@@ -36,16 +36,62 @@
               keystone-engine
               lief
               pefile
+              pytest
               unicorn
             ]
           );
+
+          haloce-tools = pkgs.python3Packages.buildPythonApplication {
+            pname = "haloce-decomp-tools";
+            version = "0.1.0";
+            src = ./.;
+            pyproject = true;
+
+            build-system = with pkgs.python3Packages; [
+              setuptools
+            ];
+
+            dependencies = with pkgs.python3Packages; [
+              capstone
+              lief
+              pefile
+              unicorn
+            ];
+
+            nativeCheckInputs = with pkgs.python3Packages; [
+              pytestCheckHook
+            ];
+
+            pythonImportsCheck = [ "haloce_catalog" ];
+
+            preCheck = ''
+              export PYTHONPATH="$PWD/src:$PYTHONPATH"
+            '';
+          };
         in
         {
           _module.args.pkgs = pkgs;
 
           packages = {
+            inherit haloce-tools;
             inherit (pkgs) dynamorio;
-            default = pkgs.dynamorio;
+            default = haloce-tools;
+          };
+
+          apps = {
+            default = {
+              type = "app";
+              program = "${haloce-tools}/bin/haloce-catalog";
+            };
+
+            haloce-catalog = {
+              type = "app";
+              program = "${haloce-tools}/bin/haloce-catalog";
+            };
+          };
+
+          checks = {
+            inherit haloce-tools;
           };
 
           devShells.default = pkgs.mkShell {
@@ -64,6 +110,7 @@
 
             shellHook = ''
               export DYNAMORIO_HOME=${pkgs.dynamorio}
+              export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
             '';
           };
         };

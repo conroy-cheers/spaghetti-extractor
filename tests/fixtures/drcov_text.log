@@ -1,0 +1,11 @@
+DRCOV VERSION: 2
+DRCOV FLAVOR: drcov
+Module Table: version 2, count 2
+Columns: id, containing_id, start, end, entry, offset, preferred_base, path
+ 0, 0, 0x00400000, 0x00410000, 0x00401000, 0x00000000, 0x00400000, C:\Program Files (x86)\Microsoft Games\Halo Custom Edition\haloce.exe
+ 1, 1, 0x7b600000, 0x7b800000, 0x7b610000, 0x00000000, 0x7b600000, C:\windows\system32\kernel32.dll
+BB Table: 3 bbs
+module id, start, size:
+ 0, 0x1010, 5
+module[  0]: 0x1020, 12
+ 1, 0x2200, 7

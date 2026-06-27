@@ -3,6 +3,7 @@
   stdenv,
   fetchFromGitHub,
   cmake,
+  coreutils,
   ninja,
   makeWrapper,
   perl,
@@ -70,6 +71,8 @@ stdenv.mkDerivation rec {
     runHook preInstallCheck
 
     "$out/bin/drrun" -version | grep -F "drrun version ${version}"
+    logdir="$(mktemp -d)"
+    "$out/bin/drrun" -64 -quiet -t drcov -dump_text -logdir "$logdir" -- "${coreutils}/bin/true"
 
     runHook postInstallCheck
   '';
