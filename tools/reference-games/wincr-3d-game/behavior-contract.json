@@ -1,0 +1,438 @@
+{
+  "format": "wincr-behavior-contract-v1",
+  "contract_id": "wincr.reference.3d-game",
+  "title": "WinCR 3D reference game deterministic transcript",
+  "version": "1",
+  "scope": "A small Win32/GDI game used as a public target for deriving a clean-room behavior spec from an original Windows PE.",
+  "target": {
+    "id": "wincr-3d-reference-game",
+    "primary_binary": "wincr-3d-game.exe",
+    "window_fixture_binary": "wincr-3d-game-window.exe",
+    "binary_kind": "PE32",
+    "runtime_modes": [
+      "console JSON transcript",
+      "interactive Win32 window"
+    ]
+  },
+  "command_line": {
+    "usage": "wincr-3d-game.exe --json [--scenario idle|orbit|collect|dive|burnout|aim_miss] [--frames N] [--seed N]; wincr-3d-game-window.exe --window-smoke [--scenario idle|orbit|collect|dive|burnout|aim_miss] [--frames N] [--seed N]",
+    "defaults": {
+      "scenario": "orbit",
+      "frames": 180,
+      "seed": 7
+    },
+    "frame_clamp": {
+      "min": 1,
+      "max": 7200
+    }
+  },
+  "json_transcript": {
+    "format": "wincr-3d-game-transcript-v1",
+    "required_top_level_fields": [
+      "format",
+      "game",
+      "version",
+      "scenario",
+      "seed",
+      "frames",
+      "constants",
+      "targets",
+      "samples",
+      "final",
+      "aggregate_hash"
+    ],
+    "sample_policy": "emit frames 0 through 15, every frame divisible by 30, and the final simulated frame before stepping",
+    "hash_algorithm": {
+      "name": "FNV-1a/u32 little-endian word stream",
+      "offset_basis": 2166136261,
+      "prime": 16777619,
+      "aggregate": "start at offset_basis, mix every sampled frame hash for every simulated frame, then mix the post-run frame hash with zero input"
+    }
+  },
+  "constants": {
+    "fixed_scale": 1024,
+    "screen_w": 320,
+    "screen_h": 200,
+    "max_frames": 7200,
+    "target_count": 4,
+    "input_masks": {
+      "left": 1,
+      "right": 2,
+      "up": 4,
+      "down": 8,
+      "thrust": 16,
+      "fire": 32
+    },
+    "sin_table": [
+      0,
+      200,
+      392,
+      569,
+      724,
+      851,
+      946,
+      1004,
+      1024,
+      1004,
+      946,
+      851,
+      724,
+      569,
+      392,
+      200,
+      0,
+      -200,
+      -392,
+      -569,
+      -724,
+      -851,
+      -946,
+      -1004,
+      -1024,
+      -1004,
+      -946,
+      -851,
+      -724,
+      -569,
+      -392,
+      -200
+    ],
+    "cube_vertices": [
+      [-256, -256, -256],
+      [256, -256, -256],
+      [256, 256, -256],
+      [-256, 256, -256],
+      [-256, -256, 256],
+      [256, -256, 256],
+      [256, 256, 256],
+      [-256, 256, 256]
+    ],
+    "cube_edges": [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+      [3, 0],
+      [4, 5],
+      [5, 6],
+      [6, 7],
+      [7, 4],
+      [0, 4],
+      [1, 5],
+      [2, 6],
+      [3, 7]
+    ]
+  },
+  "initial_state": {
+    "frame": 0,
+    "x": 0,
+    "y": 0,
+    "z": 768,
+    "vx": 0,
+    "vy": 0,
+    "vz": 0,
+    "yaw": 0,
+    "pitch": 0,
+    "energy": 1000,
+    "health": 1000,
+    "score": 0,
+    "cooldown": 0,
+    "collected_mask": 0,
+    "rng": "seed"
+  },
+  "target_generation": {
+    "rng_seed": "seed xor 0xa51c3d2f",
+    "lcg": "state = state * 1664525 + 1013904223 modulo 2^32",
+    "range": "min + ((next_state >> 8) modulo span)",
+    "target_fields": {
+      "x": "range(-1400, 2801)",
+      "y": "range(-700, 1401)",
+      "z": "range(2600, 3601) + index * 280",
+      "radius": "260 + index * 30",
+      "value": "100 + index * 75"
+    }
+  },
+  "scenario_inputs": {
+    "idle": "always 0",
+    "collect": [
+      "thrust while frame < 96",
+      "right when floor(frame / 24) is even, left otherwise",
+      "up while 20 <= frame < 70",
+      "fire on frames 34, 78, and 118"
+    ],
+    "dive": [
+      "left while frame < 8",
+      "thrust while 8 <= frame < 120"
+    ],
+    "burnout": "thrust every frame, including after energy depletion",
+    "aim_miss": "fire on frame 0 only, then no input",
+    "orbit": [
+      "left while frame < 48",
+      "right while 48 <= frame < 112",
+      "thrust while 12 <= frame < 120",
+      "fire when frame modulo 40 equals 16",
+      "down while 70 <= frame < 118"
+    ],
+    "fallback": "unknown scenario names use orbit behavior"
+  },
+  "state_transition": [
+    "left decrements yaw modulo 32; right increments yaw modulo 32",
+    "up increases pitch by 16 clamped to [-384, 384]; down decreases pitch by 16 clamped to [-384, 384]",
+    "when neither up nor down is pressed, pitch becomes trunc_toward_zero(pitch * 7 / 8)",
+    "with thrust and positive energy, vx += cos(yaw) / 24, vz += sin(yaw) / 24 + 18, vy += pitch / 96, and energy decreases by 3 clamped to [0, 1000]",
+    "without effective thrust, including thrust requested with zero energy, energy increases by 2 clamped to [0, 1000]",
+    "position adds velocity, then every velocity component becomes trunc_toward_zero(component * 31 / 32)",
+    "cooldown decrements by one when positive",
+    "an uncollected target is collected when absolute x, y, and z distance are all less than its radius",
+    "collection sets the target bit, adds target value to score, and adds 80 energy clamped to [0, 1000]",
+    "fire with zero cooldown adds 25 score and sets cooldown to 12 when a visible target projection lies within 18 pixels of screen center",
+    "z below zero clamps to zero, zeros vz, and subtracts 5 health clamped to [0, 1000]",
+    "frame increments after all other updates"
+  ],
+  "projection": {
+    "rx": "world_x - state.x",
+    "ry": "world_y - state.y",
+    "rz": "world_z - state.z + 2048",
+    "denom": "max(rz, 96)",
+    "x": "screen_w / 2 + (rx * 180) / denom",
+    "y": "screen_h / 2 - (ry * 180) / denom",
+    "visible": "rz > 96 and x in (-64, screen_w + 64) and y in (-64, screen_h + 64)"
+  },
+  "rendering_contract": {
+    "window_title": "WinCR 3D Reference Game",
+    "class_name": "WinCR3DReferenceGame",
+    "timer_ms": 16,
+    "window_smoke": "wincr-3d-game-window.exe --window-smoke runs the real Win32 window/GDI path with scripted scenario input for the requested frame count, then exits with code 0",
+    "surface": "GDI backbuffer",
+    "observable_primitives": [
+      "black background",
+      "green wire grid",
+      "yellow visible targets",
+      "cyan projected cube edges",
+      "white HUD text"
+    ]
+  },
+  "coverage_requirements": {
+    "required_records": [
+      {
+        "id": "json-orbit-seed7-180",
+        "entity_type": "behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "orbit-seed7-180",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "json-collect-seed11-150",
+        "entity_type": "behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "collect-seed11-150",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "json-collect-seed2-64",
+        "entity_type": "behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "collect-seed2-64",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "json-dive-seed7-64",
+        "entity_type": "behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "dive-seed7-64",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "json-orbit-seed1-64",
+        "entity_type": "behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "orbit-seed1-64",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "json-burnout-seed7-360",
+        "entity_type": "behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "burnout-seed7-360",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "json-aim-miss-seed1-4",
+        "entity_type": "behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "aim-miss-seed1-4",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "process-help",
+        "entity_type": "process_behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "help",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "process-noargs-error",
+        "entity_type": "process_behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "noargs-error",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "process-default-json",
+        "entity_type": "process_behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "default-json",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "process-unknown-option",
+        "entity_type": "process_behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "unknown-option",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "process-missing-scenario-value",
+        "entity_type": "process_behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "missing-scenario-value",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "process-parser-edge-cases",
+        "entity_type": "process_behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "parser-edge-cases",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "process-parser-empty-sign-long",
+        "entity_type": "process_behavior_observation",
+        "match": {
+          "contract_id": "wincr.reference.3d-game",
+          "test_id": "parser-empty-sign-long",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "mutation-wrong-state-transition",
+        "entity_type": "mutation_test_case",
+        "match": {
+          "inputs.mutation_kind": "wrong_state_transition",
+          "status": "killed"
+        }
+      },
+      {
+        "id": "mutation-bad-projection",
+        "entity_type": "mutation_test_case",
+        "match": {
+          "inputs.mutation_kind": "bad_projection",
+          "status": "killed"
+        }
+      },
+      {
+        "id": "mutation-bad-input-schedule",
+        "entity_type": "mutation_test_case",
+        "match": {
+          "inputs.mutation_kind": "bad_input_schedule",
+          "status": "killed"
+        }
+      },
+      {
+        "id": "mutation-bad-frame-hash",
+        "entity_type": "mutation_test_case",
+        "match": {
+          "inputs.mutation_kind": "bad_frame_hash",
+          "status": "killed"
+        }
+      },
+      {
+        "id": "mutation-bad-target-generation",
+        "entity_type": "mutation_test_case",
+        "match": {
+          "inputs.mutation_kind": "bad_target_generation",
+          "status": "killed"
+        }
+      },
+      {
+        "id": "data-state-transcript-round-trip",
+        "entity_type": "data_state_test_case",
+        "match": {
+          "inputs.structure_kind": "transcript",
+          "inputs.case_kind": "round_trip",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "data-state-scenario-round-trip",
+        "entity_type": "data_state_test_case",
+        "match": {
+          "inputs.structure_kind": "scenario",
+          "inputs.case_kind": "round_trip",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "data-state-projection-round-trip",
+        "entity_type": "data_state_test_case",
+        "match": {
+          "inputs.structure_kind": "projection",
+          "inputs.case_kind": "round_trip",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "data-state-simulation-transition",
+        "entity_type": "data_state_test_case",
+        "match": {
+          "inputs.structure_kind": "fixed_step_simulation",
+          "inputs.case_kind": "transition",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "interface-writefile-success",
+        "entity_type": "interface_test_case",
+        "match": {
+          "inputs.endpoint": "KERNEL32.dll!WriteFile",
+          "inputs.case_kind": "success",
+          "status": "pass"
+        }
+      },
+      {
+        "id": "interface-getcommandline-success",
+        "entity_type": "interface_test_case",
+        "match": {
+          "inputs.endpoint": "KERNEL32.dll!GetCommandLineA",
+          "inputs.case_kind": "success",
+          "status": "pass"
+        }
+      }
+    ]
+  }
+}

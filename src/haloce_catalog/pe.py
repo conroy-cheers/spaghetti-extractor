@@ -67,6 +67,10 @@ BLOCK_TERMINATORS = {
     "sysenter",
     "ud2",
 }
+PADDING_MNEMONICS = {
+    "int3",
+    "nop",
+}
 
 
 @dataclass(frozen=True)
@@ -221,6 +225,16 @@ def executable_range_classification(role: RoleDecision) -> tuple[str, str]:
     return "excluded tool/runtime", role.reason
 
 
+def mapped_section_size(virtual_size: int, raw_size: int) -> int:
+    """Return the RVA span Windows maps for a PE section.
+
+    SizeOfRawData may be larger than VirtualSize because of file alignment; the
+    raw tail is not part of the mapped executable image.
+    """
+
+    return virtual_size if virtual_size > 0 else raw_size
+
+
 def discover_linear_blocks(path: Path) -> tuple[list[BlockCandidate], list[EdgeCandidate]]:
     pe = pefile.PE(str(path), fast_load=False)
     machine = pe.FILE_HEADER.Machine
@@ -236,11 +250,13 @@ def discover_linear_blocks(path: Path) -> tuple[list[BlockCandidate], list[EdgeC
         characteristics = section.Characteristics
         if not (characteristics & IMAGE_SCN_MEM_EXECUTE):
             continue
-        data = section.get_data()
+        data = section.get_data()[: mapped_section_size(section.Misc_VirtualSize, section.SizeOfRawData)]
         section_rva = section.VirtualAddress
         offset = 0
         block_start: int | None = None
         last_end: int | None = None
+        padding_start: int | None = None
+        padding_end: int | None = None
 
         while offset < len(data):
             address = image_base + section_rva + offset
@@ -248,13 +264,29 @@ def discover_linear_blocks(path: Path) -> tuple[list[BlockCandidate], list[EdgeC
             if not insns:
                 if block_start is not None and last_end is not None and last_end > block_start:
                     blocks.append(_block(block_start, last_end))
+                if padding_start is not None and padding_end is not None and padding_end > padding_start:
+                    blocks.append(_padding_block(padding_start, padding_end))
                 block_start = None
                 last_end = None
+                padding_start = None
+                padding_end = None
                 offset += 1
                 continue
 
             insn = insns[0]
             insn_rva = insn.address - image_base
+            if block_start is None and _is_padding_instruction(insn):
+                if padding_start is None:
+                    padding_start = insn_rva
+                padding_end = insn_rva + insn.size
+                offset += insn.size
+                continue
+
+            if padding_start is not None and padding_end is not None and padding_end > padding_start:
+                blocks.append(_padding_block(padding_start, padding_end))
+                padding_start = None
+                padding_end = None
+
             if block_start is None:
                 block_start = insn_rva
             last_end = insn_rva + insn.size
@@ -280,8 +312,42 @@ def discover_linear_blocks(path: Path) -> tuple[list[BlockCandidate], list[EdgeC
 
         if block_start is not None and last_end is not None and last_end > block_start:
             blocks.append(_block(block_start, last_end))
+        if padding_start is not None and padding_end is not None and padding_end > padding_start:
+            blocks.append(_padding_block(padding_start, padding_end))
 
-    return blocks, edges
+    return _split_blocks_at_edge_targets(blocks, edges), edges
+
+
+def _split_blocks_at_edge_targets(
+    blocks: list[BlockCandidate],
+    edges: list[EdgeCandidate],
+) -> list[BlockCandidate]:
+    targets = {edge.to_rva for edge in edges}
+    if not targets:
+        return blocks
+    split: list[BlockCandidate] = []
+    for block in blocks:
+        if block.classification != "code":
+            split.append(block)
+            continue
+        inner_targets = sorted(target for target in targets if block.rva_start < target < block.rva_end)
+        if not inner_targets:
+            split.append(block)
+            continue
+        boundaries = [block.rva_start, *inner_targets, block.rva_end]
+        for start, end in zip(boundaries, boundaries[1:]):
+            if end <= start:
+                continue
+            split.append(
+                BlockCandidate(
+                    rva_start=start,
+                    rva_end=end,
+                    source=block.source,
+                    classification=block.classification,
+                    confidence=block.confidence,
+                )
+            )
+    return split
 
 
 def _section_info(section: Any) -> SectionInfo:
@@ -409,6 +475,10 @@ def _ends_block(insn: Any) -> bool:
     return mnemonic.startswith(BRANCH_PREFIXES) or mnemonic.startswith("call") or mnemonic in BLOCK_TERMINATORS
 
 
+def _is_padding_instruction(insn: Any) -> bool:
+    return str(insn.mnemonic).lower() in PADDING_MNEMONICS
+
+
 def _direct_branch_target(insn: Any, image_base: int) -> int | None:
     mnemonic = insn.mnemonic.lower()
     if not (mnemonic.startswith("j") or mnemonic.startswith("call")):
@@ -428,4 +498,14 @@ def _block(start: int, end: int) -> BlockCandidate:
         source="capstone-linear",
         classification="code",
         confidence="low",
+    )
+
+
+def _padding_block(start: int, end: int) -> BlockCandidate:
+    return BlockCandidate(
+        rva_start=start,
+        rva_end=end,
+        source="capstone-linear",
+        classification="padding/alignment",
+        confidence="medium",
     )

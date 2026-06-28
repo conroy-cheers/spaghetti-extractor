@@ -1,4 +1,4 @@
-"""Clean-room catalog and coverage tooling for Halo CE runtime analysis."""
+"""Windows clean-room catalog and coverage tooling with Halo CE compatibility presets."""
 
 __all__ = [ "__version__" ]
 

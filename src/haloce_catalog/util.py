@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -22,6 +23,10 @@ def sha256_file(path: Path) -> str:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def sha256_text(data: str) -> str:
+    return sha256_bytes(data.encode("utf-8"))
 
 
 def json_dumps(data: Any) -> str:
@@ -52,3 +57,13 @@ def unique_preserve_order(values: Iterable[str]) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+_POSIX_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9_./-])/(?:[^\s,;`]+)")
+_WINDOWS_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]:\\\\|[A-Za-z]:/)(?:[^\s,;`]+)")
+
+
+def public_text(value: object) -> str:
+    text = "" if value is None else str(value)
+    text = _WINDOWS_ABSOLUTE_PATH.sub("[private path]", text)
+    return _POSIX_ABSOLUTE_PATH.sub("[private path]", text)

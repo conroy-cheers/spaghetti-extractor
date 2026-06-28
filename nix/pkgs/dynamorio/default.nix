@@ -15,6 +15,7 @@
 stdenv.mkDerivation rec {
   pname = "dynamorio";
   version = "11.91.20630";
+  bitness = if stdenv.hostPlatform.is32bit then "32" else "64";
 
   src = fetchFromGitHub {
     owner = "DynamoRIO";
@@ -59,7 +60,7 @@ stdenv.mkDerivation rec {
     mkdir -p "$out/bin"
 
     for tool in drrun drconfig drdeploy drinject; do
-      makeWrapper "$out/bin64/$tool" "$out/bin/$tool" \
+      makeWrapper "$out/bin${bitness}/$tool" "$out/bin/$tool" \
         --set DYNAMORIO_HOME "$out"
     done
 
@@ -72,7 +73,7 @@ stdenv.mkDerivation rec {
 
     "$out/bin/drrun" -version | grep -F "drrun version ${version}"
     logdir="$(mktemp -d)"
-    "$out/bin/drrun" -64 -quiet -t drcov -dump_text -logdir "$logdir" -- "${coreutils}/bin/true"
+    "$out/bin/drrun" -${bitness} -quiet -t drcov -dump_text -logdir "$logdir" -- "${coreutils}/bin/true"
 
     runHook postInstallCheck
   '';
@@ -82,6 +83,9 @@ stdenv.mkDerivation rec {
     homepage = "https://dynamorio.org/";
     license = lib.licenses.bsd3;
     mainProgram = "drrun";
-    platforms = [ "x86_64-linux" ];
+    platforms = [
+      "i686-linux"
+      "x86_64-linux"
+    ];
   };
 }

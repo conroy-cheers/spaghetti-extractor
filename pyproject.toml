@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "haloce-decomp-tools"
 version = "0.1.0"
-description = "Clean-room Halo CE catalog, coverage, and oracle-spec tooling"
+description = "Windows clean-room catalog, coverage, and oracle-spec tooling"
 requires-python = ">=3.11"
 dependencies = [
   "capstone",
@@ -15,10 +15,11 @@ dependencies = [
 ]
 
 [project.scripts]
+wincr = "haloce_catalog.cli:main"
 haloce-catalog = "haloce_catalog.cli:main"
 
 [tool.setuptools.packages.find]
 where = [ "src" ]
 
 [tool.setuptools.package-data]
-haloce_catalog = [ "schema.sql" ]
+haloce_catalog = [ "schema.sql", "presets/*.toml" ]
