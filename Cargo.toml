@@ -1,0 +1,6 @@
+[workspace]
+members = [
+  "crates/wincr-block",
+]
+resolver = "2"
+

@@ -460,7 +460,9 @@ def render_guest_trace_script(target_config: TargetConfig | None = None) -> str:
   [string]$Target = "{_ps_escape(default_target)}",
   [int]$RunSeconds = 45,
   [string]$TraceRoot = "{_ps_escape(vm.trace_root)}",
-  [string]$TestIdPrefix = "windows-vm"
+  [string]$TestIdPrefix = "windows-vm",
+  [switch]$BlockStateTrace,
+  [int]$BlockStateMaxRecords = 8192
 )
 $ErrorActionPreference = "Stop"
 $DynamoRoot = Join-Path $TraceRoot "DynamoRIO"
@@ -484,7 +486,11 @@ function Invoke-WinCRTraceTarget {{
   $TestId = "$TestIdPrefix-$Name"
   $Log = Join-Path $LogRoot "$TestId.jsonl"
   Remove-Item -Force -ErrorAction SilentlyContinue $Log, "$Log.*"
-  $Args = @("-c", $Client, "-out", $Log, "-test_id", $TestId, "--", $Exe)
+  $ClientArgs = @("-c", $Client, "-out", $Log, "-test_id", $TestId)
+  if ($BlockStateTrace) {{
+    $ClientArgs += @("-block_state_trace", "-block_state_max_records", [string][Math]::Max(1, $BlockStateMaxRecords))
+  }}
+  $Args = @($ClientArgs + @("--", $Exe))
   foreach ($Arg in $Spec.Args) {{ $Args += $Arg }}
   $WorkingDirectory = if ($Spec.Cwd -and $Spec.Cwd -ne ".") {{ Join-Path $RuntimeRoot $Spec.Cwd }} else {{ $RuntimeRoot }}
   $Process = Start-Process -FilePath $Drrun.FullName -ArgumentList $Args -WorkingDirectory $WorkingDirectory -PassThru
@@ -599,6 +605,8 @@ def run_windows_guest_trace(
     target: str = "Both",
     run_seconds: int = 45,
     test_id_prefix: str = "windows-vm",
+    block_state_trace: bool = False,
+    block_state_max_records: int = 8192,
     password: str | None = None,
     sshpass: str = "sshpass",
     ssh: str = "ssh",
@@ -610,10 +618,14 @@ def run_windows_guest_trace(
     vm = target_manifest.windows_vm
     out_dir.mkdir(parents=True, exist_ok=True)
     remote = f"{user}@{host}" if user else host
+    block_state_args = ""
+    if block_state_trace:
+        block_state_args = f" -BlockStateTrace -BlockStateMaxRecords {max(1, block_state_max_records)}"
     ps_command = (
         "powershell.exe -NoProfile -ExecutionPolicy Bypass "
         f"-File {vm.trace_root}\\{vm.guest_trace_script} -Target {target} "
         f"-RunSeconds {run_seconds} -TestIdPrefix {test_id_prefix}"
+        f"{block_state_args}"
     )
     auth_args = []
     if password is not None:
@@ -956,6 +968,12 @@ def _host_trace_shell_script(name: str, target_config: TargetConfig) -> str:
     default_user = _default_vm_user(target_config)
     default_password = _default_vm_password(target_config)
     password_expr = _shell_env_default(target_config.windows_vm.password_env, "WINCR_WINDOWS_VM_PASSWORD", default_password)
+    block_state_trace_expr = _shell_env_default(
+        _block_state_trace_env(target_config), "WINCR_WINDOWS_VM_BLOCK_STATE_TRACE", "1"
+    )
+    block_state_max_records_expr = _shell_env_default(
+        _block_state_max_records_env(target_config), "WINCR_WINDOWS_VM_BLOCK_STATE_MAX_RECORDS", "250000"
+    )
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 guest="${{1:?guest host or IP required}}"
@@ -963,7 +981,13 @@ user="${{2:-{default_user}}}"
 out_dir="${{3:-private/windows-vm/logs/{name}}}"
 target="${{4:-{default_target}}}"
 password="{password_expr}"
-python -m haloce_catalog run-windows-guest-trace --host "$guest" --user "$user" --out-dir "$out_dir" --target "$target" --password "$password"
+block_state_trace="{block_state_trace_expr}"
+block_state_max_records="{block_state_max_records_expr}"
+block_state_args=()
+case "$block_state_trace" in
+  1|true|TRUE|yes|YES|on|ON) block_state_args=(--block-state-trace --block-state-max-records "$block_state_max_records") ;;
+esac
+python -m haloce_catalog run-windows-guest-trace --host "$guest" --user "$user" --out-dir "$out_dir" --target "$target" --password "$password" "${{block_state_args[@]}}"
 """
 
 
@@ -982,6 +1006,22 @@ def _shell_env_name(name: str) -> str:
     return name
 
 
+def _block_state_trace_env(target_config: TargetConfig) -> str:
+    return f"{_windows_vm_env_prefix(target_config)}_BLOCK_STATE_TRACE"
+
+
+def _block_state_max_records_env(target_config: TargetConfig) -> str:
+    return f"{_windows_vm_env_prefix(target_config)}_BLOCK_STATE_MAX_RECORDS"
+
+
+def _windows_vm_env_prefix(target_config: TargetConfig) -> str:
+    password_env = _shell_env_name(target_config.windows_vm.password_env)
+    suffix = "_PASSWORD"
+    if password_env.endswith(suffix):
+        return password_env[: -len(suffix)]
+    return password_env
+
+
 def _shell_escape_default(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
 
@@ -992,6 +1032,12 @@ def _host_prove_trace_shell_script(name: str, target_config: TargetConfig) -> st
     default_password = _default_vm_password(target_config)
     password_expr = _shell_env_default(target_config.windows_vm.password_env, "WINCR_WINDOWS_VM_PASSWORD", default_password)
     skip_reports_expr = _shell_env_default(target_config.windows_vm.skip_reports_env, "WINCR_WINDOWS_VM_SKIP_REPORTS", "0")
+    block_state_trace_expr = _shell_env_default(
+        _block_state_trace_env(target_config), "WINCR_WINDOWS_VM_BLOCK_STATE_TRACE", "1"
+    )
+    block_state_max_records_expr = _shell_env_default(
+        _block_state_max_records_env(target_config), "WINCR_WINDOWS_VM_BLOCK_STATE_MAX_RECORDS", "250000"
+    )
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 guest="${{1:?guest host or IP required}}"
@@ -1005,7 +1051,13 @@ skip_reports=()
 if [[ "{skip_reports_expr}" == "1" ]]; then
   skip_reports=(--skip-reports)
 fi
-python -m haloce_catalog prove-windows-guest-trace --host "$guest" --user "$user" --db "$db" --report-dir "$report_dir" --out-dir "$out_dir" --target "$target" --password "$password" "${{skip_reports[@]}}"
+block_state_trace="{block_state_trace_expr}"
+block_state_max_records="{block_state_max_records_expr}"
+block_state_args=()
+case "$block_state_trace" in
+  1|true|TRUE|yes|YES|on|ON) block_state_args=(--block-state-trace --block-state-max-records "$block_state_max_records") ;;
+esac
+python -m haloce_catalog prove-windows-guest-trace --host "$guest" --user "$user" --db "$db" --report-dir "$report_dir" --out-dir "$out_dir" --target "$target" --password "$password" "${{skip_reports[@]}}" "${{block_state_args[@]}}"
 """
 
 

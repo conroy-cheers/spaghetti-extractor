@@ -164,6 +164,7 @@ def promote_clean_templates(
     promoted: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
     rejected: list[dict[str, str]] = []
+    rewritten_paths: list[Path] = []
     for path in _iter_clean_templates(corpus_dir):
         template = _load_json(path)
         rel_path = path.relative_to(corpus_dir).as_posix()
@@ -195,6 +196,12 @@ def promote_clean_templates(
         promoted.append({"path": rel_path, "entity_type": entity_type, "category": category})
         if not dry_run:
             write_json(path, candidate)
+            rewritten_paths.append(path)
+    manifest_refresh = (
+        _refresh_content_manifest_entries(corpus_dir, rewritten_paths)
+        if rewritten_paths and not dry_run
+        else {"updated": 0, "missing": 0, "content_manifest": None}
+    )
     return {
         "status": "pass" if not rejected else "fail",
         "source_corpus": _public_source_corpus(manifest),
@@ -208,10 +215,40 @@ def promote_clean_templates(
             "skipped_templates": len(skipped),
             "rejected_templates": len(rejected),
         },
+        "content_manifest": manifest_refresh,
         "promoted": promoted,
         "skipped": skipped,
         "rejected": rejected,
     }
+
+
+def _refresh_content_manifest_entries(corpus_dir: Path, changed_paths: list[Path]) -> dict[str, Any]:
+    manifest_path = corpus_dir / "content-manifest.json"
+    if not manifest_path.exists():
+        return {"updated": 0, "missing": len(changed_paths), "content_manifest": None}
+    manifest = _load_json(manifest_path)
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        return {"updated": 0, "missing": len(changed_paths), "content_manifest": str(manifest_path)}
+
+    by_path: dict[str, dict[str, Any]] = {
+        str(artifact.get("path") or ""): artifact for artifact in artifacts if isinstance(artifact, dict)
+    }
+    updated = 0
+    missing = 0
+    for path in changed_paths:
+        rel_path = path.relative_to(corpus_dir).as_posix()
+        artifact = by_path.get(rel_path)
+        if artifact is None:
+            missing += 1
+            continue
+        artifact["sha256"] = sha256_file(path)
+        artifact["size"] = path.stat().st_size
+        updated += 1
+    if updated:
+        manifest["artifact_count"] = len(artifacts)
+        write_json(manifest_path, manifest)
+    return {"updated": updated, "missing": missing, "content_manifest": str(manifest_path)}
 
 
 def validate_clean_specs(spec_json: Path, tests_json: Path | None = None) -> dict[str, Any]:

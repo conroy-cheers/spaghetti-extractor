@@ -178,6 +178,8 @@ def ingest_trace(db_path: Path, log_path: Path, *, suite: str = "trace") -> dict
       {"kind":"cfg_edge","test_id":"...","pid":1,"module_sha256":"...","rva_edge_from":4096,"rva_edge_to":4108}
       {"kind":"call_edge","test_id":"...","pid":1,"module_sha256":"...","caller_rva":4096,"callee_module_sha256":"...","callee_rva":8192}
       {"kind":"value_trace","test_id":"...","module_sha256":"...","routine_label":"fn_...","block_label":"bb_...","values":{...}}
+      {"kind":"block_entry","test_id":"...","module_sha256":"...","rva_start":4096,"rva_end":4108,"state":{...}}
+      {"kind":"block_exit","test_id":"...","module_sha256":"...","rva_start":4096,"rva_end":4108,"state":{...},"side_effects":{...}}
     """
 
     conn = connect(db_path)
@@ -391,6 +393,8 @@ def ingest_trace(db_path: Path, log_path: Path, *, suite: str = "trace") -> dict
                     ),
                 )
                 counts["value_traces"] += 1
+            elif kind in {"block_entry", "block_exit"}:
+                counts["block_state_records"] = counts.get("block_state_records", 0) + 1
             else:
                 raise ValueError(f"unknown trace record kind: {kind}")
 
@@ -417,33 +421,42 @@ def _labels_for_value_rva(conn: sqlite3.Connection, binary_id: int, rva: int) ->
     if row is not None:
         routine_label = row["routine_label"]
         if routine_label is None:
-            routine = conn.execute(
-                """
-                SELECT label
-                FROM functions
-                WHERE binary_id = ?
-                  AND rva <= ?
-                  AND rva + size > ?
-                ORDER BY rva DESC, size ASC
-                LIMIT 1
-                """,
-                (binary_id, rva, rva),
-            ).fetchone()
-            routine_label = routine["label"] if routine is not None else None
+            routine_label = _function_label_for_rva(conn, binary_id, rva)
         return {"block_label": row["block_label"], "routine_label": routine_label}
+    return {"block_label": None, "routine_label": _function_label_for_rva(conn, binary_id, rva)}
+
+
+def _function_label_for_rva(conn: sqlite3.Connection, binary_id: int, rva: int) -> str | None:
     routine = conn.execute(
         """
-        SELECT label
-        FROM functions
-        WHERE binary_id = ?
-          AND rva <= ?
-          AND rva + size > ?
-        ORDER BY rva DESC, size ASC
+        SELECT f.label
+        FROM function_semantics fs
+        JOIN functions f ON f.id = fs.function_id
+        WHERE fs.binary_id = ?
+          AND fs.rva_start <= ?
+          AND (fs.rva_end IS NULL OR fs.rva_end > ?)
+        ORDER BY fs.rva_start DESC, fs.rva_end IS NULL ASC, fs.rva_end ASC
         LIMIT 1
         """,
         (binary_id, rva, rva),
     ).fetchone()
-    return {"block_label": None, "routine_label": routine["label"] if routine is not None else None}
+    if routine is not None:
+        return str(routine["label"])
+    routine = conn.execute(
+        """
+        SELECT f.label
+        FROM functions f
+        JOIN basic_blocks bb ON bb.function_id = f.id
+        WHERE f.binary_id = ?
+          AND f.rva <= ?
+          AND bb.rva_end > ?
+        GROUP BY f.id, f.label, f.rva
+        ORDER BY f.rva DESC
+        LIMIT 1
+        """,
+        (binary_id, rva, rva),
+    ).fetchone()
+    return str(routine["label"]) if routine is not None else None
 
 
 def ingest_halo_trace(db_path: Path, log_path: Path, *, suite: str = "halo-trace") -> dict[str, Any]:
@@ -467,6 +480,8 @@ def prove_trace(
     expected_returncode: int | None = 0,
     semantic_profile: bool = False,
     semantic_max_records: int = 128,
+    block_state_trace: bool = False,
+    block_state_max_records: int = 8192,
 ) -> dict[str, Any]:
     app = list(app)
     if app and app[0] == "--":
@@ -498,6 +513,8 @@ def prove_trace(
         ]
         if semantic_profile:
             runner_args.extend(["--semantic-profile", "--semantic-max-records", str(max(1, semantic_max_records))])
+        if block_state_trace:
+            runner_args.extend(["--block-state-trace", "--block-state-max-records", str(max(1, block_state_max_records))])
         command = [
             *runner_args,
             "--",
@@ -545,6 +562,7 @@ def prove_trace(
         expected_returncode=expected_returncode,
         stdout=stdout,
         stderr=stderr,
+        block_state_trace=block_state_trace,
     )
 
 
@@ -565,6 +583,8 @@ def prove_halo_trace(
     expected_returncode: int | None = 0,
     semantic_profile: bool = False,
     semantic_max_records: int = 128,
+    block_state_trace: bool = False,
+    block_state_max_records: int = 8192,
 ) -> dict[str, Any]:
     legacy_trace_runner = trace_runner or os.environ.get("HALOCE_TRACE_RUNNER") or shutil.which("halo-trace-run") or "halo-trace-run"
     return prove_trace(
@@ -583,6 +603,8 @@ def prove_halo_trace(
         expected_returncode=expected_returncode,
         semantic_profile=semantic_profile,
         semantic_max_records=semantic_max_records,
+        block_state_trace=block_state_trace,
+        block_state_max_records=block_state_max_records,
     )
 
 
@@ -602,6 +624,7 @@ def prove_trace_log(
     expected_returncode: int | None = 0,
     stdout: str = "",
     stderr: str = "",
+    block_state_trace: bool = False,
 ) -> dict[str, Any]:
     expected = _expected_binary(db_path, expected_filename=expected_filename, expected_sha256=expected_sha256)
     if expected is None:
@@ -622,6 +645,7 @@ def prove_trace_log(
         expected_returncode=expected_returncode,
         stdout=stdout,
         stderr=stderr,
+        block_state_trace=block_state_trace,
     )
 
 
@@ -641,6 +665,7 @@ def prove_halo_trace_log(
     expected_returncode: int | None = 0,
     stdout: str = "",
     stderr: str = "",
+    block_state_trace: bool = False,
 ) -> dict[str, Any]:
     return prove_trace_log(
         db_path,
@@ -657,6 +682,7 @@ def prove_halo_trace_log(
         expected_returncode=expected_returncode,
         stdout=stdout,
         stderr=stderr,
+        block_state_trace=block_state_trace,
     )
 
 
@@ -676,6 +702,7 @@ def _prove_trace_log(
     expected_returncode: int | None,
     stdout: str,
     stderr: str,
+    block_state_trace: bool,
 ) -> dict[str, Any]:
     failures: list[str] = []
     if timed_out and not allow_timeout:
@@ -723,6 +750,27 @@ def _prove_trace_log(
     for key, description in required_raw.items():
         if int(summary.get(key, 0)) <= 0:
             failures.append(f"missing {description} in trace log for {expected['filename']}")
+
+    expected_block_state_records = int(summary.get("expected_block_state_records", 0))
+    expected_block_state_exits = int(summary.get("expected_block_state_exits", 0))
+    if (block_state_trace or expected_block_state_records > 0) and expected_block_state_exits <= 0:
+        failures.append(f"missing expected module block-state exit records in trace log for {expected['filename']}")
+    if expected_block_state_exits > 0:
+        incomplete_exits = int(summary.get("expected_side_effect_incomplete_exits", 0))
+        if incomplete_exits > 0:
+            failures.append(
+                f"incomplete side-effect capture on {incomplete_exits} expected module block exits for {expected['filename']}"
+            )
+        limitations = summary.get("expected_side_effect_limitations") or {}
+        if limitations:
+            limitation_text = ", ".join(f"{key}={limitations[key]}" for key in sorted(limitations))
+            failures.append(f"side-effect capture limitations for {expected['filename']}: {limitation_text}")
+        unknown_calls = int(summary.get("expected_api_unknown_semantic_calls", 0))
+        if unknown_calls > 0:
+            failures.append(f"unknown API side-effect semantics on {unknown_calls} expected module calls for {expected['filename']}")
+        unresolved_calls = int(summary.get("expected_api_unresolved_external_calls", 0))
+        if unresolved_calls > 0:
+            failures.append(f"unresolved external API side-effect calls on {unresolved_calls} expected module calls for {expected['filename']}")
 
     for key, description in {
         "blocks": "mapped dynamic blocks",
@@ -1118,14 +1166,71 @@ def _empty_trace_summary(expected_sha256: str) -> dict[str, Any]:
         "blocks": 0,
         "cfg_edges": 0,
         "call_edges": 0,
+        "block_state_records": 0,
+        "block_state_entries": 0,
+        "block_state_exits": 0,
         "expected_modules": 0,
         "expected_blocks": 0,
         "expected_cfg_edges": 0,
         "expected_call_edges": 0,
+        "expected_block_state_records": 0,
+        "expected_block_state_entries": 0,
+        "expected_block_state_exits": 0,
+        "side_effect_complete_exits": 0,
+        "side_effect_incomplete_exits": 0,
+        "side_effect_limitations": {},
+        "api_unknown_semantic_calls": 0,
+        "api_unresolved_external_calls": 0,
+        "expected_side_effect_complete_exits": 0,
+        "expected_side_effect_incomplete_exits": 0,
+        "expected_side_effect_limitations": {},
+        "expected_api_unknown_semantic_calls": 0,
+        "expected_api_unresolved_external_calls": 0,
         "malformed_line_count": 0,
         "malformed_lines": [],
         "module_samples": [],
     }
+
+
+def _increment_counter_map(mapping: dict[str, Any], key: str) -> None:
+    mapping[key] = int(mapping.get(key, 0)) + 1
+
+
+def _summarize_side_effects(summary: dict[str, Any], record: dict[str, Any], *, expected: bool) -> None:
+    side_effects = record.get("side_effects") or {}
+    status = str(side_effects.get("capture_status") or "")
+    limitations = [str(value) for value in side_effects.get("limitations") or []]
+    api_calls = side_effects.get("api_calls") or []
+    incomplete = status != "complete" or bool(limitations)
+
+    if incomplete:
+        summary["side_effect_incomplete_exits"] += 1
+        if expected:
+            summary["expected_side_effect_incomplete_exits"] += 1
+    else:
+        summary["side_effect_complete_exits"] += 1
+        if expected:
+            summary["expected_side_effect_complete_exits"] += 1
+
+    for limitation in limitations:
+        _increment_counter_map(summary["side_effect_limitations"], limitation)
+        if expected:
+            _increment_counter_map(summary["expected_side_effect_limitations"], limitation)
+
+    for call in api_calls:
+        semantic_class = str(call.get("semantic_class") or "")
+        if semantic_class == "unknown":
+            summary["api_unknown_semantic_calls"] += 1
+            if expected:
+                summary["expected_api_unknown_semantic_calls"] += 1
+        if (
+            call.get("external")
+            and not call.get("symbol_resolved")
+            and semantic_class != "application_callback"
+        ):
+            summary["api_unresolved_external_calls"] += 1
+            if expected:
+                summary["expected_api_unresolved_external_calls"] += 1
 
 
 def _summarize_trace(log_path: Path, expected_sha256: str) -> dict[str, Any]:
@@ -1142,10 +1247,14 @@ def _summarize_trace(log_path: Path, expected_sha256: str) -> dict[str, Any]:
                     summary["malformed_lines"].append(line_number)
                 continue
             kind = str(record.get("kind", ""))
-            if kind not in {"module", "block", "cfg_edge", "call_edge"}:
+            if kind not in {"module", "block", "cfg_edge", "call_edge", "block_entry", "block_exit"}:
                 continue
-            count_key = "cfg_edges" if kind == "cfg_edge" else "call_edges" if kind == "call_edge" else f"{kind}s"
-            summary[count_key] += 1
+            if kind in {"block_entry", "block_exit"}:
+                summary["block_state_records"] += 1
+                summary["block_state_entries" if kind == "block_entry" else "block_state_exits"] += 1
+            else:
+                count_key = "cfg_edges" if kind == "cfg_edge" else "call_edges" if kind == "call_edge" else f"{kind}s"
+                summary[count_key] += 1
             if kind == "module" and len(summary["module_samples"]) < 20:
                 summary["module_samples"].append(
                     {
@@ -1157,14 +1266,24 @@ def _summarize_trace(log_path: Path, expected_sha256: str) -> dict[str, Any]:
                     }
                 )
             if record.get("module_sha256") == expected_sha256:
-                expected_key = (
-                    "expected_cfg_edges"
-                    if kind == "cfg_edge"
-                    else "expected_call_edges"
-                    if kind == "call_edge"
-                    else f"expected_{kind}s"
-                )
-                summary[expected_key] += 1
+                if kind in {"block_entry", "block_exit"}:
+                    summary["expected_block_state_records"] += 1
+                    summary[
+                        "expected_block_state_entries"
+                        if kind == "block_entry"
+                        else "expected_block_state_exits"
+                    ] += 1
+                else:
+                    expected_key = (
+                        "expected_cfg_edges"
+                        if kind == "cfg_edge"
+                        else "expected_call_edges"
+                        if kind == "call_edge"
+                        else f"expected_{kind}s"
+                    )
+                    summary[expected_key] += 1
+            if kind == "block_exit":
+                _summarize_side_effects(summary, record, expected=record.get("module_sha256") == expected_sha256)
     return summary
 
 

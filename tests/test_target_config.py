@@ -118,6 +118,56 @@ transition_kinds = [ "mode" ]
             self.assertEqual(gates["mutation-effective"]["missing_mutation_kinds"], [])
             self.assertEqual(gates["data-state-complete"]["status"], "pass")
 
+    def test_external_module_rules_require_explicit_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target_path = root / "toy.toml"
+            target_path.write_text(
+                """
+[project]
+id = "toy"
+name = "Toy Target"
+
+[[binary_rules]]
+names = [ "toy.exe" ]
+role = "closed_runtime"
+scope = "included"
+reason = "toy executable"
+
+[[external_modules]]
+names = [ "KERNEL32.dll" ]
+kind = "os_component"
+source = "Windows system API provider"
+reason = "external operating-system dependency"
+""",
+                encoding="utf-8",
+            )
+
+            target = load_target_config(target_path)
+
+        self.assertEqual(target.external_module_rules[0].names, ("KERNEL32.dll",))
+        self.assertEqual(target.external_module_rules[0].kind, "os_component")
+        self.assertEqual(target.external_module_rules[0].source, "Windows system API provider")
+
+    def test_external_module_rules_fail_without_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target_path = Path(tmp) / "toy.toml"
+            target_path.write_text(
+                """
+[project]
+id = "toy"
+name = "Toy Target"
+
+[[external_modules]]
+names = [ "mystery.dll" ]
+kind = "source_available_dependency"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "source"):
+                load_target_config(target_path)
+
 
 if __name__ == "__main__":
     unittest.main()

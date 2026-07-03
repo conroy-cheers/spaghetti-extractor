@@ -94,14 +94,23 @@ class WindowsVmTests(unittest.TestCase):
         self.assertIn("HaloRuntime", first_logon)
         self.assertIn(r"bin32\drrun.exe", guest_trace)
         self.assertIn('[string]$Target = "Dedicated"', guest_trace)
+        self.assertIn("[switch]$BlockStateTrace", guest_trace)
+        self.assertIn("-block_state_trace", guest_trace)
+        self.assertIn("-block_state_max_records", guest_trace)
         self.assertIn("haloceded.exe", guest_trace)
         self.assertIn("timed_out = $TimedOut", guest_trace)
         self.assertIn("exit_code = $ExitCode", guest_trace)
         self.assertIn('target="${4:-Dedicated}"', host_trace)
+        self.assertIn("HALOCE_WINDOWS_VM_BLOCK_STATE_TRACE", host_trace)
+        self.assertIn("--block-state-trace", host_trace)
+        self.assertIn("--block-state-max-records", host_trace)
         self.assertIn("HALOCE_WINDOWS_VM_PASSWORD", host_trace)
         self.assertIn("--password \"$password\"", host_trace)
         self.assertIn("prove-windows-guest-trace", host_prove_trace)
         self.assertIn('target="${6:-Dedicated}"', host_prove_trace)
+        self.assertIn("HALOCE_WINDOWS_VM_BLOCK_STATE_TRACE", host_prove_trace)
+        self.assertIn("--block-state-trace", host_prove_trace)
+        self.assertIn("--block-state-max-records", host_prove_trace)
         self.assertIn("--report-dir \"$report_dir\"", host_prove_trace)
         self.assertIn("HALOCE_WINDOWS_VM_SKIP_REPORTS", host_prove_trace)
         self.assertIn("replay-qmp-input", qmp_replay)
@@ -297,6 +306,8 @@ class WindowsVmTests(unittest.TestCase):
                     target="Client",
                     run_seconds=5,
                     test_id_prefix="trace-client",
+                    block_state_trace=True,
+                    block_state_max_records=4096,
                     password="secret",
                     sshpass="/bin/sshpass",
                     ssh="/bin/ssh",
@@ -312,6 +323,8 @@ class WindowsVmTests(unittest.TestCase):
         self.assertIn("PreferredAuthentications=password", ssh_command)
         self.assertIn("halo@192.0.2.10", ssh_command)
         self.assertIn("-Target Client", ssh_command[-1])
+        self.assertIn("-BlockStateTrace", ssh_command[-1])
+        self.assertIn("-BlockStateMaxRecords 4096", ssh_command[-1])
         self.assertEqual(scp_command[:3], ["/bin/sshpass", "-p", "secret"])
         self.assertIn("halo@192.0.2.10:C:/HaloTrace/logs/trace-client-client.result.json", scp_command)
 
@@ -332,6 +345,8 @@ class WindowsVmTests(unittest.TestCase):
                 target="Dedicated",
                 run_seconds=5,
                 test_id_prefix="trace",
+                block_state_trace=True,
+                block_state_max_records=4096,
                 expected_filename=None,
                 expected_sha256=None,
                 trace_log=None,
@@ -369,6 +384,9 @@ class WindowsVmTests(unittest.TestCase):
         self.assertEqual(test_id, "trace-dedicated")
         self.assertEqual(prove.call_args.kwargs["expected_filename"], "haloceded.exe")
         self.assertTrue(prove.call_args.kwargs["timed_out"])
+        self.assertTrue(prove.call_args.kwargs["block_state_trace"])
+        self.assertTrue(run.call_args.kwargs["block_state_trace"])
+        self.assertEqual(run.call_args.kwargs["block_state_max_records"], 4096)
 
     def test_check_vfio_host_reports_ready_devices(self):
         with tempfile.TemporaryDirectory() as tmp:

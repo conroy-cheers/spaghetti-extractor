@@ -19,6 +19,7 @@ from .behavior import (
     run_process_behavior_observation,
     upsert_behavior_contract,
 )
+from .block_suite import gate_block_suite, generate_block_suite
 from .byteclasses import rebuild_executable_byte_classes
 from .catalog import build_catalog, resolve_install_root
 from .clean_derivation import derive_clean_specs, promote_clean_templates, validate_clean_specs
@@ -343,6 +344,8 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     prove_trace.add_argument("--expected-returncode", type=int, default=0, help="expected traced process exit code")
     prove_trace.add_argument("--semantic-profile", action="store_true", help="capture bounded private semantic values")
     prove_trace.add_argument("--semantic-max-records", type=int, default=128)
+    prove_trace.add_argument("--block-state-trace", action="store_true", help="capture block-local pre/post state and side effects")
+    prove_trace.add_argument("--block-state-max-records", type=int, default=8192)
     prove_trace.add_argument("--pretraced", action="store_true", help="run app directly; it must write HALOCE_TRACE_OUT")
     prove_trace.add_argument("--suite", default="halo-trace")
     prove_trace.add_argument("--report-dir", type=Path, default=Path("build/reports"))
@@ -365,11 +368,35 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     prove_trace_generic.add_argument("--expected-returncode", type=int, default=0, help="expected traced process exit code")
     prove_trace_generic.add_argument("--semantic-profile", action="store_true", help="capture bounded private semantic values")
     prove_trace_generic.add_argument("--semantic-max-records", type=int, default=128)
+    prove_trace_generic.add_argument("--block-state-trace", action="store_true", help="capture block-local pre/post state and side effects")
+    prove_trace_generic.add_argument("--block-state-max-records", type=int, default=8192)
     prove_trace_generic.add_argument("--pretraced", action="store_true", help="run app directly; it must write WINCR_TRACE_OUT")
     prove_trace_generic.add_argument("--suite", default="trace")
     prove_trace_generic.add_argument("--report-dir", type=Path, default=Path("build/reports"))
     prove_trace_generic.add_argument("app", nargs=argparse.REMAINDER)
     prove_trace_generic.set_defaults(func=_cmd_prove_trace)
+
+    block_suite = subcommands.add_parser(
+        "generate-block-suite",
+        help="generate a private full-coverage block conformance suite from included binaries and captured traces",
+    )
+    _add_target_config(block_suite)
+    block_suite.add_argument("--binary-root", type=Path, required=True, help="runtime root used to resolve included manifest binaries")
+    block_suite.add_argument("--binary", dest="binaries", type=Path, action="append", help="included binary path; repeatable")
+    block_suite.add_argument("--trace-dir", type=Path, help="directory containing captured trace JSONL files")
+    block_suite.add_argument("--trace", dest="traces", type=Path, action="append", help="trace JSONL file; repeatable")
+    block_suite.add_argument("--out-dir", type=Path, required=True)
+    block_suite.add_argument("--wincr-block", default="wincr-block", help="wincr-block executable")
+    block_suite.add_argument("--max-cases-per-block", type=int)
+    block_suite.add_argument("--no-clean", dest="clean", action="store_false", help="do not remove existing suite output before generation")
+    block_suite.set_defaults(func=_cmd_generate_block_suite, clean=True)
+
+    block_suite_gate = subcommands.add_parser(
+        "block-suite-gate",
+        help="fail unless a generated block conformance suite has no unresolved gaps",
+    )
+    block_suite_gate.add_argument("--suite", type=Path, required=True)
+    block_suite_gate.set_defaults(func=_cmd_block_suite_gate)
 
     wine_probe = subcommands.add_parser(
         "probe-wine-trace",
@@ -474,6 +501,8 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     windows_guest_trace.add_argument("--target")
     windows_guest_trace.add_argument("--run-seconds", type=int, default=45)
     windows_guest_trace.add_argument("--test-id-prefix", default="windows-vm")
+    windows_guest_trace.add_argument("--block-state-trace", action="store_true", help="capture per-block pre/post state and side-effect records in the guest")
+    windows_guest_trace.add_argument("--block-state-max-records", type=int, default=8192)
     windows_guest_trace.add_argument("--password", default="", help="password for generated password-only Windows trace VMs")
     windows_guest_trace.add_argument("--sshpass", default="sshpass", help="sshpass executable used when --password is set")
     windows_guest_trace.add_argument("--ssh", default="ssh")
@@ -493,6 +522,8 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     prove_windows_guest_trace.add_argument("--target")
     prove_windows_guest_trace.add_argument("--run-seconds", type=int, default=45)
     prove_windows_guest_trace.add_argument("--test-id-prefix", default="windows-vm")
+    prove_windows_guest_trace.add_argument("--block-state-trace", action="store_true", help="capture per-block pre/post state and side-effect records in the guest")
+    prove_windows_guest_trace.add_argument("--block-state-max-records", type=int, default=8192)
     prove_windows_guest_trace.add_argument("--expected-filename")
     prove_windows_guest_trace.add_argument("--expected-sha256")
     prove_windows_guest_trace.add_argument("--trace-log", type=Path, help="copied JSONL trace path; defaults to <out-dir>/<test-id>.jsonl")
@@ -1215,6 +1246,8 @@ def _cmd_prove_halo_trace(args: Any) -> int:
         expected_returncode=args.expected_returncode,
         semantic_profile=args.semantic_profile,
         semantic_max_records=args.semantic_max_records,
+        block_state_trace=args.block_state_trace,
+        block_state_max_records=args.block_state_max_records,
     )
     reports = generate_reports(args.db, args.report_dir)
     _print_json({"trace_proof": result, "reports": {key: str(value) for key, value in reports.items()}})
@@ -1238,10 +1271,46 @@ def _cmd_prove_trace(args: Any) -> int:
         expected_returncode=args.expected_returncode,
         semantic_profile=args.semantic_profile,
         semantic_max_records=args.semantic_max_records,
+        block_state_trace=args.block_state_trace,
+        block_state_max_records=args.block_state_max_records,
     )
     reports = generate_reports(args.db, args.report_dir)
     _print_json({"trace_proof": result, "reports": {key: str(value) for key, value in reports.items()}})
     return 0 if result["ok"] else 1
+
+
+def _cmd_generate_block_suite(args: Any) -> int:
+    target_config = _target_config_from_args(args)
+    result = generate_block_suite(
+        target_config=target_config,
+        binary_root=args.binary_root,
+        binaries=list(args.binaries or []),
+        trace_dir=args.trace_dir,
+        traces=list(args.traces or []),
+        out_dir=args.out_dir,
+        wincr_block=args.wincr_block,
+        max_cases_per_block=args.max_cases_per_block,
+        clean=args.clean,
+    )
+    _print_json(
+        {
+            "block_suite": {
+                "ok": result["ok"],
+                "manifest": str(args.out_dir / "manifest.json"),
+                "gaps": str(args.out_dir / "gaps.json"),
+                "next_traces": str(args.out_dir / "next-traces.json"),
+                "external_modules": str(args.out_dir / "external-modules.json"),
+                "gap_count": result["gaps"]["gap_count"],
+            }
+        }
+    )
+    return 0 if result["ok"] else 1
+
+
+def _cmd_block_suite_gate(args: Any) -> int:
+    result = gate_block_suite(args.suite)
+    _print_json({"block_suite_gate": result})
+    return 0 if result["status"] == "pass" else 1
 
 
 def _cmd_probe_wine_trace(args: Any) -> int:
@@ -1330,6 +1399,8 @@ def _cmd_run_windows_guest_trace(args: Any) -> int:
         target=args.target or _default_trace_target(target_config),
         run_seconds=args.run_seconds,
         test_id_prefix=args.test_id_prefix,
+        block_state_trace=args.block_state_trace,
+        block_state_max_records=args.block_state_max_records,
         password=args.password or None,
         sshpass=args.sshpass,
         ssh=args.ssh,
@@ -1354,6 +1425,8 @@ def _cmd_prove_windows_guest_trace(args: Any) -> int:
         target=selected_target,
         run_seconds=args.run_seconds,
         test_id_prefix=args.test_id_prefix,
+        block_state_trace=args.block_state_trace,
+        block_state_max_records=args.block_state_max_records,
         password=args.password or None,
         sshpass=args.sshpass,
         ssh=args.ssh,
@@ -1379,6 +1452,7 @@ def _cmd_prove_windows_guest_trace(args: Any) -> int:
         allow_timeout=not args.fail_on_timeout,
         stdout=run_result.get("stdout", ""),
         stderr=run_result.get("stderr", ""),
+        block_state_trace=args.block_state_trace,
     )
     if not run_result["ok"]:
         proof["failures"].append("Windows guest trace command or log copy failed")

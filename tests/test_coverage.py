@@ -189,6 +189,223 @@ class DrcovParserTests(unittest.TestCase):
 
         self.assertTrue(result["ok"], result["failures"])
 
+    def test_prove_trace_passes_block_state_options_to_runner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "catalog.db"
+            log_path = tmp_path / "trace.jsonl"
+            module_sha = "2" * 64
+            self._seed_binary(db_path, module_sha)
+
+            def fake_run(command, **kwargs):
+                if command[0] != "trace-runner":
+                    return subprocess.CompletedProcess(command, 0, stdout="tool\n", stderr="")
+                self.assertEqual(command[0], "trace-runner")
+                self.assertIn("--block-state-trace", command)
+                self.assertEqual(command[command.index("--block-state-max-records") + 1], "4096")
+                self.assertLess(command.index("--block-state-trace"), command.index("--"))
+                self._write_trace_log(
+                    log_path,
+                    "trace-block-state",
+                    module_sha,
+                    side_effects={"format": "wincr-block-side-effects-v1", "capture_status": "complete"},
+                )
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with mock.patch.object(coverage.subprocess, "run", side_effect=fake_run):
+                result = coverage.prove_trace(
+                    db_path,
+                    log_path,
+                    "trace-block-state",
+                    ["wine", "haloce.exe"],
+                    expected_filename="haloce.exe",
+                    arch="32",
+                    trace_runner="trace-runner",
+                    timeout_seconds=10,
+                    block_state_trace=True,
+                    block_state_max_records=4096,
+                )
+
+        self.assertTrue(result["ok"], result["failures"])
+        self.assertEqual(result["raw_trace"]["expected_block_state_exits"], 1)
+        self.assertEqual(result["raw_trace"]["expected_side_effect_complete_exits"], 1)
+
+    def test_ingest_trace_accepts_block_state_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "catalog.db"
+            log_path = tmp_path / "trace.jsonl"
+            module_sha = "3" * 64
+            self._seed_binary(db_path, module_sha)
+            records = [
+                {
+                    "kind": "module",
+                    "test_id": "trace-block-state",
+                    "pid": 1,
+                    "module_name": "haloce.exe",
+                    "module_sha256": module_sha,
+                },
+                {
+                    "kind": "block_entry",
+                    "test_id": "trace-block-state",
+                    "pid": 1,
+                    "module_sha256": module_sha,
+                    "rva_start": 0x1000,
+                    "rva_end": 0x1005,
+                    "state": {"registers": {}},
+                },
+                {
+                    "kind": "block_exit",
+                    "test_id": "trace-block-state",
+                    "pid": 1,
+                    "module_sha256": module_sha,
+                    "rva_start": 0x1000,
+                    "rva_end": 0x1005,
+                    "state": {"registers": {}},
+                    "side_effects": {"format": "wincr-block-side-effects-v1", "capture_status": "complete"},
+                },
+                {
+                    "kind": "block",
+                    "test_id": "trace-block-state",
+                    "pid": 1,
+                    "module_sha256": module_sha,
+                    "rva_block": 0x1000,
+                    "size": 5,
+                },
+                {
+                    "kind": "cfg_edge",
+                    "test_id": "trace-block-state",
+                    "pid": 1,
+                    "module_sha256": module_sha,
+                    "rva_edge_from": 0x1000,
+                    "rva_edge_to": 0x1005,
+                },
+                {
+                    "kind": "call_edge",
+                    "test_id": "trace-block-state",
+                    "pid": 1,
+                    "module_sha256": module_sha,
+                    "caller_rva": 0x1000,
+                    "callee_module_sha256": module_sha,
+                    "callee_rva": 0x2000,
+                },
+            ]
+            log_path.write_text("\n".join(coverage.json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+            counts = coverage.ingest_trace(db_path, log_path, suite="block-state")
+
+        self.assertEqual(counts["block_state_records"], 2)
+        self.assertEqual(counts["blocks"], 1)
+        self.assertEqual(counts["cfg_edges"], 1)
+        self.assertEqual(counts["call_edges"], 1)
+
+    def test_prove_trace_log_accepts_complete_block_state_side_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "catalog.db"
+            log_path = tmp_path / "trace.jsonl"
+            module_sha = "4" * 64
+            self._seed_binary(db_path, module_sha)
+            self._write_trace_log(
+                log_path,
+                "complete-side-effects",
+                module_sha,
+                side_effects={
+                    "format": "wincr-block-side-effects-v1",
+                    "capture_status": "complete",
+                    "limitations": [],
+                    "api_calls": [
+                        {
+                            "api": "KERNEL32.dll!HeapCreate",
+                            "external": True,
+                            "symbol_resolved": True,
+                            "semantic_class": "heap",
+                        }
+                    ],
+                },
+            )
+
+            result = coverage.prove_trace_log(
+                db_path,
+                log_path,
+                "complete-side-effects",
+                expected_filename="haloce.exe",
+                block_state_trace=True,
+            )
+
+        self.assertTrue(result["ok"], result["failures"])
+        self.assertEqual(result["raw_trace"]["expected_block_state_records"], 2)
+        self.assertEqual(result["raw_trace"]["expected_block_state_entries"], 1)
+        self.assertEqual(result["raw_trace"]["expected_block_state_exits"], 1)
+        self.assertEqual(result["raw_trace"]["expected_side_effect_complete_exits"], 1)
+        self.assertEqual(result["raw_trace"]["expected_side_effect_incomplete_exits"], 0)
+        self.assertEqual(result["raw_trace"]["expected_api_unknown_semantic_calls"], 0)
+        self.assertEqual(result["raw_trace"]["expected_api_unresolved_external_calls"], 0)
+
+    def test_prove_trace_log_rejects_incomplete_block_state_side_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "catalog.db"
+            log_path = tmp_path / "trace.jsonl"
+            module_sha = "5" * 64
+            self._seed_binary(db_path, module_sha)
+            self._write_trace_log(
+                log_path,
+                "incomplete-side-effects",
+                module_sha,
+                side_effects={
+                    "format": "wincr-block-side-effects-v1",
+                    "capture_status": "partial",
+                    "limitations": ["memory_write_overflow"],
+                    "api_calls": [
+                        {
+                            "api": "UNKNOWN",
+                            "external": True,
+                            "symbol_resolved": False,
+                            "semantic_class": "unknown",
+                        }
+                    ],
+                },
+            )
+
+            result = coverage.prove_trace_log(
+                db_path,
+                log_path,
+                "incomplete-side-effects",
+                expected_filename="haloce.exe",
+                block_state_trace=True,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["raw_trace"]["expected_side_effect_incomplete_exits"], 1)
+        self.assertEqual(result["raw_trace"]["expected_side_effect_limitations"], {"memory_write_overflow": 1})
+        self.assertEqual(result["raw_trace"]["expected_api_unknown_semantic_calls"], 1)
+        self.assertEqual(result["raw_trace"]["expected_api_unresolved_external_calls"], 1)
+        self.assertTrue(any("incomplete side-effect capture" in failure for failure in result["failures"]))
+        self.assertTrue(any("side-effect capture limitations" in failure for failure in result["failures"]))
+        self.assertTrue(any("unknown API side-effect semantics" in failure for failure in result["failures"]))
+        self.assertTrue(any("unresolved external API side-effect calls" in failure for failure in result["failures"]))
+
+    def test_prove_trace_log_rejects_requested_block_state_without_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "catalog.db"
+            log_path = tmp_path / "trace.jsonl"
+            module_sha = "6" * 64
+            self._seed_binary(db_path, module_sha)
+            self._write_trace_log(log_path, "missing-block-exit", module_sha)
+
+            result = coverage.prove_trace_log(
+                db_path,
+                log_path,
+                "missing-block-exit",
+                expected_filename="haloce.exe",
+                block_state_trace=True,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("missing expected module block-state exit records" in failure for failure in result["failures"]))
+
     def test_prove_halo_trace_pretraced_runs_app_with_trace_environment(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -921,7 +1138,7 @@ class DrcovParserTests(unittest.TestCase):
         self.assertEqual(coverage_report["static_call_edges"], 2)
         self.assertEqual(coverage_report["covered_static_call_edges"], 2)
 
-    def _write_trace_log(self, path: Path, test_id: str, module_sha: str) -> None:
+    def _write_trace_log(self, path: Path, test_id: str, module_sha: str, *, side_effects=None) -> None:
         records = [
             {
                 "kind": "module",
@@ -956,6 +1173,32 @@ class DrcovParserTests(unittest.TestCase):
                 "callee_rva": 0x2000,
             },
         ]
+        if side_effects is not None:
+            records.extend(
+                [
+                    {
+                        "kind": "block_entry",
+                        "test_id": test_id,
+                        "pid": 1,
+                        "module_name": "haloce.exe",
+                        "module_sha256": module_sha,
+                        "rva_start": 0x1000,
+                        "rva_end": 0x1005,
+                        "state": {"registers": {}},
+                    },
+                    {
+                        "kind": "block_exit",
+                        "test_id": test_id,
+                        "pid": 1,
+                        "module_name": "haloce.exe",
+                        "module_sha256": module_sha,
+                        "rva_start": 0x1000,
+                        "rva_end": 0x1005,
+                        "state": {"registers": {}},
+                        "side_effects": side_effects,
+                    },
+                ]
+            )
         path.write_text("\n".join(coverage.json.dumps(record) for record in records) + "\n", encoding="utf-8")
 
     def _seed_binary(self, db_path: Path, sha256: str) -> None:

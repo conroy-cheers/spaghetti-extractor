@@ -321,6 +321,7 @@
                 halo_trace.c \
                 ${dynamorio-windows}/lib32/release/dynamorio.lib \
                 ${dynamorio-windows}/ext/lib32/release/drmgr.lib \
+                ${dynamorio-windows}/ext/lib32/release/drwrap.lib \
                 -o halo_trace.dll
               runHook postBuild
             '';
@@ -347,7 +348,7 @@
             ];
             text = ''
               usage() {
-                echo "usage: halo-trace-run --out trace.jsonl --test-id TEST [--arch auto|32|64] -- app [args...]" >&2
+                echo "usage: halo-trace-run --out trace.jsonl --test-id TEST [--arch auto|32|64] [--block-state-trace] [--block-state-max-records N] -- app [args...]" >&2
               }
 
               out=""
@@ -355,6 +356,8 @@
               arch="auto"
               semantic_profile=0
               semantic_max_records=128
+              block_state_trace=0
+              block_state_max_records=8192
               if [ "''${1:-}" = "--version" ]; then
                 echo "halo-trace-run 0.1.0"
                 exit 0
@@ -379,6 +382,14 @@
                     ;;
                   --semantic-max-records)
                     semantic_max_records="''${2:-128}"
+                    shift 2
+                    ;;
+                  --block-state-trace)
+                    block_state_trace=1
+                    shift
+                    ;;
+                  --block-state-max-records)
+                    block_state_max_records="''${2:-8192}"
                     shift 2
                     ;;
                   --)
@@ -428,6 +439,9 @@
               case "$semantic_profile" in
                 1|true|yes|on) client_args+=(-semantic_values -semantic_max_records "$semantic_max_records") ;;
               esac
+              case "$block_state_trace" in
+                1|true|yes|on) client_args+=(-block_state_trace -block_state_max_records "$block_state_max_records") ;;
+              esac
               if [ -n "$dr_arch" ]; then
                 drrun "$dr_arch" \
                   -follow_children \
@@ -463,7 +477,7 @@
             ];
             text = ''
               usage() {
-                echo "usage: halo-trace-run-i386-late --out trace.jsonl --test-id TEST [--follow-children] -- app [args...]" >&2
+                echo "usage: halo-trace-run-i386-late --out trace.jsonl --test-id TEST [--follow-children] [--block-state-trace] [--block-state-max-records N] -- app [args...]" >&2
               }
 
               out=""
@@ -471,6 +485,8 @@
               follow_children="''${HALOCE_TRACE_FOLLOW_CHILDREN:-0}"
               semantic_profile=0
               semantic_max_records=128
+              block_state_trace=0
+              block_state_max_records=8192
               if [ "''${1:-}" = "--version" ]; then
                 echo "halo-trace-run-i386-late 0.1.0"
                 exit 0
@@ -502,6 +518,14 @@
                     ;;
                   --semantic-max-records)
                     semantic_max_records="''${2:-128}"
+                    shift 2
+                    ;;
+                  --block-state-trace)
+                    block_state_trace=1
+                    shift
+                    ;;
+                  --block-state-max-records)
+                    block_state_max_records="''${2:-8192}"
                     shift 2
                     ;;
                   --)
@@ -540,6 +564,9 @@
               case "$semantic_profile" in
                 1|true|yes|on) client_args+=(-semantic_values -semantic_max_records "$semantic_max_records") ;;
               esac
+              case "$block_state_trace" in
+                1|true|yes|on) client_args+=(-block_state_trace -block_state_max_records "$block_state_max_records") ;;
+              esac
               ${dynamorio-combined}/bin32/drrun \
                 "''${dr_args[@]}" \
                 -c "${halo-trace-client32}/lib/libhalo_trace.so" \
@@ -563,13 +590,15 @@
             ];
             text = ''
               usage() {
-                echo "usage: halo-trace-run-dr8-i386-late --out trace.jsonl --test-id TEST -- app [args...]" >&2
+                echo "usage: halo-trace-run-dr8-i386-late --out trace.jsonl --test-id TEST [--block-state-trace] [--block-state-max-records N] -- app [args...]" >&2
               }
 
               out=""
               test_id=""
               semantic_profile=0
               semantic_max_records=128
+              block_state_trace=0
+              block_state_max_records=8192
               if [ "''${1:-}" = "--version" ]; then
                 echo "halo-trace-run-dr8-i386-late 0.1.0"
                 exit 0
@@ -597,6 +626,14 @@
                     ;;
                   --semantic-max-records)
                     semantic_max_records="''${2:-128}"
+                    shift 2
+                    ;;
+                  --block-state-trace)
+                    block_state_trace=1
+                    shift
+                    ;;
+                  --block-state-max-records)
+                    block_state_max_records="''${2:-8192}"
                     shift 2
                     ;;
                   --)
@@ -630,6 +667,9 @@
               client_args=(-out "$out" -test_id "$test_id")
               case "$semantic_profile" in
                 1|true|yes|on) client_args+=(-semantic_values -semantic_max_records "$semantic_max_records") ;;
+              esac
+              case "$block_state_trace" in
+                1|true|yes|on) client_args+=(-block_state_trace -block_state_max_records "$block_state_max_records") ;;
               esac
               ${dynamorio8-linux}/bin32/drrun \
                 -late \
@@ -795,6 +835,29 @@
               trace_wineprefix="''${WINCR_3D_REFERENCE_TRACE_WINEPREFIX:-build/reference-games/wincr-3d-game/trace-wineprefix}"
               wine_cmd="''${WINCR_3D_REFERENCE_WINE:-${pkgs.winePackages.stable}/bin/wine}"
               python_cmd="${pkgs.python3}/bin/python"
+              block_state_trace="''${WINCR_3D_REFERENCE_BLOCK_STATE_TRACE:-1}"
+              block_state_max_records="''${WINCR_3D_REFERENCE_BLOCK_STATE_MAX_RECORDS:-250000}"
+              block_state_scope="''${WINCR_3D_REFERENCE_BLOCK_STATE_SCOPE:-representative}"
+              trace_timeout_seconds="''${WINCR_3D_REFERENCE_TRACE_TIMEOUT_SECONDS:-120}"
+              block_state_trace_args=()
+              coverage_trace_args=()
+              case "$block_state_trace" in
+                1|true|TRUE|yes|YES|on|ON)
+                  block_state_trace_args=(--block-state-trace --block-state-max-records "$block_state_max_records")
+                  case "$block_state_scope" in
+                    all|ALL)
+                      coverage_trace_args=("''${block_state_trace_args[@]}")
+                      trace_timeout_seconds="''${WINCR_3D_REFERENCE_BLOCK_STATE_TIMEOUT_SECONDS:-240}"
+                      ;;
+                    representative|REPRESENTATIVE|first|FIRST|"")
+                      ;;
+                    *)
+                      echo "unsupported WINCR_3D_REFERENCE_BLOCK_STATE_SCOPE: $block_state_scope" >&2
+                      exit 2
+                      ;;
+                  esac
+                  ;;
+              esac
 
               case "$db" in /*) ;; *) db="$PWD/$db" ;; esac
               case "$report_dir" in /*) ;; *) report_dir="$PWD/$report_dir" ;; esac
@@ -1121,10 +1184,11 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
                   --semantic-profile \
                   --semantic-max-records 256 \
+                  "''${block_state_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1138,8 +1202,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1153,8 +1218,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1168,8 +1234,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1183,8 +1250,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1198,8 +1266,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1213,8 +1282,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1228,8 +1298,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1243,8 +1314,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1258,8 +1330,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1274,8 +1347,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1298,8 +1372,9 @@
                     --expected-filename wincr-3d-game.exe \
                     --arch 32 \
                     --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                    --timeout-seconds 120 \
+                    --timeout-seconds "$trace_timeout_seconds" \
                     --fail-on-timeout \
+                    "''${coverage_trace_args[@]}" \
                     --suite reference-coverage \
                     --report-dir "$report_dir" \
                     -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1314,8 +1389,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --expected-returncode 4 \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
@@ -1329,8 +1405,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --expected-returncode 4 \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
@@ -1345,8 +1422,9 @@
                   --expected-filename wincr-3d-game.exe \
                   --arch 32 \
                   --trace-runner "${halo-trace-run-i386-late}/bin/halo-trace-run-i386-late" \
-                  --timeout-seconds 120 \
+                  --timeout-seconds "$trace_timeout_seconds" \
                   --fail-on-timeout \
+                  "''${coverage_trace_args[@]}" \
                   --suite reference-coverage \
                   --report-dir "$report_dir" \
                   -- "$wine_cmd" "$root/bin/wincr-3d-game.exe" \
@@ -1681,6 +1759,12 @@
                   --note "Reference target uses repo-owned public behavior contracts and fixtures as reviewed clean template content." \
                   >/dev/null
 
+                wincr validate-dirty-corpus \
+                  --corpus-dir "$private_artifact_dir" \
+                  --report-json "$report_dir/dirty-corpus-validation.json" \
+                  --report-md "$report_dir/dirty-corpus-validation.md" \
+                  >/dev/null
+
                 wincr derive-clean-specs \
                   --corpus-dir "$private_artifact_dir" \
                   --out-dir "$clean_spec_dir" \
@@ -1988,7 +2072,10 @@ setup.write_text(text)
               ghidra-headless
               pkgs.ghidra
               pkgs.llvm
+              pkgs.cargo
               python
+              pkgs.rustc
+              pkgs.rustfmt
               dynamorio-combined
               dynamorio8-linux
               halo-trace-client
@@ -2053,7 +2140,10 @@ setup.write_text(text)
           devShells.test = pkgs.mkShell {
             packages = [
               python
+              pkgs.cargo
               pkgs.jq
+              pkgs.rustc
+              pkgs.rustfmt
               pkgs.sqlite
               pkgs.sshpass
             ];

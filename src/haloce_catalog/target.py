@@ -23,6 +23,17 @@ class BinaryRule:
 
 
 @dataclass(frozen=True)
+class ExternalModuleRule:
+    kind: str
+    source: str
+    reason: str
+    names: tuple[str, ...] = ()
+    path_contains: tuple[str, ...] = ()
+    sha256: tuple[str, ...] = ()
+    version: str | None = None
+
+
+@dataclass(frozen=True)
 class TraceTarget:
     id: str
     executable: str
@@ -65,6 +76,7 @@ class TargetConfig:
     reference_package_metadata_key: str = "reference_package"
     source_info_metadata_key: str = "source_info"
     binary_rules: tuple[BinaryRule, ...] = ()
+    external_module_rules: tuple[ExternalModuleRule, ...] = ()
     unknown_directory_markers: tuple[str, ...] = ()
     trace_targets: tuple[TraceTarget, ...] = ()
     required_oracle_process_suites: tuple[str, ...] = ()
@@ -89,6 +101,18 @@ class TargetConfig:
             "reference_package_metadata_key": self.reference_package_metadata_key,
             "source_info_metadata_key": self.source_info_metadata_key,
             "unknown_directory_markers": list(self.unknown_directory_markers),
+            "external_modules": [
+                {
+                    "kind": rule.kind,
+                    "source": rule.source,
+                    "reason": rule.reason,
+                    "names": list(rule.names),
+                    "path_contains": list(rule.path_contains),
+                    "sha256": list(rule.sha256),
+                    "version": rule.version,
+                }
+                for rule in self.external_module_rules
+            ],
             "trace_targets": [
                 {
                     "id": target.id,
@@ -162,6 +186,7 @@ def target_config_from_mapping(data: dict[str, Any], *, source_path: str | None 
         reference_package_metadata_key=str(provenance.get("reference_package_metadata_key") or "reference_package"),
         source_info_metadata_key=str(provenance.get("source_info_metadata_key") or "source_info"),
         binary_rules=tuple(_binary_rule(item) for item in data.get("binary_rules", [])),
+        external_module_rules=tuple(_external_module_rule(item) for item in data.get("external_modules", [])),
         unknown_directory_markers=_tuple_str(data.get("unknown_directory_markers")),
         trace_targets=tuple(_trace_target(item) for item in data.get("trace_targets", [])),
         required_oracle_process_suites=_tuple_str(gates.get("oracle_process_suites")),
@@ -211,6 +236,24 @@ def _binary_rule(data: dict[str, Any]) -> BinaryRule:
         reason=str(data.get("reason") or ""),
         names=_tuple_str(data.get("names")),
         path_contains=_tuple_str(data.get("path_contains")),
+    )
+
+
+def _external_module_rule(data: dict[str, Any]) -> ExternalModuleRule:
+    kind = str(data.get("kind") or "").strip()
+    source = str(data.get("source") or "").strip()
+    if not kind:
+        raise ValueError("[[external_modules]] entries require kind")
+    if not source:
+        raise ValueError("[[external_modules]] entries require source")
+    return ExternalModuleRule(
+        kind=kind,
+        source=source,
+        reason=str(data.get("reason") or ""),
+        names=_tuple_str(data.get("names")),
+        path_contains=_tuple_str(data.get("path_contains")),
+        sha256=_tuple_str(data.get("sha256")),
+        version=_optional_str(data.get("version")),
     )
 
 

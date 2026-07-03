@@ -237,6 +237,27 @@ class CleanDerivationTests(unittest.TestCase):
                 },
                 reviewed=False,
             )
+            clean_template_path = corpus / "review" / "behavior-observations" / "clean" / "clean-template.json"
+            clean_template_rel = clean_template_path.relative_to(corpus).as_posix()
+            write_json(
+                corpus / "content-manifest.json",
+                {
+                    "format": "wincr-dirty-corpus-v2",
+                    "artifact_role": "private_dirty_corpus_content_manifest",
+                    "artifact_count": 1,
+                    "artifacts": [
+                        {
+                            "label": "artifact_clean_template",
+                            "artifact_kind": "review_clean_template",
+                            "entity_type": "behavior_observation",
+                            "path": clean_template_rel,
+                            "sha256": "stale",
+                            "size": 0,
+                            "taint_level": "clean_candidate",
+                        }
+                    ],
+                },
+            )
 
             result = promote_clean_templates(
                 corpus,
@@ -253,14 +274,21 @@ class CleanDerivationTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
+            content_manifest = json.loads((corpus / "content-manifest.json").read_text(encoding="utf-8"))
+            manifest_entry = content_manifest["artifacts"][0]
+            promoted_template_size = clean_template_path.stat().st_size
 
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["summary"]["promoted_templates"], 1)
         self.assertEqual(result["summary"]["rejected_templates"], 1)
+        self.assertEqual(result["content_manifest"]["updated"], 1)
+        self.assertEqual(result["content_manifest"]["missing"], 0)
         self.assertEqual(promoted["review_status"], "reviewed")
         self.assertEqual(promoted["taint_level"], "reviewed_public")
         self.assertEqual(promoted["publication_decision"], "publish")
         self.assertEqual(leaky["review_status"], "draft")
+        self.assertEqual(manifest_entry["size"], promoted_template_size)
+        self.assertNotEqual(manifest_entry["sha256"], "stale")
 
     def test_validate_clean_specs_accepts_complete_clean_spec_and_tests_json(self):
         with tempfile.TemporaryDirectory() as tmp:

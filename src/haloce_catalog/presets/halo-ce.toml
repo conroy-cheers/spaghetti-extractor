@@ -116,6 +116,45 @@ role = "excluded_tool_or_redistributable"
 scope = "excluded"
 reason = "Watson crash-reporting component"
 
+[[external_modules]]
+path_contains = [
+  "C:\\WINDOWS\\System32\\",
+  "C:/WINDOWS/System32/",
+  "C:\\windows\\system32\\",
+  "C:/windows/system32/",
+]
+kind = "os_component"
+source = "Windows system directory supplied by the execution environment; reimplementation may call the same OS API surface"
+reason = "Win32 and NT APIs are modeled as external side effects, not clean-room reimplemented blocks"
+
+[[external_modules]]
+names = [
+  "dynamorio.dll",
+  "drmgr.dll",
+  "drwrap.dll",
+  "halo_trace.dll",
+  "wincr_trace.dll",
+]
+kind = "trace_instrumentation"
+source = "DynamoRIO runtime and this repository's trace client build"
+reason = "Instrumentation modules are present only during trace capture"
+
+[[external_modules]]
+names = [
+  "ogg.dll",
+  "vorbis.dll",
+  "vorbisfile.dll",
+]
+kind = "source_available_dependency"
+source = "Xiph.org Ogg/Vorbis source-compatible dependency family"
+reason = "Source-available audio codec libraries are outside the proprietary clean-room block obligation set"
+
+[[external_modules]]
+names = [ "msvcr71.dll" ]
+kind = "redistributable_runtime"
+source = "Microsoft Visual C++ runtime redistributable compatible with the original binary ABI"
+reason = "CRT behavior is an external runtime dependency for API-compatible reimplementations"
+
 [[trace_targets]]
 id = "client"
 executable = "haloce.exe"
