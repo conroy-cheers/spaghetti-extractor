@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs_24_11.url = "github:NixOS/nixpkgs/nixos-24.11";
     flake-parts.url = "github:hercules-ci/flake-parts";
     nix-haloce.url = "git+file:../nix-haloce";
   };
@@ -24,6 +25,7 @@
       flake-parts,
       nix-haloce,
       nixpkgs,
+      nixpkgs_24_11,
       ...
     }:
     let
@@ -43,6 +45,54 @@
             inherit system;
             overlays = [ overlays.default ];
           };
+          pkgsGcc13 = import nixpkgs_24_11 {
+            inherit system;
+          };
+          mingw32 = pkgs.pkgsCross.mingw32;
+          mingw32Oniguruma = mingw32.oniguruma.overrideAttrs (old: {
+            meta = (old.meta or { }) // {
+              platforms = (old.meta.platforms or [ ]) ++ [ "i686-windows" ];
+            };
+          });
+          stageAJqCommonCflags = "-g0 -fno-asynchronous-unwind-tables -fno-ident -fno-inline -fno-inline-functions -fno-inline-small-functions -fno-ipa-cp -fno-ipa-sra -fno-ipa-icf";
+          mkStageAJq =
+            label: optFlag:
+            (mingw32.jq.override {
+              oniguruma = mingw32Oniguruma;
+            }).overrideAttrs
+              (old: {
+                pname = "stage-a-jq-${label}";
+                doCheck = false;
+                doInstallCheck = false;
+                dontStrip = true;
+                outputs = [ "out" ];
+                buildInputs = (old.buildInputs or [ ]) ++ [ mingw32.windows.pthreads ];
+                configureFlags = [
+                  "--prefix=${builtins.placeholder "out"}"
+                  "--bindir=${builtins.placeholder "out"}/bin"
+                  "--sbindir=${builtins.placeholder "out"}/bin"
+                  "--datadir=${builtins.placeholder "out"}/share"
+                  "--mandir=${builtins.placeholder "out"}/share/man"
+                ];
+                CFLAGS = "${optFlag} ${stageAJqCommonCflags}";
+                LDFLAGS = "-Wl,-Map,jq-${label}.map";
+                postFixup = "";
+                postInstall =
+                  (old.postInstall or "")
+                  + ''
+                    map_path="$(find . -name 'jq-${label}.map' -print -quit)"
+                    if [ -z "$map_path" ]; then
+                      echo "missing jq-${label}.map" >&2
+                      exit 1
+                    fi
+                    mkdir -p "$out/share/wincr/stage-a-jq-fixtures/${label}"
+                    cp "$map_path" "$out/share/wincr/stage-a-jq-fixtures/${label}/jq.map"
+                    cp "$out/bin/jq.exe" "$out/share/wincr/stage-a-jq-fixtures/${label}/jq.exe"
+                  '';
+                meta = (old.meta or { }) // {
+                  platforms = (old.meta.platforms or [ ]) ++ [ "i686-windows" ];
+                };
+              });
 
           python = pkgs.python3.withPackages (
             ps: with ps; [
@@ -52,6 +102,7 @@
               pefile
               pytest
               unicorn
+              z3-solver
             ]
           );
 
@@ -240,6 +291,7 @@
               lief
               pefile
               unicorn
+              z3-solver
             ];
 
             nativeCheckInputs = with pkgs.python3Packages; [
@@ -276,6 +328,573 @@
               printf '%s\n' "${halo-trace-win32-smoke}"
             '';
           };
+
+          stage-a-fixtures = pkgs.pkgsCross.mingw32.stdenv.mkDerivation {
+            pname = "stage-a-fixtures";
+            version = "0.1.0";
+            src = ./tools/stage-a-fixtures;
+
+            dontConfigure = true;
+            nativeBuildInputs = [
+              pkgs.python3
+            ];
+
+            buildPhase = ''
+              runHook preBuild
+              common_flags=(
+                -g0
+                -fno-asynchronous-unwind-tables
+                -fno-exceptions
+                -fno-ident
+                -nostdlib
+                -Wl,--exclude-all-symbols
+                -Wl,--subsystem,console
+                -Wl,-e,_mainCRTStartup
+                -Wl,--image-base,0x400000
+                -Wl,--section-alignment,0x1000
+                -Wl,--file-alignment,0x200
+              )
+              compile_flags=(
+                -g0
+                -fno-asynchronous-unwind-tables
+                -fno-exceptions
+                -fno-ident
+              )
+              gcc15_bin="${pkgs.pkgsCross.mingw32.stdenv.cc}/bin"
+              gcc13="${pkgsGcc13.pkgsCross.mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc"
+              gcc13_bin="${pkgsGcc13.pkgsCross.mingw32.stdenv.cc}/bin"
+              $CC -O0 "''${common_flags[@]}" -o stage-a-original.exe stage_a_equivalence.S -lkernel32
+              $CC -O2 "''${common_flags[@]}" -DSTAGE_A_VARIANT_B -o stage-a-candidate.exe stage_a_equivalence.S -lkernel32
+              $CC -Og "''${common_flags[@]}" -o stage-a-original-og.exe stage_a_equivalence.S -lkernel32
+              $CC -Os "''${common_flags[@]}" -DSTAGE_A_VARIANT_B -o stage-a-candidate-os.exe stage_a_equivalence.S -lkernel32
+              $CC -O2 "''${common_flags[@]}" -DSTAGE_A_MUTATION -o stage-a-mutated.exe stage_a_equivalence.S -lkernel32
+              "$gcc13" -c -O0 "''${compile_flags[@]}" -DSTAGE_A_NO_EXTERNAL -o stage-a-gcc13-original.o stage_a_equivalence.S
+              "$gcc13" -c -Og "''${compile_flags[@]}" -DSTAGE_A_NO_EXTERNAL -o stage-a-gcc13-original-og.o stage_a_equivalence.S
+              $CC -c -O2 "''${compile_flags[@]}" -DSTAGE_A_VARIANT_B -DSTAGE_A_NO_EXTERNAL -o stage-a-gcc15-candidate.o stage_a_equivalence.S
+              $CC -c -Os "''${compile_flags[@]}" -DSTAGE_A_VARIANT_B -DSTAGE_A_NO_EXTERNAL -o stage-a-gcc15-candidate-os.o stage_a_equivalence.S
+              "$gcc13_bin/i686-w64-mingw32-objcopy" -O binary -j .text stage-a-gcc13-original.o stage-a-gcc13-original.text
+              "$gcc13_bin/i686-w64-mingw32-objcopy" -O binary -j .text stage-a-gcc13-original-og.o stage-a-gcc13-original-og.text
+              "$gcc15_bin/i686-w64-mingw32-objcopy" -O binary -j .text stage-a-gcc15-candidate.o stage-a-gcc15-candidate.text
+              "$gcc15_bin/i686-w64-mingw32-objcopy" -O binary -j .text stage-a-gcc15-candidate-os.o stage-a-gcc15-candidate-os.text
+              python3 pe32_from_text.py --text stage-a-gcc13-original.text --out stage-a-gcc13-original.exe
+              python3 pe32_from_text.py --text stage-a-gcc13-original-og.text --out stage-a-gcc13-original-og.exe
+              python3 pe32_from_text.py --text stage-a-gcc15-candidate.text --out stage-a-gcc15-candidate.exe
+              python3 pe32_from_text.py --text stage-a-gcc15-candidate-os.text --out stage-a-gcc15-candidate-os.exe
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              runHook preInstall
+              fixture_dir="$out/share/wincr/stage-a-fixtures/symbolic-equivalence"
+              mkdir -p "$fixture_dir"
+              cp stage-a-original.exe stage-a-candidate.exe stage-a-original-og.exe stage-a-candidate-os.exe \
+                stage-a-mutated.exe stage-a-gcc13-original.exe stage-a-gcc13-original-og.exe \
+                stage-a-gcc15-candidate.exe stage-a-gcc15-candidate-os.exe "$fixture_dir/"
+              cat > "$fixture_dir/block-map.json" <<'JSON'
+              {
+                "blocks": [
+                  {
+                    "id": "entry",
+                    "kind": "code",
+                    "reachable": true,
+                    "original": { "rva": "0x1000", "size": 8 },
+                    "candidate": { "rva": "0x1000", "size": 10 }
+                  },
+                  {
+                    "id": "memory",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1010", "size": 8 },
+                    "candidate": { "rva": "0x1010", "size": 9 }
+                  },
+                  {
+                    "id": "zero",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1020", "size": 3 },
+                    "candidate": { "rva": "0x1020", "size": 3 }
+                  },
+                  {
+                    "id": "external",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1030", "size": 9 },
+                    "candidate": { "rva": "0x1030", "size": 9 },
+                    "external_calls": [
+                      {
+                        "dll": "kernel32.dll",
+                        "symbol": "GetTickCount",
+                        "args": []
+                      }
+                    ]
+                  },
+                  {
+                    "id": "branch-entry",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1040", "size": 5 },
+                    "candidate": { "rva": "0x1040", "size": 5 }
+                  },
+                  {
+                    "id": "branch-fallthrough",
+                    "kind": "code",
+                    "reachable": true,
+                    "original": { "rva": "0x1045", "size": 3 },
+                    "candidate": { "rva": "0x1045", "size": 3 }
+                  },
+                  {
+                    "id": "branch-taken",
+                    "kind": "code",
+                    "reachable": true,
+                    "invariant": { "checked": true, "constraints": [ { "reg": "eax", "equals": 7 } ] },
+                    "original": { "rva": "0x1048", "size": 6 },
+                    "candidate": { "rva": "0x1048", "size": 6 }
+                  }
+                ],
+                "waivers": [
+                  {
+                    "id": "original-entry-padding",
+                    "binary": "original",
+                    "rva": "0x1008",
+                    "size": "0x8",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "candidate-entry-padding",
+                    "binary": "candidate",
+                    "rva": "0x100a",
+                    "size": "0x6",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "original-memory-padding",
+                    "binary": "original",
+                    "rva": "0x1018",
+                    "size": "0x8",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "candidate-memory-padding",
+                    "binary": "candidate",
+                    "rva": "0x1019",
+                    "size": "0x7",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "zero-padding",
+                    "binary": "both",
+                    "rva": "0x1023",
+                    "size": "0xd",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "external-padding",
+                    "binary": "both",
+                    "rva": "0x1039",
+                    "size": "0x7",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "branch-tail-padding",
+                    "binary": "both",
+                    "rva": "0x104e",
+                    "size": "0x2",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  }
+                ]
+              }
+              JSON
+              cat > "$fixture_dir/block-map-core.json" <<'JSON'
+              {
+                "blocks": [
+                  {
+                    "id": "entry",
+                    "kind": "code",
+                    "reachable": true,
+                    "original": { "rva": "0x1000", "size": 8 },
+                    "candidate": { "rva": "0x1000", "size": 10 }
+                  },
+                  {
+                    "id": "memory",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1010", "size": 8 },
+                    "candidate": { "rva": "0x1010", "size": 9 }
+                  },
+                  {
+                    "id": "zero",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1020", "size": 3 },
+                    "candidate": { "rva": "0x1020", "size": 3 }
+                  },
+                  {
+                    "id": "branch-entry",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1030", "size": 5 },
+                    "candidate": { "rva": "0x1030", "size": 5 }
+                  },
+                  {
+                    "id": "branch-fallthrough",
+                    "kind": "code",
+                    "reachable": true,
+                    "original": { "rva": "0x1035", "size": 3 },
+                    "candidate": { "rva": "0x1035", "size": 3 }
+                  },
+                  {
+                    "id": "branch-taken",
+                    "kind": "code",
+                    "reachable": true,
+                    "invariant": { "checked": true, "constraints": [ { "reg": "eax", "equals": 7 } ] },
+                    "original": { "rva": "0x1038", "size": 6 },
+                    "candidate": { "rva": "0x1038", "size": 6 }
+                  }
+                ],
+                "waivers": [
+                  {
+                    "id": "original-entry-padding",
+                    "binary": "original",
+                    "rva": "0x1008",
+                    "size": "0x8",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "candidate-entry-padding",
+                    "binary": "candidate",
+                    "rva": "0x100a",
+                    "size": "0x6",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "original-memory-padding",
+                    "binary": "original",
+                    "rva": "0x1018",
+                    "size": "0x8",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "candidate-memory-padding",
+                    "binary": "candidate",
+                    "rva": "0x1019",
+                    "size": "0x7",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "zero-padding",
+                    "binary": "both",
+                    "rva": "0x1023",
+                    "size": "0xd",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "branch-tail-padding",
+                    "binary": "both",
+                    "rva": "0x103e",
+                    "size": "0x2",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  }
+                ]
+              }
+              JSON
+              cat > "$fixture_dir/block-map-mutated.json" <<'JSON'
+              {
+                "blocks": [
+                  {
+                    "id": "entry",
+                    "kind": "code",
+                    "reachable": true,
+                    "original": { "rva": "0x1000", "size": 8 },
+                    "candidate": { "rva": "0x1000", "size": 8 }
+                  },
+                  {
+                    "id": "memory",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1010", "size": 8 },
+                    "candidate": { "rva": "0x1010", "size": 8 }
+                  },
+                  {
+                    "id": "zero",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1020", "size": 3 },
+                    "candidate": { "rva": "0x1020", "size": 6 }
+                  },
+                  {
+                    "id": "external",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1030", "size": 9 },
+                    "candidate": { "rva": "0x1030", "size": 9 },
+                    "external_calls": [
+                      {
+                        "dll": "kernel32.dll",
+                        "symbol": "GetTickCount",
+                        "args": []
+                      }
+                    ]
+                  },
+                  {
+                    "id": "branch-entry",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "fixture_function", "checked": true },
+                    "original": { "rva": "0x1040", "size": 5 },
+                    "candidate": { "rva": "0x1040", "size": 5 }
+                  },
+                  {
+                    "id": "branch-fallthrough",
+                    "kind": "code",
+                    "reachable": true,
+                    "original": { "rva": "0x1045", "size": 3 },
+                    "candidate": { "rva": "0x1045", "size": 3 }
+                  },
+                  {
+                    "id": "branch-taken",
+                    "kind": "code",
+                    "reachable": true,
+                    "original": { "rva": "0x1048", "size": 6 },
+                    "candidate": { "rva": "0x1048", "size": 6 }
+                  }
+                ],
+                "waivers": [
+                  {
+                    "id": "entry-padding",
+                    "binary": "both",
+                    "rva": "0x1008",
+                    "size": "0x8",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "memory-padding",
+                    "binary": "both",
+                    "rva": "0x1018",
+                    "size": "0x8",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "original-zero-padding",
+                    "binary": "original",
+                    "rva": "0x1023",
+                    "size": "0xd",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "candidate-zero-padding",
+                    "binary": "candidate",
+                    "rva": "0x1026",
+                    "size": "0xa",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "external-padding",
+                    "binary": "both",
+                    "rva": "0x1039",
+                    "size": "0x7",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  },
+                  {
+                    "id": "branch-tail-padding",
+                    "binary": "both",
+                    "rva": "0x104e",
+                    "size": "0x2",
+                    "reason": "post-ret alignment padding emitted by the fixture build"
+                  }
+                ]
+              }
+              JSON
+              cat > "$fixture_dir/stage-a-fixture-lemmas.lean" <<'LEAN'
+              namespace StageAFixture
+
+              theorem fixtureSupplementChecked : True := True.intro
+
+              end StageAFixture
+              LEAN
+              cat > "$fixture_dir/suite.json" <<'JSON'
+              {
+                "model": "x86-pe32-env-v1",
+                "cases": [
+                  {
+                    "id": "gcc-o0-vs-gcc-o2-symbolic-equivalence",
+                    "original": "stage-a-original.exe",
+                    "candidate": "stage-a-candidate.exe",
+                    "mapping": "block-map.json",
+                    "lean_inputs": ["stage-a-fixture-lemmas.lean"],
+                    "expect": "pass"
+                  },
+                  {
+                    "id": "gcc-og-vs-gcc-os-symbolic-equivalence",
+                    "original": "stage-a-original-og.exe",
+                    "candidate": "stage-a-candidate-os.exe",
+                    "mapping": "block-map.json",
+                    "lean_inputs": ["stage-a-fixture-lemmas.lean"],
+                    "expect": "pass"
+                  },
+                  {
+                    "id": "gcc13-o0-vs-gcc15-o2-symbolic-equivalence",
+                    "original": "stage-a-gcc13-original.exe",
+                    "candidate": "stage-a-gcc15-candidate.exe",
+                    "mapping": "block-map-core.json",
+                    "lean_inputs": ["stage-a-fixture-lemmas.lean"],
+                    "expect": "pass"
+                  },
+                  {
+                    "id": "gcc13-og-vs-gcc15-os-symbolic-equivalence",
+                    "original": "stage-a-gcc13-original-og.exe",
+                    "candidate": "stage-a-gcc15-candidate-os.exe",
+                    "mapping": "block-map-core.json",
+                    "lean_inputs": ["stage-a-fixture-lemmas.lean"],
+                    "expect": "pass"
+                  },
+                  {
+                    "id": "gcc-o0-vs-mutated-candidate",
+                    "original": "stage-a-original.exe",
+                    "candidate": "stage-a-mutated.exe",
+                    "mapping": "block-map-mutated.json",
+                    "lean_inputs": ["stage-a-fixture-lemmas.lean"],
+                    "expect": "fail"
+                  }
+                ]
+              }
+              JSON
+              cat > "$fixture_dir/build-metadata.json" <<JSON
+              {
+                "format": "stage-a-fixture-build-metadata-v1",
+                "source": "stage_a_equivalence.S",
+                "compiler": "$($CC -dumpmachine)",
+                "compiler_version": "$($CC -dumpfullversion -dumpversion)",
+                "alternate_compiler": "$("$gcc13" -dumpmachine)",
+                "alternate_compiler_version": "$("$gcc13" -dumpfullversion -dumpversion)",
+                "cases": [
+                  {"id": "gcc-o0-vs-gcc-o2-symbolic-equivalence", "original_flags": "-O0", "candidate_flags": "-O2 -DSTAGE_A_VARIANT_B"},
+                  {"id": "gcc-og-vs-gcc-os-symbolic-equivalence", "original_flags": "-Og", "candidate_flags": "-Os -DSTAGE_A_VARIANT_B"},
+                  {"id": "gcc13-o0-vs-gcc15-o2-symbolic-equivalence", "normalized_pe_layout": true, "original_compiler": "gcc13", "candidate_compiler": "gcc15", "original_flags": "-O0 -DSTAGE_A_NO_EXTERNAL", "candidate_flags": "-O2 -DSTAGE_A_VARIANT_B -DSTAGE_A_NO_EXTERNAL"},
+                  {"id": "gcc13-og-vs-gcc15-os-symbolic-equivalence", "normalized_pe_layout": true, "original_compiler": "gcc13", "candidate_compiler": "gcc15", "original_flags": "-Og -DSTAGE_A_NO_EXTERNAL", "candidate_flags": "-Os -DSTAGE_A_VARIANT_B -DSTAGE_A_NO_EXTERNAL"},
+                  {"id": "gcc-o0-vs-mutated-candidate", "original_flags": "-O0", "candidate_flags": "-O2 -DSTAGE_A_MUTATION"}
+                ]
+              }
+              JSON
+              runHook postInstall
+            '';
+          };
+
+          stage-a-fixtures-root = pkgs.writeShellApplication {
+            name = "stage-a-fixtures-root";
+            text = ''
+              printf '%s\n' "${stage-a-fixtures}"
+            '';
+          };
+
+          stage-a-fixtures-check = pkgs.runCommand "stage-a-fixtures-check"
+            {
+              nativeBuildInputs = [
+                haloce-tools
+                pkgs.lean4
+              ];
+            }
+            ''
+              fixture_dir="${stage-a-fixtures}/share/wincr/stage-a-fixtures/symbolic-equivalence"
+              wincr stage-a-validate-suite \
+                --suite "$fixture_dir/suite.json" \
+                --model x86-pe32-env-v1 \
+                --out "$TMPDIR/stage-a-suite"
+              mkdir -p "$out"
+              cp -R "$TMPDIR/stage-a-suite/." "$out/"
+            '';
+
+          stage-a-jq-o2 = mkStageAJq "o2" "-O2";
+          stage-a-jq-o0 = mkStageAJq "o0" "-O0";
+
+          stage-a-jq-fixtures = pkgs.runCommand "stage-a-jq-fixtures"
+            {
+              nativeBuildInputs = [
+                pkgs.jq
+              ];
+            }
+            ''
+              fixture_dir="$out/share/wincr/stage-a-fixtures/jq-o2-o0"
+              mkdir -p "$fixture_dir"
+              cp "${stage-a-jq-o2}/share/wincr/stage-a-jq-fixtures/o2/jq.exe" "$fixture_dir/jq-o2.exe"
+              cp "${stage-a-jq-o0}/share/wincr/stage-a-jq-fixtures/o0/jq.exe" "$fixture_dir/jq-o0.exe"
+              cp "${stage-a-jq-o2}/share/wincr/stage-a-jq-fixtures/o2/jq.map" "$fixture_dir/jq-o2.map"
+              cp "${stage-a-jq-o0}/share/wincr/stage-a-jq-fixtures/o0/jq.map" "$fixture_dir/jq-o0.map"
+              jq -n \
+                --arg original_flags "-O2 ${stageAJqCommonCflags}" \
+                --arg candidate_flags "-O0 ${stageAJqCommonCflags}" \
+                --arg compiler "$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc -dumpmachine)" \
+                --arg compiler_version "$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc -dumpfullversion -dumpversion)" \
+                '{
+                  format: "stage-a-jq-fixture-build-metadata-v1",
+                  source: "jq-1.8.1 from nixpkgs",
+                  target: "i686-w64-mingw32",
+                  original: { file: "jq-o2.exe", linker_map: "jq-o2.map", flags: $original_flags },
+                  candidate: { file: "jq-o0.exe", linker_map: "jq-o0.map", flags: $candidate_flags },
+                  compiler: { target: $compiler, version: $compiler_version }
+                }' > "$fixture_dir/build-metadata.json"
+            '';
+
+          stage-a-jq-fixtures-root = pkgs.writeShellApplication {
+            name = "stage-a-jq-fixtures-root";
+            text = ''
+              printf '%s\n' "${stage-a-jq-fixtures}"
+            '';
+          };
+
+          stage-a-jq-fixtures-check = pkgs.runCommand "stage-a-jq-fixtures-check"
+            {
+              nativeBuildInputs = [
+                haloce-tools
+                pkgs.jq
+                pkgs.lean4
+              ];
+            }
+            ''
+              fixture_dir="${stage-a-jq-fixtures}/share/wincr/stage-a-fixtures/jq-o2-o0"
+              work="$TMPDIR/stage-a-jq"
+              mkdir -p "$work"
+              wincr stage-a-generate-map \
+                --original "$fixture_dir/jq-o2.exe" \
+                --candidate "$fixture_dir/jq-o0.exe" \
+                --linker-map-original "$fixture_dir/jq-o2.map" \
+                --linker-map-candidate "$fixture_dir/jq-o0.map" \
+                --original-flags "-O2 ${stageAJqCommonCflags}" \
+                --candidate-flags "-O0 ${stageAJqCommonCflags}" \
+                --out "$work/jq-block-map.json" \
+                --layout-contract-out "$work/jq-layout-contract.json"
+              cat > "$work/suite.json" <<JSON
+              {
+                "model": "x86-pe32-env-v1",
+                "cases": [
+                  {
+                    "id": "jq-o2-vs-o0-windows-x86",
+                    "original": "$fixture_dir/jq-o2.exe",
+                    "candidate": "$fixture_dir/jq-o0.exe",
+                    "mapping": "$work/jq-block-map.json",
+                    "layout_contract": "$work/jq-layout-contract.json",
+                    "expect": "pass"
+                  }
+                ]
+              }
+              JSON
+              wincr stage-a-validate-suite \
+                --suite "$work/suite.json" \
+                --model x86-pe32-env-v1 \
+                --out "$TMPDIR/stage-a-jq-suite"
+              mkdir -p "$out/generated" "$out/report"
+              cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" "$work/suite.json" "$out/generated/"
+              cp -R "$TMPDIR/stage-a-jq-suite/." "$out/report/"
+            '';
 
           wincr-3d-reference-source-info-json = builtins.toJSON {
             source = "tools/reference-games/wincr-3d-game";
@@ -1921,6 +2540,12 @@ setup.write_text(text)
               halo-trace-wine-probe-dr8-i386-late
               halo-trace-win32-smoke
               halo-trace-win32-smoke-root
+              stage-a-fixtures
+              stage-a-fixtures-check
+              stage-a-fixtures-root
+              stage-a-jq-fixtures
+              stage-a-jq-fixtures-check
+              stage-a-jq-fixtures-root
               wincr-3d-reference-game
               wincr-3d-reference-observe
               wincr-3d-reference-root
@@ -2043,6 +2668,16 @@ setup.write_text(text)
               type = "app";
               program = "${wincr-3d-reference-observe}/bin/wincr-3d-reference-observe";
             };
+
+            stage-a-fixtures-root = {
+              type = "app";
+              program = "${stage-a-fixtures-root}/bin/stage-a-fixtures-root";
+            };
+
+            stage-a-jq-fixtures-root = {
+              type = "app";
+              program = "${stage-a-jq-fixtures-root}/bin/stage-a-jq-fixtures-root";
+            };
           };
 
           checks = {
@@ -2060,6 +2695,10 @@ setup.write_text(text)
               wincr-trace-run-i386-late
               wincr-trace-run-dr8-i386-late
               halo-trace-win32-smoke
+              stage-a-fixtures
+              stage-a-fixtures-check
+              stage-a-jq-fixtures
+              stage-a-jq-fixtures-check
               wincr-3d-reference-game
               haloce-windows-vm-bundle
               ;
@@ -2073,6 +2712,7 @@ setup.write_text(text)
               pkgs.ghidra
               pkgs.llvm
               pkgs.cargo
+              pkgs.lean4
               python
               pkgs.rustc
               pkgs.rustfmt
@@ -2091,6 +2731,10 @@ setup.write_text(text)
               halo-trace-wine-probe-dr8-i386-late
               halo-trace-win32-smoke
               halo-trace-win32-smoke-root
+              stage-a-fixtures
+              stage-a-fixtures-root
+              stage-a-jq-fixtures
+              stage-a-jq-fixtures-root
               wincr-3d-reference-game
               wincr-3d-reference-observe
               wincr-3d-reference-root
@@ -2110,6 +2754,7 @@ setup.write_text(text)
               pkgs.wineWow64Packages.stable
               pkgs.xvfb
               pkgs.xorriso
+              pkgs.z3
               pkgs.jq
               pkgs.sqlite
             ];
@@ -2142,10 +2787,16 @@ setup.write_text(text)
               python
               pkgs.cargo
               pkgs.jq
+              pkgs.lean4
               pkgs.rustc
               pkgs.rustfmt
+              stage-a-fixtures
+              stage-a-fixtures-root
+              stage-a-jq-fixtures
+              stage-a-jq-fixtures-root
               pkgs.sqlite
               pkgs.sshpass
+              pkgs.z3
             ];
 
             shellHook = ''

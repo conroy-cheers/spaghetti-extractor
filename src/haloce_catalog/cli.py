@@ -80,6 +80,7 @@ from .routines import (
     upsert_internal_routine_contract,
 )
 from .static_crosscheck import DEFAULT_STATIC_CROSS_CHECK_TOOLS, run_static_cross_checks
+from .stage_a import STAGE_A_MODEL_ID, stage_a_generate_map, stage_a_validate, stage_a_validate_suite
 from .target import TargetConfig, load_target_config, target_lists_from_metadata
 from .util import utc_now
 from .wine_probe import probe_wine_trace_matrix
@@ -171,6 +172,50 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     report.add_argument("--db", type=Path, default=Path("build/catalog/catalog.db"))
     report.add_argument("--out-dir", type=Path, default=Path("build/reports"))
     report.set_defaults(func=_cmd_report)
+
+    stage_a = subcommands.add_parser(
+        "stage-a-validate",
+        help="validate PE32 binary-to-binary behavioral equivalence under the Stage A model",
+    )
+    stage_a.add_argument("--original", type=Path, required=True, help="original PE32 binary")
+    stage_a.add_argument("--candidate", type=Path, required=True, help="candidate PE32 binary")
+    stage_a.add_argument("--mapping", type=Path, required=True, help="explicit original-to-candidate block map JSON")
+    stage_a.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
+    stage_a.add_argument("--invariants", type=Path, help="optional checked invariant package JSON")
+    stage_a.add_argument("--layout-contract", type=Path, help="optional strict same-layout contract JSON")
+    stage_a.add_argument(
+        "--lean-input",
+        dest="lean_inputs",
+        action="append",
+        type=Path,
+        default=[],
+        help="additional Lean file to copy into report/lean and check before allowing a final pass; repeatable",
+    )
+    stage_a.add_argument("--out", type=Path, required=True, help="report output directory")
+    stage_a.set_defaults(func=_cmd_stage_a_validate)
+
+    stage_a_suite = subcommands.add_parser(
+        "stage-a-validate-suite",
+        help="run a Stage A validation suite of PE32 binary-equivalence cases",
+    )
+    stage_a_suite.add_argument("--suite", type=Path, required=True, help="Stage A validation suite JSON")
+    stage_a_suite.add_argument("--model", default=None, help="override execution model identifier for suite cases")
+    stage_a_suite.add_argument("--out", type=Path, required=True, help="suite report output directory")
+    stage_a_suite.set_defaults(func=_cmd_stage_a_validate_suite)
+
+    stage_a_generate = subcommands.add_parser(
+        "stage-a-generate-map",
+        help="generate a Stage A block map from PE32 binaries and linker maps",
+    )
+    stage_a_generate.add_argument("--original", type=Path, required=True, help="original PE32 binary")
+    stage_a_generate.add_argument("--candidate", type=Path, required=True, help="candidate PE32 binary")
+    stage_a_generate.add_argument("--linker-map-original", type=Path, required=True, help="original linker map")
+    stage_a_generate.add_argument("--linker-map-candidate", type=Path, required=True, help="candidate linker map")
+    stage_a_generate.add_argument("--original-flags", default="", help="compiler flags used for the original binary")
+    stage_a_generate.add_argument("--candidate-flags", default="", help="compiler flags used for the candidate binary")
+    stage_a_generate.add_argument("--out", type=Path, required=True, help="output block map JSON")
+    stage_a_generate.add_argument("--layout-contract-out", type=Path, help="optional output layout contract JSON")
+    stage_a_generate.set_defaults(func=_cmd_stage_a_generate_map)
 
     private_artifacts = subcommands.add_parser(
         "export-private-artifacts",
@@ -1106,6 +1151,46 @@ def _cmd_report(args: Any) -> int:
     reports = generate_reports(args.db, args.out_dir)
     _print_json({key: str(value) for key, value in reports.items()})
     return 0
+
+
+def _cmd_stage_a_validate(args: Any) -> int:
+    result = stage_a_validate(
+        original=args.original,
+        candidate=args.candidate,
+        mapping=args.mapping,
+        model=args.model,
+        out=args.out,
+        invariants=args.invariants,
+        layout_contract=args.layout_contract,
+        lean_inputs=tuple(args.lean_inputs or ()),
+    )
+    _print_json(result)
+    return 0 if result["verdict"] == "pass" else 1
+
+
+def _cmd_stage_a_validate_suite(args: Any) -> int:
+    result = stage_a_validate_suite(
+        suite=args.suite,
+        model=args.model,
+        out=args.out,
+    )
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_a_generate_map(args: Any) -> int:
+    result = stage_a_generate_map(
+        original=args.original,
+        candidate=args.candidate,
+        linker_map_original=args.linker_map_original,
+        linker_map_candidate=args.linker_map_candidate,
+        out=args.out,
+        layout_contract_out=args.layout_contract_out,
+        original_flags=args.original_flags,
+        candidate_flags=args.candidate_flags,
+    )
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
 
 
 def _cmd_export_private_artifacts(args: Any) -> int:

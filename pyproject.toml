@@ -14,6 +14,11 @@ dependencies = [
   "unicorn",
 ]
 
+[project.optional-dependencies]
+proof = [
+  "z3-solver",
+]
+
 [project.scripts]
 wincr = "haloce_catalog.cli:main"
 haloce-catalog = "haloce_catalog.cli:main"
