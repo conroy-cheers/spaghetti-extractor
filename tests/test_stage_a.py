@@ -1372,6 +1372,90 @@ class StageAValidateTests(unittest.TestCase):
             smoke = stage_a_smoke_contract(reference_contract=root / "reference-contract.json")
             self.assertEqual(smoke["status"], "pass")
 
+    def test_reference_contract_abi_callsites_ignore_prologue_pushes_and_capture_stack_slots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex(
+                "55"  # push ebp
+                "89e5"  # mov ebp, esp
+                "83ec10"  # sub esp, 0x10
+                "b878563412"  # mov eax, 0x12345678
+                "89442404"  # mov [esp + 4], eax
+                "c7042400204000"  # mov dword ptr [esp], 0x402000
+                "e800000000"  # call next instruction
+                "c9"  # leave
+                "c3"  # ret
+            )
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = self._write_mapping(root / "block-map.json", size=len(code), block_id="stack-args")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            abi = result["constraints"]["abi_callsites"]
+            self.assertEqual(abi["counts"]["callsites"], 1)
+            callsite = abi["original"]["functions"][0]["callsites"][0]
+            sources = callsite["argument_sources"]
+            self.assertEqual([source["stack_offset"] for source in sources], [4, 0])
+            self.assertEqual(sources[0]["kind"], "register")
+            self.assertEqual(sources[0]["register"], "eax")
+            self.assertEqual(sources[1]["kind"], "immediate")
+            self.assertEqual(sources[1]["value"], 0x402000)
+            source_rvas = {
+                source["instruction"]["rva"]
+                for source in sources
+                if isinstance(source.get("instruction"), dict)
+            }
+            self.assertNotIn(0x1000, source_rvas)
+            self.assertNotIn("source", callsite["hidden_sret_or_out_param_evidence"])
+            self.assertEqual(
+                callsite["hidden_sret_or_out_param_evidence"]["reason"],
+                "first_stack_argument_not_address_like",
+            )
+
+    def test_reference_contract_abi_callsites_mark_explicit_stack_address_first_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex(
+                "55"  # push ebp
+                "89e5"  # mov ebp, esp
+                "83ec10"  # sub esp, 0x10
+                "8d45fc"  # lea eax, [ebp - 4]
+                "890424"  # mov [esp], eax
+                "e800000000"  # call next instruction
+                "c9"  # leave
+                "c3"  # ret
+            )
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = self._write_mapping(root / "block-map.json", size=len(code), block_id="stack-address")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            callsite = result["constraints"]["abi_callsites"]["original"]["functions"][0]["callsites"][0]
+            source = callsite["argument_sources"][0]
+            self.assertEqual(source["kind"], "register")
+            self.assertEqual(source["register"], "eax")
+            self.assertEqual(source["register_definition"]["kind"], "address")
+            self.assertEqual(source["register_definition"]["address_class"], "stack_address")
+            self.assertEqual(callsite["hidden_sret_or_out_param_evidence"]["status"], "candidate")
+            self.assertEqual(
+                callsite["hidden_sret_or_out_param_evidence"]["reason"],
+                "first_stack_argument_has_address_provenance",
+            )
+
     def test_stage_a_export_reference_contract_rejects_stale_validation_report_binding(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

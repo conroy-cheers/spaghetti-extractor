@@ -2501,7 +2501,9 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
     callsites = []
     register_reads: set[str] = set()
     register_writes: set[str] = set()
+    register_definitions: dict[str, dict[str, Any]] = {}
     pushes: list[dict[str, Any]] = []
+    stack_argument_writes: dict[int, dict[str, Any]] = {}
     stack_delta = 0
     for insn in instructions:
         reads, writes = _instruction_register_access(insn)
@@ -2510,13 +2512,38 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
         mnemonic = str(insn.mnemonic)
         if mnemonic == "push":
             stack_delta -= 4 if binary.bitness == 32 else 8
-            pushes.append(_abi_argument_source(binary, insn))
+            pushes.append(_abi_argument_source(binary, insn, register_definitions))
         elif mnemonic == "pop":
             stack_delta += 4 if binary.bitness == 32 else 8
+            pushes = []
+            stack_argument_writes = {}
+        elif _abi_resets_pending_arguments(insn):
+            pushes = []
+            stack_argument_writes = {}
         elif mnemonic == "ret":
             stack_delta += _abi_ret_imm(insn)
+            pushes = []
+            stack_argument_writes = {}
         elif mnemonic == "call":
-            callsites.append(_abi_callsite_evidence(binary, insn, block_id, list(pushes[-8:])))
+            callsites.append(
+                _abi_callsite_evidence(
+                    binary,
+                    insn,
+                    block_id,
+                    _abi_pending_argument_sources(pushes, stack_argument_writes),
+                )
+            )
+            pushes = []
+            stack_argument_writes = {}
+        else:
+            offset = _abi_stack_argument_write_offset(insn)
+            if offset is not None:
+                stack_argument_writes[offset] = _abi_stack_argument_write_source(binary, insn, offset, register_definitions)
+        defined_register = _abi_update_register_definitions(binary, insn, register_definitions, writes)
+        if mnemonic == "call":
+            for volatile in ("eax", "ecx", "edx", "rax", "rcx", "rdx"):
+                if volatile != defined_register:
+                    register_definitions.pop(volatile, None)
     preserved = sorted(reg for reg in ("ebx", "esi", "edi", "rbx", "rsi", "rdi") if reg in register_reads and reg in register_writes)
     clobbered = sorted(reg for reg in register_writes if reg not in set(preserved) and reg not in {"esp", "rsp", "ebp", "rbp"})
     return {
@@ -2553,10 +2580,39 @@ def _abi_ret_imm(insn: Any) -> int:
     return int(insn.operands[0].imm)
 
 
-def _abi_argument_source(binary: StageABinary, insn: Any) -> dict[str, Any]:
+def _abi_argument_source(binary: StageABinary, insn: Any, register_definitions: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     if not insn.operands:
         return {"kind": "unknown", "instruction": _instruction_report(binary, insn)}
-    operand = insn.operands[0]
+    return _abi_attach_register_definition(_abi_operand_argument_source(binary, insn, insn.operands[0]), register_definitions)
+
+
+def _abi_stack_argument_write_source(
+    binary: StageABinary,
+    insn: Any,
+    offset: int,
+    register_definitions: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if len(insn.operands) < 2:
+        source = {"kind": "unknown", "instruction": _instruction_report(binary, insn)}
+    else:
+        source = _abi_attach_register_definition(
+            _abi_operand_argument_source(binary, insn, insn.operands[1]),
+            register_definitions,
+        )
+    source["stack_offset"] = offset
+    source["stack_write"] = _instruction_report(binary, insn)
+    return source
+
+
+def _abi_operand_argument_source(binary: StageABinary, insn: Any, operand: Any) -> dict[str, Any]:
+    if str(insn.mnemonic) == "lea" and operand.type == X86_OP_MEM:
+        addressing = _abi_mem_operand_report(insn, operand)
+        return {
+            "kind": "address",
+            "addressing": addressing,
+            "address_class": _abi_address_class(addressing),
+            "instruction": _instruction_report(binary, insn),
+        }
     if operand.type == X86_OP_IMM:
         return {"kind": "immediate", "value": int(operand.imm), "instruction": _instruction_report(binary, insn)}
     if operand.type == X86_OP_REG:
@@ -2564,6 +2620,116 @@ def _abi_argument_source(binary: StageABinary, insn: Any) -> dict[str, Any]:
     if operand.type == X86_OP_MEM:
         return {"kind": "memory", "addressing": _abi_mem_operand_report(insn, operand), "instruction": _instruction_report(binary, insn)}
     return {"kind": "unknown", "instruction": _instruction_report(binary, insn)}
+
+
+def _abi_attach_register_definition(source: dict[str, Any], register_definitions: dict[str, dict[str, Any]] | None) -> dict[str, Any]:
+    if source.get("kind") != "register" or not isinstance(register_definitions, dict):
+        return source
+    register = source.get("register")
+    definition = register_definitions.get(str(register))
+    if isinstance(definition, dict):
+        source = dict(source)
+        source["register_definition"] = definition
+    return source
+
+
+def _abi_update_register_definitions(
+    binary: StageABinary,
+    insn: Any,
+    register_definitions: dict[str, dict[str, Any]],
+    written_registers: set[str],
+) -> str | None:
+    definition = _abi_register_definition(binary, insn, register_definitions)
+    defined_register = definition[0] if definition is not None else None
+    for register in written_registers:
+        if register != defined_register:
+            register_definitions.pop(register, None)
+    if definition is not None:
+        register_definitions[definition[0]] = definition[1]
+    return defined_register
+
+
+def _abi_register_definition(
+    binary: StageABinary,
+    insn: Any,
+    register_definitions: dict[str, dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    if len(insn.operands) < 2:
+        return None
+    dst = insn.operands[0]
+    if dst.type != X86_OP_REG:
+        return None
+    register = insn.reg_name(dst.reg)
+    if not register:
+        return None
+    mnemonic = str(insn.mnemonic)
+    if mnemonic == "lea":
+        source = _abi_operand_argument_source(binary, insn, insn.operands[1])
+    elif mnemonic == "mov":
+        source = _abi_operand_argument_source(binary, insn, insn.operands[1])
+        if source.get("kind") == "register":
+            copied = register_definitions.get(str(source.get("register")))
+            if isinstance(copied, dict):
+                source = dict(copied)
+                source["copied_from_register"] = insn.reg_name(insn.operands[1].reg)
+                source["copied_by"] = _instruction_report(binary, insn)
+    else:
+        return None
+    return str(register), source
+
+
+def _abi_address_class(addressing: dict[str, Any]) -> str:
+    base = str(addressing.get("base") or "")
+    if base in {"esp", "ebp", "rsp", "rbp"}:
+        return "stack_address"
+    return "computed_address"
+
+
+def _abi_pending_argument_sources(pushes: list[dict[str, Any]], stack_argument_writes: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    stack_sources = [
+        stack_argument_writes[offset]
+        for offset in sorted(stack_argument_writes, reverse=True)
+        if offset >= 0
+    ]
+    return list(pushes[-8:]) + stack_sources
+
+
+def _abi_resets_pending_arguments(insn: Any) -> bool:
+    mnemonic = str(insn.mnemonic)
+    if mnemonic in {"leave", "enter"}:
+        return True
+    if mnemonic == "mov" and len(insn.operands) == 2:
+        dst, src = insn.operands
+        if dst.type == X86_OP_REG and src.type == X86_OP_REG:
+            dst_name = insn.reg_name(dst.reg)
+            src_name = insn.reg_name(src.reg)
+            if (dst_name, src_name) in {("ebp", "esp"), ("rbp", "rsp")}:
+                return True
+    if mnemonic in {"sub", "add", "and", "lea"} and insn.operands:
+        dst = insn.operands[0]
+        if dst.type == X86_OP_REG and insn.reg_name(dst.reg) in {"esp", "rsp"}:
+            return True
+    return False
+
+
+def _abi_stack_argument_write_offset(insn: Any) -> int | None:
+    if not insn.operands:
+        return None
+    mnemonic = str(insn.mnemonic)
+    if mnemonic != "mov":
+        return None
+    dst = insn.operands[0]
+    if dst.type != X86_OP_MEM:
+        return None
+    mem = dst.mem
+    base = insn.reg_name(mem.base) if mem.base else None
+    index = insn.reg_name(mem.index) if mem.index else None
+    if base not in {"esp", "rsp"} or index not in {None, ""}:
+        return None
+    offset = int(mem.disp)
+    if offset < 0:
+        return None
+    return offset
 
 
 def _abi_callsite_evidence(binary: StageABinary, insn: Any, block_id: str, argument_sources: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2625,9 +2791,21 @@ def _abi_hidden_sret_evidence(argument_sources: list[dict[str, Any]]) -> dict[st
     if not argument_sources:
         return {"status": "unknown", "reason": "no_static_arguments"}
     first = argument_sources[-1]
-    if first.get("kind") in {"memory", "register"}:
-        return {"status": "candidate", "source": first, "reason": "first_stack_argument_is_address_like"}
-    return {"status": "unknown"}
+    address_source = _abi_address_like_argument_source(first)
+    if address_source is not None:
+        return {"status": "candidate", "source": first, "address_source": address_source, "reason": "first_stack_argument_has_address_provenance"}
+    if first.get("kind") == "register":
+        return {"status": "unknown", "reason": "first_stack_argument_register_without_address_provenance"}
+    return {"status": "unknown", "reason": "first_stack_argument_not_address_like"}
+
+
+def _abi_address_like_argument_source(source: dict[str, Any]) -> dict[str, Any] | None:
+    if source.get("kind") == "address":
+        return source
+    definition = source.get("register_definition") if isinstance(source.get("register_definition"), dict) else None
+    if definition is not None and definition.get("kind") == "address":
+        return definition
+    return None
 
 
 def _abi_varargs_evidence(symbol: str) -> dict[str, Any]:

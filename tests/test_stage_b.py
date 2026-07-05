@@ -22,6 +22,7 @@ from haloce_catalog.stage_b import (
     stage_b_materialize_upstream_suite,
     stage_b_run_functional_suite,
     stage_b_validate_candidate,
+    _stage_b_delta_repair_items,
     _render_decompiled_c_source,
 )
 from haloce_catalog.util import sha256_bytes, sha256_file
@@ -1651,6 +1652,9 @@ class StageBTests(unittest.TestCase):
             self.assertNotIn("stage_b_unimplemented", source)
             functions = json.loads((root / "skeleton" / "functions.json").read_text(encoding="utf-8"))
             self.assertEqual(functions["functions"][0]["decompiler"]["code"], "int tiny_from_decompiler(void) {\n  return 1;\n}")
+            source_map_entry = result["source_map"]["functions"][0]
+            anchor = source.splitlines()[source_map_entry["line_start"] - 1].strip()
+            self.assertEqual(anchor, "int tiny_from_decompiler(void) {")
 
     def test_decompiled_c_skeleton_omits_aliased_direct_import_thunk_body(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3802,12 +3806,112 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["format"], "stage-b-delta-explanation-v1")
             self.assertEqual(result["status"], "incomplete")
             self.assertGreaterEqual(result["counts"]["repair_items"], 1)
-            item = result["repair_items"][0]
+            item = next(item for item in result["repair_items"] if item["violated_contract_family"] == "function_ranges")
             self.assertEqual(item["violated_contract_family"], "function_ranges")
             self.assertEqual(item["original_function"], "tiny")
             self.assertEqual(item["likely_repair_class"], "function_mapping")
             self.assertEqual(item["generated_source_location"]["file"], "src/jq_stage_b_skeleton.c")
             self.assertTrue((root / "delta" / "stage-b-delta.json").exists())
+
+    def test_explain_delta_splits_abi_callsites_into_actionable_repairs(self):
+        skeleton = {
+            "source_map": {
+                "functions": [
+                    {
+                        "function": "foo",
+                        "file": "src/jq_stage_b_skeleton.c",
+                        "line_start": 42,
+                        "line_end": 53,
+                    }
+                ]
+            }
+        }
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "contract_status": "satisfied",
+                    "blocker": "candidate ABI/callsite evidence does not yet cover the reference contract",
+                    "next_action": "repair prototypes, sret/out-params, varargs bridges, stack deltas, or register preservation before final proof",
+                    "evidence": {
+                        "reference_counts": {"functions": 3, "callsites": 7},
+                        "candidate_counts": {"functions": 1, "callsites": 5},
+                        "candidate_abi": {
+                            "candidate": {
+                                "functions": [
+                                    {
+                                        "name": "foo",
+                                        "callsites": [
+                                            {
+                                                "id": "callsite:foo:1000",
+                                                "block_id": "foo-0000",
+                                                "instruction": {"rva": 0x1000, "mnemonic": "call"},
+                                                "target": {"kind": "direct", "target_rva": 0x2000},
+                                                "argument_sources": [
+                                                    {
+                                                        "kind": "register",
+                                                        "register": "eax",
+                                                        "stack_offset": 0,
+                                                    }
+                                                ],
+                                                "hidden_sret_or_out_param_evidence": {
+                                                    "status": "candidate",
+                                                    "reason": "first_stack_argument_is_address_like",
+                                                },
+                                                "varargs_evidence": {"status": "not_observed"},
+                                                "function_pointer_targets": [],
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton=skeleton,
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        classes = {item["likely_repair_class"] for item in result}
+        self.assertIn("abi_callsite_coverage", classes)
+        self.assertIn("hidden_sret_or_out_param", classes)
+        hidden_item = next(item for item in result if item["likely_repair_class"] == "hidden_sret_or_out_param")
+        self.assertEqual(hidden_item["original_function"], "foo")
+        self.assertEqual(hidden_item["generated_source_location"]["file"], "src/jq_stage_b_skeleton.c")
+        self.assertEqual(hidden_item["generated_source_location"]["line_start"], 42)
+        coverage_item = next(item for item in result if item["likely_repair_class"] == "abi_callsite_coverage")
+        self.assertEqual(coverage_item["evidence"]["missing"], {"functions": 2, "callsites": 2})
+
+    def test_explain_delta_keeps_unmapped_candidate_crash_as_crash_localization_work(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "crash_kind": "wine_unhandled_page_fault",
+                "instruction_address": "0x7BB48767",
+                "stderr_preview": "wine: Unhandled page fault on write access\n",
+                "repair_hints": ["inspect ABI, stack, hidden sret/out-param evidence"],
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["violated_contract_family"], "candidate_crash")
+        self.assertEqual(result[0]["likely_repair_class"], "candidate_crash_unmapped")
+        self.assertIsNone(result[0]["original_function"])
+        self.assertIn("module, RVA, or backtrace", result[0]["next_action"])
 
     def test_validate_candidate_reports_stage_a_failure_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:

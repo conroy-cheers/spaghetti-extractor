@@ -1402,6 +1402,9 @@ def _stage_b_delta_repair_items(
                     )
                 )
             continue
+        if family_name == "abi_callsites":
+            items.extend(_stage_b_abi_repair_items(family=family, evidence=evidence, source_map=source_map))
+            continue
         items.append(
             _stage_b_repair_item(
                 family=family_name,
@@ -1430,7 +1433,7 @@ def _stage_b_repair_item(
     next_action: str,
     evidence: dict[str, Any],
 ) -> dict[str, Any]:
-    location = source_map.get(function or "") if function else None
+    location = _stage_b_source_location(source_map, function)
     return {
         "violated_contract_family": family,
         "original_function": function,
@@ -1448,12 +1451,20 @@ def _stage_b_source_map_by_function(skeleton: dict[str, Any]) -> dict[str, dict[
     result = {}
     for item in functions:
         if isinstance(item, dict) and isinstance(item.get("function"), str):
-            result[item["function"]] = {
+            location = {
                 "file": item.get("file"),
                 "line_start": item.get("line_start"),
                 "line_end": item.get("line_end"),
             }
+            result[item["function"]] = location
+            result.setdefault(_linker_function_match_key(item["function"]), location)
     return result
+
+
+def _stage_b_source_location(source_map: dict[str, dict[str, Any]], function: str | None) -> dict[str, Any] | None:
+    if not function:
+        return None
+    return source_map.get(function) or source_map.get(_linker_function_match_key(function))
 
 
 def _stage_b_contract_functions(contract: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1489,6 +1500,125 @@ def _stage_b_repair_class_for_family(family: str, evidence: dict[str, Any]) -> s
     if family in {"binary_faithfulness", "padding_alignment"}:
         return "layout_or_padding"
     return family
+
+
+def _stage_b_abi_repair_items(
+    *,
+    family: dict[str, Any],
+    evidence: dict[str, Any],
+    source_map: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    reference_counts = evidence.get("reference_counts") if isinstance(evidence.get("reference_counts"), dict) else {}
+    candidate_counts = evidence.get("candidate_counts") if isinstance(evidence.get("candidate_counts"), dict) else {}
+    missing_functions = max(0, int(reference_counts.get("functions") or 0) - int(candidate_counts.get("functions") or 0))
+    missing_callsites = max(0, int(reference_counts.get("callsites") or 0) - int(candidate_counts.get("callsites") or 0))
+    items: list[dict[str, Any]] = []
+    if missing_functions or missing_callsites:
+        items.append(
+            _stage_b_repair_item(
+                family="abi_callsites",
+                function=None,
+                block_id=None,
+                source_map=source_map,
+                repair_class="abi_callsite_coverage",
+                next_action=(
+                    f"recover {missing_callsites} missing candidate callsites and {missing_functions} missing ABI function records; "
+                    "start with missing linker-root/function coverage, then rerun Stage A contract validation"
+                ),
+                evidence={
+                    "family": _stage_b_contract_family_summary(family),
+                    "reference_counts": reference_counts,
+                    "candidate_counts": candidate_counts,
+                    "missing": {"functions": missing_functions, "callsites": missing_callsites},
+                },
+            )
+        )
+    for sample in _stage_b_candidate_abi_callsite_samples(evidence):
+        items.append(
+            _stage_b_repair_item(
+                family="abi_callsites",
+                function=sample.get("function"),
+                block_id=sample.get("block_id"),
+                source_map=source_map,
+                repair_class=str(sample.get("repair_class") or "abi_callsite_mismatch"),
+                next_action=str(sample.get("next_action") or "repair this generated ABI/callsite before final Stage A validation"),
+                evidence={"callsite": sample},
+            )
+        )
+    if not items:
+        items.append(
+            _stage_b_repair_item(
+                family="abi_callsites",
+                function=None,
+                block_id=None,
+                source_map=source_map,
+                repair_class=_stage_b_repair_class_for_family("abi_callsites", evidence),
+                next_action=str(family.get("next_action") or "inspect ABI/callsite evidence and repair the candidate"),
+                evidence={"family": family},
+            )
+        )
+    return items
+
+
+def _stage_b_contract_family_summary(family: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "family": family.get("family"),
+        "status": family.get("status"),
+        "contract_status": family.get("contract_status"),
+        "blocker": family.get("blocker"),
+        "next_action": family.get("next_action"),
+    }
+
+
+def _stage_b_candidate_abi_callsite_samples(evidence: dict[str, Any], *, limit: int = 6) -> list[dict[str, Any]]:
+    candidate_abi = evidence.get("candidate_abi") if isinstance(evidence.get("candidate_abi"), dict) else {}
+    candidate = candidate_abi.get("candidate") if isinstance(candidate_abi.get("candidate"), dict) else {}
+    functions = candidate.get("functions") if isinstance(candidate.get("functions"), list) else []
+    samples: list[dict[str, Any]] = []
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        function_name = str(function.get("name") or "")
+        callsites = function.get("callsites") if isinstance(function.get("callsites"), list) else []
+        for callsite in callsites:
+            if not isinstance(callsite, dict):
+                continue
+            sample = _stage_b_candidate_abi_callsite_sample(function_name, callsite)
+            if sample is not None:
+                samples.append(sample)
+            if len(samples) >= limit:
+                return samples
+    return samples
+
+
+def _stage_b_candidate_abi_callsite_sample(function_name: str, callsite: dict[str, Any]) -> dict[str, Any] | None:
+    hidden = callsite.get("hidden_sret_or_out_param_evidence") if isinstance(callsite.get("hidden_sret_or_out_param_evidence"), dict) else {}
+    varargs = callsite.get("varargs_evidence") if isinstance(callsite.get("varargs_evidence"), dict) else {}
+    targets = callsite.get("function_pointer_targets") if isinstance(callsite.get("function_pointer_targets"), list) else []
+    if hidden.get("status") == "candidate":
+        repair_class = "hidden_sret_or_out_param"
+        next_action = f"verify generated prototype/call bridge for {function_name}; first stack argument is address-like at {callsite.get('id')}"
+    elif varargs.get("status") == "candidate":
+        repair_class = "varargs_or_stdio_bridge"
+        next_action = f"verify generated varargs/stdout-stderr bridge for {function_name} at {callsite.get('id')}"
+    elif targets:
+        repair_class = "function_pointer_target"
+        next_action = f"resolve generated function-pointer target set for {function_name} at {callsite.get('id')}"
+    else:
+        return None
+    return {
+        "function": function_name,
+        "block_id": callsite.get("block_id"),
+        "callsite_id": callsite.get("id"),
+        "instruction": callsite.get("instruction"),
+        "target": callsite.get("target"),
+        "argument_sources": callsite.get("argument_sources") if isinstance(callsite.get("argument_sources"), list) else [],
+        "hidden_sret_or_out_param_evidence": hidden,
+        "varargs_evidence": varargs,
+        "function_pointer_targets": targets,
+        "repair_class": repair_class,
+        "next_action": next_action,
+    }
 
 
 def _stage_b_functional_repair_items(functional: dict[str, Any] | None, source_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1528,10 +1658,15 @@ def _stage_b_crash_repair_items(
         return []
     fault_rva = _optional_int(crash.get("fault_rva") or crash.get("exception_rva"))
     function = _stage_b_function_for_rva(candidate_functions, fault_rva) if fault_rva is not None else None
-    repair_class = "stack_delta_mismatch"
-    text = json.dumps(crash, sort_keys=True, default=str).lower()
-    if "realloc" in text or "stack" in text or "esp" in text:
-        repair_class = "hidden_sret_or_out_param"
+    if fault_rva is None or function is None:
+        repair_class = "candidate_crash_unmapped"
+        next_action = "enrich the candidate-only crash report with a candidate module, RVA, or backtrace before assigning a source repair class"
+    else:
+        repair_class = "stack_delta_mismatch"
+        next_action = "inspect the candidate-only crash report and repair the mapped generated source span"
+        text = json.dumps(crash, sort_keys=True, default=str).lower()
+        if "realloc" in text or "stack" in text or "esp" in text:
+            repair_class = "hidden_sret_or_out_param"
     return [
         _stage_b_repair_item(
             family="candidate_crash",
@@ -1539,7 +1674,7 @@ def _stage_b_crash_repair_items(
             block_id=None,
             source_map=source_map,
             repair_class=repair_class,
-            next_action="inspect the candidate-only crash report and repair the mapped generated source span",
+            next_action=next_action,
             evidence={"crash": crash},
         )
     ]
@@ -1559,13 +1694,16 @@ def _stage_b_function_for_rva(candidate_functions: list[dict[str, Any]], rva: in
 def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
     class_rank = {
         "candidate_crash": 0,
+        "candidate_crash_unmapped": 0,
         "hidden_sret_or_out_param": 1,
-        "stack_delta_mismatch": 2,
-        "preserved_register_mismatch": 3,
-        "varargs_or_stdio_bridge": 4,
-        "short_option_state_machine": 5,
-        "jump_table_target": 6,
-        "function_mapping": 7,
+        "abi_callsite_coverage": 2,
+        "stack_delta_mismatch": 3,
+        "preserved_register_mismatch": 4,
+        "varargs_or_stdio_bridge": 5,
+        "short_option_state_machine": 6,
+        "function_pointer_target": 7,
+        "jump_table_target": 8,
+        "function_mapping": 9,
     }
     return (class_rank.get(str(item.get("likely_repair_class")), 20), str(item.get("original_function") or ""))
 

@@ -1544,10 +1544,47 @@ def _source_anchor_line(
     if implementation_mode == "scaffold":
         ident = _identifier(name, 0)
         candidates.append(f"stage_b_fn_{ident}")
+    for candidate in candidates:
+        line = _source_body_anchor_line(lines, candidate)
+        if line is not None:
+            return line
     for index, line in enumerate(lines, start=1):
         if any(candidate and candidate in line for candidate in candidates):
             return index
     return None
+
+
+def _source_body_anchor_line(lines: list[str], name: str) -> int | None:
+    if not name:
+        return None
+    comment = re.compile(r"\bname\s+" + re.escape(name) + r"\s*(?:\*/)?$")
+    for index, line in enumerate(lines, start=1):
+        if comment.search(line.strip()):
+            definition = _source_definition_after(lines, start=index + 1, name=name)
+            return definition if definition is not None else index
+    return _source_definition_after(lines, start=1, name=name)
+
+
+def _source_definition_after(lines: list[str], *, start: int, name: str) -> int | None:
+    for index in range(max(1, start), len(lines) + 1):
+        line = lines[index - 1]
+        if name not in line:
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("extern ", "typedef ", "#")) or stripped.endswith(";"):
+            continue
+        if "{" in stripped or _source_next_nonempty_line(lines, index + 1) == "{":
+            return index
+    return None
+
+
+def _source_next_nonempty_line(lines: list[str], start: int) -> str | None:
+    for index in range(max(1, start), len(lines) + 1):
+        stripped = lines[index - 1].strip()
+        if stripped:
+            return stripped
+    return None
+
 
 def _render_decompiled_c_source(
     *,

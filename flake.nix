@@ -2100,6 +2100,8 @@
               cp "$diagnostic_dir/link-report.json" "$out_dir/decompiled-c-link-report.json"
               cp "$diagnostic_dir/link-roots/link-roots.json" "$out_dir/decompiled-c-link-roots.json"
               cp "$skeleton_dir/manifest.json" "$out_dir/skeleton-manifest.json"
+              mkdir -p "$out_dir/src"
+              cp "$skeleton_dir/src/jq_stage_b_skeleton.c" "$out_dir/src/"
               stage-b-provenance-wincr stage-b-generate-candidate-provenance \
                 --target-name jq \
                 --skeleton-manifest "$out_dir/skeleton-manifest.json" \
@@ -2599,6 +2601,9 @@
               cp "$diagnostic_dir/link-roots/link-roots.json" "$out_dir/decompiled-c-link-roots.json"
               cp "$skeleton_dir/manifest.json" "$out_dir/skeleton-manifest.json"
               cp "$libjq_skeleton_dir/manifest.json" "$out_dir/libjq-1-skeleton-manifest.json"
+              mkdir -p "$out_dir/src"
+              cp "$skeleton_dir/src/jq_stage_b_skeleton.c" "$out_dir/src/"
+              cp "$libjq_skeleton_dir/src/jq-libjq-1_stage_b_skeleton.c" "$out_dir/src/"
               cp "$libjq_compile_dir/report.json" "$out_dir/libjq-1-decompiled-c-compile-report.json"
               for dll in "$fixture_dir"/*.dll "$fixture_dir"/*.DLL; do
                 if test -e "$dll" && test "$(basename "$dll" | tr A-Z a-z)" != "libjq-1.dll"; then
@@ -2799,6 +2804,8 @@
               mkdir -p "$work"
               test -s "${stage-b-smoke-check}/functional-report.json"
               test -s "$candidate_dir/smoke/report.json"
+              test -s "$candidate_dir/src/jq_stage_b_skeleton.c"
+              test -s "$candidate_dir/src/jq-libjq-1_stage_b_skeleton.c"
               jq -e '
                 .format == "stage-b-runtime-smoke-v1"
                 and .status == "pass"
@@ -3009,6 +3016,7 @@
               cp "$candidate_dir/jq-stage-b-generated-closure-candidate.map" "$out/"
               cp "$candidate_dir/libjq-1.dll" "$out/"
               cp "$candidate_dir/decompiled-c-generated-closure-link-report.json" "$out/"
+              cp -R "$candidate_dir/src" "$out/src"
               cp "$candidate_dir/candidate-provenance.json" "$out/initial-candidate-provenance.json"
               cp "$claimed_provenance" "$out/candidate-provenance.json"
               cp "$functional_report" "$out/functional-report.json"
