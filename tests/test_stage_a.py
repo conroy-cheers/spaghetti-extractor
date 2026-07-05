@@ -1452,9 +1452,210 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(source["register_definition"]["address_class"], "stack_address")
             self.assertEqual(callsite["hidden_sret_or_out_param_evidence"]["status"], "candidate")
             self.assertEqual(
+                callsite["hidden_sret_or_out_param_evidence"]["address_role"],
+                "stack_out_param_or_scratch_buffer",
+            )
+            self.assertEqual(
                 callsite["hidden_sret_or_out_param_evidence"]["reason"],
                 "first_stack_argument_has_address_provenance",
             )
+
+    def test_abi_callsites_resolve_import_loaded_through_register(self):
+        class FakePE:
+            def __init__(self, data: bytes):
+                self.data = data
+
+            def get_data(self, rva: int, size: int) -> bytes:
+                if rva < 0x1000:
+                    return b""
+                offset = rva - 0x1000
+                return self.data[offset : offset + size]
+
+        code = bytes.fromhex(
+            "a164234100"  # mov eax, dword ptr [0x412364]
+            "ffd0"  # call eax
+        )
+        binary = stage_a.StageABinary(
+            path=Path("candidate.exe"),
+            sha256="",
+            size=len(code),
+            machine="i386",
+            bitness=32,
+            image_base=0x400000,
+            entrypoint_rva=0x1000,
+            size_of_image=0x20000,
+            subsystem="console",
+            sections=(),
+            imports=(
+                stage_a.StageAImport(
+                    dll="kernel32.dll",
+                    symbol="LeaveCriticalSection",
+                    ordinal=None,
+                    thunk_rva=0x12364,
+                ),
+            ),
+            pe=FakePE(code),
+        )
+
+        evidence = stage_a._abi_block_evidence(
+            binary,
+            stage_a.BlockSide(rva_start=0x1000, rva_end=0x1000 + len(code)),
+            "iat-register-call",
+        )
+
+        self.assertEqual(len(evidence["callsites"]), 1)
+        callsite = evidence["callsites"][0]
+        self.assertEqual(callsite["target"]["kind"], "import")
+        self.assertEqual(callsite["target"]["symbol"], "LeaveCriticalSection")
+        self.assertEqual(callsite["target"]["dll"], "kernel32.dll")
+        self.assertEqual(callsite["target"]["thunk_rva"], 0x12364)
+        self.assertEqual(callsite["target"]["via_register"], "eax")
+        self.assertEqual(callsite["target"]["source"]["memory_rva"], 0x12364)
+        self.assertEqual(callsite["target"]["source"]["import"]["symbol"], "LeaveCriticalSection")
+        self.assertEqual(callsite["target"]["source"]["memory_role"], "import_address_table")
+        self.assertEqual(callsite["function_pointer_targets"], [])
+
+    def test_abi_callsites_classify_global_function_pointer_slot(self):
+        class FakePE:
+            def __init__(self, data: bytes):
+                self.data = data
+
+            def get_data(self, rva: int, size: int) -> bytes:
+                if rva < 0x1000:
+                    return b""
+                offset = rva - 0x1000
+                return self.data[offset : offset + size]
+
+        code = bytes.fromhex(
+            "a100d04000"  # mov eax, dword ptr [0x40d000]
+            "ffd0"  # call eax
+        )
+        binary = stage_a.StageABinary(
+            path=Path("candidate.exe"),
+            sha256="",
+            size=len(code),
+            machine="i386",
+            bitness=32,
+            image_base=0x400000,
+            entrypoint_rva=0x1000,
+            size_of_image=0x20000,
+            subsystem="console",
+            sections=(
+                stage_a.StageASection(".text", 0x1000, 0x2000, 0, 0x1000, 0, True, True, False, True),
+                stage_a.StageASection(".data", 0xD000, 0xD100, 0, 0x100, 0, False, True, True, False),
+            ),
+            imports=(),
+            pe=FakePE(code),
+        )
+
+        evidence = stage_a._abi_block_evidence(
+            binary,
+            stage_a.BlockSide(rva_start=0x1000, rva_end=0x1000 + len(code)),
+            "global-slot-call",
+        )
+
+        callsite = evidence["callsites"][0]
+        self.assertEqual(callsite["target"]["kind"], "function_pointer")
+        self.assertEqual(callsite["target"]["memory_rva"], 0xD000)
+        self.assertEqual(callsite["target"]["memory_role"], "global_writable_pointer_slot")
+        self.assertEqual(callsite["target"]["source"]["memory_section"]["name"], ".data")
+        self.assertEqual(callsite["function_pointer_targets"][0]["memory_role"], "global_writable_pointer_slot")
+
+    def test_abi_callsites_classify_argument_callback_table_deref(self):
+        class FakePE:
+            def __init__(self, data: bytes):
+                self.data = data
+
+            def get_data(self, rva: int, size: int) -> bytes:
+                if rva < 0x1000:
+                    return b""
+                offset = rva - 0x1000
+                return self.data[offset : offset + size]
+
+        code = bytes.fromhex(
+            "8b4508"  # mov eax, dword ptr [ebp + 8]
+            "8b00"  # mov eax, dword ptr [eax]
+            "ffd0"  # call eax
+        )
+        binary = stage_a.StageABinary(
+            path=Path("candidate.exe"),
+            sha256="",
+            size=len(code),
+            machine="i386",
+            bitness=32,
+            image_base=0x400000,
+            entrypoint_rva=0x1000,
+            size_of_image=0x20000,
+            subsystem="console",
+            sections=(),
+            imports=(),
+            pe=FakePE(code),
+        )
+
+        evidence = stage_a._abi_block_evidence(
+            binary,
+            stage_a.BlockSide(rva_start=0x1000, rva_end=0x1000 + len(code)),
+            "argument-table-call",
+        )
+
+        callsite = evidence["callsites"][0]
+        self.assertEqual(callsite["target"]["kind"], "function_pointer")
+        self.assertEqual(callsite["target"]["memory_role"], "argument_pointer_deref")
+        self.assertEqual(callsite["target"]["source"]["base_register_definition"]["memory_role"], "stack_argument_slot")
+        self.assertEqual(callsite["function_pointer_targets"][0]["memory_role"], "argument_pointer_deref")
+
+    def test_contract_candidate_abi_coverage_gaps_name_missing_functions_and_callsites(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "_missing",
+                        "blocks": [{"block_id": "missing", "rva_start": 0x1000, "rva_end": 0x1010, "size": 0x10}],
+                        "callsites": [
+                            {
+                                "id": "callsite:missing:1004",
+                                "block_id": "missing",
+                                "instruction": {"rva": 0x1004, "mnemonic": "call", "op_str": "0x402000"},
+                                "target": {"kind": "direct", "target_rva": 0x2000},
+                            }
+                        ],
+                    },
+                    {
+                        "name": "_partial",
+                        "blocks": [{"block_id": "partial", "rva_start": 0x1100, "rva_end": 0x1120, "size": 0x20}],
+                        "callsites": [
+                            {"id": "callsite:partial:1104", "block_id": "partial", "instruction": {"rva": 0x1104}},
+                            {"id": "callsite:partial:1110", "block_id": "partial", "instruction": {"rva": 0x1110}},
+                        ],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "partial",
+                        "callsites": [
+                            {"id": "callsite:partial:1104", "block_id": "partial", "instruction": {"rva": 0x1104}},
+                        ],
+                    }
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        self.assertEqual(gaps["counts"]["missing_functions"], 1)
+        self.assertEqual(gaps["counts"]["incomplete_callsite_functions"], 1)
+        self.assertEqual(gaps["counts"]["missing_callsites"], 1)
+        self.assertEqual(gaps["missing_functions"][0]["name"], "_missing")
+        self.assertEqual(gaps["missing_functions"][0]["match_key"], "missing")
+        self.assertEqual(gaps["missing_functions"][0]["callsites"], 1)
+        self.assertEqual(gaps["missing_functions"][0]["callsite_samples"][0]["instruction"]["op_str"], "0x402000")
+        self.assertEqual(gaps["incomplete_callsites"][0]["name"], "_partial")
+        self.assertEqual(gaps["incomplete_callsites"][0]["candidate_callsites"], 1)
+        self.assertEqual(gaps["incomplete_callsites"][0]["reference_callsites"], 2)
 
     def test_stage_a_export_reference_contract_rejects_stale_validation_report_binding(self):
         with tempfile.TemporaryDirectory() as tmp:

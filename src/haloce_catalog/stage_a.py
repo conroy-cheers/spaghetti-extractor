@@ -1755,6 +1755,7 @@ def _contract_candidate_families(
     missing_functions = sorted(str(item["name"]) for item in expected_functions if str(item["name"]) not in candidate_function_names)
     abi_contract = constraints.get("abi_callsites") if isinstance(constraints.get("abi_callsites"), dict) else {}
     candidate_abi = _candidate_abi_constraint_from_functions(candidate, candidate_functions)
+    abi_coverage_gaps = _contract_candidate_abi_coverage_gaps(abi_contract, candidate_abi)
     original_imports = _contract_import_signature(original)
     candidate_imports = _contract_import_signature(_binary_reference_layout(candidate))
     contract_status = str(contract.get("status") or "")
@@ -1794,6 +1795,7 @@ def _contract_candidate_families(
                 "reference_counts": abi_contract.get("counts") if isinstance(abi_contract.get("counts"), dict) else {},
                 "candidate_counts": candidate_abi.get("counts"),
                 "candidate_abi": candidate_abi,
+                "coverage_gaps": abi_coverage_gaps,
             },
         ),
         _contract_candidate_family(
@@ -1922,6 +1924,93 @@ def _contract_candidate_abi_status(reference_abi: dict[str, Any], candidate_abi:
     if int(candidate_counts.get("callsites") or 0) < int(reference_counts.get("callsites") or 0):
         return "incomplete"
     return "satisfied"
+
+
+def _contract_candidate_abi_coverage_gaps(reference_abi: dict[str, Any], candidate_abi: dict[str, Any]) -> dict[str, Any]:
+    reference = reference_abi.get("original") if isinstance(reference_abi.get("original"), dict) else {}
+    candidate = candidate_abi.get("candidate") if isinstance(candidate_abi.get("candidate"), dict) else {}
+    reference_functions = [item for item in reference.get("functions", []) if isinstance(item, dict)]
+    candidate_functions = [item for item in candidate.get("functions", []) if isinstance(item, dict)]
+    candidate_by_key: dict[str, list[dict[str, Any]]] = {}
+    for function in candidate_functions:
+        name = function.get("name")
+        if isinstance(name, str):
+            candidate_by_key.setdefault(_linker_function_match_key(name), []).append(function)
+
+    missing_functions: list[dict[str, Any]] = []
+    incomplete_callsites: list[dict[str, Any]] = []
+    for function in reference_functions:
+        name = function.get("name")
+        if not isinstance(name, str):
+            continue
+        key = _linker_function_match_key(name)
+        candidates = candidate_by_key.get(key, [])
+        reference_callsites = function.get("callsites") if isinstance(function.get("callsites"), list) else []
+        if not candidates:
+            missing_functions.append(_abi_function_gap_sample(function, key))
+            continue
+        candidate_callsite_count = max(
+            len(item.get("callsites", [])) if isinstance(item.get("callsites"), list) else 0
+            for item in candidates
+        )
+        if candidate_callsite_count < len(reference_callsites):
+            incomplete_callsites.append(
+                {
+                    "name": name,
+                    "match_key": key,
+                    "reference_callsites": len(reference_callsites),
+                    "candidate_callsites": candidate_callsite_count,
+                    "missing_callsites": len(reference_callsites) - candidate_callsite_count,
+                    "reference_callsite_samples": [_abi_callsite_gap_sample(item) for item in reference_callsites[:5]],
+                }
+            )
+
+    return {
+        "missing_functions": missing_functions[:100],
+        "incomplete_callsites": incomplete_callsites[:100],
+        "counts": {
+            "missing_functions": len(missing_functions),
+            "incomplete_callsite_functions": len(incomplete_callsites),
+            "missing_callsites": sum(int(item.get("missing_callsites") or 0) for item in incomplete_callsites),
+        },
+    }
+
+
+def _abi_function_gap_sample(function: dict[str, Any], match_key: str) -> dict[str, Any]:
+    blocks = function.get("blocks") if isinstance(function.get("blocks"), list) else []
+    callsites = function.get("callsites") if isinstance(function.get("callsites"), list) else []
+    return {
+        "name": function.get("name"),
+        "match_key": match_key,
+        "blocks": [
+            {
+                "block_id": block.get("block_id"),
+                "rva_start": block.get("rva_start"),
+                "rva_end": block.get("rva_end"),
+                "size": block.get("size"),
+            }
+            for block in blocks[:5]
+            if isinstance(block, dict)
+        ],
+        "callsites": len(callsites),
+        "callsite_samples": [_abi_callsite_gap_sample(item) for item in callsites[:5]],
+    }
+
+
+def _abi_callsite_gap_sample(callsite: Any) -> dict[str, Any]:
+    if not isinstance(callsite, dict):
+        return {}
+    instruction = callsite.get("instruction") if isinstance(callsite.get("instruction"), dict) else {}
+    return {
+        "id": callsite.get("id"),
+        "block_id": callsite.get("block_id"),
+        "instruction": {
+            "rva": instruction.get("rva"),
+            "mnemonic": instruction.get("mnemonic"),
+            "op_str": instruction.get("op_str"),
+        },
+        "target": callsite.get("target") if isinstance(callsite.get("target"), dict) else {},
+    }
 
 
 def _resolve_contract_sidecar_path(contract_path: Path, path_text: Any, name: str) -> Path:
@@ -2531,6 +2620,7 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
                     insn,
                     block_id,
                     _abi_pending_argument_sources(pushes, stack_argument_writes),
+                    register_definitions,
                 )
             )
             pushes = []
@@ -2583,7 +2673,10 @@ def _abi_ret_imm(insn: Any) -> int:
 def _abi_argument_source(binary: StageABinary, insn: Any, register_definitions: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     if not insn.operands:
         return {"kind": "unknown", "instruction": _instruction_report(binary, insn)}
-    return _abi_attach_register_definition(_abi_operand_argument_source(binary, insn, insn.operands[0]), register_definitions)
+    return _abi_attach_register_definition(
+        _abi_operand_argument_source(binary, insn, insn.operands[0], register_definitions),
+        register_definitions,
+    )
 
 
 def _abi_stack_argument_write_source(
@@ -2596,7 +2689,7 @@ def _abi_stack_argument_write_source(
         source = {"kind": "unknown", "instruction": _instruction_report(binary, insn)}
     else:
         source = _abi_attach_register_definition(
-            _abi_operand_argument_source(binary, insn, insn.operands[1]),
+            _abi_operand_argument_source(binary, insn, insn.operands[1], register_definitions),
             register_definitions,
         )
     source["stack_offset"] = offset
@@ -2604,7 +2697,12 @@ def _abi_stack_argument_write_source(
     return source
 
 
-def _abi_operand_argument_source(binary: StageABinary, insn: Any, operand: Any) -> dict[str, Any]:
+def _abi_operand_argument_source(
+    binary: StageABinary,
+    insn: Any,
+    operand: Any,
+    register_definitions: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     if str(insn.mnemonic) == "lea" and operand.type == X86_OP_MEM:
         addressing = _abi_mem_operand_report(insn, operand)
         return {
@@ -2618,7 +2716,24 @@ def _abi_operand_argument_source(binary: StageABinary, insn: Any, operand: Any) 
     if operand.type == X86_OP_REG:
         return {"kind": "register", "register": insn.reg_name(operand.reg), "instruction": _instruction_report(binary, insn)}
     if operand.type == X86_OP_MEM:
-        return {"kind": "memory", "addressing": _abi_mem_operand_report(insn, operand), "instruction": _instruction_report(binary, insn)}
+        addressing = _abi_mem_operand_report(insn, operand)
+        source: dict[str, Any] = {"kind": "memory", "addressing": addressing, "instruction": _instruction_report(binary, insn)}
+        memory_rva = _abi_absolute_addressing_rva(binary, addressing)
+        if memory_rva is not None:
+            source["memory_rva"] = memory_rva
+            section = _section_for_rva(binary, memory_rva)
+            if section is not None:
+                source["memory_section"] = _abi_section_report(section)
+            imported = _import_for_thunk_rva(binary, memory_rva)
+            if imported is not None:
+                source["import"] = _abi_import_report(imported)
+        base = addressing.get("base")
+        if isinstance(base, str) and isinstance(register_definitions, dict):
+            base_definition = register_definitions.get(base)
+            if isinstance(base_definition, dict):
+                source["base_register_definition"] = base_definition
+        source["memory_role"] = _abi_memory_role(source)
+        return source
     return {"kind": "unknown", "instruction": _instruction_report(binary, insn)}
 
 
@@ -2664,9 +2779,9 @@ def _abi_register_definition(
         return None
     mnemonic = str(insn.mnemonic)
     if mnemonic == "lea":
-        source = _abi_operand_argument_source(binary, insn, insn.operands[1])
+        source = _abi_operand_argument_source(binary, insn, insn.operands[1], register_definitions)
     elif mnemonic == "mov":
-        source = _abi_operand_argument_source(binary, insn, insn.operands[1])
+        source = _abi_operand_argument_source(binary, insn, insn.operands[1], register_definitions)
         if source.get("kind") == "register":
             copied = register_definitions.get(str(source.get("register")))
             if isinstance(copied, dict):
@@ -2732,8 +2847,14 @@ def _abi_stack_argument_write_offset(insn: Any) -> int | None:
     return offset
 
 
-def _abi_callsite_evidence(binary: StageABinary, insn: Any, block_id: str, argument_sources: list[dict[str, Any]]) -> dict[str, Any]:
-    target = _abi_call_target(binary, insn)
+def _abi_callsite_evidence(
+    binary: StageABinary,
+    insn: Any,
+    block_id: str,
+    argument_sources: list[dict[str, Any]],
+    register_definitions: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    target = _abi_call_target(binary, insn, register_definitions)
     symbol = str(target.get("symbol") or "")
     return {
         "id": f"callsite:{block_id}:{int(insn.address - binary.image_base):x}",
@@ -2748,7 +2869,11 @@ def _abi_callsite_evidence(binary: StageABinary, insn: Any, block_id: str, argum
     }
 
 
-def _abi_call_target(binary: StageABinary, insn: Any) -> dict[str, Any]:
+def _abi_call_target(
+    binary: StageABinary,
+    insn: Any,
+    register_definitions: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     target_rva = _resolved_branch_target(binary, insn)
     imported = _import_for_call_instruction(binary, insn)
     if imported is not None:
@@ -2762,6 +2887,11 @@ def _abi_call_target(binary: StageABinary, insn: Any) -> dict[str, Any]:
     if target_rva is not None:
         return {"kind": "direct", "target_rva": target_rva}
     if len(insn.operands) == 1 and insn.operands[0].type in {X86_OP_REG, X86_OP_MEM}:
+        if insn.operands[0].type == X86_OP_REG:
+            register_name = insn.reg_name(insn.operands[0].reg)
+            resolved = _abi_register_call_target(binary, register_name, register_definitions)
+            if resolved is not None:
+                return resolved
         return {
             "kind": "function_pointer",
             "operand": insn.op_str,
@@ -2769,6 +2899,50 @@ def _abi_call_target(binary: StageABinary, insn: Any) -> dict[str, Any]:
             "status": "unresolved",
         }
     return {"kind": "unknown", "status": "unresolved"}
+
+
+def _abi_register_call_target(
+    binary: StageABinary,
+    register_name: str | None,
+    register_definitions: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    if not register_name or not isinstance(register_definitions, dict):
+        return None
+    definition = register_definitions.get(register_name)
+    if not isinstance(definition, dict):
+        return None
+    imported = definition.get("import") if isinstance(definition.get("import"), dict) else None
+    if imported is not None:
+        return {
+            "kind": "import",
+            "dll": imported.get("dll"),
+            "symbol": imported.get("symbol"),
+            "ordinal": imported.get("ordinal"),
+            "thunk_rva": imported.get("thunk_rva"),
+            "via_register": register_name,
+            "source": definition,
+        }
+    memory_rva = _safe_int(definition.get("memory_rva"))
+    if memory_rva is not None:
+        return {
+            "kind": "function_pointer",
+            "operand": register_name,
+            "recoverable_targets": [],
+            "status": "unresolved",
+            "source": definition,
+            "memory_rva": memory_rva,
+            "memory_role": definition.get("memory_role"),
+        }
+    if definition.get("kind") == "memory":
+        return {
+            "kind": "function_pointer",
+            "operand": register_name,
+            "recoverable_targets": [],
+            "status": "unresolved",
+            "source": definition,
+            "memory_role": definition.get("memory_role"),
+        }
+    return None
 
 
 def _import_for_call_instruction(binary: StageABinary, insn: Any) -> StageAImport | None:
@@ -2787,13 +2961,58 @@ def _abi_mem_operand_report(insn: Any, operand: Any) -> dict[str, Any]:
     }
 
 
+def _abi_section_report(section: StageASection) -> dict[str, Any]:
+    return {
+        "name": section.name,
+        "rva_start": section.rva_start,
+        "rva_end": section.rva_end,
+        "readable": section.readable,
+        "writable": section.writable,
+        "executable": section.executable,
+    }
+
+
+def _abi_memory_role(source: dict[str, Any]) -> str:
+    if isinstance(source.get("import"), dict):
+        return "import_address_table"
+    section = source.get("memory_section") if isinstance(source.get("memory_section"), dict) else {}
+    if source.get("memory_rva") is not None:
+        if section.get("writable") is True:
+            return "global_writable_pointer_slot"
+        if section:
+            return "global_readonly_pointer_slot"
+        return "absolute_memory_slot"
+    addressing = source.get("addressing") if isinstance(source.get("addressing"), dict) else {}
+    base = str(addressing.get("base") or "")
+    if base in {"ebp", "rbp"}:
+        disp = _safe_int(addressing.get("disp")) or 0
+        return "stack_argument_slot" if disp >= 0 else "stack_local_slot"
+    if base in {"esp", "rsp"}:
+        return "stack_pointer_slot"
+    base_definition = source.get("base_register_definition") if isinstance(source.get("base_register_definition"), dict) else None
+    if base_definition is not None:
+        base_role = str(base_definition.get("memory_role") or "")
+        if base_role == "stack_argument_slot":
+            return "argument_pointer_deref"
+        if base_definition.get("memory_rva") is not None:
+            return "global_pointer_deref"
+        return "computed_pointer_deref"
+    return "computed_memory"
+
+
 def _abi_hidden_sret_evidence(argument_sources: list[dict[str, Any]]) -> dict[str, Any]:
     if not argument_sources:
         return {"status": "unknown", "reason": "no_static_arguments"}
     first = argument_sources[-1]
     address_source = _abi_address_like_argument_source(first)
     if address_source is not None:
-        return {"status": "candidate", "source": first, "address_source": address_source, "reason": "first_stack_argument_has_address_provenance"}
+        return {
+            "status": "candidate",
+            "source": first,
+            "address_source": address_source,
+            "address_role": _abi_address_argument_role(address_source),
+            "reason": "first_stack_argument_has_address_provenance",
+        }
     if first.get("kind") == "register":
         return {"status": "unknown", "reason": "first_stack_argument_register_without_address_provenance"}
     return {"status": "unknown", "reason": "first_stack_argument_not_address_like"}
@@ -2808,6 +3027,12 @@ def _abi_address_like_argument_source(source: dict[str, Any]) -> dict[str, Any] 
     return None
 
 
+def _abi_address_argument_role(address_source: dict[str, Any]) -> str:
+    if address_source.get("address_class") == "stack_address":
+        return "stack_out_param_or_scratch_buffer"
+    return "computed_out_param_or_hidden_sret"
+
+
 def _abi_varargs_evidence(symbol: str) -> dict[str, Any]:
     lower = symbol.lower()
     if any(token in lower for token in ("printf", "fprintf", "sprintf", "scanf", "execl")):
@@ -2818,7 +3043,11 @@ def _abi_varargs_evidence(symbol: str) -> dict[str, Any]:
 def _abi_function_pointer_targets(target: dict[str, Any]) -> list[dict[str, Any]]:
     if target.get("kind") != "function_pointer":
         return []
-    return [{"status": "unresolved", "operand": target.get("operand")}]
+    item: dict[str, Any] = {"status": "unresolved", "operand": target.get("operand")}
+    for key in ("memory_rva", "memory_role", "source"):
+        if key in target:
+            item[key] = target[key]
+    return [item]
 
 
 def _abi_import_prototypes(binary: StageABinary) -> list[dict[str, Any]]:
@@ -3250,6 +3479,13 @@ def _primary_symbol_name(names: list[str]) -> str:
 def _executable_section_for_rva(binary: StageABinary, rva: int) -> StageASection | None:
     for section in binary.sections:
         if section.executable and section.rva_start <= rva < section.rva_end:
+            return section
+    return None
+
+
+def _section_for_rva(binary: StageABinary, rva: int) -> StageASection | None:
+    for section in binary.sections:
+        if section.rva_start <= rva < section.rva_end:
             return section
     return None
 
@@ -5375,9 +5611,35 @@ def _import_for_absolute_memory_operand(binary: StageABinary, operand: Any) -> S
     thunk_rva = _absolute_mem_operand_rva(binary, operand)
     if thunk_rva is None:
         return None
+    return _import_for_thunk_rva(binary, thunk_rva)
+
+
+def _import_for_thunk_rva(binary: StageABinary, thunk_rva: int) -> StageAImport | None:
     for item in binary.imports:
         if item.thunk_rva == thunk_rva:
             return item
+    return None
+
+
+def _abi_import_report(item: StageAImport) -> dict[str, Any]:
+    return {
+        "dll": item.dll,
+        "symbol": item.symbol,
+        "ordinal": item.ordinal,
+        "thunk_rva": item.thunk_rva,
+    }
+
+
+def _abi_absolute_addressing_rva(binary: StageABinary, addressing: dict[str, Any]) -> int | None:
+    if addressing.get("base") or addressing.get("index"):
+        return None
+    address = _safe_int(addressing.get("disp"))
+    if address is None:
+        return None
+    if binary.image_base <= address < binary.image_base + binary.size_of_image:
+        return address - binary.image_base
+    if 0 <= address < binary.size_of_image:
+        return address
     return None
 
 

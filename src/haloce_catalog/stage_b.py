@@ -1337,6 +1337,7 @@ def stage_b_explain_delta(
         validation=contract_validation,
         skeleton=skeleton,
         candidate_functions=candidate_functions,
+        candidate_binary=candidate_bin,
         crash=crash,
         functional=functional,
     )
@@ -1377,6 +1378,7 @@ def _stage_b_delta_repair_items(
     candidate_functions: list[dict[str, Any]],
     crash: dict[str, Any] | None,
     functional: dict[str, Any] | None,
+    candidate_binary: Any | None = None,
 ) -> list[dict[str, Any]]:
     source_map = _stage_b_source_map_by_function(skeleton)
     contract_functions = _stage_b_contract_functions(contract)
@@ -1417,7 +1419,7 @@ def _stage_b_delta_repair_items(
             )
         )
     items.extend(_stage_b_functional_repair_items(functional, source_map))
-    items.extend(_stage_b_crash_repair_items(crash, candidate_functions, source_map))
+    items.extend(_stage_b_crash_repair_items(crash, candidate_functions, source_map, candidate_binary))
     for index, item in enumerate(sorted(items, key=_stage_b_repair_rank), start=1):
         item["rank"] = index
     return sorted(items, key=lambda item: int(item["rank"]))
@@ -1512,8 +1514,14 @@ def _stage_b_abi_repair_items(
     candidate_counts = evidence.get("candidate_counts") if isinstance(evidence.get("candidate_counts"), dict) else {}
     missing_functions = max(0, int(reference_counts.get("functions") or 0) - int(candidate_counts.get("functions") or 0))
     missing_callsites = max(0, int(reference_counts.get("callsites") or 0) - int(candidate_counts.get("callsites") or 0))
+    coverage_gaps = evidence.get("coverage_gaps") if isinstance(evidence.get("coverage_gaps"), dict) else {}
+    coverage_gap_counts = coverage_gaps.get("counts") if isinstance(coverage_gaps.get("counts"), dict) else {}
     items: list[dict[str, Any]] = []
+    items.extend(_stage_b_abi_coverage_gap_items(evidence, source_map))
     if missing_functions or missing_callsites:
+        named_missing_functions = coverage_gap_counts.get("missing_functions")
+        partial_callsite_functions = coverage_gap_counts.get("incomplete_callsite_functions")
+        named_missing_callsites = coverage_gap_counts.get("missing_callsites")
         items.append(
             _stage_b_repair_item(
                 family="abi_callsites",
@@ -1522,7 +1530,10 @@ def _stage_b_abi_repair_items(
                 source_map=source_map,
                 repair_class="abi_callsite_coverage",
                 next_action=(
-                    f"recover {missing_callsites} missing candidate callsites and {missing_functions} missing ABI function records; "
+                    f"recover ABI coverage gaps: {named_missing_functions if named_missing_functions is not None else missing_functions} named missing functions"
+                    f" and {named_missing_callsites if named_missing_callsites is not None else missing_callsites} missing callsites"
+                    f" across {partial_callsite_functions if partial_callsite_functions is not None else 'unknown'} partially matched functions"
+                    f" (raw count deficit: {missing_functions} functions, {missing_callsites} callsites); "
                     "start with missing linker-root/function coverage, then rerun Stage A contract validation"
                 ),
                 evidence={
@@ -1530,6 +1541,7 @@ def _stage_b_abi_repair_items(
                     "reference_counts": reference_counts,
                     "candidate_counts": candidate_counts,
                     "missing": {"functions": missing_functions, "callsites": missing_callsites},
+                    "coverage_gap_counts": coverage_gap_counts,
                 },
             )
         )
@@ -1557,6 +1569,65 @@ def _stage_b_abi_repair_items(
                 evidence={"family": family},
             )
         )
+    return items
+
+
+def _stage_b_abi_coverage_gap_items(
+    evidence: dict[str, Any],
+    source_map: dict[str, dict[str, Any]],
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    coverage_gaps = evidence.get("coverage_gaps") if isinstance(evidence.get("coverage_gaps"), dict) else {}
+    items: list[dict[str, Any]] = []
+    missing_functions = coverage_gaps.get("missing_functions") if isinstance(coverage_gaps.get("missing_functions"), list) else []
+    for sample in missing_functions:
+        if not isinstance(sample, dict):
+            continue
+        name = sample.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        items.append(
+            _stage_b_repair_item(
+                family="abi_callsites",
+                function=name,
+                block_id=None,
+                source_map=source_map,
+                repair_class="abi_function_coverage",
+                next_action=f"recover generated ABI evidence for {name}; emit the function in the candidate linker map and preserve its callsites",
+                evidence={"coverage_gap": sample},
+            )
+        )
+        if len(items) >= limit:
+            return items
+
+    incomplete_callsites = (
+        coverage_gaps.get("incomplete_callsites")
+        if isinstance(coverage_gaps.get("incomplete_callsites"), list)
+        else []
+    )
+    for sample in incomplete_callsites:
+        if not isinstance(sample, dict):
+            continue
+        name = sample.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        items.append(
+            _stage_b_repair_item(
+                family="abi_callsites",
+                function=name,
+                block_id=None,
+                source_map=source_map,
+                repair_class="abi_callsite_function_coverage",
+                next_action=(
+                    f"recover {sample.get('missing_callsites')} missing generated callsites for {name}; "
+                    "preserve call instructions and rerun Stage A contract validation"
+                ),
+                evidence={"coverage_gap": sample},
+            )
+        )
+        if len(items) >= limit:
+            return items
     return items
 
 
@@ -1596,14 +1667,14 @@ def _stage_b_candidate_abi_callsite_sample(function_name: str, callsite: dict[st
     varargs = callsite.get("varargs_evidence") if isinstance(callsite.get("varargs_evidence"), dict) else {}
     targets = callsite.get("function_pointer_targets") if isinstance(callsite.get("function_pointer_targets"), list) else []
     if hidden.get("status") == "candidate":
-        repair_class = "hidden_sret_or_out_param"
-        next_action = f"verify generated prototype/call bridge for {function_name}; first stack argument is address-like at {callsite.get('id')}"
+        repair_class = _stage_b_hidden_address_repair_class(hidden)
+        next_action = _stage_b_hidden_address_next_action(function_name, callsite, repair_class)
     elif varargs.get("status") == "candidate":
         repair_class = "varargs_or_stdio_bridge"
         next_action = f"verify generated varargs/stdout-stderr bridge for {function_name} at {callsite.get('id')}"
     elif targets:
-        repair_class = "function_pointer_target"
-        next_action = f"resolve generated function-pointer target set for {function_name} at {callsite.get('id')}"
+        repair_class = _stage_b_function_pointer_repair_class(callsite)
+        next_action = _stage_b_function_pointer_next_action(function_name, callsite, repair_class)
     else:
         return None
     return {
@@ -1619,6 +1690,88 @@ def _stage_b_candidate_abi_callsite_sample(function_name: str, callsite: dict[st
         "repair_class": repair_class,
         "next_action": next_action,
     }
+
+
+def _stage_b_hidden_address_repair_class(hidden: dict[str, Any]) -> str:
+    role = _stage_b_hidden_address_role(hidden)
+    if role == "stack_out_param_or_scratch_buffer":
+        return "stack_out_param_or_scratch_buffer"
+    if role == "computed_out_param_or_hidden_sret":
+        return "computed_out_param_or_hidden_sret"
+    return "hidden_sret_or_out_param"
+
+
+def _stage_b_hidden_address_role(hidden: dict[str, Any]) -> str:
+    role = hidden.get("address_role")
+    if isinstance(role, str) and role:
+        return role
+    address_source = hidden.get("address_source") if isinstance(hidden.get("address_source"), dict) else {}
+    if address_source.get("address_class") == "stack_address":
+        return "stack_out_param_or_scratch_buffer"
+    if address_source:
+        return "computed_out_param_or_hidden_sret"
+    return ""
+
+
+def _stage_b_hidden_address_next_action(function_name: str, callsite: dict[str, Any], repair_class: str) -> str:
+    callsite_id = callsite.get("id")
+    actions = {
+        "stack_out_param_or_scratch_buffer": "recover generated prototype plus stack out-param/scratch-buffer bridge",
+        "computed_out_param_or_hidden_sret": "recover generated prototype and computed out-param or hidden-return bridge",
+        "hidden_sret_or_out_param": "verify generated prototype/call bridge for address-like first argument",
+    }
+    return f"{actions.get(repair_class, actions['hidden_sret_or_out_param'])} for {function_name} at {callsite_id}"
+
+
+def _stage_b_function_pointer_repair_class(callsite: dict[str, Any]) -> str:
+    role = _stage_b_function_pointer_memory_role(callsite)
+    if role == "global_writable_pointer_slot":
+        return "global_callback_slot"
+    if role == "global_readonly_pointer_slot":
+        return "readonly_callback_table"
+    if role == "argument_pointer_deref":
+        return "argument_callback_table"
+    if role == "global_pointer_deref":
+        return "global_callback_table"
+    if role in {"computed_pointer_deref", "computed_memory"}:
+        return "computed_function_pointer_target"
+    return "function_pointer_target"
+
+
+def _stage_b_function_pointer_memory_role(callsite: dict[str, Any]) -> str:
+    target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
+    role = target.get("memory_role")
+    if isinstance(role, str) and role:
+        return role
+    source = target.get("source") if isinstance(target.get("source"), dict) else {}
+    role = source.get("memory_role")
+    if isinstance(role, str) and role:
+        return role
+    targets = callsite.get("function_pointer_targets") if isinstance(callsite.get("function_pointer_targets"), list) else []
+    for item in targets:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("memory_role")
+        if isinstance(role, str) and role:
+            return role
+        source = item.get("source") if isinstance(item.get("source"), dict) else {}
+        role = source.get("memory_role")
+        if isinstance(role, str) and role:
+            return role
+    return ""
+
+
+def _stage_b_function_pointer_next_action(function_name: str, callsite: dict[str, Any], repair_class: str) -> str:
+    callsite_id = callsite.get("id")
+    actions = {
+        "global_callback_slot": "recover initialization and generated storage for global callback/function-pointer slot",
+        "readonly_callback_table": "recover the read-only callback table and preserve its candidate layout",
+        "argument_callback_table": "recover the callback table/prototype passed into this generated function",
+        "global_callback_table": "recover the global callback table and its indexed call targets",
+        "computed_function_pointer_target": "recover the computed indirect-call table and prove every reachable target",
+        "function_pointer_target": "resolve generated function-pointer target set",
+    }
+    return f"{actions.get(repair_class, actions['function_pointer_target'])} for {function_name} at {callsite_id}"
 
 
 def _stage_b_functional_repair_items(functional: dict[str, Any] | None, source_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1653,20 +1806,28 @@ def _stage_b_crash_repair_items(
     crash: dict[str, Any] | None,
     candidate_functions: list[dict[str, Any]],
     source_map: dict[str, dict[str, Any]],
+    candidate_binary: Any | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(crash, dict):
         return []
-    fault_rva = _optional_int(crash.get("fault_rva") or crash.get("exception_rva"))
-    function = _stage_b_function_for_rva(candidate_functions, fault_rva) if fault_rva is not None else None
-    if fault_rva is None or function is None:
-        repair_class = "candidate_crash_unmapped"
-        next_action = "enrich the candidate-only crash report with a candidate module, RVA, or backtrace before assigning a source repair class"
-    else:
+    location = _stage_b_candidate_crash_location(crash, candidate_binary)
+    fault_rva = location.get("rva")
+    function = _stage_b_function_for_rva(candidate_functions, fault_rva) if isinstance(fault_rva, int) else None
+    if function is not None:
         repair_class = "stack_delta_mismatch"
         next_action = "inspect the candidate-only crash report and repair the mapped generated source span"
         text = json.dumps(crash, sort_keys=True, default=str).lower()
         if "realloc" in text or "stack" in text or "esp" in text:
             repair_class = "hidden_sret_or_out_param"
+    elif location.get("classification") == "outside_candidate_image":
+        repair_class = "candidate_crash_external_module"
+        next_action = (
+            "candidate crash PC is outside the candidate image; prioritize source-mapped ABI/callsite, import, "
+            "and callback-table contract repairs unless a candidate-only backtrace identifies a candidate frame"
+        )
+    else:
+        repair_class = "candidate_crash_unmapped"
+        next_action = "enrich the candidate-only crash report with a candidate module, RVA, or backtrace before assigning a source repair class"
     return [
         _stage_b_repair_item(
             family="candidate_crash",
@@ -1675,9 +1836,63 @@ def _stage_b_crash_repair_items(
             source_map=source_map,
             repair_class=repair_class,
             next_action=next_action,
-            evidence={"crash": crash},
+            evidence={"crash": crash, "candidate_location": location},
         )
     ]
+
+
+def _stage_b_candidate_crash_location(crash: dict[str, Any], candidate_binary: Any | None) -> dict[str, Any]:
+    explicit_rva = _optional_int(crash.get("exception_rva") or crash.get("instruction_rva") or crash.get("fault_rva"))
+    image = _stage_b_candidate_image_range(candidate_binary)
+    if explicit_rva is not None:
+        return {
+            "classification": "candidate_rva_explicit",
+            "rva": explicit_rva,
+            "candidate_image": image,
+        }
+    pc = _optional_int(
+        crash.get("instruction_address")
+        or crash.get("exception_address")
+        or crash.get("program_counter")
+        or crash.get("pc")
+    )
+    if pc is None:
+        return {"classification": "missing_candidate_pc", "rva": None, "candidate_image": image}
+    if image is None:
+        return {"classification": "candidate_image_unknown", "pc": pc, "rva": None, "candidate_image": None}
+    image_base = int(image["image_base"])
+    image_end = int(image["image_end"])
+    if image_base <= pc < image_end:
+        return {
+            "classification": "inside_candidate_image",
+            "pc": pc,
+            "rva": pc - image_base,
+            "candidate_image": image,
+        }
+    return {
+        "classification": "outside_candidate_image",
+        "pc": pc,
+        "rva": None,
+        "candidate_image": image,
+    }
+
+
+def _stage_b_candidate_image_range(candidate_binary: Any | None) -> dict[str, int] | None:
+    if candidate_binary is None:
+        return None
+    if isinstance(candidate_binary, dict):
+        image_base = _optional_int(candidate_binary.get("image_base"))
+        size_of_image = _optional_int(candidate_binary.get("size_of_image"))
+    else:
+        image_base = _optional_int(getattr(candidate_binary, "image_base", None))
+        size_of_image = _optional_int(getattr(candidate_binary, "size_of_image", None))
+    if image_base is None or size_of_image is None:
+        return None
+    return {
+        "image_base": image_base,
+        "size_of_image": size_of_image,
+        "image_end": image_base + size_of_image,
+    }
 
 
 def _stage_b_function_for_rva(candidate_functions: list[dict[str, Any]], rva: int | None) -> str | None:
@@ -1696,12 +1911,22 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "candidate_crash": 0,
         "candidate_crash_unmapped": 0,
         "hidden_sret_or_out_param": 1,
-        "abi_callsite_coverage": 2,
+        "stack_out_param_or_scratch_buffer": 1,
+        "computed_out_param_or_hidden_sret": 1,
+        "abi_function_coverage": 2,
+        "abi_callsite_function_coverage": 2,
+        "abi_callsite_coverage": 3,
         "stack_delta_mismatch": 3,
         "preserved_register_mismatch": 4,
         "varargs_or_stdio_bridge": 5,
         "short_option_state_machine": 6,
+        "global_callback_slot": 7,
+        "argument_callback_table": 7,
+        "global_callback_table": 7,
+        "readonly_callback_table": 7,
+        "computed_function_pointer_target": 7,
         "function_pointer_target": 7,
+        "candidate_crash_external_module": 8,
         "jump_table_target": 8,
         "function_mapping": 9,
     }

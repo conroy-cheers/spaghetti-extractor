@@ -3822,6 +3822,12 @@ class StageBTests(unittest.TestCase):
                         "file": "src/jq_stage_b_skeleton.c",
                         "line_start": 42,
                         "line_end": 53,
+                    },
+                    {
+                        "function": "bar",
+                        "file": "src/jq_stage_b_skeleton.c",
+                        "line_start": 60,
+                        "line_end": 70,
                     }
                 ]
             }
@@ -3837,6 +3843,31 @@ class StageBTests(unittest.TestCase):
                     "evidence": {
                         "reference_counts": {"functions": 3, "callsites": 7},
                         "candidate_counts": {"functions": 1, "callsites": 5},
+                        "coverage_gaps": {
+                            "missing_functions": [
+                                {
+                                    "name": "bar",
+                                    "match_key": "bar",
+                                    "callsites": 2,
+                                    "callsite_samples": [{"id": "callsite:bar:2000"}],
+                                }
+                            ],
+                            "incomplete_callsites": [
+                                {
+                                    "name": "foo",
+                                    "match_key": "foo",
+                                    "reference_callsites": 3,
+                                    "candidate_callsites": 1,
+                                    "missing_callsites": 2,
+                                    "reference_callsite_samples": [{"id": "callsite:foo:1000"}],
+                                }
+                            ],
+                            "counts": {
+                                "missing_functions": 1,
+                                "incomplete_callsite_functions": 1,
+                                "missing_callsites": 2,
+                            },
+                        },
                         "candidate_abi": {
                             "candidate": {
                                 "functions": [
@@ -3883,13 +3914,168 @@ class StageBTests(unittest.TestCase):
 
         classes = {item["likely_repair_class"] for item in result}
         self.assertIn("abi_callsite_coverage", classes)
+        self.assertIn("abi_function_coverage", classes)
+        self.assertIn("abi_callsite_function_coverage", classes)
         self.assertIn("hidden_sret_or_out_param", classes)
+        function_item = next(item for item in result if item["likely_repair_class"] == "abi_function_coverage")
+        self.assertEqual(function_item["original_function"], "bar")
+        self.assertEqual(function_item["generated_source_location"]["line_start"], 60)
+        callsite_item = next(item for item in result if item["likely_repair_class"] == "abi_callsite_function_coverage")
+        self.assertEqual(callsite_item["original_function"], "foo")
+        self.assertEqual(callsite_item["generated_source_location"]["line_start"], 42)
         hidden_item = next(item for item in result if item["likely_repair_class"] == "hidden_sret_or_out_param")
         self.assertEqual(hidden_item["original_function"], "foo")
         self.assertEqual(hidden_item["generated_source_location"]["file"], "src/jq_stage_b_skeleton.c")
         self.assertEqual(hidden_item["generated_source_location"]["line_start"], 42)
         coverage_item = next(item for item in result if item["likely_repair_class"] == "abi_callsite_coverage")
         self.assertEqual(coverage_item["evidence"]["missing"], {"functions": 2, "callsites": 2})
+        self.assertEqual(
+            coverage_item["evidence"]["coverage_gap_counts"],
+            {"missing_functions": 1, "incomplete_callsite_functions": 1, "missing_callsites": 2},
+        )
+        self.assertIn("1 named missing functions", coverage_item["next_action"])
+        self.assertLess(function_item["rank"], coverage_item["rank"])
+
+    def test_explain_delta_classifies_stack_out_param_or_scratch_buffer(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 1, "callsites": 1},
+                        "candidate_counts": {"functions": 1, "callsites": 1},
+                        "candidate_abi": {
+                            "candidate": {
+                                "functions": [
+                                    {
+                                        "name": "stack_bridge",
+                                        "callsites": [
+                                            {
+                                                "id": "callsite:stack_bridge:1000",
+                                                "block_id": "stack_bridge",
+                                                "target": {"kind": "direct", "target_rva": 0x2000},
+                                                "hidden_sret_or_out_param_evidence": {
+                                                    "status": "candidate",
+                                                    "address_role": "stack_out_param_or_scratch_buffer",
+                                                    "address_source": {"kind": "address", "address_class": "stack_address"},
+                                                },
+                                                "varargs_evidence": {"status": "not_observed"},
+                                                "function_pointer_targets": [],
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {"function": "stack_bridge", "file": "src/out.c", "line_start": 30, "line_end": 40}
+                    ]
+                }
+            },
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["likely_repair_class"], "stack_out_param_or_scratch_buffer")
+        self.assertEqual(result[0]["original_function"], "stack_bridge")
+        self.assertEqual(result[0]["generated_source_location"]["line_start"], 30)
+        self.assertIn("stack out-param/scratch-buffer", result[0]["next_action"])
+
+    def test_explain_delta_classifies_indirect_call_source_roles(self):
+        skeleton = {
+            "source_map": {
+                "functions": [
+                    {"function": "global_slot", "file": "src/out.c", "line_start": 10, "line_end": 15},
+                    {"function": "argument_table", "file": "src/out.c", "line_start": 20, "line_end": 25},
+                ]
+            }
+        }
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "contract_status": "satisfied",
+                    "evidence": {
+                        "reference_counts": {"functions": 2, "callsites": 2},
+                        "candidate_counts": {"functions": 2, "callsites": 2},
+                        "candidate_abi": {
+                            "candidate": {
+                                "functions": [
+                                    {
+                                        "name": "global_slot",
+                                        "callsites": [
+                                            {
+                                                "id": "callsite:global_slot:1000",
+                                                "block_id": "global_slot",
+                                                "target": {
+                                                    "kind": "function_pointer",
+                                                    "operand": "eax",
+                                                    "memory_role": "global_writable_pointer_slot",
+                                                },
+                                                "function_pointer_targets": [
+                                                    {"status": "unresolved", "operand": "eax", "memory_role": "global_writable_pointer_slot"}
+                                                ],
+                                                "hidden_sret_or_out_param_evidence": {"status": "unknown"},
+                                                "varargs_evidence": {"status": "not_observed"},
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "name": "argument_table",
+                                        "callsites": [
+                                            {
+                                                "id": "callsite:argument_table:1010",
+                                                "block_id": "argument_table",
+                                                "target": {
+                                                    "kind": "function_pointer",
+                                                    "operand": "eax",
+                                                    "memory_role": "argument_pointer_deref",
+                                                },
+                                                "function_pointer_targets": [
+                                                    {"status": "unresolved", "operand": "eax", "memory_role": "argument_pointer_deref"}
+                                                ],
+                                                "hidden_sret_or_out_param_evidence": {"status": "unknown"},
+                                                "varargs_evidence": {"status": "not_observed"},
+                                            }
+                                        ],
+                                    },
+                                ]
+                            }
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton=skeleton,
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        by_function = {item["original_function"]: item for item in result}
+        self.assertEqual(by_function["global_slot"]["likely_repair_class"], "global_callback_slot")
+        self.assertIn("global callback", by_function["global_slot"]["next_action"])
+        self.assertEqual(by_function["global_slot"]["generated_source_location"]["line_start"], 10)
+        self.assertEqual(by_function["argument_table"]["likely_repair_class"], "argument_callback_table")
+        self.assertIn("callback table/prototype", by_function["argument_table"]["next_action"])
+        self.assertEqual(by_function["argument_table"]["generated_source_location"]["line_start"], 20)
 
     def test_explain_delta_keeps_unmapped_candidate_crash_as_crash_localization_work(self):
         result = _stage_b_delta_repair_items(
@@ -3912,6 +4098,100 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(result[0]["likely_repair_class"], "candidate_crash_unmapped")
         self.assertIsNone(result[0]["original_function"])
         self.assertIn("module, RVA, or backtrace", result[0]["next_action"])
+
+    def test_explain_delta_maps_candidate_crash_pc_inside_image_to_source(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {"function": "crashing_func", "file": "src/out.c", "line_start": 70, "line_end": 80}
+                    ]
+                }
+            },
+            candidate_functions=[
+                {"name": "crashing_func", "rva_start": 0x1000, "rva_end": 0x1100},
+            ],
+            candidate_binary={"image_base": 0x400000, "size_of_image": 0x20000},
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "instruction_address": "0x401020",
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["violated_contract_family"], "candidate_crash")
+        self.assertEqual(result[0]["likely_repair_class"], "stack_delta_mismatch")
+        self.assertEqual(result[0]["original_function"], "crashing_func")
+        self.assertEqual(result[0]["generated_source_location"]["line_start"], 70)
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["classification"], "inside_candidate_image")
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["rva"], 0x1020)
+
+    def test_explain_delta_ranks_external_module_crash_behind_source_mapped_abi_repairs(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 1, "callsites": 1},
+                        "candidate_counts": {"functions": 1, "callsites": 1},
+                        "candidate_abi": {
+                            "candidate": {
+                                "functions": [
+                                    {
+                                        "name": "needs_abi_fix",
+                                        "callsites": [
+                                            {
+                                                "id": "callsite:needs_abi_fix:1000",
+                                                "block_id": "needs_abi_fix",
+                                                "target": {"kind": "direct", "target_rva": 0x2000},
+                                                "argument_sources": [],
+                                                "hidden_sret_or_out_param_evidence": {
+                                                    "status": "candidate",
+                                                    "reason": "test",
+                                                },
+                                                "varargs_evidence": {"status": "not_observed"},
+                                                "function_pointer_targets": [],
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {"function": "needs_abi_fix", "file": "src/out.c", "line_start": 20, "line_end": 30}
+                    ]
+                }
+            },
+            candidate_functions=[],
+            candidate_binary={"image_base": 0x400000, "size_of_image": 0x20000},
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "instruction_address": "0x7BB48767",
+            },
+            functional=None,
+        )
+
+        hidden_item = next(item for item in result if item["likely_repair_class"] == "hidden_sret_or_out_param")
+        crash_item = next(item for item in result if item["likely_repair_class"] == "candidate_crash_external_module")
+        self.assertLess(hidden_item["rank"], crash_item["rank"])
+        self.assertIsNone(crash_item["original_function"])
+        self.assertIn("outside the candidate image", crash_item["next_action"])
+        self.assertEqual(crash_item["evidence"]["candidate_location"]["classification"], "outside_candidate_image")
 
     def test_validate_candidate_reports_stage_a_failure_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
