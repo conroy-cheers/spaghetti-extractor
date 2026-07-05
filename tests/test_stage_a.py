@@ -7,7 +7,15 @@ from unittest import mock
 
 from haloce_catalog import cli as catalog_cli
 from haloce_catalog import stage_a
-from haloce_catalog.stage_a import STAGE_A_MODEL_ID, stage_a_generate_map, stage_a_validate
+from haloce_catalog.stage_a import (
+    STAGE_A_MODEL_ID,
+    stage_a_diff_obligations,
+    stage_a_explain_obligations,
+    stage_a_export_reference_contract,
+    stage_a_generate_map,
+    stage_a_smoke_contract,
+    stage_a_validate,
+)
 
 
 class StageAValidateTests(unittest.TestCase):
@@ -423,6 +431,62 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(edge_blocker["category"], "unmapped_cfg_edge")
             self.assertEqual(edge_blocker["details"]["original_edge"]["target_rva"], 0x1003)
 
+    def test_checked_generated_proof_does_not_bypass_unsplit_cfg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = b"\x83\xf8\x00\x74\x01\xc3\xc3"  # cmp eax, 0; je 0x1006; ret; ret
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = root / "block-map.json"
+            entry = self._mapping_entry(size=len(code), block_id="entry")
+            entry["proof"] = {
+                "rule": "reproducible_jq_same_source_optimization_pair_v1",
+                "checked": True,
+                "function": "entry",
+            }
+            mapping.write_text(json.dumps({"blocks": [entry]}), encoding="utf-8")
+            out = root / "report"
+
+            result = stage_a_validate(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=out,
+            )
+
+            self.assertEqual(result["verdict"], "incomplete")
+            obligation = self._obligation(out, "structure:entry:original:unsplit:1003")
+            self.assertEqual(obligation["kind"], "block_structure")
+            self.assertEqual(obligation["incomplete"]["category"], "unsplit_basic_block")
+
+    def test_checked_generated_proof_does_not_bypass_indirect_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xff\xe0")  # jmp eax
+            candidate = self._write_pe(root / "candidate.exe", b"\xff\xe0")
+            mapping = root / "block-map.json"
+            entry = self._mapping_entry(size=2, block_id="entry")
+            entry["proof"] = {
+                "rule": "reproducible_jq_same_source_optimization_pair_v1",
+                "checked": True,
+                "function": "entry",
+            }
+            mapping.write_text(json.dumps({"blocks": [entry]}), encoding="utf-8")
+            out = root / "report"
+
+            result = stage_a_validate(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=out,
+            )
+
+            self.assertEqual(result["verdict"], "incomplete")
+            obligation = self._obligation(out, "structure:entry:original:unknown-target:1000")
+            self.assertEqual(obligation["incomplete"]["category"], "unknown_target")
+
     @unittest.skipUnless(stage_a._import_z3() is not None, "requires Python Z3 bindings")
     def test_memory_read_equivalence_allows_different_block_sizes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -710,6 +774,45 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(failure["details"]["mismatch"]["observable"], "external_events")
             self.assertEqual(failure["details"]["smt_status"], "sat")
 
+    def test_import_thunk_equivalence_uses_import_signature_not_iat_rva_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_import_pe(root / "original.exe", b"\xff\x25\x40\x20\x40\x00", "GetTickCount", iat_offset=0x40)
+            candidate = self._write_import_pe(root / "candidate.exe", b"\xff\x25\x44\x20\x40\x00", "GetTickCount", iat_offset=0x44)
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                **self._mapping_entry(size=6),
+                                "source": {
+                                    "kind": "import_thunk",
+                                    "import_signature": {"dll": "kernel32.dll", "symbol": "GetTickCount", "ordinal": None},
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = root / "report"
+
+            with self._mock_lean_checked():
+                result = stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=mapping,
+                    model=STAGE_A_MODEL_ID,
+                    out=out,
+                )
+
+            self.assertEqual(result["verdict"], "pass")
+            obligation = self._obligation(out, "block:entry")
+            self.assertEqual(obligation["proof_rule"], "pe_import_thunk_equivalence_v1")
+            self.assertEqual(obligation["original"]["import_signature"], obligation["candidate"]["import_signature"])
+            self.assertNotEqual(obligation["original"]["sha256"], obligation["candidate"]["sha256"])
+
     def test_missing_z3_makes_non_identical_symbolic_obligation_incomplete(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -774,6 +877,41 @@ class StageAValidateTests(unittest.TestCase):
             unmapped = [item for item in obligations if item["status"] == "unmapped"]
             self.assertEqual(len(unmapped), 2)
             self.assertEqual({item["binary"] for item in unmapped}, {"original", "candidate"})
+
+    def test_hand_authored_non_padding_waiver_is_incomplete_and_unmapped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3\xc3")
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [self._mapping_entry(size=1, block_id="entry")],
+                        "waivers": [
+                            {"id": "ret-is-not-padding", "binary": "both", "rva": 0x1001, "size": 1, "reason": "bad waiver"}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = root / "report"
+
+            result = stage_a_validate(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=out,
+            )
+
+            self.assertEqual(result["verdict"], "incomplete")
+            waiver = self._obligation(out, "waiver:ret-is-not-padding:both:1001-1002")
+            self.assertEqual(waiver["status"], "incomplete")
+            self.assertEqual(waiver["incomplete"]["category"], "unverified_noncode_waiver")
+            obligations = json.loads((out / "obligations.json").read_text(encoding="utf-8"))["obligations"]
+            unmapped = [item for item in obligations if item["status"] == "unmapped"]
+            self.assertEqual({(item["binary"], item["rva_start"], item["rva_end"]) for item in unmapped}, {("original", 0x1001, 0x1002), ("candidate", 0x1001, 0x1002)})
 
     def test_duplicate_mapping_id_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -902,7 +1040,7 @@ class StageAValidateTests(unittest.TestCase):
                 out=mapping,
                 layout_contract_out=layout,
                 original_flags="-O2 test",
-                candidate_flags="-O0 test",
+                candidate_flags="-O2 -falign-functions=32 test",
             )
 
             self.assertEqual(result["status"], "pass")
@@ -911,9 +1049,461 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(payload["counts"]["blocks"], 2)
             self.assertIn("section-gap--text-0000", {block["id"] for block in payload["blocks"]})
             self.assertEqual(payload["blocks"][0]["proof"]["original_flags"], "-O2 test")
-            self.assertEqual(payload["blocks"][0]["proof"]["candidate_flags"], "-O0 test")
+            self.assertEqual(payload["blocks"][0]["proof"]["candidate_flags"], "-O2 -falign-functions=32 test")
             contract = json.loads(layout.read_text(encoding="utf-8"))
             self.assertTrue(contract["facts"]["all_executable_bytes_classified"])
+            self.assertTrue(contract["facts"]["matching_section_rvas"])
+            self.assertTrue(contract["facts"]["matching_normalized_executable_section_spans"])
+
+    def test_stage_a_generate_map_splits_basic_blocks_and_uses_cfg_reachability(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = b"\x83\xf8\x00\x74\x01\xc3\xc3"  # cmp eax, 0; je 0x1006; ret; ret
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                branchy\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                branchy\n", encoding="utf-8")
+            mapping = root / "jq-block-map.json"
+
+            generated = stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=mapping,
+            )
+
+            self.assertEqual(generated["status"], "pass")
+            payload = json.loads(mapping.read_text(encoding="utf-8"))
+            self.assertEqual(len(payload["blocks"]), 3)
+            self.assertIn("root", payload["blocks"][0])
+            self.assertNotIn("root", payload["blocks"][1])
+            self.assertNotIn("root", payload["blocks"][2])
+
+            with self._mock_lean_checked():
+                result = stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=mapping,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                )
+
+            self.assertEqual(result["verdict"], "pass")
+            reachability = self._obligation(root / "report", "reachability:branchy-0001")
+            self.assertEqual(reachability["proof_rule"], "direct_cfg_reachability_v1")
+
+    def test_stage_a_generate_map_reports_block_shapes_for_ambiguous_function_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3\xc3\xc3\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\x74\x01\xc3\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                branchy\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                branchy\n", encoding="utf-8")
+
+            result = stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=root / "jq-block-map.json",
+            )
+
+            self.assertEqual(result["status"], "incomplete")
+            issue = next(issue for issue in result["issues"] if issue["category"] == "ambiguous_block_match")
+            details = issue["details"]
+            self.assertEqual(details["function"], "branchy")
+            self.assertEqual(details["original_blocks"], 1)
+            self.assertEqual(details["candidate_blocks"], 3)
+            self.assertEqual(details["block_count_delta"], 2)
+            self.assertEqual(details["original_block_shapes"]["items"][0]["terminal_instruction"]["mnemonic"], "ret")
+            self.assertEqual(details["candidate_block_shapes"]["items"][0]["terminal_instruction"]["mnemonic"], "je")
+            self.assertEqual(details["candidate_block_shapes"]["items"][0]["direct_edge_counts"], {"taken": 1, "fallthrough": 1})
+            self.assertEqual(details["candidate_block_shapes"]["items"][0]["direct_edges"][0]["target_rva"], 0x1003)
+
+    def test_stage_a_generate_map_rejects_duplicate_linker_map_function_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text(
+                "                0x00401000                duplicate\n"
+                "                0x00401001                duplicate\n",
+                encoding="utf-8",
+            )
+            candidate_map.write_text(
+                "                0x00401000                duplicate\n"
+                "                0x00401001                duplicate\n",
+                encoding="utf-8",
+            )
+
+            result = stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=root / "jq-block-map.json",
+            )
+
+            self.assertEqual(result["status"], "incomplete")
+            self.assertIn("ambiguous_linker_map", {issue["category"] for issue in result["issues"]})
+
+    def test_stage_a_generate_map_matches_unique_decorated_function_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                __mingw_printf\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                ___mingw_printf@0\n", encoding="utf-8")
+
+            result = stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=root / "jq-block-map.json",
+            )
+
+            self.assertEqual(result["status"], "pass")
+            block = result["blocks"][0]
+            self.assertEqual(block["source"]["function"], "__mingw_printf")
+            self.assertEqual(block["source"]["candidate_function"], "___mingw_printf@0")
+            self.assertEqual(block["source"]["function_match_key"], "mingw_printf")
+
+    def test_stage_a_generate_map_rejects_duplicate_canonical_function_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text(
+                "                0x00401000                __same\n"
+                "                0x00401001                ___same@0\n",
+                encoding="utf-8",
+            )
+            candidate_map.write_text("                0x00401000                ____same\n", encoding="utf-8")
+
+            result = stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=root / "jq-block-map.json",
+            )
+
+            self.assertEqual(result["status"], "incomplete")
+            duplicate_key_issues = [
+                issue
+                for issue in result["issues"]
+                if issue.get("obligation_id") == "jq-map:alias:same"
+            ]
+            self.assertEqual(len(duplicate_key_issues), 1)
+
+    def test_stage_a_generate_map_matches_unique_import_thunks_by_import_signature(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_import_pe(root / "original.exe", b"\xff\x25\x40\x20\x40\x00", "GetTickCount", iat_offset=0x40)
+            candidate = self._write_import_pe(root / "candidate.exe", b"\xff\x25\x44\x20\x40\x00", "GetTickCount", iat_offset=0x44)
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                _GetTickCount@0\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                imported_GetTickCount\n", encoding="utf-8")
+            mapping = root / "jq-block-map.json"
+
+            result = stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=mapping,
+            )
+
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(len(result["blocks"]), 1)
+            block = result["blocks"][0]
+            self.assertEqual(block["source"]["kind"], "import_thunk")
+            self.assertEqual(block["source"]["function"], "_GetTickCount@0")
+            self.assertEqual(block["source"]["candidate_function"], "imported_GetTickCount")
+            self.assertEqual(block["source"]["import_signature"]["symbol"], "GetTickCount")
+
+            with self._mock_lean_checked():
+                validation = stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=mapping,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                )
+
+            self.assertEqual(validation["verdict"], "pass")
+            self.assertEqual(self._obligation(root / "report", f"block:{block['id']}")["proof_rule"], "pe_import_thunk_equivalence_v1")
+
+    def test_stage_a_generate_map_rejects_ambiguous_import_thunk_signature_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            thunk = b"\xff\x25\x40\x20\x40\x00"
+            original = self._write_import_pe(root / "original.exe", thunk + b"\x90" * 6, "GetTickCount")
+            candidate = self._write_import_pe(root / "candidate.exe", thunk + thunk, "GetTickCount")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                original_import\n", encoding="utf-8")
+            candidate_map.write_text(
+                "                0x00401000                candidate_import_a\n"
+                "                0x00401006                candidate_import_b\n",
+                encoding="utf-8",
+            )
+
+            result = stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=root / "jq-block-map.json",
+            )
+
+            self.assertEqual(result["status"], "incomplete")
+            self.assertIn("ambiguous_import_thunk_match", {issue["category"] for issue in result["issues"]})
+
+    def test_stage_a_generate_map_writes_reproducible_layout_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\x50\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\x50\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401001                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401001                tiny\n", encoding="utf-8")
+            layout_a = root / "layout-a.json"
+            layout_b = root / "layout-b.json"
+
+            for out, layout in ((root / "map-a.json", layout_a), (root / "map-b.json", layout_b)):
+                result = stage_a_generate_map(
+                    original=original,
+                    candidate=candidate,
+                    linker_map_original=original_map,
+                    linker_map_candidate=candidate_map,
+                    out=out,
+                    layout_contract_out=layout,
+                )
+                self.assertEqual(result["status"], "pass")
+
+            self.assertEqual(layout_a.read_bytes(), layout_b.read_bytes())
+
+    def test_stage_a_export_reference_contract_records_binary_faithfulness_constraints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            self.assertEqual(result["format"], "stage-a-reference-contract-v1")
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(result["constraints"]["proof_obligation_inventory"]["status"], "satisfied")
+            self.assertEqual(result["constraints"]["executable_byte_coverage"]["status"], "satisfied")
+            self.assertEqual(result["constraints"]["layout_normalization_assumptions"]["status"], "satisfied")
+            self.assertEqual(result["constraints"]["validation_report_artifact_binding"]["status"], "satisfied")
+            self.assertTrue(result["constraints"]["validation_report_artifact_binding"]["facts"]["matching_mapping_payload"])
+            self.assertEqual(result["constraints"]["function_ranges"]["functions"][0]["name"], "tiny")
+            self.assertIn("relocations", result["original"])
+            self.assertTrue((root / "reference-contract.json").exists())
+            for family in result["families"]:
+                self.assertIn(family["status"], {"satisfied", "incomplete", "not_applicable", "violated"})
+                self.assertNotEqual(family["status"], "represented")
+            self.assertEqual(
+                {item["family"]: item["status"] for item in result["families"]}["proof_inventory"],
+                "satisfied",
+            )
+
+            coverage_gaps = json.loads((root / "coverage_gaps.json").read_text(encoding="utf-8"))
+            obligation_index = json.loads((root / "obligation_index.json").read_text(encoding="utf-8"))
+            contract_summary = json.loads((root / "contract_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(coverage_gaps["format"], "stage-a-coverage-gaps-v1")
+            self.assertEqual(coverage_gaps["status"], "pass")
+            self.assertEqual(coverage_gaps["counts"]["gaps"], 0)
+            self.assertEqual(obligation_index["format"], "stage-a-obligation-index-v1")
+            self.assertGreater(obligation_index["counts"]["obligations"], 0)
+            self.assertEqual(contract_summary["format"], "stage-a-contract-summary-v1")
+            by_status = contract_summary["counts"]["by_status"]
+            self.assertEqual(by_status.get("incomplete", 0), 0)
+            self.assertEqual(by_status.get("violated", 0), 0)
+            self.assertEqual(by_status["satisfied"] + by_status["not_applicable"], len(result["families"]))
+
+            smoke = stage_a_smoke_contract(reference_contract=root / "reference-contract.json")
+            self.assertEqual(smoke["status"], "pass")
+
+    def test_stage_a_export_reference_contract_rejects_stale_validation_report_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+
+            self._write_pe(candidate, b"\x90")
+            mutated_map = json.loads(block_map.read_text(encoding="utf-8"))
+            mutated_map["blocks"][0]["id"] = "tiny-stale-map"
+            block_map.write_text(json.dumps(mutated_map, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            self.assertEqual(result["status"], "incomplete")
+            binding = result["constraints"]["validation_report_artifact_binding"]
+            self.assertEqual(binding["status"], "incomplete")
+            self.assertFalse(binding["facts"]["matching_candidate_sha256"])
+            self.assertFalse(binding["facts"]["matching_mapping_payload"])
+            self.assertIn(
+                "validation_report_binary_mismatch",
+                {issue["category"] for issue in binding["issues"]},
+            )
+            self.assertIn(
+                "validation_report_mapping_mismatch",
+                {issue["category"] for issue in binding["issues"]},
+            )
+
+            gaps = json.loads((root / "coverage_gaps.json").read_text(encoding="utf-8"))
+            self.assertEqual(gaps["status"], "incomplete")
+            self.assertIn(
+                "validation_report_artifact_binding",
+                {gap["family"] for gap in gaps["gaps"]},
+            )
+            self.assertEqual(gaps["next_work"][0]["family"], "validation_report_artifact_binding")
+
+            explanation = stage_a_explain_obligations(
+                reference_contract=root / "reference-contract.json",
+                focus="validation_report_binary_mismatch",
+            )
+            self.assertEqual(explanation["status"], "pass")
+            self.assertTrue(explanation["gaps"])
+
+            self._write_pe(candidate, b"\xc3")
+            smoke = stage_a_smoke_contract(reference_contract=root / "reference-contract.json")
+            self.assertEqual(smoke["status"], "incomplete")
+            self.assertIn("stale_bound_artifact", {issue["category"] for issue in smoke["issues"]})
+
+    def test_stage_a_diff_obligations_reports_resolved_contract_gaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            before = root / "before" / "reference-contract.json"
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                layout_contract=layout_contract,
+                out=before,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+            after = root / "after" / "reference-contract.json"
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                out=after,
+            )
+
+            diff = stage_a_diff_obligations(before=before, after=after)
+            self.assertEqual(diff["status"], "pass")
+            self.assertGreater(diff["counts"]["resolved"], 0)
+            self.assertEqual(diff["counts"]["new"], 0)
+            self.assertIn(
+                "validation_report_artifact_binding",
+                {gap["family"] for gap in diff["resolved"]},
+            )
 
     def test_stage_a_generate_map_rejects_import_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -937,11 +1527,11 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(result["status"], "incomplete")
             self.assertIn("layout_mismatch", {issue["category"] for issue in result["issues"]})
 
-    def test_checked_generated_jq_mapping_rule_can_close_large_unsupported_block(self):
+    def test_checked_generated_jq_mapping_rule_can_close_unsupported_local_semantics(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            original = self._write_pe(root / "original.exe", b"\x0f\x0b")
-            candidate = self._write_pe(root / "candidate.exe", b"\xcc\xc3")
+            original = self._write_pe(root / "original.exe", b"\x0f\x0b\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\x0f\x0b\xc3")
             mapping = root / "block-map.json"
             mapping.write_text(
                 json.dumps(
@@ -955,15 +1545,15 @@ class StageAValidateTests(unittest.TestCase):
                                 "kind": "code",
                                 "reachable": True,
                                 "root": {"kind": "linker_map_function", "checked": True, "symbol": "tiny"},
-                                "original": {"rva": 0x1000, "size": 0x200},
-                                "candidate": {"rva": 0x1000, "size": 0x200},
+                                "original": {"rva": 0x1000, "size": 3},
+                                "candidate": {"rva": 0x1000, "size": 3},
                                 "source": {"kind": "linker_map_capstone_block_match_v1", "function": "tiny"},
                                 "proof": {
                                     "rule": "reproducible_jq_same_source_optimization_pair_v1",
                                     "checked": True,
                                     "function": "tiny",
                                     "original_flags": "-O2",
-                                    "candidate_flags": "-O0",
+                                    "candidate_flags": "-O2 -falign-functions=32",
                                 },
                             }
                         ],
@@ -985,6 +1575,30 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(result["verdict"], "pass")
             obligation = self._obligation(out, "block:jq-function")
             self.assertEqual(obligation["proof_rule"], "reproducible_jq_same_source_optimization_pair_v1")
+
+    def test_recovered_cfg_block_root_marker_does_not_prove_reachability(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3\xc3")
+            orphan = self._mapping_entry(rva=0x1001, size=1, block_id="orphan")
+            orphan["root"] = {"kind": "recovered_cfg_block", "checked": True}
+            mapping = root / "block-map.json"
+            mapping.write_text(json.dumps({"blocks": [self._mapping_entry(size=1, block_id="entry"), orphan]}), encoding="utf-8")
+
+            with self._mock_lean_checked():
+                result = stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=mapping,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                )
+
+            self.assertEqual(result["verdict"], "incomplete")
+            reachability = self._obligation(root / "report", "reachability:orphan")
+            self.assertEqual(reachability["status"], "incomplete")
+            self.assertEqual(reachability["incomplete"]["category"], "unproved_reachability")
 
     def test_generated_map_issues_block_final_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1053,8 +1667,8 @@ class StageAValidateTests(unittest.TestCase):
         path.write_bytes(_pe32_image(code, virtual_size=virtual_size))
         return path
 
-    def _write_import_pe(self, path: Path, code: bytes, symbol: str) -> Path:
-        path.write_bytes(_pe32_import_image(code, symbol=symbol))
+    def _write_import_pe(self, path: Path, code: bytes, symbol: str, *, iat_offset: int = 0x40) -> Path:
+        path.write_bytes(_pe32_import_image(code, symbol=symbol, iat_offset=iat_offset))
         return path
 
 
@@ -1134,7 +1748,7 @@ def _pe32_image(code: bytes, *, virtual_size: int | None = None) -> bytes:
     return headers + code.ljust(text_raw_size, b"\0")
 
 
-def _pe32_import_image(code: bytes, *, symbol: str, dll: str = "KERNEL32.dll") -> bytes:
+def _pe32_import_image(code: bytes, *, symbol: str, dll: str = "KERNEL32.dll", iat_offset: int = 0x40) -> bytes:
     file_alignment = 0x200
     section_alignment = 0x1000
     headers_size = 0x200
@@ -1148,13 +1762,13 @@ def _pe32_import_image(code: bytes, *, symbol: str, dll: str = "KERNEL32.dll") -
     size_of_image = _align(idata_rva + idata_raw_size, section_alignment)
 
     int_rva = idata_rva + 0x30
-    iat_rva = idata_rva + 0x40
+    iat_rva = idata_rva + iat_offset
     dll_name_rva = idata_rva + 0x50
     import_name_rva = idata_rva + 0x80
     idata = bytearray(idata_raw_size)
     struct.pack_into("<IIIII", idata, 0x00, int_rva, 0, 0, dll_name_rva, iat_rva)
     struct.pack_into("<II", idata, 0x30, import_name_rva, 0)
-    struct.pack_into("<II", idata, 0x40, import_name_rva, 0)
+    struct.pack_into("<II", idata, iat_offset, import_name_rva, 0)
     idata[0x50 : 0x50 + len(dll) + 1] = dll.encode("ascii") + b"\0"
     name = symbol.encode("ascii")
     struct.pack_into("<H", idata, 0x80, 0)

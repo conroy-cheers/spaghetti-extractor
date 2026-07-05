@@ -18,6 +18,7 @@ import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressIterator;
 import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.block.BasicBlockModel;
@@ -54,6 +55,7 @@ public class HaloCatalogExport extends GhidraScript {
         imageBase = currentProgram.getImageBase().getOffset();
         decompiler = new DecompInterface();
         decompiler.openProgram(currentProgram);
+        ensureExternalEntryPointFunctions();
 
         StringBuilder json = new StringBuilder();
         json.append("{\n");
@@ -116,6 +118,26 @@ public class HaloCatalogExport extends GhidraScript {
             json.append("\n  ");
         }
         json.append("]");
+    }
+
+    private void ensureExternalEntryPointFunctions() throws Exception {
+        AddressIterator iterator = currentProgram.getSymbolTable().getExternalEntryPointIterator();
+        while (iterator.hasNext()) {
+            Address address = iterator.next();
+            if (!inProgramMemory(address)) {
+                continue;
+            }
+            if (currentProgram.getFunctionManager().getFunctionAt(address) != null) {
+                continue;
+            }
+            Symbol symbol = currentProgram.getSymbolTable().getPrimarySymbol(address);
+            String name = symbol == null ? "export_" + Long.toHexString(rva(address)) : symbol.getName();
+            try {
+                createFunction(address, name);
+            } catch (Exception ignored) {
+                // Export coverage checks will report any entrypoint Ghidra still cannot materialize.
+            }
+        }
     }
 
     private void blocks(StringBuilder json) throws Exception {

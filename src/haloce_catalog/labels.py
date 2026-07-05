@@ -9,12 +9,15 @@ from typing import Iterable
 from .util import json_dumps, utc_now
 
 
+_HEX_LABEL_SUFFIX_TRANS = str.maketrans("0123456789abcdef", "abcdefghijklmnop")
+
+
 def stable_label(prefix: str, parts: Iterable[object], *, hint: str | None = None) -> str:
     digest = hashlib.sha1()
     for part in parts:
         digest.update(str(part).encode("utf-8", errors="surrogateescape"))
         digest.update(b"\0")
-    suffix = digest.hexdigest()[:12]
+    suffix = digest.hexdigest()[:12].translate(_HEX_LABEL_SUFFIX_TRANS)
     hint_part = f"_{slug(hint)}" if hint else ""
     return f"{prefix}{hint_part}_{suffix}"
 

@@ -80,7 +80,26 @@ from .routines import (
     upsert_internal_routine_contract,
 )
 from .static_crosscheck import DEFAULT_STATIC_CROSS_CHECK_TOOLS, run_static_cross_checks
-from .stage_a import STAGE_A_MODEL_ID, stage_a_generate_map, stage_a_validate, stage_a_validate_suite
+from .stage_a import (
+    STAGE_A_MODEL_ID,
+    stage_a_diff_obligations,
+    stage_a_explain_obligations,
+    stage_a_export_reference_contract,
+    stage_a_generate_map,
+    stage_a_smoke_contract,
+    stage_a_validate,
+    stage_a_validate_suite,
+)
+from .stage_b import (
+    stage_b_audit_readiness,
+    stage_b_export_decompiler,
+    stage_b_generate_candidate_provenance,
+    stage_b_generate_link_roots,
+    stage_b_generate_skeleton,
+    stage_b_materialize_upstream_suite,
+    stage_b_run_functional_suite,
+    stage_b_validate_candidate,
+)
 from .target import TargetConfig, load_target_config, target_lists_from_metadata
 from .util import utc_now
 from .wine_probe import probe_wine_trace_matrix
@@ -213,9 +232,196 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_a_generate.add_argument("--linker-map-candidate", type=Path, required=True, help="candidate linker map")
     stage_a_generate.add_argument("--original-flags", default="", help="compiler flags used for the original binary")
     stage_a_generate.add_argument("--candidate-flags", default="", help="compiler flags used for the candidate binary")
+    stage_a_generate.add_argument(
+        "--proof-rule",
+        default="reproducible_jq_same_source_optimization_pair_v1",
+        help="checked generated mapping proof rule to stamp onto generated block obligations",
+    )
     stage_a_generate.add_argument("--out", type=Path, required=True, help="output block map JSON")
     stage_a_generate.add_argument("--layout-contract-out", type=Path, help="optional output layout contract JSON")
     stage_a_generate.set_defaults(func=_cmd_stage_a_generate_map)
+
+    stage_a_contract = subcommands.add_parser(
+        "stage-a-export-reference-contract",
+        help="export a reusable Stage A binary-faithfulness contract for Stage B tooling",
+    )
+    stage_a_contract.add_argument("--original", type=Path, required=True, help="original PE binary")
+    stage_a_contract.add_argument("--candidate", type=Path, help="optional candidate PE binary")
+    stage_a_contract.add_argument("--mapping", type=Path, help="optional Stage A block map JSON")
+    stage_a_contract.add_argument("--validation-report", type=Path, help="optional stage-a-validate report directory or JSON")
+    stage_a_contract.add_argument("--layout-contract", type=Path, help="optional Stage A layout contract JSON")
+    stage_a_contract.add_argument("--sidecar-dir", type=Path, help="directory for coverage_gaps/obligation_index/summary sidecars")
+    stage_a_contract.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
+    stage_a_contract.add_argument("--out", type=Path, required=True, help="output reference contract JSON")
+    stage_a_contract.set_defaults(func=_cmd_stage_a_export_reference_contract)
+
+    stage_a_smoke = subcommands.add_parser(
+        "stage-a-smoke-contract",
+        help="fast schema/artifact-binding smoke check for a Stage A reference contract",
+    )
+    stage_a_smoke.add_argument("--reference-contract", type=Path, required=True)
+    stage_a_smoke.add_argument("--out", type=Path)
+    stage_a_smoke.set_defaults(func=_cmd_stage_a_smoke_contract)
+
+    stage_a_explain = subcommands.add_parser(
+        "stage-a-explain-obligations",
+        help="explain Stage A contract gaps and obligations for a focused item",
+    )
+    stage_a_explain.add_argument("--reference-contract", type=Path, required=True)
+    stage_a_explain.add_argument("--focus", required=True, help="function, section, category, obligation id, or gap id")
+    stage_a_explain.add_argument("--out", type=Path)
+    stage_a_explain.set_defaults(func=_cmd_stage_a_explain_obligations)
+
+    stage_a_diff = subcommands.add_parser(
+        "stage-a-diff-obligations",
+        help="diff Stage A contract coverage gaps across two iterations",
+    )
+    stage_a_diff.add_argument("--before", type=Path, required=True)
+    stage_a_diff.add_argument("--after", type=Path, required=True)
+    stage_a_diff.add_argument("--out", type=Path)
+    stage_a_diff.set_defaults(func=_cmd_stage_a_diff_obligations)
+
+    stage_b_generate = subcommands.add_parser(
+        "stage-b-generate-skeleton",
+        help="generate a Stage B clean-room skeleton from PE32 reverse-engineering artifacts",
+    )
+    stage_b_generate.add_argument("--original", type=Path, required=True, help="original PE32 binary")
+    stage_b_generate.add_argument("--linker-map", type=Path, help="optional linker map for named function ranges")
+    stage_b_generate.add_argument("--target-name", required=True, help="target identifier such as jq or ripgrep")
+    stage_b_generate.add_argument("--source-language", choices=["c", "rust"], default="c")
+    stage_b_generate.add_argument("--decompiler-export", type=Path, help="optional decompiler JSON export used as RE evidence")
+    stage_b_generate.add_argument("--reference-contract", type=Path, help="optional Stage A reference contract used for function ranges")
+    stage_b_generate.add_argument(
+        "--coverage-reference-contract",
+        type=Path,
+        help="optional Stage A reference contract used only to audit generated function coverage",
+    )
+    stage_b_generate.add_argument(
+        "--function-name",
+        dest="function_names",
+        action="append",
+        help="limit generated source to a named recovered function; repeatable",
+    )
+    stage_b_generate.add_argument(
+        "--implementation-mode",
+        choices=["scaffold", "decompiled-c"],
+        default="scaffold",
+        help="source generation mode; decompiled-c requires complete decompiler C for every recovered function",
+    )
+    stage_b_generate.add_argument("--out-dir", type=Path, required=True, help="skeleton output directory")
+    stage_b_generate.set_defaults(func=_cmd_stage_b_generate_skeleton)
+
+    stage_b_export = subcommands.add_parser(
+        "stage-b-export-decompiler",
+        help="run Ghidra headless decompiler export directly for a Stage B target PE",
+    )
+    stage_b_export.add_argument("--original", type=Path, required=True, help="original PE binary")
+    stage_b_export.add_argument("--target-name", required=True, help="target identifier such as jq or ripgrep")
+    stage_b_export.add_argument("--out", type=Path, required=True, help="output directory for export JSON and report")
+    stage_b_export.add_argument("--analyze-headless", help="path to analyzeHeadless; defaults to HALOCE_GHIDRA_HEADLESS/PATH")
+    stage_b_export.add_argument("--script-path", type=Path, help="directory containing HaloCatalogExport.java")
+    stage_b_export.add_argument("--project-dir", type=Path, help="Ghidra project directory; defaults under --out")
+    stage_b_export.add_argument("--project-name", default="stage-b-decompiler-export")
+    stage_b_export.add_argument("--timeout-seconds", type=int)
+    stage_b_export.set_defaults(func=_cmd_stage_b_export_decompiler)
+
+    stage_b_materialize = subcommands.add_parser(
+        "stage-b-materialize-upstream-suite",
+        help="materialize a canonical Stage B upstream integration functional suite from source/case artifacts",
+    )
+    stage_b_materialize.add_argument("--target-name", required=True, help="target identifier such as jq or ripgrep")
+    stage_b_materialize.add_argument("--suite-source", type=Path, required=True, help="upstream integration suite source artifact")
+    stage_b_materialize.add_argument("--source-revision", required=True, help="revision or immutable identifier for the upstream suite source")
+    stage_b_materialize.add_argument("--cases", type=Path, required=True, help="JSON case manifest for the upstream integration suite")
+    stage_b_materialize.add_argument("--suite-scope", default="full", choices=["full", "subset"], help="coverage scope for the materialized suite")
+    stage_b_materialize.add_argument("--out", type=Path, required=True, help="suite output directory")
+    stage_b_materialize.set_defaults(func=_cmd_stage_b_materialize_upstream_suite)
+
+    stage_b_functional = subcommands.add_parser(
+        "stage-b-run-functional-suite",
+        help="run original and candidate process commands across a Stage B functional suite and compare outputs",
+    )
+    stage_b_functional.add_argument("--suite", type=Path, required=True, help="Stage B functional suite JSON")
+    stage_b_functional.add_argument("--original-command-json", required=True, help="JSON string list command prefix for the original")
+    stage_b_functional.add_argument("--candidate-command-json", required=True, help="JSON string list command prefix for the candidate")
+    stage_b_functional.add_argument("--original-binary", type=Path, help="original binary expected to be exercised by the command prefix")
+    stage_b_functional.add_argument("--candidate-binary", type=Path, help="candidate binary expected to be exercised by the command prefix")
+    stage_b_functional.add_argument("--timeout-seconds", type=float, default=30.0)
+    stage_b_functional.add_argument("--strip-stderr-line-regex", action="append", default=[], help="drop stderr lines matching this regex before comparing outputs")
+    stage_b_functional.add_argument("--out", type=Path, required=True, help="functional report output directory")
+    stage_b_functional.set_defaults(func=_cmd_stage_b_run_functional_suite)
+
+    stage_b_provenance = subcommands.add_parser(
+        "stage-b-generate-candidate-provenance",
+        help="generate a Stage B candidate provenance manifest from measured skeleton, build, and functional artifacts",
+    )
+    stage_b_provenance.add_argument("--target-name", required=True, help="target identifier such as jq or ripgrep")
+    stage_b_provenance.add_argument("--skeleton-manifest", type=Path, required=True, help="Stage B skeleton manifest JSON")
+    stage_b_provenance.add_argument("--candidate", type=Path, required=True, help="candidate executable")
+    stage_b_provenance.add_argument("--functional-report", type=Path, help="optional Stage B functional report JSON")
+    stage_b_provenance.add_argument("--build-target", required=True, help="target triple used to build the candidate")
+    stage_b_provenance.add_argument("--build-compiler", required=True, help="compiler used to build the candidate")
+    stage_b_provenance.add_argument("--build-output", help="build output path or filename for the candidate executable")
+    stage_b_provenance.add_argument("--build-report", type=Path, help="optional measured build/link report JSON")
+    stage_b_provenance.add_argument(
+        "--target-closure-manifest",
+        type=Path,
+        help="optional stage-b-target-closure-skeletons-v1 manifest for generated target-owned DLL closure sources",
+    )
+    stage_b_provenance.add_argument(
+        "--fixed-up-source",
+        dest="fixed_up_sources",
+        action="append",
+        type=Path,
+        help="source file produced by compile/structure-only cleanup of the generated skeleton; repeatable",
+    )
+    stage_b_provenance.add_argument("--out", type=Path, required=True, help="provenance output directory")
+    stage_b_provenance.set_defaults(func=_cmd_stage_b_generate_candidate_provenance)
+
+    stage_b_link_roots = subcommands.add_parser(
+        "stage-b-generate-link-roots",
+        help="generate linker GC root flags from a Stage A function contract and candidate object symbols",
+    )
+    stage_b_link_roots.add_argument("--original", type=Path, required=True, help="original PE binary")
+    stage_b_link_roots.add_argument("--linker-map-original", type=Path, help="original linker map")
+    stage_b_link_roots.add_argument("--reference-contract", type=Path, help="Stage A reference contract with function_ranges")
+    stage_b_link_roots.add_argument("--skeleton-functions", type=Path, help="Stage B functions.json used to classify missing roots")
+    stage_b_link_roots.add_argument("--object", type=Path, required=True, help="candidate object file to inspect with llvm-nm")
+    stage_b_link_roots.add_argument("--nm", default="llvm-nm", help="nm-compatible tool used to list object symbols")
+    stage_b_link_roots.add_argument("--out", type=Path, required=True, help="output directory for link root artifacts")
+    stage_b_link_roots.set_defaults(func=_cmd_stage_b_generate_link_roots)
+
+    stage_b_validate = subcommands.add_parser(
+        "stage-b-validate-candidate",
+        help="validate a Stage B candidate provenance package and delegate binary equivalence to Stage A",
+    )
+    stage_b_validate.add_argument("--original", type=Path, required=True, help="original PE32 binary")
+    stage_b_validate.add_argument("--candidate", type=Path, required=True, help="candidate PE32 binary")
+    stage_b_validate.add_argument("--linker-map-original", type=Path, required=True, help="original linker map")
+    stage_b_validate.add_argument("--linker-map-candidate", type=Path, required=True, help="candidate linker map")
+    stage_b_validate.add_argument("--skeleton-manifest", type=Path, required=True, help="Stage B skeleton manifest JSON")
+    stage_b_validate.add_argument("--candidate-provenance", type=Path, required=True, help="Stage B candidate provenance JSON")
+    stage_b_validate.add_argument("--functional-report", type=Path, help="checked Stage B functional report JSON")
+    stage_b_validate.add_argument("--reference-contract", type=Path, help="optional Stage A reference contract JSON to report Stage B coverage against")
+    stage_b_validate.add_argument("--target-name", required=True, help="target identifier such as jq or ripgrep")
+    stage_b_validate.add_argument("--original-flags", default="", help="compiler flags used for the original binary")
+    stage_b_validate.add_argument("--candidate-flags", default="", help="compiler flags used for the candidate binary")
+    stage_b_validate.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
+    stage_b_validate.add_argument("--out", type=Path, required=True, help="validation output directory")
+    stage_b_validate.set_defaults(func=_cmd_stage_b_validate_candidate)
+
+    stage_b_audit = subcommands.add_parser(
+        "stage-b-audit-readiness",
+        help="audit jq/ripgrep Stage B validation reports against the full readiness requirements",
+    )
+    stage_b_audit.add_argument(
+        "--report",
+        action="append",
+        default=[],
+        help="target=path to a stage-b.json validation report; repeat for jq and ripgrep",
+    )
+    stage_b_audit.add_argument("--out", type=Path, required=True, help="readiness audit output directory")
+    stage_b_audit.set_defaults(func=_cmd_stage_b_audit_readiness)
 
     private_artifacts = subcommands.add_parser(
         "export-private-artifacts",
@@ -1188,9 +1394,186 @@ def _cmd_stage_a_generate_map(args: Any) -> int:
         layout_contract_out=args.layout_contract_out,
         original_flags=args.original_flags,
         candidate_flags=args.candidate_flags,
+        proof_rule=args.proof_rule,
     )
     _print_json(result)
     return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_a_export_reference_contract(args: Any) -> int:
+    result = stage_a_export_reference_contract(
+        original=args.original,
+        candidate=args.candidate,
+        mapping=args.mapping,
+        validation_report=args.validation_report,
+        layout_contract=args.layout_contract,
+        sidecar_dir=args.sidecar_dir,
+        model=args.model,
+        out=args.out,
+    )
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_a_smoke_contract(args: Any) -> int:
+    result = stage_a_smoke_contract(reference_contract=args.reference_contract, out=args.out)
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_a_explain_obligations(args: Any) -> int:
+    result = stage_a_explain_obligations(reference_contract=args.reference_contract, focus=args.focus, out=args.out)
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_a_diff_obligations(args: Any) -> int:
+    result = stage_a_diff_obligations(before=args.before, after=args.after, out=args.out)
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_b_generate_skeleton(args: Any) -> int:
+    result = stage_b_generate_skeleton(
+        original=args.original,
+        out_dir=args.out_dir,
+        target_name=args.target_name,
+        linker_map=args.linker_map,
+        reference_contract=args.reference_contract,
+        coverage_reference_contract=args.coverage_reference_contract,
+        source_language=args.source_language,
+        decompiler_export=args.decompiler_export,
+        implementation_mode=args.implementation_mode,
+        function_names=args.function_names,
+    )
+    _print_json(result)
+    return 0 if result["status"] == "generated" else 1
+
+
+def _cmd_stage_b_export_decompiler(args: Any) -> int:
+    result = stage_b_export_decompiler(
+        original=args.original,
+        target_name=args.target_name,
+        out=args.out,
+        analyze_headless=args.analyze_headless,
+        script_path=args.script_path,
+        project_dir=args.project_dir,
+        project_name=args.project_name,
+        timeout_seconds=args.timeout_seconds,
+    )
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_b_materialize_upstream_suite(args: Any) -> int:
+    result = stage_b_materialize_upstream_suite(
+        target_name=args.target_name,
+        suite_source=args.suite_source,
+        source_revision=args.source_revision,
+        cases=args.cases,
+        suite_scope=args.suite_scope,
+        out=args.out,
+    )
+    _print_json(result)
+    return 0
+
+
+def _cmd_stage_b_run_functional_suite(args: Any) -> int:
+    result = stage_b_run_functional_suite(
+        suite=args.suite,
+        original_command=_json_string_list(args.original_command_json, "--original-command-json"),
+        candidate_command=_json_string_list(args.candidate_command_json, "--candidate-command-json"),
+        original_binary=args.original_binary,
+        candidate_binary=args.candidate_binary,
+        timeout_seconds=args.timeout_seconds,
+        strip_stderr_line_regexes=tuple(args.strip_stderr_line_regex),
+        out=args.out,
+    )
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_b_generate_candidate_provenance(args: Any) -> int:
+    result = stage_b_generate_candidate_provenance(
+        target_name=args.target_name,
+        skeleton_manifest=args.skeleton_manifest,
+        candidate=args.candidate,
+        functional_report=args.functional_report,
+        build_target=args.build_target,
+        build_compiler=args.build_compiler,
+        build_output=args.build_output,
+        build_report=args.build_report,
+        target_closure_manifest=args.target_closure_manifest,
+        fixed_up_sources=args.fixed_up_sources,
+        out=args.out,
+    )
+    _print_json(result)
+    return 0
+
+
+def _cmd_stage_b_generate_link_roots(args: Any) -> int:
+    result = stage_b_generate_link_roots(
+        original=args.original,
+        linker_map_original=args.linker_map_original,
+        reference_contract=args.reference_contract,
+        skeleton_functions=args.skeleton_functions,
+        object_file=args.object,
+        nm=args.nm,
+        out=args.out,
+    )
+    _print_json(result)
+    return 0
+
+
+def _cmd_stage_b_validate_candidate(args: Any) -> int:
+    result = stage_b_validate_candidate(
+        original=args.original,
+        candidate=args.candidate,
+        linker_map_original=args.linker_map_original,
+        linker_map_candidate=args.linker_map_candidate,
+        skeleton_manifest=args.skeleton_manifest,
+        candidate_provenance=args.candidate_provenance,
+        functional_report=args.functional_report,
+        reference_contract=args.reference_contract,
+        target_name=args.target_name,
+        original_flags=args.original_flags,
+        candidate_flags=args.candidate_flags,
+        model=args.model,
+        out=args.out,
+    )
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_b_audit_readiness(args: Any) -> int:
+    result = stage_b_audit_readiness(reports=_target_path_map(args.report, "--report"), out=args.out)
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _json_string_list(value: str, option_name: str) -> tuple[str, ...]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{option_name} must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        raise SystemExit(f"{option_name} must be a JSON list of strings")
+    return tuple(parsed)
+
+
+def _target_path_map(values: list[str], option_name: str) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for value in values:
+        if "=" not in value:
+            raise SystemExit(f"{option_name} entries must use target=path, got {value!r}")
+        target, path = value.split("=", 1)
+        target = target.strip()
+        if not target:
+            raise SystemExit(f"{option_name} target must not be empty")
+        if target in result:
+            raise SystemExit(f"{option_name} target {target!r} was supplied more than once")
+        result[target] = Path(path)
+    return result
 
 
 def _cmd_export_private_artifacts(args: Any) -> int:

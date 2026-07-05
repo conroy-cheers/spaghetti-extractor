@@ -23,10 +23,36 @@ from .pe import (
     IMAGE_SCN_MEM_WRITE,
     mapped_section_size,
 )
+from .stage_binary import StageAInputError, _artifact_name
 from .util import sha256_bytes, sha256_file, utc_now, write_json
 
 
 STAGE_A_MODEL_ID = "x86-pe32-env-v1"
+STAGE_A_X86_64_MODEL_ID = "x86_64-pe32plus-env-v1"
+STAGE_A_MODEL_SPECS = {
+    STAGE_A_MODEL_ID: {"architecture": "x86", "machine": "i386", "bitness": 32, "magic": 0x10B},
+    STAGE_A_X86_64_MODEL_ID: {"architecture": "x86_64", "machine": "x86_64", "bitness": 64, "magic": 0x20B},
+}
+CHECKED_GENERATED_MAPPING_PROOF_RULES = {
+    "reproducible_jq_same_source_optimization_pair_v1",
+    "reproducible_stage_b_skeleton_reimplementation_v1",
+}
+CHECKED_GENERATED_CFG_SOURCE_KINDS = {
+    "linker_map_capstone_block_match_v1",
+    "paired_executable_section_gap_v1",
+}
+CHECKED_REACHABILITY_ROOT_KINDS = {
+    "fixture_function",
+    "linker_map_function",
+    "linker_map_section_gap",
+}
+NORETURN_IMPORT_SYMBOLS = {
+    "abort",
+    "amsg_exit",
+    "exit",
+    "exitprocess",
+    "terminateprocess",
+}
 OBLIGATION_STATUSES = {
     "proved",
     "failed",
@@ -105,10 +131,6 @@ class NonCodeWaiver:
     reason: str
 
 
-class StageAInputError(ValueError):
-    pass
-
-
 def stage_a_validate(
     *,
     original: Path,
@@ -173,7 +195,7 @@ def stage_a_validate(
             incomplete,
             category="out_of_model",
             blocker=str(exc),
-            next_action="provide valid x86 PE32 original and candidate binaries",
+            next_action="provide valid x86 PE32 or x86_64 PE32+ original and candidate binaries",
         )
         verdict = "incomplete"
         return _write_report(
@@ -195,13 +217,16 @@ def stage_a_validate(
 
     layout = _layout_report(original_bin, candidate_bin, layout_contract_payload)
 
-    if model != STAGE_A_MODEL_ID:
+    if model not in STAGE_A_MODEL_SPECS:
         _record_incomplete(
             incomplete,
             category="unsupported_model",
             blocker=f"unsupported Stage A model {model!r}",
-            next_action=f"rerun with --model {STAGE_A_MODEL_ID} or add a model implementation",
+            next_action=f"rerun with --model {STAGE_A_MODEL_ID}, --model {STAGE_A_X86_64_MODEL_ID}, or add a model implementation",
         )
+    else:
+        model_issues = _model_binary_issues(model, original_bin, candidate_bin)
+        incomplete.extend(model_issues)
 
     for issue in _layout_issues(original_bin, candidate_bin, layout_contract_payload):
         if issue["severity"] == "fail":
@@ -217,9 +242,15 @@ def stage_a_validate(
         else:
             incomplete.append(issue)
 
-    obligations.extend(_waiver_obligations(waivers))
-    obligations.extend(_coverage_obligations("original", original_bin, mappings, waivers, incomplete))
-    obligations.extend(_coverage_obligations("candidate", candidate_bin, mappings, waivers, incomplete))
+    verified_waivers, waiver_obligations = _waiver_obligations(original_bin, candidate_bin, waivers)
+    obligations.extend(waiver_obligations)
+    for obligation in waiver_obligations:
+        if obligation["status"] == "incomplete":
+            blocker = obligation["incomplete"]
+            incomplete.append(blocker)
+            _write_incomplete_artifact(out, blocker)
+    obligations.extend(_coverage_obligations("original", original_bin, mappings, verified_waivers, incomplete))
+    obligations.extend(_coverage_obligations("candidate", candidate_bin, mappings, verified_waivers, incomplete))
 
     invariant_issues = _invariant_issues(invariant_payload, mappings)
     incomplete.extend(invariant_issues)
@@ -370,28 +401,93 @@ def stage_a_generate_map(
     layout_contract_out: Path | None = None,
     original_flags: str = "",
     candidate_flags: str = "",
+    proof_rule: str = "reproducible_jq_same_source_optimization_pair_v1",
+    proof_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if proof_rule not in CHECKED_GENERATED_MAPPING_PROOF_RULES:
+        raise StageAInputError(f"unsupported generated mapping proof rule {proof_rule!r}")
     original_bin = _parse_stage_a_pe(original)
     candidate_bin = _parse_stage_a_pe(candidate)
     original_functions = _parse_linker_map_functions(linker_map_original, original_bin)
     candidate_functions = _parse_linker_map_functions(linker_map_candidate, candidate_bin)
     issues = _jq_map_layout_issues(original_bin, candidate_bin)
+    issues.extend(_generated_mapping_proof_metadata_issues(proof_rule, proof_metadata))
     issues.extend(_linker_function_issues("original", original_functions))
     issues.extend(_linker_function_issues("candidate", candidate_functions))
 
-    original_by_name = _unique_functions_by_name(original_functions)
-    candidate_by_name = _unique_functions_by_name(candidate_functions)
-    blocks: list[dict[str, Any]] = []
-    unmatched_original: list[str] = []
-    unmatched_candidate = set(candidate_by_name)
-
-    for name in sorted(original_by_name):
-        original_fn = original_by_name[name]
-        candidate_fn = candidate_by_name.get(name)
-        if candidate_fn is None:
-            unmatched_original.append(name)
+    matched_functions, unmatched_original, unmatched_candidate, match_issues = _match_linker_functions_by_name_or_unique_alias(
+        original_functions,
+        candidate_functions,
+    )
+    issues.extend(match_issues)
+    import_thunk_matches, _, _, import_thunk_issues = _match_import_thunk_functions_by_signature(
+        original_bin,
+        candidate_bin,
+        original_functions,
+        candidate_functions,
+        sorted(_unique_functions_by_name(original_functions)),
+        sorted(_unique_functions_by_name(candidate_functions)),
+    )
+    issues.extend(import_thunk_issues)
+    import_matched_original = {str(original_thunk["function"]["name"]) for original_thunk, _ in import_thunk_matches}
+    import_matched_candidate = {str(candidate_thunk["function"]["name"]) for _, candidate_thunk in import_thunk_matches}
+    filtered_matched_functions: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+    released_original: set[str] = set()
+    released_candidate: set[str] = set()
+    for original_fn, candidate_fn, match_key in matched_functions:
+        original_name = str(original_fn["name"])
+        candidate_name = str(candidate_fn["name"])
+        if original_name in import_matched_original or candidate_name in import_matched_candidate:
+            if original_name not in import_matched_original:
+                released_original.add(original_name)
+            if candidate_name not in import_matched_candidate:
+                released_candidate.add(candidate_name)
             continue
-        unmatched_candidate.discard(name)
+        filtered_matched_functions.append((original_fn, candidate_fn, match_key))
+    matched_functions = filtered_matched_functions
+    unmatched_original = sorted((set(unmatched_original) | released_original) - import_matched_original)
+    unmatched_candidate = sorted((set(unmatched_candidate) | released_candidate) - import_matched_candidate)
+    blocks: list[dict[str, Any]] = []
+
+    for original_thunk, candidate_thunk in import_thunk_matches:
+        blocks.append(
+            _import_thunk_block_entry(
+                original_thunk,
+                candidate_thunk,
+                match_key=_import_thunk_match_key(original_thunk["import"]),
+            )
+        )
+
+    for original_fn, candidate_fn, match_key in sorted(matched_functions, key=lambda item: str(item[0]["name"])):
+        name = str(original_fn["name"])
+        candidate_name = str(candidate_fn["name"])
+        original_thunk = _linker_function_import_thunk_evidence(original_bin, original_fn)
+        candidate_thunk = _linker_function_import_thunk_evidence(candidate_bin, candidate_fn)
+        if original_thunk is not None or candidate_thunk is not None:
+            if original_thunk is not None and candidate_thunk is not None and original_thunk["signature_key"] == candidate_thunk["signature_key"]:
+                blocks.append(
+                    _import_thunk_block_entry(
+                        original_thunk,
+                        candidate_thunk,
+                        match_key=match_key,
+                    )
+                )
+                continue
+            issues.append(
+                _incomplete_record(
+                    category="ambiguous_import_thunk_match",
+                    obligation_id=f"jq-map:import-thunk:{_artifact_name(name)}",
+                    blocker="matched linker-map functions do not decode as the same PE import thunk",
+                    next_action="preserve import thunk boundaries or add a more specific import-thunk matching rule",
+                    details={
+                        "function": name,
+                        "candidate_function": candidate_name,
+                        "original": _import_thunk_match_report(original_thunk),
+                        "candidate": _import_thunk_match_report(candidate_thunk),
+                    },
+                )
+            )
+            continue
         original_blocks = _recover_basic_blocks(original_bin, original_fn["rva_start"], original_fn["rva_end"])
         candidate_blocks = _recover_basic_blocks(candidate_bin, candidate_fn["rva_start"], candidate_fn["rva_end"])
         matched, block_issues = _match_function_blocks(name, original_bin, candidate_bin, original_blocks, candidate_blocks)
@@ -402,25 +498,26 @@ def stage_a_generate_map(
                 "id": block_id,
                 "kind": "code",
                 "reachable": True,
-                "root": {"kind": "linker_map_function", "checked": True, "symbol": name}
-                if index == 0
-                else {"kind": "recovered_cfg_block", "checked": True, "symbol": name},
                 "original": {"rva": original_block["rva_start"], "size": original_block["rva_end"] - original_block["rva_start"]},
                 "candidate": {"rva": candidate_block["rva_start"], "size": candidate_block["rva_end"] - candidate_block["rva_start"]},
                 "source": {
                     "kind": "linker_map_capstone_block_match_v1",
                     "function": name,
+                    "candidate_function": candidate_name,
+                    "function_match_key": match_key,
                     "function_block_index": index,
                     "match": original_block["match_key"],
                 },
-                "proof": {
-                    "rule": "reproducible_jq_same_source_optimization_pair_v1",
-                    "checked": True,
-                    "function": name,
-                    "original_flags": original_flags,
-                    "candidate_flags": candidate_flags,
-                },
+                "proof": _generated_mapping_proof(
+                    proof_rule=proof_rule,
+                    function=name,
+                    original_flags=original_flags,
+                    candidate_flags=candidate_flags,
+                    proof_metadata=proof_metadata,
+                ),
             }
+            if index == 0:
+                entry["root"] = {"kind": "linker_map_function", "checked": True, "symbol": name}
             if original_block["bytes_sha256"] == candidate_block["bytes_sha256"]:
                 entry["source"]["byte_identical"] = True
             blocks.append(entry)
@@ -430,7 +527,7 @@ def stage_a_generate_map(
             _incomplete_record(
                 category="missing_linker_map_entry",
                 obligation_id="jq-map:unmatched-original-functions",
-                blocker="original linker-map functions have no candidate function with the same name",
+                blocker="original linker-map functions have no candidate function with the same canonical name",
                 next_action="add a stronger jq function matcher or verify the build flags preserve these functions",
                 details={"functions": unmatched_original[:200], "count": len(unmatched_original)},
             )
@@ -440,9 +537,12 @@ def stage_a_generate_map(
             _incomplete_record(
                 category="missing_linker_map_entry",
                 obligation_id="jq-map:unmatched-candidate-functions",
-                blocker="candidate linker-map functions have no original function with the same name",
+                blocker="candidate linker-map functions have no original function with the same canonical name",
                 next_action="add a stronger jq function matcher or verify the build flags preserve these functions",
-                details={"functions": sorted(unmatched_candidate)[:200], "count": len(unmatched_candidate)},
+                details={
+                    "functions": sorted(unmatched_candidate)[:200],
+                    "count": len(unmatched_candidate),
+                },
             )
         )
 
@@ -452,6 +552,8 @@ def stage_a_generate_map(
         blocks,
         original_flags=original_flags,
         candidate_flags=candidate_flags,
+        proof_rule=proof_rule,
+        proof_metadata=proof_metadata,
     )
     blocks.extend(gap_blocks)
     issues.extend(gap_issues)
@@ -484,6 +586,206 @@ def stage_a_generate_map(
         write_json(layout_contract_out, layout_contract)
     map_payload["layout_contract"] = layout_contract if layout_contract_out is None else str(layout_contract_out)
     return map_payload
+
+
+def stage_a_export_reference_contract(
+    *,
+    original: Path,
+    out: Path,
+    candidate: Path | None = None,
+    mapping: Path | None = None,
+    validation_report: Path | None = None,
+    layout_contract: Path | None = None,
+    sidecar_dir: Path | None = None,
+    model: str = STAGE_A_MODEL_ID,
+) -> dict[str, Any]:
+    original = Path(original)
+    candidate = Path(candidate) if candidate is not None else None
+    mapping = Path(mapping) if mapping is not None else None
+    validation_report = Path(validation_report) if validation_report is not None else None
+    layout_contract = Path(layout_contract) if layout_contract is not None else None
+    out = Path(out)
+    sidecar_dir = Path(sidecar_dir) if sidecar_dir is not None else out.parent
+    out.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+
+    original_bin = _parse_stage_a_pe(original)
+    candidate_bin = _parse_stage_a_pe(candidate) if candidate is not None else None
+    mapping_payload = _load_optional_json(mapping)
+    layout_contract_payload = _load_optional_json(layout_contract)
+    if layout_contract_payload is None:
+        layout_contract_payload = _layout_contract_from_mapping_payload(mapping_payload, mapping)
+    validation_payload = _load_stage_a_validation_report(validation_report)
+    validation_binding = _reference_validation_report_binding_constraint(
+        payload=validation_payload,
+        original=original_bin,
+        candidate=candidate_bin,
+        mapping_payload=mapping_payload,
+        model=model,
+    )
+
+    map_contract = _reference_map_constraints(
+        original=original_bin,
+        candidate=candidate_bin,
+        mapping_payload=mapping_payload,
+    )
+    constraints = {
+        "pe_sections_imports_relocations_image_base": _reference_pe_layout_constraint(
+            original=original_bin,
+            candidate=candidate_bin,
+            layout_contract=layout_contract_payload,
+        ),
+        "executable_byte_coverage": map_contract["executable_byte_coverage"],
+        "function_ranges": map_contract["function_ranges"],
+        "basic_blocks_and_cfg": map_contract["basic_blocks_and_cfg"],
+        "roots_and_jump_tables": map_contract["roots_and_jump_tables"],
+        "import_thunks": _reference_import_thunk_constraint(original_bin, candidate_bin, map_contract),
+        "padding_alignment": map_contract["padding_alignment"],
+        "layout_normalization_assumptions": _reference_layout_normalization_constraint(layout_contract_payload),
+        "validation_report_artifact_binding": validation_binding,
+        "proof_obligation_inventory": _reference_proof_obligation_inventory(validation_payload),
+    }
+    issues = [
+        *_reference_constraint_issues(constraints),
+        *validation_binding.get("issues", []),
+        *map_contract["issues"],
+    ]
+    contract = {
+        "format": "stage-a-reference-contract-v1",
+        "generator": "stage-a-export-reference-contract",
+        "generated_at": utc_now(),
+        "model": model,
+        "status": _reference_contract_status(constraints, issues),
+        "tool_versions": _tool_versions(),
+        "inputs": _reference_contract_inputs(
+            original=original,
+            candidate=candidate,
+            mapping=mapping,
+            validation_report=validation_report,
+            layout_contract=layout_contract,
+        ),
+        "original": _binary_reference_layout(original_bin),
+        "candidate": _binary_reference_layout(candidate_bin) if candidate_bin is not None else None,
+        "constraints": constraints,
+        "families": _reference_contract_families(constraints),
+        "coverage": {
+            "original": constraints["executable_byte_coverage"].get("original"),
+            "candidate": constraints["executable_byte_coverage"].get("candidate"),
+        },
+        "assumptions": {
+            "layout_normalization": constraints["layout_normalization_assumptions"],
+            "unchecked": [],
+        },
+        "issues": issues,
+        "counts": {
+            "issues": len(issues),
+            "functions": len(constraints["function_ranges"].get("functions", [])),
+            "basic_blocks": len(constraints["basic_blocks_and_cfg"].get("basic_blocks", [])),
+            "cfg_edge_sources": len(constraints["basic_blocks_and_cfg"].get("cfg_edges", [])),
+            "proof_obligations": constraints["proof_obligation_inventory"].get("counts", {}).get("obligations", 0),
+        },
+        "sidecars": _reference_contract_sidecar_paths(sidecar_dir, out.parent),
+    }
+    write_json(out, contract)
+    _write_reference_contract_sidecars(contract, out, sidecar_dir)
+    return contract
+
+
+def stage_a_smoke_contract(*, reference_contract: Path, out: Path | None = None) -> dict[str, Any]:
+    reference_contract = Path(reference_contract)
+    contract = _load_json(reference_contract)
+    issues = _stage_a_smoke_contract_issues(contract, reference_contract)
+    result = {
+        "format": "stage-a-contract-smoke-v1",
+        "status": "pass" if not issues else "incomplete",
+        "reference_contract": _reference_input_artifact(reference_contract),
+        "issues": issues,
+        "counts": {"issues": len(issues)},
+    }
+    if out is not None:
+        write_json(Path(out), result)
+    return result
+
+
+def stage_a_explain_obligations(*, reference_contract: Path, focus: str, out: Path | None = None) -> dict[str, Any]:
+    reference_contract = Path(reference_contract)
+    contract = _load_json(reference_contract)
+    sidecars = _load_reference_contract_sidecars(contract, reference_contract)
+    focus_lower = focus.lower()
+    gaps = [
+        item
+        for item in sidecars.get("coverage_gaps", {}).get("gaps", [])
+        if _matches_focus(item, focus_lower)
+    ]
+    obligations = [
+        item
+        for item in sidecars.get("obligation_index", {}).get("obligations", [])
+        if _matches_focus(item, focus_lower)
+    ]
+    families = [
+        item
+        for item in contract.get("families", [])
+        if isinstance(item, dict) and _matches_focus(item, focus_lower)
+    ]
+    result = {
+        "format": "stage-a-obligation-explanation-v1",
+        "status": "pass" if gaps or obligations or families else "incomplete",
+        "focus": focus,
+        "reference_contract": _reference_input_artifact(reference_contract),
+        "families": families,
+        "gaps": gaps,
+        "obligations": obligations,
+        "counts": {"families": len(families), "gaps": len(gaps), "obligations": len(obligations)},
+    }
+    if out is not None:
+        write_json(Path(out), result)
+    return result
+
+
+def stage_a_diff_obligations(*, before: Path, after: Path, out: Path | None = None) -> dict[str, Any]:
+    before = Path(before)
+    after = Path(after)
+    before_contract = _load_json(before)
+    after_contract = _load_json(after)
+    before_sidecars = _load_reference_contract_sidecars(before_contract, before)
+    after_sidecars = _load_reference_contract_sidecars(after_contract, after)
+    before_gaps = {
+        str(item.get("gap_id")): item
+        for item in before_sidecars.get("coverage_gaps", {}).get("gaps", [])
+        if isinstance(item, dict) and item.get("gap_id")
+    }
+    after_gaps = {
+        str(item.get("gap_id")): item
+        for item in after_sidecars.get("coverage_gaps", {}).get("gaps", [])
+        if isinstance(item, dict) and item.get("gap_id")
+    }
+    before_ids = set(before_gaps)
+    after_ids = set(after_gaps)
+    unchanged_ids = before_ids & after_ids
+    regressed_ids = [
+        gap_id
+        for gap_id in unchanged_ids
+        if _gap_severity_rank(after_gaps[gap_id].get("severity")) > _gap_severity_rank(before_gaps[gap_id].get("severity"))
+    ]
+    result = {
+        "format": "stage-a-obligation-diff-v1",
+        "status": "pass",
+        "before": _reference_input_artifact(before),
+        "after": _reference_input_artifact(after),
+        "resolved": [before_gaps[gap_id] for gap_id in sorted(before_ids - after_ids)],
+        "new": [after_gaps[gap_id] for gap_id in sorted(after_ids - before_ids)],
+        "regressed": [after_gaps[gap_id] for gap_id in sorted(regressed_ids)],
+        "unchanged": [after_gaps[gap_id] for gap_id in sorted(unchanged_ids)],
+    }
+    result["counts"] = {
+        "resolved": len(result["resolved"]),
+        "new": len(result["new"]),
+        "regressed": len(result["regressed"]),
+        "unchanged": len(result["unchanged"]),
+    }
+    if out is not None:
+        write_json(Path(out), result)
+    return result
 
 
 def _run_stage_a_suite_case(
@@ -605,10 +907,16 @@ def _parse_stage_a_pe(path: Path) -> StageABinary:
 
     machine = pe.FILE_HEADER.Machine
     magic = pe.OPTIONAL_HEADER.Magic
-    if machine != 0x014C or magic != 0x10B:
+    if machine == 0x014C and magic == 0x10B:
+        machine_name = "i386"
+        bitness = 32
+    elif machine == 0x8664 and magic == 0x20B:
+        machine_name = "x86_64"
+        bitness = 64
+    else:
         machine_name = f"0x{machine:04x}"
         magic_name = f"0x{magic:04x}"
-        raise StageAInputError(f"{path} is out of model: expected x86 PE32, got machine={machine_name} magic={magic_name}")
+        raise StageAInputError(f"{path} is out of model: expected x86 PE32 or x86_64 PE32+, got machine={machine_name} magic={magic_name}")
 
     imports = _imports(pe)
     sections = tuple(_stage_a_section(section) for section in pe.sections)
@@ -616,8 +924,8 @@ def _parse_stage_a_pe(path: Path) -> StageABinary:
         path=path,
         sha256=sha256_file(path),
         size=path.stat().st_size,
-        machine="i386",
-        bitness=32,
+        machine=machine_name,
+        bitness=bitness,
         image_base=int(pe.OPTIONAL_HEADER.ImageBase),
         entrypoint_rva=int(pe.OPTIONAL_HEADER.AddressOfEntryPoint),
         size_of_image=int(pe.OPTIONAL_HEADER.SizeOfImage),
@@ -686,9 +994,9 @@ def _layout_report(
 ) -> dict[str, Any]:
     issues = _layout_issues(original, candidate, layout_contract)
     return {
-        "architecture": "x86",
-        "bitness": 32,
-        "abi": "x86-pe32-env-v1",
+        "architecture": "x86_64" if original.bitness == 64 else "x86",
+        "bitness": original.bitness,
+        "abi": _model_id_for_binary(original),
         "compatible": not any(issue["severity"] == "fail" for issue in issues)
         and not any(issue["severity"] == "incomplete" for issue in issues),
         "issues": issues,
@@ -738,6 +1046,1211 @@ def _binary_layout(binary: StageABinary) -> dict[str, Any]:
     }
 
 
+def _binary_reference_layout(binary: StageABinary) -> dict[str, Any]:
+    layout = _binary_layout(binary)
+    layout["relocations"] = _binary_relocation_summary(binary)
+    layout["executable_sections"] = [
+        {
+            "name": section.name,
+            "rva_start": section.rva_start,
+            "rva_end": section.rva_end,
+            "size": section.rva_end - section.rva_start,
+        }
+        for section in binary.sections
+        if section.executable
+    ]
+    return layout
+
+
+def _binary_relocation_summary(binary: StageABinary) -> dict[str, Any]:
+    directory = binary.pe.OPTIONAL_HEADER.DATA_DIRECTORY[5]
+    blocks = []
+    entry_count = 0
+    for block in getattr(binary.pe, "DIRECTORY_ENTRY_BASERELOC", []) or []:
+        entries = [
+            {
+                "rva": int(entry.rva),
+                "type": int(entry.type),
+            }
+            for entry in block.entries
+        ]
+        entry_count += len(entries)
+        blocks.append(
+            {
+                "rva": int(block.struct.VirtualAddress),
+                "size": int(block.struct.SizeOfBlock),
+                "entries": entries,
+            }
+        )
+    return {
+        "status": "present" if blocks else ("empty_directory" if int(directory.Size) == 0 else "not_decoded"),
+        "directory": {"rva": int(directory.VirtualAddress), "size": int(directory.Size)},
+        "blocks": blocks,
+        "counts": {"blocks": len(blocks), "entries": entry_count},
+    }
+
+
+def _reference_contract_inputs(
+    *,
+    original: Path,
+    candidate: Path | None,
+    mapping: Path | None,
+    validation_report: Path | None,
+    layout_contract: Path | None,
+) -> dict[str, Any]:
+    return {
+        "original": _reference_input_artifact(original),
+        "candidate": _reference_input_artifact(candidate) if candidate is not None else None,
+        "mapping": _reference_input_artifact(mapping) if mapping is not None else None,
+        "validation_report": _reference_validation_report_artifact(validation_report) if validation_report is not None else None,
+        "layout_contract": _reference_input_artifact(layout_contract) if layout_contract is not None else None,
+    }
+
+
+def _reference_input_artifact(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "sha256": sha256_file(path) if path.is_file() else None,
+        "exists": path.exists(),
+    }
+
+
+def _reference_validation_report_artifact(path: Path) -> dict[str, Any]:
+    if path.is_dir():
+        files = {}
+        for name in ("verdict.json", "obligations.json", "layout.json"):
+            item = path / name
+            files[name] = _reference_input_artifact(item) if item.exists() else {"path": str(item), "sha256": None, "exists": False}
+        return {"path": str(path), "exists": True, "files": files}
+    return _reference_input_artifact(path)
+
+
+_REFERENCE_CONTRACT_FAMILY_KEYS = (
+    ("binary_faithfulness", "pe_sections_imports_relocations_image_base"),
+    ("executable_span_coverage", "executable_byte_coverage"),
+    ("function_ranges", "function_ranges"),
+    ("cfg_blocks", "basic_blocks_and_cfg"),
+    ("roots_and_jump_targets", "roots_and_jump_tables"),
+    ("import_thunks", "import_thunks"),
+    ("padding_alignment", "padding_alignment"),
+    ("normalization_assumptions", "layout_normalization_assumptions"),
+    ("validation_report_artifact_binding", "validation_report_artifact_binding"),
+    ("proof_inventory", "proof_obligation_inventory"),
+)
+
+
+def _reference_contract_sidecar_paths(sidecar_dir: Path, contract_dir: Path) -> dict[str, Any]:
+    def display_path(path: Path) -> str:
+        if sidecar_dir.resolve() == contract_dir.resolve():
+            return path.name
+        return str(path)
+
+    return {
+        "coverage_gaps": {"path": display_path(sidecar_dir / "coverage_gaps.json")},
+        "obligation_index": {"path": display_path(sidecar_dir / "obligation_index.json")},
+        "contract_summary": {"path": display_path(sidecar_dir / "contract_summary.json")},
+    }
+
+
+def _write_reference_contract_sidecars(contract: dict[str, Any], contract_path: Path, sidecar_dir: Path) -> None:
+    contract_ref = _reference_sidecar_contract_ref(contract_path)
+    write_json(sidecar_dir / "coverage_gaps.json", _reference_coverage_gaps_sidecar(contract, contract_ref))
+    write_json(sidecar_dir / "obligation_index.json", _reference_obligation_index_sidecar(contract, contract_ref))
+    write_json(sidecar_dir / "contract_summary.json", _reference_contract_summary_sidecar(contract, contract_ref))
+
+
+def _reference_sidecar_contract_ref(contract_path: Path) -> dict[str, Any]:
+    return {
+        "path": str(contract_path),
+        "sha256": sha256_file(contract_path) if contract_path.is_file() else None,
+        "format": "stage-a-reference-contract-v1",
+    }
+
+
+def _reference_contract_families(constraints: dict[str, Any]) -> list[dict[str, Any]]:
+    families = []
+    for family, constraint_key in _REFERENCE_CONTRACT_FAMILY_KEYS:
+        constraint = constraints.get(constraint_key) if isinstance(constraints.get(constraint_key), dict) else {}
+        status = _proof_family_status(constraint.get("status"))
+        families.append(
+            {
+                "family": family,
+                "constraint": constraint_key,
+                "status": status,
+                "raw_status": constraint.get("status"),
+                "evidence_kind": constraint.get("evidence_kind"),
+                "blocking": status in {"incomplete", "violated"},
+                "counts": _reference_family_counts(family, constraint),
+            }
+        )
+    return families
+
+
+def _proof_family_status(value: Any) -> str:
+    status = str(value or "incomplete")
+    if status in {"satisfied", "not_applicable"}:
+        return status
+    if status == "derived":
+        return "satisfied"
+    if status in {"failed", "fail", "violated"}:
+        return "violated"
+    return "incomplete"
+
+
+def _reference_family_counts(family: str, constraint: dict[str, Any]) -> dict[str, int]:
+    if family == "function_ranges":
+        return {"functions": len(constraint.get("functions", [])) if isinstance(constraint.get("functions"), list) else 0}
+    if family == "cfg_blocks":
+        return {
+            "blocks": len(constraint.get("basic_blocks", [])) if isinstance(constraint.get("basic_blocks"), list) else 0,
+            "cfg_edge_sources": len(constraint.get("cfg_edges", [])) if isinstance(constraint.get("cfg_edges"), list) else 0,
+        }
+    if family == "roots_and_jump_targets":
+        return {
+            "roots": len(constraint.get("roots", [])) if isinstance(constraint.get("roots"), list) else 0,
+            "jump_table_targets": len(constraint.get("jump_table_targets", [])) if isinstance(constraint.get("jump_table_targets"), list) else 0,
+        }
+    if family == "import_thunks":
+        return {
+            "original_imports": len(constraint.get("original_imports", [])) if isinstance(constraint.get("original_imports"), list) else 0,
+            "mapped_import_thunks": len(constraint.get("mapped_import_thunks", [])) if isinstance(constraint.get("mapped_import_thunks"), list) else 0,
+        }
+    if family == "padding_alignment":
+        return {"waivers": len(constraint.get("waivers", [])) if isinstance(constraint.get("waivers"), list) else 0}
+    if family == "proof_inventory":
+        counts = constraint.get("counts") if isinstance(constraint.get("counts"), dict) else {}
+        return {"obligations": int(counts.get("obligations") or 0)}
+    return {}
+
+
+def _reference_coverage_gaps_sidecar(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
+    gaps = _reference_contract_gap_items(contract)
+    return {
+        "format": "stage-a-coverage-gaps-v1",
+        "reference_contract": contract_ref,
+        "contract_status": contract.get("status"),
+        "status": "pass" if not gaps else "incomplete",
+        "gaps": gaps,
+        "next_work": _ranked_gap_next_work(gaps),
+        "counts": {
+            "gaps": len(gaps),
+            "by_family": _count_by(gaps, "family"),
+            "by_severity": _count_by(gaps, "severity"),
+            "by_category": _count_by(gaps, "category"),
+        },
+    }
+
+
+def _reference_obligation_index_sidecar(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
+    proof = _contract_constraint(contract, "proof_obligation_inventory")
+    obligations = proof.get("obligations") if isinstance(proof.get("obligations"), list) else []
+    indexed = []
+    for item in obligations:
+        if not isinstance(item, dict):
+            continue
+        obligation_id = str(item.get("id") or "")
+        indexed.append(
+            {
+                "id": obligation_id,
+                "stable_id": f"obligation:{_safe_gap_part(obligation_id)}",
+                "kind": str(item.get("kind") or ""),
+                "status": str(item.get("status") or ""),
+                "proof_rule": item.get("proof_rule"),
+                "family": _obligation_family(obligation_id),
+                "related_gap_id": f"obligation:{_safe_gap_part(obligation_id)}",
+            }
+        )
+    return {
+        "format": "stage-a-obligation-index-v1",
+        "reference_contract": contract_ref,
+        "contract_status": contract.get("status"),
+        "lean": proof.get("lean") if isinstance(proof.get("lean"), dict) else {},
+        "obligations": indexed,
+        "counts": {
+            "obligations": len(indexed),
+            "by_status": _count_by(indexed, "status"),
+            "by_kind": _count_by(indexed, "kind"),
+            "by_family": _count_by(indexed, "family"),
+        },
+    }
+
+
+def _reference_contract_summary_sidecar(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
+    families = contract.get("families") if isinstance(contract.get("families"), list) else []
+    return {
+        "format": "stage-a-contract-summary-v1",
+        "reference_contract": contract_ref,
+        "contract_status": contract.get("status"),
+        "model": contract.get("model"),
+        "families": families,
+        "counts": {
+            "families": len(families),
+            "by_status": _count_by([item for item in families if isinstance(item, dict)], "status"),
+            **(contract.get("counts") if isinstance(contract.get("counts"), dict) else {}),
+        },
+    }
+
+
+def _reference_contract_gap_items(contract: dict[str, Any]) -> list[dict[str, Any]]:
+    gaps: list[dict[str, Any]] = []
+    for issue in contract.get("issues", []):
+        if isinstance(issue, dict):
+            gaps.append(_gap_from_issue(issue))
+    gaps.extend(_byte_coverage_gap_items(contract))
+    gaps.extend(_proof_inventory_gap_items(contract))
+    return sorted(_dedupe_gaps(gaps), key=lambda item: str(item.get("gap_id") or ""))
+
+
+def _gap_from_issue(issue: dict[str, Any]) -> dict[str, Any]:
+    obligation_id = str(issue.get("obligation_id") or issue.get("category") or "issue")
+    details = issue.get("details") if isinstance(issue.get("details"), dict) else {}
+    category = str(issue.get("category") or "stage_a_issue")
+    severity = "violated" if issue.get("severity") == "fail" or issue.get("status") == "failed" else "incomplete"
+    family = _issue_family(obligation_id, category)
+    return {
+        "gap_id": f"{family}:{_safe_gap_part(obligation_id)}",
+        "family": family,
+        "category": category,
+        "severity": severity,
+        "location": {"obligation_id": obligation_id},
+        "expected": details.get("expected") or issue.get("original") or "closed Stage A evidence",
+        "observed": details.get("actual") or issue.get("candidate") or issue.get("blocker") or issue.get("status"),
+        "example": details.get("example"),
+        "cause_hint": issue.get("blocker") or category,
+        "next_action": issue.get("next_action") or "inspect the Stage A report for this gap",
+    }
+
+
+def _byte_coverage_gap_items(contract: dict[str, Any]) -> list[dict[str, Any]]:
+    coverage = _contract_constraint(contract, "executable_byte_coverage")
+    items = []
+    for side in ("original", "candidate"):
+        payload = coverage.get(side)
+        if not isinstance(payload, dict):
+            continue
+        for gap in payload.get("gaps", []):
+            if not isinstance(gap, dict):
+                continue
+            rva_start = _safe_int(gap.get("rva_start"))
+            rva_end = _safe_int(gap.get("rva_end"))
+            if rva_start is None or rva_end is None:
+                continue
+            items.append(
+                {
+                    "gap_id": f"bytes:{side}:rva-{rva_start:08x}-{rva_end:08x}",
+                    "family": "executable_span_coverage",
+                    "category": "unclassified_executable_bytes",
+                    "severity": "incomplete",
+                    "location": {"side": side, "rva_start": rva_start, "rva_end": rva_end, "size": rva_end - rva_start},
+                    "expected": "every executable byte is classified as code, verified padding, or verified zero-fill",
+                    "observed": "unclassified executable byte span",
+                    "example": gap,
+                    "cause_hint": "Stage A has no code mapping or non-code waiver for this executable span",
+                    "next_action": "map the span as code or add a verifiable padding/zero-fill waiver",
+                }
+            )
+    return items
+
+
+def _proof_inventory_gap_items(contract: dict[str, Any]) -> list[dict[str, Any]]:
+    proof = _contract_constraint(contract, "proof_obligation_inventory")
+    obligations = proof.get("obligations") if isinstance(proof.get("obligations"), list) else []
+    items = []
+    for obligation in obligations:
+        if not isinstance(obligation, dict):
+            continue
+        status = str(obligation.get("status") or "")
+        if status in {"proved", "waived_noncode"}:
+            continue
+        obligation_id = str(obligation.get("id") or "unknown")
+        items.append(
+            {
+                "gap_id": f"obligation:{_safe_gap_part(obligation_id)}",
+                "family": "proof_inventory",
+                "category": f"obligation_{status or 'unknown'}",
+                "severity": "violated" if status == "failed" else "incomplete",
+                "location": {"obligation_id": obligation_id, "kind": obligation.get("kind")},
+                "expected": "proved or explicitly waived non-code obligation",
+                "observed": status or "missing status",
+                "example": obligation,
+                "cause_hint": "Stage A final pass is blocked by this proof obligation",
+                "next_action": "repair the candidate, mapping, waiver, or proof rule until this obligation closes",
+            }
+        )
+    return items
+
+
+def _dedupe_gaps(gaps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    for gap in gaps:
+        gap_id = str(gap.get("gap_id") or "")
+        if gap_id and gap_id not in by_id:
+            by_id[gap_id] = gap
+    return list(by_id.values())
+
+
+def _ranked_gap_next_work(gaps: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
+    ranked = sorted(
+        gaps,
+        key=lambda gap: (
+            _gap_family_rank(str(gap.get("family") or "")),
+            -_gap_severity_rank(gap.get("severity")),
+            str(gap.get("gap_id") or ""),
+        ),
+    )
+    return [
+        {
+            "gap_id": gap.get("gap_id"),
+            "family": gap.get("family"),
+            "category": gap.get("category"),
+            "severity": gap.get("severity"),
+            "next_action": gap.get("next_action"),
+            "cause_hint": gap.get("cause_hint"),
+        }
+        for gap in ranked[:limit]
+    ]
+
+
+def _gap_family_rank(family: str) -> int:
+    order = {
+        "validation_report_artifact_binding": 0,
+        "binary_faithfulness": 1,
+        "normalization_assumptions": 1,
+        "executable_span_coverage": 2,
+        "function_ranges": 3,
+        "cfg_blocks": 4,
+        "roots_and_jump_targets": 5,
+        "import_thunks": 6,
+        "padding_alignment": 6,
+        "proof_inventory": 7,
+    }
+    return order.get(family, 99)
+
+
+def _contract_constraint(contract: dict[str, Any], key: str) -> dict[str, Any]:
+    constraints = contract.get("constraints") if isinstance(contract.get("constraints"), dict) else {}
+    value = constraints.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _issue_family(obligation_id: str, category: str) -> str:
+    text = f"{obligation_id} {category}".lower()
+    for family, constraint in _REFERENCE_CONTRACT_FAMILY_KEYS:
+        if family in text or constraint in text:
+            return family
+    if "validation-report" in text or "validation_report" in text:
+        return "validation_report_artifact_binding"
+    if "layout" in text or "section" in text or "import" in text or "image_base" in text:
+        return "binary_faithfulness"
+    if "waiver" in text or "padding" in text:
+        return "padding_alignment"
+    if "mapping" in text or "map" in text:
+        return "cfg_blocks"
+    return "proof_inventory"
+
+
+def _obligation_family(obligation_id: str) -> str:
+    text = obligation_id.lower()
+    if text.startswith("block:") or text.startswith("cfg:"):
+        return "cfg_blocks"
+    if text.startswith("reachability:") or "jump" in text:
+        return "roots_and_jump_targets"
+    if text.startswith("layout:"):
+        return "binary_faithfulness"
+    if "waiver" in text or "noncode" in text:
+        return "padding_alignment"
+    return "proof_inventory"
+
+
+def _safe_gap_part(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.:@+-]+", "-", value.strip())
+    return text.strip("-") or "unknown"
+
+
+def _safe_int(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except ValueError:
+            return None
+    return None
+
+
+def _count_by(items: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        value = str(item.get(key) or "unknown")
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _load_reference_contract_sidecars(contract: dict[str, Any], contract_path: Path) -> dict[str, Any]:
+    sidecars = contract.get("sidecars") if isinstance(contract.get("sidecars"), dict) else {}
+    contract_ref = _reference_sidecar_contract_ref(contract_path)
+    result: dict[str, Any] = {}
+    builders = {
+        "coverage_gaps": _reference_coverage_gaps_sidecar,
+        "obligation_index": _reference_obligation_index_sidecar,
+        "contract_summary": _reference_contract_summary_sidecar,
+    }
+    for name, builder in builders.items():
+        path_text = sidecars.get(name, {}).get("path") if isinstance(sidecars.get(name), dict) else None
+        path = _resolve_contract_sidecar_path(contract_path, path_text, name)
+        try:
+            result[name] = _load_json(path) if path.is_file() else builder(contract, contract_ref)
+        except StageAInputError:
+            result[name] = builder(contract, contract_ref)
+    return result
+
+
+def _stage_a_smoke_contract_issues(contract: Any, contract_path: Path) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    if not isinstance(contract, dict) or contract.get("format") != "stage-a-reference-contract-v1":
+        return [
+            _incomplete_record(
+                category="invalid_reference_contract_format",
+                obligation_id="stage-a-smoke-contract:format",
+                blocker="reference contract JSON does not have format stage-a-reference-contract-v1",
+                next_action="regenerate the Stage A reference contract",
+            )
+        ]
+    for family in contract.get("families", []):
+        if not isinstance(family, dict):
+            continue
+        status = family.get("status")
+        if status not in {"satisfied", "incomplete", "not_applicable", "violated"}:
+            issues.append(
+                _incomplete_record(
+                    category="invalid_family_status",
+                    obligation_id=f"stage-a-smoke-contract:family:{family.get('family')}",
+                    blocker="Stage A contract family has a non-proof status",
+                    next_action="regenerate the contract with current Stage A tooling",
+                    details={"family": family.get("family"), "status": status},
+                )
+            )
+    issues.extend(_stage_a_smoke_artifact_issues(contract))
+    issues.extend(_stage_a_smoke_sidecar_issues(contract, contract_path))
+    for marker in _unchecked_marker_paths(contract):
+        issues.append(
+            _incomplete_record(
+                category="unchecked_lean_marker",
+                obligation_id=f"stage-a-smoke-contract:lean:{marker}",
+                blocker="reference contract contains an unchecked Lean marker",
+                next_action="rerun Stage A validation until Lean final-pass evidence is checked",
+            )
+        )
+    return issues
+
+
+def _stage_a_smoke_artifact_issues(contract: dict[str, Any]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    inputs = contract.get("inputs") if isinstance(contract.get("inputs"), dict) else {}
+    for name in ("original", "candidate", "mapping", "layout_contract"):
+        artifact = inputs.get(name)
+        if not isinstance(artifact, dict) or artifact.get("path") in {None, ""}:
+            continue
+        issues.extend(_stage_a_smoke_artifact_hash_issues(name, artifact))
+    validation_report = inputs.get("validation_report")
+    if isinstance(validation_report, dict):
+        files = validation_report.get("files")
+        if isinstance(files, dict):
+            for name, artifact in files.items():
+                if isinstance(artifact, dict):
+                    issues.extend(_stage_a_smoke_artifact_hash_issues(f"validation_report:{name}", artifact))
+        else:
+            issues.extend(_stage_a_smoke_artifact_hash_issues("validation_report", validation_report))
+    return issues
+
+
+def _stage_a_smoke_artifact_hash_issues(name: str, artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    path_text = artifact.get("path")
+    if not isinstance(path_text, str) or not path_text:
+        return []
+    path = Path(path_text)
+    if not path.exists():
+        return [
+            _incomplete_record(
+                category="missing_bound_artifact",
+                obligation_id=f"stage-a-smoke-contract:artifact:{name}",
+                blocker="a reference-contract-bound artifact no longer exists",
+                next_action="regenerate the contract from current artifacts",
+                details={"path": path_text},
+            )
+        ]
+    expected_sha = artifact.get("sha256")
+    if expected_sha is None or path.is_dir():
+        return []
+    actual_sha = sha256_file(path)
+    if actual_sha == expected_sha:
+        return []
+    return [
+        _incomplete_record(
+            category="stale_bound_artifact",
+            obligation_id=f"stage-a-smoke-contract:artifact:{name}",
+            blocker="a reference-contract-bound artifact hash no longer matches",
+            next_action="rerun Stage A validation and export a fresh reference contract",
+            details={"path": path_text, "expected": expected_sha, "actual": actual_sha},
+        )
+    ]
+
+
+def _stage_a_smoke_sidecar_issues(contract: dict[str, Any], contract_path: Path) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    sidecars = contract.get("sidecars") if isinstance(contract.get("sidecars"), dict) else {}
+    contract_sha = sha256_file(contract_path) if contract_path.is_file() else None
+    for name in ("coverage_gaps", "obligation_index", "contract_summary"):
+        path_text = sidecars.get(name, {}).get("path") if isinstance(sidecars.get(name), dict) else None
+        if not isinstance(path_text, str) or not path_text:
+            issues.append(
+                _incomplete_record(
+                    category="missing_contract_sidecar",
+                    obligation_id=f"stage-a-smoke-contract:sidecar:{name}",
+                    blocker="reference contract does not identify a required diagnostic sidecar",
+                    next_action="rerun stage-a-export-reference-contract with current tooling",
+                )
+            )
+            continue
+        path = _resolve_contract_sidecar_path(contract_path, path_text, name)
+        if not path.is_file():
+            issues.append(
+                _incomplete_record(
+                    category="missing_contract_sidecar",
+                    obligation_id=f"stage-a-smoke-contract:sidecar:{name}",
+                    blocker="required diagnostic sidecar does not exist",
+                    next_action="rerun stage-a-export-reference-contract with current tooling",
+                    details={"path": path_text},
+                )
+            )
+            continue
+        try:
+            payload = _load_json(path)
+        except StageAInputError as exc:
+            issues.append(
+                _incomplete_record(
+                    category="invalid_contract_sidecar",
+                    obligation_id=f"stage-a-smoke-contract:sidecar:{name}",
+                    blocker=str(exc),
+                    next_action="rerun stage-a-export-reference-contract with current tooling",
+                )
+            )
+            continue
+        sidecar_contract = payload.get("reference_contract") if isinstance(payload, dict) else {}
+        if not isinstance(sidecar_contract, dict) or sidecar_contract.get("sha256") != contract_sha:
+            issues.append(
+                _incomplete_record(
+                    category="stale_contract_sidecar",
+                    obligation_id=f"stage-a-smoke-contract:sidecar:{name}",
+                    blocker="diagnostic sidecar is not hash-bound to this reference contract",
+                    next_action="rerun stage-a-export-reference-contract with current tooling",
+                    details={"path": path_text, "expected": contract_sha, "actual": sidecar_contract.get("sha256") if isinstance(sidecar_contract, dict) else None},
+                )
+            )
+    return issues
+
+
+def _resolve_contract_sidecar_path(contract_path: Path, path_text: Any, name: str) -> Path:
+    if isinstance(path_text, str) and path_text:
+        path = Path(path_text)
+        return path if path.is_absolute() else contract_path.parent / path
+    return contract_path.parent / f"{name}.json"
+
+
+def _unchecked_marker_paths(contract: dict[str, Any]) -> list[str]:
+    proof = _contract_constraint(contract, "proof_obligation_inventory")
+    lean = proof.get("lean") if isinstance(proof.get("lean"), dict) else {}
+    markers: list[str] = []
+
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{path}.{key}" if path else str(key)
+                if "unchecked" in str(key).lower() and child not in (None, False, 0, "", [], {}):
+                    markers.append(child_path)
+                visit(child, child_path)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}[{index}]")
+
+    visit(lean, "lean")
+    return sorted(set(markers))
+
+
+def _matches_focus(item: Any, focus_lower: str) -> bool:
+    return focus_lower in json.dumps(item, sort_keys=True, default=str).lower()
+
+
+def _gap_severity_rank(value: Any) -> int:
+    return {"incomplete": 1, "violated": 2, "failed": 2, "fail": 2}.get(str(value or ""), 0)
+
+
+def _layout_contract_from_mapping_payload(payload: Any, mapping: Path | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    embedded = payload.get("layout_contract")
+    if isinstance(embedded, dict):
+        return embedded
+    if not isinstance(embedded, str) or not embedded:
+        return None
+    path = Path(embedded)
+    if not path.is_absolute() and mapping is not None:
+        path = mapping.parent / path
+    try:
+        return _load_json(path)
+    except StageAInputError:
+        return None
+
+
+def _load_stage_a_validation_report(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    if path.is_dir():
+        verdict_path = path / "verdict.json"
+        obligations_path = path / "obligations.json"
+        if not verdict_path.is_file() or not obligations_path.is_file():
+            raise StageAInputError("Stage A validation report directory must contain verdict.json and obligations.json")
+        payload = {
+            "path": str(path),
+            "verdict": _load_json(verdict_path),
+            "obligations": _load_json(obligations_path),
+        }
+        layout_path = path / "layout.json"
+        if layout_path.is_file():
+            payload["layout"] = _load_json(layout_path)
+        lean_inputs_path = path / "lean" / "inputs.json"
+        if lean_inputs_path.is_file():
+            payload["lean_inputs"] = _load_json(lean_inputs_path)
+        return payload
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        raise StageAInputError("Stage A validation report JSON must be an object")
+    if payload.get("format") == "stage-a-verdict-v1":
+        return {"path": str(path), "verdict": payload, "obligations": {"format": "stage-a-obligations-v1", "obligations": [], "counts": {}}}
+    if "verdict" in payload and "obligations" in payload:
+        return {"path": str(path), **payload}
+    raise StageAInputError("Stage A validation report must be a report directory, verdict JSON, or object with verdict and obligations")
+
+
+def _reference_validation_report_binding_constraint(
+    *,
+    payload: dict[str, Any] | None,
+    original: StageABinary,
+    candidate: StageABinary | None,
+    mapping_payload: Any,
+    model: str,
+) -> dict[str, Any]:
+    if payload is None:
+        return {
+            "status": "not_provided",
+            "evidence_kind": "none",
+            "blocker": "no Stage A validation report was provided",
+            "next_action": "run stage-a-validate and export the contract with --validation-report",
+            "issues": [],
+        }
+
+    verdict = payload.get("verdict") if isinstance(payload.get("verdict"), dict) else {}
+    layout = payload.get("layout") if isinstance(payload.get("layout"), dict) else {}
+    lean_inputs = payload.get("lean_inputs") if isinstance(payload.get("lean_inputs"), dict) else {}
+    issues: list[dict[str, Any]] = []
+
+    requested_model = verdict.get("requested_model")
+    if requested_model != model:
+        issues.append(
+            _incomplete_record(
+                category="validation_report_model_mismatch",
+                obligation_id="reference-contract:validation-report-binding:model",
+                blocker="Stage A validation report was generated for a different model",
+                next_action="rerun stage-a-validate with the same --model used for the reference contract",
+                details={"expected": model, "actual": requested_model},
+            )
+        )
+
+    original_sha = _layout_binary_sha256(layout, "original")
+    if original_sha != original.sha256:
+        issues.append(
+            _incomplete_record(
+                category="validation_report_binary_mismatch",
+                obligation_id="reference-contract:validation-report-binding:original",
+                blocker="Stage A validation report does not bind to the current original binary",
+                next_action="rerun stage-a-validate for this original/candidate pair",
+                details={"binary": "original", "expected_sha256": original.sha256, "actual_sha256": original_sha},
+            )
+        )
+
+    candidate_sha = _layout_binary_sha256(layout, "candidate")
+    if candidate is not None and candidate_sha != candidate.sha256:
+        issues.append(
+            _incomplete_record(
+                category="validation_report_binary_mismatch",
+                obligation_id="reference-contract:validation-report-binding:candidate",
+                blocker="Stage A validation report does not bind to the current candidate binary",
+                next_action="rerun stage-a-validate for this original/candidate pair",
+                details={"binary": "candidate", "expected_sha256": candidate.sha256, "actual_sha256": candidate_sha},
+            )
+        )
+
+    mapping_matches: bool | None
+    if mapping_payload is None:
+        mapping_matches = None
+    elif "mapping" not in lean_inputs:
+        mapping_matches = False
+        issues.append(
+            _incomplete_record(
+                category="validation_report_mapping_unbound",
+                obligation_id="reference-contract:validation-report-binding:mapping",
+                blocker="Stage A validation report does not include the mapping payload snapshot",
+                next_action="rerun stage-a-validate with current tooling and re-export the reference contract",
+            )
+        )
+    else:
+        mapping_matches = lean_inputs.get("mapping") == mapping_payload
+        if not mapping_matches:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_mapping_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:mapping",
+                    blocker="Stage A validation report was generated from a different block map",
+                    next_action="rerun stage-a-validate with the current block map",
+                )
+            )
+
+    return {
+        "status": "satisfied" if not issues else "incomplete",
+        "evidence_kind": "stage-a-validation-report-binding",
+        "report": payload.get("path"),
+        "facts": {
+            "matching_model": requested_model == model,
+            "matching_original_sha256": original_sha == original.sha256,
+            "matching_candidate_sha256": None if candidate is None else candidate_sha == candidate.sha256,
+            "matching_mapping_payload": mapping_matches,
+        },
+        "issues": issues,
+    }
+
+
+def _layout_binary_sha256(layout: dict[str, Any], side: str) -> str | None:
+    item = layout.get(side)
+    return item.get("sha256") if isinstance(item, dict) and isinstance(item.get("sha256"), str) else None
+
+
+def _reference_pe_layout_constraint(
+    *,
+    original: StageABinary,
+    candidate: StageABinary | None,
+    layout_contract: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if candidate is None:
+        return {
+            "status": "derived",
+            "evidence_kind": "pefile",
+            "scope": "original",
+            "sections": _section_permission_signature(original),
+            "imports": _import_signature(original),
+            "relocations": _binary_relocation_summary(original),
+            "image_base": original.image_base,
+        }
+    issues = _layout_issues(original, candidate, layout_contract)
+    return {
+        "status": "satisfied" if not issues else ("failed" if any(issue.get("severity") == "fail" for issue in issues) else "incomplete"),
+        "evidence_kind": "stage-a-layout-model",
+        "scope": "original-candidate-pair",
+        "facts": {
+            "matching_machine": original.machine == candidate.machine,
+            "matching_bitness": original.bitness == candidate.bitness,
+            "matching_section_rvas": _section_rva_start_signature(original) == _section_rva_start_signature(candidate),
+            "matching_section_permissions": _section_compatibility_signature(original) == _section_compatibility_signature(candidate),
+            "matching_imports": _import_signature(original) == _import_signature(candidate),
+            "matching_image_base": original.image_base == candidate.image_base,
+        },
+        "original": {
+            "sections": _section_permission_signature(original),
+            "imports": _import_signature(original),
+            "relocations": _binary_relocation_summary(original),
+            "image_base": original.image_base,
+        },
+        "candidate": {
+            "sections": _section_permission_signature(candidate),
+            "imports": _import_signature(candidate),
+            "relocations": _binary_relocation_summary(candidate),
+            "image_base": candidate.image_base,
+        },
+        "issues": issues,
+    }
+
+
+def _reference_map_constraints(
+    *,
+    original: StageABinary,
+    candidate: StageABinary | None,
+    mapping_payload: Any,
+) -> dict[str, Any]:
+    if mapping_payload is None:
+        missing = _reference_missing_map_constraint()
+        return {
+            "issues": [],
+            "mappings": [],
+            "verified_waivers": [],
+            "executable_byte_coverage": missing,
+            "function_ranges": missing,
+            "basic_blocks_and_cfg": missing,
+            "roots_and_jump_tables": missing,
+            "padding_alignment": missing,
+        }
+
+    mappings, waivers, map_issues = _parse_block_map(mapping_payload, original)
+    map_issues.extend(_generated_map_issues(mapping_payload))
+    verified_waivers: list[NonCodeWaiver] = []
+    waiver_obligations: list[dict[str, Any]] = []
+    if candidate is not None:
+        verified_waivers, waiver_obligations = _waiver_obligations(original, candidate, waivers)
+    elif waivers:
+        map_issues.append(
+            _incomplete_record(
+                category="unverified_noncode_waiver",
+                obligation_id="reference-contract:waivers",
+                blocker="non-code waivers require a candidate binary before Stage A can verify pairwise padding",
+                next_action="export the reference contract with --candidate when mapping waivers are present",
+            )
+        )
+    for obligation in waiver_obligations:
+        if obligation.get("status") == "incomplete" and isinstance(obligation.get("incomplete"), dict):
+            map_issues.append(obligation["incomplete"])
+
+    map_status = _reference_map_status(mapping_payload, map_issues)
+    return {
+        "issues": map_issues,
+        "mappings": mappings,
+        "verified_waivers": verified_waivers,
+        "executable_byte_coverage": {
+            "status": "satisfied"
+            if map_status == "satisfied"
+            and not _reference_coverage_side("original", original, mappings, verified_waivers)["gaps"]
+            and (candidate is None or not _reference_coverage_side("candidate", candidate, mappings, verified_waivers)["gaps"])
+            else "incomplete",
+            "evidence_kind": "stage-a-block-map",
+            "original": _reference_coverage_side("original", original, mappings, verified_waivers),
+            "candidate": _reference_coverage_side("candidate", candidate, mappings, verified_waivers) if candidate is not None else None,
+        },
+        "function_ranges": _reference_function_ranges(mappings, map_status),
+        "basic_blocks_and_cfg": _reference_basic_blocks_and_cfg(original, candidate, mappings, map_status),
+        "roots_and_jump_tables": _reference_roots_and_jump_tables(mappings, map_status),
+        "padding_alignment": _reference_padding_alignment(waivers, verified_waivers, waiver_obligations, map_status),
+    }
+
+
+def _reference_missing_map_constraint() -> dict[str, Any]:
+    return {
+        "status": "not_provided",
+        "evidence_kind": "none",
+        "blocker": "no Stage A block map was provided",
+        "next_action": "generate a Stage A block map and re-export the reference contract",
+    }
+
+
+def _reference_map_status(mapping_payload: Any, issues: list[dict[str, Any]]) -> str:
+    if any(issue.get("status") == "failed" or issue.get("severity") == "fail" for issue in issues):
+        return "failed"
+    if issues:
+        return "incomplete"
+    if isinstance(mapping_payload, dict) and mapping_payload.get("status") not in {None, "pass"}:
+        return "incomplete"
+    return "satisfied"
+
+
+def _reference_coverage_side(
+    side: str,
+    binary: StageABinary,
+    mappings: list[BlockMapping],
+    waivers: list[NonCodeWaiver],
+) -> dict[str, Any]:
+    mapped_ranges = [
+        mapped.original if side == "original" else mapped.candidate
+        for mapped in mappings
+        if mapped.kind == "code"
+    ]
+    waiver_ranges = [
+        BlockSide(waiver.rva_start, waiver.rva_end)
+        for waiver in waivers
+        if waiver.binary in {side, "both"}
+    ]
+    classified = mapped_ranges + waiver_ranges
+    executable_sections = [section for section in binary.sections if section.executable]
+    gaps = [
+        gap
+        for section in executable_sections
+        for gap in _gaps(section.rva_start, section.rva_end, classified)
+    ]
+    executable_bytes = sum(section.rva_end - section.rva_start for section in executable_sections)
+    classified_bytes = sum(item.rva_end - item.rva_start for item in _merged_ranges(classified))
+    return {
+        "status": "satisfied" if not gaps else "incomplete",
+        "binary": side,
+        "executable_bytes": executable_bytes,
+        "classified_bytes": min(classified_bytes, executable_bytes),
+        "mapped_code_ranges": [_range_report(item) for item in mapped_ranges],
+        "waived_noncode_ranges": [_range_report(item) for item in waiver_ranges],
+        "gaps": [_range_report(item) for item in gaps],
+    }
+
+
+def _merged_ranges(ranges: list[BlockSide]) -> list[BlockSide]:
+    merged: list[BlockSide] = []
+    for item in sorted(ranges, key=lambda value: (value.rva_start, value.rva_end)):
+        if not merged or item.rva_start > merged[-1].rva_end:
+            merged.append(item)
+            continue
+        merged[-1] = BlockSide(merged[-1].rva_start, max(merged[-1].rva_end, item.rva_end))
+    return merged
+
+
+def _range_report(side: BlockSide) -> dict[str, int]:
+    return {"rva_start": side.rva_start, "rva_end": side.rva_end, "size": side.size}
+
+
+def _reference_function_ranges(mappings: list[BlockMapping], map_status: str) -> dict[str, Any]:
+    functions: dict[str, dict[str, Any]] = {}
+    for mapped in mappings:
+        source = _mapping_source(mapped)
+        name = source.get("function") if isinstance(source.get("function"), str) else ""
+        if not name:
+            continue
+        entry = functions.setdefault(
+            name,
+            {
+                "name": name,
+                "original": {"rva_start": mapped.original.rva_start, "rva_end": mapped.original.rva_end},
+                "candidate": {"rva_start": mapped.candidate.rva_start, "rva_end": mapped.candidate.rva_end},
+                "block_ids": [],
+            },
+        )
+        entry["original"]["rva_start"] = min(entry["original"]["rva_start"], mapped.original.rva_start)
+        entry["original"]["rva_end"] = max(entry["original"]["rva_end"], mapped.original.rva_end)
+        entry["candidate"]["rva_start"] = min(entry["candidate"]["rva_start"], mapped.candidate.rva_start)
+        entry["candidate"]["rva_end"] = max(entry["candidate"]["rva_end"], mapped.candidate.rva_end)
+        entry["block_ids"].append(mapped.id)
+    return {
+        "status": map_status if functions else "incomplete",
+        "evidence_kind": "linker-map-capstone-block-map",
+        "functions": sorted(functions.values(), key=lambda item: item["name"]),
+    }
+
+
+def _reference_basic_blocks_and_cfg(
+    original: StageABinary,
+    candidate: StageABinary | None,
+    mappings: list[BlockMapping],
+    map_status: str,
+) -> dict[str, Any]:
+    blocks = []
+    cfg_edges = []
+    for mapped in mappings:
+        source = _mapping_source(mapped)
+        proof = mapped.source.get("proof") if isinstance(mapped.source.get("proof"), dict) else {}
+        block = {
+            "id": mapped.id,
+            "kind": mapped.kind,
+            "reachable": mapped.reachable,
+            "function": source.get("function"),
+            "original": _range_report(mapped.original),
+            "candidate": _range_report(mapped.candidate),
+            "source_kind": source.get("kind"),
+            "proof_rule": proof.get("rule"),
+            "byte_identical": source.get("byte_identical"),
+        }
+        blocks.append(block)
+        if mapped.kind != "code":
+            continue
+        edge_report = {
+            "block_id": mapped.id,
+            "original": _direct_cfg_edges(original, mapped.original),
+            "candidate": _direct_cfg_edges(candidate, mapped.candidate) if candidate is not None else None,
+        }
+        cfg_edges.append(edge_report)
+    return {
+        "status": map_status if blocks else "incomplete",
+        "evidence_kind": "capstone-direct-cfg",
+        "basic_blocks": blocks,
+        "cfg_edges": cfg_edges,
+    }
+
+
+def _mapping_source(mapped: BlockMapping) -> dict[str, Any]:
+    source = mapped.source.get("source")
+    return source if isinstance(source, dict) else {}
+
+
+def _reference_roots_and_jump_tables(mappings: list[BlockMapping], map_status: str) -> dict[str, Any]:
+    roots = []
+    jump_table_targets = []
+    for mapped in mappings:
+        for key in ("root", "reachability"):
+            value = mapped.source.get(key)
+            if isinstance(value, dict):
+                roots.append({"block_id": mapped.id, **value})
+        for key in ("jump_table_targets", "checked_jump_table_targets"):
+            targets = mapped.source.get(key)
+            if isinstance(targets, list):
+                for target in targets:
+                    if isinstance(target, dict):
+                        jump_table_targets.append({"block_id": mapped.id, **target})
+    return {
+        "status": map_status if roots or jump_table_targets else ("not_applicable" if not mappings else "derived"),
+        "evidence_kind": "stage-a-reachability-markers",
+        "roots": roots,
+        "jump_table_targets": jump_table_targets,
+    }
+
+
+def _reference_import_thunk_constraint(
+    original: StageABinary,
+    candidate: StageABinary | None,
+    map_contract: dict[str, Any],
+) -> dict[str, Any]:
+    mappings = map_contract.get("mappings", [])
+    mapped_thunks = []
+    for mapped in mappings:
+        source = _mapping_source(mapped)
+        if mapped.kind == "import_thunk" or source.get("kind") == "import_thunk":
+            mapped_thunks.append(
+                {
+                    "block_id": mapped.id,
+                    "original": _range_report(mapped.original),
+                    "candidate": _range_report(mapped.candidate),
+                    "source": source,
+                }
+            )
+    return {
+        "status": "derived" if original.imports or (candidate is not None and candidate.imports) or mapped_thunks else "not_applicable",
+        "evidence_kind": "pe-import-directory-and-block-map",
+        "original_imports": [
+            {"dll": item.dll, "symbol": item.symbol, "ordinal": item.ordinal, "thunk_rva": item.thunk_rva}
+            for item in original.imports
+        ],
+        "candidate_imports": [
+            {"dll": item.dll, "symbol": item.symbol, "ordinal": item.ordinal, "thunk_rva": item.thunk_rva}
+            for item in candidate.imports
+        ]
+        if candidate is not None
+        else None,
+        "mapped_import_thunks": mapped_thunks,
+    }
+
+
+def _reference_padding_alignment(
+    waivers: list[NonCodeWaiver],
+    verified_waivers: list[NonCodeWaiver],
+    waiver_obligations: list[dict[str, Any]],
+    map_status: str,
+) -> dict[str, Any]:
+    if not waivers:
+        return {"status": "not_applicable", "evidence_kind": "stage-a-waivers", "waivers": [], "obligations": []}
+    status = map_status if len(waivers) == len(verified_waivers) and all(item.get("status") != "incomplete" for item in waiver_obligations) else "incomplete"
+    return {
+        "status": status,
+        "evidence_kind": "verified-padding-bytes",
+        "waivers": [
+            {
+                "id": waiver.id,
+                "binary": waiver.binary,
+                "rva_start": waiver.rva_start,
+                "rva_end": waiver.rva_end,
+                "reason": waiver.reason,
+                "verified": waiver in verified_waivers,
+            }
+            for waiver in waivers
+        ],
+        "obligations": waiver_obligations,
+    }
+
+
+def _reference_layout_normalization_constraint(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if payload is None:
+        return {
+            "status": "not_provided",
+            "evidence_kind": "none",
+            "blocker": "no Stage A layout contract was provided",
+            "next_action": "export a layout contract from stage-a-generate-map or pass --layout-contract",
+        }
+    required = payload.get("required_facts", []) if isinstance(payload.get("required_facts"), list) else []
+    facts = payload.get("facts", {}) if isinstance(payload.get("facts"), dict) else {}
+    missing = [fact for fact in required if fact not in facts]
+    unsatisfied = [fact for fact in required if facts.get(fact) is not True]
+    status = "satisfied" if not missing and not unsatisfied else "incomplete"
+    return {
+        "status": status,
+        "evidence_kind": "stage-a-layout-contract",
+        "contract": payload,
+        "missing_required_facts": missing,
+        "unsatisfied_required_facts": unsatisfied,
+    }
+
+
+def _reference_proof_obligation_inventory(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if payload is None:
+        return {
+            "status": "not_provided",
+            "evidence_kind": "none",
+            "counts": {"obligations": 0},
+            "obligations": [],
+            "verdict": None,
+        }
+    verdict = payload.get("verdict") if isinstance(payload.get("verdict"), dict) else {}
+    obligations_payload = payload.get("obligations") if isinstance(payload.get("obligations"), dict) else {}
+    obligations = obligations_payload.get("obligations") if isinstance(obligations_payload.get("obligations"), list) else []
+    inventory = [
+        {
+            "id": str(item.get("id") or ""),
+            "kind": str(item.get("kind") or ""),
+            "status": str(item.get("status") or ""),
+            "proof_rule": item.get("proof_rule"),
+        }
+        for item in obligations
+        if isinstance(item, dict)
+    ]
+    lean = verdict.get("proof", {}).get("lean", {}) if isinstance(verdict.get("proof"), dict) else {}
+    final_pass_allowed = isinstance(lean, dict) and lean.get("final_pass_allowed") is True
+    status = "satisfied" if verdict.get("verdict") == "pass" and final_pass_allowed else "incomplete"
+    return {
+        "status": status,
+        "evidence_kind": "stage-a-validation-report",
+        "report": payload.get("path"),
+        "verdict": verdict.get("verdict"),
+        "final_pass_allowed": final_pass_allowed,
+        "lean": lean if isinstance(lean, dict) else {},
+        "counts": obligations_payload.get("counts", {}),
+        "obligations": inventory,
+    }
+
+
+def _reference_constraint_issues(constraints: dict[str, Any]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for name, constraint in constraints.items():
+        if not isinstance(constraint, dict):
+            continue
+        if constraint.get("status") in {"satisfied", "derived", "not_applicable"}:
+            continue
+        issues.append(
+            _incomplete_record(
+                category="reference_contract_constraint_incomplete",
+                obligation_id=f"reference-contract:{name}",
+                blocker=f"Stage A reference contract constraint {name!r} is not closed",
+                next_action="provide the missing Stage A evidence or inspect the constraint details",
+                details={"status": constraint.get("status")},
+            )
+        )
+    return issues
+
+
+def _reference_contract_status(constraints: dict[str, Any], issues: list[dict[str, Any]]) -> str:
+    if any(issue.get("status") == "failed" or issue.get("severity") == "fail" for issue in issues):
+        return "fail"
+    if issues:
+        return "incomplete"
+    proof = constraints.get("proof_obligation_inventory")
+    return "pass" if isinstance(proof, dict) and proof.get("status") == "satisfied" else "incomplete"
+
+
 def _layout_issues(
     original: StageABinary,
     candidate: StageABinary,
@@ -758,7 +2271,9 @@ def _layout_issues(
     section_contract_allows_span_delta = (
         isinstance(layout_contract, dict)
         and layout_contract.get("allow_different_section_spans") is True
+        and layout_contract.get("facts", {}).get("matching_normalized_executable_section_spans") is True
         and _section_compatibility_signature(original) == _section_compatibility_signature(candidate)
+        and _section_rva_start_signature(original) == _section_rva_start_signature(candidate)
     )
     if not section_signature_matches and not section_contract_allows_span_delta:
         issues.append(
@@ -801,7 +2316,43 @@ def _layout_issues(
                         next_action="add the required layout fact or remove it from required_facts",
                     )
                 )
+            elif layout_contract.get("facts", {}).get(fact) is not True:
+                issues.append(
+                    _incomplete_record(
+                        category="unsatisfied_layout_fact",
+                        obligation_id=f"layout:fact:{fact}",
+                        blocker=f"strict layout contract requires fact {fact!r} to be true",
+                        next_action="regenerate the layout contract from a closed Stage A map or rebuild the fixtures with compatible PE layout",
+                        details={"fact": fact, "value": layout_contract.get("facts", {}).get(fact)},
+                    )
+                )
     return issues
+
+
+def _model_binary_issues(model: str, original: StageABinary, candidate: StageABinary) -> list[dict[str, Any]]:
+    spec = STAGE_A_MODEL_SPECS[model]
+    issues: list[dict[str, Any]] = []
+    for side, binary in (("original", original), ("candidate", candidate)):
+        if binary.machine == spec["machine"] and binary.bitness == spec["bitness"]:
+            continue
+        issues.append(
+            _incomplete_record(
+                category="model_binary_mismatch",
+                obligation_id=f"model:{side}:architecture",
+                blocker=f"{side} binary does not match requested Stage A model {model}",
+                next_action="use the model matching the PE architecture or rebuild the fixture for the requested model",
+                details={
+                    "model": model,
+                    "expected": {"machine": spec["machine"], "bitness": spec["bitness"]},
+                    "actual": {"machine": binary.machine, "bitness": binary.bitness},
+                },
+            )
+        )
+    return issues
+
+
+def _model_id_for_binary(binary: StageABinary) -> str:
+    return STAGE_A_X86_64_MODEL_ID if binary.bitness == 64 else STAGE_A_MODEL_ID
 
 
 def _section_permission_signature(binary: StageABinary) -> list[dict[str, Any]]:
@@ -823,6 +2374,20 @@ def _section_compatibility_signature(binary: StageABinary) -> list[dict[str, Any
     return [
         {
             "name": section.name,
+            "executable": section.executable,
+            "readable": section.readable,
+            "writable": section.writable,
+            "contains_code": section.contains_code,
+        }
+        for section in binary.sections
+    ]
+
+
+def _section_rva_start_signature(binary: StageABinary) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": section.name,
+            "rva_start": section.rva_start,
             "executable": section.executable,
             "readable": section.readable,
             "writable": section.writable,
@@ -860,8 +2425,8 @@ def _jq_map_layout_issues(original: StageABinary, candidate: StageABinary) -> li
             _incomplete_record(
                 category="layout_mismatch",
                 obligation_id="jq-map:layout:architecture",
-                blocker="jq map generation requires both inputs to be x86 PE32 binaries",
-                next_action="rebuild the jq fixtures for i686-w64-mingw32",
+                blocker="generated map creation requires both inputs to use the same supported PE architecture",
+                next_action="rebuild the fixtures for a single supported Windows target",
             )
         )
     if _section_compatibility_signature(original) != _section_compatibility_signature(candidate):
@@ -874,6 +2439,19 @@ def _jq_map_layout_issues(original: StageABinary, candidate: StageABinary) -> li
                 details={
                     "original": _section_compatibility_signature(original),
                     "candidate": _section_compatibility_signature(candidate),
+                },
+            )
+        )
+    if _section_rva_start_signature(original) != _section_rva_start_signature(candidate):
+        issues.append(
+            _incomplete_record(
+                category="layout_mismatch",
+                obligation_id="jq-map:layout:section-rvas",
+                blocker="jq map generation requires matching PE section RVAs before span normalization",
+                next_action="make the jq fixture builds use the same linker script and section placement policy",
+                details={
+                    "original": _section_rva_start_signature(original),
+                    "candidate": _section_rva_start_signature(candidate),
                 },
             )
         )
@@ -896,24 +2474,29 @@ def _parse_linker_map_functions(path: Path, binary: StageABinary) -> list[dict[s
     except OSError as exc:
         raise StageAInputError(f"cannot read linker map {path}: {exc}") from exc
     symbol_starts: dict[int, list[str]] = {}
+    boundary_starts: set[int] = set()
     for line in text.splitlines():
         parsed = _parse_linker_map_symbol_line(line, binary)
-        if parsed is None:
+        if parsed is not None:
+            rva, name = parsed
+            if _executable_section_for_rva(binary, rva) is None:
+                continue
+            symbol_starts.setdefault(rva, [])
+            if name not in symbol_starts[rva]:
+                symbol_starts[rva].append(name)
             continue
-        rva, name = parsed
-        if _executable_section_for_rva(binary, rva) is None:
-            continue
-        symbol_starts.setdefault(rva, [])
-        if name not in symbol_starts[rva]:
-            symbol_starts[rva].append(name)
+        boundary = _parse_linker_map_text_boundary_line(line, binary)
+        if boundary is not None:
+            boundary_starts.add(boundary)
 
     functions: list[dict[str, Any]] = []
     ordered = sorted(symbol_starts)
+    range_boundaries = sorted(set(ordered) | boundary_starts)
     for index, rva in enumerate(ordered):
         section = _executable_section_for_rva(binary, rva)
         if section is None:
             continue
-        next_starts = [value for value in ordered[index + 1 :] if value > rva and value <= section.rva_end]
+        next_starts = [value for value in range_boundaries if value > rva and value <= section.rva_end]
         rva_end = next_starts[0] if next_starts else section.rva_end
         if rva_end <= rva:
             continue
@@ -928,6 +2511,20 @@ def _parse_linker_map_functions(path: Path, binary: StageABinary) -> list[dict[s
             }
         )
     return functions
+
+
+def _parse_linker_map_text_boundary_line(line: str, binary: StageABinary) -> int | None:
+    match = re.match(r"^\s*\.text\S*\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\b", line)
+    if match is None:
+        return None
+    address = int(match.group(1), 16)
+    if address >= binary.image_base:
+        rva = address - binary.image_base
+    else:
+        rva = address
+    if _executable_section_for_rva(binary, rva) is None:
+        return None
+    return rva
 
 
 def _parse_linker_map_symbol_line(line: str, binary: StageABinary) -> tuple[int, str] | None:
@@ -959,6 +2556,10 @@ def _executable_section_for_rva(binary: StageABinary, rva: int) -> StageASection
     return None
 
 
+def _capstone_mode(binary: StageABinary) -> int:
+    return capstone.CS_MODE_64 if binary.bitness == 64 else capstone.CS_MODE_32
+
+
 def _linker_function_issues(binary_name: str, functions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     if not functions:
@@ -968,6 +2569,27 @@ def _linker_function_issues(binary_name: str, functions: list[dict[str, Any]]) -
                 obligation_id=f"jq-map:{binary_name}:functions",
                 blocker=f"{binary_name} linker map did not expose executable symbols",
                 next_action="rebuild jq with linker map emission and unstripped symbols",
+            )
+        )
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for function in functions:
+        by_name.setdefault(str(function["name"]), []).append(function)
+    duplicates = {
+        name: [
+            {"rva_start": item["rva_start"], "rva_end": item["rva_end"], "aliases": item.get("aliases", [])}
+            for item in entries
+        ]
+        for name, entries in by_name.items()
+        if len(entries) > 1
+    }
+    if duplicates:
+        issues.append(
+            _incomplete_record(
+                category="ambiguous_linker_map",
+                obligation_id=f"jq-map:{binary_name}:duplicate-function-names",
+                blocker=f"{binary_name} linker map contains duplicate primary function names",
+                next_action="disambiguate duplicate linker-map symbols before accepting generated jq mappings",
+                details={"functions": duplicates},
             )
         )
     seen_ranges: list[tuple[str, BlockSide]] = [
@@ -993,6 +2615,208 @@ def _unique_functions_by_name(functions: list[dict[str, Any]]) -> dict[str, dict
     return {name: entries[0] for name, entries in grouped.items() if len(entries) == 1}
 
 
+def _match_linker_functions_by_name_or_unique_alias(
+    original_functions: list[dict[str, Any]],
+    candidate_functions: list[dict[str, Any]],
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any], str]], list[str], list[str], list[dict[str, Any]]]:
+    original_by_name = _unique_functions_by_name(original_functions)
+    candidate_by_name = _unique_functions_by_name(candidate_functions)
+    matched: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+    unmatched_original = set(original_by_name)
+    unmatched_candidate = set(candidate_by_name)
+    for name in sorted(set(original_by_name) & set(candidate_by_name)):
+        matched.append((original_by_name[name], candidate_by_name[name], _linker_function_match_key(name)))
+        unmatched_original.discard(name)
+        unmatched_candidate.discard(name)
+
+    original_by_key: dict[str, list[str]] = {}
+    candidate_by_key: dict[str, list[str]] = {}
+    for name in unmatched_original:
+        original_by_key.setdefault(_linker_function_match_key(name), []).append(name)
+    for name in unmatched_candidate:
+        candidate_by_key.setdefault(_linker_function_match_key(name), []).append(name)
+
+    issues: list[dict[str, Any]] = []
+    for key in sorted(set(original_by_key) & set(candidate_by_key)):
+        original_names = sorted(original_by_key[key])
+        candidate_names = sorted(candidate_by_key[key])
+        if len(original_names) == 1 and len(candidate_names) == 1:
+            original_name = original_names[0]
+            candidate_name = candidate_names[0]
+            matched.append((original_by_name[original_name], candidate_by_name[candidate_name], key))
+            unmatched_original.discard(original_name)
+            unmatched_candidate.discard(candidate_name)
+            continue
+        issues.append(
+            _incomplete_record(
+                category="ambiguous_linker_map",
+                obligation_id=f"jq-map:alias:{_artifact_name(key)}",
+                blocker="decorated linker-map names produce an ambiguous canonical alias match",
+                next_action="preserve exact function names or add a more specific linker-map alias rule",
+                details={"match_key": key, "original": original_names, "candidate": candidate_names},
+            )
+        )
+    return matched, sorted(unmatched_original), sorted(unmatched_candidate), issues
+
+
+def _match_import_thunk_functions_by_signature(
+    original: StageABinary,
+    candidate: StageABinary,
+    original_functions: list[dict[str, Any]],
+    candidate_functions: list[dict[str, Any]],
+    unmatched_original: list[str],
+    unmatched_candidate: list[str],
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[str], list[str], list[dict[str, Any]]]:
+    original_by_name = _unique_functions_by_name(original_functions)
+    candidate_by_name = _unique_functions_by_name(candidate_functions)
+    original_unmatched = set(unmatched_original)
+    candidate_unmatched = set(unmatched_candidate)
+    original_thunks = [
+        thunk
+        for name in sorted(original_unmatched)
+        for thunk in [_linker_function_import_thunk_evidence(original, original_by_name[name])]
+        if name in original_by_name and thunk is not None
+    ]
+    candidate_thunks = [
+        thunk
+        for name in sorted(candidate_unmatched)
+        for thunk in [_linker_function_import_thunk_evidence(candidate, candidate_by_name[name])]
+        if name in candidate_by_name and thunk is not None
+    ]
+    original_by_signature = _group_import_thunks_by_signature(original_thunks)
+    candidate_by_signature = _group_import_thunks_by_signature(candidate_thunks)
+
+    matched: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    issues: list[dict[str, Any]] = []
+    for signature in sorted(set(original_by_signature) & set(candidate_by_signature)):
+        left = original_by_signature[signature]
+        right = candidate_by_signature[signature]
+        if len(left) == 1 and len(right) == 1:
+            matched.append((left[0], right[0]))
+            original_unmatched.discard(str(left[0]["function"]["name"]))
+            candidate_unmatched.discard(str(right[0]["function"]["name"]))
+            continue
+        issues.append(
+            _incomplete_record(
+                category="ambiguous_import_thunk_match",
+                obligation_id=f"jq-map:import-thunk:{_artifact_name(signature)}",
+                blocker="PE import-thunk linker-map functions do not have a unique import-signature match",
+                next_action="preserve unique import thunk symbols or add disambiguating checked thunk metadata",
+                details={
+                    "import_signature": _import_signature_report(left[0]["import"] if left else right[0]["import"]),
+                    "original": [_import_thunk_match_report(item) for item in left],
+                    "candidate": [_import_thunk_match_report(item) for item in right],
+                },
+            )
+        )
+    return matched, sorted(original_unmatched), sorted(candidate_unmatched), issues
+
+
+def _group_import_thunks_by_signature(thunks: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for thunk in thunks:
+        grouped.setdefault(str(thunk["signature_key"]), []).append(thunk)
+    return grouped
+
+
+def _linker_function_import_thunk_evidence(binary: StageABinary, function: dict[str, Any]) -> dict[str, Any] | None:
+    start = int(function["rva_start"])
+    end = int(function["rva_end"])
+    if end <= start:
+        return None
+    data = binary.pe.get_data(start, min(16, end - start))
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    instructions = list(dis.disasm(data, binary.image_base + start))
+    if not instructions:
+        return None
+    first = instructions[0]
+    if int(first.address - binary.image_base) != start:
+        return None
+    imported = _direct_import_jump_instruction(binary, first)
+    if imported is None:
+        return None
+    thunk_end = start + int(first.size)
+    if thunk_end > end:
+        return None
+    padding = binary.pe.get_data(thunk_end, end - thunk_end)
+    if len(padding) != end - thunk_end or not _is_padding_bytes(binary, thunk_end, padding):
+        return None
+    return {
+        "function": function,
+        "block": BlockSide(start, thunk_end),
+        "function_range": BlockSide(start, end),
+        "import": imported,
+        "signature_key": _import_thunk_match_key(imported),
+        "instruction": _instruction_report(binary, first),
+        "padding_sha256": sha256_bytes(padding),
+    }
+
+
+def _import_thunk_block_entry(
+    original: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    match_key: str,
+) -> dict[str, Any]:
+    original_function = original["function"]
+    candidate_function = candidate["function"]
+    original_block: BlockSide = original["block"]
+    candidate_block: BlockSide = candidate["block"]
+    name = str(original_function["name"])
+    return {
+        "id": _artifact_name(f"{name}-import-thunk"),
+        "kind": "code",
+        "reachable": True,
+        "original": {"rva": original_block.rva_start, "size": original_block.size},
+        "candidate": {"rva": candidate_block.rva_start, "size": candidate_block.size},
+        "root": {"kind": "linker_map_function", "checked": True, "symbol": name},
+        "source": {
+            "kind": "import_thunk",
+            "function": name,
+            "candidate_function": str(candidate_function["name"]),
+            "function_match_key": match_key,
+            "import_signature": _import_signature_report(original["import"]),
+            "original_instruction": original["instruction"],
+            "candidate_instruction": candidate["instruction"],
+            "original_function_range": _range_report(original["function_range"]),
+            "candidate_function_range": _range_report(candidate["function_range"]),
+            "padding_classification": "verified_linker_function_suffix_padding",
+        },
+    }
+
+
+def _import_thunk_match_report(thunk: dict[str, Any] | None) -> dict[str, Any] | None:
+    if thunk is None:
+        return None
+    return {
+        "function": str(thunk["function"]["name"]),
+        "aliases": list(thunk["function"].get("aliases", [])),
+        "block": _range_report(thunk["block"]),
+        "function_range": _range_report(thunk["function_range"]),
+        "import_signature": _import_signature_report(thunk["import"]),
+        "instruction": thunk["instruction"],
+    }
+
+
+def _import_thunk_match_key(imported: StageAImport) -> str:
+    symbol = imported.symbol if imported.symbol is not None else f"ordinal-{imported.ordinal}"
+    return f"{imported.dll}!{symbol}"
+
+
+def _import_signature_report(imported: StageAImport) -> dict[str, Any]:
+    return {"dll": imported.dll, "symbol": imported.symbol, "ordinal": imported.ordinal}
+
+
+def _linker_function_match_key(name: str) -> str:
+    value = name
+    if "@" in value:
+        left, right = value.rsplit("@", 1)
+        if right.isdigit():
+            value = left
+    return value.lstrip("_")
+
+
 def _match_function_blocks(
     name: str,
     original: StageABinary,
@@ -1000,40 +2824,198 @@ def _match_function_blocks(
     original_blocks: list[dict[str, Any]],
     candidate_blocks: list[dict[str, Any]],
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[dict[str, Any]]]:
-    del original, candidate
-    if len(original_blocks) != 1 or len(candidate_blocks) != 1:
+    if len(original_blocks) != len(candidate_blocks):
         return [], [
             _incomplete_record(
                 category="ambiguous_block_match",
                 obligation_id=f"jq-map:function:{_artifact_name(name)}",
-                blocker="jq function map expected exactly one recovered function block per linker-map symbol",
-                next_action="extend the jq map generator to match split basic blocks for this function",
-                details={"function": name, "original_blocks": len(original_blocks), "candidate_blocks": len(candidate_blocks)},
+                blocker="jq function map recovered different basic-block counts for matching linker-map symbols",
+                next_action="extend the jq map generator to match split basic blocks for this function by CFG shape",
+                details=_ambiguous_block_match_details(
+                    name=name,
+                    original=original,
+                    candidate=candidate,
+                    original_blocks=original_blocks,
+                    candidate_blocks=candidate_blocks,
+                ),
             )
         ]
-    return [(original_blocks[0], candidate_blocks[0])], []
+    return list(zip(original_blocks, candidate_blocks)), []
+
+
+def _ambiguous_block_match_details(
+    *,
+    name: str,
+    original: StageABinary,
+    candidate: StageABinary,
+    original_blocks: list[dict[str, Any]],
+    candidate_blocks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "function": name,
+        "original_blocks": len(original_blocks),
+        "candidate_blocks": len(candidate_blocks),
+        "block_count_delta": len(candidate_blocks) - len(original_blocks),
+        "original_block_shapes": _block_shape_summaries(original, original_blocks),
+        "candidate_block_shapes": _block_shape_summaries(candidate, candidate_blocks),
+    }
+
+
+def _block_shape_summaries(binary: StageABinary, blocks: list[dict[str, Any]], *, limit: int = 64) -> dict[str, Any]:
+    summaries = [
+        _block_shape_summary(binary, index, block)
+        for index, block in enumerate(blocks[:limit])
+    ]
+    return {
+        "count": len(blocks),
+        "items": summaries,
+        "truncated": max(0, len(blocks) - limit),
+    }
+
+
+def _block_shape_summary(binary: StageABinary, index: int, block: dict[str, Any]) -> dict[str, Any]:
+    rva_start = int(block["rva_start"])
+    rva_end = int(block["rva_end"])
+    data = binary.pe.get_data(rva_start, rva_end - rva_start)
+    instructions = _disassemble_block(binary, rva_start, data)
+    terminal = instructions[-1] if instructions else None
+    first = instructions[0] if instructions else None
+    edges = _direct_cfg_edges(binary, BlockSide(rva_start, rva_end))
+    return {
+        "index": index,
+        "rva_start": rva_start,
+        "rva_end": rva_end,
+        "size": rva_end - rva_start,
+        "instruction_count": len(instructions),
+        "first_instruction": _instruction_shape(binary, first),
+        "terminal_instruction": _instruction_shape(binary, terminal),
+        "direct_edge_counts": _edge_kind_counts(edges),
+        "direct_edges": edges[:8],
+        "direct_edges_truncated": max(0, len(edges) - 8),
+        "bytes_sha256": block.get("bytes_sha256"),
+        "match_key": block.get("match_key"),
+    }
+
+
+def _disassemble_block(binary: StageABinary, rva_start: int, data: bytes) -> list[Any]:
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    return list(dis.disasm(data, binary.image_base + rva_start))
+
+
+def _instruction_shape(binary: StageABinary, insn: Any | None) -> dict[str, Any] | None:
+    if insn is None:
+        return None
+    return {
+        "rva": int(insn.address - binary.image_base),
+        "mnemonic": str(insn.mnemonic),
+        "op_str": str(insn.op_str),
+        "size": int(insn.size),
+    }
+
+
+def _edge_kind_counts(edges: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for edge in edges:
+        kind = str(edge.get("kind") or "unknown")
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
 
 
 def _recover_basic_blocks(binary: StageABinary, rva_start: int, rva_end: int) -> list[dict[str, Any]]:
     data = binary.pe.get_data(rva_start, rva_end - rva_start)
-    dis = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
     dis.detail = True
     instructions = list(dis.disasm(data, binary.image_base + rva_start))
     decoded = sum(int(insn.size) for insn in instructions)
-    match_key = {
-        "kind": "linker_map_function_range",
-        "instruction_count": len(instructions),
-        "decoded_bytes": decoded,
-        "range_size": len(data),
+    if not instructions or decoded != len(data):
+        return [_function_range_block(binary, rva_start, rva_end, data, len(instructions), decoded)]
+
+    insn_by_rva = {int(insn.address - binary.image_base): insn for insn in instructions}
+    starts: set[int] = {rva_start}
+    for insn in instructions:
+        rva = int(insn.address - binary.image_base)
+        next_rva = rva + int(insn.size)
+        mnemonic = insn.mnemonic
+        if _is_conditional_jump(mnemonic):
+            target = _resolved_branch_target(binary, insn)
+            if target is not None and rva_start <= target < rva_end:
+                starts.add(target)
+            if next_rva < rva_end:
+                starts.add(next_rva)
+        elif mnemonic in {"jmp", "ljmp"}:
+            target = _resolved_branch_target(binary, insn)
+            if target is not None and rva_start <= target < rva_end:
+                starts.add(target)
+        elif mnemonic == "call":
+            target = _resolved_branch_target(binary, insn)
+            if target is not None and rva_start <= target < rva_end:
+                starts.add(target)
+            if _is_noreturn_import_call(binary, insn) and next_rva < rva_end:
+                starts.add(next_rva)
+
+    ordered_starts = [start for start in sorted(starts) if start in insn_by_rva]
+    if not ordered_starts:
+        return [_function_range_block(binary, rva_start, rva_end, data, len(instructions), decoded)]
+
+    blocks: list[dict[str, Any]] = []
+    instruction_rvas = sorted(insn_by_rva)
+    for index, start in enumerate(ordered_starts):
+        next_start = ordered_starts[index + 1] if index + 1 < len(ordered_starts) else rva_end
+        block_end = next_start
+        for insn_rva in instruction_rvas:
+            if insn_rva < start:
+                continue
+            if insn_rva >= next_start:
+                break
+            insn = insn_by_rva[insn_rva]
+            insn_end = insn_rva + int(insn.size)
+            if _instruction_ends_basic_block(insn) or _is_noreturn_import_call(binary, insn):
+                block_end = insn_end
+                break
+        if block_end <= start:
+            continue
+        block_data = binary.pe.get_data(start, block_end - start)
+        if _is_padding_bytes(binary, start, block_data):
+            continue
+        blocks.append(
+            {
+                "rva_start": start,
+                "rva_end": block_end,
+                "bytes_sha256": sha256_bytes(block_data),
+                "match_key": {
+                    "kind": "recovered_basic_block",
+                    "function_rva_start": rva_start,
+                    "function_rva_end": rva_end,
+                    "block_index": len(blocks),
+                    "instruction_count": sum(1 for item in instructions if start <= int(item.address - binary.image_base) < block_end),
+                    "range_size": len(block_data),
+                },
+            }
+        )
+    return blocks or [_function_range_block(binary, rva_start, rva_end, data, len(instructions), decoded)]
+
+
+def _function_range_block(
+    binary: StageABinary,
+    rva_start: int,
+    rva_end: int,
+    data: bytes,
+    instruction_count: int,
+    decoded: int,
+) -> dict[str, Any]:
+    del binary
+    return {
+        "rva_start": rva_start,
+        "rva_end": rva_end,
+        "bytes_sha256": sha256_bytes(data),
+        "match_key": {
+            "kind": "linker_map_function_range",
+            "instruction_count": instruction_count,
+            "decoded_bytes": decoded,
+            "range_size": len(data),
+        },
     }
-    return [
-        {
-            "rva_start": rva_start,
-            "rva_end": rva_end,
-            "bytes_sha256": sha256_bytes(data),
-            "match_key": match_key,
-        }
-    ]
 
 
 def _section_gap_waivers(binary_name: str, binary: StageABinary, ranges: list[BlockSide]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1074,6 +3056,8 @@ def _paired_section_gap_classification(
     *,
     original_flags: str,
     candidate_flags: str,
+    proof_rule: str,
+    proof_metadata: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     original_ranges = [
         BlockSide(_parse_int(block["original"]["rva"]), _parse_int(block["original"]["rva"]) + _parse_int(block["original"]["size"]))
@@ -1091,84 +3075,226 @@ def _paired_section_gap_classification(
     for section in sorted(set(original_gaps) | set(candidate_gaps)):
         left_gaps = original_gaps.get(section, [])
         right_gaps = candidate_gaps.get(section, [])
-        if len(left_gaps) != len(right_gaps):
+        left_code_blocks, left_waivers = _section_gap_code_blocks("original", original, left_gaps)
+        right_code_blocks, right_waivers = _section_gap_code_blocks("candidate", candidate, right_gaps)
+        waivers.extend(left_waivers)
+        waivers.extend(right_waivers)
+        if len(left_code_blocks) != len(right_code_blocks):
             issues.append(
                 _incomplete_record(
                     category="ambiguous_section_gap_match",
                     obligation_id=f"jq-map:section-gap:{_artifact_name(section)}",
-                    blocker="original and candidate executable section gaps do not have the same count",
-                    next_action="extend the jq map generator to match section gaps by content or CFG",
-                    details={"section": section, "original_gaps": len(left_gaps), "candidate_gaps": len(right_gaps)},
-                )
-            )
-            continue
-        for index, (left, right) in enumerate(zip(left_gaps, right_gaps)):
-            left_bytes = original.pe.get_data(left.rva_start, left.size)
-            right_bytes = candidate.pe.get_data(right.rva_start, right.size)
-            left_padding = _is_padding_bytes(original, left.rva_start, left_bytes)
-            right_padding = _is_padding_bytes(candidate, right.rva_start, right_bytes)
-            if left_padding and right_padding:
-                waivers.extend(
-                    [
-                        {
-                            "id": f"original-padding-{left.rva_start:x}-{left.rva_end:x}",
-                            "binary": "original",
-                            "rva": left.rva_start,
-                            "size": left.size,
-                            "reason": "verified executable section gap is zero-fill or padding instructions",
-                        },
-                        {
-                            "id": f"candidate-padding-{right.rva_start:x}-{right.rva_end:x}",
-                            "binary": "candidate",
-                            "rva": right.rva_start,
-                            "size": right.size,
-                            "reason": "verified executable section gap is zero-fill or padding instructions",
-                        },
-                    ]
-                )
-                continue
-            if not left_padding and not right_padding:
-                name = f"section-gap-{section}-{index:04d}"
-                gap_blocks.append(
-                    {
-                        "id": _artifact_name(name),
-                        "kind": "code",
-                        "reachable": True,
-                        "root": {"kind": "linker_map_section_gap", "checked": True, "section": section, "index": index},
-                        "original": {"rva": left.rva_start, "size": left.size},
-                        "candidate": {"rva": right.rva_start, "size": right.size},
-                        "source": {
-                            "kind": "paired_executable_section_gap_v1",
-                            "section": section,
-                            "gap_index": index,
-                            "original_sha256": sha256_bytes(left_bytes),
-                            "candidate_sha256": sha256_bytes(right_bytes),
-                        },
-                        "proof": {
-                            "rule": "reproducible_jq_same_source_optimization_pair_v1",
-                            "checked": True,
-                            "function": name,
-                            "original_flags": original_flags,
-                            "candidate_flags": candidate_flags,
-                        },
-                    }
-                )
-                continue
-            issues.append(
-                _incomplete_record(
-                    category="ambiguous_section_gap_match",
-                    obligation_id=f"jq-map:section-gap:{_artifact_name(section)}:{index}",
-                    blocker="one executable section gap is padding and the paired gap is code",
-                    next_action="recover a stronger mapping for this section gap",
+                    blocker="original and candidate executable section gap basic blocks do not have the same count after padding normalization",
+                    next_action="extend the jq map generator to match split section-gap blocks by CFG shape",
                     details={
                         "section": section,
-                        "index": index,
-                        "original": {"rva_start": left.rva_start, "rva_end": left.rva_end, "padding": left_padding},
-                        "candidate": {"rva_start": right.rva_start, "rva_end": right.rva_end, "padding": right_padding},
+                        "original_code_blocks": len(left_code_blocks),
+                        "candidate_code_blocks": len(right_code_blocks),
+                        "original_gaps": len(left_gaps),
+                        "candidate_gaps": len(right_gaps),
+                        "original_unmatched_sample": _gap_block_sample(left_code_blocks, limit=8),
+                        "candidate_unmatched_sample": _gap_block_sample(right_code_blocks, limit=8),
                     },
                 )
             )
+            continue
+        for index, (left_unit, right_unit) in enumerate(zip(left_code_blocks, right_code_blocks)):
+            left = left_unit["block"]
+            right = right_unit["block"]
+            left_bytes = left_unit["bytes"]
+            right_bytes = right_unit["bytes"]
+            name = f"section-gap-{section}-{index:04d}"
+            gap_blocks.append(
+                {
+                    "id": _artifact_name(name),
+                    "kind": "code",
+                    "reachable": True,
+                    "root": {"kind": "linker_map_section_gap", "checked": True, "section": section, "index": index},
+                    "original": {"rva": left.rva_start, "size": left.size},
+                    "candidate": {"rva": right.rva_start, "size": right.size},
+                    "source": {
+                        "kind": "paired_executable_section_gap_v1",
+                        "section": section,
+                        "gap_index": index,
+                        "original_gap_index": left_unit["gap_index"],
+                        "candidate_gap_index": right_unit["gap_index"],
+                        "original_gap_block_index": left_unit["gap_block_index"],
+                        "candidate_gap_block_index": right_unit["gap_block_index"],
+                        "original_match": left_unit["match_key"],
+                        "candidate_match": right_unit["match_key"],
+                        "original_sha256": sha256_bytes(left_bytes),
+                        "candidate_sha256": sha256_bytes(right_bytes),
+                    },
+                    "proof": _generated_mapping_proof(
+                        proof_rule=proof_rule,
+                        function=name,
+                        original_flags=original_flags,
+                        candidate_flags=candidate_flags,
+                        proof_metadata=proof_metadata,
+                    ),
+                }
+            )
     return gap_blocks, waivers, issues
+
+
+def _section_gap_code_blocks(
+    binary_name: str,
+    binary: StageABinary,
+    gaps: list[BlockSide],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    code_blocks: list[dict[str, Any]] = []
+    waivers: list[dict[str, Any]] = []
+    for gap_index, gap in enumerate(gaps):
+        queue = [gap]
+        seen: set[tuple[int, int]] = set()
+        gap_block_index = 0
+        while queue:
+            span = queue.pop(0)
+            span_key = (span.rva_start, span.rva_end)
+            if span_key in seen or span.size <= 0:
+                continue
+            seen.add(span_key)
+            data = binary.pe.get_data(span.rva_start, span.size)
+            if len(data) != span.size:
+                code_blocks.append(
+                    {
+                        "gap_index": gap_index,
+                        "gap_block_index": gap_block_index,
+                        "block": span,
+                        "bytes": data,
+                        "match_key": {"kind": "unreadable_section_gap_fragment", "range_size": span.size, "read_bytes": len(data)},
+                    }
+                )
+                gap_block_index += 1
+                continue
+            if _is_padding_bytes(binary, span.rva_start, data):
+                waivers.append(_padding_waiver(binary_name, span))
+                continue
+
+            recovered = [
+                item
+                for item in _recover_basic_blocks(binary, span.rva_start, span.rva_end)
+                if span.rva_start <= int(item["rva_start"]) < int(item["rva_end"]) <= span.rva_end
+            ]
+            recovered_ranges: list[BlockSide] = []
+            for item in recovered:
+                block = BlockSide(int(item["rva_start"]), int(item["rva_end"]))
+                block_bytes = binary.pe.get_data(block.rva_start, block.size)
+                recovered_ranges.append(block)
+                if len(block_bytes) != block.size:
+                    code_blocks.append(
+                        {
+                            "gap_index": gap_index,
+                            "gap_block_index": gap_block_index,
+                            "block": block,
+                            "bytes": block_bytes,
+                            "match_key": {
+                                "kind": "unreadable_section_gap_fragment",
+                                "range_size": block.size,
+                                "read_bytes": len(block_bytes),
+                            },
+                        }
+                    )
+                    gap_block_index += 1
+                    continue
+                if _is_padding_bytes(binary, block.rva_start, block_bytes):
+                    waivers.append(_padding_waiver(binary_name, block))
+                    continue
+
+                edge_padding, code_span, code_bytes = _trim_padding_edges(binary, block, block_bytes)
+                for padding in edge_padding:
+                    waivers.append(_padding_waiver(binary_name, padding))
+                if code_span is None:
+                    continue
+                if _is_padding_bytes(binary, code_span.rva_start, code_bytes):
+                    waivers.append(_padding_waiver(binary_name, code_span))
+                    continue
+                code_blocks.append(
+                    {
+                        "gap_index": gap_index,
+                        "gap_block_index": gap_block_index,
+                        "block": code_span,
+                        "bytes": code_bytes,
+                        "match_key": {
+                            **item["match_key"],
+                            "trimmed_padding_prefix": code_span.rva_start - block.rva_start,
+                            "trimmed_padding_suffix": block.rva_end - code_span.rva_end,
+                        },
+                    }
+                )
+                gap_block_index += 1
+
+            if not recovered_ranges:
+                code_blocks.append(
+                    {
+                        "gap_index": gap_index,
+                        "gap_block_index": gap_block_index,
+                        "block": span,
+                        "bytes": data,
+                        "match_key": {"kind": "unrecovered_section_gap_fragment", "range_size": span.size},
+                    }
+                )
+                gap_block_index += 1
+                continue
+
+            for residue in _gaps(span.rva_start, span.rva_end, recovered_ranges):
+                if residue.size > 0:
+                    queue.append(residue)
+    code_blocks.sort(key=lambda item: (item["block"].rva_start, item["block"].rva_end))
+    return code_blocks, waivers
+
+
+def _trim_padding_edges(binary: StageABinary, block: BlockSide, data: bytes) -> tuple[list[BlockSide], BlockSide | None, bytes]:
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    instructions = list(dis.disasm(data, binary.image_base + block.rva_start))
+    if sum(int(insn.size) for insn in instructions) != len(data):
+        return [], block, data
+
+    first_code_index = 0
+    while first_code_index < len(instructions) and _is_padding_instruction(instructions[first_code_index]):
+        first_code_index += 1
+    if first_code_index == len(instructions):
+        return [block], None, b""
+
+    last_code_index = len(instructions) - 1
+    while last_code_index > first_code_index and _is_padding_instruction(instructions[last_code_index]):
+        last_code_index -= 1
+
+    code_start = int(instructions[first_code_index].address - binary.image_base)
+    last_code = instructions[last_code_index]
+    code_end = int(last_code.address - binary.image_base) + int(last_code.size)
+    padding: list[BlockSide] = []
+    if block.rva_start < code_start:
+        padding.append(BlockSide(block.rva_start, code_start))
+    if code_end < block.rva_end:
+        padding.append(BlockSide(code_end, block.rva_end))
+    code_span = BlockSide(code_start, code_end)
+    return padding, code_span, binary.pe.get_data(code_span.rva_start, code_span.size)
+
+
+def _padding_waiver(binary_name: str, span: BlockSide) -> dict[str, Any]:
+    return {
+        "id": f"{binary_name}-padding-{span.rva_start:x}-{span.rva_end:x}",
+        "binary": binary_name,
+        "rva": span.rva_start,
+        "size": span.size,
+        "reason": "verified executable section gap is zero-fill or padding instructions",
+    }
+
+
+def _gap_block_sample(items: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "rva_start": item["block"].rva_start,
+            "rva_end": item["block"].rva_end,
+            "gap_index": item["gap_index"],
+            "gap_block_index": item["gap_block_index"],
+            "match_key": item["match_key"],
+            "bytes_sha256": sha256_bytes(item["bytes"]) if isinstance(item.get("bytes"), bytes) else None,
+        }
+        for item in items[:limit]
+    ]
 
 
 def _section_gaps(binary: StageABinary, ranges: list[BlockSide]) -> dict[str, list[BlockSide]]:
@@ -1187,32 +3313,103 @@ def _is_padding_bytes(binary: StageABinary, rva_start: int, data: bytes) -> bool
         return True
     if all(byte in {0x00, 0x90, 0xCC} for byte in data):
         return True
-    dis = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
     instructions = list(dis.disasm(data, binary.image_base + rva_start))
     if sum(int(insn.size) for insn in instructions) != len(data):
         return False
-    return all(insn.mnemonic in {"nop", "int3"} for insn in instructions)
+    if all(_is_padding_instruction(insn) for insn in instructions):
+        return True
+    return _is_alignment_jump_over_padding(binary, BlockSide(rva_start, rva_start + len(data)), instructions)
+
+
+def _is_padding_instruction(insn: Any) -> bool:
+    if insn.mnemonic in {"nop", "int3"}:
+        return True
+    if insn.mnemonic != "lea" or len(insn.operands) != 2:
+        return False
+    destination, source = insn.operands
+    if destination.type != X86_OP_REG or source.type != X86_OP_MEM:
+        return False
+    mem = source.mem
+    return destination.reg == mem.base and not mem.index and mem.disp == 0
+
+
+def _is_alignment_jump_over_padding(binary: StageABinary, span: BlockSide, instructions: list[Any]) -> bool:
+    if not instructions:
+        return False
+    insn = instructions[0]
+    if insn.mnemonic not in {"jmp", "ljmp"}:
+        return False
+    target = _resolved_branch_target(binary, insn)
+    if target is None:
+        return False
+    insn_end = int(insn.address - binary.image_base) + int(insn.size)
+    if target < insn_end:
+        return False
+    if target < span.rva_end and not all(_is_padding_instruction(item) for item in instructions[1:]):
+        return False
+    bridge_end = max(span.rva_end, target)
+    section = _executable_section_covering_range(binary, span.rva_start, bridge_end)
+    if section is None:
+        return False
+    skipped_start = insn_end
+    skipped_end = target
+    if skipped_start == skipped_end:
+        return target == span.rva_end
+    skipped = binary.pe.get_data(skipped_start, skipped_end - skipped_start)
+    return len(skipped) == skipped_end - skipped_start and _is_padding_bytes(binary, skipped_start, skipped)
 
 
 def _generated_layout_contract(original: StageABinary, candidate: StageABinary, map_payload: dict[str, Any]) -> dict[str, Any]:
+    facts = {
+        "matching_architecture": original.machine == candidate.machine and original.bitness == candidate.bitness,
+        "matching_section_rvas": _section_rva_start_signature(original) == _section_rva_start_signature(candidate),
+        "matching_section_permissions": _section_compatibility_signature(original) == _section_compatibility_signature(candidate),
+        "matching_imports": _import_signature(original) == _import_signature(candidate),
+        "all_executable_bytes_classified": map_payload.get("status") == "pass",
+    }
+    facts["matching_normalized_executable_section_spans"] = (
+        facts["matching_architecture"]
+        and facts["matching_section_rvas"]
+        and facts["matching_section_permissions"]
+        and facts["all_executable_bytes_classified"]
+    )
     return {
         "format": "stage-a-layout-contract-v1",
         "generator": "stage-a-generate-map",
         "require_same_image_base": original.image_base == candidate.image_base,
-        "allow_different_section_spans": True,
+        "allow_different_section_spans": facts["matching_normalized_executable_section_spans"],
         "required_facts": [
             "matching_architecture",
+            "matching_section_rvas",
             "matching_section_permissions",
             "matching_imports",
             "all_executable_bytes_classified",
+            "matching_normalized_executable_section_spans",
         ],
-        "facts": {
-            "matching_architecture": original.machine == candidate.machine and original.bitness == candidate.bitness,
-            "matching_section_permissions": _section_compatibility_signature(original) == _section_compatibility_signature(candidate),
-            "matching_imports": _import_signature(original) == _import_signature(candidate),
-            "all_executable_bytes_classified": map_payload.get("status") == "pass",
-        },
+        "facts": facts,
+        "normalized_sections": _normalized_section_reports(original, candidate),
     }
+
+
+def _normalized_section_reports(original: StageABinary, candidate: StageABinary) -> list[dict[str, Any]]:
+    reports: list[dict[str, Any]] = []
+    by_name = {section.name: section for section in candidate.sections}
+    for section in original.sections:
+        other = by_name.get(section.name)
+        normalized_rva_end = max(section.rva_end, other.rva_end) if other is not None and section.executable else section.rva_end
+        reports.append(
+            {
+                "name": section.name,
+                "executable": section.executable,
+                "rva_start": section.rva_start,
+                "normalized_rva_end": normalized_rva_end,
+                "original_rva_end": section.rva_end,
+                "candidate_rva_end": other.rva_end if other is not None else None,
+            }
+        )
+    return reports
 
 
 def _parse_block_map(payload: Any, original: StageABinary) -> tuple[list[BlockMapping], list[NonCodeWaiver], list[dict[str, Any]]]:
@@ -1362,19 +3559,119 @@ def _range_overlap_issues(binary_name: str, ranges: list[tuple[str, BlockSide]])
     return issues
 
 
-def _waiver_obligations(waivers: Iterable[NonCodeWaiver]) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": f"waiver:{waiver.id}:{waiver.binary}:{waiver.rva_start:x}-{waiver.rva_end:x}",
-            "kind": "executable_byte_class",
-            "status": "waived_noncode",
-            "binary": waiver.binary,
+def _waiver_obligations(
+    original: StageABinary,
+    candidate: StageABinary,
+    waivers: Iterable[NonCodeWaiver],
+) -> tuple[list[NonCodeWaiver], list[dict[str, Any]]]:
+    verified: list[NonCodeWaiver] = []
+    obligations: list[dict[str, Any]] = []
+    for waiver in waivers:
+        checks = _verify_waiver(original, candidate, waiver)
+        obligation_id = f"waiver:{waiver.id}:{waiver.binary}:{waiver.rva_start:x}-{waiver.rva_end:x}"
+        failed = [check for check in checks if check["status"] != "verified"]
+        if failed:
+            blocker = _incomplete_record(
+                category="unverified_noncode_waiver",
+                obligation_id=obligation_id,
+                blocker="non-code waiver bytes are not independently verified as executable-section padding",
+                next_action="narrow the waiver to verified padding bytes or map the range as code",
+                details={
+                    "waiver": {
+                        "id": waiver.id,
+                        "binary": waiver.binary,
+                        "rva_start": waiver.rva_start,
+                        "rva_end": waiver.rva_end,
+                        "reason": waiver.reason,
+                    },
+                    "checks": checks,
+                },
+            )
+            obligations.append(
+                {
+                    "id": obligation_id,
+                    "kind": "executable_byte_class",
+                    "status": "incomplete",
+                    "binary": waiver.binary,
+                    "rva_start": waiver.rva_start,
+                    "rva_end": waiver.rva_end,
+                    "reason": waiver.reason,
+                    "incomplete": blocker,
+                }
+            )
+            continue
+        verified.append(waiver)
+        obligations.append(
+            {
+                "id": obligation_id,
+                "kind": "executable_byte_class",
+                "status": "waived_noncode",
+                "proof_rule": "verified_padding_bytes_v1",
+                "binary": waiver.binary,
+                "rva_start": waiver.rva_start,
+                "rva_end": waiver.rva_end,
+                "reason": waiver.reason,
+                "checks": checks,
+            }
+        )
+    return verified, obligations
+
+
+def _verify_waiver(original: StageABinary, candidate: StageABinary, waiver: NonCodeWaiver) -> list[dict[str, Any]]:
+    sides = []
+    if waiver.binary in {"original", "both"}:
+        sides.append(("original", original))
+    if waiver.binary in {"candidate", "both"}:
+        sides.append(("candidate", candidate))
+    return [_verify_waiver_side(side, binary, waiver) for side, binary in sides]
+
+
+def _verify_waiver_side(side: str, binary: StageABinary, waiver: NonCodeWaiver) -> dict[str, Any]:
+    section = _executable_section_covering_range(binary, waiver.rva_start, waiver.rva_end)
+    if section is None:
+        return {
+            "binary": side,
+            "status": "not_executable_section_padding",
             "rva_start": waiver.rva_start,
             "rva_end": waiver.rva_end,
-            "reason": waiver.reason,
+            "reason": "waiver range is not fully contained in one executable section",
         }
-        for waiver in waivers
-    ]
+    data = binary.pe.get_data(waiver.rva_start, waiver.rva_end - waiver.rva_start)
+    if len(data) != waiver.rva_end - waiver.rva_start:
+        return {
+            "binary": side,
+            "status": "unreadable",
+            "rva_start": waiver.rva_start,
+            "rva_end": waiver.rva_end,
+            "section": section.name,
+            "read_bytes": len(data),
+        }
+    if not _is_padding_bytes(binary, waiver.rva_start, data):
+        return {
+            "binary": side,
+            "status": "not_padding",
+            "rva_start": waiver.rva_start,
+            "rva_end": waiver.rva_end,
+            "section": section.name,
+            "bytes_sha256": sha256_bytes(data),
+        }
+    return {
+        "binary": side,
+        "status": "verified",
+        "rva_start": waiver.rva_start,
+        "rva_end": waiver.rva_end,
+        "section": section.name,
+        "bytes_sha256": sha256_bytes(data),
+    }
+
+
+def _executable_section_covering_range(binary: StageABinary, rva_start: int, rva_end: int) -> StageASection | None:
+    if rva_end <= rva_start:
+        return None
+    for section in binary.sections:
+        if section.executable and section.rva_start <= rva_start and rva_end <= section.rva_end:
+            return section
+    return None
 
 
 def _coverage_obligations(
@@ -1505,14 +3802,28 @@ def _cfg_edge_obligations(
     for mapped in mappings:
         if mapped.kind != "code" or block_statuses.get(f"block:{mapped.id}") != "proved":
             continue
-        if _checked_mapping_proof(mapped) is not None:
+
+        original_structure = _block_structure_analysis(original, mapped.original, "original", mapped.id)
+        candidate_structure = _block_structure_analysis(candidate, mapped.candidate, "candidate", mapped.id)
+        structure_blockers = original_structure["blockers"] + candidate_structure["blockers"]
+        generated_indirect_obligations = _generated_indirect_target_obligations(mapped, original_structure["blockers"], candidate_structure["blockers"])
+        if generated_indirect_obligations is not None:
+            obligations.extend(generated_indirect_obligations)
+            structure_blockers = [blocker for blocker in structure_blockers if blocker["category"] != "unknown_target"]
+        for blocker in structure_blockers:
+            obligations.append({"id": blocker["obligation_id"], "kind": "block_structure", "status": "incomplete", "incomplete": blocker})
+        if structure_blockers:
             continue
-        original_edges = _direct_cfg_edges(original, mapped.original)
-        candidate_edges = _direct_cfg_edges(candidate, mapped.candidate)
+
+        original_edges = original_structure["edges"]
+        candidate_edges = candidate_structure["edges"]
+        matched_candidate_edges: set[int] = set()
+        edge_incomplete = False
         for original_edge in original_edges:
             obligation_id = f"edge:{mapped.id}:{original_edge['kind']}:{original_edge['target_rva']:x}"
-            target_id = original_targets.get(original_edge["target_rva"])
+            original_edge, target_id = _canonical_mapped_edge(original, original_targets, original_edge)
             if target_id is None:
+                edge_incomplete = True
                 blocker = _incomplete_record(
                     category="unmapped_cfg_edge",
                     obligation_id=obligation_id,
@@ -1522,15 +3833,19 @@ def _cfg_edge_obligations(
                 )
                 obligations.append({"id": obligation_id, "kind": "cfg_edge", "status": "incomplete", "incomplete": blocker})
                 continue
-            matching_candidate_edges = [
-                edge
-                for edge in candidate_edges
-                if edge["kind"] == original_edge["kind"] and candidate_targets.get(edge["target_rva"]) == target_id
-            ]
-            if not matching_candidate_edges:
+            matching_candidate_edge: tuple[int, dict[str, Any]] | None = None
+            for index, edge in enumerate(candidate_edges):
+                if index in matched_candidate_edges:
+                    continue
+                candidate_edge, candidate_target_id = _canonical_mapped_edge(candidate, candidate_targets, edge)
+                if candidate_edge["kind"] == original_edge["kind"] and candidate_target_id == target_id:
+                    matching_candidate_edge = (index, candidate_edge)
+                    break
+            if matching_candidate_edge is None:
                 candidate_edge_reports = [
-                    {**edge, "mapped_target": candidate_targets.get(edge["target_rva"])}
+                    {**canonical_edge, "mapped_target": candidate_target_id}
                     for edge in candidate_edges
+                    for canonical_edge, candidate_target_id in [_canonical_mapped_edge(candidate, candidate_targets, edge)]
                     if edge["kind"] == original_edge["kind"]
                 ]
                 failure = _failure_record(
@@ -1543,6 +3858,8 @@ def _cfg_edge_obligations(
                 )
                 obligations.append({"id": obligation_id, "kind": "cfg_edge", "status": "failed", "failure": failure})
                 continue
+            candidate_edge_index, candidate_edge = matching_candidate_edge
+            matched_candidate_edges.add(candidate_edge_index)
             obligations.append(
                 {
                     "id": obligation_id,
@@ -1553,10 +3870,127 @@ def _cfg_edge_obligations(
                     "edge_kind": original_edge["kind"],
                     "target_block": target_id,
                     "original_edge": original_edge,
-                    "candidate_edge": matching_candidate_edges[0],
+                    "candidate_edge": candidate_edge,
                 }
             )
+        if edge_incomplete:
+            continue
+        for index, candidate_edge in enumerate(candidate_edges):
+            if index in matched_candidate_edges:
+                continue
+            obligation_id = f"edge:{mapped.id}:candidate-extra:{candidate_edge['kind']}:{candidate_edge['target_rva']:x}"
+            candidate_edge, mapped_target = _canonical_mapped_edge(candidate, candidate_targets, candidate_edge)
+            if mapped_target is None:
+                blocker = _incomplete_record(
+                    category="unmapped_cfg_edge",
+                    obligation_id=obligation_id,
+                    blocker="direct candidate CFG edge target is not covered by a block mapping",
+                    next_action="add a mapped target block or fix the candidate mapping/proof",
+                    details={"source_block": mapped.id, "candidate_edge": candidate_edge},
+                )
+                obligations.append({"id": obligation_id, "kind": "cfg_edge", "status": "incomplete", "incomplete": blocker})
+                continue
+            failure = _failure_record(
+                category="cfg_edge_mismatch",
+                obligation_id=obligation_id,
+                blocker="candidate CFG edge has no matching original edge",
+                original={"source_block": mapped.id, "edges": original_edges},
+                candidate={"source_block": mapped.id, "edge": candidate_edge, "mapped_target": mapped_target},
+                details={"source_block": mapped.id, "unexpected_target_block": mapped_target},
+            )
+            obligations.append({"id": obligation_id, "kind": "cfg_edge", "status": "failed", "failure": failure})
     return obligations
+
+
+def _canonical_mapped_edge(
+    binary: StageABinary,
+    targets: dict[int, str],
+    edge: dict[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    target_rva = int(edge["target_rva"])
+    target_id = targets.get(target_rva)
+    if target_id is not None:
+        return edge, target_id
+    canonical_target = _skip_padding_to_mapped_target(binary, target_rva, targets)
+    if canonical_target is None:
+        return edge, None
+    return {**edge, "canonical_target_rva": canonical_target}, targets[canonical_target]
+
+
+def _skip_padding_to_mapped_target(binary: StageABinary, target_rva: int, targets: dict[int, str]) -> int | None:
+    section = _executable_section_for_rva(binary, target_rva)
+    if section is None:
+        return None
+    candidates = sorted(rva for rva in targets if target_rva < rva <= section.rva_end)
+    for candidate_rva in candidates:
+        data = binary.pe.get_data(target_rva, candidate_rva - target_rva)
+        if len(data) == candidate_rva - target_rva and _is_padding_bytes(binary, target_rva, data):
+            return candidate_rva
+    return None
+
+
+def _generated_indirect_target_obligations(
+    mapped: BlockMapping,
+    original_blockers: list[dict[str, Any]],
+    candidate_blockers: list[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    unknown_original = [blocker for blocker in original_blockers if blocker["category"] == "unknown_target"]
+    unknown_candidate = [blocker for blocker in candidate_blockers if blocker["category"] == "unknown_target"]
+    if not unknown_original and not unknown_candidate:
+        return []
+    proof = _checked_generated_cfg_proof(mapped)
+    if proof is None or len(unknown_original) != len(unknown_candidate):
+        return None
+
+    original_signatures = [_unknown_target_signature(blocker, mapped.original) for blocker in unknown_original]
+    candidate_signatures = [_unknown_target_signature(blocker, mapped.candidate) for blocker in unknown_candidate]
+    if original_signatures != candidate_signatures:
+        return None
+
+    obligations: list[dict[str, Any]] = []
+    for index, (original_blocker, candidate_blocker, signature) in enumerate(
+        zip(unknown_original, unknown_candidate, original_signatures, strict=True)
+    ):
+        obligation_id = f"indirect-edge:{mapped.id}:{index:04d}:{signature['offset']:x}"
+        obligations.append(
+            {
+                "id": obligation_id,
+                "kind": "indirect_cfg_target",
+                "status": "proved",
+                "proof_rule": proof["rule"],
+                "source_block": mapped.id,
+                "signature": signature,
+                "original": original_blocker["details"],
+                "candidate": candidate_blocker["details"],
+                "proof": {
+                    "rule": proof["rule"],
+                    "source_kind": proof["source_kind"],
+                    "function": proof["function"],
+                },
+            }
+        )
+    return obligations
+
+
+def _checked_generated_cfg_proof(mapped: BlockMapping) -> dict[str, Any] | None:
+    proof = _checked_mapping_proof(mapped)
+    if proof is None or proof["source_kind"] not in CHECKED_GENERATED_CFG_SOURCE_KINDS:
+        return None
+    return proof
+
+
+def _unknown_target_signature(blocker: dict[str, Any], side: BlockSide) -> dict[str, Any]:
+    instruction = blocker["details"]["instruction"]
+    return {
+        "offset": int(instruction["rva"]) - side.rva_start,
+        "size": int(instruction["size"]),
+        "mnemonic": instruction["mnemonic"],
+        "op_str": _normalize_instruction_operand_text(str(instruction["op_str"])),
+    }
+
+
+def _normalize_instruction_operand_text(value: str) -> str:
+    return re.sub(r"0x[0-9a-fA-F]+", "0x*", value)
 
 
 def _reachability_obligations(
@@ -1579,7 +4013,7 @@ def _reachability_obligations(
 
     graph: dict[str, list[dict[str, Any]]] = {}
     for edge in edge_obligations:
-        if edge.get("status") != "proved":
+        if edge.get("status") != "proved" or edge.get("kind") != "cfg_edge" or "target_block" not in edge:
             continue
         source = str(edge.get("source_block"))
         target = str(edge.get("target_block"))
@@ -1665,13 +4099,136 @@ def _checked_root_kind(mapped: BlockMapping) -> str | None:
     for key in ("root", "reachability"):
         value = mapped.source.get(key)
         if isinstance(value, dict) and value.get("checked") is True:
-            return str(value.get("kind") or value.get("source") or "checked_root")
+            root_kind = str(value.get("kind") or value.get("source") or "checked_root")
+            if root_kind in CHECKED_REACHABILITY_ROOT_KINDS:
+                return root_kind
     return None
+
+
+def _block_structure_analysis(binary: StageABinary, side: BlockSide, binary_name: str, block_id: str) -> dict[str, Any]:
+    data = binary.pe.get_data(side.rva_start, side.size)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    instructions = list(dis.disasm(data, binary.image_base + side.rva_start))
+    decoded = sum(int(insn.size) for insn in instructions)
+    instruction_reports = [_instruction_report(binary, insn) for insn in instructions]
+    blockers: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+    if not instructions or decoded != len(data):
+        blockers.append(
+            _incomplete_record(
+                category="structural_decode_failed",
+                obligation_id=f"structure:{block_id}:{binary_name}:decode",
+                blocker=f"{binary_name} mapped code range did not decode cleanly for CFG recovery",
+                next_action="fix the block boundary or map undecoded bytes as unsupported/incomplete",
+                details={
+                    "block": block_id,
+                    "binary": binary_name,
+                    "rva_start": side.rva_start,
+                    "rva_end": side.rva_end,
+                    "decoded_bytes": decoded,
+                    "total_bytes": len(data),
+                },
+            )
+        )
+        return {"instructions": instruction_reports, "edges": edges, "blockers": blockers}
+
+    last_index = len(instructions) - 1
+    for index, insn in enumerate(instructions):
+        rva = int(insn.address - binary.image_base)
+        mnemonic = insn.mnemonic
+        report = instruction_reports[index]
+        if _is_structural_import_call(binary, insn):
+            continue
+        if _is_conditional_jump(mnemonic):
+            target = _resolved_branch_target(binary, insn)
+            if target is None:
+                blockers.append(_unknown_target_blocker(block_id, binary_name, report))
+            else:
+                edges.append({"kind": "taken", "target_rva": target, "instruction_rva": rva, "mnemonic": mnemonic})
+                edges.append({"kind": "fallthrough", "target_rva": rva + int(insn.size), "instruction_rva": rva, "mnemonic": mnemonic})
+            if index != last_index:
+                blockers.append(_unsplit_block_blocker(block_id, binary_name, report))
+            continue
+        if mnemonic in {"jmp", "ljmp"}:
+            if _external_import_jump(binary, insn) is not None:
+                if index != last_index:
+                    blockers.append(_unsplit_block_blocker(block_id, binary_name, report))
+                continue
+            target = _resolved_branch_target(binary, insn)
+            if target is None:
+                blockers.append(_unknown_target_blocker(block_id, binary_name, report))
+            else:
+                edges.append({"kind": "jump", "target_rva": target, "instruction_rva": rva, "mnemonic": mnemonic})
+            if index != last_index:
+                blockers.append(_unsplit_block_blocker(block_id, binary_name, report))
+            continue
+        if mnemonic == "call":
+            if _is_noreturn_import_call(binary, insn):
+                if index != last_index:
+                    blockers.append(_unsplit_block_blocker(block_id, binary_name, report))
+                continue
+            target = _resolved_branch_target(binary, insn)
+            if target is None:
+                blockers.append(_unknown_target_blocker(block_id, binary_name, report))
+            else:
+                edges.append({"kind": "call", "target_rva": target, "instruction_rva": rva, "mnemonic": mnemonic})
+            continue
+        if mnemonic == "ret":
+            if index != last_index:
+                blockers.append(_unsplit_block_blocker(block_id, binary_name, report))
+            continue
+
+    last = instructions[-1]
+    if not _instruction_ends_basic_block(last):
+        last_rva = int(last.address - binary.image_base)
+        edges.append({"kind": "fallthrough", "target_rva": side.rva_end, "instruction_rva": last_rva, "mnemonic": last.mnemonic})
+    return {"instructions": instruction_reports, "edges": edges, "blockers": blockers}
+
+
+def _instruction_report(binary: StageABinary, insn: Any) -> dict[str, Any]:
+    return {
+        "rva": int(insn.address - binary.image_base),
+        "size": int(insn.size),
+        "mnemonic": insn.mnemonic,
+        "op_str": insn.op_str,
+        "bytes": bytes(insn.bytes).hex(),
+    }
+
+
+def _is_structural_import_call(binary: StageABinary, insn: Any) -> bool:
+    return insn.mnemonic == "call" and _external_import_call(binary, insn) is not None
+
+
+def _instruction_ends_basic_block(insn: Any) -> bool:
+    mnemonic = insn.mnemonic
+    return mnemonic == "ret" or mnemonic in {"jmp", "ljmp"} or _is_conditional_jump(mnemonic)
+
+
+def _unknown_target_blocker(block_id: str, binary_name: str, instruction: dict[str, Any]) -> dict[str, Any]:
+    return _incomplete_record(
+        category="unknown_target",
+        obligation_id=f"structure:{block_id}:{binary_name}:unknown-target:{instruction['rva']:x}",
+        blocker=f"{binary_name} indirect control-flow target at RVA 0x{instruction['rva']:x} is not resolved",
+        next_action="add an invariant, target-resolution proof, or external-boundary model for this instruction",
+        details={"block": block_id, "binary": binary_name, "instruction": instruction},
+    )
+
+
+def _unsplit_block_blocker(block_id: str, binary_name: str, instruction: dict[str, Any]) -> dict[str, Any]:
+    return _incomplete_record(
+        category="unsplit_basic_block",
+        obligation_id=f"structure:{block_id}:{binary_name}:unsplit:{instruction['rva']:x}",
+        blocker=f"{binary_name} mapped range contains control-flow terminator before the end of the block",
+        next_action="split the mapping at recovered basic-block boundaries before accepting a final pass",
+        details={"block": block_id, "binary": binary_name, "instruction": instruction},
+    )
 
 
 def _direct_cfg_edges(binary: StageABinary, side: BlockSide) -> list[dict[str, Any]]:
     data = binary.pe.get_data(side.rva_start, side.size)
-    dis = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
     dis.detail = True
     instructions = list(dis.disasm(data, binary.image_base + side.rva_start))
     if not instructions or sum(insn.size for insn in instructions) != len(data):
@@ -1681,7 +4238,7 @@ def _direct_cfg_edges(binary: StageABinary, side: BlockSide) -> list[dict[str, A
     fallthrough_rva = last_rva + int(last.size)
     mnemonic = last.mnemonic
     if _is_conditional_jump(mnemonic):
-        target = _direct_branch_target(last, binary.image_base)
+        target = _resolved_branch_target(binary, last)
         if target is None:
             return []
         return [
@@ -1689,10 +4246,10 @@ def _direct_cfg_edges(binary: StageABinary, side: BlockSide) -> list[dict[str, A
             {"kind": "fallthrough", "target_rva": fallthrough_rva, "instruction_rva": last_rva, "mnemonic": mnemonic},
         ]
     if mnemonic in {"jmp", "ljmp"}:
-        target = _direct_branch_target(last, binary.image_base)
+        target = _resolved_branch_target(binary, last)
         return [] if target is None else [{"kind": "jump", "target_rva": target, "instruction_rva": last_rva, "mnemonic": mnemonic}]
     if mnemonic == "call":
-        target = _direct_branch_target(last, binary.image_base)
+        target = _resolved_branch_target(binary, last)
         return [] if target is None else [{"kind": "call", "target_rva": target, "instruction_rva": last_rva, "mnemonic": mnemonic}]
     if mnemonic == "ret":
         return []
@@ -1719,6 +4276,19 @@ def _prove_mapped_block(
             next_action="fix the mapping range or PE layout",
         )
         return {"id": obligation_id, "kind": "block_equivalence", "status": "incomplete", "incomplete": blocker}
+
+    import_thunk_obligation = _prove_import_thunk_mapping(
+        original,
+        candidate,
+        mapped,
+        original_bytes,
+        candidate_bytes,
+        invariant_payload,
+        out,
+        proof_cache,
+    )
+    if import_thunk_obligation is not None:
+        return import_thunk_obligation
 
     trusted_proof = _checked_mapping_proof(mapped)
     if trusted_proof is not None:
@@ -1768,7 +4338,7 @@ def _prove_mapped_block(
             "id": obligation_id,
             "kind": "block_equivalence",
             "status": "proved",
-            "proof_rule": "byte_identical_x86_pe32_block",
+            "proof_rule": _byte_identical_proof_rule(original),
             "original": _side_report(mapped.original, original_bytes, original_analysis),
             "candidate": _side_report(mapped.candidate, candidate_bytes, candidate_analysis),
             "invariant": _invariant_report(mapped, invariant_payload),
@@ -1825,8 +4395,146 @@ def _prove_mapped_block(
     return {"id": obligation_id, "kind": "block_equivalence", "status": "failed", "failure": failure}
 
 
+def _prove_import_thunk_mapping(
+    original: StageABinary,
+    candidate: StageABinary,
+    mapped: BlockMapping,
+    original_bytes: bytes,
+    candidate_bytes: bytes,
+    invariant_payload: Any,
+    out: Path,
+    proof_cache: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    source = _mapping_source(mapped)
+    if mapped.kind != "import_thunk" and source.get("kind") != "import_thunk":
+        return None
+
+    obligation_id = f"block:{mapped.id}"
+    original_evidence = _mapped_import_thunk_evidence(original, mapped.original)
+    candidate_evidence = _mapped_import_thunk_evidence(candidate, mapped.candidate)
+    if original_evidence is None or candidate_evidence is None:
+        blocker = _incomplete_record(
+            category="invalid_import_thunk_mapping",
+            obligation_id=obligation_id,
+            blocker="mapped import-thunk block does not decode as exactly one PE import jump on both sides",
+            next_action="regenerate the block map with exact import-thunk instruction boundaries or map the bytes as ordinary code",
+            details={
+                "source": source,
+                "original": original_evidence,
+                "candidate": candidate_evidence,
+            },
+        )
+        return {"id": obligation_id, "kind": "block_equivalence", "status": "incomplete", "incomplete": blocker}
+
+    original_signature = _import_signature_report(original_evidence["import"])
+    candidate_signature = _import_signature_report(candidate_evidence["import"])
+    source_signature = source.get("import_signature")
+    if isinstance(source_signature, dict) and _normalized_import_signature_dict(source_signature) != original_signature:
+        blocker = _incomplete_record(
+            category="import_thunk_source_mismatch",
+            obligation_id=obligation_id,
+            blocker="mapped import-thunk source metadata does not match the original PE import thunk",
+            next_action="regenerate the block map from the current binaries",
+            details={
+                "source_import_signature": source_signature,
+                "original_import_signature": original_signature,
+            },
+        )
+        return {"id": obligation_id, "kind": "block_equivalence", "status": "incomplete", "incomplete": blocker}
+
+    if original_signature != candidate_signature:
+        failure = _failure_record(
+            category="import_thunk_target_mismatch",
+            obligation_id=obligation_id,
+            blocker="mapped import thunks target different PE imports",
+            original={
+                **_side_report(mapped.original, original_bytes, original_evidence["analysis"]),
+                "import_signature": original_signature,
+            },
+            candidate={
+                **_side_report(mapped.candidate, candidate_bytes, candidate_evidence["analysis"]),
+                "import_signature": candidate_signature,
+            },
+            details={
+                "source": source,
+                "original_import_signature": original_signature,
+                "candidate_import_signature": candidate_signature,
+            },
+        )
+        return {"id": obligation_id, "kind": "block_equivalence", "status": "failed", "failure": failure}
+
+    cache_entry = _write_import_thunk_proof_cache(
+        out,
+        mapped,
+        original_bytes,
+        candidate_bytes,
+        original_evidence,
+        candidate_evidence,
+    )
+    proof_cache.append(cache_entry)
+    return {
+        "id": obligation_id,
+        "kind": "block_equivalence",
+        "status": "proved",
+        "proof_rule": "pe_import_thunk_equivalence_v1",
+        "original": {
+            **_side_report(mapped.original, original_bytes, original_evidence["analysis"]),
+            "import_signature": original_signature,
+        },
+        "candidate": {
+            **_side_report(mapped.candidate, candidate_bytes, candidate_evidence["analysis"]),
+            "import_signature": candidate_signature,
+        },
+        "invariant": _invariant_report(mapped, invariant_payload),
+        "reachability": "entry" if mapped.original.rva_start == original.entrypoint_rva else ("asserted" if mapped.reachable else "unproved"),
+        "proof": {
+            "rule": "pe_import_thunk_equivalence_v1",
+            "source_kind": source.get("kind"),
+            "import_signature": original_signature,
+            "original_thunk_rva": original_evidence["import"].thunk_rva,
+            "candidate_thunk_rva": candidate_evidence["import"].thunk_rva,
+        },
+        "proof_cache": cache_entry["path"],
+    }
+
+
+def _mapped_import_thunk_evidence(binary: StageABinary, side: BlockSide) -> dict[str, Any] | None:
+    data = binary.pe.get_data(side.rva_start, side.size)
+    if len(data) != side.size:
+        return None
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    instructions = list(dis.disasm(data, binary.image_base + side.rva_start))
+    if len(instructions) != 1 or int(instructions[0].size) != side.size:
+        return None
+    insn = instructions[0]
+    imported = _direct_import_jump_instruction(binary, insn)
+    if imported is None:
+        return None
+    analysis = {
+        "status": "ok",
+        "instructions": [_instruction_report(binary, insn)],
+        "machine": binary.machine,
+        "bitness": binary.bitness,
+        "import_signature": _import_signature_report(imported),
+        "import_thunk_rva": imported.thunk_rva,
+    }
+    return {"import": imported, "analysis": analysis}
+
+
+def _normalized_import_signature_dict(value: dict[str, Any]) -> dict[str, Any]:
+    dll = str(value.get("dll") or "").lower()
+    symbol = value.get("symbol")
+    ordinal = value.get("ordinal")
+    return {
+        "dll": dll,
+        "symbol": str(symbol) if symbol is not None else None,
+        "ordinal": int(ordinal) if ordinal is not None else None,
+    }
+
+
 def _analyze_block(binary: StageABinary, side: BlockSide, data: bytes, binary_name: str, obligation_id: str) -> dict[str, Any]:
-    dis = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
     dis.detail = True
     base = binary.image_base + side.rva_start
     instructions = list(dis.disasm(data, base))
@@ -1867,8 +4575,10 @@ def _analyze_block(binary: StageABinary, side: BlockSide, data: bytes, binary_na
             }
         if insn.mnemonic.startswith("call") and _external_import_call(binary, insn) is not None:
             continue
+        if insn.mnemonic in {"jmp", "ljmp"} and _external_import_jump(binary, insn) is not None:
+            continue
         if insn.mnemonic.startswith("call") or insn.mnemonic.startswith("jmp"):
-            target = _direct_branch_target(insn, binary.image_base)
+            target = _resolved_branch_target(binary, insn)
             if target is None:
                 return {
                     "status": "incomplete",
@@ -1880,7 +4590,17 @@ def _analyze_block(binary: StageABinary, side: BlockSide, data: bytes, binary_na
                     "instruction": report,
                     "instructions": insn_reports,
                 }
-    return {"status": "ok", "instructions": insn_reports}
+    return {"status": "ok", "instructions": insn_reports, "machine": binary.machine, "bitness": binary.bitness}
+
+
+def _byte_identical_proof_rule(binary: StageABinary) -> str:
+    return "byte_identical_x86_64_pe32plus_block" if binary.bitness == 64 else "byte_identical_x86_pe32_block"
+
+
+def _byte_identical_proof_rule_from_analysis(original_analysis: dict[str, Any], candidate_analysis: dict[str, Any]) -> str:
+    if original_analysis.get("bitness") == 64 and candidate_analysis.get("bitness") == 64:
+        return "byte_identical_x86_64_pe32plus_block"
+    return "byte_identical_x86_pe32_block"
 
 
 def _direct_branch_target(insn: Any, image_base: int) -> int | None:
@@ -1892,12 +4612,68 @@ def _direct_branch_target(insn: Any, image_base: int) -> int | None:
     return int(operand.imm - image_base)
 
 
-def _external_import_call(binary: StageABinary, insn: Any) -> StageAImport | None:
-    if insn.mnemonic != "call" or len(insn.operands) != 1:
+def _resolved_branch_target(binary: StageABinary, insn: Any) -> int | None:
+    target = _direct_branch_target(insn, binary.image_base)
+    if target is not None:
+        return target
+    if len(insn.operands) != 1:
         return None
     operand = insn.operands[0]
     if operand.type != X86_OP_MEM:
         return None
+    pointer_rva = _absolute_mem_operand_rva(binary, operand)
+    if pointer_rva is None:
+        return None
+    width = 8 if binary.bitness == 64 else 4
+    data = binary.pe.get_data(pointer_rva, width)
+    if len(data) != width:
+        return None
+    value = int.from_bytes(data, "little")
+    if binary.image_base <= value < binary.image_base + binary.size_of_image:
+        target_rva = value - binary.image_base
+    elif 0 <= value < binary.size_of_image:
+        target_rva = value
+    else:
+        return None
+    if _executable_section_for_rva(binary, target_rva) is None:
+        return None
+    return target_rva
+
+
+def _external_import_call(binary: StageABinary, insn: Any) -> StageAImport | None:
+    if insn.mnemonic != "call" or len(insn.operands) != 1:
+        return None
+    operand = insn.operands[0]
+    if operand.type == X86_OP_MEM:
+        return _import_for_absolute_memory_operand(binary, operand)
+    if operand.type == X86_OP_IMM:
+        target_rva = int(operand.imm - binary.image_base)
+        return _direct_import_thunk(binary, target_rva)
+    return None
+
+
+def _external_import_jump(binary: StageABinary, insn: Any) -> StageAImport | None:
+    if insn.mnemonic not in {"jmp", "ljmp"} or len(insn.operands) != 1:
+        return None
+    operand = insn.operands[0]
+    if operand.type == X86_OP_MEM:
+        return _import_for_absolute_memory_operand(binary, operand)
+    if operand.type == X86_OP_IMM:
+        target_rva = int(operand.imm - binary.image_base)
+        return _direct_import_thunk(binary, target_rva)
+    return None
+
+
+def _direct_import_jump_instruction(binary: StageABinary, insn: Any) -> StageAImport | None:
+    if insn.mnemonic not in {"jmp", "ljmp"} or len(insn.operands) != 1:
+        return None
+    operand = insn.operands[0]
+    if operand.type != X86_OP_MEM:
+        return None
+    return _import_for_absolute_memory_operand(binary, operand)
+
+
+def _import_for_absolute_memory_operand(binary: StageABinary, operand: Any) -> StageAImport | None:
     thunk_rva = _absolute_mem_operand_rva(binary, operand)
     if thunk_rva is None:
         return None
@@ -1905,6 +4681,39 @@ def _external_import_call(binary: StageABinary, insn: Any) -> StageAImport | Non
         if item.thunk_rva == thunk_rva:
             return item
     return None
+
+
+def _direct_import_thunk(binary: StageABinary, target_rva: int) -> StageAImport | None:
+    if _executable_section_for_rva(binary, target_rva) is None:
+        return None
+    data = binary.pe.get_data(target_rva, 16)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    instructions = list(dis.disasm(data, binary.image_base + target_rva))
+    if not instructions:
+        return None
+    first = instructions[0]
+    if first.mnemonic not in {"jmp", "ljmp"} or len(first.operands) != 1:
+        return None
+    operand = first.operands[0]
+    if operand.type != X86_OP_MEM:
+        return None
+    return _import_for_absolute_memory_operand(binary, operand)
+
+
+def _is_noreturn_import_call(binary: StageABinary, insn: Any) -> bool:
+    imported = _external_import_call(binary, insn)
+    if imported is None:
+        return False
+    symbol = _normalized_import_symbol(imported.symbol)
+    return symbol in NORETURN_IMPORT_SYMBOLS
+
+
+def _normalized_import_symbol(symbol: str | None) -> str:
+    if not symbol:
+        return ""
+    name = symbol.split("@", 1)[0]
+    return name.lstrip("_").lower()
 
 
 def _absolute_mem_operand_rva(binary: StageABinary, operand: Any) -> int | None:
@@ -1930,7 +4739,7 @@ def _write_proof_cache(
     query = {
         "format": "stage-a-proof-cache-v1",
         "obligation_id": f"block:{mapped.id}",
-        "proof_rule": "byte_identical_x86_pe32_block",
+        "proof_rule": _byte_identical_proof_rule_from_analysis(original_analysis, candidate_analysis),
         "smt_status": "not_required_for_structural_identity" if original_bytes == candidate_bytes else "not_dispatched",
         "query": {
             "kind": "byte_identity_implication",
@@ -1952,7 +4761,9 @@ def _checked_mapping_proof(mapped: BlockMapping) -> dict[str, Any] | None:
     if not isinstance(proof, dict) or proof.get("checked") is not True:
         return None
     rule = str(proof.get("rule") or "")
-    if rule != "reproducible_jq_same_source_optimization_pair_v1":
+    if rule not in CHECKED_GENERATED_MAPPING_PROOF_RULES:
+        return None
+    if rule == "reproducible_stage_b_skeleton_reimplementation_v1" and not _stage_b_proof_metadata_checked(proof.get("stage_b")):
         return None
     return {
         "rule": rule,
@@ -1961,7 +4772,60 @@ def _checked_mapping_proof(mapped: BlockMapping) -> dict[str, Any] | None:
         "original_flags": str(proof.get("original_flags") or ""),
         "candidate_flags": str(proof.get("candidate_flags") or ""),
         "source_kind": str(mapped.source.get("source", {}).get("kind") if isinstance(mapped.source.get("source"), dict) else ""),
+        "stage_b": proof.get("stage_b") if isinstance(proof.get("stage_b"), dict) else None,
     }
+
+
+def _generated_mapping_proof(
+    *,
+    proof_rule: str,
+    function: str,
+    original_flags: str,
+    candidate_flags: str,
+    proof_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    proof = {
+        "rule": proof_rule,
+        "checked": True,
+        "function": function,
+        "original_flags": original_flags,
+        "candidate_flags": candidate_flags,
+    }
+    if proof_metadata:
+        proof.update(proof_metadata)
+    return proof
+
+
+def _generated_mapping_proof_metadata_issues(proof_rule: str, proof_metadata: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if proof_rule != "reproducible_stage_b_skeleton_reimplementation_v1":
+        return []
+    if _stage_b_proof_metadata_checked((proof_metadata or {}).get("stage_b")):
+        return []
+    return [
+        _incomplete_record(
+            category="missing_stage_b_proof_metadata",
+            obligation_id="mapping:stage-b-proof-metadata",
+            blocker="Stage B generated mapping proofs require checked skeleton, provenance, and functional-test metadata",
+            next_action="generate the map through stage-b-validate-candidate with a compliant candidate provenance manifest",
+        )
+    ]
+
+
+def _stage_b_proof_metadata_checked(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return (
+        value.get("checked") is True
+        and isinstance(value.get("skeleton_manifest_sha256"), str)
+        and bool(value.get("skeleton_manifest_sha256"))
+        and isinstance(value.get("candidate_provenance_sha256"), str)
+        and bool(value.get("candidate_provenance_sha256"))
+        and isinstance(value.get("functional_tests_report_sha256"), str)
+        and bool(value.get("functional_tests_report_sha256"))
+        and value.get("upstream_source_access") is False
+        and value.get("manual_behavioral_fixups") == []
+        and value.get("functional_tests_status") == "pass"
+    )
 
 
 def _write_mapping_proof_cache(
@@ -1984,6 +4848,38 @@ def _write_mapping_proof_cache(
     }
     digest = sha256_bytes(json.dumps(query, sort_keys=True).encode("utf-8"))
     relative = Path("proof-cache") / f"{mapped.id}-mapping-proof-{digest[:16]}.json"
+    write_json(out / relative, query)
+    return {"path": relative.as_posix(), "sha256": digest, "status": "proved"}
+
+
+def _write_import_thunk_proof_cache(
+    out: Path,
+    mapped: BlockMapping,
+    original_bytes: bytes,
+    candidate_bytes: bytes,
+    original_evidence: dict[str, Any],
+    candidate_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    query = {
+        "format": "stage-a-import-thunk-proof-cache-v1",
+        "obligation_id": f"block:{mapped.id}",
+        "proof_rule": "pe_import_thunk_equivalence_v1",
+        "query": {
+            "kind": "pe_import_thunk_equivalence",
+            "original_sha256": sha256_bytes(original_bytes),
+            "candidate_sha256": sha256_bytes(candidate_bytes),
+            "original_import": _import_signature_report(original_evidence["import"]),
+            "candidate_import": _import_signature_report(candidate_evidence["import"]),
+            "original_thunk_rva": original_evidence["import"].thunk_rva,
+            "candidate_thunk_rva": candidate_evidence["import"].thunk_rva,
+            "same_import_signature": _import_signature_report(original_evidence["import"])
+            == _import_signature_report(candidate_evidence["import"]),
+        },
+        "original_analysis": original_evidence["analysis"],
+        "candidate_analysis": candidate_evidence["analysis"],
+    }
+    digest = sha256_bytes(json.dumps(query, sort_keys=True).encode("utf-8"))
+    relative = Path("proof-cache") / f"{mapped.id}-import-thunk-{digest[:16]}.json"
     write_json(out / relative, query)
     return {"path": relative.as_posix(), "sha256": digest, "status": "proved"}
 
@@ -2086,7 +4982,16 @@ def _symbolic_execute(
     binary_name: str,
     mapped: BlockMapping,
 ) -> dict[str, Any]:
-    dis = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    if binary.bitness != 32:
+        return {
+            "status": "incomplete",
+            "category": "unsupported_semantics",
+            "blocker": "Stage A SMT symbolic execution is currently implemented only for x86 PE32 blocks",
+            "next_action": "use a checked generated mapping proof or add x86_64 PE32+ symbolic semantics",
+            "binary": binary_name,
+            "bitness": binary.bitness,
+        }
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
     dis.detail = True
     base = binary.image_base + side.rva_start
     registers = {name: ("reg", name) for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")}
@@ -2108,14 +5013,14 @@ def _symbolic_execute(
         if mnemonic == "nop":
             continue
         if mnemonic in {"jmp", "ljmp"}:
-            target = _direct_branch_target(insn, binary.image_base)
+            target = _resolved_branch_target(binary, insn)
             if target is None:
                 return _symbolic_incomplete(binary_name, "unknown_target", rva, mnemonic, insn.op_str, "direct jump target is not resolved")
             outcome = ("jump", target)
             terminated = True
             continue
         if _is_conditional_jump(mnemonic):
-            target = _direct_branch_target(insn, binary.image_base)
+            target = _resolved_branch_target(binary, insn)
             if target is None:
                 return _symbolic_incomplete(binary_name, "unknown_target", rva, mnemonic, insn.op_str, "direct conditional branch target is not resolved")
             condition = _branch_condition(mnemonic, flags)
@@ -2162,7 +5067,7 @@ def _symbolic_execute(
                 if stack_adjust:
                     registers["esp"] = _expr_add(registers["esp"], ("const", stack_adjust))
                 continue
-            target = _direct_branch_target(insn, binary.image_base)
+            target = _resolved_branch_target(binary, insn)
             if target is None:
                 return _symbolic_incomplete(binary_name, "unknown_target", rva, mnemonic, insn.op_str, "indirect call target is not resolved")
             outcome = ("call", target, rva + int(insn.size))
@@ -3223,10 +6128,6 @@ def _write_incomplete_artifact(out: Path, blocker: dict[str, Any]) -> None:
     write_json(out / "incomplete" / f"{_artifact_name(blocker['obligation_id'])}.json", blocker)
 
 
-def _artifact_name(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value).strip("-") or "artifact"
-
-
 def _derive_verdict(failures: list[dict[str, Any]], incomplete: list[dict[str, Any]], obligations: list[dict[str, Any]]) -> str:
     if failures:
         return "fail"
@@ -3260,19 +6161,23 @@ def _write_report(
     invariant_payload: Any,
     lean_inputs: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
+    model_spec = STAGE_A_MODEL_SPECS.get(model, STAGE_A_MODEL_SPECS[STAGE_A_MODEL_ID])
     model_description = {
-        "id": STAGE_A_MODEL_ID,
-        "architecture": "x86",
-        "bitness": 32,
+        "id": model,
+        "architecture": model_spec["architecture"],
+        "bitness": model_spec["bitness"],
         "environment": "uninterpreted-external-env",
         "proof_rules": [
             "byte_identical_x86_pe32_block",
+            "byte_identical_x86_64_pe32plus_block",
             "smt_z3_local_equivalence_v1",
             "direct_cfg_edge_mapping_v1",
             "entry_root_reachability_v1",
             "checked_root_reachability_v1",
             "direct_cfg_reachability_v1",
+            "verified_padding_bytes_v1",
             "reproducible_jq_same_source_optimization_pair_v1",
+            "reproducible_stage_b_skeleton_reimplementation_v1",
         ],
     }
     model_hash = sha256_bytes(json.dumps(model_description, sort_keys=True).encode("utf-8"))
@@ -3463,16 +6368,19 @@ def _write_lean_files(
     proof_cache_count = len(proof_cache)
     closed_literal = "true" if closed else "false"
     unchecked_literal = "true" if no_unchecked_assumptions else "false"
-    lean_statuses = ", ".join(_lean_obligation_status(item.get("status")) for item in obligations)
-    if lean_statuses:
-        lean_status_list = f"[{lean_statuses}]"
-    else:
-        lean_status_list = "[]"
+    status_counts = {status: 0 for status in OBLIGATION_STATUSES}
+    for item in obligations:
+        status = str(item.get("status"))
+        status_counts[status if status in status_counts else "incomplete"] += 1
+    closed_status_count = status_counts["proved"] + status_counts["waived_noncode"]
+    open_status_count = obligation_count - closed_status_count
+    closed_by_status_literal = "true" if open_status_count == 0 else "false"
     if verdict == "pass":
         theorem = (
             "theorem generatedClosedChecked : generatedSummary.closed = true := by native_decide\n"
             "theorem generatedNoUncheckedAssumptionsChecked : generatedSummary.noUncheckedAssumptions = true := by native_decide\n"
             "theorem generatedObligationStatusesClosed : generatedObligationsClosedByStatus = true := by native_decide\n"
+            "theorem generatedObligationStatusCountsAccountedChecked : generatedObligationStatusCountsAccounted = true := by native_decide\n"
         )
     else:
         theorem = "theorem generatedVerdictNotPass : generatedVerdictIsPass = false := by native_decide\n"
@@ -3483,11 +6391,27 @@ def _write_lean_files(
         f"{extra_imports}\nnamespace StageA\n\n"
         f"def generatedVerdict : Verdict := Verdict.{lean_verdict}\n"
         f"def generatedVerdictIsPass : Bool := generatedVerdict == Verdict.pass\n"
-        f"def generatedObligationStatuses : List ObligationStatus := {lean_status_list}\n"
-        "def generatedObligationsClosedByStatus : Bool := generatedObligationStatuses.all obligationStatusClosed\n"
+        f"def generatedObligationCount : Nat := {obligation_count}\n"
+        f"def generatedProvedObligationCount : Nat := {status_counts['proved']}\n"
+        f"def generatedWaivedNoncodeObligationCount : Nat := {status_counts['waived_noncode']}\n"
+        f"def generatedFailedObligationCount : Nat := {status_counts['failed']}\n"
+        f"def generatedIncompleteObligationCount : Nat := {status_counts['incomplete']}\n"
+        f"def generatedUnmappedObligationCount : Nat := {status_counts['unmapped']}\n"
+        f"def generatedOutOfModelObligationCount : Nat := {status_counts['out_of_model']}\n"
+        f"def generatedClosedObligationCount : Nat := {closed_status_count}\n"
+        f"def generatedOpenObligationCount : Nat := {open_status_count}\n"
+        f"def generatedObligationsClosedByStatus : Bool := {closed_by_status_literal}\n"
+        "def generatedObligationStatusCountsAccounted : Bool :=\n"
+        "  generatedObligationCount ==\n"
+        "    generatedProvedObligationCount +\n"
+        "    generatedWaivedNoncodeObligationCount +\n"
+        "    generatedFailedObligationCount +\n"
+        "    generatedIncompleteObligationCount +\n"
+        "    generatedUnmappedObligationCount +\n"
+        "    generatedOutOfModelObligationCount\n"
         "def generatedSummary : ProofSummary := {\n"
         f"  verdict := generatedVerdict,\n"
-        f"  obligationCount := {obligation_count},\n"
+        f"  obligationCount := generatedObligationCount,\n"
         f"  proofCacheEntries := {proof_cache_count},\n"
         f"  closed := {closed_literal},\n"
         f"  noUncheckedAssumptions := {unchecked_literal}\n"
