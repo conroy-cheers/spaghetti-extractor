@@ -4077,6 +4077,138 @@ class StageBTests(unittest.TestCase):
         self.assertIn("callback table/prototype", by_function["argument_table"]["next_action"])
         self.assertEqual(by_function["argument_table"]["generated_source_location"]["line_start"], 20)
 
+    def test_explain_delta_classifies_ripgrep_harness_failures_from_candidate_stdout(self):
+        functional = {
+            "target_name": "ripgrep",
+            "suite_id": "ripgrep-upstream-integration-tests",
+            "coverage": {"suite_scope": "subset", "source_revision": "ripgrep-15.1.0", "case_count": 1},
+            "cases": [
+                {
+                    "id": "ripgrep-upstream-integration-harness",
+                    "status": "fail",
+                    "args": ["--test-threads=1"],
+                    "mismatch": {"fields": ["returncode"]},
+                    "expected": {"returncode": 0},
+                    "candidate": {
+                        "returncode": 101,
+                        "timed_out": False,
+                        "stdout": {
+                            "bytes": 512,
+                            "preview": (
+                                "\nrunning 4 tests\n"
+                                "test binary::after_match1_explicit ... FAILED\n"
+                                "test binary::mmap_binary_flag ... FAILED\n"
+                                "test feature::f1078_max_columns_preview1 ... FAILED\n"
+                                "test misc::context_stdin ... ok\n"
+                                "test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out\n"
+                            ),
+                        },
+                        "stderr": {"bytes": 0, "preview": ""},
+                    },
+                }
+            ],
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "entrypoint",
+                            "file": "src/ripgrep_stage_b_skeleton.rs",
+                            "line_start": 20,
+                            "line_end": 23,
+                        }
+                    ]
+                }
+            },
+            candidate_functions=[],
+            crash=None,
+            functional=functional,
+        )
+
+        by_class = {item["likely_repair_class"]: item for item in result}
+        self.assertIn("ripgrep_binary_search_behavior", by_class)
+        self.assertIn("ripgrep_feature_behavior", by_class)
+        binary_item = by_class["ripgrep_binary_search_behavior"]
+        self.assertEqual(binary_item["original_function"], "entrypoint")
+        self.assertEqual(binary_item["generated_source_location"]["file"], "src/ripgrep_stage_b_skeleton.rs")
+        self.assertEqual(binary_item["evidence"]["harness_test_prefix"]["prefix"], "binary")
+        self.assertEqual(binary_item["evidence"]["harness_test_prefix"]["failed_tests"], 2)
+        self.assertIn("binary::after_match1_explicit", binary_item["next_action"])
+
+    def test_explain_delta_maps_generic_functional_failure_to_cli_entry_source(self):
+        functional = {
+            "target_name": "jq",
+            "suite_id": "jq-upstream-integration-tests",
+            "coverage": {"suite_scope": "full", "source_revision": "jq-1.8.1", "case_count": 1},
+            "cases": [
+                {
+                    "id": "jq-cli-exit",
+                    "status": "fail",
+                    "args": ["--help"],
+                    "mismatch": {"fields": ["returncode"]},
+                    "expected": {"returncode": 0},
+                    "candidate": {
+                        "returncode": 2,
+                        "timed_out": False,
+                        "stdout": {"bytes": 0, "preview": ""},
+                        "stderr": {"bytes": 12, "preview": "bad usage\n"},
+                    },
+                }
+            ],
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {"function": "umain", "file": "src/jq_stage_b_skeleton.c", "line_start": 100, "line_end": 180}
+                    ]
+                }
+            },
+            candidate_functions=[],
+            crash=None,
+            functional=functional,
+        )
+
+        self.assertEqual(result[0]["likely_repair_class"], "cli_exit_status_behavior")
+        self.assertEqual(result[0]["original_function"], "umain")
+        self.assertEqual(result[0]["generated_source_location"]["line_start"], 100)
+        self.assertEqual(result[0]["evidence"]["suite"]["source_revision"], "jq-1.8.1")
+
+    def test_explain_delta_classifies_import_prototype_inventory_gap_as_import_work(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "next_action": "repair ABI evidence",
+                    "evidence": {
+                        "reference_counts": {"functions": 0, "callsites": 0, "import_prototypes": 12},
+                        "candidate_counts": {"functions": 0, "callsites": 0, "import_prototypes": 9},
+                        "candidate_abi": {"candidate": {"functions": []}},
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["likely_repair_class"], "import_prototype_mismatch")
+        self.assertNotEqual(result[0]["likely_repair_class"], "varargs_or_stdio_bridge")
+
     def test_explain_delta_keeps_unmapped_candidate_crash_as_crash_localization_work(self):
         result = _stage_b_delta_repair_items(
             contract={},

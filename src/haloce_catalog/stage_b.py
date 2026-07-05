@@ -1323,6 +1323,10 @@ def stage_b_explain_delta(
     skeleton = _load_json(skeleton_manifest)
     crash = _load_optional_stage_b_json(Path(candidate_crash_report)) if candidate_crash_report is not None else None
     functional = _load_optional_stage_b_json(Path(functional_report)) if functional_report is not None else None
+    functional_diagnostics = _stage_b_functional_diagnostics(
+        functional_report_path=Path(functional_report) if functional_report is not None else None,
+        functional_report_payload=functional,
+    )
     contract_validation = stage_a_validate_contract_candidate(
         reference_contract=reference_contract,
         candidate=candidate,
@@ -1354,6 +1358,7 @@ def stage_b_explain_delta(
         else {"path": str(candidate_crash_report), "sha256": sha256_file(Path(candidate_crash_report))},
         "functional_report": None if functional_report is None else {"path": str(functional_report), "sha256": sha256_file(Path(functional_report))},
         "contract_candidate_validation": contract_validation,
+        "functional_diagnostics": functional_diagnostics,
         "repair_items": items,
         "counts": {
             "repair_items": len(items),
@@ -1485,6 +1490,15 @@ def _stage_b_first_contract_function(functions: dict[str, dict[str, Any]]) -> st
 
 def _stage_b_repair_class_for_family(family: str, evidence: dict[str, Any]) -> str:
     if family == "abi_callsites":
+        candidate_abi = evidence.get("candidate_abi") if isinstance(evidence.get("candidate_abi"), dict) else {}
+        candidate = candidate_abi.get("candidate") if isinstance(candidate_abi.get("candidate"), dict) else {}
+        candidate_functions = candidate.get("functions") if isinstance(candidate.get("functions"), list) else []
+        reference_counts = evidence.get("reference_counts") if isinstance(evidence.get("reference_counts"), dict) else {}
+        candidate_counts = evidence.get("candidate_counts") if isinstance(evidence.get("candidate_counts"), dict) else {}
+        if not candidate_functions:
+            if (reference_counts.get("import_prototypes") or 0) != (candidate_counts.get("import_prototypes") or 0):
+                return "import_prototype_mismatch"
+            return "abi_contract_coverage"
         text = json.dumps(evidence, sort_keys=True, default=str).lower()
         if "sret" in text or "out_param" in text:
             return "hidden_sret_or_out_param"
@@ -1777,29 +1791,174 @@ def _stage_b_function_pointer_next_action(function_name: str, callsite: dict[str
 def _stage_b_functional_repair_items(functional: dict[str, Any] | None, source_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     if not isinstance(functional, dict):
         return []
-    items = []
+    items: list[dict[str, Any]] = []
+    target_name = str(functional.get("target_name") or "")
+    entry_function = _stage_b_functional_entry_function(target_name, source_map)
     for case in functional.get("cases", []) if isinstance(functional.get("cases"), list) else []:
         if not isinstance(case, dict) or case.get("status") == "pass":
             continue
-        mismatch = case.get("mismatch") if isinstance(case.get("mismatch"), dict) else {}
-        fields = mismatch.get("fields") if isinstance(mismatch.get("fields"), list) else []
-        repair_class = "functional_expected_output_failure"
-        if "stderr" in fields or "stdout" in fields:
-            repair_class = "varargs_or_stdio_bridge"
-        if "returncode" in fields:
-            repair_class = "short_option_state_machine" if "-n" in json.dumps(case, default=str) else "functional_expected_output_failure"
+        harness_items = _stage_b_functional_harness_repair_items(
+            functional=functional,
+            case=case,
+            source_map=source_map,
+            entry_function=entry_function,
+        )
+        if harness_items:
+            items.extend(harness_items)
+            continue
+        repair_class = _stage_b_functional_case_repair_class(functional, case)
         items.append(
             _stage_b_repair_item(
                 family="functional_expected_output",
-                function=None,
+                function=entry_function,
                 block_id=None,
                 source_map=source_map,
                 repair_class=repair_class,
-                next_action=f"repair candidate behavior for expected-output case {case.get('id')}",
-                evidence={"case": _stage_b_functional_case_summary(case)},
+                next_action=_stage_b_functional_case_next_action(functional, case, repair_class),
+                evidence={
+                    "case": _stage_b_functional_case_summary(case),
+                    "suite": _stage_b_functional_suite_summary(functional),
+                },
             )
         )
     return items
+
+
+def _stage_b_functional_harness_repair_items(
+    *,
+    functional: dict[str, Any],
+    case: dict[str, Any],
+    source_map: dict[str, dict[str, Any]],
+    entry_function: str | None,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    candidate = case.get("candidate") if isinstance(case.get("candidate"), dict) else {}
+    stdout = candidate.get("stdout") if isinstance(candidate.get("stdout"), dict) else {}
+    text, artifact = _stage_b_stream_text(stdout)
+    parsed = _stage_b_parse_cargo_test_output(text)
+    failed_tests = parsed.get("failed_tests") if isinstance(parsed.get("failed_tests"), list) else []
+    if not failed_tests:
+        return []
+
+    prefix_counts: Counter[str] = Counter()
+    prefix_samples: dict[str, list[str]] = {}
+    for failed in failed_tests:
+        if not isinstance(failed, dict):
+            continue
+        name = str(failed.get("name") or "")
+        if not name:
+            continue
+        prefix = _stage_b_harness_test_prefix(name)
+        prefix_counts[prefix] += 1
+        prefix_samples.setdefault(prefix, [])
+        if len(prefix_samples[prefix]) < 5:
+            prefix_samples[prefix].append(name)
+
+    items: list[dict[str, Any]] = []
+    target_name = str(functional.get("target_name") or "")
+    for prefix, count in sorted(prefix_counts.items(), key=lambda item: (-item[1], item[0]))[:limit]:
+        repair_class = _stage_b_harness_prefix_repair_class(target_name, prefix)
+        samples = prefix_samples.get(prefix, [])
+        sample_text = ", ".join(samples[:3])
+        items.append(
+            _stage_b_repair_item(
+                family="functional_expected_output",
+                function=entry_function,
+                block_id=None,
+                source_map=source_map,
+                repair_class=repair_class,
+                next_action=(
+                    f"recover {target_name or 'candidate'} behavior for upstream harness prefix {prefix!r} "
+                    f"({count} failing tests); start with {sample_text or 'the first failed harness case'}"
+                ),
+                evidence={
+                    "case": _stage_b_functional_case_summary(case),
+                    "suite": _stage_b_functional_suite_summary(functional),
+                    "harness_test_prefix": {
+                        "prefix": prefix,
+                        "failed_tests": count,
+                        "sample_tests": samples,
+                        "total_failed_tests_in_artifact": len(failed_tests),
+                        "result_line": parsed.get("result_line"),
+                        "status_counts": parsed.get("status_counts"),
+                    },
+                    "candidate_stdout_artifact": artifact,
+                },
+            )
+        )
+    return items
+
+
+def _stage_b_functional_entry_function(target_name: str, source_map: dict[str, dict[str, Any]]) -> str | None:
+    target_id = _artifact_name(target_name)
+    preferred = ["main", "entrypoint"]
+    if "jq" in target_id:
+        preferred = ["umain", "_wmain", "mainCRTStartup", "main", "entrypoint"]
+    elif "ripgrep" in target_id or target_id == "rg":
+        preferred = ["entrypoint", "main"]
+    for name in preferred:
+        if name in source_map or _linker_function_match_key(name) in source_map:
+            return name
+    names = sorted(name for name in source_map if name and not name.startswith("_stage_b_"))
+    return names[0] if names else None
+
+
+def _stage_b_functional_case_repair_class(functional: dict[str, Any], case: dict[str, Any]) -> str:
+    mismatch = case.get("mismatch") if isinstance(case.get("mismatch"), dict) else {}
+    raw_fields = mismatch.get("fields")
+    fields = {str(field) for field in raw_fields} if isinstance(raw_fields, list) else set()
+    candidate = case.get("candidate") if isinstance(case.get("candidate"), dict) else {}
+    target_id = _artifact_name(str(functional.get("target_name") or ""))
+    if bool(candidate.get("timed_out")) or fields.intersection({"timed_out", "timeout"}):
+        return "candidate_timeout"
+    if "stderr" in fields:
+        return "stderr_behavior"
+    if "stdout" in fields:
+        return "stdout_behavior"
+    if "returncode" in fields:
+        if "jq" in target_id and "-n" in json.dumps(case, default=str):
+            return "short_option_state_machine"
+        return "cli_exit_status_behavior"
+    return "functional_expected_output_failure"
+
+
+def _stage_b_functional_case_next_action(functional: dict[str, Any], case: dict[str, Any], repair_class: str) -> str:
+    case_id = case.get("id")
+    target_name = str(functional.get("target_name") or "candidate")
+    actions = {
+        "candidate_timeout": "repair candidate termination or long-running control flow",
+        "stderr_behavior": "recover diagnostic/stderr behavior for this public expected-output case",
+        "stdout_behavior": "recover stdout-producing behavior for this public expected-output case",
+        "short_option_state_machine": "repair generated short-option parsing and jq command dispatch for this case",
+        "cli_exit_status_behavior": "recover exit-status behavior for this public expected-output case",
+        "functional_expected_output_failure": "repair candidate behavior for this public expected-output case",
+    }
+    return f"{actions.get(repair_class, actions['functional_expected_output_failure'])} in {target_name} case {case_id}"
+
+
+def _stage_b_functional_suite_summary(functional: dict[str, Any]) -> dict[str, Any]:
+    coverage = functional.get("coverage") if isinstance(functional.get("coverage"), dict) else {}
+    return {
+        "target_name": functional.get("target_name"),
+        "suite_id": functional.get("suite_id"),
+        "suite_scope": coverage.get("suite_scope"),
+        "source_revision": coverage.get("source_revision"),
+        "case_count": coverage.get("case_count"),
+    }
+
+
+def _stage_b_harness_prefix_repair_class(target_name: str, prefix: str) -> str:
+    target_id = _artifact_name(target_name)
+    if "ripgrep" in target_id or target_id == "rg":
+        ripgrep_classes = {
+            "binary": "ripgrep_binary_search_behavior",
+            "feature": "ripgrep_feature_behavior",
+            "misc": "ripgrep_filesystem_behavior",
+            "regression": "ripgrep_regression_behavior",
+            "search": "ripgrep_search_behavior",
+        }
+        return ripgrep_classes.get(prefix, "ripgrep_upstream_harness_behavior")
+    return "upstream_integration_harness"
 
 
 def _stage_b_crash_repair_items(
@@ -1919,7 +2078,21 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "stack_delta_mismatch": 3,
         "preserved_register_mismatch": 4,
         "varargs_or_stdio_bridge": 5,
+        "stderr_behavior": 5,
+        "stdout_behavior": 5,
         "short_option_state_machine": 6,
+        "candidate_timeout": 6,
+        "cli_exit_status_behavior": 6,
+        "functional_expected_output_failure": 6,
+        "upstream_integration_harness": 6,
+        "ripgrep_binary_search_behavior": 6,
+        "ripgrep_feature_behavior": 6,
+        "ripgrep_filesystem_behavior": 6,
+        "ripgrep_regression_behavior": 6,
+        "ripgrep_search_behavior": 6,
+        "ripgrep_upstream_harness_behavior": 6,
+        "import_prototype_mismatch": 7,
+        "abi_contract_coverage": 7,
         "global_callback_slot": 7,
         "argument_callback_table": 7,
         "global_callback_table": 7,

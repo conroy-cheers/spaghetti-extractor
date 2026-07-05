@@ -3440,8 +3440,19 @@
                 --out "$work/validate" \
                 > "$work/validate.stdout"
               code=$?
+              wincr stage-b-explain-delta \
+                --reference-contract "${stage-b-ripgrep-reference-contract}/share/wincr/stage-b/ripgrep/reference-contract/ripgrep-reference-contract.json" \
+                --candidate "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
+                --linker-map-candidate "$candidate_dir/rg-stage-b-skeleton-candidate.map" \
+                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --functional-report "$functional_report" \
+                --model x86_64-pe32plus-env-v1 \
+                --out "$work/delta" \
+                > "$work/delta.stdout"
+              delta_code=$?
               set -e
               test "$code" -ne 0
+              test "$delta_code" -ne 0
               jq -e '
                 .status == "incomplete"
                 and .provenance_status == "incomplete"
@@ -3474,17 +3485,28 @@
                 and ([.reference_contract_coverage.families[] | select(.family == "pe_sections_imports_relocations_image_base").stage_b_status][0] == "represented")
                 and ([.reference_contract_coverage.families[] | select(.family == "validation_report_artifact_binding").status][0] == "incomplete")
               ' "$work/validate/stage-b.json" >/dev/null
+              jq -e '
+                .format == "stage-b-delta-explanation-v1"
+                and .status == "incomplete"
+                and .functional_report != null
+                and .functional_diagnostics.harness_tests.top_failed_tests[0].prefix == "binary"
+                and ([.repair_items[].likely_repair_class] | index("ripgrep_binary_search_behavior"))
+                and ([.repair_items[].likely_repair_class] | index("ripgrep_feature_behavior"))
+                and ([.repair_items[] | select(.likely_repair_class == "ripgrep_binary_search_behavior").generated_source_location.file][0] == "src/ripgrep_stage_b_skeleton.rs")
+              ' "$work/delta/stage-b-delta.json" >/dev/null
               mkdir -p "$out"
               cp "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
                 "$candidate_dir/rg-stage-b-skeleton-candidate.map" \
                 "$claimed_provenance" \
                 "$functional_report" \
                 "$work/validate/stage-b.json" \
+                "$work/delta/stage-b-delta.json" \
                 "$out/"
               cp "$work/materialized-suite.stdout" \
                 "$work/functional.stdout" \
                 "$work/provenance.stdout" \
                 "$work/validate.stdout" \
+                "$work/delta.stdout" \
                 "$work/smoke-suite.stdout" \
                 "$work/smoke-functional.stdout" \
                 "$work/full-suite.stdout" \
@@ -3493,8 +3515,10 @@
               cp -R "$work/functional" "$out/functional"
               cp -R "$work/provenance" "$out/provenance"
               cp -R "$work/validate" "$out/validate"
+              cp -R "$work/delta" "$out/delta"
               cp -R "$work/smoke-suite" "$out/smoke-suite"
               cp -R "$work/smoke-functional" "$out/smoke-functional"
+              printf '%s\n' "$delta_code" > "$out/delta.returncode"
             '';
 
           stage-b-functional-runner-check = pkgs.runCommand "stage-b-functional-runner-check"
