@@ -1605,7 +1605,7 @@
               stage-b-skeleton-wincr stage-b-generate-skeleton \
                 --original "$fixture_dir/jq-original.exe" \
                 --decompiler-export "${stage-b-jq-decompiler-export}/jq.ghidra.json" \
-                --coverage-reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
+                --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
                 --target-name jq \
                 --source-language c \
                 --implementation-mode decompiled-c \
@@ -1648,12 +1648,15 @@
                 and .implementation_recovery.status == "incomplete"
                 and .implementation_recovery.source_implements_behavior == false
                 and .implementation_recovery.generated_source_kind == "decompiler_recovered_partial"
-                and .implementation_recovery.functions == .implementation_recovery.decompiler_code_functions
-                and .implementation_recovery.decompiler_coverage.status == "complete"
-                and .implementation_recovery.blockers == ["incomplete_reference_contract_function_coverage"]
-                and .reference_contract_function_coverage.status == "incomplete"
+                and .reverse_engineering.function_source == "stage_a_reference_contract"
+                and .implementation_recovery.functions == .reference_contract_function_coverage.counts.contract_functions
+                and .implementation_recovery.decompiler_code_functions < .implementation_recovery.functions
+                and .implementation_recovery.decompiler_coverage.status == "incomplete"
+                and (.implementation_recovery.blockers | index("missing_decompiler_exports"))
+                and (.implementation_recovery.blockers | index("missing_decompiler_code"))
+                and .reference_contract_function_coverage.status == "complete"
                 and .reference_contract_function_coverage.counts.contract_functions == 168
-                and .reference_contract_function_coverage.counts.missing > 0
+                and .reference_contract_function_coverage.counts.missing == 0
               ' "$skeleton_dir/manifest.json" >/dev/null
               jq -n \
                 --arg status "$compile_status" \

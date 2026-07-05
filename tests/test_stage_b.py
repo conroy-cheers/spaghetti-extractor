@@ -25,6 +25,10 @@ from haloce_catalog.stage_b import (
     _stage_b_delta_repair_items,
     _render_decompiled_c_source,
 )
+from haloce_catalog.stage_b_skeleton import (
+    _render_decompiled_c_source as _render_skeleton_decompiled_c_source,
+    _skeleton_source_map,
+)
 from haloce_catalog.util import sha256_bytes, sha256_file
 from test_stage_a import _LeanCheckedMock, _pe32_image, _pe32_import_image
 
@@ -349,6 +353,85 @@ class StageBTests(unittest.TestCase):
                 coverage["representation_counts"],
                 {"missing_from_skeleton_function_ranges": 1, "represented_by_skeleton_function": 1},
             )
+
+    def test_decompiled_skeleton_sources_reference_contract_and_emits_missing_decompiler_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text(
+                "                0x00401000                first\n"
+                "                0x00401001                second\n",
+                encoding="utf-8",
+            )
+            candidate_map.write_text(
+                "                0x00401000                first\n"
+                "                0x00401001                second\n",
+                encoding="utf-8",
+            )
+            block_map = root / "block-map.json"
+            reference_contract = root / "reference-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+            )
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                out=reference_contract,
+            )
+            decompiler = root / "jq.ghidra.json"
+            decompiler.write_text(
+                json.dumps(
+                    {
+                        "functions": [
+                            {
+                                "rva_start": 0x1000,
+                                "rva_end": 0x1001,
+                                "name": "first",
+                                "decompiler": {
+                                    "status": "success",
+                                    "c": "int first(void) {\n  return 0;\n}",
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                reference_contract=reference_contract,
+                decompiler_export=decompiler,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="decompiled-c",
+                out_dir=root / "skeleton",
+            )
+
+            self.assertEqual(result["reverse_engineering"]["function_source"], "stage_a_reference_contract")
+            self.assertEqual(result["counts"]["functions"], 2)
+            self.assertEqual(result["reference_contract_function_coverage"]["status"], "complete")
+            self.assertEqual(result["reference_contract_function_coverage"]["counts"]["missing"], 0)
+            recovery = result["implementation_recovery"]
+            self.assertEqual(recovery["status"], "incomplete")
+            self.assertFalse(recovery["source_implements_behavior"])
+            self.assertIn("missing_decompiler_exports", recovery["blockers"])
+            self.assertIn("missing_decompiler_code", recovery["blockers"])
+            self.assertEqual(recovery["decompiler_coverage"]["counts"]["missing_decompiler_functions"], 1)
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn("int first(void)", source)
+            self.assertIn("uintptr_t __cdecl second(void)", source)
+            self.assertIn("Stage B contract placeholder for missing decompiler body", source)
+            by_function = {item["function"]: item for item in result["source_map"]["functions"]}
+            self.assertEqual(by_function["second"]["source_kind"], "generated_contract_placeholder")
 
     def test_decompiled_skeleton_disambiguates_duplicate_decompiler_names_by_rva(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1987,6 +2070,89 @@ class StageBTests(unittest.TestCase):
         self.assertIn("argv[i][j] = (char)((ch < 0x80) ? ch : '?');", source)
         self.assertIn("rc = (int)umain(argc,(undefined4 *)argv);", source)
         self.assertIn("exit(rc);", source)
+
+    def test_decompiled_c_source_map_marks_generated_and_omitted_runtime_entries(self):
+        functions = [
+            {
+                "name": "___tmainCRTStartup",
+                "rva_start": 0x1010,
+                "rva_end": 0x1100,
+                "size": 0xF0,
+                "decompiler": {"status": "success", "code": "int ___tmainCRTStartup(void) { return 1; }"},
+            },
+            {
+                "name": "mainCRTStartup",
+                "rva_start": 0x1420,
+                "rva_end": 0x142F,
+                "size": 0xF,
+                "decompiler": {"status": "success", "code": "int mainCRTStartup(void) { return ___tmainCRTStartup(); }"},
+            },
+            {
+                "name": "___wgetmainargs",
+                "rva_start": 0xC1B0,
+                "rva_end": 0xC235,
+                "size": 0x85,
+                "decompiler": {"status": "success", "code": "int ___wgetmainargs(void) { return 0; }"},
+            },
+            {
+                "name": "umain",
+                "rva_start": 0x245E,
+                "rva_end": 0x490C,
+                "size": 0x24AE,
+                "decompiler": {"status": "success", "code": "uintptr_t umain(int argc,undefined4 *argv) { return argc; }"},
+            },
+        ]
+        source = _render_skeleton_decompiled_c_source(target_name="jq", functions=functions)
+
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=functions,
+            source_language="c",
+            implementation_mode="decompiled-c",
+        )
+
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function["mainCRTStartup"]["source_kind"], "generated_runtime_bridge")
+        self.assertEqual(by_function["___tmainCRTStartup"]["source_kind"], "omitted_runtime_entry")
+        self.assertEqual(by_function["___wgetmainargs"]["source_kind"], "omitted_runtime_entry")
+        bridge_line = source.splitlines()[by_function["mainCRTStartup"]["line_start"] - 1]
+        self.assertIn("void __cdecl mainCRTStartup(void)", bridge_line)
+
+    def test_decompiled_c_source_map_marks_multiline_definition_and_aliases(self):
+        source = "\n".join(
+            [
+                "/* original RVA 0x8f80, size 64, name ___gdtoa */",
+                "ulonglong __cdecl",
+                "___gdtoa(int *param_1,int param_2,",
+                "        uint *param_3)",
+                "",
+                "{",
+                "  return 0;",
+                "}",
+            ]
+        )
+
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=[
+                {
+                    "name": "___gdtoa",
+                    "aliases": ["__gdtoa"],
+                    "rva_start": 0x8F80,
+                    "rva_end": 0x8FC0,
+                    "decompiler": {"status": "success", "code": source},
+                }
+            ],
+            source_language="c",
+            implementation_mode="decompiled-c",
+        )
+
+        entry = source_map["functions"][0]
+        self.assertEqual(entry["source_kind"], "decompiled_function")
+        self.assertEqual(entry["line_start"], 3)
+        self.assertEqual(entry["aliases"], ["__gdtoa"])
 
     def test_decompiled_c_renderer_returns_import_tail_call_result(self):
         source = _render_decompiled_c_source(
@@ -3936,7 +4102,7 @@ class StageBTests(unittest.TestCase):
         self.assertIn("1 named missing functions", coverage_item["next_action"])
         self.assertLess(function_item["rank"], coverage_item["rank"])
 
-    def test_explain_delta_classifies_stack_out_param_or_scratch_buffer(self):
+    def test_explain_delta_classifies_stack_out_param_as_scratch_buffer_verification(self):
         validation = {
             "families": [
                 {
@@ -3988,10 +4154,221 @@ class StageBTests(unittest.TestCase):
             functional=None,
         )
 
-        self.assertEqual(result[0]["likely_repair_class"], "stack_out_param_or_scratch_buffer")
+        self.assertEqual(result[0]["likely_repair_class"], "stack_scratch_buffer_or_out_param")
         self.assertEqual(result[0]["original_function"], "stack_bridge")
         self.assertEqual(result[0]["generated_source_location"]["line_start"], 30)
-        self.assertIn("stack out-param/scratch-buffer", result[0]["next_action"])
+        self.assertIn("local stack scratch/out-param", result[0]["next_action"])
+
+    def test_explain_delta_classifies_runtime_crt_stack_bridge_separately(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 1, "callsites": 1},
+                        "candidate_counts": {"functions": 1, "callsites": 1},
+                        "candidate_abi": {
+                            "candidate": {
+                                "functions": [
+                                    {
+                                        "name": "__wgetmainargs",
+                                        "callsites": [
+                                            {
+                                                "id": "callsite:__wgetmainargs:11d3",
+                                                "block_id": "__wgetmainargs",
+                                                "hidden_sret_or_out_param_evidence": {
+                                                    "status": "candidate",
+                                                    "address_role": "stack_out_param_or_scratch_buffer",
+                                                    "address_source": {
+                                                        "kind": "address",
+                                                        "address_class": "stack_address",
+                                                    },
+                                                },
+                                                "varargs_evidence": {"status": "not_observed"},
+                                                "function_pointer_targets": [],
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "___wgetmainargs",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 8477,
+                            "line_end": 8480,
+                            "source_kind": "omitted_runtime_entry",
+                        }
+                    ]
+                }
+            },
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["likely_repair_class"], "runtime_crt_stack_bridge")
+        self.assertEqual(result[0]["generated_source_location"]["source_kind"], "omitted_runtime_entry")
+        self.assertIn("runtime/CRT bridge", result[0]["next_action"])
+
+    def test_explain_delta_classifies_runtime_crt_function_coverage_gap(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 1, "callsites": 0},
+                        "candidate_counts": {"functions": 0, "callsites": 0},
+                        "coverage_gaps": {
+                            "missing_functions": [
+                                {
+                                    "name": "_FindPESectionByName",
+                                    "match_key": "FindPESectionByName",
+                                    "blocks": [{"block_id": "_FindPESectionByName-0000"}],
+                                    "callsites": 2,
+                                }
+                            ],
+                            "counts": {"missing_functions": 1, "incomplete_callsite_functions": 0, "missing_callsites": 0},
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["likely_repair_class"], "runtime_crt_function_coverage")
+        self.assertEqual(result[0]["original_function"], "_FindPESectionByName")
+        self.assertIn("runtime/CRT closure and linker roots", result[0]["next_action"])
+
+    def test_explain_delta_uses_source_map_aliases_for_stdcall_sanitized_names(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 1, "callsites": 0},
+                        "candidate_counts": {"functions": 0, "callsites": 0},
+                        "coverage_gaps": {
+                            "missing_functions": [
+                                {
+                                    "name": "__dyn_tls_dtor@12",
+                                    "match_key": "dyn_tls_dtor",
+                                    "blocks": [{"block_id": "__dyn_tls_dtor-12-0000"}],
+                                    "callsites": 0,
+                                }
+                            ],
+                            "counts": {"missing_functions": 1, "incomplete_callsite_functions": 0, "missing_callsites": 0},
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "___dyn_tls_dtor_12",
+                            "aliases": ["__dyn_tls_dtor@12"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 1362,
+                            "line_end": 1379,
+                            "source_kind": "decompiled_function",
+                        }
+                    ]
+                }
+            },
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["likely_repair_class"], "runtime_crt_function_coverage")
+        self.assertEqual(result[0]["generated_source_location"]["line_start"], 1362)
+
+    def test_explain_delta_classifies_specific_function_coverage_source_kinds(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 3, "callsites": 0},
+                        "candidate_counts": {"functions": 0, "callsites": 0},
+                        "coverage_gaps": {
+                            "missing_functions": [
+                                {"name": "__iob_func", "match_key": "iob_func", "blocks": [], "callsites": 0},
+                                {"name": "_gnu_exception_handler@4", "match_key": "gnu_exception_handler", "blocks": [], "callsites": 0},
+                                {"name": "section-gap--text-0000", "match_key": "section-gap--text-0000", "blocks": [], "callsites": 0},
+                            ],
+                            "counts": {"missing_functions": 3, "incomplete_callsite_functions": 0, "missing_callsites": 0},
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "___iob_func",
+                            "aliases": ["__iob_func"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 2305,
+                            "line_end": 2308,
+                            "source_kind": "omitted_import_thunk",
+                        },
+                        {
+                            "function": "_gnu_exception_handler@4",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 3661,
+                            "line_end": 3670,
+                            "source_kind": "generated_contract_placeholder",
+                        },
+                    ]
+                }
+            },
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        by_function = {item["original_function"]: item for item in result}
+        self.assertEqual(by_function["__iob_func"]["likely_repair_class"], "import_thunk_linkage")
+        self.assertIn("import thunk linkage", by_function["__iob_func"]["next_action"])
+        self.assertEqual(by_function["_gnu_exception_handler@4"]["likely_repair_class"], "missing_decompiler_body")
+        self.assertIn("generated contract placeholder", by_function["_gnu_exception_handler@4"]["next_action"])
+        self.assertEqual(by_function["section-gap--text-0000"]["likely_repair_class"], "section_gap_or_padding_coverage")
+        self.assertIn("code, padding, or a section-gap artifact", by_function["section-gap--text-0000"]["next_action"])
 
     def test_explain_delta_classifies_indirect_call_source_roles(self):
         skeleton = {

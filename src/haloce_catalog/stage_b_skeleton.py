@@ -406,7 +406,11 @@ def stage_b_generate_skeleton(
         binary,
         functions,
     )
-    if implementation_mode == "decompiled-c" and implementation_recovery["status"] != "complete":
+    if (
+        implementation_mode == "decompiled-c"
+        and implementation_recovery["status"] != "complete"
+        and reference_contract_payload is None
+    ):
         blockers = ", ".join(implementation_recovery["blockers"])
         raise StageAInputError(f"decompiled-c Stage B implementation source is incomplete: {blockers}")
     implementation_recovery = _skeleton_implementation_recovery_with_contract_coverage(
@@ -817,8 +821,24 @@ def _merge_decompiler_evidence(contract_functions: list[dict[str, Any]], decompi
         if len(matches) != 1:
             matches = by_name.get(str(function.get("name") or ""), [])
         item = dict(function)
-        if len(matches) == 1 and isinstance(matches[0].get("decompiler"), dict):
-            item["decompiler"] = matches[0]["decompiler"]
+        if len(matches) == 1:
+            decompiler_match = matches[0]
+            item["name"] = str(decompiler_match.get("name") or item.get("name") or "")
+            aliases = []
+            for alias in [
+                *(function.get("aliases") or []),
+                function.get("name"),
+                decompiler_match.get("name"),
+                *(decompiler_match.get("aliases") or []),
+            ]:
+                if isinstance(alias, str) and alias and alias not in aliases:
+                    aliases.append(alias)
+            item["aliases"] = aliases
+            for key in ("source_name", "name_disambiguation", "pe_export_aliases"):
+                if key in decompiler_match:
+                    item[key] = decompiler_match[key]
+            if isinstance(decompiler_match.get("decompiler"), dict):
+                item["decompiler"] = decompiler_match["decompiler"]
         merged.append(item)
     return merged
 
@@ -1510,12 +1530,15 @@ def _skeleton_source_map(
         line = _source_anchor_line(lines, name, source_language=source_language, implementation_mode=implementation_mode)
         if line is None:
             continue
+        source_kind = _source_anchor_kind(lines, line=line, function=function)
         anchors.append(
             {
                 "function": name,
+                "aliases": [alias for alias in function.get("aliases", []) if isinstance(alias, str) and alias],
                 "file": source_rel.as_posix(),
                 "line_start": line,
                 "line_end": line,
+                "source_kind": source_kind,
                 "rva_start": function.get("rva_start"),
                 "rva_end": function.get("rva_end"),
             }
@@ -1541,6 +1564,9 @@ def _source_anchor_line(
     implementation_mode: str,
 ) -> int | None:
     candidates = [name]
+    c_identifier = _c_identifier_from_name(name)
+    if c_identifier != name:
+        candidates.append(c_identifier)
     if implementation_mode == "scaffold":
         ident = _identifier(name, 0)
         candidates.append(f"stage_b_fn_{ident}")
@@ -1552,6 +1578,33 @@ def _source_anchor_line(
         if any(candidate and candidate in line for candidate in candidates):
             return index
     return None
+
+
+def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]) -> str:
+    name = str(function.get("name") or "")
+    if name == "mainCRTStartup" and _source_line_contains_definition(lines, line=line, name=name):
+        return "generated_runtime_bridge"
+    definition = _source_definition_after(lines, start=line, name=name)
+    window = "\n".join(lines[max(0, line - 2) : min(len(lines), line + 2)])
+    if "MinGW CRT entry body replaced by a generated runtime bridge" in window:
+        return "omitted_runtime_entry"
+    if "import thunk for" in window:
+        return "omitted_import_thunk"
+    decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
+    if not str(decompiler.get("code") or "").strip():
+        return "generated_contract_placeholder"
+    if definition == line:
+        return "decompiled_function"
+    return "source_anchor"
+
+
+def _source_line_contains_definition(lines: list[str], *, line: int, name: str) -> bool:
+    if not name or line < 1 or line > len(lines):
+        return False
+    stripped = lines[line - 1].strip()
+    if name not in stripped or stripped.startswith(("extern ", "typedef ", "#", "/*", "//")) or stripped.endswith(";"):
+        return False
+    return "{" in stripped or _source_next_nonempty_line(lines, line + 1) == "{"
 
 
 def _source_body_anchor_line(lines: list[str], name: str) -> int | None:
@@ -1575,6 +1628,16 @@ def _source_definition_after(lines: list[str], *, start: int, name: str) -> int 
             continue
         if "{" in stripped or _source_next_nonempty_line(lines, index + 1) == "{":
             return index
+        for lookahead in range(index + 1, min(len(lines), index + 16) + 1):
+            lookahead_stripped = lines[lookahead - 1].strip()
+            if not lookahead_stripped:
+                continue
+            if lookahead_stripped.startswith(("/*", "//", "extern ", "typedef ", "#")):
+                break
+            if lookahead_stripped.endswith(";"):
+                break
+            if "{" in lookahead_stripped:
+                return index
     return None
 
 
@@ -1967,6 +2030,15 @@ def _render_decompiled_c_source(
             continue
         decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
         code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=str(function.get("name") or "")).strip()
+        if not code:
+            lines.extend(
+                [
+                    f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
+                    _decompiled_c_contract_placeholder(function),
+                    "",
+                ]
+            )
+            continue
         lines.extend(
             [
                 f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
@@ -1975,6 +2047,21 @@ def _render_decompiled_c_source(
             ]
         )
     return "\n".join(lines)
+
+
+def _decompiled_c_contract_placeholder(function: dict[str, Any]) -> str:
+    name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
+    rva_start = int(function.get("rva_start") or 0)
+    size = int(function.get("size") or 0)
+    return "\n".join(
+        [
+            f"uintptr_t __cdecl {name}(void)",
+            "{",
+            f"  /* Stage B contract placeholder for missing decompiler body at RVA 0x{rva_start:x}, size {size}. */",
+            "  return 0;",
+            "}",
+        ]
+    )
 
 def _decompiled_c_is_import_thunk(function: dict[str, Any]) -> bool:
     linkage = function.get("linkage")

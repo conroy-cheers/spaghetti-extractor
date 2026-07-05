@@ -1458,13 +1458,20 @@ def _stage_b_source_map_by_function(skeleton: dict[str, Any]) -> dict[str, dict[
     result = {}
     for item in functions:
         if isinstance(item, dict) and isinstance(item.get("function"), str):
+            names = [item["function"]]
+            aliases = item.get("aliases") if isinstance(item.get("aliases"), list) else []
+            names.extend(alias for alias in aliases if isinstance(alias, str) and alias)
             location = {
                 "file": item.get("file"),
                 "line_start": item.get("line_start"),
                 "line_end": item.get("line_end"),
             }
-            result[item["function"]] = location
-            result.setdefault(_linker_function_match_key(item["function"]), location)
+            for optional_key in ("source_kind", "rva_start", "rva_end"):
+                if optional_key in item:
+                    location[optional_key] = item.get(optional_key)
+            for name in names:
+                result.setdefault(name, location)
+                result.setdefault(_linker_function_match_key(name), location)
     return result
 
 
@@ -1601,14 +1608,16 @@ def _stage_b_abi_coverage_gap_items(
         name = sample.get("name")
         if not isinstance(name, str) or not name:
             continue
+        source_location = _stage_b_source_location(source_map, name)
+        repair_class = _stage_b_function_coverage_repair_class(name, source_location)
         items.append(
             _stage_b_repair_item(
                 family="abi_callsites",
                 function=name,
                 block_id=None,
                 source_map=source_map,
-                repair_class="abi_function_coverage",
-                next_action=f"recover generated ABI evidence for {name}; emit the function in the candidate linker map and preserve its callsites",
+                repair_class=repair_class,
+                next_action=_stage_b_function_coverage_next_action(name, repair_class),
                 evidence={"coverage_gap": sample},
             )
         )
@@ -1643,6 +1652,43 @@ def _stage_b_abi_coverage_gap_items(
         if len(items) >= limit:
             return items
     return items
+
+
+def _stage_b_function_coverage_repair_class(function_name: str, source_location: dict[str, Any] | None = None) -> str:
+    if function_name.startswith("section-gap-"):
+        return "section_gap_or_padding_coverage"
+    source_kind = source_location.get("source_kind") if isinstance(source_location, dict) else None
+    if source_kind == "omitted_import_thunk":
+        return "import_thunk_linkage"
+    if source_kind == "generated_contract_placeholder":
+        return "missing_decompiler_body"
+    if _stage_b_is_runtime_crt_support_function(function_name):
+        return "runtime_crt_function_coverage"
+    return "abi_function_coverage"
+
+
+def _stage_b_function_coverage_next_action(function_name: str, repair_class: str) -> str:
+    if repair_class == "runtime_crt_function_coverage":
+        return (
+            f"align generated runtime/CRT closure and linker roots for {function_name}; "
+            "preserve the support function or make the runtime-link policy explicit before rerunning Stage A"
+        )
+    if repair_class == "import_thunk_linkage":
+        return (
+            f"repair import thunk linkage for {function_name}; preserve the thunk/import classification "
+            "or link through the matching import surface before rerunning Stage A"
+        )
+    if repair_class == "missing_decompiler_body":
+        return (
+            f"replace the generated contract placeholder for {function_name} with recovered behavior "
+            "from reverse-engineering evidence before expecting Stage A equivalence"
+        )
+    if repair_class == "section_gap_or_padding_coverage":
+        return (
+            f"classify {function_name} as code, padding, or a section-gap artifact in the Stage A contract "
+            "and generated candidate layout"
+        )
+    return f"recover generated ABI evidence for {function_name}; emit the function in the candidate linker map and preserve its callsites"
 
 
 def _stage_b_contract_family_summary(family: dict[str, Any]) -> dict[str, Any]:
@@ -1681,7 +1727,7 @@ def _stage_b_candidate_abi_callsite_sample(function_name: str, callsite: dict[st
     varargs = callsite.get("varargs_evidence") if isinstance(callsite.get("varargs_evidence"), dict) else {}
     targets = callsite.get("function_pointer_targets") if isinstance(callsite.get("function_pointer_targets"), list) else []
     if hidden.get("status") == "candidate":
-        repair_class = _stage_b_hidden_address_repair_class(hidden)
+        repair_class = _stage_b_hidden_address_repair_class(function_name, hidden)
         next_action = _stage_b_hidden_address_next_action(function_name, callsite, repair_class)
     elif varargs.get("status") == "candidate":
         repair_class = "varargs_or_stdio_bridge"
@@ -1706,10 +1752,12 @@ def _stage_b_candidate_abi_callsite_sample(function_name: str, callsite: dict[st
     }
 
 
-def _stage_b_hidden_address_repair_class(hidden: dict[str, Any]) -> str:
+def _stage_b_hidden_address_repair_class(function_name: str, hidden: dict[str, Any]) -> str:
     role = _stage_b_hidden_address_role(hidden)
     if role == "stack_out_param_or_scratch_buffer":
-        return "stack_out_param_or_scratch_buffer"
+        if _stage_b_is_runtime_crt_bridge_function(function_name):
+            return "runtime_crt_stack_bridge"
+        return "stack_scratch_buffer_or_out_param"
     if role == "computed_out_param_or_hidden_sret":
         return "computed_out_param_or_hidden_sret"
     return "hidden_sret_or_out_param"
@@ -1730,11 +1778,56 @@ def _stage_b_hidden_address_role(hidden: dict[str, Any]) -> str:
 def _stage_b_hidden_address_next_action(function_name: str, callsite: dict[str, Any], repair_class: str) -> str:
     callsite_id = callsite.get("id")
     actions = {
-        "stack_out_param_or_scratch_buffer": "recover generated prototype plus stack out-param/scratch-buffer bridge",
+        "runtime_crt_stack_bridge": "verify generated runtime/CRT bridge and linker policy for this stack out-param helper",
+        "stack_scratch_buffer_or_out_param": "verify generated prototype and local stack scratch/out-param handling",
+        "stack_out_param_or_scratch_buffer": "verify generated prototype and local stack scratch/out-param handling",
         "computed_out_param_or_hidden_sret": "recover generated prototype and computed out-param or hidden-return bridge",
         "hidden_sret_or_out_param": "verify generated prototype/call bridge for address-like first argument",
     }
     return f"{actions.get(repair_class, actions['hidden_sret_or_out_param'])} for {function_name} at {callsite_id}"
+
+
+def _stage_b_is_runtime_crt_bridge_function(function_name: str) -> bool:
+    key = _linker_function_match_key(function_name).lower()
+    return key in {
+        "tmaincrtstartup",
+        "maincrtstartup",
+        "winmaincrtstartup",
+        "wmain",
+        "wgetmainargs",
+    }
+
+
+def _stage_b_is_runtime_crt_support_function(function_name: str) -> bool:
+    key = _linker_function_match_key(function_name).lower()
+    if _stage_b_is_runtime_crt_bridge_function(function_name):
+        return True
+    exact = {
+        "findpesection",
+        "findpesectionbyname",
+        "findpesectionexec",
+        "getpeimagebase",
+        "isnonwritableincurrentimage",
+        "validateimagebase",
+    }
+    if key in exact:
+        return True
+    prefixes = (
+        "w64_mingw",
+        "mingwthr",
+        "mingw_",
+        "dyn_tls_",
+        "do_global_",
+        "tlregdtor",
+    )
+    if key.startswith(prefixes):
+        return True
+    suffixes = (
+        "_d2a",
+        "_dtoa_r",
+        "_gdtoa",
+    )
+    return key.endswith(suffixes)
 
 
 def _stage_b_function_pointer_repair_class(callsite: dict[str, Any]) -> str:
@@ -2070,9 +2163,12 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "candidate_crash": 0,
         "candidate_crash_unmapped": 0,
         "hidden_sret_or_out_param": 1,
-        "stack_out_param_or_scratch_buffer": 1,
         "computed_out_param_or_hidden_sret": 1,
         "abi_function_coverage": 2,
+        "runtime_crt_function_coverage": 2,
+        "import_thunk_linkage": 2,
+        "missing_decompiler_body": 2,
+        "section_gap_or_padding_coverage": 2,
         "abi_callsite_function_coverage": 2,
         "abi_callsite_coverage": 3,
         "stack_delta_mismatch": 3,
@@ -2100,6 +2196,9 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "computed_function_pointer_target": 7,
         "function_pointer_target": 7,
         "candidate_crash_external_module": 8,
+        "runtime_crt_stack_bridge": 8,
+        "stack_scratch_buffer_or_out_param": 8,
+        "stack_out_param_or_scratch_buffer": 8,
         "jump_table_target": 8,
         "function_mapping": 9,
     }
