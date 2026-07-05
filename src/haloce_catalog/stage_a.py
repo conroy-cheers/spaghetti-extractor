@@ -787,6 +787,7 @@ def stage_a_validate_contract_candidate(
             "candidate_functions": len(candidate_functions),
             "alias_matches": alias_evidence["counts"]["alias_matches"],
             "alias_ambiguities": alias_evidence["counts"]["ambiguities"],
+            "unmatched_aliases": alias_evidence["counts"].get("unmatched_aliases", 0),
         },
     }
     write_json(out / "verdict.json", result)
@@ -1790,6 +1791,12 @@ def _contract_candidate_families(
     abi_coverage_gaps = _contract_candidate_abi_coverage_gaps(abi_contract, candidate_abi, alias_evidence=alias_evidence)
     original_imports = _contract_import_signature(original)
     candidate_imports = _contract_import_signature(_binary_reference_layout(candidate))
+    missing_function_details = _contract_candidate_missing_function_details(
+        missing_functions,
+        constraints=constraints,
+        candidate_imports=candidate_imports,
+        alias_evidence=alias_evidence,
+    )
     contract_status = str(contract.get("status") or "")
     proof_family = contract_families.get("proof_inventory") or contract_families.get("proof_obligation_inventory_and_statuses")
     proof_status = proof_family.get("status") if isinstance(proof_family, dict) else None
@@ -1824,6 +1831,8 @@ def _contract_candidate_families(
                 "expected_count": len(expected_functions),
                 "candidate_count": len(candidate_functions),
                 "missing_functions": missing_functions[:100],
+                "missing_function_details": missing_function_details[:100],
+                "missing_by_category": _count_by(missing_function_details, "category"),
                 "ambiguous_aliases": [_contract_alias_ambiguity_sample(alias_ambiguities[name]) for name in ambiguous_functions[:100]],
                 "alias_matches": _contract_alias_match_samples(alias_matches, expected_functions),
                 "alias_evidence_status": alias_evidence.get("status"),
@@ -1893,9 +1902,11 @@ def _empty_contract_candidate_alias_evidence(*, status: str = "not_applicable") 
         "status": status,
         "matches_by_reference": {},
         "ambiguities_by_reference": {},
+        "unmatched_by_reference": {},
         "alias_matches": [],
         "ambiguities": [],
-        "counts": {"alias_matches": 0, "ambiguities": 0},
+        "unmatched_aliases": [],
+        "counts": {"alias_matches": 0, "ambiguities": 0, "unmatched_aliases": 0},
     }
 
 
@@ -1906,16 +1917,21 @@ def _contract_candidate_skeleton_alias_evidence(skeleton: dict[str, Any], candid
     entries = source_map.get("functions") if isinstance(source_map.get("functions"), list) else []
     candidate_lookup = _contract_candidate_function_lookup(candidate_functions)
     unresolved: dict[str, list[dict[str, Any]]] = {}
+    unmatched: dict[str, list[dict[str, Any]]] = {}
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("function"), str):
             continue
         source_function = str(entry["function"])
         source_aliases = [alias for alias in entry.get("aliases", []) if isinstance(alias, str) and alias]
         reference_names = _dedupe_strings([source_function, *source_aliases])
+        if not reference_names:
+            continue
         candidate_matches = _contract_candidate_lookup_matches(candidate_lookup, *reference_names)
         if not candidate_matches:
-            continue
-        if not reference_names:
+            for name in reference_names:
+                unmatched.setdefault(name, []).append(
+                    _contract_candidate_source_alias_sample(entry, reference_name=name, source_aliases=source_aliases)
+                )
             continue
         if len(candidate_matches) > 1:
             ambiguity = {
@@ -1943,6 +1959,8 @@ def _contract_candidate_skeleton_alias_evidence(skeleton: dict[str, Any], candid
     ambiguities_by_reference: dict[str, list[dict[str, Any]]] = {}
     alias_matches: list[dict[str, Any]] = []
     ambiguities: list[dict[str, Any]] = []
+    unmatched_by_reference: dict[str, list[dict[str, Any]]] = {}
+    unmatched_aliases: list[dict[str, Any]] = []
     for reference_name, matches in sorted(unresolved.items()):
         unique = _unique_alias_matches(matches)
         if len(unique) == 1 and "candidate" in unique[0]:
@@ -1951,15 +1969,23 @@ def _contract_candidate_skeleton_alias_evidence(skeleton: dict[str, Any], candid
         else:
             ambiguities_by_reference[reference_name] = unique
             ambiguities.append({"reference_name": reference_name, "matches": unique[:5], "matches_total": len(unique)})
+    for reference_name, matches in sorted(unmatched.items()):
+        if reference_name in matches_by_reference or reference_name in ambiguities_by_reference:
+            continue
+        unique = _unique_alias_matches(matches)
+        unmatched_by_reference[reference_name] = unique
+        unmatched_aliases.append({"reference_name": reference_name, "matches": unique[:5], "matches_total": len(unique)})
 
     return {
         "format": "stage-a-contract-candidate-alias-evidence-v1",
         "status": "incomplete" if ambiguities else "satisfied",
         "matches_by_reference": matches_by_reference,
         "ambiguities_by_reference": ambiguities_by_reference,
+        "unmatched_by_reference": unmatched_by_reference,
         "alias_matches": alias_matches[:100],
         "ambiguities": ambiguities[:100],
-        "counts": {"alias_matches": len(alias_matches), "ambiguities": len(ambiguities)},
+        "unmatched_aliases": unmatched_aliases[:100],
+        "counts": {"alias_matches": len(alias_matches), "ambiguities": len(ambiguities), "unmatched_aliases": len(unmatched_aliases)},
     }
 
 
@@ -2045,6 +2071,12 @@ def _unique_alias_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]
                 "candidate_rva_start": candidate.get("rva_start"),
                 "candidate_rva_end": candidate.get("rva_end"),
                 "reason": match.get("reason"),
+                "source_kind": match.get("source_kind"),
+                "source_aliases": match.get("source_aliases"),
+                "rva_start": match.get("rva_start"),
+                "rva_end": match.get("rva_end"),
+                "file": match.get("file"),
+                "line_start": match.get("line_start"),
             },
             sort_keys=True,
         )
@@ -2053,6 +2085,25 @@ def _unique_alias_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]
         seen.add(key)
         result.append(match)
     return result
+
+
+def _contract_candidate_source_alias_sample(
+    entry: dict[str, Any],
+    *,
+    reference_name: str,
+    source_aliases: list[str],
+) -> dict[str, Any]:
+    return {
+        "reference_name": reference_name,
+        "source_function": entry.get("function"),
+        "source_kind": entry.get("source_kind"),
+        "source_aliases": source_aliases,
+        "rva_start": entry.get("rva_start"),
+        "rva_end": entry.get("rva_end"),
+        "file": entry.get("file"),
+        "line_start": entry.get("line_start"),
+        "line_end": entry.get("line_end"),
+    }
 
 
 def _contract_candidate_function_sample(function: dict[str, Any]) -> dict[str, Any]:
@@ -2092,7 +2143,140 @@ def _contract_candidate_alias_evidence_summary(alias_evidence: dict[str, Any]) -
         "counts": alias_evidence.get("counts"),
         "alias_matches": alias_evidence.get("alias_matches", [])[:20] if isinstance(alias_evidence.get("alias_matches"), list) else [],
         "ambiguities": alias_evidence.get("ambiguities", [])[:20] if isinstance(alias_evidence.get("ambiguities"), list) else [],
+        "unmatched_aliases": alias_evidence.get("unmatched_aliases", [])[:20]
+        if isinstance(alias_evidence.get("unmatched_aliases"), list)
+        else [],
     }
+
+
+def _contract_candidate_missing_function_details(
+    missing_functions: list[str],
+    *,
+    constraints: dict[str, Any],
+    candidate_imports: list[dict[str, Any]],
+    alias_evidence: dict[str, Any],
+) -> list[dict[str, Any]]:
+    unmatched = alias_evidence.get("unmatched_by_reference") if isinstance(alias_evidence.get("unmatched_by_reference"), dict) else {}
+    reference_import_thunks = _contract_reference_import_thunks_by_function(constraints)
+    details: list[dict[str, Any]] = []
+    for function_name in missing_functions:
+        source_entries = unmatched.get(function_name) if isinstance(unmatched.get(function_name), list) else []
+        source_evidence = source_entries[0] if source_entries and isinstance(source_entries[0], dict) else None
+        import_thunk = reference_import_thunks.get(function_name)
+        candidate_import_match = _contract_candidate_matching_import(import_thunk, candidate_imports)
+        category = _contract_candidate_missing_function_category(
+            function_name,
+            source_evidence=source_evidence,
+            reference_import_thunk=import_thunk,
+            candidate_import_match=candidate_import_match,
+        )
+        item: dict[str, Any] = {
+            "function": function_name,
+            "category": category,
+            "severity": "blocking",
+            "next_action": _contract_candidate_missing_function_next_action(function_name, category),
+        }
+        if source_evidence is not None:
+            item["source_evidence"] = source_evidence
+        if import_thunk is not None:
+            item["reference_import_thunk"] = import_thunk
+        if candidate_import_match is not None:
+            item["candidate_import_match"] = candidate_import_match
+        details.append(item)
+    return details
+
+
+def _contract_reference_import_thunks_by_function(constraints: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    import_contract = constraints.get("import_thunks") if isinstance(constraints.get("import_thunks"), dict) else {}
+    mapped = import_contract.get("mapped_import_thunks") if isinstance(import_contract.get("mapped_import_thunks"), list) else []
+    result: dict[str, dict[str, Any]] = {}
+    for item in mapped:
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source") if isinstance(item.get("source"), dict) else {}
+        function_name = source.get("function")
+        if not isinstance(function_name, str) or not function_name:
+            continue
+        result.setdefault(
+            function_name,
+            {
+                "id": item.get("id"),
+                "function": function_name,
+                "function_match_key": _linker_function_match_key(function_name),
+                "source_kind": source.get("kind"),
+                "import_signature": source.get("import_signature") if isinstance(source.get("import_signature"), dict) else None,
+                "original": item.get("original") if isinstance(item.get("original"), dict) else None,
+                "candidate": item.get("candidate") if isinstance(item.get("candidate"), dict) else None,
+            },
+        )
+    return result
+
+
+def _contract_candidate_matching_import(
+    reference_import_thunk: dict[str, Any] | None,
+    candidate_imports: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not isinstance(reference_import_thunk, dict):
+        return None
+    signature = reference_import_thunk.get("import_signature")
+    if not isinstance(signature, dict):
+        return None
+    for imported in candidate_imports:
+        if not isinstance(imported, dict):
+            continue
+        if _contract_import_signature_dict_key(imported) == _contract_import_signature_dict_key(signature):
+            return imported
+    return None
+
+
+def _contract_import_signature_dict_key(imported: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(imported.get("dll") or "").lower(),
+        str(imported.get("symbol") or ""),
+        str(imported.get("ordinal") or ""),
+    )
+
+
+def _contract_candidate_missing_function_category(
+    function_name: str,
+    *,
+    source_evidence: dict[str, Any] | None,
+    reference_import_thunk: dict[str, Any] | None,
+    candidate_import_match: dict[str, Any] | None,
+) -> str:
+    source_kind = source_evidence.get("source_kind") if isinstance(source_evidence, dict) else None
+    if source_kind == "omitted_import_thunk" or reference_import_thunk is not None:
+        if candidate_import_match is not None:
+            return "import_thunk_symbol_missing_with_matching_import"
+        return "import_thunk_symbol_missing"
+    if source_kind == "omitted_runtime_entry":
+        return "runtime_entry_replaced_by_generated_bridge"
+    if source_kind == "generated_contract_placeholder":
+        return "generated_contract_placeholder_missing"
+    if function_name.startswith("section-gap-"):
+        return "section_gap_or_padding_missing"
+    if source_evidence is not None:
+        return "source_map_alias_unresolved"
+    return "function_missing"
+
+
+def _contract_candidate_missing_function_next_action(function_name: str, category: str) -> str:
+    if category == "import_thunk_symbol_missing_with_matching_import":
+        return (
+            f"preserve the original import thunk symbol for {function_name} or add a strict Stage A import-thunk "
+            "representation mapping that proves the matching candidate import is equivalent"
+        )
+    if category == "import_thunk_symbol_missing":
+        return f"restore or map the import thunk for {function_name} and ensure the candidate imports the same target"
+    if category == "runtime_entry_replaced_by_generated_bridge":
+        return f"emit or retain the runtime/CRT entry/support function {function_name}, or prove the generated bridge is equivalent"
+    if category == "generated_contract_placeholder_missing":
+        return f"replace or root the generated contract placeholder for {function_name} before rerunning Stage A"
+    if category == "section_gap_or_padding_missing":
+        return f"classify and preserve the executable section span represented by {function_name}"
+    if category == "source_map_alias_unresolved":
+        return f"root the generated source-map alias for {function_name} so the candidate linker map exposes it"
+    return f"generate or retain candidate implementation and linker root for {function_name}"
 
 
 def _contract_candidate_binary_matches(original: dict[str, Any], candidate: StageABinary) -> bool:

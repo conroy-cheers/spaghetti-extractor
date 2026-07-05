@@ -1726,6 +1726,86 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(match["source_function"], "_gnu_exception_handler@4")
         self.assertEqual(match["candidate"]["name"], "_gnu_exception_handler_4")
 
+    def test_contract_candidate_alias_evidence_records_unmatched_source_aliases(self):
+        alias_evidence = stage_a._contract_candidate_skeleton_alias_evidence(
+            {
+                "format": "stage-b-skeleton-v1",
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "___iob_func",
+                            "aliases": ["__iob_func"],
+                            "source_kind": "omitted_import_thunk",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 2305,
+                            "line_end": 2308,
+                        }
+                    ]
+                },
+            },
+            [],
+        )
+
+        unmatched = alias_evidence["unmatched_by_reference"]["__iob_func"][0]
+
+        self.assertEqual(alias_evidence["status"], "satisfied")
+        self.assertEqual(alias_evidence["counts"]["unmatched_aliases"], 2)
+        self.assertEqual(unmatched["source_function"], "___iob_func")
+        self.assertEqual(unmatched["source_kind"], "omitted_import_thunk")
+        self.assertEqual(unmatched["file"], "src/jq_stage_b_skeleton.c")
+
+    def test_contract_candidate_missing_function_details_classify_import_thunk_and_runtime_entry(self):
+        alias_evidence = {
+            "unmatched_by_reference": {
+                "__iob_func": [
+                    {
+                        "reference_name": "__iob_func",
+                        "source_function": "___iob_func",
+                        "source_kind": "omitted_import_thunk",
+                        "source_aliases": ["__iob_func"],
+                    }
+                ],
+                "wmain": [
+                    {
+                        "reference_name": "wmain",
+                        "source_function": "_wmain",
+                        "source_kind": "omitted_runtime_entry",
+                        "source_aliases": ["wmain"],
+                    }
+                ],
+            }
+        }
+        constraints = {
+            "import_thunks": {
+                "mapped_import_thunks": [
+                    {
+                        "id": "__iob_func-import-thunk",
+                        "source": {
+                            "function": "__iob_func",
+                            "kind": "import_thunk",
+                            "import_signature": {"dll": "msvcrt.dll", "symbol": "__p__iob", "ordinal": None},
+                        },
+                        "original": {"rva_start": 0x2000, "rva_end": 0x2006},
+                    }
+                ]
+            }
+        }
+
+        details = stage_a._contract_candidate_missing_function_details(
+            ["__iob_func", "wmain"],
+            constraints=constraints,
+            candidate_imports=[{"dll": "MSVCRT.dll", "symbol": "__p__iob", "ordinal": None}],
+            alias_evidence=alias_evidence,
+        )
+
+        by_function = {item["function"]: item for item in details}
+        self.assertEqual(by_function["__iob_func"]["category"], "import_thunk_symbol_missing_with_matching_import")
+        self.assertEqual(by_function["__iob_func"]["candidate_import_match"]["symbol"], "__p__iob")
+        self.assertEqual(by_function["__iob_func"]["source_evidence"]["source_kind"], "omitted_import_thunk")
+        self.assertIn("import thunk symbol", by_function["__iob_func"]["next_action"])
+        self.assertEqual(by_function["wmain"]["category"], "runtime_entry_replaced_by_generated_bridge")
+        self.assertIn("runtime/CRT", by_function["wmain"]["next_action"])
+
     def test_contract_candidate_abi_coverage_gaps_fail_closed_on_ambiguous_skeleton_aliases(self):
         reference_abi = {
             "original": {

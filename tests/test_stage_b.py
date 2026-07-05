@@ -722,12 +722,12 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["counts"]["missing_with_skeleton_evidence"], 1)
             self.assertEqual(
                 result["counts"]["missing_by_skeleton_representation"],
-                {"runtime_entry_replaced_by_generated_bridge": 1},
+                {"skeleton_function_not_emitted_as_text_symbol": 1},
             )
             missing = result["issues"][0]["details"]["functions"][0]
             self.assertEqual(missing["name"], "wmain")
             self.assertEqual(missing["skeleton"]["name"], "_wmain")
-            self.assertEqual(missing["skeleton"]["representation"], "runtime_entry_replaced_by_generated_bridge")
+            self.assertEqual(missing["skeleton"]["representation"], "skeleton_function_not_emitted_as_text_symbol")
 
     def test_generate_link_roots_rejects_ambiguous_object_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2013,6 +2013,30 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("void jq_get_exit_code(void)", source)
         self.assertNotIn("  jq_get_exit_code();\n  return;", source)
 
+    def test_decompiled_c_renderer_preserves_iob_import_thunk_symbol(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "___iob_func",
+                    "rva_start": 0xC380,
+                    "rva_end": 0xC386,
+                    "size": 6,
+                    "linkage": {"kind": "import_thunk", "symbol": "__p__iob", "original_symbol": "___iob_func"},
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t ___iob_func(void) { __p__iob(); return; }",
+                    },
+                },
+            ],
+        )
+
+        self.assertIn(".section .text$___iob_func", source)
+        self.assertIn(".globl ___iob_func", source)
+        self.assertIn("jmp *__imp____p__iob", source)
+        self.assertIn("#define ___iob_func __p__iob", source)
+        self.assertIn("import thunk for __p__iob; body omitted", source)
+
     def test_decompiled_c_renderer_replaces_mingw_crt_entry_with_bridge(self):
         source = _render_decompiled_c_source(
             target_name="jq",
@@ -2063,13 +2087,44 @@ class StageBTests(unittest.TestCase):
         self.assertIn("MinGW CRT entry body replaced by a generated runtime bridge", source)
         self.assertNotIn("return *(int *)0x18;", source)
         self.assertNotIn("return ___tmainCRTStartup();", source)
-        self.assertNotIn("int _wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
+        self.assertIn("int _wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
         self.assertIn("void __cdecl mainCRTStartup(void)", source)
         self.assertIn("__wgetmainargs(&argc,(int *)&wargv,(int *)&wenv,0,&startup_info)", source)
         self.assertIn("argv = (char **)malloc((argc + 1) * sizeof(char *));", source)
         self.assertIn("argv[i][j] = (char)((ch < 0x80) ? ch : '?');", source)
         self.assertIn("rc = (int)umain(argc,(undefined4 *)argv);", source)
+        self.assertNotIn("rc = _wmain(argc,wargv,wenv);", source)
         self.assertIn("exit(rc);", source)
+
+    def test_decompiled_c_runtime_bridge_calls_wmain_when_umain_is_unavailable(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "mainCRTStartup",
+                    "rva_start": 0x1420,
+                    "rva_end": 0x142F,
+                    "size": 0xF,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t mainCRTStartup(void) {\n  return ___tmainCRTStartup();\n}",
+                    },
+                },
+                {
+                    "name": "_wmain",
+                    "rva_start": 0x490C,
+                    "rva_end": 0x4A07,
+                    "size": 0xFB,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "int _wmain(int argc,wchar_t **argv,wchar_t **envp) {\n  return argc;\n}",
+                    },
+                },
+            ],
+        )
+
+        self.assertIn("rc = _wmain(argc,wargv,wenv);", source)
+        self.assertNotIn("rc = (int)umain(argc,(undefined4 *)argv);", source)
 
     def test_decompiled_c_source_map_marks_generated_and_omitted_runtime_entries(self):
         functions = [
@@ -2101,6 +2156,14 @@ class StageBTests(unittest.TestCase):
                 "size": 0x24AE,
                 "decompiler": {"status": "success", "code": "uintptr_t umain(int argc,undefined4 *argv) { return argc; }"},
             },
+            {
+                "name": "_wmain",
+                "aliases": ["wmain"],
+                "rva_start": 0x490C,
+                "rva_end": 0x4A07,
+                "size": 0xFB,
+                "decompiler": {"status": "success", "code": "int _wmain(int argc,wchar_t **argv,wchar_t **envp) { return argc; }"},
+            },
         ]
         source = _render_skeleton_decompiled_c_source(target_name="jq", functions=functions)
 
@@ -2116,6 +2179,8 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["mainCRTStartup"]["source_kind"], "generated_runtime_bridge")
         self.assertEqual(by_function["___tmainCRTStartup"]["source_kind"], "omitted_runtime_entry")
         self.assertEqual(by_function["___wgetmainargs"]["source_kind"], "omitted_runtime_entry")
+        self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
+        self.assertEqual(by_function["_wmain"]["aliases"], ["wmain"])
         bridge_line = source.splitlines()[by_function["mainCRTStartup"]["line_start"] - 1]
         self.assertIn("void __cdecl mainCRTStartup(void)", bridge_line)
 
@@ -4039,6 +4104,71 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["__iob_func"]["likely_repair_class"], "import_thunk_linkage")
         self.assertIn("import thunk symbol", by_function["__iob_func"]["next_action"])
         self.assertEqual(by_function["regular_body"]["likely_repair_class"], "function_mapping")
+
+    def test_explain_delta_prefers_stage_a_missing_function_details(self):
+        validation = {
+            "families": [
+                {
+                    "family": "function_ranges",
+                    "status": "incomplete",
+                    "evidence": {
+                        "missing_functions": ["__iob_func", "wmain"],
+                        "missing_function_details": [
+                            {
+                                "function": "__iob_func",
+                                "category": "import_thunk_symbol_missing_with_matching_import",
+                                "next_action": "preserve the original import thunk symbol for __iob_func",
+                                "candidate_import_match": {"dll": "msvcrt.dll", "symbol": "__p__iob", "ordinal": None},
+                            },
+                            {
+                                "function": "wmain",
+                                "category": "runtime_entry_replaced_by_generated_bridge",
+                                "next_action": "emit or retain the runtime/CRT entry/support function wmain",
+                            },
+                        ],
+                    },
+                }
+            ]
+        }
+        skeleton = {
+            "source_map": {
+                "functions": [
+                    {
+                        "function": "___iob_func",
+                        "aliases": ["__iob_func"],
+                        "file": "src/jq_stage_b_skeleton.c",
+                        "line_start": 2305,
+                        "line_end": 2308,
+                        "source_kind": "omitted_import_thunk",
+                    },
+                    {
+                        "function": "_wmain",
+                        "aliases": ["wmain"],
+                        "file": "src/jq_stage_b_skeleton.c",
+                        "line_start": 8477,
+                        "line_end": 8480,
+                        "source_kind": "omitted_runtime_entry",
+                    },
+                ]
+            }
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton=skeleton,
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        by_function = {item["original_function"]: item for item in result}
+        self.assertEqual(by_function["__iob_func"]["likely_repair_class"], "import_thunk_linkage")
+        self.assertEqual(by_function["__iob_func"]["evidence"]["missing_function_detail"]["candidate_import_match"]["symbol"], "__p__iob")
+        self.assertEqual(by_function["__iob_func"]["generated_source_location"]["line_start"], 2305)
+        self.assertEqual(by_function["wmain"]["likely_repair_class"], "runtime_crt_function_coverage")
+        self.assertEqual(by_function["wmain"]["generated_source_location"]["source_kind"], "omitted_runtime_entry")
+        self.assertIn("runtime/CRT", by_function["wmain"]["next_action"])
 
     def test_explain_delta_splits_abi_callsites_into_actionable_repairs(self):
         skeleton = {

@@ -31,11 +31,12 @@ __all__ = [
 
 STAGE_B_PROOF_RULE = "reproducible_stage_b_skeleton_reimplementation_v1"
 
-_DECOMPILED_C_RUNTIME_ENTRY_NAMES = frozenset({"___tmainCRTStartup", "mainCRTStartup", "_wmain", "___wgetmainargs"})
+_DECOMPILED_C_RUNTIME_ENTRY_NAMES = frozenset({"___tmainCRTStartup", "mainCRTStartup", "___wgetmainargs"})
 
 _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
 
 _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS = frozenset({"_crt_atexit", "__crt_atexit"})
+_DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES = frozenset({"___iob_func"})
 
 def stage_b_generate_link_roots(
     *,
@@ -1988,6 +1989,7 @@ def _render_decompiled_c_source(
         [*(external_function_names or ()), *import_thunk_symbols, *import_thunk_alias_symbols, *direct_import_alias_symbols],
         implemented_functions,
     )
+    preserved_import_thunks = _decompiled_c_preserved_import_thunk_alias_lines(functions)
     import_aliases = _decompiled_c_import_thunk_alias_lines(functions)
     if externs:
         lines.extend(externs)
@@ -1997,6 +1999,9 @@ def _render_decompiled_c_source(
         lines.append("")
     if placeholders:
         lines.extend(placeholders)
+        lines.append("")
+    if preserved_import_thunks:
+        lines.extend(preserved_import_thunks)
         lines.append("")
     if import_aliases:
         lines.extend(import_aliases)
@@ -2109,52 +2114,83 @@ def _decompiled_c_import_thunk_alias_pairs(functions: list[dict[str, Any]]) -> l
         pairs.append((left, right))
     return pairs
 
+def _decompiled_c_preserved_import_thunk_alias_lines(functions: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for left, right in _decompiled_c_import_thunk_alias_pairs(functions):
+        if left not in _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES:
+            continue
+        import_pointer = f"__imp__{right}"
+        lines.extend(
+            [
+                "__asm__(",
+                f"\".section .text${left},\\\"x\\\"\\n\"",
+                f"\".globl {left}\\n\"",
+                f"\".def {left}; .scl 2; .type 32; .endef\\n\"",
+                f"\"{left}:\\n\"",
+                f"\"  jmp *{import_pointer}\\n\"",
+                ");",
+            ]
+        )
+    return lines
+
 def _decompiled_c_is_runtime_entry(function: dict[str, Any]) -> bool:
     return str(function.get("name") or "") in _DECOMPILED_C_RUNTIME_ENTRY_NAMES
 
 def _decompiled_c_runtime_entry_bridge(functions: list[dict[str, Any]]) -> list[str]:
     names = {str(function.get("name") or "") for function in functions}
-    if "mainCRTStartup" not in names or "umain" not in names:
+    if "mainCRTStartup" not in names or ("_wmain" not in names and "umain" not in names):
         return []
-    return [
+    lines = [
         "void __cdecl mainCRTStartup(void)",
         "{",
         "  int argc = 0;",
         "  wchar_t **wargv = (wchar_t **)0;",
         "  wchar_t **wenv = (wchar_t **)0;",
-        "  char **argv = (char **)0;",
         "  _startupinfo startup_info = {0};",
         "  int rc = 0;",
-        "  int i = 0;",
         "  stage_b_layout_keepalive();",
         "  if (__wgetmainargs(&argc,(int *)&wargv,(int *)&wenv,0,&startup_info) < 0) {",
         "    exit(8);",
         "  }",
-        "  argv = (char **)malloc((argc + 1) * sizeof(char *));",
-        "  if (argv == (char **)0) {",
-        "    exit(8);",
-        "  }",
-        "  for (i = 0; i < argc; i = i + 1) {",
-        "    int length = 0;",
-        "    int j = 0;",
-        "    while (wargv[i][length] != 0) {",
-        "      length = length + 1;",
-        "    }",
-        "    argv[i] = (char *)malloc((size_t)length + 1U);",
-        "    if (argv[i] == (char *)0) {",
-        "      exit(8);",
-        "    }",
-        "    for (j = 0; j < length; j = j + 1) {",
-        "      wchar_t ch = wargv[i][j];",
-        "      argv[i][j] = (char)((ch < 0x80) ? ch : '?');",
-        "    }",
-        "    argv[i][length] = '\\0';",
-        "  }",
-        "  argv[argc] = (char *)0;",
-        "  rc = (int)umain(argc,(undefined4 *)argv);",
+    ]
+    if "umain" in names:
+        lines.extend(
+            [
+                "  char **argv = (char **)0;",
+                "  int i = 0;",
+                "  argv = (char **)malloc((argc + 1) * sizeof(char *));",
+                "  if (argv == (char **)0) {",
+                "    exit(8);",
+                "  }",
+                "  for (i = 0; i < argc; i = i + 1) {",
+                "    int length = 0;",
+                "    int j = 0;",
+                "    while (wargv[i][length] != 0) {",
+                "      length = length + 1;",
+                "    }",
+                "    argv[i] = (char *)malloc((size_t)length + 1U);",
+                "    if (argv[i] == (char *)0) {",
+                "      exit(8);",
+                "    }",
+                "    for (j = 0; j < length; j = j + 1) {",
+                "      wchar_t ch = wargv[i][j];",
+                "      argv[i][j] = (char)((ch < 0x80) ? ch : '?');",
+                "    }",
+                "    argv[i][length] = '\\0';",
+                "  }",
+                "  argv[argc] = (char *)0;",
+                "  rc = (int)umain(argc,(undefined4 *)argv);",
+            ]
+        )
+    else:
+        lines.append("  rc = _wmain(argc,wargv,wenv);")
+    lines.extend(
+        [
         "  exit(rc);",
         "}",
-    ]
+        ]
+    )
+    return lines
 
 def _decompiled_c_runtime_entry_bridge_externs(functions: list[dict[str, Any]]) -> list[str]:
     if not _decompiled_c_runtime_entry_bridge(functions):
