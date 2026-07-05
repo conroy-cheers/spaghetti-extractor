@@ -2782,6 +2782,256 @@
               }
             '';
 
+          stage-b-jq-generated-closure-candidate-check = pkgs.runCommand "stage-b-jq-generated-closure-candidate-check"
+            {
+              nativeBuildInputs = [
+                haloce-tools
+                pkgs.jq
+                pkgs.wineWow64Packages.stable
+                pkgs.xvfb-run
+                stage-b-functional-tools
+              ];
+            }
+            ''
+              candidate_dir="${stage-b-jq-generated-closure-candidate}/share/wincr/stage-b/jq/generated-closure-candidate"
+              closure_manifest="${stage-b-jq-target-closure-skeleton}/share/wincr/stage-b/jq/target-closure-skeletons/target-closure-skeletons.json"
+              work="$TMPDIR/stage-b-jq-generated-closure-candidate-check"
+              mkdir -p "$work"
+              test -s "${stage-b-smoke-check}/functional-report.json"
+              test -s "$candidate_dir/smoke/report.json"
+              jq -e '
+                .format == "stage-b-runtime-smoke-v1"
+                and .status == "pass"
+                and .runner == "xvfb-run wine"
+              ' "$candidate_dir/smoke/report.json" >/dev/null
+
+              tar -C "$work" -xf "${pkgs.jq.src}" jq-1.8.1/tests
+              (
+                cd "$work/jq-1.8.1"
+                find tests -type f -print0 | sort -z | xargs -0 sha256sum
+              ) > "$work/upstream-suite-source.txt"
+              cat > "$work/cases.json" <<'JSON'
+              {
+                "format": "stage-b-upstream-suite-cases-v1",
+                "cases": [
+                  {
+                    "id": "jq-upstream-run-tests-generated-closure",
+                    "args": ["-L", "tests/modules", "--run-tests", "tests/jq.test"],
+                    "stdin": "",
+                    "cwd": "__JQ_TEST_ROOT__",
+                    "expected_returncode": 0,
+                    "expected_stdout_policy": "any",
+                    "expected_stderr_policy": "any",
+                    "timeout_seconds": 120,
+                    "candidate_timeout_seconds": 120
+                  }
+                ]
+              }
+              JSON
+              substituteInPlace "$work/cases.json" \
+                --replace-fail "__JQ_TEST_ROOT__" "$work/jq-1.8.1"
+              stage-b-functional-wincr stage-b-materialize-upstream-suite \
+                --target-name jq \
+                --suite-source "$work/upstream-suite-source.txt" \
+                --source-revision jq-1.8.1 \
+                --cases "$work/cases.json" \
+                --suite-scope full \
+                --out "$work/materialized-suite" \
+                > "$work/materialized-suite.stdout"
+
+              export HOME="$work/home"
+              export XDG_CACHE_HOME="$work/xdg-cache"
+              export XDG_CONFIG_HOME="$work/xdg-config"
+              export XDG_DATA_HOME="$work/xdg-data"
+              export WINEPREFIX="$work/wineprefix"
+              export WINEDEBUG=-all
+              export WINEDLLOVERRIDES=mscoree,mshtml,winedbg.exe=
+              export MESA_VK_IGNORE_CONFORMANCE_WARNING=1
+              mkdir -p "$HOME" "$XDG_CACHE_HOME/fontconfig" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+              cat > "$work/run-jq-generated-closure-under-wine" <<EOF
+              #!${pkgs.runtimeShell}
+              set -eu
+              pe="\$1"
+              shift
+              runroot="\$(mktemp -d "\''${TMPDIR:-/tmp}/stage-b-jq-generated-closure-under-wine.XXXXXX")"
+              cleanup() {
+                ${pkgs.coreutils}/bin/timeout --kill-after=5s 30s \
+                  ${pkgs.wineWow64Packages.stable}/bin/wineserver -k >/dev/null 2>&1 || true
+                rm -rf "\$runroot"
+              }
+              trap cleanup EXIT
+              trap 'exit 143' INT TERM
+              mkdir -p "\$runroot/bin"
+              exe_name="\$(basename "\$pe")"
+              pe_dir="\$(dirname "\$pe")"
+              cp "\$pe" "\$runroot/bin/\$exe_name"
+              for dll in "\$pe_dir"/*.dll "\$pe_dir"/*.DLL; do
+                if test -e "\$dll"; then
+                  cp "\$dll" "\$runroot/bin/"
+                fi
+              done
+              chmod +x "\$runroot/bin/\$exe_name"
+              set +e
+              ${pkgs.xvfb-run}/bin/xvfb-run -a \
+                ${pkgs.wineWow64Packages.stable}/bin/wine "\$runroot/bin/\$exe_name" "\$@"
+              code=\$?
+              set -e
+              exit "\$code"
+              EOF
+              chmod +x "$work/run-jq-generated-closure-under-wine"
+              candidate_cmd="$(jq -cn \
+                --arg runner "$work/run-jq-generated-closure-under-wine" \
+                --arg exe "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                '[$runner,$exe]')"
+
+              set +e
+              stage-b-functional-wincr stage-b-run-functional-suite \
+                --suite "$work/materialized-suite/functional-suite.json" \
+                --candidate-command-json "$candidate_cmd" \
+                --candidate-binary "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --strip-stderr-line-regex '^wine: created the configuration directory ' \
+                --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
+                --strip-stderr-line-regex '^      after [0-9]+ requests .* with [0-9]+ events remaining\.$' \
+                --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
+                --out "$work/functional" \
+                > "$work/functional.stdout"
+              functional_code=$?
+              set -e
+              functional_report="$work/functional/functional-report.json"
+              jq -n \
+                --slurpfile report "$functional_report" \
+                --arg functional_report "$functional_report" \
+                --arg functional_report_sha256 "$(sha256sum "$functional_report" | cut -d' ' -f1)" \
+                --arg candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --arg candidate_sha256 "$(sha256sum "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" | cut -d' ' -f1)" \
+                '
+                def first_failed_case:
+                  ($report[0].cases // [])
+                  | map(select(.status != "pass"))
+                  | .[0] // {};
+                def stderr_preview:
+                  first_failed_case.candidate.stderr.preview // "";
+                def page_fault:
+                  stderr_preview
+                  | capture("wine: Unhandled page fault on (?<access>[^ ]+) access to (?<fault_address>[0-9A-Fa-f]+) at address (?<instruction_address>[0-9A-Fa-f]+) \\(thread (?<thread>[0-9A-Fa-f]+)\\)")?;
+                (page_fault // {}) as $fault
+                | {
+                    format: "stage-b-candidate-crash-v1",
+                    source: "stage-b-functional-report",
+                    target_name: "jq",
+                    original_runtime_observations: false,
+                    candidate: {
+                      path: $candidate,
+                      sha256: $candidate_sha256
+                    },
+                    functional_report: {
+                      path: $functional_report,
+                      sha256: $functional_report_sha256
+                    },
+                    case_id: (first_failed_case.id // ""),
+                    status: (if ($fault | length) == 0 then "not_detected" else "detected" end),
+                    crash_kind: (if ($fault | length) == 0 then "" else "wine_unhandled_page_fault" end),
+                    access: ($fault.access // ""),
+                    fault_address: (if $fault.fault_address then "0x\($fault.fault_address)" else null end),
+                    instruction_address: (if $fault.instruction_address then "0x\($fault.instruction_address)" else null end),
+                    thread: ($fault.thread // ""),
+                    stderr_preview: stderr_preview,
+                    repair_hints: [
+                      "candidate-only crash",
+                      "page fault during public jq upstream suite",
+                      "inspect ABI, stack, hidden sret/out-param, and recovered function-pointer evidence"
+                    ]
+                  }
+                ' > "$work/candidate-crash.json"
+
+              wincr stage-b-generate-candidate-provenance \
+                --target-name jq \
+                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --functional-report "$functional_report" \
+                --build-target i686-w64-mingw32 \
+                --build-compiler i686-w64-mingw32-cc \
+                --build-output jq-stage-b-generated-closure-candidate.exe \
+                --build-report "$candidate_dir/decompiled-c-generated-closure-link-report.json" \
+                --target-closure-manifest "$closure_manifest" \
+                --out "$work/provenance" \
+                > "$work/provenance.stdout"
+              claimed_provenance="$work/provenance/candidate-provenance.json"
+
+              set +e
+              wincr stage-b-validate-candidate \
+                --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --linker-map-candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.map" \
+                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --candidate-provenance "$claimed_provenance" \
+                --functional-report "$functional_report" \
+                --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
+                --target-name jq \
+                --out "$work/validate" \
+                > "$work/validate.stdout"
+              validate_code=$?
+              wincr stage-b-explain-delta \
+                --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
+                --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --linker-map-candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.map" \
+                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --functional-report "$functional_report" \
+                --candidate-crash-report "$work/candidate-crash.json" \
+                --out "$work/delta" \
+                > "$work/delta.stdout"
+              delta_code=$?
+              set -e
+              test "$validate_code" -ne 0
+              test "$delta_code" -ne 0
+              jq -e '
+                .status == "incomplete"
+                and .candidate.build.report.source_dependency_policy.status == "satisfied"
+                and .candidate.build.report.target_import_closure.status == "satisfied"
+                and .candidate.build.report.standalone_link_diagnostic.status == "pass"
+                and ([.issues[].category] | index("target_library_linkage") | not)
+                and ([.issues[].category] | index("target_import_closure_incomplete") | not)
+                and ([.issues[].category] | index("standalone_build_incomplete") | not)
+                and .functional.oracle.original_runtime_observations == false
+                and (.functional.commands | has("original") | not)
+                and (.functional.binary_bindings | has("original") | not)
+                and .reference_contract_coverage.provided == true
+              ' "$work/validate/stage-b.json" >/dev/null
+              jq -e '
+                .format == "stage-b-delta-explanation-v1"
+                and .status == "incomplete"
+                and .counts.repair_items > 0
+                and .candidate_crash_report != null
+                and ([.repair_items[].violated_contract_family] | index("candidate_crash"))
+              ' "$work/delta/stage-b-delta.json" >/dev/null
+
+              mkdir -p "$out"
+              cp "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" "$out/"
+              cp "$candidate_dir/jq-stage-b-generated-closure-candidate.map" "$out/"
+              cp "$candidate_dir/libjq-1.dll" "$out/"
+              cp "$candidate_dir/decompiled-c-generated-closure-link-report.json" "$out/"
+              cp "$candidate_dir/candidate-provenance.json" "$out/initial-candidate-provenance.json"
+              cp "$claimed_provenance" "$out/candidate-provenance.json"
+              cp "$functional_report" "$out/functional-report.json"
+              cp "$work/validate/stage-b.json" "$out/stage-b.json"
+              cp "$work/delta/stage-b-delta.json" "$out/stage-b-delta.json"
+              cp "$work/candidate-crash.json" "$out/candidate-crash.json"
+              cp "$work/materialized-suite.stdout" \
+                "$work/functional.stdout" \
+                "$work/provenance.stdout" \
+                "$work/validate.stdout" \
+                "$work/delta.stdout" \
+                "$out/"
+              cp -R "$work/materialized-suite" "$out/materialized-suite"
+              cp -R "$work/functional" "$out/functional"
+              cp -R "$work/provenance" "$out/provenance"
+              cp -R "$work/validate" "$out/validate"
+              cp -R "$work/delta" "$out/delta"
+              cp -R "$candidate_dir/smoke" "$out/smoke"
+              printf '%s\n' "$functional_code" > "$out/functional.returncode"
+              printf '%s\n' "$validate_code" > "$out/validate.returncode"
+              printf '%s\n' "$delta_code" > "$out/delta.returncode"
+            '';
+
           stage-b-ripgrep-toolchain-diagnostic = pkgs.runCommand "stage-b-ripgrep-toolchain-diagnostic"
             {
               nativeBuildInputs = [
@@ -3341,7 +3591,7 @@
               mkdir -p "$work"
               set +e
               wincr stage-b-audit-readiness \
-                --report "jq=${stage-b-jq-skeleton-candidate-check}/stage-b.json" \
+                --report "jq=${stage-b-jq-generated-closure-candidate-check}/stage-b.json" \
                 --report "ripgrep=${stage-b-ripgrep-skeleton-candidate-check}/stage-b.json" \
                 --out "$work/audit" \
                 > "$work/audit.stdout"
@@ -3362,15 +3612,14 @@
                 and ([.targets.ripgrep.requirements[] | select(.id == "same_architecture_same_os").status][0] == "satisfied")
                 and ([.targets.jq.requirements[] | select(.id == "functional_binary_bindings").status][0] == "satisfied")
                 and ([.targets.ripgrep.requirements[] | select(.id == "functional_binary_bindings").status][0] == "satisfied")
-                and ([.targets.jq.requirements[] | select(.id == "canonical_upstream_functional_suite").status][0] == "satisfied")
-                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").status][0] == "incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").evidence.status][0] == "violated")
-                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").evidence.violations[].kind] | index("target_library_linkage"))
-                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").evidence.target_import_closure.status][0] == "incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").evidence.dependency_issue_categories] | flatten | index("target_import_closure_incomplete"))
+                and ([.targets.jq.requirements[] | select(.id == "canonical_upstream_functional_suite").status][0] == "incomplete")
+                and ([.targets.jq.requirements[] | select(.id == "canonical_upstream_functional_suite").evidence.status][0] == "fail")
+                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").status][0] == "satisfied")
+                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").evidence.status][0] == "satisfied")
+                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").evidence.target_import_closure.status][0] == "satisfied")
                 and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").status][0] == "incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.reason][0] == "pre_stage_a_requirements_incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.behavioral_mismatch_blocks_stage_a][0] == false)
+                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.reason][0] == "functional_behavior_mismatch")
+                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.behavioral_mismatch_blocks_stage_a][0] == true)
                 and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.ran][0] == false)
                 and ([.targets.jq.requirements[] | select(.id == "stage_a_reference_contract_coverage").status][0] == "incomplete")
                 and ([.targets.jq.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.provided][0] == true)
@@ -5050,6 +5299,7 @@ setup.write_text(text)
               stage-b-jq-skeleton-candidate-check
               stage-b-jq-target-closure-skeleton
               stage-b-jq-generated-closure-candidate
+              stage-b-jq-generated-closure-candidate-check
               stage-b-jq-skeleton-root
               stage-b-ripgrep-toolchain-diagnostic
               stage-b-ripgrep-toolchain-diagnostic-root
@@ -5246,6 +5496,7 @@ setup.write_text(text)
               stage-b-jq-skeleton-candidate-check
               stage-b-jq-target-closure-skeleton
               stage-b-jq-generated-closure-candidate
+              stage-b-jq-generated-closure-candidate-check
               stage-b-ripgrep-integration-harness
               stage-b-ripgrep-reference-contract
               stage-b-ripgrep-skeleton
