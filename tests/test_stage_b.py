@@ -824,6 +824,32 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["import_thunk_linker_flags"], ["-Wl,--undefined,___crt_atexit"])
             self.assertEqual((root / "roots" / "import-thunk-root-flags.txt").read_text(encoding="utf-8"), "-Wl,--undefined,___crt_atexit\n")
 
+    def test_generate_link_roots_preserves_iob_func_alias_import_symbol(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_import_pe(root / "jq.exe", b"\xff\x25\x40\x20\x40\x00\x00\x00", "__p__iob")
+            linker_map = root / "jq.map"
+            linker_map.write_text("                0x00401000                __iob_func\n", encoding="utf-8")
+            obj = root / "candidate.o"
+            obj.write_bytes(b"not really coff")
+            nm = root / "fake-nm"
+            nm.write_text("#!/bin/sh\ntrue\n", encoding="utf-8")
+            nm.chmod(0o755)
+
+            result = stage_b_generate_link_roots(
+                original=original,
+                linker_map_original=linker_map,
+                object_file=obj,
+                nm=str(nm),
+                out=root / "roots",
+            )
+
+            self.assertEqual(result["counts"]["import_thunk_roots"], 1)
+            self.assertEqual(result["import_thunk_roots"][0]["contract_function"], "__iob_func")
+            self.assertEqual(result["import_thunk_roots"][0]["symbol"], "__p__iob")
+            self.assertEqual(result["import_thunk_linker_flags"], ["-Wl,--undefined,___iob_func"])
+            self.assertEqual((root / "roots" / "import-thunk-root-flags.txt").read_text(encoding="utf-8"), "-Wl,--undefined,___iob_func\n")
+
     def test_export_decompiler_runs_ghidra_and_summarizes_completeness(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2036,6 +2062,26 @@ class StageBTests(unittest.TestCase):
         self.assertIn("jmp *__imp____p__iob", source)
         self.assertIn("#define ___iob_func __p__iob", source)
         self.assertIn("import thunk for __p__iob; body omitted", source)
+
+    def test_decompiled_c_renderer_anchors_jq_reference_import_surface(self):
+        source = _render_decompiled_c_source(target_name="jq", functions=[])
+
+        for symbol in [
+            "AreFileApisANSI",
+            "GetLastError",
+            "GetModuleHandleA",
+            "GetProcAddress",
+            "IsDBCSLeadByteEx",
+            "MultiByteToWideChar",
+            "Sleep",
+            "TlsGetValue",
+            "VirtualProtect",
+            "VirtualQuery",
+            "WriteFile",
+            "_get_osfhandle",
+            "isalpha",
+        ]:
+            self.assertIn(f"(void *)(uintptr_t)&{symbol}", source)
 
     def test_decompiled_c_renderer_replaces_mingw_crt_entry_with_bridge(self):
         source = _render_decompiled_c_source(

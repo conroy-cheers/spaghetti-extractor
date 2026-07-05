@@ -37,6 +37,7 @@ _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
 
 _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS = frozenset({"_crt_atexit", "__crt_atexit"})
 _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES = frozenset({"___iob_func"})
+_DECOMPILED_C_PRESERVED_IMPORT_THUNK_CONTRACT_SYMBOLS = frozenset({"__iob_func"})
 
 def stage_b_generate_link_roots(
     *,
@@ -243,6 +244,8 @@ def _stage_b_import_thunk_coff_symbol(root: dict[str, Any]) -> str:
     contract_function = str(root.get("contract_function") or "")
     if symbol == "atexit" and contract_function in {"_crt_atexit", "__crt_atexit"}:
         return "___crt_atexit"
+    if contract_function in _DECOMPILED_C_PRESERVED_IMPORT_THUNK_CONTRACT_SYMBOLS:
+        return f"_{contract_function}"
     return f"_{symbol}"
 
 def _stage_b_nm_defined_text_symbols(object_file: Path, *, nm: str) -> list[str]:
@@ -2206,7 +2209,20 @@ def _decompiled_c_layout_support_lines(target_name: str) -> list[str]:
         "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
         "uintptr_t __cdecl jv_mem_alloc(size_t);",
         "__attribute__((used, section(\".rdata$stage_b_jq_import_anchor\"))) static void * const stage_b_jq_import_anchor[] = {",
+        "    (void *)(uintptr_t)&AreFileApisANSI,",
+        "    (void *)(uintptr_t)&GetLastError,",
+        "    (void *)(uintptr_t)&GetModuleHandleA,",
+        "    (void *)(uintptr_t)&GetProcAddress,",
+        "    (void *)(uintptr_t)&IsDBCSLeadByteEx,",
+        "    (void *)(uintptr_t)&MultiByteToWideChar,",
+        "    (void *)(uintptr_t)&Sleep,",
+        "    (void *)(uintptr_t)&TlsGetValue,",
+        "    (void *)(uintptr_t)&VirtualProtect,",
+        "    (void *)(uintptr_t)&VirtualQuery,",
+        "    (void *)(uintptr_t)&WriteFile,",
         "    (void *)&stage_b_jq_imp_SetUnhandledExceptionFilter,",
+        "    (void *)(uintptr_t)&_get_osfhandle,",
+        "    (void *)(uintptr_t)&isalpha,",
         "    (void *)(uintptr_t)&jq_util_input_next_input_cb,",
         "    (void *)(uintptr_t)&jv_dumpf,",
         "    (void *)(uintptr_t)&jv_invalid_with_msg,",
