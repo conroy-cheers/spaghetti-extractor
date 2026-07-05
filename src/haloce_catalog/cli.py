@@ -272,6 +272,7 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_a_contract_candidate.add_argument("--reference-contract", type=Path, required=True)
     stage_a_contract_candidate.add_argument("--candidate", type=Path, required=True)
     stage_a_contract_candidate.add_argument("--linker-map-candidate", type=Path, required=True)
+    stage_a_contract_candidate.add_argument("--skeleton-manifest", type=Path, help="optional Stage B skeleton manifest with explicit source aliases")
     stage_a_contract_candidate.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
     stage_a_contract_candidate.add_argument("--out", type=Path, required=True)
     stage_a_contract_candidate.set_defaults(func=_cmd_stage_a_validate_contract_candidate)
@@ -1451,6 +1452,7 @@ def _cmd_stage_a_validate_contract_candidate(args: Any) -> int:
         reference_contract=args.reference_contract,
         candidate=args.candidate,
         linker_map_candidate=args.linker_map_candidate,
+        skeleton_manifest=args.skeleton_manifest,
         model=args.model,
         out=args.out,
     )

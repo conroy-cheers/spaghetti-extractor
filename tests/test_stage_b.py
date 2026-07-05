@@ -2130,6 +2130,12 @@ class StageBTests(unittest.TestCase):
                 "{",
                 "  return 0;",
                 "}",
+                "",
+                "/* original RVA 0x5370, size 404, name _gnu_exception_handler@4 */",
+                "uintptr_t __cdecl _gnu_exception_handler_4(void)",
+                "{",
+                "  return 0;",
+                "}",
             ]
         )
 
@@ -2143,16 +2149,25 @@ class StageBTests(unittest.TestCase):
                     "rva_start": 0x8F80,
                     "rva_end": 0x8FC0,
                     "decompiler": {"status": "success", "code": source},
-                }
+                },
+                {
+                    "name": "_gnu_exception_handler@4",
+                    "aliases": ["_gnu_exception_handler@4"],
+                    "rva_start": 0x5370,
+                    "rva_end": 0x5504,
+                    "decompiler": {"status": "incomplete", "code": ""},
+                },
             ],
             source_language="c",
             implementation_mode="decompiled-c",
         )
 
-        entry = source_map["functions"][0]
-        self.assertEqual(entry["source_kind"], "decompiled_function")
-        self.assertEqual(entry["line_start"], 3)
-        self.assertEqual(entry["aliases"], ["__gdtoa"])
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function["___gdtoa"]["source_kind"], "decompiled_function")
+        self.assertEqual(by_function["___gdtoa"]["line_start"], 3)
+        self.assertEqual(by_function["___gdtoa"]["aliases"], ["__gdtoa"])
+        self.assertEqual(by_function["_gnu_exception_handler@4"]["line_start"], 10)
+        self.assertEqual(by_function["_gnu_exception_handler@4"]["aliases"], ["_gnu_exception_handler@4", "_gnu_exception_handler_4"])
 
     def test_decompiled_c_renderer_returns_import_tail_call_result(self):
         source = _render_decompiled_c_source(
@@ -3975,9 +3990,55 @@ class StageBTests(unittest.TestCase):
             item = next(item for item in result["repair_items"] if item["violated_contract_family"] == "function_ranges")
             self.assertEqual(item["violated_contract_family"], "function_ranges")
             self.assertEqual(item["original_function"], "tiny")
-            self.assertEqual(item["likely_repair_class"], "function_mapping")
+            self.assertEqual(item["likely_repair_class"], "missing_decompiler_body")
             self.assertEqual(item["generated_source_location"]["file"], "src/jq_stage_b_skeleton.c")
             self.assertTrue((root / "delta" / "stage-b-delta.json").exists())
+
+    def test_explain_delta_classifies_missing_function_range_by_source_kind(self):
+        validation = {
+            "families": [
+                {
+                    "family": "function_ranges",
+                    "status": "incomplete",
+                    "evidence": {"missing_functions": ["__iob_func", "regular_body"]},
+                }
+            ]
+        }
+        skeleton = {
+            "source_map": {
+                "functions": [
+                    {
+                        "function": "___iob_func",
+                        "aliases": ["__iob_func"],
+                        "file": "src/jq_stage_b_skeleton.c",
+                        "line_start": 10,
+                        "line_end": 12,
+                        "source_kind": "omitted_import_thunk",
+                    },
+                    {
+                        "function": "regular_body",
+                        "file": "src/jq_stage_b_skeleton.c",
+                        "line_start": 20,
+                        "line_end": 24,
+                        "source_kind": "decompiled_function",
+                    },
+                ]
+            }
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton=skeleton,
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        by_function = {item["original_function"]: item for item in result}
+        self.assertEqual(by_function["__iob_func"]["likely_repair_class"], "import_thunk_linkage")
+        self.assertIn("import thunk symbol", by_function["__iob_func"]["next_action"])
+        self.assertEqual(by_function["regular_body"]["likely_repair_class"], "function_mapping")
 
     def test_explain_delta_splits_abi_callsites_into_actionable_repairs(self):
         skeleton = {

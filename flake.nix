@@ -2545,6 +2545,12 @@
                   import_thunk_root_flags+=("$flag")
                 fi
               done < "$diagnostic_dir/link-roots/import-thunk-root-flags.txt"
+              link_root_flags=()
+              while IFS= read -r flag; do
+                if test -n "$flag"; then
+                  link_root_flags+=("$flag")
+                fi
+              done < "$diagnostic_dir/link-roots/link-root-flags.txt"
               budgeted_link_root_flags=()
               while IFS= read -r flag; do
                 if test -n "$flag"; then
@@ -2558,7 +2564,7 @@
                 "$diagnostic_dir/jq_stage_b_skeleton.o" \
                 "$diagnostic_dir/libstage_b_msvcrt_atexit.a" \
                 "''${import_thunk_root_flags[@]}" \
-                "''${budgeted_link_root_flags[@]}" \
+                "''${link_root_flags[@]}" \
                 -L"$work" \
                 -l:libstage_b_target_closure_libjq_1.dll.a \
                 -L${mingw32Oniguruma.lib}/lib \
@@ -2642,7 +2648,7 @@
                   linker_flags: (
                     ["-nostartfiles", "libstage_b_msvcrt_atexit.a"]
                     + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
-                    + (($link_root_flags[0].budgeted_linker_flags // []) | map(tostring))
+                    + (($link_root_flags[0].linker_flags // []) | map(tostring))
                     + ["generated-target-closure/libstage_b_target_closure_libjq_1.dll.a", "-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.generated-closure.link.map"]
                   ),
                   standalone_link_diagnostic: {
@@ -2652,7 +2658,7 @@
                     linker_flags: (
                       ["-nostartfiles", "libstage_b_msvcrt_atexit.a"]
                       + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
-                      + (($link_root_flags[0].budgeted_linker_flags // []) | map(tostring))
+                      + (($link_root_flags[0].linker_flags // []) | map(tostring))
                       + ["generated-target-closure/libstage_b_target_closure_libjq_1.dll.a", "-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.generated-closure.link.map"]
                     ),
                     executable: $exe,

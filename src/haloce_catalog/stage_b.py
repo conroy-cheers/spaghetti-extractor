@@ -1130,6 +1130,7 @@ def stage_b_validate_candidate(
                     reference_contract=Path(reference_contract),
                     candidate=Path(candidate),
                     linker_map_candidate=Path(linker_map_candidate),
+                    skeleton_manifest=Path(skeleton_manifest),
                     model=model,
                     out=out / "stage-a",
                 )
@@ -1331,6 +1332,7 @@ def stage_b_explain_delta(
         reference_contract=reference_contract,
         candidate=candidate,
         linker_map_candidate=linker_map_candidate,
+        skeleton_manifest=skeleton_manifest,
         model=model,
         out=out / "stage-a-contract-candidate",
     )
@@ -1397,15 +1399,18 @@ def _stage_b_delta_repair_items(
         missing = evidence.get("missing_functions") if isinstance(evidence.get("missing_functions"), list) else []
         if missing:
             for name in missing[:20]:
+                function_name = str(name)
+                source_location = _stage_b_source_location(source_map, function_name)
+                repair_class = _stage_b_function_range_repair_class(function_name, source_location)
                 items.append(
                     _stage_b_repair_item(
                         family=family_name,
-                        function=str(name),
+                        function=function_name,
                         block_id=None,
                         source_map=source_map,
-                        repair_class="function_mapping",
-                        next_action=f"generate or retain candidate implementation and linker root for {name}",
-                        evidence={"family": family, "contract_function": contract_functions.get(str(name), {})},
+                        repair_class=repair_class,
+                        next_action=_stage_b_function_range_next_action(function_name, repair_class),
+                        evidence={"family": family, "contract_function": contract_functions.get(function_name, {})},
                     )
                 )
             continue
@@ -1689,6 +1694,28 @@ def _stage_b_function_coverage_next_action(function_name: str, repair_class: str
             "and generated candidate layout"
         )
     return f"recover generated ABI evidence for {function_name}; emit the function in the candidate linker map and preserve its callsites"
+
+
+def _stage_b_function_range_repair_class(function_name: str, source_location: dict[str, Any] | None = None) -> str:
+    repair_class = _stage_b_function_coverage_repair_class(function_name, source_location)
+    return "function_mapping" if repair_class == "abi_function_coverage" else repair_class
+
+
+def _stage_b_function_range_next_action(function_name: str, repair_class: str) -> str:
+    if repair_class == "function_mapping":
+        return f"generate or retain candidate implementation and linker root for {function_name}"
+    if repair_class == "import_thunk_linkage":
+        return (
+            f"preserve the import thunk symbol for {function_name} or add a Stage A import-thunk representation "
+            "mapping that proves the linked import surface is equivalent"
+        )
+    if repair_class == "missing_decompiler_body":
+        return f"replace or root the generated contract placeholder for {function_name} before rerunning Stage A"
+    if repair_class == "runtime_crt_function_coverage":
+        return f"align runtime/CRT entry generation and linker roots for {function_name}"
+    if repair_class == "section_gap_or_padding_coverage":
+        return f"classify and preserve the executable section span represented by {function_name}"
+    return _stage_b_function_coverage_next_action(function_name, repair_class)
 
 
 def _stage_b_contract_family_summary(family: dict[str, Any]) -> dict[str, Any]:

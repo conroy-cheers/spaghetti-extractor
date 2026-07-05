@@ -1531,10 +1531,15 @@ def _skeleton_source_map(
         if line is None:
             continue
         source_kind = _source_anchor_kind(lines, line=line, function=function)
+        aliases = [alias for alias in function.get("aliases", []) if isinstance(alias, str) and alias]
+        generated_identifier = _c_identifier_from_name(name) if source_language == "c" else name
+        if generated_identifier and generated_identifier != name:
+            aliases.append(generated_identifier)
+        aliases = list(dict.fromkeys(aliases))
         anchors.append(
             {
                 "function": name,
-                "aliases": [alias for alias in function.get("aliases", []) if isinstance(alias, str) and alias],
+                "aliases": aliases,
                 "file": source_rel.as_posix(),
                 "line_start": line,
                 "line_end": line,

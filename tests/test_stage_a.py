@@ -1657,6 +1657,189 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(gaps["incomplete_callsites"][0]["candidate_callsites"], 1)
         self.assertEqual(gaps["incomplete_callsites"][0]["reference_callsites"], 2)
 
+    def test_contract_candidate_abi_coverage_gaps_use_explicit_skeleton_aliases(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "__dyn_tls_dtor@12",
+                        "blocks": [{"block_id": "dyn", "rva_start": 0x1000, "rva_end": 0x1001, "size": 1}],
+                        "callsites": [],
+                    }
+                ]
+            },
+            "counts": {"functions": 1, "callsites": 0},
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "___dyn_tls_dtor_12",
+                        "callsites": [],
+                    }
+                ]
+            },
+            "counts": {"functions": 1, "callsites": 0},
+        }
+        alias_evidence = stage_a._contract_candidate_skeleton_alias_evidence(
+            {
+                "format": "stage-b-skeleton-v1",
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "___dyn_tls_dtor_12",
+                            "aliases": ["__dyn_tls_dtor@12"],
+                            "source_kind": "decompiled_function",
+                        }
+                    ]
+                },
+            },
+            [{"name": "___dyn_tls_dtor_12", "rva_start": 0x1000, "rva_end": 0x1001, "section": ".text"}],
+        )
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi, alias_evidence=alias_evidence)
+
+        self.assertEqual(gaps["counts"]["missing_functions"], 0)
+        self.assertEqual(gaps["counts"]["ambiguous_functions"], 0)
+        self.assertEqual(alias_evidence["matches_by_reference"]["__dyn_tls_dtor@12"]["source_function"], "___dyn_tls_dtor_12")
+
+    def test_contract_candidate_alias_evidence_matches_generated_c_identifier_alias(self):
+        alias_evidence = stage_a._contract_candidate_skeleton_alias_evidence(
+            {
+                "format": "stage-b-skeleton-v1",
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "_gnu_exception_handler@4",
+                            "aliases": ["_gnu_exception_handler@4", "_gnu_exception_handler_4"],
+                            "source_kind": "generated_contract_placeholder",
+                        }
+                    ]
+                },
+            },
+            [{"name": "_gnu_exception_handler_4", "rva_start": 0x3414, "rva_end": 0x3420, "section": ".text"}],
+        )
+
+        match = alias_evidence["matches_by_reference"]["_gnu_exception_handler@4"]
+
+        self.assertEqual(alias_evidence["status"], "satisfied")
+        self.assertEqual(match["source_function"], "_gnu_exception_handler@4")
+        self.assertEqual(match["candidate"]["name"], "_gnu_exception_handler_4")
+
+    def test_contract_candidate_abi_coverage_gaps_fail_closed_on_ambiguous_skeleton_aliases(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "__dup@4",
+                        "blocks": [{"block_id": "dup", "rva_start": 0x1000, "rva_end": 0x1001, "size": 1}],
+                        "callsites": [],
+                    }
+                ]
+            },
+            "counts": {"functions": 1, "callsites": 0},
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {"name": "___first_4", "callsites": []},
+                    {"name": "___second_4", "callsites": []},
+                ]
+            },
+            "counts": {"functions": 2, "callsites": 0},
+        }
+        alias_evidence = stage_a._contract_candidate_skeleton_alias_evidence(
+            {
+                "format": "stage-b-skeleton-v1",
+                "source_map": {
+                    "functions": [
+                        {"function": "___first_4", "aliases": ["__dup@4"]},
+                        {"function": "___second_4", "aliases": ["__dup@4"]},
+                    ]
+                },
+            },
+            [
+                {"name": "___first_4", "rva_start": 0x1000, "rva_end": 0x1001, "section": ".text"},
+                {"name": "___second_4", "rva_start": 0x1001, "rva_end": 0x1002, "section": ".text"},
+            ],
+        )
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi, alias_evidence=alias_evidence)
+
+        self.assertEqual(alias_evidence["status"], "incomplete")
+        self.assertEqual(gaps["counts"]["missing_functions"], 0)
+        self.assertEqual(gaps["counts"]["ambiguous_functions"], 1)
+        self.assertEqual(gaps["ambiguous_functions"][0]["name"], "__dup@4")
+
+    def test_validate_contract_candidate_satisfies_function_ranges_with_explicit_skeleton_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            candidate_bin = stage_a._parse_stage_a_pe(candidate)
+            contract = self._write_reference_contract(
+                root / "reference-contract.json",
+                candidate_bin,
+                functions=["__dyn_tls_init@12"],
+            )
+            linker_map = root / "candidate.map"
+            linker_map.write_text("0x401000 @___dyn_tls_init_12@16\n", encoding="utf-8")
+            skeleton_manifest = self._write_skeleton_manifest(
+                root / "manifest.json",
+                [
+                    {
+                        "function": "___dyn_tls_init_12",
+                        "aliases": ["__dyn_tls_init@12"],
+                        "source_kind": "decompiled_function",
+                    }
+                ],
+            )
+
+            result = stage_a.stage_a_validate_contract_candidate(
+                reference_contract=contract,
+                candidate=candidate,
+                linker_map_candidate=linker_map,
+                skeleton_manifest=skeleton_manifest,
+                out=root / "out",
+            )
+
+        families = {item["family"]: item for item in result["families"]}
+        self.assertEqual(result["verdict"], "pass")
+        self.assertEqual(families["function_ranges"]["status"], "satisfied")
+        self.assertEqual(families["abi_callsites"]["status"], "satisfied")
+        self.assertEqual(families["function_ranges"]["evidence"]["alias_matches"][0]["reference_name"], "__dyn_tls_init@12")
+        self.assertEqual(result["counts"]["alias_matches"], 2)
+
+    def test_validate_contract_candidate_keeps_duplicate_skeleton_alias_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3\xc3")
+            candidate_bin = stage_a._parse_stage_a_pe(candidate)
+            contract = self._write_reference_contract(root / "reference-contract.json", candidate_bin, functions=["__dup@4"])
+            linker_map = root / "candidate.map"
+            linker_map.write_text("0x401000 ___first_4\n0x401001 ___second_4\n", encoding="utf-8")
+            skeleton_manifest = self._write_skeleton_manifest(
+                root / "manifest.json",
+                [
+                    {"function": "___first_4", "aliases": ["__dup@4"]},
+                    {"function": "___second_4", "aliases": ["__dup@4"]},
+                ],
+            )
+
+            result = stage_a.stage_a_validate_contract_candidate(
+                reference_contract=contract,
+                candidate=candidate,
+                linker_map_candidate=linker_map,
+                skeleton_manifest=skeleton_manifest,
+                out=root / "out",
+            )
+
+        families = {item["family"]: item for item in result["families"]}
+        self.assertEqual(result["verdict"], "incomplete")
+        self.assertEqual(families["function_ranges"]["status"], "incomplete")
+        self.assertEqual(families["abi_callsites"]["status"], "incomplete")
+        self.assertEqual(families["function_ranges"]["evidence"]["missing_functions"], [])
+        self.assertEqual(families["function_ranges"]["evidence"]["ambiguous_aliases"][0]["matches_total"], 2)
+
     def test_stage_a_export_reference_contract_rejects_stale_validation_report_binding(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1950,6 +2133,80 @@ class StageAValidateTests(unittest.TestCase):
 
     def _write_pe(self, path: Path, code: bytes, *, virtual_size: int | None = None) -> Path:
         path.write_bytes(_pe32_image(code, virtual_size=virtual_size))
+        return path
+
+    def _write_reference_contract(self, path: Path, binary: stage_a.StageABinary, *, functions: list[str]) -> Path:
+        layout = stage_a._binary_reference_layout(binary)
+        function_rows = [
+            {
+                "name": name,
+                "rva_start": 0x1000 + index,
+                "rva_end": 0x1000 + index + 1,
+                "section": ".text",
+                "bytes_sha256": "",
+            }
+            for index, name in enumerate(functions)
+        ]
+        abi_functions = [
+            {
+                "name": name,
+                "blocks": [
+                    {
+                        "block_id": f"block-{index}",
+                        "rva_start": 0x1000 + index,
+                        "rva_end": 0x1000 + index + 1,
+                        "size": 1,
+                    }
+                ],
+                "callsites": [],
+            }
+            for index, name in enumerate(functions)
+        ]
+        sidecars = {
+            "coverage_gaps": {"path": "coverage_gaps.json"},
+            "obligation_index": {"path": "obligation_index.json"},
+            "contract_summary": {"path": "contract_summary.json"},
+            "abi_callsites": {"path": "abi_callsites.json"},
+        }
+        payload = {
+            "format": "stage-a-reference-contract-v1",
+            "model": STAGE_A_MODEL_ID,
+            "status": "pass",
+            "original": layout,
+            "constraints": {
+                "function_ranges": {"status": "satisfied", "functions": function_rows},
+                "abi_callsites": {
+                    "status": "satisfied",
+                    "original": {"functions": abi_functions, "import_prototypes": []},
+                    "counts": {"functions": len(functions), "callsites": 0, "import_prototypes": 0},
+                },
+            },
+            "families": [
+                {"family": "binary_faithfulness", "status": "satisfied"},
+                {"family": "function_ranges", "status": "satisfied"},
+                {"family": "abi_callsites", "status": "satisfied"},
+                {"family": "import_thunks", "status": "satisfied"},
+                {"family": "proof_inventory", "status": "satisfied"},
+            ],
+            "inputs": {},
+            "sidecars": sidecars,
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        contract_ref = {"path": str(path), "sha256": stage_a.sha256_file(path), "exists": True}
+        for sidecar in sidecars.values():
+            sidecar_path = path.parent / str(sidecar["path"])
+            sidecar_path.write_text(json.dumps({"reference_contract": contract_ref}), encoding="utf-8")
+        return path
+
+    def _write_skeleton_manifest(self, path: Path, functions: list[dict]) -> Path:
+        payload = {
+            "format": "stage-b-skeleton-v1",
+            "source_map": {
+                "format": "stage-b-source-map-v1",
+                "functions": functions,
+            },
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
     def _write_import_pe(self, path: Path, code: bytes, symbol: str, *, iat_offset: int = 0x40) -> Path:
