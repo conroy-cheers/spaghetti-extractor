@@ -640,6 +640,7 @@ def stage_a_export_reference_contract(
         "basic_blocks_and_cfg": map_contract["basic_blocks_and_cfg"],
         "roots_and_jump_tables": map_contract["roots_and_jump_tables"],
         "import_thunks": _reference_import_thunk_constraint(original_bin, candidate_bin, map_contract),
+        "abi_callsites": _reference_abi_callsites_constraint(original_bin, candidate_bin, map_contract),
         "padding_alignment": map_contract["padding_alignment"],
         "layout_normalization_assumptions": _reference_layout_normalization_constraint(layout_contract_payload),
         "validation_report_artifact_binding": validation_binding,
@@ -682,6 +683,7 @@ def stage_a_export_reference_contract(
             "functions": len(constraints["function_ranges"].get("functions", [])),
             "basic_blocks": len(constraints["basic_blocks_and_cfg"].get("basic_blocks", [])),
             "cfg_edge_sources": len(constraints["basic_blocks_and_cfg"].get("cfg_edges", [])),
+            "abi_callsites": constraints["abi_callsites"].get("counts", {}).get("callsites", 0),
             "proof_obligations": constraints["proof_obligation_inventory"].get("counts", {}).get("obligations", 0),
         },
         "sidecars": _reference_contract_sidecar_paths(sidecar_dir, out.parent),
@@ -704,6 +706,70 @@ def stage_a_smoke_contract(*, reference_contract: Path, out: Path | None = None)
     }
     if out is not None:
         write_json(Path(out), result)
+    return result
+
+
+def stage_a_validate_contract_candidate(
+    *,
+    reference_contract: Path,
+    candidate: Path,
+    linker_map_candidate: Path,
+    out: Path,
+    model: str = STAGE_A_MODEL_ID,
+) -> dict[str, Any]:
+    reference_contract = Path(reference_contract)
+    candidate = Path(candidate)
+    linker_map_candidate = Path(linker_map_candidate)
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    contract = _load_json(reference_contract)
+    candidate_bin = _parse_stage_a_pe(candidate)
+    smoke = stage_a_smoke_contract(reference_contract=reference_contract)
+    issues = list(smoke.get("issues", [])) if isinstance(smoke.get("issues"), list) else []
+    if not isinstance(contract, dict) or contract.get("format") != "stage-a-reference-contract-v1":
+        raise StageAInputError("reference contract must have format stage-a-reference-contract-v1")
+    if contract.get("model") != model:
+        issues.append(
+            _incomplete_record(
+                category="contract_model_mismatch",
+                obligation_id="stage-a-contract-candidate:model",
+                blocker="reference contract model does not match requested model",
+                next_action="rerun with the contract model or regenerate the contract",
+                details={"expected": model, "actual": contract.get("model")},
+            )
+        )
+    candidate_functions = _parse_linker_map_functions(linker_map_candidate, candidate_bin)
+    families = _contract_candidate_families(contract, candidate_bin, candidate_functions)
+    for family in families:
+        if family["status"] in {"incomplete", "violated"}:
+            issues.append(
+                _incomplete_record(
+                    category=f"contract_candidate_{family['family']}",
+                    obligation_id=f"stage-a-contract-candidate:{family['family']}",
+                    blocker=family.get("blocker", "candidate does not satisfy this reference contract family"),
+                    next_action=family.get("next_action", "repair the candidate or regenerate the contract package"),
+                    details=family.get("evidence", {}),
+                )
+            )
+    verdict = "pass" if not issues and all(item["status"] in {"satisfied", "not_applicable"} for item in families) else "incomplete"
+    result = {
+        "format": "stage-a-contract-candidate-validation-v1",
+        "verdict": verdict,
+        "status": verdict,
+        "model": model,
+        "reference_contract": _reference_input_artifact(reference_contract),
+        "candidate": _reference_input_artifact(candidate),
+        "linker_map_candidate": _reference_input_artifact(linker_map_candidate),
+        "families": families,
+        "issues": issues,
+        "counts": {
+            "families": len(families),
+            "issues": len(issues),
+            "candidate_functions": len(candidate_functions),
+        },
+    }
+    write_json(out / "verdict.json", result)
+    write_json(out / "contract-candidate.json", result)
     return result
 
 
@@ -1132,6 +1198,7 @@ _REFERENCE_CONTRACT_FAMILY_KEYS = (
     ("cfg_blocks", "basic_blocks_and_cfg"),
     ("roots_and_jump_targets", "roots_and_jump_tables"),
     ("import_thunks", "import_thunks"),
+    ("abi_callsites", "abi_callsites"),
     ("padding_alignment", "padding_alignment"),
     ("normalization_assumptions", "layout_normalization_assumptions"),
     ("validation_report_artifact_binding", "validation_report_artifact_binding"),
@@ -1149,6 +1216,7 @@ def _reference_contract_sidecar_paths(sidecar_dir: Path, contract_dir: Path) -> 
         "coverage_gaps": {"path": display_path(sidecar_dir / "coverage_gaps.json")},
         "obligation_index": {"path": display_path(sidecar_dir / "obligation_index.json")},
         "contract_summary": {"path": display_path(sidecar_dir / "contract_summary.json")},
+        "abi_callsites": {"path": display_path(sidecar_dir / "abi_callsites.json")},
     }
 
 
@@ -1157,6 +1225,7 @@ def _write_reference_contract_sidecars(contract: dict[str, Any], contract_path: 
     write_json(sidecar_dir / "coverage_gaps.json", _reference_coverage_gaps_sidecar(contract, contract_ref))
     write_json(sidecar_dir / "obligation_index.json", _reference_obligation_index_sidecar(contract, contract_ref))
     write_json(sidecar_dir / "contract_summary.json", _reference_contract_summary_sidecar(contract, contract_ref))
+    write_json(sidecar_dir / "abi_callsites.json", _reference_abi_callsites_sidecar(contract, contract_ref))
 
 
 def _reference_sidecar_contract_ref(contract_path: Path) -> dict[str, Any]:
@@ -1214,6 +1283,13 @@ def _reference_family_counts(family: str, constraint: dict[str, Any]) -> dict[st
         return {
             "original_imports": len(constraint.get("original_imports", [])) if isinstance(constraint.get("original_imports"), list) else 0,
             "mapped_import_thunks": len(constraint.get("mapped_import_thunks", [])) if isinstance(constraint.get("mapped_import_thunks"), list) else 0,
+        }
+    if family == "abi_callsites":
+        counts = constraint.get("counts") if isinstance(constraint.get("counts"), dict) else {}
+        return {
+            "functions": int(counts.get("functions") or 0),
+            "callsites": int(counts.get("callsites") or 0),
+            "imports": int(counts.get("import_prototypes") or 0),
         }
     if family == "padding_alignment":
         return {"waivers": len(constraint.get("waivers", [])) if isinstance(constraint.get("waivers"), list) else 0}
@@ -1288,6 +1364,18 @@ def _reference_contract_summary_sidecar(contract: dict[str, Any], contract_ref: 
             "by_status": _count_by([item for item in families if isinstance(item, dict)], "status"),
             **(contract.get("counts") if isinstance(contract.get("counts"), dict) else {}),
         },
+    }
+
+
+def _reference_abi_callsites_sidecar(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
+    abi = _contract_constraint(contract, "abi_callsites")
+    return {
+        "format": "stage-a-abi-callsites-v1",
+        "reference_contract": contract_ref,
+        "contract_status": contract.get("status"),
+        "status": _proof_family_status(abi.get("status")),
+        "abi_callsites": abi,
+        "counts": abi.get("counts") if isinstance(abi.get("counts"), dict) else {},
     }
 
 
@@ -1494,6 +1582,7 @@ def _load_reference_contract_sidecars(contract: dict[str, Any], contract_path: P
         "coverage_gaps": _reference_coverage_gaps_sidecar,
         "obligation_index": _reference_obligation_index_sidecar,
         "contract_summary": _reference_contract_summary_sidecar,
+        "abi_callsites": _reference_abi_callsites_sidecar,
     }
     for name, builder in builders.items():
         path_text = sidecars.get(name, {}).get("path") if isinstance(sidecars.get(name), dict) else None
@@ -1600,7 +1689,7 @@ def _stage_a_smoke_sidecar_issues(contract: dict[str, Any], contract_path: Path)
     issues: list[dict[str, Any]] = []
     sidecars = contract.get("sidecars") if isinstance(contract.get("sidecars"), dict) else {}
     contract_sha = sha256_file(contract_path) if contract_path.is_file() else None
-    for name in ("coverage_gaps", "obligation_index", "contract_summary"):
+    for name in ("coverage_gaps", "obligation_index", "contract_summary", "abi_callsites"):
         path_text = sidecars.get(name, {}).get("path") if isinstance(sidecars.get(name), dict) else None
         if not isinstance(path_text, str) or not path_text:
             issues.append(
@@ -1648,6 +1737,191 @@ def _stage_a_smoke_sidecar_issues(contract: dict[str, Any], contract_path: Path)
                 )
             )
     return issues
+
+
+def _contract_candidate_families(
+    contract: dict[str, Any],
+    candidate: StageABinary,
+    candidate_functions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    original = contract.get("original") if isinstance(contract.get("original"), dict) else {}
+    constraints = contract.get("constraints") if isinstance(contract.get("constraints"), dict) else {}
+    contract_families = {str(item.get("family")): item for item in contract.get("families", []) if isinstance(item, dict)}
+    candidate_function_names = {str(item.get("name") or "") for item in candidate_functions}
+    function_contract = constraints.get("function_ranges") if isinstance(constraints.get("function_ranges"), dict) else {}
+    expected_functions = [
+        item for item in function_contract.get("functions", []) if isinstance(item, dict) and isinstance(item.get("name"), str)
+    ]
+    missing_functions = sorted(str(item["name"]) for item in expected_functions if str(item["name"]) not in candidate_function_names)
+    abi_contract = constraints.get("abi_callsites") if isinstance(constraints.get("abi_callsites"), dict) else {}
+    candidate_abi = _candidate_abi_constraint_from_functions(candidate, candidate_functions)
+    original_imports = _contract_import_signature(original)
+    candidate_imports = _contract_import_signature(_binary_reference_layout(candidate))
+    contract_status = str(contract.get("status") or "")
+    proof_family = contract_families.get("proof_inventory") or contract_families.get("proof_obligation_inventory_and_statuses")
+    proof_status = proof_family.get("status") if isinstance(proof_family, dict) else None
+    families = [
+        _contract_candidate_family(
+            "binary_faithfulness",
+            "satisfied" if _contract_candidate_binary_matches(original, candidate) else "violated",
+            "candidate PE layout/import/image-base target does not match the Stage A reference contract",
+            "rebuild the candidate with matching PE target layout, imports, subsystem, and image base",
+            contract_families.get("binary_faithfulness"),
+            evidence={
+                "expected": _contract_binary_signature(original),
+                "candidate": _contract_binary_signature(_binary_reference_layout(candidate)),
+            },
+        ),
+        _contract_candidate_family(
+            "function_ranges",
+            "satisfied" if not missing_functions and expected_functions else "incomplete",
+            "candidate linker map is missing reference-contract functions",
+            "add/generate candidate functions or linker roots for the missing names",
+            contract_families.get("function_ranges"),
+            evidence={
+                "expected_count": len(expected_functions),
+                "candidate_count": len(candidate_functions),
+                "missing_functions": missing_functions[:100],
+            },
+        ),
+        _contract_candidate_family(
+            "abi_callsites",
+            _contract_candidate_abi_status(abi_contract, candidate_abi),
+            "candidate ABI/callsite evidence does not yet cover the reference contract",
+            "repair prototypes, sret/out-params, varargs bridges, stack deltas, or register preservation before final proof",
+            contract_families.get("abi_callsites"),
+            evidence={
+                "reference_counts": abi_contract.get("counts") if isinstance(abi_contract.get("counts"), dict) else {},
+                "candidate_counts": candidate_abi.get("counts"),
+                "candidate_abi": candidate_abi,
+            },
+        ),
+        _contract_candidate_family(
+            "import_thunks",
+            "satisfied" if original_imports == candidate_imports else "incomplete",
+            "candidate imports differ from the reference contract",
+            "rebuild/link the candidate with matching import thunk/prototype surface",
+            contract_families.get("import_thunks"),
+            evidence={"expected_imports": original_imports, "candidate_imports": candidate_imports},
+        ),
+        _contract_candidate_family(
+            "proof_inventory",
+            "satisfied" if contract_status == "pass" and proof_status == "satisfied" else "incomplete",
+            "reference contract proof inventory is not fully satisfied",
+            "regenerate the Stage A reference contract from a final-pass validation package before using it as a Stage B repair contract",
+            proof_family,
+            evidence={"contract_status": contract.get("status"), "proof_family_status": proof_status},
+        ),
+    ]
+    return families
+
+
+def _contract_candidate_family(
+    family: str,
+    status: str,
+    blocker: str,
+    next_action: str,
+    contract_family: dict[str, Any] | None,
+    *,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    contract_status = contract_family.get("status") if isinstance(contract_family, dict) else None
+    if contract_status == "violated":
+        status = "violated"
+    elif contract_status == "incomplete" and status == "satisfied":
+        status = "incomplete"
+    return {
+        "family": family,
+        "status": status,
+        "contract_status": contract_status,
+        "blocker": "" if status in {"satisfied", "not_applicable"} else blocker,
+        "next_action": "" if status in {"satisfied", "not_applicable"} else next_action,
+        "evidence": evidence,
+    }
+
+
+def _contract_candidate_binary_matches(original: dict[str, Any], candidate: StageABinary) -> bool:
+    return _contract_binary_signature(original) == _contract_binary_signature(_binary_reference_layout(candidate))
+
+
+def _contract_binary_signature(layout: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "machine": layout.get("machine"),
+        "bitness": layout.get("bitness"),
+        "subsystem": layout.get("subsystem"),
+        "image_base": layout.get("image_base"),
+        "entrypoint_rva": layout.get("entrypoint_rva"),
+        "sections": _contract_section_signature(layout),
+        "imports": _contract_import_signature(layout),
+    }
+
+
+def _contract_section_signature(layout: dict[str, Any]) -> list[dict[str, Any]]:
+    sections = layout.get("sections") if isinstance(layout.get("sections"), list) else []
+    result = []
+    for item in sections:
+        if not isinstance(item, dict):
+            continue
+        permissions = item.get("permissions") if isinstance(item.get("permissions"), dict) else {}
+        result.append(
+            {
+                "name": item.get("name"),
+                "rva_start": item.get("rva_start"),
+                "rva_end": item.get("rva_end"),
+                "executable": item.get("executable", permissions.get("execute")),
+                "readable": item.get("readable", permissions.get("read")),
+                "writable": item.get("writable", permissions.get("write")),
+            }
+        )
+    return result
+
+
+def _contract_import_signature(layout: dict[str, Any]) -> list[dict[str, Any]]:
+    imports = layout.get("imports") if isinstance(layout.get("imports"), list) else []
+    result = []
+    for item in imports:
+        if isinstance(item, dict):
+            result.append({"dll": item.get("dll"), "symbol": item.get("symbol"), "ordinal": item.get("ordinal")})
+        elif isinstance(item, (list, tuple)) and len(item) >= 3:
+            result.append({"dll": item[0], "symbol": item[1], "ordinal": item[2]})
+    return sorted(result, key=lambda value: (str(value.get("dll")), str(value.get("symbol")), str(value.get("ordinal"))))
+
+
+def _candidate_abi_constraint_from_functions(candidate: StageABinary, candidate_functions: list[dict[str, Any]]) -> dict[str, Any]:
+    mappings = [
+        BlockMapping(
+            id=_artifact_name(str(function.get("name") or f"function-{index:04d}")),
+            kind="code",
+                original=BlockSide(int(function["rva_start"]), int(function["rva_end"])),
+                candidate=BlockSide(int(function["rva_start"]), int(function["rva_end"])),
+                reachable=True,
+                invariant_checked=True,
+                source={"source": {"function": str(function.get("name") or f"function_{index:04d}")}},
+            )
+        for index, function in enumerate(candidate_functions)
+        if int(function.get("rva_end") or 0) > int(function.get("rva_start") or 0)
+    ]
+    functions = _abi_function_evidence(candidate, mappings, side="candidate")
+    return {
+        "status": "satisfied" if functions else "incomplete",
+        "evidence_kind": "capstone-static-abi-callsites",
+        "candidate": {"functions": functions, "import_prototypes": _abi_import_prototypes(candidate)},
+        "counts": {
+            "functions": len(functions),
+            "callsites": sum(len(item.get("callsites", [])) for item in functions),
+            "import_prototypes": len(candidate.imports),
+        },
+    }
+
+
+def _contract_candidate_abi_status(reference_abi: dict[str, Any], candidate_abi: dict[str, Any]) -> str:
+    reference_counts = reference_abi.get("counts") if isinstance(reference_abi.get("counts"), dict) else {}
+    candidate_counts = candidate_abi.get("counts") if isinstance(candidate_abi.get("counts"), dict) else {}
+    if int(candidate_counts.get("functions") or 0) < int(reference_counts.get("functions") or 0):
+        return "incomplete"
+    if int(candidate_counts.get("callsites") or 0) < int(reference_counts.get("callsites") or 0):
+        return "incomplete"
+    return "satisfied"
 
 
 def _resolve_contract_sidecar_path(contract_path: Path, path_text: Any, name: str) -> Path:
@@ -2135,6 +2409,252 @@ def _reference_import_thunk_constraint(
         else None,
         "mapped_import_thunks": mapped_thunks,
     }
+
+
+def _reference_abi_callsites_constraint(
+    original: StageABinary,
+    candidate: StageABinary | None,
+    map_contract: dict[str, Any],
+) -> dict[str, Any]:
+    mappings = [mapped for mapped in map_contract.get("mappings", []) if isinstance(mapped, BlockMapping) and mapped.kind == "code"]
+    map_status = str(map_contract.get("function_ranges", {}).get("status") or "incomplete")
+    original_functions = _abi_function_evidence(original, mappings, side="original")
+    candidate_functions = _abi_function_evidence(candidate, mappings, side="candidate") if candidate is not None else None
+    original_callsites = sum(len(item.get("callsites", [])) for item in original_functions)
+    candidate_callsites = (
+        sum(len(item.get("callsites", [])) for item in candidate_functions)
+        if isinstance(candidate_functions, list)
+        else None
+    )
+    return {
+        "status": map_status if mappings else "incomplete",
+        "evidence_kind": "capstone-static-abi-callsites",
+        "scope": "original-candidate-pair" if candidate is not None else "original",
+        "original": {
+            "functions": original_functions,
+            "import_prototypes": _abi_import_prototypes(original),
+        },
+        "candidate": {
+            "functions": candidate_functions,
+            "import_prototypes": _abi_import_prototypes(candidate),
+        }
+        if candidate is not None
+        else None,
+        "counts": {
+            "functions": len(original_functions),
+            "callsites": original_callsites,
+            "candidate_callsites": candidate_callsites,
+            "import_prototypes": len(original.imports),
+        },
+    }
+
+
+def _abi_function_evidence(binary: StageABinary | None, mappings: list[BlockMapping], *, side: str) -> list[dict[str, Any]]:
+    if binary is None:
+        return []
+    by_name: dict[str, dict[str, Any]] = {}
+    for mapped in mappings:
+        source = _mapping_source(mapped)
+        name = source.get("function") if isinstance(source.get("function"), str) and source.get("function") else mapped.id
+        block = mapped.original if side == "original" else mapped.candidate
+        entry = by_name.setdefault(
+            name,
+            {
+                "name": name,
+                "blocks": [],
+                "callsites": [],
+                "registers": {
+                    "reads": [],
+                    "writes": [],
+                    "preserved_candidates": [],
+                    "clobbered_candidates": [],
+                },
+                "stack_delta": {"status": "unknown"},
+            },
+        )
+        block_evidence = _abi_block_evidence(binary, block, mapped.id)
+        entry["blocks"].append({"block_id": mapped.id, **_range_report(block)})
+        entry["callsites"].extend(block_evidence["callsites"])
+        entry["registers"]["reads"] = sorted(set(entry["registers"]["reads"]) | set(block_evidence["register_reads"]))
+        entry["registers"]["writes"] = sorted(set(entry["registers"]["writes"]) | set(block_evidence["register_writes"]))
+        entry["registers"]["preserved_candidates"] = sorted(set(entry["registers"]["preserved_candidates"]) | set(block_evidence["preserved_candidates"]))
+        entry["registers"]["clobbered_candidates"] = sorted(set(entry["registers"]["clobbered_candidates"]) | set(block_evidence["clobbered_candidates"]))
+        if block_evidence["stack_delta"]["status"] != "unknown":
+            entry["stack_delta"] = block_evidence["stack_delta"]
+    return sorted(by_name.values(), key=lambda item: str(item.get("name") or ""))
+
+
+def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -> dict[str, Any]:
+    data = binary.pe.get_data(block.rva_start, block.size)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    instructions = list(dis.disasm(data, binary.image_base + block.rva_start))
+    if sum(int(insn.size) for insn in instructions) != len(data):
+        return {
+            "callsites": [],
+            "register_reads": [],
+            "register_writes": [],
+            "preserved_candidates": [],
+            "clobbered_candidates": [],
+            "stack_delta": {"status": "unknown", "reason": "decode_incomplete"},
+        }
+    callsites = []
+    register_reads: set[str] = set()
+    register_writes: set[str] = set()
+    pushes: list[dict[str, Any]] = []
+    stack_delta = 0
+    for insn in instructions:
+        reads, writes = _instruction_register_access(insn)
+        register_reads.update(reads)
+        register_writes.update(writes)
+        mnemonic = str(insn.mnemonic)
+        if mnemonic == "push":
+            stack_delta -= 4 if binary.bitness == 32 else 8
+            pushes.append(_abi_argument_source(binary, insn))
+        elif mnemonic == "pop":
+            stack_delta += 4 if binary.bitness == 32 else 8
+        elif mnemonic == "ret":
+            stack_delta += _abi_ret_imm(insn)
+        elif mnemonic == "call":
+            callsites.append(_abi_callsite_evidence(binary, insn, block_id, list(pushes[-8:])))
+    preserved = sorted(reg for reg in ("ebx", "esi", "edi", "rbx", "rsi", "rdi") if reg in register_reads and reg in register_writes)
+    clobbered = sorted(reg for reg in register_writes if reg not in set(preserved) and reg not in {"esp", "rsp", "ebp", "rbp"})
+    return {
+        "callsites": callsites,
+        "register_reads": sorted(register_reads),
+        "register_writes": sorted(register_writes),
+        "preserved_candidates": preserved,
+        "clobbered_candidates": clobbered,
+        "stack_delta": {"status": "derived", "net_bytes": stack_delta},
+    }
+
+
+def _instruction_register_access(insn: Any) -> tuple[set[str], set[str]]:
+    reads: set[str] = set()
+    writes: set[str] = set()
+    try:
+        read_ids, write_ids = insn.regs_access()
+    except Exception:
+        read_ids, write_ids = (), ()
+    for reg in read_ids:
+        name = insn.reg_name(reg)
+        if name:
+            reads.add(str(name))
+    for reg in write_ids:
+        name = insn.reg_name(reg)
+        if name:
+            writes.add(str(name))
+    return reads, writes
+
+
+def _abi_ret_imm(insn: Any) -> int:
+    if len(insn.operands) != 1 or insn.operands[0].type != X86_OP_IMM:
+        return 0
+    return int(insn.operands[0].imm)
+
+
+def _abi_argument_source(binary: StageABinary, insn: Any) -> dict[str, Any]:
+    if not insn.operands:
+        return {"kind": "unknown", "instruction": _instruction_report(binary, insn)}
+    operand = insn.operands[0]
+    if operand.type == X86_OP_IMM:
+        return {"kind": "immediate", "value": int(operand.imm), "instruction": _instruction_report(binary, insn)}
+    if operand.type == X86_OP_REG:
+        return {"kind": "register", "register": insn.reg_name(operand.reg), "instruction": _instruction_report(binary, insn)}
+    if operand.type == X86_OP_MEM:
+        return {"kind": "memory", "addressing": _abi_mem_operand_report(insn, operand), "instruction": _instruction_report(binary, insn)}
+    return {"kind": "unknown", "instruction": _instruction_report(binary, insn)}
+
+
+def _abi_callsite_evidence(binary: StageABinary, insn: Any, block_id: str, argument_sources: list[dict[str, Any]]) -> dict[str, Any]:
+    target = _abi_call_target(binary, insn)
+    symbol = str(target.get("symbol") or "")
+    return {
+        "id": f"callsite:{block_id}:{int(insn.address - binary.image_base):x}",
+        "block_id": block_id,
+        "instruction": _instruction_report(binary, insn),
+        "target": target,
+        "argument_sources": argument_sources,
+        "stack_delta": {"status": "unknown"},
+        "hidden_sret_or_out_param_evidence": _abi_hidden_sret_evidence(argument_sources),
+        "varargs_evidence": _abi_varargs_evidence(symbol),
+        "function_pointer_targets": _abi_function_pointer_targets(target),
+    }
+
+
+def _abi_call_target(binary: StageABinary, insn: Any) -> dict[str, Any]:
+    target_rva = _resolved_branch_target(binary, insn)
+    imported = _import_for_call_instruction(binary, insn)
+    if imported is not None:
+        return {
+            "kind": "import",
+            "dll": imported.dll,
+            "symbol": imported.symbol,
+            "ordinal": imported.ordinal,
+            "thunk_rva": imported.thunk_rva,
+        }
+    if target_rva is not None:
+        return {"kind": "direct", "target_rva": target_rva}
+    if len(insn.operands) == 1 and insn.operands[0].type in {X86_OP_REG, X86_OP_MEM}:
+        return {
+            "kind": "function_pointer",
+            "operand": insn.op_str,
+            "recoverable_targets": [],
+            "status": "unresolved",
+        }
+    return {"kind": "unknown", "status": "unresolved"}
+
+
+def _import_for_call_instruction(binary: StageABinary, insn: Any) -> StageAImport | None:
+    if len(insn.operands) != 1 or insn.operands[0].type != X86_OP_MEM:
+        return None
+    return _import_for_absolute_memory_operand(binary, insn.operands[0])
+
+
+def _abi_mem_operand_report(insn: Any, operand: Any) -> dict[str, Any]:
+    mem = operand.mem
+    return {
+        "base": insn.reg_name(mem.base) if mem.base else None,
+        "index": insn.reg_name(mem.index) if mem.index else None,
+        "scale": int(mem.scale),
+        "disp": int(mem.disp),
+    }
+
+
+def _abi_hidden_sret_evidence(argument_sources: list[dict[str, Any]]) -> dict[str, Any]:
+    if not argument_sources:
+        return {"status": "unknown", "reason": "no_static_arguments"}
+    first = argument_sources[-1]
+    if first.get("kind") in {"memory", "register"}:
+        return {"status": "candidate", "source": first, "reason": "first_stack_argument_is_address_like"}
+    return {"status": "unknown"}
+
+
+def _abi_varargs_evidence(symbol: str) -> dict[str, Any]:
+    lower = symbol.lower()
+    if any(token in lower for token in ("printf", "fprintf", "sprintf", "scanf", "execl")):
+        return {"status": "candidate", "reason": "known_variadic_symbol"}
+    return {"status": "not_observed"}
+
+
+def _abi_function_pointer_targets(target: dict[str, Any]) -> list[dict[str, Any]]:
+    if target.get("kind") != "function_pointer":
+        return []
+    return [{"status": "unresolved", "operand": target.get("operand")}]
+
+
+def _abi_import_prototypes(binary: StageABinary) -> list[dict[str, Any]]:
+    return [
+        {
+            "dll": item.dll,
+            "symbol": item.symbol,
+            "ordinal": item.ordinal,
+            "thunk_rva": item.thunk_rva,
+            "calling_convention": "stdcall" if item.symbol and "@" in item.symbol else "unknown",
+            "varargs_evidence": _abi_varargs_evidence(item.symbol or ""),
+        }
+        for item in binary.imports
+    ]
 
 
 def _reference_padding_alignment(

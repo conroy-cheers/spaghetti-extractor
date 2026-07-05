@@ -88,10 +88,12 @@ from .stage_a import (
     stage_a_generate_map,
     stage_a_smoke_contract,
     stage_a_validate,
+    stage_a_validate_contract_candidate,
     stage_a_validate_suite,
 )
 from .stage_b import (
     stage_b_audit_readiness,
+    stage_b_explain_delta,
     stage_b_export_decompiler,
     stage_b_generate_candidate_provenance,
     stage_b_generate_link_roots,
@@ -263,6 +265,17 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_a_smoke.add_argument("--out", type=Path)
     stage_a_smoke.set_defaults(func=_cmd_stage_a_smoke_contract)
 
+    stage_a_contract_candidate = subcommands.add_parser(
+        "stage-a-validate-contract-candidate",
+        help="validate a candidate against a Stage A reference contract package without reading the original binary",
+    )
+    stage_a_contract_candidate.add_argument("--reference-contract", type=Path, required=True)
+    stage_a_contract_candidate.add_argument("--candidate", type=Path, required=True)
+    stage_a_contract_candidate.add_argument("--linker-map-candidate", type=Path, required=True)
+    stage_a_contract_candidate.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
+    stage_a_contract_candidate.add_argument("--out", type=Path, required=True)
+    stage_a_contract_candidate.set_defaults(func=_cmd_stage_a_validate_contract_candidate)
+
     stage_a_explain = subcommands.add_parser(
         "stage-a-explain-obligations",
         help="explain Stage A contract gaps and obligations for a focused item",
@@ -339,12 +352,10 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
 
     stage_b_functional = subcommands.add_parser(
         "stage-b-run-functional-suite",
-        help="run original and candidate process commands across a Stage B functional suite and compare outputs",
+        help="run a candidate command across a Stage B expected-output functional suite",
     )
     stage_b_functional.add_argument("--suite", type=Path, required=True, help="Stage B functional suite JSON")
-    stage_b_functional.add_argument("--original-command-json", required=True, help="JSON string list command prefix for the original")
     stage_b_functional.add_argument("--candidate-command-json", required=True, help="JSON string list command prefix for the candidate")
-    stage_b_functional.add_argument("--original-binary", type=Path, help="original binary expected to be exercised by the command prefix")
     stage_b_functional.add_argument("--candidate-binary", type=Path, help="candidate binary expected to be exercised by the command prefix")
     stage_b_functional.add_argument("--timeout-seconds", type=float, default=30.0)
     stage_b_functional.add_argument("--strip-stderr-line-regex", action="append", default=[], help="drop stderr lines matching this regex before comparing outputs")
@@ -395,9 +406,9 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
         "stage-b-validate-candidate",
         help="validate a Stage B candidate provenance package and delegate binary equivalence to Stage A",
     )
-    stage_b_validate.add_argument("--original", type=Path, required=True, help="original PE32 binary")
+    stage_b_validate.add_argument("--original", type=Path, help="legacy original PE32 binary; omitted when --reference-contract is used")
     stage_b_validate.add_argument("--candidate", type=Path, required=True, help="candidate PE32 binary")
-    stage_b_validate.add_argument("--linker-map-original", type=Path, required=True, help="original linker map")
+    stage_b_validate.add_argument("--linker-map-original", type=Path, help="legacy original linker map; omitted when --reference-contract is used")
     stage_b_validate.add_argument("--linker-map-candidate", type=Path, required=True, help="candidate linker map")
     stage_b_validate.add_argument("--skeleton-manifest", type=Path, required=True, help="Stage B skeleton manifest JSON")
     stage_b_validate.add_argument("--candidate-provenance", type=Path, required=True, help="Stage B candidate provenance JSON")
@@ -422,6 +433,20 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     )
     stage_b_audit.add_argument("--out", type=Path, required=True, help="readiness audit output directory")
     stage_b_audit.set_defaults(func=_cmd_stage_b_audit_readiness)
+
+    stage_b_delta = subcommands.add_parser(
+        "stage-b-explain-delta",
+        help="explain candidate-only Stage B contract and behavior deltas as ranked source-mapped repair items",
+    )
+    stage_b_delta.add_argument("--reference-contract", type=Path, required=True)
+    stage_b_delta.add_argument("--candidate", type=Path, required=True)
+    stage_b_delta.add_argument("--linker-map-candidate", type=Path, required=True)
+    stage_b_delta.add_argument("--skeleton-manifest", type=Path, required=True)
+    stage_b_delta.add_argument("--candidate-crash-report", type=Path)
+    stage_b_delta.add_argument("--functional-report", type=Path)
+    stage_b_delta.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
+    stage_b_delta.add_argument("--out", type=Path, required=True)
+    stage_b_delta.set_defaults(func=_cmd_stage_b_explain_delta)
 
     private_artifacts = subcommands.add_parser(
         "export-private-artifacts",
@@ -1421,6 +1446,18 @@ def _cmd_stage_a_smoke_contract(args: Any) -> int:
     return 0 if result["status"] == "pass" else 1
 
 
+def _cmd_stage_a_validate_contract_candidate(args: Any) -> int:
+    result = stage_a_validate_contract_candidate(
+        reference_contract=args.reference_contract,
+        candidate=args.candidate,
+        linker_map_candidate=args.linker_map_candidate,
+        model=args.model,
+        out=args.out,
+    )
+    _print_json(result)
+    return 0 if result["verdict"] == "pass" else 1
+
+
 def _cmd_stage_a_explain_obligations(args: Any) -> int:
     result = stage_a_explain_obligations(reference_contract=args.reference_contract, focus=args.focus, out=args.out)
     _print_json(result)
@@ -1481,9 +1518,7 @@ def _cmd_stage_b_materialize_upstream_suite(args: Any) -> int:
 def _cmd_stage_b_run_functional_suite(args: Any) -> int:
     result = stage_b_run_functional_suite(
         suite=args.suite,
-        original_command=_json_string_list(args.original_command_json, "--original-command-json"),
         candidate_command=_json_string_list(args.candidate_command_json, "--candidate-command-json"),
-        original_binary=args.original_binary,
         candidate_binary=args.candidate_binary,
         timeout_seconds=args.timeout_seconds,
         strip_stderr_line_regexes=tuple(args.strip_stderr_line_regex),
@@ -1547,6 +1582,21 @@ def _cmd_stage_b_validate_candidate(args: Any) -> int:
 
 def _cmd_stage_b_audit_readiness(args: Any) -> int:
     result = stage_b_audit_readiness(reports=_target_path_map(args.report, "--report"), out=args.out)
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_b_explain_delta(args: Any) -> int:
+    result = stage_b_explain_delta(
+        reference_contract=args.reference_contract,
+        candidate=args.candidate,
+        linker_map_candidate=args.linker_map_candidate,
+        skeleton_manifest=args.skeleton_manifest,
+        candidate_crash_report=args.candidate_crash_report,
+        functional_report=args.functional_report,
+        model=args.model,
+        out=args.out,
+    )
     _print_json(result)
     return 0 if result["status"] == "pass" else 1
 

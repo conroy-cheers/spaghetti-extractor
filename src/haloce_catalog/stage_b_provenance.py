@@ -132,6 +132,13 @@ def _candidate_functional_tests_from_report(functional_report: Path | None) -> d
     payload = _load_json(functional_report)
     if not isinstance(payload, dict) or payload.get("format") != "stage-b-functional-report-v1":
         raise StageBProvenanceInputError("Stage B candidate provenance functional report must have format stage-b-functional-report-v1")
+    commands = payload.get("commands") if isinstance(payload.get("commands"), dict) else {}
+    bindings = payload.get("binary_bindings") if isinstance(payload.get("binary_bindings"), dict) else {}
+    if "original" in commands or "original" in bindings:
+        raise StageBProvenanceInputError("Stage B functional report must not contain original runtime observations")
+    for case in payload.get("cases") or []:
+        if isinstance(case, dict) and ("original" in case or "original_expectation" in case):
+            raise StageBProvenanceInputError("Stage B functional case records must not contain original runtime observations")
     status = str(payload.get("status") or "fail")
     suite = {
         "id": str(payload.get("suite_id") or ""),

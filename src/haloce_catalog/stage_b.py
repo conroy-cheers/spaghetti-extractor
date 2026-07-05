@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import signal
 import subprocess
 from collections import Counter
 from pathlib import Path
@@ -1010,9 +1009,9 @@ def stage_b_generate_skeleton(
 
 def stage_b_validate_candidate(
     *,
-    original: Path,
+    original: Path | None,
     candidate: Path,
-    linker_map_original: Path,
+    linker_map_original: Path | None,
     linker_map_candidate: Path,
     skeleton_manifest: Path,
     candidate_provenance: Path,
@@ -1032,12 +1031,32 @@ def stage_b_validate_candidate(
     map_result: dict[str, Any] | None = None
     binary_evidence: dict[str, Any]
     reference_contract_payload: dict[str, Any] | None = None
-    from .stage_a import stage_a_generate_map, stage_a_validate
+    from .stage_a import stage_a_generate_map, stage_a_validate, stage_a_validate_contract_candidate
+
+    if reference_contract is not None:
+        try:
+            loaded_contract = _load_json(Path(reference_contract))
+            if not isinstance(loaded_contract, dict) or loaded_contract.get("format") != "stage-a-reference-contract-v1":
+                raise StageAInputError("Stage B reference contract must have format stage-a-reference-contract-v1")
+            reference_contract_payload = loaded_contract
+        except StageAInputError as exc:
+            issues.append(
+                {
+                    "category": "invalid_reference_contract",
+                    "blocker": str(exc),
+                    "next_action": "provide a readable stage-a-reference-contract-v1 JSON artifact",
+                }
+            )
 
     try:
-        original_bin = _parse_stage_a_pe(Path(original))
         candidate_bin = _parse_stage_a_pe(Path(candidate))
-        binary_evidence = _binary_target_evidence(original_bin, candidate_bin)
+        if reference_contract_payload is not None:
+            binary_evidence = _binary_target_evidence_from_reference_contract(reference_contract_payload, candidate_bin)
+        else:
+            if original is None:
+                raise StageAInputError("Stage B validation requires --reference-contract for zero-original validation or --original for legacy pair validation")
+            original_bin = _parse_stage_a_pe(Path(original))
+            binary_evidence = _binary_target_evidence(original_bin, candidate_bin)
         issues.extend(_binary_target_issues(binary_evidence))
     except StageAInputError as exc:
         binary_evidence = {
@@ -1088,21 +1107,6 @@ def stage_b_validate_candidate(
             }
         )
 
-    if reference_contract is not None:
-        try:
-            loaded_contract = _load_json(Path(reference_contract))
-            if not isinstance(loaded_contract, dict) or loaded_contract.get("format") != "stage-a-reference-contract-v1":
-                raise StageAInputError("Stage B reference contract must have format stage-a-reference-contract-v1")
-            reference_contract_payload = loaded_contract
-        except StageAInputError as exc:
-            issues.append(
-                {
-                    "category": "invalid_reference_contract",
-                    "blocker": str(exc),
-                    "next_action": "provide a readable stage-a-reference-contract-v1 JSON artifact",
-                }
-            )
-
     pre_stage_a_issues = list(issues)
     pre_stage_a_issue_count = len(issues)
 
@@ -1119,61 +1123,73 @@ def stage_b_validate_candidate(
             if isinstance(functional_report_payload, dict) and isinstance(functional_report_payload.get("binary_bindings"), dict)
             else {}
         )
-        functional_original_binding = functional_bindings.get("original") if isinstance(functional_bindings.get("original"), dict) else {}
         functional_candidate_binding = functional_bindings.get("candidate") if isinstance(functional_bindings.get("candidate"), dict) else {}
         try:
-            map_result = stage_a_generate_map(
-                original=Path(original),
-                candidate=Path(candidate),
-                linker_map_original=Path(linker_map_original),
-                linker_map_candidate=Path(linker_map_candidate),
-                out=work / "block-map.json",
-                layout_contract_out=work / "layout-contract.json",
-                original_flags=original_flags,
-                candidate_flags=candidate_flags,
-                proof_rule=STAGE_B_PROOF_RULE,
-                proof_metadata={
-                    "stage_b": {
-                        "checked": True,
-                        "target_name": target_name,
-                        "skeleton_manifest_sha256": sha256_file(Path(skeleton_manifest)),
-                        "candidate_provenance_sha256": sha256_file(Path(candidate_provenance)),
-                        "functional_tests_report_sha256": sha256_file(Path(functional_report)) if functional_report is not None else "",
-                        "upstream_source_access": False,
-                        "manual_behavioral_fixups": [],
-                        "functional_tests_status": "pass",
-                        "functional_tests_suite_id": str(functional_report_payload.get("suite_id") or "")
-                        if isinstance(functional_report_payload, dict)
-                        else "",
-                        "functional_tests_suite_sha256": str(functional_report_payload.get("suite_sha256") or "")
-                        if isinstance(functional_report_payload, dict)
-                        else "",
-                        "functional_tests_suite_case_manifest_sha256": str(functional_report_payload.get("suite_case_manifest_sha256") or "")
-                        if isinstance(functional_report_payload, dict)
-                        else "",
-                        "functional_tests_case_ids_sha256": str(functional_coverage.get("case_ids_sha256") or ""),
-                        "functional_tests_original_binary_sha256": str(functional_original_binding.get("sha256") or ""),
-                        "functional_tests_candidate_binary_sha256": str(functional_candidate_binding.get("sha256") or ""),
-                    }
-                },
-            )
-            stage_a_result = stage_a_validate(
-                original=Path(original),
-                candidate=Path(candidate),
-                mapping=work / "block-map.json",
-                model=model,
-                out=out / "stage-a",
-                layout_contract=work / "layout-contract.json",
-            )
-            if map_result.get("status") != "pass":
-                issues.append(
-                    {
-                        "category": "stage_a_map_incomplete",
-                        "blocker": "Stage A generated map did not close for the Stage B candidate",
-                        "next_action": "inspect generated/block-map.json and extend the skeleton or mapping generator",
-                        "details": map_result.get("issues", []),
-                    }
+            if reference_contract_payload is not None:
+                stage_a_result = stage_a_validate_contract_candidate(
+                    reference_contract=Path(reference_contract),
+                    candidate=Path(candidate),
+                    linker_map_candidate=Path(linker_map_candidate),
+                    model=model,
+                    out=out / "stage-a",
                 )
+            else:
+                if original is None or linker_map_original is None:
+                    raise StageAInputError(
+                        "Stage B validation requires --reference-contract for zero-original validation "
+                        "or --original and --linker-map-original for legacy pair validation"
+                    )
+                map_result = stage_a_generate_map(
+                    original=Path(original),
+                    candidate=Path(candidate),
+                    linker_map_original=Path(linker_map_original),
+                    linker_map_candidate=Path(linker_map_candidate),
+                    out=work / "block-map.json",
+                    layout_contract_out=work / "layout-contract.json",
+                    original_flags=original_flags,
+                    candidate_flags=candidate_flags,
+                    proof_rule=STAGE_B_PROOF_RULE,
+                    proof_metadata={
+                        "stage_b": {
+                            "checked": True,
+                            "target_name": target_name,
+                            "skeleton_manifest_sha256": sha256_file(Path(skeleton_manifest)),
+                            "candidate_provenance_sha256": sha256_file(Path(candidate_provenance)),
+                            "functional_tests_report_sha256": sha256_file(Path(functional_report)) if functional_report is not None else "",
+                            "upstream_source_access": False,
+                            "manual_behavioral_fixups": [],
+                            "functional_tests_status": "pass",
+                            "functional_tests_suite_id": str(functional_report_payload.get("suite_id") or "")
+                            if isinstance(functional_report_payload, dict)
+                            else "",
+                            "functional_tests_suite_sha256": str(functional_report_payload.get("suite_sha256") or "")
+                            if isinstance(functional_report_payload, dict)
+                            else "",
+                            "functional_tests_suite_case_manifest_sha256": str(functional_report_payload.get("suite_case_manifest_sha256") or "")
+                            if isinstance(functional_report_payload, dict)
+                            else "",
+                            "functional_tests_case_ids_sha256": str(functional_coverage.get("case_ids_sha256") or ""),
+                            "functional_tests_candidate_binary_sha256": str(functional_candidate_binding.get("sha256") or ""),
+                        }
+                    },
+                )
+                stage_a_result = stage_a_validate(
+                    original=Path(original),
+                    candidate=Path(candidate),
+                    mapping=work / "block-map.json",
+                    model=model,
+                    out=out / "stage-a",
+                    layout_contract=work / "layout-contract.json",
+                )
+                if map_result.get("status") != "pass":
+                    issues.append(
+                        {
+                            "category": "stage_a_map_incomplete",
+                            "blocker": "Stage A generated map did not close for the Stage B candidate",
+                            "next_action": "inspect generated/block-map.json and extend the skeleton or mapping generator",
+                            "details": map_result.get("issues", []),
+                        }
+                    )
             if stage_a_result.get("verdict") != "pass":
                 issues.append(
                     {
@@ -1284,6 +1300,283 @@ def stage_b_audit_readiness(*, reports: dict[str, Path], out: Path) -> dict[str,
     return result
 
 
+def stage_b_explain_delta(
+    *,
+    reference_contract: Path,
+    candidate: Path,
+    linker_map_candidate: Path,
+    skeleton_manifest: Path,
+    out: Path,
+    candidate_crash_report: Path | None = None,
+    functional_report: Path | None = None,
+    model: str = STAGE_A_MODEL_ID,
+) -> dict[str, Any]:
+    from .stage_a import stage_a_validate_contract_candidate
+
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    reference_contract = Path(reference_contract)
+    candidate = Path(candidate)
+    linker_map_candidate = Path(linker_map_candidate)
+    skeleton_manifest = Path(skeleton_manifest)
+    contract = _load_json(reference_contract)
+    skeleton = _load_json(skeleton_manifest)
+    crash = _load_optional_stage_b_json(Path(candidate_crash_report)) if candidate_crash_report is not None else None
+    functional = _load_optional_stage_b_json(Path(functional_report)) if functional_report is not None else None
+    contract_validation = stage_a_validate_contract_candidate(
+        reference_contract=reference_contract,
+        candidate=candidate,
+        linker_map_candidate=linker_map_candidate,
+        model=model,
+        out=out / "stage-a-contract-candidate",
+    )
+    candidate_bin = _parse_stage_a_pe(candidate)
+    candidate_functions = _parse_linker_map_functions(linker_map_candidate, candidate_bin)
+    items = _stage_b_delta_repair_items(
+        contract=contract,
+        validation=contract_validation,
+        skeleton=skeleton,
+        candidate_functions=candidate_functions,
+        crash=crash,
+        functional=functional,
+    )
+    result = {
+        "format": "stage-b-delta-explanation-v1",
+        "status": "incomplete" if items else "pass",
+        "generated_at": utc_now(),
+        "reference_contract": _stage_b_reference_contract_artifact(reference_contract),
+        "candidate": {"path": str(candidate), "sha256": sha256_file(candidate)},
+        "linker_map_candidate": {"path": str(linker_map_candidate), "sha256": sha256_file(linker_map_candidate)},
+        "skeleton_manifest": {"path": str(skeleton_manifest), "sha256": sha256_file(skeleton_manifest)},
+        "candidate_crash_report": None
+        if candidate_crash_report is None
+        else {"path": str(candidate_crash_report), "sha256": sha256_file(Path(candidate_crash_report))},
+        "functional_report": None if functional_report is None else {"path": str(functional_report), "sha256": sha256_file(Path(functional_report))},
+        "contract_candidate_validation": contract_validation,
+        "repair_items": items,
+        "counts": {
+            "repair_items": len(items),
+            "by_repair_class": _count_by(items, "likely_repair_class"),
+            "by_family": _count_by(items, "violated_contract_family"),
+        },
+    }
+    write_json(out / "stage-b-delta.json", result)
+    return result
+
+
+def _load_optional_stage_b_json(path: Path) -> dict[str, Any] | None:
+    payload = _load_json(path)
+    return payload if isinstance(payload, dict) else {"format": "unknown", "payload": payload}
+
+
+def _stage_b_delta_repair_items(
+    *,
+    contract: dict[str, Any],
+    validation: dict[str, Any],
+    skeleton: dict[str, Any],
+    candidate_functions: list[dict[str, Any]],
+    crash: dict[str, Any] | None,
+    functional: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    source_map = _stage_b_source_map_by_function(skeleton)
+    contract_functions = _stage_b_contract_functions(contract)
+    candidate_by_name = {str(item.get("name") or ""): item for item in candidate_functions}
+    items: list[dict[str, Any]] = []
+    for family in validation.get("families", []) if isinstance(validation.get("families"), list) else []:
+        if not isinstance(family, dict) or family.get("status") in {"satisfied", "not_applicable"}:
+            continue
+        family_name = str(family.get("family") or "unknown")
+        evidence = family.get("evidence") if isinstance(family.get("evidence"), dict) else {}
+        missing = evidence.get("missing_functions") if isinstance(evidence.get("missing_functions"), list) else []
+        if missing:
+            for name in missing[:20]:
+                items.append(
+                    _stage_b_repair_item(
+                        family=family_name,
+                        function=str(name),
+                        block_id=None,
+                        source_map=source_map,
+                        repair_class="function_mapping",
+                        next_action=f"generate or retain candidate implementation and linker root for {name}",
+                        evidence={"family": family, "contract_function": contract_functions.get(str(name), {})},
+                    )
+                )
+            continue
+        items.append(
+            _stage_b_repair_item(
+                family=family_name,
+                function=_stage_b_first_contract_function(contract_functions),
+                block_id=None,
+                source_map=source_map,
+                repair_class=_stage_b_repair_class_for_family(family_name, evidence),
+                next_action=str(family.get("next_action") or "inspect the contract family evidence and repair the candidate"),
+                evidence={"family": family},
+            )
+        )
+    items.extend(_stage_b_functional_repair_items(functional, source_map))
+    items.extend(_stage_b_crash_repair_items(crash, candidate_functions, source_map))
+    for index, item in enumerate(sorted(items, key=_stage_b_repair_rank), start=1):
+        item["rank"] = index
+    return sorted(items, key=lambda item: int(item["rank"]))
+
+
+def _stage_b_repair_item(
+    *,
+    family: str,
+    function: str | None,
+    block_id: str | None,
+    source_map: dict[str, dict[str, Any]],
+    repair_class: str,
+    next_action: str,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    location = source_map.get(function or "") if function else None
+    return {
+        "violated_contract_family": family,
+        "original_function": function,
+        "original_block": block_id,
+        "generated_source_location": location,
+        "likely_repair_class": repair_class,
+        "next_action": next_action,
+        "evidence": evidence,
+    }
+
+
+def _stage_b_source_map_by_function(skeleton: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    source_map = skeleton.get("source_map") if isinstance(skeleton.get("source_map"), dict) else {}
+    functions = source_map.get("functions") if isinstance(source_map.get("functions"), list) else []
+    result = {}
+    for item in functions:
+        if isinstance(item, dict) and isinstance(item.get("function"), str):
+            result[item["function"]] = {
+                "file": item.get("file"),
+                "line_start": item.get("line_start"),
+                "line_end": item.get("line_end"),
+            }
+    return result
+
+
+def _stage_b_contract_functions(contract: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    constraints = contract.get("constraints") if isinstance(contract.get("constraints"), dict) else {}
+    function_contract = constraints.get("function_ranges") if isinstance(constraints.get("function_ranges"), dict) else {}
+    return {
+        str(item.get("name")): item
+        for item in function_contract.get("functions", [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+
+
+def _stage_b_first_contract_function(functions: dict[str, dict[str, Any]]) -> str | None:
+    return sorted(functions)[0] if functions else None
+
+
+def _stage_b_repair_class_for_family(family: str, evidence: dict[str, Any]) -> str:
+    if family == "abi_callsites":
+        text = json.dumps(evidence, sort_keys=True, default=str).lower()
+        if "sret" in text or "out_param" in text:
+            return "hidden_sret_or_out_param"
+        if "printf" in text or "varargs" in text or "stdio" in text:
+            return "varargs_or_stdio_bridge"
+        if "register" in text or "clobber" in text or "preserved" in text:
+            return "preserved_register_mismatch"
+        if "stack" in text:
+            return "stack_delta_mismatch"
+        return "abi_callsite_mismatch"
+    if family == "roots_and_jump_targets":
+        return "jump_table_target"
+    if family == "import_thunks":
+        return "import_prototype_mismatch"
+    if family in {"binary_faithfulness", "padding_alignment"}:
+        return "layout_or_padding"
+    return family
+
+
+def _stage_b_functional_repair_items(functional: dict[str, Any] | None, source_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(functional, dict):
+        return []
+    items = []
+    for case in functional.get("cases", []) if isinstance(functional.get("cases"), list) else []:
+        if not isinstance(case, dict) or case.get("status") == "pass":
+            continue
+        mismatch = case.get("mismatch") if isinstance(case.get("mismatch"), dict) else {}
+        fields = mismatch.get("fields") if isinstance(mismatch.get("fields"), list) else []
+        repair_class = "functional_expected_output_failure"
+        if "stderr" in fields or "stdout" in fields:
+            repair_class = "varargs_or_stdio_bridge"
+        if "returncode" in fields:
+            repair_class = "short_option_state_machine" if "-n" in json.dumps(case, default=str) else "functional_expected_output_failure"
+        items.append(
+            _stage_b_repair_item(
+                family="functional_expected_output",
+                function=None,
+                block_id=None,
+                source_map=source_map,
+                repair_class=repair_class,
+                next_action=f"repair candidate behavior for expected-output case {case.get('id')}",
+                evidence={"case": _stage_b_functional_case_summary(case)},
+            )
+        )
+    return items
+
+
+def _stage_b_crash_repair_items(
+    crash: dict[str, Any] | None,
+    candidate_functions: list[dict[str, Any]],
+    source_map: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not isinstance(crash, dict):
+        return []
+    fault_rva = _optional_int(crash.get("fault_rva") or crash.get("exception_rva"))
+    function = _stage_b_function_for_rva(candidate_functions, fault_rva) if fault_rva is not None else None
+    repair_class = "stack_delta_mismatch"
+    text = json.dumps(crash, sort_keys=True, default=str).lower()
+    if "realloc" in text or "stack" in text or "esp" in text:
+        repair_class = "hidden_sret_or_out_param"
+    return [
+        _stage_b_repair_item(
+            family="candidate_crash",
+            function=function,
+            block_id=None,
+            source_map=source_map,
+            repair_class=repair_class,
+            next_action="inspect the candidate-only crash report and repair the mapped generated source span",
+            evidence={"crash": crash},
+        )
+    ]
+
+
+def _stage_b_function_for_rva(candidate_functions: list[dict[str, Any]], rva: int | None) -> str | None:
+    if rva is None:
+        return None
+    for function in candidate_functions:
+        start = int(function.get("rva_start") or 0)
+        end = int(function.get("rva_end") or 0)
+        if start <= rva < end:
+            return str(function.get("name") or "")
+    return None
+
+
+def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
+    class_rank = {
+        "candidate_crash": 0,
+        "hidden_sret_or_out_param": 1,
+        "stack_delta_mismatch": 2,
+        "preserved_register_mismatch": 3,
+        "varargs_or_stdio_bridge": 4,
+        "short_option_state_machine": 5,
+        "jump_table_target": 6,
+        "function_mapping": 7,
+    }
+    return (class_rank.get(str(item.get("likely_repair_class")), 20), str(item.get("original_function") or ""))
+
+
+def _count_by(items: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counter: Counter[str] = Counter()
+    for item in items:
+        counter[str(item.get(key) or "")] += 1
+    return dict(sorted(counter.items()))
+
+
 _STAGE_A_CLOSED_OBLIGATION_STATUSES = frozenset({"proved", "waived_noncode"})
 
 
@@ -1324,23 +1617,20 @@ def _stage_b_functional_diagnostics(
     cases = [case for case in functional_report_payload.get("cases", []) if isinstance(case, dict)]
     failed_cases = [case for case in cases if case.get("status") != "pass"]
     field_counter: Counter[str] = Counter()
-    original_expectation_failures = 0
     timeout_failures = 0
     returncode_pairs: Counter[str] = Counter()
     for case in failed_cases:
         mismatch = case.get("mismatch") if isinstance(case.get("mismatch"), dict) else {}
         for field in mismatch.get("fields", []) if isinstance(mismatch.get("fields"), list) else []:
             field_counter[str(field)] += 1
-        if _functional_case_original_expectation_failed(case):
-            original_expectation_failures += 1
-        original = case.get("original") if isinstance(case.get("original"), dict) else {}
         candidate = case.get("candidate") if isinstance(case.get("candidate"), dict) else {}
-        if bool(original.get("timed_out")) or bool(candidate.get("timed_out")):
+        expected = case.get("expected") if isinstance(case.get("expected"), dict) else {}
+        if bool(candidate.get("timed_out")):
             timeout_failures += 1
-        original_returncode = original.get("returncode")
         candidate_returncode = candidate.get("returncode")
-        if original_returncode != candidate_returncode:
-            returncode_pairs[f"{original_returncode}->{candidate_returncode}"] += 1
+        expected_returncode = expected.get("returncode")
+        if expected_returncode != candidate_returncode:
+            returncode_pairs[f"{expected_returncode}->{candidate_returncode}"] += 1
 
     harness_tests = _stage_b_harness_test_diagnostics(failed_cases)
     diagnostics = {
@@ -1358,7 +1648,6 @@ def _stage_b_functional_diagnostics(
         "counts": functional_report_payload.get("counts", {}),
         "failure_counts": {
             "mismatch_fields": _stage_b_sorted_counts(field_counter, "field"),
-            "original_expectation_failures": original_expectation_failures,
             "timeout_failures": timeout_failures,
             "returncode_pairs": _stage_b_sorted_counts(returncode_pairs, "returncode_pair"),
             "failed_case_prefixes": _stage_b_failed_case_prefix_counts(failed_cases),
@@ -1383,26 +1672,27 @@ def _stage_b_functional_coverage_summary(payload: dict[str, Any]) -> dict[str, A
 
 
 def _stage_b_functional_case_summary(case: dict[str, Any]) -> dict[str, Any]:
-    original = case.get("original") if isinstance(case.get("original"), dict) else {}
     candidate = case.get("candidate") if isinstance(case.get("candidate"), dict) else {}
     mismatch = case.get("mismatch") if isinstance(case.get("mismatch"), dict) else {}
+    expected = case.get("expected") if isinstance(case.get("expected"), dict) else {}
     summary = {
         "id": case.get("id"),
         "args": _stage_b_json_preview(case.get("args", []), max_items=8, max_depth=1),
         "mismatch_fields": list(mismatch.get("fields", [])) if isinstance(mismatch.get("fields"), list) else [],
-        "original_returncode": original.get("returncode"),
+        "expected_returncode": expected.get("returncode"),
         "candidate_returncode": candidate.get("returncode"),
-        "original_timed_out": original.get("timed_out"),
         "candidate_timed_out": candidate.get("timed_out"),
-        "original_stdout": _stage_b_stream_artifact_summary(original.get("stdout")),
+        "expected_stdout_sha256": None
+        if not isinstance(expected.get("stdout"), str)
+        else sha256_bytes(expected["stdout"].encode("utf-8")),
         "candidate_stdout": _stage_b_stream_artifact_summary(candidate.get("stdout")),
-        "original_stderr": _stage_b_stream_artifact_summary(original.get("stderr")),
+        "expected_stderr_sha256": None
+        if not isinstance(expected.get("stderr"), str)
+        else sha256_bytes(expected["stderr"].encode("utf-8")),
         "candidate_stderr": _stage_b_stream_artifact_summary(candidate.get("stderr")),
     }
-    if "original_expectation" in mismatch:
-        summary["original_expectation"] = _stage_b_json_preview(mismatch["original_expectation"])
-    elif isinstance(case.get("original_expectation"), dict):
-        summary["original_expectation"] = _stage_b_json_preview(case["original_expectation"])
+    if isinstance(case.get("expectation"), dict):
+        summary["expectation"] = _stage_b_json_preview(case["expectation"])
     return summary
 
 
@@ -1423,17 +1713,6 @@ def _stage_b_failed_case_prefix_counts(failed_cases: list[dict[str, Any]]) -> li
         prefix = case_id.split("-", 1)[0] if case_id else "unknown"
         counter[prefix] += 1
     return _stage_b_sorted_counts(counter, "prefix")
-
-
-def _functional_case_original_expectation_failed(case: dict[str, Any]) -> bool:
-    expectation = case.get("original_expectation")
-    if isinstance(expectation, dict) and expectation.get("status") not in {None, "pass"}:
-        return True
-    mismatch = case.get("mismatch")
-    if isinstance(mismatch, dict):
-        fields = mismatch.get("fields")
-        return isinstance(fields, list) and "original_expectation" in fields
-    return False
 
 
 def _stage_b_empty_harness_diagnostics() -> dict[str, Any]:
@@ -1586,15 +1865,6 @@ def _stage_b_functional_next_focus(diagnostics: dict[str, Any]) -> list[dict[str
                 "next_action": "recover or generate behavior for this upstream integration-test family before rerunning Stage A",
             }
         )
-    if failure_counts.get("original_expectation_failures"):
-        focus.append(
-            {
-                "source": "functional_baseline",
-                "category": "original_expectation",
-                "count": failure_counts.get("original_expectation_failures"),
-                "next_action": "fix the functional suite expectation or original command before using it as a Stage B gate",
-            }
-        )
     return focus[:8]
 
 
@@ -1605,7 +1875,6 @@ def _stage_b_functional_mismatch_next_action(field: str) -> str:
         "timeout": "investigate candidate hangs or missing process termination behavior",
         "stdout": "recover stdout-producing behavior for the failing command shapes",
         "stderr": "recover diagnostic/stderr behavior for the failing command shapes",
-        "original_expectation": "repair the original baseline expectation before trusting candidate comparison",
     }
     return actions.get(field, "inspect failed functional cases and extend generated behavior recovery")
 
@@ -2038,7 +2307,7 @@ def _stage_b_reference_contract_coverage(
 
     constraints = reference_contract.get("constraints") if isinstance(reference_contract.get("constraints"), dict) else {}
     stage_a_pass = stage_a_result is not None and stage_a_result.get("verdict") == "pass"
-    map_pass = map_result is not None and map_result.get("status") == "pass"
+    map_pass = stage_a_pass if map_result is None else map_result.get("status") == "pass"
     skeleton_counts = skeleton.get("counts") if isinstance(skeleton.get("counts"), dict) else {}
     recovery = skeleton.get("implementation_recovery") if isinstance(skeleton.get("implementation_recovery"), dict) else {}
     contract_counts = reference_contract.get("counts") if isinstance(reference_contract.get("counts"), dict) else {}
@@ -2352,6 +2621,40 @@ def _binary_target_evidence(original: StageABinary, candidate: StageABinary) -> 
     }
 
 
+def _binary_target_evidence_from_reference_contract(contract: dict[str, Any], candidate: StageABinary) -> dict[str, Any]:
+    original = contract.get("original") if isinstance(contract.get("original"), dict) else {}
+    original_subsystem = str(original.get("subsystem") or "")
+    facts = {
+        "matching_machine": original.get("machine") == candidate.machine,
+        "matching_bitness": original.get("bitness") == candidate.bitness,
+        "matching_subsystem": original_subsystem == candidate.subsystem,
+        "both_windows_pe": original_subsystem in {"windows_cui", "windows_gui"} and _is_windows_stage_b_pe(candidate),
+    }
+    facts["same_architecture_same_os"] = (
+        facts["matching_machine"]
+        and facts["matching_bitness"]
+        and facts["matching_subsystem"]
+        and facts["both_windows_pe"]
+    )
+    return {
+        "format": "stage-b-binary-target-evidence-v1",
+        "status": "pass" if facts["same_architecture_same_os"] else "incomplete",
+        "source": "stage_a_reference_contract",
+        "original": {
+            "path": original.get("path"),
+            "sha256": original.get("sha256"),
+            "size": original.get("size"),
+            "machine": original.get("machine"),
+            "bitness": original.get("bitness"),
+            "subsystem": original.get("subsystem"),
+            "image_base": original.get("image_base"),
+            "entrypoint_rva": original.get("entrypoint_rva"),
+        },
+        "candidate": _binary_target_summary(candidate),
+        "facts": facts,
+    }
+
+
 def _binary_target_issues(evidence: dict[str, Any]) -> list[dict[str, Any]]:
     if evidence.get("status") == "pass":
         return []
@@ -2371,7 +2674,6 @@ _STAGE_B_BEHAVIORAL_BLOCKING_ISSUES = {
     "functional_test_report_failed_case_records",
     "functional_test_report_failed_cases",
     "functional_test_report_incomplete_cases",
-    "functional_test_report_original_baseline_failed",
     "functional_tests_not_passing",
 }
 
@@ -2392,7 +2694,7 @@ def _stage_b_stage_a_gate(
     if pre_stage_a_categories:
         reason = "functional_behavior_mismatch" if behavioral_blockers else "pre_stage_a_requirements_incomplete"
         next_action = (
-            "repair the Stage B candidate until functional observations match the original before invoking Stage A"
+            "repair the Stage B candidate until public expected-output smoke tests pass before invoking Stage A"
             if behavioral_blockers
             else "satisfy Stage B provenance, source, target, build, and functional-report requirements before invoking Stage A"
         )
@@ -2426,7 +2728,8 @@ def _stage_b_stage_a_gate(
 
     stage_a_verdict = str(stage_a_result.get("verdict") or "")
     map_status = str(map_result.get("status") or "") if isinstance(map_result, dict) else ""
-    passed = stage_a_verdict == "pass" and map_status == "pass"
+    map_closed = map_result is None or map_status == "pass"
+    passed = stage_a_verdict == "pass" and map_closed
     return {
         "eligible": True,
         "ran": True,
@@ -2435,7 +2738,7 @@ def _stage_b_stage_a_gate(
         "blocking_issue_categories": [] if passed else _issue_categories(all_issues),
         "behavioral_mismatch_blocks_stage_a": False,
         "behavioral_blocking_issue_categories": [],
-        "next_action": "" if passed else "inspect generated Stage A map and verdict artifacts and repair the candidate or mapping inputs",
+        "next_action": "" if passed else "inspect generated Stage A verdict artifacts and repair the candidate or mapping inputs",
     }
 
 
@@ -5138,19 +5441,26 @@ def _functional_report_required_coverage_issues(target_name: str, report: dict[s
                 details={"expected": expected_hash, "actual": coverage.get("case_ids_sha256")},
             )
         )
+    commands = report.get("commands") if isinstance(report.get("commands"), dict) else {}
+    bindings = report.get("binary_bindings") if isinstance(report.get("binary_bindings"), dict) else {}
+    if "original" in commands or "original" in bindings:
+        issues.append(
+            _issue(
+                "functional_test_report_contains_original_runtime_observation",
+                "Stage B functional reports must be candidate-only expected-output reports",
+                details={"commands": sorted(commands), "binary_bindings": sorted(bindings)},
+            )
+        )
     for case in report.get("cases") or []:
-        if isinstance(case, dict):
-            original_expectation = case.get("original_expectation")
-            if isinstance(original_expectation, dict) and original_expectation.get("status") == "fail":
-                issues.append(
-                    _issue(
-                        "functional_test_report_original_baseline_failed",
-                        "functional report original command did not satisfy the case baseline expectation",
-                        details={"case_id": case.get("id"), "expectation": original_expectation},
-                    )
+        if isinstance(case, dict) and ("original" in case or "original_expectation" in case):
+            issues.append(
+                _issue(
+                    "functional_test_report_contains_original_runtime_observation",
+                    "Stage B functional case records must not contain original runtime observations",
+                    details={"case_id": case.get("id")},
                 )
-                break
-    for case in report.get("cases") or []:
+            )
+            break
         if not isinstance(case, dict) or case.get("status") != "pass":
             issues.append(_issue("functional_test_report_failed_case_records", "all recorded functional cases must have status pass", details=case))
             break
@@ -5162,39 +5472,46 @@ def _functional_report_binary_binding_issues(binary_evidence: dict[str, Any], re
         return []
     bindings = report.get("binary_bindings")
     if not isinstance(bindings, dict):
-        return [_issue("missing_functional_binary_bindings", "functional report must bind original and candidate commands to the validated binaries")]
+        return [_issue("missing_functional_binary_bindings", "functional report must bind the candidate command to the validated candidate binary")]
 
     issues: list[dict[str, Any]] = []
-    for side in ("original", "candidate"):
-        expected = binary_evidence.get(side)
-        binding = bindings.get(side)
-        if not isinstance(expected, dict):
-            continue
-        if not isinstance(binding, dict) or binding.get("provided") is not True:
-            issues.append(
-                _issue(
-                    "missing_functional_binary_binding",
-                    f"functional report must include a {side} binary binding",
-                    details={"side": side, "binding": binding},
-                )
+    if "original" in bindings:
+        issues.append(
+            _issue(
+                "functional_binary_binding_contains_original",
+                "functional reports must not bind or execute the original binary",
+                details={"binding": bindings.get("original")},
             )
-            continue
-        if binding.get("sha256") != expected.get("sha256"):
-            issues.append(
-                _issue(
-                    "functional_binary_hash_mismatch",
-                    f"functional report {side} binary hash does not match the validated binary",
-                    details={"side": side, "expected": expected.get("sha256"), "actual": binding.get("sha256")},
-                )
+        )
+    expected = binary_evidence.get("candidate")
+    binding = bindings.get("candidate")
+    if not isinstance(expected, dict):
+        return issues
+    if not isinstance(binding, dict) or binding.get("provided") is not True:
+        issues.append(
+            _issue(
+                "missing_functional_binary_binding",
+                "functional report must include a candidate binary binding",
+                details={"side": "candidate", "binding": binding},
             )
-        if binding.get("command_contains_path") is not True:
-            issues.append(
-                _issue(
-                    "functional_binary_command_not_bound",
-                    f"functional report {side} command does not contain the validated binary path",
-                    details={"side": side, "binding": binding},
-                )
+        )
+        return issues
+    if binding.get("sha256") != expected.get("sha256"):
+        issues.append(
+            _issue(
+                "functional_binary_hash_mismatch",
+                "functional report candidate binary hash does not match the validated binary",
+                details={"side": "candidate", "expected": expected.get("sha256"), "actual": binding.get("sha256")},
             )
+        )
+    if binding.get("command_contains_path") is not True:
+        issues.append(
+            _issue(
+                "functional_binary_command_not_bound",
+                "functional report candidate command does not contain the validated binary path",
+                details={"side": "candidate", "binding": binding},
+            )
+        )
     return issues
 
 
@@ -5315,9 +5632,9 @@ def _audit_readiness_target(target_name: str, report: Path, payload: Any) -> dic
         _audit_functional_requirement(target_name, functional, candidate),
         _audit_requirement(
             "stage_a_final_pass",
-            "satisfied" if stage_a.get("map_status") == "pass" and stage_a.get("verdict") == "pass" else "incomplete",
+            "satisfied" if stage_a.get("verdict") == "pass" and stage_a.get("gate", {}).get("status") == "pass" else "incomplete",
             blocker="Stage A did not produce a final pass for this Stage B candidate",
-            next_action="repair the candidate or mapping inputs until stage-a-validate reports pass",
+            next_action="repair the candidate or mapping inputs until Stage A reports pass",
             evidence={
                 "map_status": stage_a.get("map_status"),
                 "verdict": stage_a.get("verdict"),
@@ -5543,8 +5860,8 @@ def _audit_functional_binary_binding_requirement(payload: dict[str, Any]) -> dic
     return _audit_requirement(
         "functional_binary_bindings",
         "satisfied" if not issues else "incomplete",
-        blocker="functional report does not prove it exercised the validated original and candidate binaries",
-        next_action="run the functional suite with --original-binary/--candidate-binary and command prefixes that invoke those exact paths",
+        blocker="functional report does not prove it exercised the validated candidate binary",
+        next_action="run the functional suite with --candidate-binary and a command prefix that invokes that exact path",
         evidence={
             "issue_categories": [issue["category"] for issue in issues],
             "binary_bindings": functional.get("binary_bindings") if isinstance(functional, dict) else None,

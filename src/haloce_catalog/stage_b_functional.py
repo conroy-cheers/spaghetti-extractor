@@ -82,11 +82,9 @@ def stage_b_materialize_upstream_suite(
 def stage_b_run_functional_suite(
     *,
     suite: Path,
-    original_command: tuple[str, ...],
     candidate_command: tuple[str, ...],
     out: Path,
     timeout_seconds: float = 30.0,
-    original_binary: Path | None = None,
     candidate_binary: Path | None = None,
     strip_stderr_line_regexes: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
@@ -116,7 +114,6 @@ def stage_b_run_functional_suite(
             _run_functional_case(
                 case=entry,
                 index=index,
-                original_command=original_command,
                 candidate_command=candidate_command,
                 out=out / "cases",
                 default_timeout_seconds=timeout_seconds,
@@ -151,12 +148,12 @@ def stage_b_run_functional_suite(
         "suite_name": suite_name,
         "suite_kind": str(payload.get("suite_kind") or _coverage_payload(payload).get("suite_kind") or ("upstream_integration" if upstream_suite else "local")),
         "upstream_suite": upstream_suite,
-        "commands": {
-            "original": list(original_command),
-            "candidate": list(candidate_command),
+        "oracle": {
+            "kind": "expected_output",
+            "original_runtime_observations": False,
         },
+        "commands": {"candidate": list(candidate_command)},
         "binary_bindings": {
-            "original": _functional_binary_binding(original_binary, original_command),
             "candidate": _functional_binary_binding(candidate_binary, candidate_command),
         },
         "coverage": _functional_coverage_report(
@@ -260,8 +257,8 @@ def _materialized_suite_cases(payload: Any) -> list[dict[str, Any]]:
         _case_stdin(normalized)
         _case_env(normalized)
         _case_cwd(normalized)
-        _case_expected_original_returncode(normalized)
-        for timeout_key in ("timeout_seconds", "original_timeout_seconds", "candidate_timeout_seconds"):
+        _case_expected_output(normalized)
+        for timeout_key in ("timeout_seconds", "candidate_timeout_seconds"):
             if timeout_key not in normalized:
                 continue
             try:
@@ -307,7 +304,6 @@ def _run_functional_case(
     *,
     case: dict[str, Any],
     index: int,
-    original_command: tuple[str, ...],
     candidate_command: tuple[str, ...],
     out: Path,
     default_timeout_seconds: float,
@@ -319,21 +315,11 @@ def _run_functional_case(
     args = _case_args(case)
     stdin_bytes = _case_stdin(case)
     timeout = float(case.get("timeout_seconds", default_timeout_seconds))
-    original_timeout = _case_side_timeout_seconds(case, "original_timeout_seconds", timeout)
     candidate_timeout = _case_side_timeout_seconds(case, "candidate_timeout_seconds", timeout)
     env = _case_env(case)
     env_sha256 = _env_sha256(env)
     cwd = _case_cwd(case)
-    expected_original_returncode = _case_expected_original_returncode(case)
-    original = _run_observed_process(
-        command=(*original_command, *args),
-        stdin_bytes=stdin_bytes,
-        env=env,
-        cwd=cwd,
-        timeout_seconds=original_timeout,
-        out_prefix=case_out / "original",
-        strip_stderr_line_regexes=strip_stderr_line_regexes,
-    )
+    expected = _case_expected_output(case)
     candidate = _run_observed_process(
         command=(*candidate_command, *args),
         stdin_bytes=stdin_bytes,
@@ -343,29 +329,25 @@ def _run_functional_case(
         out_prefix=case_out / "candidate",
         strip_stderr_line_regexes=strip_stderr_line_regexes,
     )
-    original_expectation = _functional_original_expectation(original, expected_original_returncode)
-    original_expected = original_expectation is None or original_expectation["status"] == "pass"
-    equivalent = _functional_observations_equal(original, candidate)
-    timeout_failure = bool(original.get("timed_out") or candidate.get("timed_out"))
-    status = "pass" if original_expected and equivalent and not timeout_failure else "fail"
+    expectation = _functional_expected_output_result(candidate, expected)
+    timeout_failure = bool(candidate.get("timed_out"))
+    status = "pass" if expectation["status"] == "pass" and not timeout_failure else "fail"
     return {
         "id": case_id,
         "status": status,
         "args": args,
         "timeout_seconds": timeout,
-        "original_timeout_seconds": original_timeout,
         "candidate_timeout_seconds": candidate_timeout,
         "stdin_sha256": sha256_bytes(stdin_bytes),
         "cwd": cwd,
         "env_keys": sorted(env),
         "env_sha256": env_sha256,
-        "expect_original_returncode": expected_original_returncode,
-        "original_expectation": original_expectation,
-        "original": original,
+        "expected": expected,
+        "expectation": expectation,
         "candidate": candidate,
         "mismatch": None
         if status == "pass"
-        else _functional_mismatch(original, candidate, original_expectation, timeout_failure=timeout_failure),
+        else _functional_mismatch(candidate, expected, expectation, timeout_failure=timeout_failure),
     }
 
 
@@ -473,13 +455,42 @@ def _case_cwd(case: dict[str, Any]) -> str | None:
     return cwd
 
 
-def _case_expected_original_returncode(case: dict[str, Any]) -> int | None:
-    value = case.get("expect_original_returncode")
+def _case_expected_output(case: dict[str, Any]) -> dict[str, Any]:
+    value = case.get("expected_returncode", case.get("expect_returncode"))
     if value is None:
-        return None
+        raise StageBFunctionalInputError("functional suite case expected_returncode must be present")
     if isinstance(value, bool) or not isinstance(value, int):
-        raise StageBFunctionalInputError("functional suite case expect_original_returncode must be an integer")
-    return value
+        raise StageBFunctionalInputError("functional suite case expected_returncode must be an integer")
+    stdout, stdout_policy = _case_expected_stream(case, "stdout")
+    stderr, stderr_policy = _case_expected_stream(case, "stderr")
+    return {
+        "returncode": value,
+        "stdout": stdout,
+        "stdout_policy": stdout_policy,
+        "stderr": stderr,
+        "stderr_policy": stderr_policy,
+    }
+
+
+def _case_expected_stream(case: dict[str, Any], stream: str) -> tuple[str | None, str]:
+    direct_key = f"expected_{stream}"
+    text_key = f"expected_{stream}_text"
+    policy_key = f"expected_{stream}_policy"
+    policy = case.get(policy_key, "exact")
+    if policy not in {"exact", "any"}:
+        raise StageBFunctionalInputError(f"functional suite case {policy_key} must be exact or any")
+    if direct_key in case and text_key in case:
+        raise StageBFunctionalInputError(f"functional suite case cannot contain both {direct_key} and {text_key}")
+    if policy == "any":
+        if direct_key in case or text_key in case:
+            raise StageBFunctionalInputError(f"functional suite case cannot combine {policy_key}=any with {direct_key}")
+        return None, "any"
+    if direct_key not in case and text_key not in case:
+        raise StageBFunctionalInputError(f"functional suite case {direct_key} must be present")
+    value = case.get(direct_key, case.get(text_key))
+    if not isinstance(value, str):
+        raise StageBFunctionalInputError(f"functional suite case {direct_key} must be a string")
+    return value, "exact"
 
 
 def _case_side_timeout_seconds(case: dict[str, Any], key: str, default: float) -> float:
@@ -503,9 +514,8 @@ def _functional_case_manifest(cases: list[dict[str, Any]]) -> list[dict[str, Any
             "cwd": case.get("cwd"),
             "env_sha256": str(case.get("env_sha256") or ""),
             "timeout_seconds": case.get("timeout_seconds"),
-            "original_timeout_seconds": case.get("original_timeout_seconds"),
             "candidate_timeout_seconds": case.get("candidate_timeout_seconds"),
-            "expect_original_returncode": case.get("expect_original_returncode"),
+            "expected": case.get("expected"),
         }
         for case in cases
     ]
@@ -532,48 +542,52 @@ def _stream_artifact(path: Path, data: bytes) -> dict[str, Any]:
     }
 
 
-def _functional_observations_equal(original: dict[str, Any], candidate: dict[str, Any]) -> bool:
-    return (
-        original.get("returncode") == candidate.get("returncode")
-        and original.get("timed_out") == candidate.get("timed_out")
-        and original.get("stdout", {}).get("sha256") == candidate.get("stdout", {}).get("sha256")
-        and original.get("stderr", {}).get("sha256") == candidate.get("stderr", {}).get("sha256")
+def _functional_expected_output_result(candidate: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
+    actual_stdout = str(candidate.get("stdout", {}).get("preview") or "")
+    actual_stderr = str(candidate.get("stderr", {}).get("preview") or "")
+    stdout_exact = expected.get("stdout_policy", "exact") == "exact"
+    stderr_exact = expected.get("stderr_policy", "exact") == "exact"
+    passed = (
+        candidate.get("returncode") == expected["returncode"]
+        and candidate.get("timed_out") is False
+        and (not stdout_exact or actual_stdout == expected["stdout"])
+        and (not stderr_exact or actual_stderr == expected["stderr"])
     )
-
-
-def _functional_original_expectation(original: dict[str, Any], expected_returncode: int | None) -> dict[str, Any] | None:
-    if expected_returncode is None:
-        return None
-    passed = original.get("returncode") == expected_returncode and original.get("timed_out") is False
     return {
         "status": "pass" if passed else "fail",
-        "returncode": expected_returncode,
-        "actual_returncode": original.get("returncode"),
-        "actual_timed_out": original.get("timed_out"),
+        "expected_returncode": expected["returncode"],
+        "actual_returncode": candidate.get("returncode"),
+        "actual_timed_out": candidate.get("timed_out"),
+        "expected_stdout_policy": expected.get("stdout_policy", "exact"),
+        "expected_stdout_sha256": None
+        if not isinstance(expected.get("stdout"), str)
+        else sha256_bytes(expected["stdout"].encode("utf-8")),
+        "actual_stdout_sha256": candidate.get("stdout", {}).get("sha256"),
+        "expected_stderr_policy": expected.get("stderr_policy", "exact"),
+        "expected_stderr_sha256": None
+        if not isinstance(expected.get("stderr"), str)
+        else sha256_bytes(expected["stderr"].encode("utf-8")),
+        "actual_stderr_sha256": candidate.get("stderr", {}).get("sha256"),
     }
 
 
 def _functional_mismatch(
-    original: dict[str, Any],
     candidate: dict[str, Any],
-    original_expectation: dict[str, Any] | None = None,
+    expected: dict[str, Any],
+    expectation: dict[str, Any],
     *,
     timeout_failure: bool = False,
 ) -> dict[str, Any]:
     fields = []
-    if original_expectation is not None and original_expectation.get("status") != "pass":
-        fields.append("original_expectation")
     if timeout_failure:
         fields.append("timeout")
-    for key in ("returncode", "timed_out"):
-        if original.get(key) != candidate.get(key):
-            fields.append(key)
-    for key in ("stdout", "stderr"):
-        if original.get(key, {}).get("sha256") != candidate.get(key, {}).get("sha256"):
-            fields.append(key)
-    result: dict[str, Any] = {"fields": fields}
-    if original_expectation is not None:
-        result["original_expectation"] = original_expectation
+    if candidate.get("returncode") != expected["returncode"]:
+        fields.append("returncode")
+    if expected.get("stdout_policy", "exact") == "exact" and str(candidate.get("stdout", {}).get("preview") or "") != expected["stdout"]:
+        fields.append("stdout")
+    if expected.get("stderr_policy", "exact") == "exact" and str(candidate.get("stderr", {}).get("preview") or "") != expected["stderr"]:
+        fields.append("stderr")
+    result: dict[str, Any] = {"fields": fields, "expectation": expectation}
     return result
 
 

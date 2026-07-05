@@ -567,9 +567,7 @@
                   prog="stage-b-functional-wincr stage-b-run-functional-suite"
               )
               parser.add_argument("--suite", type=Path, required=True)
-              parser.add_argument("--original-command-json", required=True)
               parser.add_argument("--candidate-command-json", required=True)
-              parser.add_argument("--original-binary", type=Path)
               parser.add_argument("--candidate-binary", type=Path)
               parser.add_argument("--timeout-seconds", type=float, default=30.0)
               parser.add_argument("--strip-stderr-line-regex", action="append", default=[])
@@ -578,9 +576,7 @@
 
               result = stage_b_run_functional_suite(
                   suite=args.suite,
-                  original_command=json_string_list(args.original_command_json, "--original-command-json"),
                   candidate_command=json_string_list(args.candidate_command_json, "--candidate-command-json"),
-                  original_binary=args.original_binary,
                   candidate_binary=args.candidate_binary,
                   timeout_seconds=args.timeout_seconds,
                   strip_stderr_line_regexes=tuple(args.strip_stderr_line_regex),
@@ -1162,7 +1158,10 @@
                     "id": "stage-b-smoke-echo",
                     "args": [],
                     "stdin": "smoke\n",
-                    "timeout_seconds": 5
+                    "timeout_seconds": 5,
+                    "expected_returncode": 0,
+                    "expected_stdout": "smoke\n",
+                    "expected_stderr": ""
                   }
                 ]
               }
@@ -1178,7 +1177,6 @@
               cat_cmd="$(jq -cn --arg cat "${pkgs.coreutils}/bin/cat" '[$cat]')"
               stage-b-functional-wincr stage-b-run-functional-suite \
                 --suite "$work/materialized-suite/functional-suite.json" \
-                --original-command-json "$cat_cmd" \
                 --candidate-command-json "$cat_cmd" \
                 --out "$work/functional" \
                 > "$work/functional.stdout"
@@ -2152,9 +2150,10 @@
                     "args": ["-L", "tests/modules", "--run-tests", "tests/jq.test"],
                     "stdin": "",
                     "cwd": "__JQ_TEST_ROOT__",
-                    "expect_original_returncode": 0,
+                    "expected_returncode": 0,
+                    "expected_stdout_policy": "any",
+                    "expected_stderr_policy": "any",
                     "timeout_seconds": 120,
-                    "original_timeout_seconds": 600,
                     "candidate_timeout_seconds": 120
                   }
                 ]
@@ -2212,39 +2211,25 @@
               exit "\$code"
               EOF
               chmod +x "$work/run-jq-under-wine"
-              original_cmd="$(jq -cn \
-                --arg runner "$work/run-jq-under-wine" \
-                --arg exe "$fixture_dir/jq-original.exe" \
-                '[$runner,$exe]')"
               candidate_cmd="$(jq -cn \
                 --arg runner "$work/run-jq-under-wine" \
                 --arg exe "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
                 '[$runner,$exe]')"
               mkdir -p "$work/smoke"
               set +e
-              "$work/run-jq-under-wine" "$fixture_dir/jq-original.exe" --version \
-                > "$work/smoke/original-version.stdout" \
-                2> "$work/smoke/original-version.stderr"
-              original_smoke_code=$?
               "$work/run-jq-under-wine" "$candidate_dir/jq-stage-b-skeleton-candidate.exe" --version \
                 > "$work/smoke/candidate-version.stdout" \
                 2> "$work/smoke/candidate-version.stderr"
               candidate_smoke_code=$?
               set -e
-              printf '%s\n' "$original_smoke_code" > "$work/smoke/original-version.returncode"
               printf '%s\n' "$candidate_smoke_code" > "$work/smoke/candidate-version.returncode"
-              test "$original_smoke_code" -eq 0
               test "$candidate_smoke_code" -eq 0
-              tr -d '\r' < "$work/smoke/original-version.stdout" > "$work/smoke/original-version.normalized.stdout"
               tr -d '\r' < "$work/smoke/candidate-version.stdout" > "$work/smoke/candidate-version.normalized.stdout"
-              cmp -s "$work/smoke/original-version.normalized.stdout" "$work/smoke/candidate-version.normalized.stdout" \
-                || ${pkgs.diffutils}/bin/diff -u "$work/smoke/original-version.normalized.stdout" "$work/smoke/candidate-version.normalized.stdout"
+              grep -Fx 'jq-1.8.1' "$work/smoke/candidate-version.normalized.stdout" >/dev/null
               set +e
               stage-b-functional-wincr stage-b-run-functional-suite \
                 --suite "$work/materialized-suite/functional-suite.json" \
-                --original-command-json "$original_cmd" \
                 --candidate-command-json "$candidate_cmd" \
-                --original-binary "$fixture_dir/jq-original.exe" \
                 --candidate-binary "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
                 --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
                 --out "$work/functional" \
@@ -2267,9 +2252,7 @@
               claimed_provenance="$work/provenance/candidate-provenance.json"
               set +e
               wincr stage-b-validate-candidate \
-                --original "$fixture_dir/jq-original.exe" \
                 --candidate "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
-                --linker-map-original "$fixture_dir/jq-original.map" \
                 --linker-map-candidate "$candidate_dir/jq-stage-b-skeleton-candidate.map" \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
                 --candidate-provenance "$claimed_provenance" \
@@ -2321,7 +2304,9 @@
                   and .functional.coverage.materialized_by == "stage-b-materialize-upstream-suite"
                   and .functional.coverage.case_ids == ["jq-upstream-run-tests"]
                   and ([.issues[].category] | index("functional_test_report_original_baseline_failed") | not)
-                  and .functional.cases[0].original_expectation.status == "pass"
+                  and .functional.oracle.original_runtime_observations == false
+                  and (.functional.commands | has("original") | not)
+                  and (.functional.binary_bindings | has("original") | not)
                   and .reference_contract_coverage.provided == true
                   and .reference_contract_coverage.status == "incomplete"
                   and .stage_a.gate.status == "blocked"
@@ -3073,9 +3058,10 @@
                     "id": "ripgrep-smoke-version",
                     "args": ["--version"],
                     "stdin": "",
-                    "expect_original_returncode": 0,
+                    "expected_returncode": 0,
+                    "expected_stdout_policy": "any",
+                    "expected_stderr_policy": "any",
                     "timeout_seconds": 60,
-                    "original_timeout_seconds": 120,
                     "candidate_timeout_seconds": 60
                   }
                 ]
@@ -3103,7 +3089,9 @@
                       "regression::r1389_bad_symlinks_no_biscuit"
                     ],
                     "stdin": "",
-                    "expect_original_returncode": 0,
+                    "expected_returncode": 0,
+                    "expected_stdout_policy": "any",
+                    "expected_stderr_policy": "any",
                     "timeout_seconds": 900
                   }
                 ]
@@ -3120,14 +3108,11 @@
               export MESA_VK_IGNORE_CONFORMANCE_WARNING=1
               printf 'skipped: per-command Wine runner initializes the prefix under xvfb-run\n' > "$work/wineboot.stderr"
               printf 'not-run\n' > "$work/wineboot.returncode"
-              smoke_original_cmd="$(jq -cn --arg runner "$work/run-ripgrep-under-wine" --arg exe "$original_dir/rg.exe" '[$runner,$exe]')"
               smoke_candidate_cmd="$(jq -cn --arg runner "$work/run-ripgrep-under-wine" --arg exe "$candidate_dir/rg-stage-b-skeleton-candidate.exe" '[$runner,$exe]')"
               set +e
               stage-b-functional-wincr stage-b-run-functional-suite \
                 --suite "$work/smoke-suite/functional-suite.json" \
-                --original-command-json "$smoke_original_cmd" \
                 --candidate-command-json "$smoke_candidate_cmd" \
-                --original-binary "$original_dir/rg.exe" \
                 --candidate-binary "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
                 --strip-stderr-line-regex '^wine: created the configuration directory ' \
                 --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
@@ -3155,14 +3140,11 @@
                   --suite-scope subset \
                   --out "$work/materialized-suite" \
                   > "$work/materialized-suite.stdout"
-                original_cmd="$(jq -cn --arg runner "$work/run-ripgrep-integration" --arg exe "$original_dir/rg.exe" '[$runner,$exe]')"
                 candidate_cmd="$(jq -cn --arg runner "$work/run-ripgrep-integration" --arg exe "$candidate_dir/rg-stage-b-skeleton-candidate.exe" '[$runner,$exe]')"
                 set +e
                 stage-b-functional-wincr stage-b-run-functional-suite \
                   --suite "$work/materialized-suite/functional-suite.json" \
-                  --original-command-json "$original_cmd" \
                   --candidate-command-json "$candidate_cmd" \
-                  --original-binary "$original_dir/rg.exe" \
                   --candidate-binary "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
                   --strip-stderr-line-regex '^wine: created the configuration directory ' \
                   --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
@@ -3189,9 +3171,7 @@
               claimed_provenance="$work/provenance/candidate-provenance.json"
               set +e
               wincr stage-b-validate-candidate \
-                --original "$original_dir/rg.exe" \
                 --candidate "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
-                --linker-map-original "$work/original-placeholder.map" \
                 --linker-map-candidate "$candidate_dir/rg-stage-b-skeleton-candidate.map" \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
                 --candidate-provenance "$claimed_provenance" \
@@ -3220,7 +3200,9 @@
                 and (.functional.coverage.source_revision == "ripgrep-15.1.0-smoke" or .functional.coverage.source_revision == "ripgrep-15.1.0")
                 and .functional.coverage.materialized_by == "stage-b-materialize-upstream-suite"
                 and (.functional.coverage.case_ids == ["ripgrep-smoke-version"] or .functional.coverage.case_ids == ["ripgrep-upstream-integration-harness"])
-                and .functional.cases[0].original_expectation.status == "pass"
+                and .functional.oracle.original_runtime_observations == false
+                and (.functional.commands | has("original") | not)
+                and (.functional.binary_bindings | has("original") | not)
                 and .stage_a.verdict == null
                 and .stage_a.gate.status == "blocked"
                 and .stage_a.gate.reason == "functional_behavior_mismatch"
@@ -3268,18 +3250,24 @@
             ''
               work="$TMPDIR/stage-b-functional"
               mkdir -p "$work"
-              cat > "$work/original.py" <<'PY'
+              cat > "$work/candidate.py" <<'PY'
               import sys
               print("argv=" + ",".join(sys.argv[1:]))
               print("stdin=" + sys.stdin.read())
               PY
-              cp "$work/original.py" "$work/candidate.py"
               printf '%s\n' 'jq upstream integration suite runner fixture' > "$work/upstream-suite-source.txt"
               cat > "$work/cases.json" <<'JSON'
               {
                 "format": "stage-b-upstream-suite-cases-v1",
                 "cases": [
-                  {"id": "stdin-argv", "args": ["-n", "."], "stdin": "{\"a\":1}"}
+                  {
+                    "id": "stdin-argv",
+                    "args": ["-n", "."],
+                    "stdin": "{\"a\":1}",
+                    "expected_returncode": 0,
+                    "expected_stdout": "argv=-n,.\nstdin={\"a\":1}\n",
+                    "expected_stderr": ""
+                  }
                 ]
               }
               JSON
@@ -3290,17 +3278,13 @@
                 --cases "$work/cases.json" \
                 --out "$work/materialized-suite" \
                 > "$work/materialized-suite.stdout"
-              original_cmd="$(jq -cn --arg python "${pkgs.python3}/bin/python3" --arg script "$work/original.py" '[$python,$script]')"
               candidate_cmd="$(jq -cn --arg python "${pkgs.python3}/bin/python3" --arg script "$work/candidate.py" '[$python,$script]')"
               stage-b-functional-wincr stage-b-run-functional-suite \
                 --suite "$work/materialized-suite/functional-suite.json" \
-                --original-command-json "$original_cmd" \
                 --candidate-command-json "$candidate_cmd" \
-                --original-binary "$work/original.py" \
                 --candidate-binary "$work/candidate.py" \
                 --out "$work/report"
               jq -e \
-                --arg original_hash "$(sha256sum "$work/original.py" | cut -d' ' -f1)" \
                 --arg candidate_hash "$(sha256sum "$work/candidate.py" | cut -d' ' -f1)" \
                 --arg source_hash "$(sha256sum "$work/upstream-suite-source.txt" | cut -d' ' -f1)" \
                 '
@@ -3323,10 +3307,11 @@
                 and .coverage.required_suite_ids == ["jq-upstream-integration-tests"]
                 and .coverage.case_ids == ["stdin-argv"]
                 and (.coverage.case_ids_sha256 | type == "string" and length == 64)
-                and .binary_bindings.original.sha256 == ($original_hash)
                 and .binary_bindings.candidate.sha256 == ($candidate_hash)
-                and .binary_bindings.original.command_contains_path == true
                 and .binary_bindings.candidate.command_contains_path == true
+                and .oracle.original_runtime_observations == false
+                and (.commands | has("original") | not)
+                and (.binary_bindings | has("original") | not)
                 and (.case_manifest | length == 1)
                 and .case_manifest[0].id == "stdin-argv"
                 and (.case_manifest[0].env_sha256 | type == "string" and length == 64)

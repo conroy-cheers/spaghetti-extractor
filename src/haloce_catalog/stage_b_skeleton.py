@@ -421,17 +421,15 @@ def stage_b_generate_skeleton(
 
     write_json(out_dir / functions_rel, {"format": "stage-b-functions-v1", "target_name": target_name, "functions": functions})
     (out_dir / source_rel.parent).mkdir(parents=True, exist_ok=True)
-    (out_dir / source_rel).write_text(
-        _render_skeleton_source(
-            target_name=target_name,
-            functions=functions,
-            source_language=source_language,
-            implementation_mode=implementation_mode,
-            external_function_names=external_function_names,
-            behavior_recovery=behavior_recovery,
-        ),
-        encoding="utf-8",
+    source_text = _render_skeleton_source(
+        target_name=target_name,
+        functions=functions,
+        source_language=source_language,
+        implementation_mode=implementation_mode,
+        external_function_names=external_function_names,
+        behavior_recovery=behavior_recovery,
     )
+    (out_dir / source_rel).write_text(source_text, encoding="utf-8")
     (out_dir / readme_rel).write_text(_render_skeleton_readme(target_name, source_language, implementation_mode), encoding="utf-8")
 
     inputs: dict[str, Any] = {
@@ -484,6 +482,13 @@ def stage_b_generate_skeleton(
             "functions": {"path": functions_rel.as_posix(), "sha256": sha256_file(out_dir / functions_rel)},
             "readme": {"path": readme_rel.as_posix(), "sha256": sha256_file(out_dir / readme_rel)},
         },
+        "source_map": _skeleton_source_map(
+            source_text,
+            source_rel=source_rel,
+            functions=functions,
+            source_language=source_language,
+            implementation_mode=implementation_mode,
+        ),
         "counts": {
             "functions": len(functions),
             "executable_sections": sum(1 for section in binary.sections if section.executable),
@@ -1487,6 +1492,62 @@ def _render_skeleton_source(
             ]
         )
     return "\n".join(lines)
+
+def _skeleton_source_map(
+    source_text: str,
+    *,
+    source_rel: Path,
+    functions: list[dict[str, Any]],
+    source_language: str,
+    implementation_mode: str,
+) -> dict[str, Any]:
+    lines = source_text.splitlines()
+    anchors: list[dict[str, Any]] = []
+    for function in functions:
+        name = str(function.get("name") or "")
+        if not name:
+            continue
+        line = _source_anchor_line(lines, name, source_language=source_language, implementation_mode=implementation_mode)
+        if line is None:
+            continue
+        anchors.append(
+            {
+                "function": name,
+                "file": source_rel.as_posix(),
+                "line_start": line,
+                "line_end": line,
+                "rva_start": function.get("rva_start"),
+                "rva_end": function.get("rva_end"),
+            }
+        )
+    anchors.sort(key=lambda item: (str(item["file"]), int(item["line_start"]), str(item["function"])))
+    for index, anchor in enumerate(anchors):
+        next_line = anchors[index + 1]["line_start"] if index + 1 < len(anchors) else len(lines) + 1
+        anchor["line_end"] = max(int(anchor["line_start"]), int(next_line) - 1)
+    return {
+        "format": "stage-b-source-map-v1",
+        "source": source_rel.as_posix(),
+        "source_language": source_language,
+        "implementation_mode": implementation_mode,
+        "functions": anchors,
+        "counts": {"functions": len(anchors)},
+    }
+
+def _source_anchor_line(
+    lines: list[str],
+    name: str,
+    *,
+    source_language: str,
+    implementation_mode: str,
+) -> int | None:
+    candidates = [name]
+    if implementation_mode == "scaffold":
+        ident = _identifier(name, 0)
+        candidates.append(f"stage_b_fn_{ident}")
+    for index, line in enumerate(lines, start=1):
+        if any(candidate and candidate in line for candidate in candidates):
+            return index
+    return None
 
 def _render_decompiled_c_source(
     *,

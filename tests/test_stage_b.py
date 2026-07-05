@@ -14,6 +14,7 @@ from haloce_catalog.stage_b import (
     STAGE_B_PROOF_RULE,
     STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
     stage_b_audit_readiness,
+    stage_b_explain_delta,
     stage_b_export_decompiler,
     stage_b_generate_candidate_provenance,
     stage_b_generate_link_roots,
@@ -873,7 +874,16 @@ class StageBTests(unittest.TestCase):
                 json.dumps(
                     {
                         "format": "stage-b-upstream-suite-cases-v1",
-                        "cases": [{"id": "version", "args": ["--version"], "stdin": ""}],
+                        "cases": [
+                            {
+                                "id": "version",
+                                "args": ["--version"],
+                                "stdin": "",
+                                "expected_returncode": 0,
+                                "expected_stdout": "jq-1.8.1\n",
+                                "expected_stderr": "",
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -925,7 +935,23 @@ class StageBTests(unittest.TestCase):
             source = root / "jq-upstream-tests-subset.txt"
             source.write_text("jq upstream suite subset fixture", encoding="utf-8")
             cases = root / "cases.json"
-            cases.write_text(json.dumps({"cases": [{"id": "version", "args": ["--version"], "stdin": ""}]}), encoding="utf-8")
+            cases.write_text(
+                json.dumps(
+                    {
+                        "cases": [
+                            {
+                                "id": "version",
+                                "args": ["--version"],
+                                "stdin": "",
+                                "expected_returncode": 0,
+                                "expected_stdout": "jq-1.8.1\n",
+                                "expected_stderr": "",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             result = stage_b_materialize_upstream_suite(
                 target_name="jq",
@@ -2716,7 +2742,6 @@ class StageBTests(unittest.TestCase):
     def test_run_functional_suite_compares_process_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            original = root / "original.py"
             candidate = root / "candidate.py"
             cwd = root / "suite-cwd"
             cwd.mkdir()
@@ -2729,7 +2754,6 @@ class StageBTests(unittest.TestCase):
                 "print('stdin=' + text)\n"
                 "print('cwd=' + Path('marker.txt').read_text(encoding='utf-8'))\n"
             )
-            original.write_text(script, encoding="utf-8")
             candidate.write_text(script, encoding="utf-8")
             suite = root / "suite.json"
             suite.write_text(
@@ -2749,7 +2773,17 @@ class StageBTests(unittest.TestCase):
                             "materialized_by": STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
                             "required_suite_ids": ["jq-upstream-integration-tests"],
                         },
-                        "cases": [{"id": "echo", "args": ["-n", "."], "stdin": "{\"a\":1}", "cwd": str(cwd)}],
+                        "cases": [
+                            {
+                                "id": "echo",
+                                "args": ["-n", "."],
+                                "stdin": "{\"a\":1}",
+                                "cwd": str(cwd),
+                                "expected_returncode": 0,
+                                "expected_stdout": "args=-n,.\nstdin={\"a\":1}\ncwd=cwd-marker\n",
+                                "expected_stderr": "",
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -2757,9 +2791,7 @@ class StageBTests(unittest.TestCase):
 
             result = stage_b_run_functional_suite(
                 suite=suite,
-                original_command=(sys.executable, str(original)),
                 candidate_command=(sys.executable, str(candidate)),
-                original_binary=original,
                 candidate_binary=candidate,
                 out=root / "functional",
             )
@@ -2773,8 +2805,9 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["case_manifest"][0]["id"], "echo")
             self.assertEqual(result["case_manifest"][0]["cwd"], str(cwd))
             self.assertEqual(result["case_manifest"][0]["env_sha256"], sha256_bytes(b"{}"))
-            self.assertEqual(result["cases"][0]["original"]["cwd"], str(cwd))
             self.assertEqual(result["cases"][0]["candidate"]["cwd"], str(cwd))
+            self.assertEqual(result["oracle"]["kind"], "expected_output")
+            self.assertFalse(result["oracle"]["original_runtime_observations"])
             self.assertEqual(result["coverage"]["suite_sha256"], result["suite_sha256"])
             self.assertEqual(result["coverage"]["suite_case_manifest_sha256"], result["suite_case_manifest_sha256"])
             self.assertEqual(result["suite_id"], "jq-upstream-integration-tests")
@@ -2786,18 +2819,16 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["coverage"]["source_revision"], "fixture")
             self.assertEqual(result["coverage"]["materialized_by"], STAGE_B_UPSTREAM_SUITE_MATERIALIZER)
             self.assertEqual(result["coverage"]["case_ids_sha256"], sha256_bytes(b'["echo"]'))
-            self.assertEqual(result["binary_bindings"]["original"]["sha256"], sha256_file(original))
             self.assertEqual(result["binary_bindings"]["candidate"]["sha256"], sha256_file(candidate))
-            self.assertTrue(result["binary_bindings"]["original"]["command_contains_path"])
             self.assertTrue(result["binary_bindings"]["candidate"]["command_contains_path"])
+            self.assertNotIn("original", result["commands"])
+            self.assertNotIn("original", result["binary_bindings"])
 
-    def test_run_functional_suite_rejects_failed_original_expectation(self):
+    def test_run_functional_suite_rejects_failed_expected_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            original = root / "original.py"
             candidate = root / "candidate.py"
             script = "import sys\nprint('same output')\nsys.exit(7)\n"
-            original.write_text(script, encoding="utf-8")
             candidate.write_text(script, encoding="utf-8")
             suite = root / "suite.json"
             suite.write_text(
@@ -2817,7 +2848,14 @@ class StageBTests(unittest.TestCase):
                             "materialized_by": STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
                             "required_suite_ids": ["ripgrep-upstream-integration-tests"],
                         },
-                        "cases": [{"id": "upstream-harness", "expect_original_returncode": 0}],
+                        "cases": [
+                            {
+                                "id": "upstream-harness",
+                                "expected_returncode": 0,
+                                "expected_stdout": "same output\n",
+                                "expected_stderr": "",
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -2825,9 +2863,7 @@ class StageBTests(unittest.TestCase):
 
             result = stage_b_run_functional_suite(
                 suite=suite,
-                original_command=(sys.executable, str(original)),
                 candidate_command=(sys.executable, str(candidate)),
-                original_binary=original,
                 candidate_binary=candidate,
                 out=root / "functional",
             )
@@ -2835,21 +2871,16 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["status"], "fail")
             self.assertEqual(result["counts"], {"cases": 1, "failed": 1, "passed": 0})
             case = result["cases"][0]
-            self.assertEqual(case["expect_original_returncode"], 0)
-            self.assertEqual(case["original_expectation"]["status"], "fail")
-            self.assertEqual(case["original_expectation"]["actual_returncode"], 7)
-            self.assertEqual(case["mismatch"]["fields"], ["original_expectation"])
-            self.assertEqual(result["case_manifest"][0]["expect_original_returncode"], 0)
+            self.assertEqual(case["expected"]["returncode"], 0)
+            self.assertEqual(case["expectation"]["status"], "fail")
+            self.assertEqual(case["expectation"]["actual_returncode"], 7)
+            self.assertEqual(case["mismatch"]["fields"], ["returncode"])
+            self.assertEqual(result["case_manifest"][0]["expected"]["returncode"], 0)
 
     def test_run_functional_suite_can_strip_configured_stderr_noise(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            original = root / "original.py"
             candidate = root / "candidate.py"
-            original.write_text(
-                "import sys\nprint('same output')\nsys.stderr.write('runner noise\\n')\n",
-                encoding="utf-8",
-            )
             candidate.write_text(
                 "import sys\nprint('same output')\nsys.stderr.write('runner noise\\nrunner noise\\n')\n",
                 encoding="utf-8",
@@ -2861,7 +2892,14 @@ class StageBTests(unittest.TestCase):
                         "target_name": "jq",
                         "suite_id": "jq-upstream-integration-tests",
                         "suite_name": "jq upstream integration tests",
-                        "cases": [{"id": "stderr-noise"}],
+                        "cases": [
+                            {
+                                "id": "stderr-noise",
+                                "expected_returncode": 0,
+                                "expected_stdout": "same output\n",
+                                "expected_stderr": "",
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -2869,7 +2907,6 @@ class StageBTests(unittest.TestCase):
 
             result = stage_b_run_functional_suite(
                 suite=suite,
-                original_command=(sys.executable, str(original)),
                 candidate_command=(sys.executable, str(candidate)),
                 out=root / "functional",
                 strip_stderr_line_regexes=(r"^runner noise$",),
@@ -2877,7 +2914,6 @@ class StageBTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "pass")
             self.assertEqual(result["runner"]["strip_stderr_line_regexes"], [r"^runner noise$"])
-            self.assertEqual(result["cases"][0]["original"]["stderr"]["bytes"], 0)
             self.assertEqual(result["cases"][0]["candidate"]["stderr"]["bytes"], 0)
 
     def test_run_functional_suite_kills_process_group_on_timeout(self):
@@ -2886,7 +2922,6 @@ class StageBTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sleeper = root / "spawn_child.py"
-            original_child = root / "original-child.pid"
             candidate_child = root / "candidate-child.pid"
             sleeper.write_text(
                 "import subprocess\n"
@@ -2905,7 +2940,15 @@ class StageBTests(unittest.TestCase):
                         "target_name": "jq",
                         "suite_id": "jq-upstream-integration-tests",
                         "suite_name": "jq upstream integration tests",
-                        "cases": [{"id": "timeout", "timeout_seconds": 0.5}],
+                        "cases": [
+                            {
+                                "id": "timeout",
+                                "timeout_seconds": 0.5,
+                                "expected_returncode": 0,
+                                "expected_stdout": "",
+                                "expected_stderr": "",
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -2913,26 +2956,21 @@ class StageBTests(unittest.TestCase):
 
             result = stage_b_run_functional_suite(
                 suite=suite,
-                original_command=(sys.executable, str(sleeper), str(original_child)),
                 candidate_command=(sys.executable, str(sleeper), str(candidate_child)),
                 out=root / "functional",
             )
 
             self.assertEqual(result["status"], "fail")
-            self.assertTrue(result["cases"][0]["original"]["timed_out"])
             self.assertTrue(result["cases"][0]["candidate"]["timed_out"])
-            self._assert_pid_file_dead(original_child)
             self._assert_pid_file_dead(candidate_child)
 
-    def test_run_functional_suite_supports_side_specific_timeouts(self):
+    def test_run_functional_suite_supports_candidate_specific_timeout(self):
         if os.name != "posix":
             self.skipTest("process-group timeout cleanup is POSIX-specific")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            original = root / "original.py"
             candidate = root / "candidate.py"
             candidate_child = root / "candidate-child.pid"
-            original.write_text("print('ok')\n", encoding="utf-8")
             candidate.write_text(
                 "import subprocess\n"
                 "import sys\n"
@@ -2954,9 +2992,10 @@ class StageBTests(unittest.TestCase):
                             {
                                 "id": "asymmetric-timeout",
                                 "timeout_seconds": 10,
-                                "original_timeout_seconds": 2,
                                 "candidate_timeout_seconds": 0.5,
-                                "expect_original_returncode": 0,
+                                "expected_returncode": 0,
+                                "expected_stdout": "ok\n",
+                                "expected_stderr": "",
                             }
                         ],
                     }
@@ -2966,7 +3005,6 @@ class StageBTests(unittest.TestCase):
 
             result = stage_b_run_functional_suite(
                 suite=suite,
-                original_command=(sys.executable, str(original)),
                 candidate_command=(sys.executable, str(candidate), str(candidate_child)),
                 out=root / "functional",
             )
@@ -2974,14 +3012,10 @@ class StageBTests(unittest.TestCase):
             case = result["cases"][0]
             self.assertEqual(result["status"], "fail")
             self.assertEqual(case["timeout_seconds"], 10.0)
-            self.assertEqual(case["original_timeout_seconds"], 2.0)
             self.assertEqual(case["candidate_timeout_seconds"], 0.5)
-            self.assertFalse(case["original"]["timed_out"])
-            self.assertEqual(case["original"]["returncode"], 0)
             self.assertTrue(case["candidate"]["timed_out"])
-            self.assertEqual(case["original_expectation"]["status"], "pass")
+            self.assertEqual(case["expectation"]["status"], "fail")
             self.assertIn("timeout", case["mismatch"]["fields"])
-            self.assertEqual(result["case_manifest"][0]["original_timeout_seconds"], 2.0)
             self.assertEqual(result["case_manifest"][0]["candidate_timeout_seconds"], 0.5)
             self._assert_pid_file_dead(candidate_child)
 
@@ -3133,26 +3167,19 @@ class StageBTests(unittest.TestCase):
                 b"test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n"
             )
             candidate_stdout.write_bytes(candidate_stdout_data)
-            original_stdout = root / "original.stdout"
-            original_stdout.write_bytes(b"")
-            original_stderr = root / "original.stderr"
-            original_stderr.write_bytes(b"")
             candidate_stderr = root / "candidate.stderr"
             candidate_stderr.write_bytes(b"")
-            original_expectation = {
+            expected = {"returncode": 0, "stdout": "", "stderr": ""}
+            expectation = {
                 "status": "fail",
-                "returncode": 0,
+                "expected_returncode": 0,
                 "actual_returncode": 101,
                 "actual_timed_out": False,
+                "expected_stdout_sha256": sha256_bytes(b""),
+                "actual_stdout_sha256": sha256_bytes(candidate_stdout_data),
             }
-            functional_payload["cases"][0]["expect_original_returncode"] = 0
-            functional_payload["cases"][0]["original_expectation"] = original_expectation
-            functional_payload["cases"][0]["original"] = {
-                "returncode": 101,
-                "timed_out": False,
-                "stdout": self._stream_artifact(original_stdout),
-                "stderr": self._stream_artifact(original_stderr),
-            }
+            functional_payload["cases"][0]["expected"] = expected
+            functional_payload["cases"][0]["expectation"] = expectation
             functional_payload["cases"][0]["candidate"] = {
                 "returncode": 101,
                 "timed_out": False,
@@ -3160,8 +3187,8 @@ class StageBTests(unittest.TestCase):
                 "stderr": self._stream_artifact(candidate_stderr),
             }
             functional_payload["cases"][0]["mismatch"] = {
-                "fields": ["original_expectation", "stdout"],
-                "original_expectation": original_expectation,
+                "fields": ["returncode", "stdout"],
+                "expectation": expectation,
             }
             functional_report.write_text(json.dumps(functional_payload), encoding="utf-8")
             provenance = root / "candidate-provenance.json"
@@ -3200,20 +3227,18 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["status"], "incomplete")
             self.assertIn("functional_test_report_failed", categories)
             self.assertIn("functional_test_report_failed_cases", categories)
-            self.assertIn("functional_test_report_original_baseline_failed", categories)
             self.assertEqual(result["stage_a"]["gate"]["status"], "blocked")
             self.assertEqual(result["stage_a"]["gate"]["reason"], "functional_behavior_mismatch")
             self.assertFalse(result["stage_a"]["gate"]["eligible"])
             self.assertFalse(result["stage_a"]["gate"]["ran"])
             self.assertTrue(result["stage_a"]["gate"]["behavioral_mismatch_blocks_stage_a"])
             self.assertIn(
-                "functional_test_report_original_baseline_failed",
+                "functional_test_report_failed",
                 result["stage_a"]["gate"]["behavioral_blocking_issue_categories"],
             )
             diagnostics = result["functional_diagnostics"]
             self.assertEqual(diagnostics["status"], "fail")
-            self.assertEqual(diagnostics["failure_counts"]["original_expectation_failures"], 1)
-            self.assertEqual(diagnostics["failure_counts"]["mismatch_fields"][0], {"field": "original_expectation", "count": 1})
+            self.assertEqual(diagnostics["failure_counts"]["mismatch_fields"][0], {"field": "returncode", "count": 1})
             self.assertIn({"field": "stdout", "count": 1}, diagnostics["failure_counts"]["mismatch_fields"])
             self.assertIn({"status": "FAILED", "count": 2}, diagnostics["harness_tests"]["status_counts"])
             self.assertIn({"status": "ok", "count": 1}, diagnostics["harness_tests"]["status_counts"])
@@ -3711,21 +3736,78 @@ class StageBTests(unittest.TestCase):
             }
             self.assertEqual(stage_b_statuses["function_ranges"], "represented")
             self.assertEqual(result["reference_contract_coverage"]["next_work"], [])
-            mapping = json.loads((root / "report" / "generated" / "block-map.json").read_text(encoding="utf-8"))
-            self.assertEqual(mapping["blocks"][0]["proof"]["rule"], STAGE_B_PROOF_RULE)
-            self.assertEqual(mapping["blocks"][0]["proof"]["stage_b"]["functional_tests_status"], "pass")
-            self.assertEqual(mapping["blocks"][0]["proof"]["stage_b"]["functional_tests_report_sha256"], sha256_file(functional_report))
-            self.assertEqual(mapping["blocks"][0]["proof"]["stage_b"]["functional_tests_suite_id"], "jq-upstream-integration-tests")
-            self.assertEqual(mapping["blocks"][0]["proof"]["stage_b"]["functional_tests_suite_sha256"], json.loads(functional_report.read_text(encoding="utf-8"))["suite_sha256"])
-            self.assertEqual(
-                mapping["blocks"][0]["proof"]["stage_b"]["functional_tests_suite_case_manifest_sha256"],
-                json.loads(functional_report.read_text(encoding="utf-8"))["suite_case_manifest_sha256"],
+            self.assertFalse((root / "report" / "generated" / "block-map.json").exists())
+            contract_verdict = json.loads((root / "report" / "stage-a" / "verdict.json").read_text(encoding="utf-8"))
+            self.assertEqual(contract_verdict["format"], "stage-a-contract-candidate-validation-v1")
+            self.assertEqual(contract_verdict["verdict"], "pass")
+            family_statuses = {item["family"]: item["status"] for item in contract_verdict["families"]}
+            self.assertEqual(family_statuses["binary_faithfulness"], "satisfied")
+            self.assertEqual(family_statuses["function_ranges"], "satisfied")
+            self.assertEqual(family_statuses["proof_inventory"], "satisfied")
+
+    def test_explain_delta_reports_source_mapped_candidate_only_repairs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = self._write_map(root / "original.map", "tiny")
+            reference_candidate_map = self._write_map(root / "reference-candidate.map", "tiny")
+            missing_candidate_map = root / "missing-candidate.map"
+            missing_candidate_map.write_text("", encoding="utf-8")
+            skeleton_dir = root / "skeleton"
+            stage_b_generate_skeleton(
+                original=original,
+                linker_map=original_map,
+                target_name="jq",
+                out_dir=skeleton_dir,
             )
-            self.assertEqual(mapping["blocks"][0]["proof"]["stage_b"]["functional_tests_case_ids_sha256"], sha256_bytes(b'["identity"]'))
-            self.assertEqual(mapping["blocks"][0]["proof"]["stage_b"]["functional_tests_original_binary_sha256"], sha256_file(original))
-            self.assertEqual(mapping["blocks"][0]["proof"]["stage_b"]["functional_tests_candidate_binary_sha256"], sha256_file(candidate))
-            obligation = self._obligation(root / "report" / "stage-a", "block:tiny-0000")
-            self.assertEqual(obligation["proof_rule"], STAGE_B_PROOF_RULE)
+            reference_block_map = root / "reference-block-map.json"
+            reference_layout = root / "reference-layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=reference_candidate_map,
+                out=reference_block_map,
+                layout_contract_out=reference_layout,
+            )
+            reference_report = root / "reference-stage-a"
+            reference_contract = root / "reference-contract.json"
+            with _LeanCheckedMock():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=reference_block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=reference_report,
+                    layout_contract=reference_layout,
+                )
+                stage_a_export_reference_contract(
+                    original=original,
+                    candidate=candidate,
+                    mapping=reference_block_map,
+                    validation_report=reference_report,
+                    layout_contract=reference_layout,
+                    out=reference_contract,
+                )
+
+            result = stage_b_explain_delta(
+                reference_contract=reference_contract,
+                candidate=candidate,
+                linker_map_candidate=missing_candidate_map,
+                skeleton_manifest=skeleton_dir / "manifest.json",
+                out=root / "delta",
+            )
+
+            self.assertEqual(result["format"], "stage-b-delta-explanation-v1")
+            self.assertEqual(result["status"], "incomplete")
+            self.assertGreaterEqual(result["counts"]["repair_items"], 1)
+            item = result["repair_items"][0]
+            self.assertEqual(item["violated_contract_family"], "function_ranges")
+            self.assertEqual(item["original_function"], "tiny")
+            self.assertEqual(item["likely_repair_class"], "function_mapping")
+            self.assertEqual(item["generated_source_location"]["file"], "src/jq_stage_b_skeleton.c")
+            self.assertTrue((root / "delta" / "stage-b-delta.json").exists())
 
     def test_validate_candidate_reports_stage_a_failure_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4217,6 +4299,8 @@ class StageBTests(unittest.TestCase):
                 "stdin_sha256": sha256_bytes(b""),
                 "env_sha256": sha256_bytes(b"{}"),
                 "timeout_seconds": 30.0,
+                "candidate_timeout_seconds": 30.0,
+                "expected": {"returncode": 0, "stdout": "", "stderr": ""},
             }
         ]
         suite_hash_payload = {
@@ -4241,9 +4325,25 @@ class StageBTests(unittest.TestCase):
             "suite_name": canonical_suite_name,
             "suite_kind": suite_kind,
             "upstream_suite": upstream_suite,
+            "oracle": {"kind": "expected_output", "original_runtime_observations": False},
+            "commands": {"candidate": [str(candidate_binary)] if candidate_binary is not None else []},
             "counts": {"cases": 1, "passed": 1 if status == "pass" else 0, "failed": 0 if status == "pass" else 1},
             "case_manifest": case_manifest,
-            "cases": [{"id": "identity", "status": status}],
+            "cases": [
+                {
+                    "id": "identity",
+                    "status": status,
+                    "expected": {"returncode": 0, "stdout": "", "stderr": ""},
+                    "expectation": {
+                        "status": status,
+                        "expected_returncode": 0,
+                        "actual_returncode": 0 if status == "pass" else 1,
+                        "actual_timed_out": False,
+                    },
+                    "candidate": {"returncode": 0 if status == "pass" else 1, "timed_out": False},
+                    "mismatch": None if status == "pass" else {"fields": ["returncode"]},
+                }
+            ],
             "coverage": {
                 "suite_id": canonical_suite_id,
                 "suite_kind": suite_kind,
@@ -4263,7 +4363,6 @@ class StageBTests(unittest.TestCase):
         }
         if original_binary is not None or candidate_binary is not None:
             payload["binary_bindings"] = {
-                "original": self._functional_binary_binding(original_binary),
                 "candidate": self._functional_binary_binding(candidate_binary),
             }
         path.write_text(json.dumps(payload), encoding="utf-8")
