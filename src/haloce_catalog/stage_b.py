@@ -1444,6 +1444,9 @@ def _stage_b_delta_repair_items(
                     )
                 )
             continue
+        if family_name == "binary_faithfulness":
+            items.extend(_stage_b_binary_faithfulness_repair_items(family=family, evidence=evidence, source_map=source_map))
+            continue
         if family_name == "abi_callsites":
             items.extend(_stage_b_abi_repair_items(family=family, evidence=evidence, source_map=source_map))
             continue
@@ -1558,6 +1561,252 @@ def _stage_b_repair_class_for_family(family: str, evidence: dict[str, Any]) -> s
     if family in {"binary_faithfulness", "padding_alignment"}:
         return "layout_or_padding"
     return family
+
+
+def _stage_b_binary_faithfulness_repair_items(
+    *,
+    family: dict[str, Any],
+    evidence: dict[str, Any],
+    source_map: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    expected = evidence.get("expected") if isinstance(evidence.get("expected"), dict) else {}
+    candidate = evidence.get("candidate") if isinstance(evidence.get("candidate"), dict) else {}
+    items: list[dict[str, Any]] = []
+
+    header_delta = _stage_b_pe_header_delta(expected, candidate)
+    if header_delta:
+        items.append(
+            _stage_b_repair_item(
+                family="binary_faithfulness",
+                function="pe-header",
+                block_id=None,
+                source_map=source_map,
+                repair_class="pe_header_layout",
+                next_action=(
+                    "rebuild the candidate with matching PE header fields "
+                    f"({', '.join(sorted(header_delta))}) before rerunning Stage A"
+                ),
+                evidence={"family": _stage_b_contract_family_summary(family), "header_delta": header_delta},
+            )
+        )
+
+    expected_entry = expected.get("entrypoint_rva")
+    candidate_entry = candidate.get("entrypoint_rva")
+    if expected_entry != candidate_entry:
+        items.append(
+            _stage_b_repair_item(
+                family="binary_faithfulness",
+                function="entrypoint",
+                block_id=None,
+                source_map=source_map,
+                repair_class="pe_entrypoint_layout",
+                next_action=(
+                    "set the candidate PE entrypoint RVA to "
+                    f"{_stage_b_hex(expected_entry)} or preserve the reference startup thunk layout "
+                    f"(candidate is {_stage_b_hex(candidate_entry)}) before rerunning Stage A"
+                ),
+                evidence={
+                    "family": _stage_b_contract_family_summary(family),
+                    "entrypoint_delta": {
+                        "expected_rva": expected_entry,
+                        "candidate_rva": candidate_entry,
+                    },
+                },
+            )
+        )
+
+    items.extend(_stage_b_section_layout_repair_items(family, expected, candidate, source_map))
+    import_delta = _stage_b_import_layout_delta(expected.get("imports"), candidate.get("imports"))
+    if import_delta["missing"] or import_delta["extra"]:
+        items.append(
+            _stage_b_repair_item(
+                family="binary_faithfulness",
+                function="import-table",
+                block_id=None,
+                source_map=source_map,
+                repair_class="pe_import_table_layout",
+                next_action=(
+                    "rebuild/link the candidate with the same imported DLL and symbol surface "
+                    f"({len(import_delta['missing'])} missing, {len(import_delta['extra'])} extra)"
+                ),
+                evidence={"family": _stage_b_contract_family_summary(family), "import_delta": import_delta},
+            )
+        )
+
+    if items:
+        return items
+    return [
+        _stage_b_repair_item(
+            family="binary_faithfulness",
+            function=None,
+            block_id=None,
+            source_map=source_map,
+            repair_class="layout_or_padding",
+            next_action=str(family.get("next_action") or "inspect PE layout evidence and repair the candidate"),
+            evidence={"family": family},
+        )
+    ]
+
+
+def _stage_b_pe_header_delta(expected: dict[str, Any], candidate: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for key in ("machine", "bitness", "subsystem", "image_base"):
+        if expected.get(key) != candidate.get(key):
+            result[key] = {"expected": expected.get(key), "candidate": candidate.get(key)}
+    return result
+
+
+def _stage_b_section_layout_repair_items(
+    family: dict[str, Any],
+    expected: dict[str, Any],
+    candidate: dict[str, Any],
+    source_map: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    expected_sections = _stage_b_sections_by_name(expected.get("sections"))
+    candidate_sections = _stage_b_sections_by_name(candidate.get("sections"))
+    items: list[dict[str, Any]] = []
+    for name in sorted(set(expected_sections) | set(candidate_sections)):
+        expected_section = expected_sections.get(name)
+        candidate_section = candidate_sections.get(name)
+        if expected_section is None or candidate_section is None:
+            status = "missing" if expected_section is not None else "extra"
+            section = expected_section if expected_section is not None else candidate_section
+            items.append(
+                _stage_b_repair_item(
+                    family="binary_faithfulness",
+                    function=f"section:{name}",
+                    block_id=None,
+                    source_map=source_map,
+                    repair_class="pe_section_table_layout",
+                    next_action=f"make candidate PE section table match the reference; section {name!r} is {status}",
+                    evidence={
+                        "family": _stage_b_contract_family_summary(family),
+                        "section_delta": {"name": name, "status": status, "section": section},
+                    },
+                )
+            )
+            continue
+        delta = _stage_b_section_span_delta(expected_section, candidate_section)
+        if not delta:
+            continue
+        expected_span = _stage_b_section_span_text(expected_section)
+        candidate_span = _stage_b_section_span_text(candidate_section)
+        items.append(
+            _stage_b_repair_item(
+                family="binary_faithfulness",
+                function=f"section:{name}",
+                block_id=None,
+                source_map=source_map,
+                repair_class="pe_section_span_layout",
+                next_action=(
+                    f"adjust candidate section {name!r} to match reference span {expected_span} "
+                    f"and permissions (candidate is {candidate_span})"
+                ),
+                evidence={
+                    "family": _stage_b_contract_family_summary(family),
+                    "section_delta": {
+                        "name": name,
+                        "expected": expected_section,
+                        "candidate": candidate_section,
+                        "delta": delta,
+                    },
+                },
+            )
+        )
+    return items
+
+
+def _stage_b_sections_by_name(sections: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(sections, list):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        name = section.get("name")
+        if isinstance(name, str) and name:
+            result.setdefault(name, section)
+    return result
+
+
+def _stage_b_section_span_delta(expected: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key in ("rva_start", "rva_end", "executable", "readable", "writable"):
+        if expected.get(key) != candidate.get(key):
+            result[key] = {"expected": expected.get(key), "candidate": candidate.get(key)}
+    expected_size = _stage_b_section_size(expected)
+    candidate_size = _stage_b_section_size(candidate)
+    if expected_size != candidate_size:
+        result["size"] = {
+            "expected": expected_size,
+            "candidate": candidate_size,
+            "delta": None if expected_size is None or candidate_size is None else candidate_size - expected_size,
+        }
+    return result
+
+
+def _stage_b_section_size(section: dict[str, Any]) -> int | None:
+    start = _stage_b_int_value(section.get("rva_start"))
+    end = _stage_b_int_value(section.get("rva_end"))
+    if start is None or end is None:
+        return None
+    return max(0, end - start)
+
+
+def _stage_b_section_span_text(section: dict[str, Any]) -> str:
+    return f"{_stage_b_hex(section.get('rva_start'))}-{_stage_b_hex(section.get('rva_end'))}"
+
+
+def _stage_b_import_layout_delta(expected: Any, candidate: Any) -> dict[str, list[dict[str, Any]]]:
+    expected_by_key = _stage_b_imports_by_key(expected)
+    candidate_by_key = _stage_b_imports_by_key(candidate)
+    return {
+        "missing": [expected_by_key[key] for key in sorted(set(expected_by_key) - set(candidate_by_key))],
+        "extra": [candidate_by_key[key] for key in sorted(set(candidate_by_key) - set(expected_by_key))],
+    }
+
+
+def _stage_b_imports_by_key(imports: Any) -> dict[tuple[str, str], dict[str, Any]]:
+    if not isinstance(imports, list):
+        return {}
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    for imported in imports:
+        if not isinstance(imported, dict):
+            continue
+        result.setdefault(_stage_b_import_layout_key(imported), imported)
+    return result
+
+
+def _stage_b_import_layout_key(imported: dict[str, Any]) -> tuple[str, str]:
+    dll = str(imported.get("dll") or "").lower()
+    symbol = imported.get("symbol")
+    if symbol not in {None, ""}:
+        return (dll, str(symbol))
+    ordinal = imported.get("ordinal")
+    return (dll, f"#{ordinal}" if ordinal not in {None, ""} else "")
+
+
+def _stage_b_int_value(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text, 0)
+        except ValueError:
+            return None
+    return None
+
+
+def _stage_b_hex(value: Any) -> str:
+    numeric = _stage_b_int_value(value)
+    if numeric is None:
+        return str(value)
+    return f"0x{numeric:x}"
 
 
 def _stage_b_abi_repair_items(
@@ -2244,6 +2493,10 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "missing_decompiler_body": 2,
         "section_gap_or_padding_coverage": 2,
         "abi_callsite_function_coverage": 2,
+        "pe_entrypoint_layout": 2,
+        "pe_header_layout": 2,
+        "pe_section_table_layout": 3,
+        "pe_section_span_layout": 3,
         "abi_callsite_coverage": 3,
         "stack_delta_mismatch": 3,
         "preserved_register_mismatch": 4,
@@ -2270,6 +2523,7 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "computed_function_pointer_target": 7,
         "function_pointer_target": 7,
         "candidate_crash_external_module": 8,
+        "pe_import_table_layout": 8,
         "runtime_crt_stack_bridge": 8,
         "stack_scratch_buffer_or_out_param": 8,
         "stack_out_param_or_scratch_buffer": 8,

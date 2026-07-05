@@ -4216,6 +4216,118 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["wmain"]["generated_source_location"]["source_kind"], "omitted_runtime_entry")
         self.assertIn("runtime/CRT", by_function["wmain"]["next_action"])
 
+    def test_explain_delta_splits_binary_faithfulness_layout_repairs(self):
+        validation = {
+            "families": [
+                {
+                    "family": "binary_faithfulness",
+                    "status": "violated",
+                    "blocker": "candidate PE layout/import/image-base target does not match the Stage A reference contract",
+                    "next_action": "rebuild the candidate with matching PE target layout, imports, subsystem, and image base",
+                    "evidence": {
+                        "expected": {
+                            "machine": "I386",
+                            "bitness": 32,
+                            "subsystem": "windows_cui",
+                            "image_base": 0x400000,
+                            "entrypoint_rva": 0x1420,
+                            "sections": [
+                                {
+                                    "name": ".text",
+                                    "rva_start": 0x1000,
+                                    "rva_end": 0xC500,
+                                    "executable": True,
+                                    "readable": True,
+                                    "writable": False,
+                                },
+                                {
+                                    "name": ".idata",
+                                    "rva_start": 0x12000,
+                                    "rva_end": 0x12D00,
+                                    "executable": False,
+                                    "readable": True,
+                                    "writable": True,
+                                },
+                            ],
+                            "imports": [
+                                {"dll": "msvcrt.dll", "symbol": "fprintf", "ordinal": None},
+                                {"dll": "kernel32.dll", "symbol": "Sleep", "ordinal": None},
+                            ],
+                        },
+                        "candidate": {
+                            "machine": "I386",
+                            "bitness": 32,
+                            "subsystem": "windows_cui",
+                            "image_base": 0x410000,
+                            "entrypoint_rva": 0x8468,
+                            "sections": [
+                                {
+                                    "name": ".text",
+                                    "rva_start": 0x1000,
+                                    "rva_end": 0xC1B4,
+                                    "executable": True,
+                                    "readable": True,
+                                    "writable": False,
+                                },
+                                {
+                                    "name": ".reloc",
+                                    "rva_start": 0x14000,
+                                    "rva_end": 0x14500,
+                                    "executable": False,
+                                    "readable": True,
+                                    "writable": False,
+                                },
+                            ],
+                            "imports": [
+                                {"dll": "msvcrt.dll", "symbol": "fprintf", "ordinal": None},
+                                {"dll": "user32.dll", "symbol": "MessageBoxA", "ordinal": None},
+                            ],
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "entrypoint",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 4,
+                            "line_end": 7,
+                        }
+                    ]
+                }
+            },
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        by_class = {item["likely_repair_class"]: item for item in result}
+        self.assertEqual(by_class["pe_header_layout"]["original_function"], "pe-header")
+        self.assertEqual(by_class["pe_header_layout"]["evidence"]["header_delta"]["image_base"]["expected"], 0x400000)
+        self.assertEqual(by_class["pe_entrypoint_layout"]["original_function"], "entrypoint")
+        self.assertEqual(by_class["pe_entrypoint_layout"]["generated_source_location"]["line_start"], 4)
+        self.assertIn("0x1420", by_class["pe_entrypoint_layout"]["next_action"])
+        text_item = next(
+            item
+            for item in result
+            if item["likely_repair_class"] == "pe_section_span_layout" and item["original_function"] == "section:.text"
+        )
+        self.assertEqual(text_item["evidence"]["section_delta"]["delta"]["size"]["delta"], -0x34C)
+        self.assertIn("0x1000-0xc500", text_item["next_action"])
+        section_table_items = [
+            item for item in result if item["likely_repair_class"] == "pe_section_table_layout"
+        ]
+        self.assertEqual({item["original_function"] for item in section_table_items}, {"section:.idata", "section:.reloc"})
+        self.assertEqual(by_class["pe_import_table_layout"]["evidence"]["import_delta"]["missing"][0]["symbol"], "Sleep")
+        self.assertEqual(by_class["pe_import_table_layout"]["evidence"]["import_delta"]["extra"][0]["symbol"], "MessageBoxA")
+
     def test_explain_delta_splits_abi_callsites_into_actionable_repairs(self):
         skeleton = {
             "source_map": {
