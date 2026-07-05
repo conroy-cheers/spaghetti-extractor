@@ -1445,7 +1445,15 @@ def _stage_b_delta_repair_items(
                 )
             continue
         if family_name == "binary_faithfulness":
-            items.extend(_stage_b_binary_faithfulness_repair_items(family=family, evidence=evidence, source_map=source_map))
+            items.extend(
+                _stage_b_binary_faithfulness_repair_items(
+                    family=family,
+                    evidence=evidence,
+                    source_map=source_map,
+                    contract_functions=contract_functions,
+                    candidate_functions=candidate_functions,
+                )
+            )
             continue
         if family_name == "abi_callsites":
             items.extend(_stage_b_abi_repair_items(family=family, evidence=evidence, source_map=source_map))
@@ -1568,9 +1576,13 @@ def _stage_b_binary_faithfulness_repair_items(
     family: dict[str, Any],
     evidence: dict[str, Any],
     source_map: dict[str, dict[str, Any]],
+    contract_functions: dict[str, dict[str, Any]] | None = None,
+    candidate_functions: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     expected = evidence.get("expected") if isinstance(evidence.get("expected"), dict) else {}
     candidate = evidence.get("candidate") if isinstance(evidence.get("candidate"), dict) else {}
+    contract_functions = contract_functions or {}
+    candidate_functions = candidate_functions or []
     items: list[dict[str, Any]] = []
 
     header_delta = _stage_b_pe_header_delta(expected, candidate)
@@ -1593,24 +1605,24 @@ def _stage_b_binary_faithfulness_repair_items(
     expected_entry = expected.get("entrypoint_rva")
     candidate_entry = candidate.get("entrypoint_rva")
     if expected_entry != candidate_entry:
+        entrypoint_delta = _stage_b_entrypoint_layout_delta(
+            expected_entry=expected_entry,
+            candidate_entry=candidate_entry,
+            contract_functions=contract_functions,
+            candidate_functions=candidate_functions,
+            source_map=source_map,
+        )
         items.append(
             _stage_b_repair_item(
                 family="binary_faithfulness",
-                function="entrypoint",
+                function=str(entrypoint_delta.get("repair_function") or "entrypoint"),
                 block_id=None,
                 source_map=source_map,
-                repair_class="pe_entrypoint_layout",
-                next_action=(
-                    "set the candidate PE entrypoint RVA to "
-                    f"{_stage_b_hex(expected_entry)} or preserve the reference startup thunk layout "
-                    f"(candidate is {_stage_b_hex(candidate_entry)}) before rerunning Stage A"
-                ),
+                repair_class=str(entrypoint_delta.get("repair_class") or "pe_entrypoint_layout"),
+                next_action=_stage_b_entrypoint_layout_next_action(entrypoint_delta),
                 evidence={
                     "family": _stage_b_contract_family_summary(family),
-                    "entrypoint_delta": {
-                        "expected_rva": expected_entry,
-                        "candidate_rva": candidate_entry,
-                    },
+                    "entrypoint_delta": entrypoint_delta,
                 },
             )
         )
@@ -1654,6 +1666,115 @@ def _stage_b_pe_header_delta(expected: dict[str, Any], candidate: dict[str, Any]
         if expected.get(key) != candidate.get(key):
             result[key] = {"expected": expected.get(key), "candidate": candidate.get(key)}
     return result
+
+
+def _stage_b_entrypoint_layout_delta(
+    *,
+    expected_entry: Any,
+    candidate_entry: Any,
+    contract_functions: dict[str, dict[str, Any]],
+    candidate_functions: list[dict[str, Any]],
+    source_map: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    expected_rva = _stage_b_int_value(expected_entry)
+    candidate_rva = _stage_b_int_value(candidate_entry)
+    expected_function = _stage_b_contract_function_for_rva(contract_functions, expected_rva) or _stage_b_source_function_for_rva(source_map, expected_rva)
+    candidate_function = _stage_b_candidate_function_for_rva(candidate_functions, candidate_rva)
+    expected_name = _stage_b_entrypoint_function_name(expected_function)
+    candidate_name = _stage_b_entrypoint_function_name(candidate_function)
+    repair_function = candidate_name or expected_name or "entrypoint"
+    source_location = _stage_b_source_location(source_map, repair_function)
+    source_kind = source_location.get("source_kind") if isinstance(source_location, dict) else None
+    repair_class = "runtime_crt_entrypoint_layout" if _stage_b_entrypoint_is_runtime_crt(repair_function, source_kind) else "pe_entrypoint_layout"
+    return {
+        "expected_rva": expected_entry,
+        "candidate_rva": candidate_entry,
+        "expected_function": expected_function,
+        "candidate_function": candidate_function,
+        "expected_function_name": expected_name,
+        "candidate_function_name": candidate_name,
+        "repair_function": repair_function,
+        "repair_class": repair_class,
+        "source_kind": source_kind,
+    }
+
+
+def _stage_b_contract_function_for_rva(
+    functions: dict[str, dict[str, Any]],
+    rva: int | None,
+) -> dict[str, Any] | None:
+    if rva is None:
+        return None
+    for name, function in sorted(functions.items()):
+        if _stage_b_function_range_contains(function, rva):
+            result = dict(function)
+            result.setdefault("name", name)
+            return result
+    return None
+
+
+def _stage_b_candidate_function_for_rva(functions: list[dict[str, Any]], rva: int | None) -> dict[str, Any] | None:
+    if rva is None:
+        return None
+    for function in functions:
+        if isinstance(function, dict) and _stage_b_function_range_contains(function, rva):
+            return dict(function)
+    return None
+
+
+def _stage_b_source_function_for_rva(source_map: dict[str, dict[str, Any]], rva: int | None) -> dict[str, Any] | None:
+    if rva is None:
+        return None
+    for name, location in sorted(source_map.items()):
+        if not isinstance(location, dict) or not _stage_b_function_range_contains(location, rva):
+            continue
+        return {
+            "name": name,
+            "rva_start": location.get("rva_start"),
+            "rva_end": location.get("rva_end"),
+            "source_kind": location.get("source_kind"),
+            "file": location.get("file"),
+            "line_start": location.get("line_start"),
+            "line_end": location.get("line_end"),
+        }
+    return None
+
+
+def _stage_b_function_range_contains(function: dict[str, Any], rva: int) -> bool:
+    start = _stage_b_int_value(function.get("rva_start"))
+    end = _stage_b_int_value(function.get("rva_end"))
+    if start is None or end is None:
+        return False
+    return start <= rva < end
+
+
+def _stage_b_entrypoint_function_name(function: dict[str, Any] | None) -> str | None:
+    if not isinstance(function, dict):
+        return None
+    name = function.get("name")
+    return str(name) if isinstance(name, str) and name else None
+
+
+def _stage_b_entrypoint_is_runtime_crt(function_name: str, source_kind: Any) -> bool:
+    if source_kind in {"generated_runtime_bridge", "omitted_runtime_entry"}:
+        return True
+    return _stage_b_is_runtime_crt_bridge_function(function_name) or _stage_b_is_runtime_crt_support_function(function_name)
+
+
+def _stage_b_entrypoint_layout_next_action(delta: dict[str, Any]) -> str:
+    expected_rva = _stage_b_hex(delta.get("expected_rva"))
+    candidate_rva = _stage_b_hex(delta.get("candidate_rva"))
+    expected_name = str(delta.get("expected_function_name") or "the reference entrypoint")
+    candidate_name = str(delta.get("candidate_function_name") or "the candidate entrypoint")
+    if delta.get("repair_class") == "runtime_crt_entrypoint_layout":
+        return (
+            f"align generated runtime/CRT entrypoint {candidate_name} with reference {expected_name} at {expected_rva}; "
+            f"candidate PE header currently points at {candidate_rva}; preserve the reference startup thunk/link policy before rerunning Stage A"
+        )
+    return (
+        f"set the candidate PE entrypoint RVA to {expected_rva} or preserve the reference startup thunk layout "
+        f"(candidate is {candidate_rva}) before rerunning Stage A"
+    )
 
 
 def _stage_b_section_layout_repair_items(
@@ -2487,6 +2608,7 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "candidate_crash_unmapped": 0,
         "hidden_sret_or_out_param": 1,
         "computed_out_param_or_hidden_sret": 1,
+        "runtime_crt_entrypoint_layout": 1,
         "abi_function_coverage": 2,
         "runtime_crt_function_coverage": 2,
         "import_thunk_linkage": 2,

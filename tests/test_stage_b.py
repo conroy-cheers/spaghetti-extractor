@@ -4295,15 +4295,24 @@ class StageBTests(unittest.TestCase):
                 "source_map": {
                     "functions": [
                         {
-                            "function": "entrypoint",
+                            "function": "mainCRTStartup",
                             "file": "src/jq_stage_b_skeleton.c",
                             "line_start": 4,
                             "line_end": 7,
+                            "source_kind": "generated_runtime_bridge",
+                            "rva_start": 0x1420,
+                            "rva_end": 0x142F,
                         }
                     ]
                 }
             },
-            candidate_functions=[],
+            candidate_functions=[
+                {
+                    "name": "mainCRTStartup",
+                    "rva_start": 0x8468,
+                    "rva_end": 0x8500,
+                }
+            ],
             crash=None,
             functional=None,
         )
@@ -4311,9 +4320,15 @@ class StageBTests(unittest.TestCase):
         by_class = {item["likely_repair_class"]: item for item in result}
         self.assertEqual(by_class["pe_header_layout"]["original_function"], "pe-header")
         self.assertEqual(by_class["pe_header_layout"]["evidence"]["header_delta"]["image_base"]["expected"], 0x400000)
-        self.assertEqual(by_class["pe_entrypoint_layout"]["original_function"], "entrypoint")
-        self.assertEqual(by_class["pe_entrypoint_layout"]["generated_source_location"]["line_start"], 4)
-        self.assertIn("0x1420", by_class["pe_entrypoint_layout"]["next_action"])
+        entrypoint_item = by_class["runtime_crt_entrypoint_layout"]
+        self.assertEqual(entrypoint_item["original_function"], "mainCRTStartup")
+        self.assertEqual(entrypoint_item["generated_source_location"]["line_start"], 4)
+        self.assertEqual(entrypoint_item["generated_source_location"]["source_kind"], "generated_runtime_bridge")
+        self.assertEqual(entrypoint_item["evidence"]["entrypoint_delta"]["expected_function_name"], "mainCRTStartup")
+        self.assertEqual(entrypoint_item["evidence"]["entrypoint_delta"]["expected_function"]["source_kind"], "generated_runtime_bridge")
+        self.assertEqual(entrypoint_item["evidence"]["entrypoint_delta"]["candidate_function_name"], "mainCRTStartup")
+        self.assertIn("0x1420", entrypoint_item["next_action"])
+        self.assertIn("runtime/CRT entrypoint", entrypoint_item["next_action"])
         text_item = next(
             item
             for item in result
