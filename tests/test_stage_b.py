@@ -730,6 +730,55 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(missing["skeleton"]["name"], "_wmain")
             self.assertEqual(missing["skeleton"]["representation"], "skeleton_function_not_emitted_as_text_symbol")
 
+    def test_generate_link_roots_classifies_mingw_crt_owned_tls_helpers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "jq.exe", b"\xc3")
+            linker_map = root / "jq.map"
+            linker_map.write_text("                0x00401000                __dyn_tls_init@12\n", encoding="utf-8")
+            skeleton_functions = root / "functions.json"
+            skeleton_functions.write_text(
+                json.dumps(
+                    {
+                        "format": "stage-b-functions-v1",
+                        "target_name": "jq",
+                        "functions": [
+                            {
+                                "name": "___dyn_tls_init_12",
+                                "aliases": ["__dyn_tls_init@12"],
+                                "rva_start": 0x1000,
+                                "rva_end": 0x1085,
+                                "decompiler": {"status": "success"},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            obj = root / "candidate.o"
+            obj.write_bytes(b"not really coff")
+            nm = root / "fake-nm"
+            nm.write_text("#!/bin/sh\n:", encoding="utf-8")
+            nm.chmod(0o755)
+
+            result = stage_b_generate_link_roots(
+                original=original,
+                linker_map_original=linker_map,
+                skeleton_functions=skeleton_functions,
+                object_file=obj,
+                nm=str(nm),
+                out=root / "roots",
+            )
+
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(result["counts"]["missing"], 1)
+            self.assertEqual(
+                result["counts"]["missing_by_skeleton_representation"],
+                {"runtime_entry_replaced_by_generated_bridge": 1},
+            )
+            missing = result["issues"][0]["details"]["functions"][0]
+            self.assertEqual(missing["skeleton"]["representation"], "runtime_entry_replaced_by_generated_bridge")
+
     def test_generate_link_roots_rejects_ambiguous_object_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2267,6 +2316,27 @@ class StageBTests(unittest.TestCase):
                 "decompiler": {"status": "success", "code": "int atexit(void) { return 0; }"},
             },
             {
+                "name": "___dyn_tls_init_12",
+                "rva_start": 0x4CB0,
+                "rva_end": 0x4D35,
+                "size": 0x85,
+                "aliases": ["__dyn_tls_init@12"],
+                "decompiler": {
+                    "status": "success",
+                    "code": "ulonglong __fastcall ___dyn_tls_init_12(undefined4 a,uint b,undefined4 c,int d) {\n  return ___mingw_TLScallback(c,d);\n}",
+                },
+            },
+            {
+                "name": "___mingw_TLScallback",
+                "rva_start": 0x56B0,
+                "rva_end": 0x57B5,
+                "size": 0x105,
+                "decompiler": {
+                    "status": "success",
+                    "code": "undefined8 __cdecl ___mingw_TLScallback(undefined4 a,uint b) {\n  return 0;\n}",
+                },
+            },
+            {
                 "name": "_wmain",
                 "aliases": ["wmain"],
                 "rva_start": 0x490C,
@@ -2285,10 +2355,13 @@ class StageBTests(unittest.TestCase):
         )
 
         self.assertIn("MinGW CRT entry body omitted; supplied by the MinGW CRT link policy", source)
+        self.assertIn("MinGW CRT support helper body omitted; supplied by the MinGW CRT link policy", source)
         self.assertNotIn("generated runtime bridge", source)
         self.assertNotIn("void __cdecl mainCRTStartup(void)", source)
         self.assertNotIn("__wgetmainargs", source)
         self.assertNotIn("int atexit(void)", source)
+        self.assertNotIn("ulonglong __fastcall ___dyn_tls_init_12", source)
+        self.assertNotIn("undefined8 __cdecl ___mingw_TLScallback", source)
         self.assertIn("int __cdecl wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
         self.assertNotIn("int __cdecl _wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
 
@@ -2303,6 +2376,8 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["WinMainCRTStartup"]["source_kind"], "omitted_runtime_entry")
         self.assertEqual(by_function["mainCRTStartup"]["source_kind"], "omitted_runtime_entry")
         self.assertEqual(by_function["atexit"]["source_kind"], "omitted_runtime_entry")
+        self.assertEqual(by_function["___dyn_tls_init_12"]["source_kind"], "omitted_runtime_helper")
+        self.assertEqual(by_function["___mingw_TLScallback"]["source_kind"], "omitted_runtime_helper")
         self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
         self.assertIn("wmain", by_function["_wmain"]["aliases"])
         wmain_line = source.splitlines()[by_function["_wmain"]["line_start"] - 1]
@@ -5540,6 +5615,49 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(register_context["register"], "ebx")
         self.assertEqual(register_context["rva"], 0x16F0)
         self.assertIn("SEH context", result[0]["next_action"])
+
+    def test_explain_delta_classifies_seh_register_context_in_omitted_runtime_helper(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "__dyn_tls_init@12",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 1344,
+                            "line_end": 1347,
+                            "source_kind": "omitted_runtime_helper",
+                        }
+                    ]
+                }
+            },
+            candidate_functions=[
+                {"name": "__dyn_tls_init@12", "rva_start": 0x16F0, "rva_end": 0x1780},
+            ],
+            candidate_binary={"image_base": 0x400000, "size_of_image": 0x20000},
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "crash_kind": "wine_unhandled_page_fault",
+                "instruction_address": "0x7BB482A3",
+                "seh_exception": {
+                    "code": "0xC0000005",
+                    "registers": {
+                        "eip": "0x7BB482A3",
+                        "ebx": "0x004016F0",
+                    },
+                },
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["violated_contract_family"], "candidate_crash")
+        self.assertEqual(result[0]["likely_repair_class"], "runtime_crt_tls_callback_context")
+        self.assertEqual(result[0]["original_function"], "__dyn_tls_init@12")
+        self.assertEqual(result[0]["generated_source_location"]["source_kind"], "omitted_runtime_helper")
+        self.assertIn("TLS callback", result[0]["next_action"])
 
     def test_explain_delta_classifies_stack_probe_crash_separately(self):
         result = _stage_b_delta_repair_items(

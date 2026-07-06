@@ -2973,12 +2973,22 @@ def _stage_b_crash_repair_items(
             module_name = f" in {location['module']['name']}"
         next_action = f"inspect the candidate-only crash report and repair the mapped generated source span{module_name}"
         text = json.dumps(crash, sort_keys=True, default=str).lower()
+        source_location = _stage_b_source_location(module_source_map, function)
+        source_kind = source_location.get("source_kind") if isinstance(source_location, dict) else None
         if register_context is not None:
-            repair_class = "candidate_crash_register_context"
-            next_action = (
-                "candidate-only SEH context has a register pointing into this generated function; inspect "
-                "callback, import-thunk, TLS, or ABI state that could hand Wine an invalid runtime pointer"
-            )
+            if source_kind == "omitted_runtime_helper":
+                repair_class = "runtime_crt_tls_callback_context"
+                next_action = (
+                    "candidate-only SEH context has a register pointing into an omitted MinGW runtime helper; "
+                    "verify TLS callback/runtime-helper link policy, callback tables, and CRT-owned roots before "
+                    "treating this as decompiled application logic"
+                )
+            else:
+                repair_class = "candidate_crash_register_context"
+                next_action = (
+                    "candidate-only SEH context has a register pointing into this generated function; inspect "
+                    "callback, import-thunk, TLS, or ABI state that could hand Wine an invalid runtime pointer"
+                )
         elif _stage_b_is_stack_probe_function(function):
             repair_class = "stack_probe_or_frame_layout"
             next_action = (
@@ -3344,6 +3354,7 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "stack_scratch_buffer_or_out_param": 1,
         "abi_function_coverage": 2,
         "runtime_crt_function_coverage": 2,
+        "runtime_crt_tls_callback_context": 2,
         "import_thunk_linkage": 2,
         "missing_decompiler_body": 2,
         "section_gap_or_padding_coverage": 2,

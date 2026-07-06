@@ -1512,12 +1512,14 @@
                 --target-name jq-libjq-1 \
                 --source-language c \
                 --implementation-mode decompiled-c \
+                --runtime-entry-policy mingw-crt \
                 --out-dir "$skeleton_dir" \
                 > "$compile_dir/generate-skeleton.stdout"
               jq -e '
                 .format == "stage-b-skeleton-v1"
                 and .target_name == "jq-libjq-1"
                 and .implementation_mode == "decompiled-c"
+                and .runtime_entry_policy == "mingw-crt"
                 and .implementation_recovery.status == "complete"
                 and .implementation_recovery.source_implements_behavior == true
                 and .implementation_recovery.generated_source_kind == "decompiler_recovered_behavior"
@@ -3252,7 +3254,10 @@
                   if (.candidate_crash_report.status // "not_detected") == "detected" then
                     ([.repair_items[].violated_contract_family] | index("candidate_crash"))
                     and (.candidate_crash_report.has_seh_exception == true)
-                    and ([.repair_items[].likely_repair_class] | index("candidate_crash_register_context"))
+                    and (
+                      ([.repair_items[].likely_repair_class] | index("candidate_crash_register_context"))
+                      or ([.repair_items[].likely_repair_class] | index("runtime_crt_tls_callback_context"))
+                    )
                     and (
                       ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
                       or ([.repair_items[].likely_repair_class] | index("stack_scratch_buffer_or_out_param"))

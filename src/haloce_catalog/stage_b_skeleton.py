@@ -38,12 +38,22 @@ _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
         "___w64_mingwthr_add_key_dtor",
         "___w64_mingwthr_remove_key_dtor",
         "__do_global_dtors",
+        "___dyn_tls_dtor_12",
+        "___dyn_tls_init_12",
         "__mingw_enum_import_library_names",
         "__mingw_raise_matherr",
         "__tlregdtor",
+        "___mingw_TLScallback",
         "_FindPESectionByName",
         "_FindPESectionExec",
         "atexit",
+    }
+)
+_DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES = frozenset(
+    {
+        "___dyn_tls_dtor_12",
+        "___dyn_tls_init_12",
+        "___mingw_TLScallback",
     }
 )
 _DECOMPILED_C_STACK_PROBE_HELPER_MACROS = {
@@ -333,7 +343,7 @@ def _missing_root_skeleton_evidence(
     }
 
 def _skeleton_missing_root_representation(function: dict[str, Any]) -> str:
-    if _decompiled_c_is_runtime_entry(function):
+    if _decompiled_c_is_runtime_entry(function) or _decompiled_c_is_mingw_crt_owned_function(function):
         return "runtime_entry_replaced_by_generated_bridge"
     if _decompiled_c_is_import_thunk(function):
         return "import_thunk_omitted_to_link_import"
@@ -1650,6 +1660,8 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
         if definition is not None:
             break
     window = "\n".join(lines[max(0, line - 2) : min(len(lines), line + 2)])
+    if "MinGW CRT support helper body omitted" in window:
+        return "omitted_runtime_helper"
     if "MinGW CRT entry body" in window:
         return "omitted_runtime_entry"
     if "stack-probe helper body omitted" in window:
@@ -2114,11 +2126,12 @@ def _render_decompiled_c_source(
             )
             continue
         if _decompiled_c_is_runtime_entry(function, runtime_entry_policy=runtime_entry_policy):
-            runtime_entry_comment = (
-                "/* MinGW CRT entry body replaced by a generated runtime bridge. */"
-                if runtime_entry_policy == "bridge"
-                else "/* MinGW CRT entry body omitted; supplied by the MinGW CRT link policy. */"
-            )
+            if runtime_entry_policy == "bridge":
+                runtime_entry_comment = "/* MinGW CRT entry body replaced by a generated runtime bridge. */"
+            elif _decompiled_c_is_mingw_crt_support_helper(function):
+                runtime_entry_comment = "/* MinGW CRT support helper body omitted; supplied by the MinGW CRT link policy. */"
+            else:
+                runtime_entry_comment = "/* MinGW CRT entry body omitted; supplied by the MinGW CRT link policy. */"
             lines.extend(
                 [
                     f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
@@ -2245,7 +2258,21 @@ def _decompiled_c_is_runtime_entry(function: dict[str, Any], *, runtime_entry_po
     name = str(function.get("name") or "")
     if name in _DECOMPILED_C_RUNTIME_ENTRY_NAMES:
         return True
-    return runtime_entry_policy == "mingw-crt" and name in _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES
+    return runtime_entry_policy == "mingw-crt" and _decompiled_c_is_mingw_crt_owned_function(function)
+
+def _decompiled_c_is_mingw_crt_owned_function(function: dict[str, Any]) -> bool:
+    name = str(function.get("name") or "")
+    if name in _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES:
+        return True
+    aliases = function.get("aliases") if isinstance(function.get("aliases"), list) else []
+    return any(isinstance(alias, str) and alias in _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES for alias in aliases)
+
+def _decompiled_c_is_mingw_crt_support_helper(function: dict[str, Any]) -> bool:
+    name = str(function.get("name") or "")
+    if name in _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES:
+        return True
+    aliases = function.get("aliases") if isinstance(function.get("aliases"), list) else []
+    return any(isinstance(alias, str) and alias in _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES for alias in aliases)
 
 def _decompiled_c_is_stack_probe_helper(function: dict[str, Any]) -> bool:
     name = str(function.get("name") or "")
