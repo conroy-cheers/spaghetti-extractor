@@ -5047,6 +5047,16 @@ _ABI_ADDRESS_LIKE_ARGUMENT_ROLES = {
     "stack_out_param_or_scratch_buffer",
 }
 
+# These are ABI-guidance provenance classes for by-value arguments. They are
+# not used to forgive address-like, literal, target, or proof-obligation loss.
+_ABI_BY_VALUE_ARGUMENT_ROLES = {
+    "immediate",
+    "register",
+    "stack_argument_slot",
+    "stack_local_slot",
+    "stack_pointer_slot",
+}
+
 
 def _contract_candidate_abi_argument_inventory_match(reference: dict[str, Any], candidate: dict[str, Any]) -> bool:
     if reference == candidate:
@@ -5057,7 +5067,7 @@ def _contract_candidate_abi_argument_inventory_match(reference: dict[str, Any], 
         return False
     if not _contract_candidate_abi_stack_roles_match(reference.get("stack_roles"), candidate.get("stack_roles")):
         return False
-    return reference.get("register_roles") == candidate.get("register_roles")
+    return _contract_candidate_abi_register_roles_match(reference.get("register_roles"), candidate.get("register_roles"))
 
 
 def _contract_candidate_abi_stack_roles_match(reference: Any, candidate: Any) -> bool:
@@ -5072,9 +5082,36 @@ def _contract_candidate_abi_stack_roles_match(reference: Any, candidate: Any) ->
 
 
 def _contract_candidate_abi_stack_role_match(reference: Any, candidate: Any) -> bool:
+    return _contract_candidate_abi_argument_role_match(reference, candidate)
+
+
+def _contract_candidate_abi_register_roles_match(reference: Any, candidate: Any) -> bool:
+    if not isinstance(reference, list) or not isinstance(candidate, list):
+        return reference == candidate
+    if len(reference) != len(candidate):
+        return False
+    for reference_item, candidate_item in zip(reference, candidate, strict=True):
+        if not isinstance(reference_item, dict) or not isinstance(candidate_item, dict):
+            if reference_item != candidate_item:
+                return False
+            continue
+        if reference_item.get("register") != candidate_item.get("register"):
+            return False
+        if not _contract_candidate_abi_argument_role_match(reference_item.get("role"), candidate_item.get("role")):
+            return False
+    return True
+
+
+def _contract_candidate_abi_argument_role_match(reference: Any, candidate: Any) -> bool:
     if reference == candidate:
         return True
-    return reference == "register" and candidate in _ABI_ADDRESS_LIKE_ARGUMENT_ROLES
+    if not isinstance(reference, str) or not isinstance(candidate, str):
+        return False
+    if reference == "register" and candidate in _ABI_ADDRESS_LIKE_ARGUMENT_ROLES:
+        return True
+    if reference in _ABI_BY_VALUE_ARGUMENT_ROLES and candidate in _ABI_BY_VALUE_ARGUMENT_ROLES:
+        return True
+    return False
 
 
 def _abi_list_count(value: Any) -> int:

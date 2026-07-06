@@ -2681,6 +2681,140 @@ class StageAValidateTests(unittest.TestCase):
 
         self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
 
+    def test_contract_candidate_abi_coverage_gaps_accept_by_value_argument_role_shape_changes(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "__gdtoa",
+                        "callsites": [
+                            {
+                                "id": "callsite:reference",
+                                "block_id": "__gdtoa-0005",
+                                "target": {"kind": "direct", "target_rva": 0x3000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 3,
+                                    "stack_args": [
+                                        {"index": 0, "role": "register"},
+                                        {"index": 1, "role": "stack_pointer_slot"},
+                                        {"index": 2, "role": "immediate"},
+                                    ],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "__dtoa_target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x3000, "rva_end": 0x3010}],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "__gdtoa",
+                        "callsites": [
+                            {
+                                "id": "callsite:candidate",
+                                "block_id": "___gdtoa",
+                                "target": {"kind": "direct", "target_rva": 0x5000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 3,
+                                    "stack_args": [
+                                        {"index": 0, "role": "stack_local_slot"},
+                                        {"index": 1, "role": "stack_argument_slot"},
+                                        {"index": 2, "role": "register"},
+                                    ],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "__dtoa_target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x5000, "rva_end": 0x5010}],
+                    },
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
+
+    def test_contract_candidate_abi_coverage_gaps_reject_literal_and_address_role_loss(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "callsites": [
+                            {
+                                "id": "callsite:reference",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x3000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 2,
+                                    "stack_args": [
+                                        {"index": 0, "role": "string_literal"},
+                                        {"index": 1, "role": "computed_out_param_or_hidden_sret"},
+                                    ],
+                                    "register_args": [],
+                                },
+                                "hidden_sret_or_out_param_evidence": {"status": "candidate"},
+                            }
+                        ],
+                    },
+                    {
+                        "name": "target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x3000, "rva_end": 0x3010}],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "callsites": [
+                            {
+                                "id": "callsite:candidate",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x5000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 2,
+                                    "stack_args": [
+                                        {"index": 0, "role": "immediate"},
+                                        {"index": 1, "role": "register"},
+                                    ],
+                                    "register_args": [],
+                                },
+                                "hidden_sret_or_out_param_evidence": {"status": "unknown"},
+                            }
+                        ],
+                    },
+                    {
+                        "name": "target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x5000, "rva_end": 0x5010}],
+                    },
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 1)
+        self.assertEqual(gaps["callsite_mismatches"][0]["issues"][0]["category"], "hidden_sret_or_out_param_missing")
+        self.assertEqual(gaps["callsite_mismatches"][0]["issues"][1]["category"], "callsite_argument_inventory_mismatch")
+
     def test_contract_candidate_abi_coverage_gaps_reject_lost_stack_out_param_role(self):
         reference_abi = {
             "original": {

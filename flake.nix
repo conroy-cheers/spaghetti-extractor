@@ -2810,6 +2810,107 @@
               }
             '';
 
+          stage-b-jq-contract-iteration-check = pkgs.runCommand "stage-b-jq-contract-iteration-check"
+            {
+              nativeBuildInputs = [
+                haloce-tools
+                pkgs.jq
+              ];
+            }
+            ''
+              candidate_dir="${stage-b-jq-generated-closure-candidate}/share/wincr/stage-b/jq/generated-closure-candidate"
+              closure_manifest="${stage-b-jq-target-closure-skeleton}/share/wincr/stage-b/jq/target-closure-skeletons/target-closure-skeletons.json"
+              work="$TMPDIR/stage-b-jq-contract-iteration-check"
+              mkdir -p "$work"
+              test -s "$candidate_dir/smoke/report.json"
+              jq -e '
+                .format == "stage-b-runtime-smoke-v1"
+                and .status == "skipped"
+                and .runner == "not_run"
+                and .returncode == 125
+              ' "$candidate_dir/smoke/report.json" >/dev/null
+
+              wincr stage-b-generate-candidate-provenance \
+                --target-name jq \
+                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --build-target i686-w64-mingw32 \
+                --build-compiler i686-w64-mingw32-cc \
+                --build-output jq-stage-b-generated-closure-candidate.exe \
+                --build-report "$candidate_dir/decompiled-c-generated-closure-link-report.json" \
+                --target-closure-manifest "$closure_manifest" \
+                --out "$work/provenance" \
+                > "$work/provenance.stdout"
+              claimed_provenance="$work/provenance/candidate-provenance.json"
+
+              set +e
+              wincr stage-b-validate-candidate \
+                --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --linker-map-candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.map" \
+                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --candidate-provenance "$claimed_provenance" \
+                --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
+                --target-name jq \
+                --out "$work/validate" \
+                > "$work/validate.stdout"
+              validate_code=$?
+              wincr stage-b-explain-delta \
+                --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
+                --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --linker-map-candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.map" \
+                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --candidate-module "name=libjq-1.dll,candidate=$candidate_dir/libjq-1.dll,linker_map=$candidate_dir/libjq-1.generated-closure.link.map,skeleton_manifest=$candidate_dir/libjq-1-skeleton-manifest.json" \
+                --out "$work/delta" \
+                > "$work/delta.stdout"
+              delta_code=$?
+              set -e
+
+              validate_status="$(jq -r '.status' "$work/validate/stage-b.json")"
+              case "$validate_status" in
+                pass) test "$validate_code" -eq 0 ;;
+                incomplete) test "$validate_code" -ne 0 ;;
+                *) printf 'unexpected Stage B validation status: %s\n' "$validate_status" >&2; exit 1 ;;
+              esac
+              delta_status="$(jq -r '.status' "$work/delta/stage-b-delta.json")"
+              case "$delta_status" in
+                pass) test "$delta_code" -eq 0 ;;
+                incomplete) test "$delta_code" -ne 0 ;;
+                *) printf 'unexpected Stage B delta status: %s\n' "$delta_status" >&2; exit 1 ;;
+              esac
+
+              jq -e '
+                .format == "stage-b-validation-v1"
+                and (.status == "pass" or .status == "incomplete")
+                and .reference_contract_coverage.provided == true
+                and .stage_a.gate.ran == true
+                and .stage_a.gate.iteration_policy == "stage_a_contract_first"
+                and .stage_a.gate.runtime_validation_policy == "candidate_only_after_stage_a_pass"
+                and .functional == null
+                and .functional_report == null
+                and .functional_diagnostics.status == "not_provided"
+              ' "$work/validate/stage-b.json" >/dev/null
+              jq -e '
+                .format == "stage-b-delta-explanation-v1"
+                and (.status == "pass" or .status == "incomplete")
+                and .functional_report == null
+                and .functional_diagnostics.status == "not_provided"
+              ' "$work/delta/stage-b-delta.json" >/dev/null
+
+              mkdir -p "$out"
+              cp "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" "$out/"
+              cp "$candidate_dir/jq-stage-b-generated-closure-candidate.map" "$out/"
+              cp "$candidate_dir/decompiled-c-generated-closure-link-report.json" "$out/"
+              cp "$candidate_dir/decompiled-c-link-roots.json" "$out/"
+              cp -R "$candidate_dir/src" "$out/src"
+              cp "$claimed_provenance" "$out/candidate-provenance.json"
+              cp "$work/validate/stage-b.json" "$out/stage-b.json"
+              cp "$work/delta/stage-b-delta.json" "$out/stage-b-delta.json"
+              cp "$work/provenance.stdout" "$work/validate.stdout" "$work/delta.stdout" "$out/"
+              cp -R "$work/provenance" "$out/provenance"
+              cp -R "$work/validate" "$out/validate"
+              cp -R "$work/delta" "$out/delta"
+            '';
+
           stage-b-jq-generated-closure-candidate-check = pkgs.runCommand "stage-b-jq-generated-closure-candidate-check"
             {
               nativeBuildInputs = [
@@ -3680,7 +3781,7 @@
               mkdir -p "$work"
               set +e
               wincr stage-b-audit-readiness \
-                --report "jq=${stage-b-jq-generated-closure-candidate-check}/stage-b.json" \
+                --report "jq=${stage-b-jq-contract-iteration-check}/stage-b.json" \
                 --report "ripgrep=${stage-b-ripgrep-skeleton-candidate-check}/stage-b.json" \
                 --out "$work/audit" \
                 > "$work/audit.stdout"
@@ -5393,6 +5494,7 @@ setup.write_text(text)
               stage-b-jq-skeleton-candidate-check
               stage-b-jq-target-closure-skeleton
               stage-b-jq-generated-closure-candidate
+              stage-b-jq-contract-iteration-check
               stage-b-jq-generated-closure-candidate-check
               stage-b-jq-skeleton-root
               stage-b-ripgrep-toolchain-diagnostic
@@ -5590,6 +5692,7 @@ setup.write_text(text)
               stage-b-jq-skeleton-candidate-check
               stage-b-jq-target-closure-skeleton
               stage-b-jq-generated-closure-candidate
+              stage-b-jq-contract-iteration-check
               stage-b-jq-generated-closure-candidate-check
               stage-b-ripgrep-integration-harness
               stage-b-ripgrep-reference-contract
