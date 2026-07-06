@@ -2109,6 +2109,119 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(gaps["callsite_mismatches"][0]["repair_class"], "varargs_or_stdio_bridge")
         self.assertIn("varargs", gaps["callsite_mismatches"][0]["next_action"])
 
+    def test_contract_candidate_abi_coverage_gaps_normalize_direct_targets_by_resolved_alias(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "_caller",
+                        "blocks": [{"block_id": "caller", "rva_start": 0x1000, "rva_end": 0x1010}],
+                        "callsites": [
+                            {
+                                "id": "callsite:caller:1004",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x2000},
+                            }
+                        ],
+                    },
+                    {
+                        "name": "_target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x2000, "rva_end": 0x2010}],
+                        "callsites": [],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "blocks": [{"block_id": "caller", "rva_start": 0x3000, "rva_end": 0x3010}],
+                        "callsites": [
+                            {
+                                "id": "callsite:caller:3004",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x4000},
+                            }
+                        ],
+                    },
+                    {
+                        "name": "target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x4000, "rva_end": 0x4010}],
+                        "callsites": [],
+                    },
+                ]
+            }
+        }
+        alias_evidence = {
+            "matches_by_reference": {
+                "_target": {
+                    "reference_name": "_target",
+                    "source_function": "target",
+                    "candidate": {"name": "target", "rva_start": 0x4000, "rva_end": 0x4010},
+                }
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi, alias_evidence=alias_evidence)
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
+
+    def test_contract_candidate_abi_coverage_gaps_keep_different_resolved_direct_targets_incomplete(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "_caller",
+                        "blocks": [{"block_id": "caller", "rva_start": 0x1000, "rva_end": 0x1010}],
+                        "callsites": [
+                            {
+                                "id": "callsite:caller:1004",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x2000},
+                            }
+                        ],
+                    },
+                    {
+                        "name": "_target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x2000, "rva_end": 0x2010}],
+                        "callsites": [],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "blocks": [{"block_id": "caller", "rva_start": 0x3000, "rva_end": 0x3010}],
+                        "callsites": [
+                            {
+                                "id": "callsite:caller:3004",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x5000},
+                            }
+                        ],
+                    },
+                    {
+                        "name": "other",
+                        "blocks": [{"block_id": "other", "rva_start": 0x5000, "rva_end": 0x5010}],
+                        "callsites": [],
+                    },
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+        mismatch = gaps["callsite_mismatches"][0]
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 1)
+        self.assertEqual(mismatch["issues"][0]["category"], "call_target_mismatch")
+        self.assertEqual(mismatch["issues"][0]["expected"]["resolved_functions"][0]["name"], "_target")
+        self.assertEqual(mismatch["issues"][0]["observed"]["resolved_functions"][0]["name"], "other")
+
     def test_contract_candidate_abi_coverage_gaps_use_explicit_skeleton_aliases(self):
         reference_abi = {
             "original": {

@@ -4489,6 +4489,8 @@ def _contract_candidate_abi_coverage_gaps(
         if isinstance(name, str):
             for key in _contract_candidate_symbol_keys(name):
                 candidate_by_key.setdefault(key, []).append(function)
+    reference_function_index = _abi_function_range_index(reference_functions)
+    candidate_function_index = _abi_function_range_index(candidate_functions)
 
     missing_functions: list[dict[str, Any]] = []
     ambiguous_functions: list[dict[str, Any]] = []
@@ -4548,6 +4550,9 @@ def _contract_candidate_abi_coverage_gaps(
                 reference_callsite,
                 candidate_callsites[index],
                 _contract_candidate_abi_alias_sample(alias_matches.get(name)),
+                reference_function_index=reference_function_index,
+                candidate_function_index=candidate_function_index,
+                alias_matches=alias_matches,
             )
             if callsite_mismatch is not None:
                 callsite_mismatches.append(callsite_mismatch)
@@ -4567,6 +4572,32 @@ def _contract_candidate_abi_coverage_gaps(
             "callsite_mismatches": len(callsite_mismatches),
         },
     }
+
+
+def _abi_function_range_index(functions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ranges: list[dict[str, Any]] = []
+    for function in functions:
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        blocks = function.get("blocks") if isinstance(function.get("blocks"), list) else []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            start = _optional_contract_int(block.get("rva_start"))
+            end = _optional_contract_int(block.get("rva_end"))
+            if start is None or end is None or end <= start:
+                continue
+            ranges.append(
+                {
+                    "name": name,
+                    "match_key": _linker_function_match_key(name),
+                    "rva_start": start,
+                    "rva_end": end,
+                    "block_id": block.get("block_id"),
+                }
+            )
+    return ranges
 
 
 def _contract_candidate_abi_function_mismatch(
@@ -4681,16 +4712,29 @@ def _contract_candidate_abi_callsite_mismatch(
     reference_callsite: dict[str, Any],
     candidate_callsite: dict[str, Any],
     alias_match: dict[str, Any] | None,
+    *,
+    reference_function_index: list[dict[str, Any]] | None = None,
+    candidate_function_index: list[dict[str, Any]] | None = None,
+    alias_matches: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     issues: list[dict[str, Any]] = []
-    reference_target = _abi_target_signature(reference_callsite.get("target"))
-    candidate_target = _abi_target_signature(candidate_callsite.get("target"))
-    if reference_target and candidate_target and reference_target != candidate_target:
+    target_match = _contract_candidate_abi_target_match(
+        reference_callsite.get("target"),
+        candidate_callsite.get("target"),
+        reference_function_index=reference_function_index or [],
+        candidate_function_index=candidate_function_index or [],
+        alias_matches=alias_matches or {},
+    )
+    if (
+        target_match["reference"]
+        and target_match["candidate"]
+        and not target_match["matched"]
+    ):
         issues.append(
             {
                 "category": "call_target_mismatch",
-                "expected": reference_target,
-                "observed": candidate_target,
+                "expected": target_match["reference"],
+                "observed": target_match["candidate"],
                 "cause_hint": "candidate call target kind/import/direct edge differs from the reference callsite",
             }
         )
@@ -4747,6 +4791,89 @@ def _contract_candidate_abi_callsite_mismatch(
         "repair_class": _contract_candidate_abi_mismatch_repair_class(issues),
         "next_action": _contract_candidate_abi_mismatch_next_action(name, issues),
     }
+
+
+def _contract_candidate_abi_target_match(
+    reference_target: Any,
+    candidate_target: Any,
+    *,
+    reference_function_index: list[dict[str, Any]],
+    candidate_function_index: list[dict[str, Any]],
+    alias_matches: dict[str, Any],
+) -> dict[str, Any]:
+    reference_signature = _abi_target_signature_with_resolution(reference_target, reference_function_index)
+    candidate_signature = _abi_target_signature_with_resolution(candidate_target, candidate_function_index)
+    if reference_signature == candidate_signature:
+        return {"matched": True, "reference": reference_signature, "candidate": candidate_signature}
+    if _contract_candidate_abi_resolved_targets_match(
+        reference_signature.get("resolved_functions"),
+        candidate_signature.get("resolved_functions"),
+        alias_matches,
+    ):
+        return {
+            "matched": True,
+            "reference": reference_signature,
+            "candidate": candidate_signature,
+            "resolution": "resolved_direct_target_function",
+        }
+    return {"matched": False, "reference": reference_signature, "candidate": candidate_signature}
+
+
+def _abi_target_signature_with_resolution(target: Any, function_index: list[dict[str, Any]]) -> dict[str, Any]:
+    signature = _abi_target_signature(target)
+    if signature.get("kind") != "direct":
+        return signature
+    rva = _optional_contract_int(signature.get("target_rva"))
+    if rva is None:
+        return signature
+    resolved = [
+        {
+            "name": item.get("name"),
+            "match_key": item.get("match_key"),
+            "rva_start": item.get("rva_start"),
+            "rva_end": item.get("rva_end"),
+            "block_id": item.get("block_id"),
+        }
+        for item in function_index
+        if int(item.get("rva_start") or 0) <= rva < int(item.get("rva_end") or 0)
+    ]
+    if resolved:
+        signature["resolved_functions"] = resolved[:8]
+    return signature
+
+
+def _contract_candidate_abi_resolved_targets_match(
+    reference_resolved: Any,
+    candidate_resolved: Any,
+    alias_matches: dict[str, Any],
+) -> bool:
+    reference_functions = [item for item in reference_resolved if isinstance(item, dict)] if isinstance(reference_resolved, list) else []
+    candidate_functions = [item for item in candidate_resolved if isinstance(item, dict)] if isinstance(candidate_resolved, list) else []
+    for reference in reference_functions:
+        reference_name = reference.get("name")
+        if not isinstance(reference_name, str) or not reference_name:
+            continue
+        candidate_names = _contract_candidate_abi_expected_candidate_names(reference_name, alias_matches)
+        candidate_keys = {_linker_function_match_key(name) for name in candidate_names}
+        for candidate in candidate_functions:
+            candidate_name = candidate.get("name")
+            if not isinstance(candidate_name, str) or not candidate_name:
+                continue
+            if candidate_name in candidate_names or _linker_function_match_key(candidate_name) in candidate_keys:
+                return True
+    return False
+
+
+def _contract_candidate_abi_expected_candidate_names(reference_name: str, alias_matches: dict[str, Any]) -> set[str]:
+    names = {reference_name}
+    match = alias_matches.get(reference_name) if isinstance(alias_matches.get(reference_name), dict) else {}
+    candidate = match.get("candidate") if isinstance(match.get("candidate"), dict) else {}
+    candidate_name = candidate.get("name")
+    if isinstance(candidate_name, str) and candidate_name:
+        names.add(candidate_name)
+    aliases = candidate.get("aliases") if isinstance(candidate.get("aliases"), list) else []
+    names.update(alias for alias in aliases if isinstance(alias, str) and alias)
+    return names
 
 
 def _contract_candidate_abi_varargs_issue(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any] | None:
