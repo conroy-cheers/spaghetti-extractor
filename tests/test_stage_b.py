@@ -2163,6 +2163,91 @@ class StageBTests(unittest.TestCase):
             self.assertIn("STAGE_B_SET_PART(local_84, 4, 4, (uint)((unkuint10)local_84 >> 0x20));", source)
             self.assertIn("return (int)(NAN(local_84) + STAGE_B_PART(local_84, 4, 4));", source)
 
+    def test_decompiled_c_renderer_preserves_dtoa_allocator_return_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "jq.exe", b"\xc3")
+            decompiler = root / "jq.ghidra.json"
+            decompiler.write_text(
+                json.dumps(
+                    {
+                        "functions": [
+                            {
+                                "rva": 0x1000,
+                                "rva_end": 0x1001,
+                                "name": "___Balloc_D2A",
+                                "signature": "void __cdecl ___Balloc_D2A(int param_1)",
+                                "decompiler": {
+                                    "status": "success",
+                                    "c": "\n".join(
+                                        [
+                                            "void __cdecl ___Balloc_D2A(int param_1)",
+                                            "{",
+                                            "  undefined4 *puVar1;",
+                                            "  puVar1 = (undefined4 *)malloc(32);",
+                                            "  if (puVar1 == (undefined4 *)0x0) {",
+                                            "    return;",
+                                            "  }",
+                                            "  puVar1[1] = param_1;",
+                                            "  puVar1[2] = 1 << (param_1 & 0x1f);",
+                                            "  puVar1[4] = 0;",
+                                            "  puVar1[3] = 0;",
+                                            "  return;",
+                                            "}",
+                                        ]
+                                    ),
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            stage_b_generate_skeleton(
+                original=original,
+                decompiler_export=decompiler,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="decompiled-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn("uintptr_t __cdecl ___Balloc_D2A(int param_1)", source)
+            self.assertIn("  return (uintptr_t)puVar1;", source)
+            self.assertIn("    return 0;", source)
+            self.assertNotIn("  puVar1[3] = 0;\n  return 0;", source)
+            i2b_source = _render_decompiled_c_source(
+                target_name="jq",
+                functions=[
+                    {
+                        "name": "___i2b_D2A",
+                        "rva_start": 0xAEF0,
+                        "rva_end": 0xAF9B,
+                        "size": 0xAB,
+                        "decompiler": {
+                            "status": "success",
+                            "code": "\n".join(
+                                [
+                                    "void __cdecl ___i2b_D2A(undefined4 param_1)",
+                                    "{",
+                                    "  undefined4 *puVar1;",
+                                    "  puVar1[3] = 0;",
+                                    "  puVar1[4] = 1;",
+                                    "  puVar1[5] = param_1;",
+                                    "  return;",
+                                    "}",
+                                ]
+                            ),
+                        },
+                    }
+                ],
+            )
+            self.assertIn("uintptr_t __cdecl ___i2b_D2A(undefined4 param_1)", i2b_source)
+            self.assertIn("  return (uintptr_t)puVar1;", i2b_source)
+            self.assertNotIn("  puVar1[5] = param_1;\n  return 0;", i2b_source)
+
     def test_decompiled_c_renderer_preserves_atexit_forwarder_shape(self):
         source = _render_decompiled_c_source(
             target_name="jq",

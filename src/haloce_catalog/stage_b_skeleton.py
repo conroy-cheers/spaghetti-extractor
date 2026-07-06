@@ -2973,6 +2973,8 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
         code = _normalize_jq_isoption_dispatch_calls(code)
     if function_name == "jq_init":
         code = _normalize_jq_init_stack_init_call(code)
+    if function_name in _DECOMPILED_C_DTOA_ALLOCATOR_RETURN_FUNCTION_NAMES:
+        code = _normalize_decompiled_dtoa_allocator_return_values(code)
     if function_name in {"_wmain", "wmain"}:
         code = _normalize_mingw_wmain_wide_argv_bridge(code, function_name=function_name)
     if "Treating indirect jump as call" in code:
@@ -3253,6 +3255,26 @@ _DECOMPILED_C_ALLOCATOR_RETURN_FUNCTION_NAMES = {
     "jq_yyalloc",
     "jq_yyrealloc",
 }
+
+_DECOMPILED_C_DTOA_ALLOCATOR_RETURN_FUNCTION_NAMES = {
+    "__Balloc_D2A",
+    "__i2b_D2A",
+    "___Balloc_D2A",
+    "___i2b_D2A",
+}
+
+
+def _normalize_decompiled_dtoa_allocator_return_values(code: str) -> str:
+    code = re.sub(
+        r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\[4\]\s*=\s*0;\s*\n\1\2\[3\]\s*=\s*0;\s*\n\1return(?:\s+0)?;\s*$",
+        r"\1\2[4] = 0;\n\1\2[3] = 0;\n\1return (uintptr_t)\2;",
+        code,
+    )
+    return re.sub(
+        r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\[3\]\s*=\s*0;\s*\n\1\2\[4\]\s*=\s*1;\s*\n\1\2\[5\]\s*=\s*([^;\n]+);\s*\n\1return(?:\s+0)?;\s*$",
+        r"\1\2[3] = 0;\n\1\2[4] = 1;\n\1\2[5] = \3;\n\1return (uintptr_t)\2;",
+        code,
+    )
 
 def _normalize_decompiled_allocator_return_values(code: str) -> str:
     allocator_call = r"(?:malloc|calloc|realloc|strdup|_strdup)\([^;\n{}]*\)"
