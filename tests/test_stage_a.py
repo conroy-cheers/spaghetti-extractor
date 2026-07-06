@@ -1652,6 +1652,7 @@ class StageAValidateTests(unittest.TestCase):
 
             abi = result["constraints"]["abi_callsites"]
             self.assertEqual(abi["counts"]["callsites"], 1)
+            self.assertEqual(abi["original"]["functions"][0]["stack_delta"]["net_bytes"], 0)
             callsite = abi["original"]["functions"][0]["callsites"][0]
             sources = callsite["argument_sources"]
             self.assertEqual([source["stack_offset"] for source in sources], [4, 0])
@@ -1670,6 +1671,73 @@ class StageAValidateTests(unittest.TestCase):
                 callsite["hidden_sret_or_out_param_evidence"]["reason"],
                 "first_stack_argument_not_address_like",
             )
+
+    def test_reference_contract_abi_stack_delta_tracks_explicit_cdecl_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex(
+                "6a01"  # push 1
+                "e800000000"  # call next instruction
+                "83c404"  # add esp, 4
+                "c3"  # ret
+            )
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = self._write_mapping(root / "block-map.json", size=len(code), block_id="cdecl-cleanup")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            function = result["constraints"]["abi_callsites"]["original"]["functions"][0]
+            self.assertEqual(function["stack_delta"]["net_bytes"], 0)
+            self.assertEqual(function["blocks"][0]["abi"]["stack_delta"]["net_bytes"], 0)
+
+    def test_reference_contract_abi_stack_delta_marks_multiblock_functions_block_local(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex(
+                "55"  # push ebp
+                "c3"  # ret
+            )
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                **self._mapping_entry(rva=0x1000, size=1, block_id="split-0000"),
+                                "source": {"function": "split"},
+                            },
+                            {
+                                **self._mapping_entry(rva=0x1001, size=1, block_id="split-0001"),
+                                "source": {"function": "split"},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            function = result["constraints"]["abi_callsites"]["original"]["functions"][0]
+            self.assertEqual(function["name"], "split")
+            self.assertEqual(function["stack_delta"]["status"], "block_local")
+            self.assertEqual(function["stack_delta"]["blocks"], 2)
+            self.assertEqual(function["blocks"][0]["abi"]["stack_delta"]["status"], "derived")
 
     def test_reference_contract_abi_callsites_mark_explicit_stack_address_first_argument(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2436,6 +2504,7 @@ class StageAValidateTests(unittest.TestCase):
         by_name = {item["name"]: item for item in candidate_abi["candidate"]["functions"]}
         self.assertIn("section-gap--text-0000", by_name)
         self.assertEqual(by_name["section-gap--text-0000"]["blocks"][0]["block_id"], "section-gap--text-0000")
+        self.assertEqual(by_name["section-gap--text-0000"]["stack_delta"]["status"], "block_local")
         self.assertNotIn("ordinary_missing", by_name)
         self.assertEqual(gaps["counts"]["missing_functions"], 1)
         self.assertEqual(gaps["missing_functions"][0]["name"], "ordinary_missing")

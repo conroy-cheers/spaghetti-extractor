@@ -5670,10 +5670,37 @@ def _abi_function_evidence(binary: StageABinary | None, mappings: list[BlockMapp
         entry.setdefault("field_accesses", []).extend(block_evidence.get("field_accesses", []))
         entry.setdefault("switch_contracts", []).extend(block_evidence.get("switch_contracts", []))
         entry.setdefault("loop_hints", []).extend(block_evidence.get("loop_hints", []))
-        if block_evidence["stack_delta"]["status"] != "unknown":
-            entry["stack_delta"] = block_evidence["stack_delta"]
         entry["memory_effect_summary"] = _abi_memory_effect_summary(entry.get("memory_reads", []), entry.get("memory_writes", []))
+    for entry in by_name.values():
+        entry["stack_delta"] = _abi_function_stack_delta_summary(entry.get("blocks"), str(entry.get("name") or ""))
     return sorted(by_name.values(), key=lambda item: str(item.get("name") or ""))
+
+
+def _abi_function_stack_delta_summary(blocks: Any, function_name: str = "") -> dict[str, Any]:
+    block_items = [block for block in blocks if isinstance(block, dict)] if isinstance(blocks, list) else []
+    derived = [
+        stack_delta
+        for block in block_items
+        for stack_delta in [block.get("abi", {}).get("stack_delta") if isinstance(block.get("abi"), dict) else None]
+        if isinstance(stack_delta, dict) and stack_delta.get("status") == "derived"
+    ]
+    if function_name.startswith("section-gap-"):
+        return {
+            "status": "block_local",
+            "reason": "synthetic section-gap unit; stack deltas are reported per block",
+            "blocks": len(block_items),
+            "derived_blocks": len(derived),
+        }
+    if len(block_items) == 1 and derived:
+        return {**derived[0], "scope": "function"}
+    if len(block_items) > 1:
+        return {
+            "status": "block_local",
+            "reason": "function spans multiple Stage A blocks; stack deltas are reported per block",
+            "blocks": len(block_items),
+            "derived_blocks": len(derived),
+        }
+    return {"status": "unknown", "reason": "no derived block stack delta"}
 
 
 def _abi_block_contract_evidence(block_evidence: dict[str, Any]) -> dict[str, Any]:
@@ -5742,6 +5769,14 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
             pushes.append(_abi_argument_source(binary, insn, register_definitions))
         elif mnemonic == "pop":
             stack_delta += 4 if binary.bitness == 32 else 8
+            pushes = []
+            stack_argument_writes = {}
+        elif mnemonic == "leave":
+            stack_delta = 0
+            pushes = []
+            stack_argument_writes = {}
+        elif (stack_adjustment := _abi_stack_pointer_adjustment(binary, insn)) is not None:
+            stack_delta += stack_adjustment
             pushes = []
             stack_argument_writes = {}
         elif _abi_resets_pending_arguments(insn):
@@ -6006,6 +6041,22 @@ def _abi_ret_imm(insn: Any) -> int:
     if len(insn.operands) != 1 or insn.operands[0].type != X86_OP_IMM:
         return 0
     return int(insn.operands[0].imm)
+
+
+def _abi_stack_pointer_adjustment(binary: StageABinary, insn: Any) -> int | None:
+    if len(insn.operands) < 2:
+        return None
+    mnemonic = str(insn.mnemonic)
+    if mnemonic not in {"add", "sub"}:
+        return None
+    dst, src = insn.operands[:2]
+    if dst.type != X86_OP_REG or src.type != X86_OP_IMM:
+        return None
+    stack_register = "esp" if binary.bitness == 32 else "rsp"
+    if insn.reg_name(dst.reg) != stack_register:
+        return None
+    value = int(src.imm)
+    return value if mnemonic == "add" else -value
 
 
 def _abi_argument_source(binary: StageABinary, insn: Any, register_definitions: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
