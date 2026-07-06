@@ -3824,18 +3824,21 @@ def _contract_candidate_families(
         _contract_candidate_family(
             "function_ranges",
             function_ranges_status,
-            "candidate linker map is missing reference-contract functions",
-            "add/generate candidate functions or linker roots for the missing names",
+            "candidate linker map is missing or ambiguously maps reference-contract functions",
+            "add/generate candidate functions, fix source-map aliases, or remove ambiguous linker roots",
             contract_families.get("function_ranges"),
             evidence={
                 "expected_count": len(expected_functions),
                 "candidate_count": len(candidate_functions),
+                "missing_count": len(missing_functions),
+                "ambiguous_count": alias_ambiguity_count,
                 "missing_functions": missing_functions[:100],
                 "missing_function_details": missing_function_details[:100],
                 "missing_by_category": _count_by(missing_function_details, "category"),
                 "ambiguous_aliases": [_contract_alias_ambiguity_sample(alias_ambiguities[name]) for name in ambiguous_functions[:100]],
                 "alias_matches": _contract_alias_match_samples(alias_matches, expected_functions),
                 "alias_evidence_status": alias_evidence.get("status"),
+                "alias_evidence_counts": alias_evidence.get("counts"),
             },
         ),
         _contract_candidate_family(
@@ -3934,6 +3937,20 @@ def _contract_candidate_skeleton_alias_evidence(skeleton: dict[str, Any], candid
                 )
             continue
         if len(candidate_matches) > 1:
+            resolved = _contract_candidate_disambiguate_exact_source_match(candidate_matches, source_function)
+            if resolved is not None:
+                for name in reference_names:
+                    unresolved.setdefault(name, []).append(
+                        {
+                            "reference_name": name,
+                            "source_function": source_function,
+                            "source_kind": entry.get("source_kind"),
+                            "candidate": _contract_candidate_function_sample(resolved),
+                            "source_aliases": source_aliases,
+                            "resolution": "unique_exact_source_function",
+                        }
+                    )
+                continue
             ambiguity = {
                 "reference_names": reference_names,
                 "source_function": source_function,
@@ -4010,6 +4027,18 @@ def _contract_candidate_lookup_matches(lookup: dict[str, list[dict[str, Any]]], 
                 if function not in matches:
                     matches.append(function)
     return matches
+
+
+def _contract_candidate_disambiguate_exact_source_match(
+    candidate_matches: list[dict[str, Any]],
+    source_function: str,
+) -> dict[str, Any] | None:
+    exact = [
+        function
+        for function in candidate_matches
+        if source_function in _contract_candidate_function_symbol_names(function)
+    ]
+    return exact[0] if len(exact) == 1 else None
 
 
 def _contract_candidate_function_names(candidate_functions: list[dict[str, Any]]) -> set[str]:

@@ -2178,6 +2178,59 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(match["source_function"], "_gnu_exception_handler@4")
         self.assertEqual(match["candidate"]["name"], "_gnu_exception_handler_4")
 
+    def test_contract_candidate_alias_evidence_prefers_unique_exact_source_function(self):
+        alias_evidence = stage_a._contract_candidate_skeleton_alias_evidence(
+            {
+                "format": "stage-b-skeleton-v1",
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "__crt_atexit",
+                            "aliases": ["_crt_atexit", "__crt_atexit"],
+                            "source_kind": "omitted_import_thunk",
+                        }
+                    ]
+                },
+            },
+            [
+                {"name": "__crt_atexit", "rva_start": 0x86A8, "rva_end": 0x86B0, "section": ".text"},
+                {"name": "_crt_atexit", "rva_start": 0x27E8, "rva_end": 0x27F0, "section": ".text"},
+            ],
+        )
+
+        match = alias_evidence["matches_by_reference"]["__crt_atexit"]
+
+        self.assertEqual(alias_evidence["status"], "satisfied")
+        self.assertEqual(alias_evidence["counts"]["ambiguities"], 0)
+        self.assertEqual(match["candidate"]["name"], "__crt_atexit")
+        self.assertEqual(match["resolution"], "unique_exact_source_function")
+        self.assertEqual(alias_evidence["matches_by_reference"]["_crt_atexit"]["candidate"]["name"], "__crt_atexit")
+
+    def test_contract_candidate_alias_evidence_keeps_duplicate_exact_source_function_incomplete(self):
+        alias_evidence = stage_a._contract_candidate_skeleton_alias_evidence(
+            {
+                "format": "stage-b-skeleton-v1",
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "__crt_atexit",
+                            "aliases": ["_crt_atexit", "__crt_atexit"],
+                            "source_kind": "omitted_import_thunk",
+                        }
+                    ]
+                },
+            },
+            [
+                {"name": "__crt_atexit", "rva_start": 0x86A8, "rva_end": 0x86B0, "section": ".text"},
+                {"name": "__crt_atexit", "rva_start": 0x96A8, "rva_end": 0x96B0, "section": ".text"},
+                {"name": "_crt_atexit", "rva_start": 0x27E8, "rva_end": 0x27F0, "section": ".text"},
+            ],
+        )
+
+        self.assertEqual(alias_evidence["status"], "incomplete")
+        self.assertEqual(alias_evidence["counts"]["ambiguities"], 2)
+        self.assertIn("__crt_atexit", alias_evidence["ambiguities_by_reference"])
+
     def test_contract_candidate_alias_evidence_records_unmatched_source_aliases(self):
         alias_evidence = stage_a._contract_candidate_skeleton_alias_evidence(
             {
