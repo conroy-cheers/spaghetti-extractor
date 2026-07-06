@@ -194,14 +194,30 @@ def _candidate_build_report_summary(
         "source_dependency_policy": source_dependency_policy,
         "target_import_closure": target_import_closure or _empty_target_import_closure(target_name),
     }
-    for key in ("generated_target_closure", "generated_import_libraries", "generated_target_dlls"):
+    for key in (
+        "layout_policy",
+        "stage_a_layout_eligible",
+        "strict_layout_link",
+        "diagnostic_layout_fallback",
+        "generated_target_closure",
+        "generated_import_libraries",
+        "generated_target_dlls",
+    ):
         value = payload.get(key)
-        if isinstance(value, (dict, list)):
+        if isinstance(value, (dict, list, str, bool)):
             summary[key] = value
     standalone = payload.get("standalone_link_diagnostic")
     if isinstance(standalone, dict):
         undefined_symbols = _undefined_reference_symbols(standalone.get("undefined_reference_samples", []))
         target_import_symbols = _target_import_symbol_matches(undefined_symbols, target_import_closure)
+        repair_plan = _standalone_link_repair_plan(
+            undefined_symbols,
+            target_import_symbols,
+            target_import_closure=target_import_closure,
+        )
+        explicit_repair_plan = standalone.get("repair_plan")
+        if isinstance(explicit_repair_plan, dict) and explicit_repair_plan.get("status") not in {None, "", "not_applicable"}:
+            repair_plan = {**repair_plan, **explicit_repair_plan}
         summary["standalone_link_diagnostic"] = {
             "status": standalone.get("status"),
             "returncode": standalone.get("returncode"),
@@ -211,11 +227,7 @@ def _candidate_build_report_summary(
             "undefined_symbol_families": _undefined_symbol_families(undefined_symbols),
             "target_import_symbol_count": len(target_import_symbols),
             "target_import_symbols": target_import_symbols[:100],
-            "repair_plan": _standalone_link_repair_plan(
-                undefined_symbols,
-                target_import_symbols,
-                target_import_closure=target_import_closure,
-            ),
+            "repair_plan": repair_plan,
             "undefined_reference_samples": standalone.get("undefined_reference_samples", []),
             "stdout": standalone.get("stdout"),
             "stderr": standalone.get("stderr"),

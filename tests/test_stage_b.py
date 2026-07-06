@@ -1516,6 +1516,76 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(report["generated_import_libraries"], ["libstage_b_target_closure_libjq_1.dll.a"])
             self.assertEqual(report["generated_target_dlls"], ["libjq-1.dll"])
 
+    def test_candidate_provenance_preserves_strict_layout_fallback_diagnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            linker_map = self._write_map(root / "original.map", "tiny")
+            skeleton_dir = root / "skeleton"
+            stage_b_generate_skeleton(
+                original=original,
+                linker_map=linker_map,
+                target_name="jq",
+                out_dir=skeleton_dir,
+            )
+            build_report = root / "link-report.json"
+            build_report.write_text(
+                json.dumps(
+                    {
+                        "format": "stage-b-decompiled-c-link-diagnostic-v1",
+                        "status": "incomplete",
+                        "layout_policy": "diagnostic_fallback",
+                        "stage_a_layout_eligible": False,
+                        "linker_flags": ["-municode", "-Wl,--section-start,.data=0x40d000"],
+                        "strict_layout_link": {
+                            "status": "incomplete",
+                            "returncode": 1,
+                            "stderr": "strict.stderr",
+                        },
+                        "diagnostic_layout_fallback": {
+                            "status": "used",
+                            "reason": "strict_stage_a_layout_link_failed",
+                            "returncode": 0,
+                            "stderr": "fallback.stderr",
+                        },
+                        "standalone_link_diagnostic": {
+                            "status": "incomplete",
+                            "returncode": 1,
+                            "unresolved_reference_lines": 0,
+                            "undefined_reference_samples": [],
+                            "repair_plan": {
+                                "status": "strict_layout_link_failed",
+                                "next_action": "repair section layout before Stage A",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            generated = stage_b_generate_candidate_provenance(
+                target_name="jq",
+                skeleton_manifest=skeleton_dir / "manifest.json",
+                candidate=candidate,
+                build_target="i686-w64-mingw32",
+                build_compiler="i686-w64-mingw32-cc",
+                build_output="candidate.exe",
+                build_report=build_report,
+                out=root / "provenance",
+            )
+
+            report = generated["build"]["report"]
+            self.assertEqual(report["layout_policy"], "diagnostic_fallback")
+            self.assertFalse(report["stage_a_layout_eligible"])
+            self.assertEqual(report["strict_layout_link"]["status"], "incomplete")
+            self.assertEqual(report["diagnostic_layout_fallback"]["status"], "used")
+            standalone = report["standalone_link_diagnostic"]
+            self.assertEqual(standalone["status"], "incomplete")
+            self.assertEqual(standalone["undefined_symbol_count"], 0)
+            self.assertEqual(standalone["repair_plan"]["status"], "strict_layout_link_failed")
+            self.assertEqual(standalone["repair_plan"]["next_action"], "repair section layout before Stage A")
+
     def test_generate_candidate_provenance_records_fixed_up_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -5066,6 +5136,47 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(result[0]["generated_source_location"]["line_start"], 70)
         self.assertEqual(result[0]["evidence"]["candidate_location"]["classification"], "inside_candidate_image")
         self.assertEqual(result[0]["evidence"]["candidate_location"]["rva"], 0x1020)
+
+    def test_explain_delta_classifies_stack_probe_crash_separately(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "___chkstk_ms",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 2100,
+                            "line_end": 2115,
+                            "source_kind": "decompiled_function",
+                        }
+                    ]
+                }
+            },
+            candidate_functions=[
+                {"name": "___chkstk_ms", "rva_start": 0x2E50, "rva_end": 0x2E80},
+            ],
+            candidate_binary={"image_base": 0x400000, "size_of_image": 0x20000},
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "crash_kind": "wine_unhandled_page_fault",
+                "access": "write",
+                "fault_address": "0x0040D0C0",
+                "instruction_address": "0x00402E63",
+                "stderr_preview": "wine: Unhandled page fault on write access to 0040D0C0 at address 00402E63\n",
+                "repair_hints": ["inspect ABI, stack, hidden sret/out-param evidence"],
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["violated_contract_family"], "candidate_crash")
+        self.assertEqual(result[0]["likely_repair_class"], "stack_probe_or_frame_layout")
+        self.assertEqual(result[0]["original_function"], "___chkstk_ms")
+        self.assertEqual(result[0]["generated_source_location"]["line_start"], 2100)
+        self.assertIn("stack-probe", result[0]["next_action"])
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["rva"], 0x2E63)
 
     def test_explain_delta_ranks_external_module_crash_behind_source_mapped_abi_repairs(self):
         validation = {

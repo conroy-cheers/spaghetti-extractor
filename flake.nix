@@ -2629,7 +2629,18 @@
                 fi
               done < "$diagnostic_dir/link-roots/budgeted-link-root-flags.txt"
 
-              printf '%s\n' 'linking jq Stage B candidate against generated target-closure import library'
+              strict_layout_flags=(
+                -Wl,--section-start,.data=0x40d000
+                -Wl,--section-start,.rdata=0x40e000
+                -Wl,--section-start,.bss=0x410000
+                -Wl,--section-start,.edata=0x411000
+                -Wl,--section-start,.idata=0x412000
+                -Wl,--section-start,.tls=0x413000
+                -Wl,--section-start,.reloc=0x414000
+              )
+              diagnostic_layout_flags=()
+
+              printf '%s\n' 'linking jq Stage B candidate against generated target-closure import library with strict Stage A layout'
               set +e
               i686-w64-mingw32-cc -municode \
                 "$diagnostic_dir/jq_stage_b_skeleton.o" \
@@ -2642,27 +2653,65 @@
                 -lonig \
                 -L${mingw32.windows.mcfgthreads}/lib \
                 -Wl,--gc-sections \
-                -Wl,--section-start,.data=0x40d000 \
-                -Wl,--section-start,.rdata=0x40e000 \
-                -Wl,--section-start,.bss=0x410000 \
-                -Wl,--section-start,.edata=0x411000 \
-                -Wl,--section-start,.idata=0x412000 \
-                -Wl,--section-start,.tls=0x413000 \
-                -Wl,--section-start,.reloc=0x414000 \
-                -Wl,-Map,"$work/jq_stage_b_skeleton.generated-closure.link.map" \
-                -o "$work/jq_stage_b_skeleton.generated-closure.exe" \
-                > "$work/generated-closure-link.stdout.txt" \
-                2> "$work/generated-closure-link.stderr.txt"
-              generated_link_code=$?
+                "''${strict_layout_flags[@]}" \
+                -Wl,-Map,"$work/jq_stage_b_skeleton.generated-closure.strict.link.map" \
+                -o "$work/jq_stage_b_skeleton.generated-closure.strict.exe" \
+                > "$work/generated-closure-strict-link.stdout.txt" \
+                2> "$work/generated-closure-strict-link.stderr.txt"
+              strict_generated_link_code=$?
               set -e
-              printf '%s\n' "$generated_link_code" > "$work/generated-closure-link.returncode"
-              grep 'undefined reference' "$work/generated-closure-link.stderr.txt" \
+              printf '%s\n' "$strict_generated_link_code" > "$work/generated-closure-strict-link.returncode"
+              grep 'undefined reference' "$work/generated-closure-strict-link.stderr.txt" \
                 | sort -u \
-                > "$work/generated-closure-link-undefined-references.txt" || true
-              generated_unresolved_count="$(wc -l < "$work/generated-closure-link-undefined-references.txt" | tr -d ' ')"
-              if test "$generated_link_code" -ne 0; then
-                sed -n '1,200p' "$work/generated-closure-link.stderr.txt" >&2
-                exit 1
+                > "$work/generated-closure-strict-link-undefined-references.txt" || true
+              strict_generated_unresolved_count="$(wc -l < "$work/generated-closure-strict-link-undefined-references.txt" | tr -d ' ')"
+
+              if test "$strict_generated_link_code" -eq 0; then
+                cp "$work/jq_stage_b_skeleton.generated-closure.strict.exe" "$work/jq_stage_b_skeleton.generated-closure.exe"
+                cp "$work/jq_stage_b_skeleton.generated-closure.strict.link.map" "$work/jq_stage_b_skeleton.generated-closure.link.map"
+                cp "$work/generated-closure-strict-link.stdout.txt" "$work/generated-closure-link.stdout.txt"
+                cp "$work/generated-closure-strict-link.stderr.txt" "$work/generated-closure-link.stderr.txt"
+                cp "$work/generated-closure-strict-link.returncode" "$work/generated-closure-link.returncode"
+                cp "$work/generated-closure-strict-link-undefined-references.txt" "$work/generated-closure-link-undefined-references.txt"
+                generated_link_code="$strict_generated_link_code"
+                generated_unresolved_count="$strict_generated_unresolved_count"
+                generated_link_status="pass"
+                layout_policy="stage_a_strict"
+                layout_fallback_used="false"
+              else
+                printf '%s\n' 'strict Stage A layout link failed; building diagnostic fallback candidate without fixed section RVAs' >&2
+                sed -n '1,200p' "$work/generated-closure-strict-link.stderr.txt" >&2
+                set +e
+                i686-w64-mingw32-cc -municode \
+                  "$diagnostic_dir/jq_stage_b_skeleton.o" \
+                  "$diagnostic_dir/libstage_b_msvcrt_atexit.a" \
+                  "''${import_thunk_root_flags[@]}" \
+                  "''${link_root_flags[@]}" \
+                  -L"$work" \
+                  -l:libstage_b_target_closure_libjq_1.dll.a \
+                  -L${mingw32Oniguruma.lib}/lib \
+                  -lonig \
+                  -L${mingw32.windows.mcfgthreads}/lib \
+                  -Wl,--gc-sections \
+                  "''${diagnostic_layout_flags[@]}" \
+                  -Wl,-Map,"$work/jq_stage_b_skeleton.generated-closure.link.map" \
+                  -o "$work/jq_stage_b_skeleton.generated-closure.exe" \
+                  > "$work/generated-closure-link.stdout.txt" \
+                  2> "$work/generated-closure-link.stderr.txt"
+                generated_link_code=$?
+                set -e
+                printf '%s\n' "$generated_link_code" > "$work/generated-closure-link.returncode"
+                grep 'undefined reference' "$work/generated-closure-link.stderr.txt" \
+                  | sort -u \
+                  > "$work/generated-closure-link-undefined-references.txt" || true
+                generated_unresolved_count="$(wc -l < "$work/generated-closure-link-undefined-references.txt" | tr -d ' ')"
+                if test "$generated_link_code" -ne 0; then
+                  sed -n '1,200p' "$work/generated-closure-link.stderr.txt" >&2
+                  exit 1
+                fi
+                generated_link_status="incomplete"
+                layout_policy="diagnostic_fallback"
+                layout_fallback_used="true"
               fi
               test -s "$work/jq_stage_b_skeleton.generated-closure.exe"
 
@@ -2677,6 +2726,8 @@
               cp "$work/libjq-1.generated-closure.link.map" "$out_dir/"
               cp "$work/libjq-1-link.stdout.txt" "$work/libjq-1-link.stderr.txt" "$out_dir/"
               cp "$work/generated-closure-link.stdout.txt" "$work/generated-closure-link.stderr.txt" "$out_dir/"
+              cp "$work/generated-closure-strict-link.stdout.txt" "$work/generated-closure-strict-link.stderr.txt" "$out_dir/"
+              cp "$work/generated-closure-strict-link.returncode" "$out_dir/"
               cp "$diagnostic_dir/report.json" "$out_dir/decompiled-c-compile-report.json"
               cp "$diagnostic_dir/link-roots/link-roots.json" "$out_dir/decompiled-c-link-roots.json"
               cp "$skeleton_dir/manifest.json" "$out_dir/skeleton-manifest.json"
@@ -2692,14 +2743,21 @@
               done
 
               jq -n \
-                --arg status "pass" \
-                --arg returncode "$generated_link_code" \
-                --arg unresolved_count "$generated_unresolved_count" \
+                --arg status "$generated_link_status" \
+                --arg returncode "$strict_generated_link_code" \
+                --arg fallback_returncode "$generated_link_code" \
+                --arg unresolved_count "$strict_generated_unresolved_count" \
+                --arg fallback_unresolved_count "$generated_unresolved_count" \
+                --arg layout_policy "$layout_policy" \
+                --argjson layout_fallback_used "$layout_fallback_used" \
                 --arg exe "$out_dir/jq-stage-b-generated-closure-candidate.exe" \
                 --arg map "$out_dir/jq-stage-b-generated-closure-candidate.map" \
                 --arg stdout "$out_dir/generated-closure-link.stdout.txt" \
                 --arg stderr "$out_dir/generated-closure-link.stderr.txt" \
-                --rawfile standalone_undefined "$work/generated-closure-link-undefined-references.txt" \
+                --arg strict_stdout "$out_dir/generated-closure-strict-link.stdout.txt" \
+                --arg strict_stderr "$out_dir/generated-closure-strict-link.stderr.txt" \
+                --rawfile standalone_undefined "$work/generated-closure-strict-link-undefined-references.txt" \
+                --rawfile fallback_undefined "$work/generated-closure-link-undefined-references.txt" \
                 --arg import_lib "$out_dir/libstage_b_target_closure_libjq_1.dll.a" \
                 --arg generated_dll "$out_dir/libjq-1.dll" \
                 --arg def "$out_dir/libjq-1.def" \
@@ -2714,6 +2772,8 @@
                 '{
                   format: "stage-b-decompiled-c-link-diagnostic-v1",
                   status: $status,
+                  layout_policy: $layout_policy,
+                  stage_a_layout_eligible: ($layout_fallback_used | not),
                   returncode: ($returncode | tonumber),
                   unresolved_reference_lines: ($unresolved_count | tonumber),
                   linker_flags: (
@@ -2736,7 +2796,33 @@
                     linker_map: $map,
                     stdout: $stdout,
                     stderr: $stderr,
+                    repair_plan: (
+                      if $layout_fallback_used then
+                        {
+                          status: "strict_layout_link_failed",
+                          next_action: "reduce or repair generated source/layout so the Stage A strict PE section RVAs link without the diagnostic fallback"
+                        }
+                      else
+                        {status: "not_applicable"}
+                      end
+                    ),
                     undefined_reference_samples: ($standalone_undefined | split("\n") | map(select(length > 0))[:100])
+                  },
+                  strict_layout_link: {
+                    status: (if ($returncode | tonumber) == 0 then "pass" else "incomplete" end),
+                    returncode: ($returncode | tonumber),
+                    stdout: $strict_stdout,
+                    stderr: $strict_stderr,
+                    undefined_reference_samples: ($standalone_undefined | split("\n") | map(select(length > 0))[:100])
+                  },
+                  diagnostic_layout_fallback: {
+                    status: (if $layout_fallback_used then "used" else "not_applicable" end),
+                    reason: (if $layout_fallback_used then "strict_stage_a_layout_link_failed" else "" end),
+                    returncode: ($fallback_returncode | tonumber),
+                    stdout: $stdout,
+                    stderr: $stderr,
+                    unresolved_reference_lines: ($fallback_unresolved_count | tonumber),
+                    undefined_reference_samples: ($fallback_undefined | split("\n") | map(select(length > 0))[:100])
                   },
                   generated_target_closure: {
                     format: "stage-b-generated-target-closure-link-artifacts-v1",
@@ -2770,7 +2856,15 @@
                   generated_import_libraries: [$import_lib],
                   generated_target_dlls: [$generated_dll],
                   link_roots_report: $link_roots,
-                  blocker: (if ($missing_export_stub_count | tonumber) == 0 then "" else "generated target-closure DLL still has missing requested-export stubs" end),
+                  blocker: (
+                    if $layout_fallback_used then
+                      "strict Stage A PE section layout failed to link; diagnostic fallback binary is not eligible for final Stage A pass"
+                    elif ($missing_export_stub_count | tonumber) == 0 then
+                      ""
+                    else
+                      "generated target-closure DLL still has missing requested-export stubs"
+                    end
+                  ),
                   executable: $exe,
                   linker_map: $map,
                   stdout: $stdout,
@@ -2852,13 +2946,26 @@
               printf '%s\n' 'asserting generated-closure candidate provenance stays strict and behavior-incomplete'
               jq -e '
                 .format == "stage-b-candidate-provenance-v1"
-                and .build.report.status == "pass"
                 and .build.report.source_dependency_policy.status == "satisfied"
                 and .build.report.target_import_closure.status == "satisfied"
                 and .build.report.target_import_closure.generated_closure.status == "satisfied"
-                and .build.report.standalone_link_diagnostic.status == "pass"
-                and .build.report.standalone_link_diagnostic.repair_plan.status == "not_applicable"
-                and .build.report.standalone_link_diagnostic.undefined_symbol_count == 0
+                and (
+                  if .build.report.layout_policy == "diagnostic_fallback" then
+                    .build.report.status == "incomplete"
+                    and .build.report.stage_a_layout_eligible == false
+                    and .build.report.strict_layout_link.status == "incomplete"
+                    and .build.report.diagnostic_layout_fallback.status == "used"
+                    and .build.report.standalone_link_diagnostic.status == "incomplete"
+                    and .build.report.standalone_link_diagnostic.repair_plan.status == "strict_layout_link_failed"
+                  else
+                    .build.report.layout_policy == "stage_a_strict"
+                    and .build.report.status == "pass"
+                    and .build.report.stage_a_layout_eligible == true
+                    and .build.report.standalone_link_diagnostic.status == "pass"
+                    and .build.report.standalone_link_diagnostic.repair_plan.status == "not_applicable"
+                    and .build.report.standalone_link_diagnostic.undefined_symbol_count == 0
+                  end
+                )
                 and .build.report.generated_target_closure.source_policy.behavior_implemented == false
                 and .functional_tests.status == "not_run"
               ' "$out_dir/candidate-provenance.json" >/dev/null || {
@@ -2888,8 +2995,9 @@
               test -s "$candidate_dir/src/jq-libjq-1_stage_b_skeleton.c"
               jq -e '
                 .format == "stage-b-runtime-smoke-v1"
-                and .status == "pass"
+                and (.status == "pass" or .status == "incomplete")
                 and .runner == "xvfb-run wine"
+                and (.status == "pass" or .returncode != 0)
               ' "$candidate_dir/smoke/report.json" >/dev/null
 
               tar -C "$work" -xf "${pkgs.jq.src}" jq-1.8.1/tests
@@ -2925,6 +3033,32 @@
                 --suite-scope full \
                 --out "$work/materialized-suite" \
                 > "$work/materialized-suite.stdout"
+              cp "$work/materialized-suite.stdout" "$work/full-suite.stdout"
+              cat > "$work/smoke-cases.json" <<'JSON'
+              {
+                "format": "stage-b-upstream-suite-cases-v1",
+                "cases": [
+                  {
+                    "id": "jq-smoke-version-generated-closure",
+                    "args": ["--version"],
+                    "stdin": "",
+                    "expected_returncode": 0,
+                    "expected_stdout": "jq-1.8.1\n",
+                    "expected_stderr": "",
+                    "timeout_seconds": 30,
+                    "candidate_timeout_seconds": 30
+                  }
+                ]
+              }
+              JSON
+              stage-b-functional-wincr stage-b-materialize-upstream-suite \
+                --target-name jq \
+                --suite-source "$work/upstream-suite-source.txt" \
+                --source-revision jq-1.8.1-smoke \
+                --cases "$work/smoke-cases.json" \
+                --suite-scope subset \
+                --out "$work/smoke-suite" \
+                > "$work/smoke-suite.stdout"
 
               export HOME="$work/home"
               export XDG_CACHE_HOME="$work/xdg-cache"
@@ -2973,7 +3107,7 @@
 
               set +e
               stage-b-functional-wincr stage-b-run-functional-suite \
-                --suite "$work/materialized-suite/functional-suite.json" \
+                --suite "$work/smoke-suite/functional-suite.json" \
                 --candidate-command-json "$candidate_cmd" \
                 --candidate-binary "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
                 --strip-stderr-line-regex '^wine: created the configuration directory ' \
@@ -2982,8 +3116,27 @@
                 --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
                 --out "$work/functional" \
                 > "$work/functional.stdout"
-              functional_code=$?
+              smoke_functional_code=$?
               set -e
+              if [ "$smoke_functional_code" -eq 0 ]; then
+                set +e
+                stage-b-functional-wincr stage-b-run-functional-suite \
+                  --suite "$work/materialized-suite/functional-suite.json" \
+                  --candidate-command-json "$candidate_cmd" \
+                  --candidate-binary "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                  --strip-stderr-line-regex '^wine: created the configuration directory ' \
+                  --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
+                  --strip-stderr-line-regex '^      after [0-9]+ requests .* with [0-9]+ events remaining\.$' \
+                  --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
+                  --out "$work/functional" \
+                  > "$work/functional.stdout"
+                functional_code=$?
+                set -e
+              else
+                printf 'skipped: jq generated-closure smoke check failed before the full upstream integration suite\n' \
+                  > "$work/full-suite.stdout"
+                functional_code="$smoke_functional_code"
+              fi
               functional_report="$work/functional/functional-report.json"
               jq -n \
                 --slurpfile report "$functional_report" \
@@ -3074,10 +3227,23 @@
                 .status == "incomplete"
                 and .candidate.build.report.source_dependency_policy.status == "satisfied"
                 and .candidate.build.report.target_import_closure.status == "satisfied"
-                and .candidate.build.report.standalone_link_diagnostic.status == "pass"
+                and (
+                  if .candidate.build.report.layout_policy == "diagnostic_fallback" then
+                    .candidate.build.report.stage_a_layout_eligible == false
+                    and .candidate.build.report.strict_layout_link.status == "incomplete"
+                    and .candidate.build.report.diagnostic_layout_fallback.status == "used"
+                    and .candidate.build.report.standalone_link_diagnostic.status == "incomplete"
+                    and .candidate.build.report.standalone_link_diagnostic.repair_plan.status == "strict_layout_link_failed"
+                    and ([.issues[].category] | index("standalone_build_incomplete"))
+                  else
+                    .candidate.build.report.layout_policy == "stage_a_strict"
+                    and .candidate.build.report.stage_a_layout_eligible == true
+                    and .candidate.build.report.standalone_link_diagnostic.status == "pass"
+                    and ([.issues[].category] | index("standalone_build_incomplete") | not)
+                  end
+                )
                 and ([.issues[].category] | index("target_library_linkage") | not)
                 and ([.issues[].category] | index("target_import_closure_incomplete") | not)
-                and ([.issues[].category] | index("standalone_build_incomplete") | not)
                 and .functional.oracle.original_runtime_observations == false
                 and (.functional.commands | has("original") | not)
                 and (.functional.binary_bindings | has("original") | not)
@@ -3089,6 +3255,7 @@
                 and .counts.repair_items > 0
                 and .candidate_crash_report != null
                 and ([.repair_items[].violated_contract_family] | index("candidate_crash"))
+                and ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
               ' "$work/delta/stage-b-delta.json" >/dev/null
 
               mkdir -p "$out"
@@ -3104,12 +3271,15 @@
               cp "$work/delta/stage-b-delta.json" "$out/stage-b-delta.json"
               cp "$work/candidate-crash.json" "$out/candidate-crash.json"
               cp "$work/materialized-suite.stdout" \
+                "$work/smoke-suite.stdout" \
+                "$work/full-suite.stdout" \
                 "$work/functional.stdout" \
                 "$work/provenance.stdout" \
                 "$work/validate.stdout" \
                 "$work/delta.stdout" \
                 "$out/"
               cp -R "$work/materialized-suite" "$out/materialized-suite"
+              cp -R "$work/smoke-suite" "$out/smoke-suite"
               cp -R "$work/functional" "$out/functional"
               cp -R "$work/provenance" "$out/provenance"
               cp -R "$work/validate" "$out/validate"

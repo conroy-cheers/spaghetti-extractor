@@ -2246,6 +2246,8 @@ def _stage_b_is_runtime_crt_support_function(function_name: str) -> bool:
     key = _linker_function_match_key(function_name).lower()
     if _stage_b_is_runtime_crt_bridge_function(function_name):
         return True
+    if _stage_b_is_stack_probe_function(function_name):
+        return True
     exact = {
         "findpesection",
         "findpesectionbyname",
@@ -2272,6 +2274,11 @@ def _stage_b_is_runtime_crt_support_function(function_name: str) -> bool:
         "_gdtoa",
     )
     return key.endswith(suffixes)
+
+
+def _stage_b_is_stack_probe_function(function_name: str) -> bool:
+    key = _linker_function_match_key(function_name).lower()
+    return key in {"chkstk", "chkstk_ms", "alloca_probe", "alloca_probe_8", "alloca_probe_16"} or key.startswith("chkstk_")
 
 
 def _stage_b_function_pointer_repair_class(callsite: dict[str, Any]) -> str:
@@ -2513,7 +2520,13 @@ def _stage_b_crash_repair_items(
         repair_class = "stack_delta_mismatch"
         next_action = "inspect the candidate-only crash report and repair the mapped generated source span"
         text = json.dumps(crash, sort_keys=True, default=str).lower()
-        if "realloc" in text or "stack" in text or "esp" in text:
+        if _stage_b_is_stack_probe_function(function):
+            repair_class = "stack_probe_or_frame_layout"
+            next_action = (
+                "repair generated stack-frame size, stack-probe helper linkage, or PE stack/layout before "
+                "treating this as a source-level ABI fix"
+            )
+        elif "realloc" in text or "stack" in text or "esp" in text:
             repair_class = "hidden_sret_or_out_param"
     elif location.get("classification") == "outside_candidate_image":
         repair_class = "candidate_crash_external_module"
@@ -2609,6 +2622,7 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "hidden_sret_or_out_param": 1,
         "computed_out_param_or_hidden_sret": 1,
         "runtime_crt_entrypoint_layout": 1,
+        "stack_probe_or_frame_layout": 1,
         "abi_function_coverage": 2,
         "runtime_crt_function_coverage": 2,
         "import_thunk_linkage": 2,
