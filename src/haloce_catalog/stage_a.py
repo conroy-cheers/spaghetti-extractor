@@ -4756,7 +4756,11 @@ def _contract_candidate_abi_callsite_mismatch(
         issues.append(varargs_issue)
     reference_inventory = _abi_argument_inventory_signature(reference_callsite.get("argument_inventory"))
     candidate_inventory = _abi_argument_inventory_signature(candidate_callsite.get("argument_inventory"))
-    if reference_inventory and candidate_inventory and reference_inventory != candidate_inventory:
+    if (
+        reference_inventory
+        and candidate_inventory
+        and not _contract_candidate_abi_argument_inventory_match(reference_inventory, candidate_inventory)
+    ):
         issues.append(
             {
                 "category": "callsite_argument_inventory_mismatch",
@@ -4927,6 +4931,41 @@ def _abi_argument_inventory_signature(inventory: Any) -> dict[str, Any]:
             if isinstance(item, dict)
         ],
     }
+
+
+_ABI_ADDRESS_LIKE_ARGUMENT_ROLES = {
+    "computed_out_param_or_hidden_sret",
+    "stack_out_param_or_scratch_buffer",
+}
+
+
+def _contract_candidate_abi_argument_inventory_match(reference: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    if reference == candidate:
+        return True
+    if reference.get("calling_convention") != candidate.get("calling_convention"):
+        return False
+    if reference.get("argument_count") != candidate.get("argument_count"):
+        return False
+    if not _contract_candidate_abi_stack_roles_match(reference.get("stack_roles"), candidate.get("stack_roles")):
+        return False
+    return reference.get("register_roles") == candidate.get("register_roles")
+
+
+def _contract_candidate_abi_stack_roles_match(reference: Any, candidate: Any) -> bool:
+    if not isinstance(reference, list) or not isinstance(candidate, list):
+        return reference == candidate
+    if len(reference) != len(candidate):
+        return False
+    return all(
+        _contract_candidate_abi_stack_role_match(reference_role, candidate_role)
+        for reference_role, candidate_role in zip(reference, candidate, strict=True)
+    )
+
+
+def _contract_candidate_abi_stack_role_match(reference: Any, candidate: Any) -> bool:
+    if reference == candidate:
+        return True
+    return reference == "register" and candidate in _ABI_ADDRESS_LIKE_ARGUMENT_ROLES
 
 
 def _abi_list_count(value: Any) -> int:

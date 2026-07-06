@@ -2222,6 +2222,131 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(mismatch["issues"][0]["expected"]["resolved_functions"][0]["name"], "_target")
         self.assertEqual(mismatch["issues"][0]["observed"]["resolved_functions"][0]["name"], "other")
 
+    def test_contract_candidate_abi_coverage_gaps_accept_candidate_specific_stack_out_param_role(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "_FindPESectionByName",
+                        "callsites": [
+                            {
+                                "id": "callsite:reference",
+                                "block_id": "_FindPESectionByName-0008",
+                                "target": {"kind": "direct", "target_rva": 0x3000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 3,
+                                    "stack_args": [
+                                        {"index": 0, "role": "register"},
+                                        {"index": 1, "role": "register"},
+                                        {"index": 2, "role": "immediate"},
+                                    ],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "_target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x3000, "rva_end": 0x3010}],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "_FindPESectionByName",
+                        "callsites": [
+                            {
+                                "id": "callsite:candidate",
+                                "block_id": "_FindPESectionByName",
+                                "target": {"kind": "direct", "target_rva": 0x5000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 3,
+                                    "stack_args": [
+                                        {"index": 0, "role": "stack_out_param_or_scratch_buffer"},
+                                        {"index": 1, "role": "register"},
+                                        {"index": 2, "role": "immediate"},
+                                    ],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "_target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x5000, "rva_end": 0x5010}],
+                    },
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
+
+    def test_contract_candidate_abi_coverage_gaps_reject_lost_stack_out_param_role(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "callsites": [
+                            {
+                                "id": "callsite:reference",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x3000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "stack_out_param_or_scratch_buffer"}],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x3000, "rva_end": 0x3010}],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "callsites": [
+                            {
+                                "id": "callsite:candidate",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x5000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "register"}],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x5000, "rva_end": 0x5010}],
+                    },
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 1)
+        self.assertEqual(gaps["callsite_mismatches"][0]["issues"][0]["category"], "callsite_argument_inventory_mismatch")
+
     def test_contract_candidate_abi_coverage_gaps_use_explicit_skeleton_aliases(self):
         reference_abi = {
             "original": {
