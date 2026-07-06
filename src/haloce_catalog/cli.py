@@ -322,6 +322,12 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
         default="scaffold",
         help="source generation mode; decompiled-c requires complete decompiler C for every recovered function",
     )
+    stage_b_generate.add_argument(
+        "--runtime-entry-policy",
+        choices=["bridge", "mingw-crt"],
+        default="bridge",
+        help="decompiled-C CRT entry strategy; bridge keeps the existing generated entry, mingw-crt lets MinGW provide startup",
+    )
     stage_b_generate.add_argument("--out-dir", type=Path, required=True, help="skeleton output directory")
     stage_b_generate.set_defaults(func=_cmd_stage_b_generate_skeleton)
 
@@ -1483,6 +1489,7 @@ def _cmd_stage_b_generate_skeleton(args: Any) -> int:
         source_language=args.source_language,
         decompiler_export=args.decompiler_export,
         implementation_mode=args.implementation_mode,
+        runtime_entry_policy=args.runtime_entry_policy,
         function_names=args.function_names,
     )
     _print_json(result)

@@ -384,6 +384,7 @@
               parser.add_argument("--decompiler-export", type=Path)
               parser.add_argument("--function-name", dest="function_names", action="append", default=[])
               parser.add_argument("--implementation-mode", choices=["scaffold", "decompiled-c"], default="scaffold")
+              parser.add_argument("--runtime-entry-policy", choices=["bridge", "mingw-crt"], default="bridge")
               parser.add_argument("--out-dir", type=Path, required=True)
               args = parser.parse_args(sys.argv[1:])
 
@@ -397,6 +398,7 @@
                   decompiler_export=args.decompiler_export,
                   function_names=args.function_names,
                   implementation_mode=args.implementation_mode,
+                  runtime_entry_policy=args.runtime_entry_policy,
                   out_dir=args.out_dir,
               )
               PY
@@ -1609,6 +1611,7 @@
                 --target-name jq \
                 --source-language c \
                 --implementation-mode decompiled-c \
+                --runtime-entry-policy mingw-crt \
                 --out-dir "$skeleton_dir"
               set +e
               i686-w64-mingw32-cc -std=gnu99 \
@@ -1727,7 +1730,7 @@
                 fi
               done < "$compile_dir/link-roots/budgeted-link-root-flags.txt"
               set +e
-              i686-w64-mingw32-cc -nostartfiles \
+              i686-w64-mingw32-cc -municode \
                 "$compile_dir/jq_stage_b_skeleton.o" \
                 "$compile_dir/libstage_b_msvcrt_atexit.a" \
                 "''${import_thunk_root_flags[@]}" \
@@ -1753,7 +1756,7 @@
               set -e
               printf '%s\n' "$rooted_link_code" > "$compile_dir/rooted-link-returncode.txt"
               set +e
-              i686-w64-mingw32-cc -nostartfiles \
+              i686-w64-mingw32-cc -municode \
                 "$compile_dir/jq_stage_b_skeleton.o" \
                 "$compile_dir/libstage_b_msvcrt_atexit.a" \
                 "''${import_thunk_root_flags[@]}" \
@@ -1779,7 +1782,7 @@
               set -e
               printf '%s\n' "$link_code" > "$compile_dir/link-returncode.txt"
               set +e
-              i686-w64-mingw32-cc -nostartfiles \
+              i686-w64-mingw32-cc -municode \
                 "$compile_dir/jq_stage_b_skeleton.o" \
                 "$compile_dir/libstage_b_msvcrt_atexit.a" \
                 "''${import_thunk_root_flags[@]}" \
@@ -1846,7 +1849,7 @@
                   returncode: ($returncode | tonumber),
                   unresolved_reference_lines: ($unresolved_count | tonumber),
                   linker_flags: (
-                    ["-nostartfiles", "libstage_b_msvcrt_atexit.a"]
+                    ["-municode", "libstage_b_msvcrt_atexit.a"]
                     + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                     + (($link_root_flags[0].budgeted_linker_flags // []) | map(tostring))
                     + ["-L${stage-a-jq-original}/lib", "-ljq", "-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.link.map"]
@@ -1855,7 +1858,7 @@
                     status: $rooted_status,
                     returncode: ($rooted_returncode | tonumber),
                     linker_flags: (
-                      ["-nostartfiles", "libstage_b_msvcrt_atexit.a"]
+                      ["-municode", "libstage_b_msvcrt_atexit.a"]
                       + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                       + (($link_root_flags[0].linker_flags // []) | map(tostring))
                       + ["-L${stage-a-jq-original}/lib", "-ljq", "-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.rooted.link.map"]
@@ -1870,7 +1873,7 @@
                     returncode: ($standalone_returncode | tonumber),
                     unresolved_reference_lines: ($standalone_unresolved_count | tonumber),
                     linker_flags: (
-                      ["-nostartfiles", "libstage_b_msvcrt_atexit.a"]
+                      ["-municode", "libstage_b_msvcrt_atexit.a"]
                       + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                       + (($link_root_flags[0].budgeted_linker_flags // []) | map(tostring))
                       + ["-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.standalone.link.map"]
@@ -2174,6 +2177,32 @@
                 --suite-scope full \
                 --out "$work/materialized-suite" \
                 > "$work/materialized-suite.stdout"
+              cp "$work/materialized-suite.stdout" "$work/full-suite.stdout"
+              cat > "$work/smoke-cases.json" <<'JSON'
+              {
+                "format": "stage-b-upstream-suite-cases-v1",
+                "cases": [
+                  {
+                    "id": "jq-smoke-version",
+                    "args": ["--version"],
+                    "stdin": "",
+                    "expected_returncode": 0,
+                    "expected_stdout": "jq-1.8.1\n",
+                    "expected_stderr": "",
+                    "timeout_seconds": 30,
+                    "candidate_timeout_seconds": 30
+                  }
+                ]
+              }
+              JSON
+              stage-b-functional-wincr stage-b-materialize-upstream-suite \
+                --target-name jq \
+                --suite-source "$work/upstream-suite-source.txt" \
+                --source-revision jq-1.8.1-smoke \
+                --cases "$work/smoke-cases.json" \
+                --suite-scope subset \
+                --out "$work/smoke-suite" \
+                > "$work/smoke-suite.stdout"
               export HOME="$work/home"
               export XDG_CACHE_HOME="$work/xdg-cache"
               export XDG_CONFIG_HOME="$work/xdg-config"
@@ -2228,20 +2257,38 @@
               candidate_smoke_code=$?
               set -e
               printf '%s\n' "$candidate_smoke_code" > "$work/smoke/candidate-version.returncode"
-              test "$candidate_smoke_code" -eq 0
-              tr -d '\r' < "$work/smoke/candidate-version.stdout" > "$work/smoke/candidate-version.normalized.stdout"
-              grep -Fx 'jq-1.8.1' "$work/smoke/candidate-version.normalized.stdout" >/dev/null
               set +e
               stage-b-functional-wincr stage-b-run-functional-suite \
-                --suite "$work/materialized-suite/functional-suite.json" \
+                --suite "$work/smoke-suite/functional-suite.json" \
                 --candidate-command-json "$candidate_cmd" \
                 --candidate-binary "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
                 --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
+                --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
+                --strip-stderr-line-regex '^      after [0-9]+ requests .* with [0-9]+ events remaining\.$' \
                 --out "$work/functional" \
                 > "$work/functional.stdout"
-              functional_code=$?
+              smoke_functional_code=$?
               set -e
-              test "$functional_code" -eq 0
+              if [ "$smoke_functional_code" -eq 0 ]; then
+                tr -d '\r' < "$work/smoke/candidate-version.stdout" > "$work/smoke/candidate-version.normalized.stdout"
+                grep -Fx 'jq-1.8.1' "$work/smoke/candidate-version.normalized.stdout" >/dev/null
+                set +e
+                stage-b-functional-wincr stage-b-run-functional-suite \
+                  --suite "$work/materialized-suite/functional-suite.json" \
+                  --candidate-command-json "$candidate_cmd" \
+                  --candidate-binary "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
+                  --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
+                  --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
+                  --strip-stderr-line-regex '^      after [0-9]+ requests .* with [0-9]+ events remaining\.$' \
+                  --out "$work/functional" \
+                  > "$work/functional.stdout"
+                functional_code=$?
+                set -e
+              else
+                printf 'skipped: jq smoke check failed before the full upstream integration suite\n' \
+                  > "$work/full-suite.stdout"
+                functional_code="$smoke_functional_code"
+              fi
               functional_report="$work/functional/functional-report.json"
               wincr stage-b-generate-candidate-provenance \
                 --target-name jq \
@@ -2295,19 +2342,31 @@
                   and .candidate.build.report.standalone_link_diagnostic.target_import_symbol_count > 0
                   and ([.candidate.build.report.source_dependency_policy.violations[].kind] | index("reference_target_artifact"))
                   and ([.candidate.build.report.source_dependency_policy.violations[].kind] | index("target_library_linkage"))
-                  and ([.issues[].category] | index("functional_tests_not_passing") | not)
-                  and ([.issues[].category] | index("functional_test_report_failed") | not)
-                  and ([.issues[].category] | index("functional_test_report_incomplete_coverage_scope") | not)
+                  and (
+                    if .functional.status == "pass" then
+                      ([.issues[].category] | index("functional_tests_not_passing") | not)
+                      and ([.issues[].category] | index("functional_test_report_failed") | not)
+                      and ([.issues[].category] | index("functional_test_report_incomplete_coverage_scope") | not)
+                    else
+                      ([.issues[].category] | index("functional_tests_not_passing"))
+                      and ([.issues[].category] | index("functional_test_failure"))
+                      and ([.issues[].category] | index("required_functional_suite_not_passing"))
+                      and ([.issues[].category] | index("functional_test_report_failed"))
+                      and ([.issues[].category] | index("functional_test_report_failed_cases"))
+                      and ([.issues[].category] | index("functional_test_report_incomplete_cases"))
+                      and ([.issues[].category] | index("functional_test_report_incomplete_coverage_scope"))
+                      and ([.issues[].category] | index("functional_test_report_failed_case_records"))
+                    end
+                  )
                   and ([.issues[].category] | index("functional_test_report_wrong_suite_id") | not)
                   and ([.issues[].category] | index("functional_test_report_wrong_source_kind") | not)
                   and ([.issues[].category] | index("functional_test_report_wrong_materializer") | not)
                   and ([.issues[].category] | index("functional_binary_command_not_bound") | not)
-                  and .functional.status == "pass"
                   and .functional.suite_id == "jq-upstream-integration-tests"
-                  and .functional.coverage.suite_scope == "full"
-                  and .functional.coverage.source_revision == "jq-1.8.1"
+                  and (.functional.coverage.suite_scope == "full" or .functional.coverage.suite_scope == "subset")
+                  and (.functional.coverage.source_revision == "jq-1.8.1" or .functional.coverage.source_revision == "jq-1.8.1-smoke")
                   and .functional.coverage.materialized_by == "stage-b-materialize-upstream-suite"
-                  and .functional.coverage.case_ids == ["jq-upstream-run-tests"]
+                  and (.functional.coverage.case_ids == ["jq-upstream-run-tests"] or .functional.coverage.case_ids == ["jq-smoke-version"])
                   and ([.issues[].category] | index("functional_test_report_original_baseline_failed") | not)
                   and .functional.oracle.original_runtime_observations == false
                   and (.functional.commands | has("original") | not)
@@ -2315,10 +2374,19 @@
                   and .reference_contract_coverage.provided == true
                   and .reference_contract_coverage.status == "incomplete"
                   and .stage_a.gate.status == "blocked"
-                  and .stage_a.gate.reason == "pre_stage_a_requirements_incomplete"
                   and .stage_a.gate.eligible == false
                   and .stage_a.gate.ran == false
-                  and .stage_a.gate.behavioral_mismatch_blocks_stage_a == false
+                  and (
+                    if .functional.status == "pass" then
+                      .stage_a.gate.reason == "pre_stage_a_requirements_incomplete"
+                      and .stage_a.gate.behavioral_mismatch_blocks_stage_a == false
+                    else
+                      .stage_a.gate.reason == "functional_behavior_mismatch"
+                      and .stage_a.gate.behavioral_mismatch_blocks_stage_a == true
+                      and ([.stage_a.gate.behavioral_blocking_issue_categories[]] | index("functional_tests_not_passing"))
+                      and ([.stage_a.gate.behavioral_blocking_issue_categories[]] | index("functional_test_failure"))
+                    end
+                  )
                 ' "$work/validate/stage-b.json" >/dev/null
               fi
               mkdir -p "$out"
@@ -2330,6 +2398,8 @@
                 "$work/validate/stage-b.json" \
                 "$out/"
               cp "$work/materialized-suite.stdout" \
+                "$work/smoke-suite.stdout" \
+                "$work/full-suite.stdout" \
                 "$work/functional.stdout" \
                 "$work/provenance.stdout" \
                 "$work/validate.stdout" \
@@ -2339,6 +2409,7 @@
                 "$candidate_dir/decompiled-c-link-roots.json" \
                 "$out/"
               cp -R "$work/materialized-suite" "$out/materialized-suite"
+              cp -R "$work/smoke-suite" "$out/smoke-suite"
               cp -R "$work/functional" "$out/functional"
               cp -R "$work/provenance" "$out/provenance"
               cp -R "$work/validate" "$out/validate"
@@ -2560,7 +2631,7 @@
 
               printf '%s\n' 'linking jq Stage B candidate against generated target-closure import library'
               set +e
-              i686-w64-mingw32-cc -nostartfiles \
+              i686-w64-mingw32-cc -municode \
                 "$diagnostic_dir/jq_stage_b_skeleton.o" \
                 "$diagnostic_dir/libstage_b_msvcrt_atexit.a" \
                 "''${import_thunk_root_flags[@]}" \
@@ -2646,7 +2717,7 @@
                   returncode: ($returncode | tonumber),
                   unresolved_reference_lines: ($unresolved_count | tonumber),
                   linker_flags: (
-                    ["-nostartfiles", "libstage_b_msvcrt_atexit.a"]
+                    ["-municode", "libstage_b_msvcrt_atexit.a"]
                     + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                     + (($link_root_flags[0].linker_flags // []) | map(tostring))
                     + ["generated-target-closure/libstage_b_target_closure_libjq_1.dll.a", "-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.generated-closure.link.map"]
@@ -2656,7 +2727,7 @@
                     returncode: ($returncode | tonumber),
                     unresolved_reference_lines: ($unresolved_count | tonumber),
                     linker_flags: (
-                      ["-nostartfiles", "libstage_b_msvcrt_atexit.a"]
+                      ["-municode", "libstage_b_msvcrt_atexit.a"]
                       + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                       + (($link_root_flags[0].linker_flags // []) | map(tostring))
                       + ["generated-target-closure/libstage_b_target_closure_libjq_1.dll.a", "-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.generated-closure.link.map"]

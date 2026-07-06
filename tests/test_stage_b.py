@@ -2172,6 +2172,71 @@ class StageBTests(unittest.TestCase):
         self.assertIn("rc = _wmain(argc,wargv,wenv);", source)
         self.assertNotIn("rc = (int)umain(argc,(undefined4 *)argv);", source)
 
+    def test_decompiled_c_renderer_can_omit_mingw_crt_entries_for_crt_link_policy(self):
+        functions = [
+            {
+                "name": "WinMainCRTStartup",
+                "rva_start": 0x1410,
+                "rva_end": 0x1420,
+                "size": 0x10,
+                "decompiler": {"status": "success", "code": "int WinMainCRTStartup(void) { return 1; }"},
+            },
+            {
+                "name": "mainCRTStartup",
+                "rva_start": 0x1420,
+                "rva_end": 0x1430,
+                "size": 0x10,
+                "decompiler": {"status": "success", "code": "int mainCRTStartup(void) { return ___tmainCRTStartup(); }"},
+            },
+            {
+                "name": "atexit",
+                "rva_start": 0x1430,
+                "rva_end": 0x1440,
+                "size": 0x10,
+                "decompiler": {"status": "success", "code": "int atexit(void) { return 0; }"},
+            },
+            {
+                "name": "_wmain",
+                "aliases": ["wmain"],
+                "rva_start": 0x490C,
+                "rva_end": 0x4A07,
+                "size": 0xFB,
+                "decompiler": {
+                    "status": "success",
+                    "code": "int __cdecl _wmain(int argc,wchar_t **argv,wchar_t **envp) {\n  return argc;\n}",
+                },
+            },
+        ]
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            runtime_entry_policy="mingw-crt",
+        )
+
+        self.assertIn("MinGW CRT entry body omitted; supplied by the MinGW CRT link policy", source)
+        self.assertNotIn("generated runtime bridge", source)
+        self.assertNotIn("void __cdecl mainCRTStartup(void)", source)
+        self.assertNotIn("__wgetmainargs", source)
+        self.assertNotIn("int atexit(void)", source)
+        self.assertIn("int __cdecl wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
+        self.assertNotIn("int __cdecl _wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
+
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=functions,
+            source_language="c",
+            implementation_mode="decompiled-c",
+        )
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function["WinMainCRTStartup"]["source_kind"], "omitted_runtime_entry")
+        self.assertEqual(by_function["mainCRTStartup"]["source_kind"], "omitted_runtime_entry")
+        self.assertEqual(by_function["atexit"]["source_kind"], "omitted_runtime_entry")
+        self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
+        self.assertIn("wmain", by_function["_wmain"]["aliases"])
+        wmain_line = source.splitlines()[by_function["_wmain"]["line_start"] - 1]
+        self.assertIn("wmain", wmain_line)
+
     def test_decompiled_c_source_map_marks_generated_and_omitted_runtime_entries(self):
         functions = [
             {

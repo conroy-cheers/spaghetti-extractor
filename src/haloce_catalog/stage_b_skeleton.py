@@ -31,7 +31,21 @@ __all__ = [
 
 STAGE_B_PROOF_RULE = "reproducible_stage_b_skeleton_reimplementation_v1"
 
-_DECOMPILED_C_RUNTIME_ENTRY_NAMES = frozenset({"___tmainCRTStartup", "mainCRTStartup", "___wgetmainargs"})
+_DECOMPILED_C_RUNTIME_ENTRY_NAMES = frozenset({"WinMainCRTStartup", "___tmainCRTStartup", "mainCRTStartup", "___wgetmainargs"})
+_DECOMPILED_C_RUNTIME_ENTRY_POLICIES = frozenset({"bridge", "mingw-crt"})
+_DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
+    {
+        "___w64_mingwthr_add_key_dtor",
+        "___w64_mingwthr_remove_key_dtor",
+        "__do_global_dtors",
+        "__mingw_enum_import_library_names",
+        "__mingw_raise_matherr",
+        "__tlregdtor",
+        "_FindPESectionByName",
+        "_FindPESectionExec",
+        "atexit",
+    }
+)
 
 _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
 
@@ -363,6 +377,7 @@ def stage_b_generate_skeleton(
     source_language: str = "c",
     decompiler_export: Path | None = None,
     implementation_mode: str = "scaffold",
+    runtime_entry_policy: str = "bridge",
     function_names: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     if source_language not in {"c", "rust"}:
@@ -373,6 +388,10 @@ def stage_b_generate_skeleton(
         raise StageAInputError("decompiled-c Stage B implementation mode requires source_language='c'")
     if implementation_mode == "decompiled-c" and decompiler_export is None:
         raise StageAInputError("decompiled-c Stage B implementation mode requires --decompiler-export")
+    if runtime_entry_policy not in _DECOMPILED_C_RUNTIME_ENTRY_POLICIES:
+        raise StageAInputError(f"unsupported Stage B runtime entry policy {runtime_entry_policy!r}")
+    if implementation_mode != "decompiled-c" and runtime_entry_policy != "bridge":
+        raise StageAInputError("Stage B runtime entry policy is only supported with implementation_mode='decompiled-c'")
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -434,6 +453,7 @@ def stage_b_generate_skeleton(
         functions=functions,
         source_language=source_language,
         implementation_mode=implementation_mode,
+        runtime_entry_policy=runtime_entry_policy,
         external_function_names=external_function_names,
         behavior_recovery=behavior_recovery,
     )
@@ -468,10 +488,12 @@ def stage_b_generate_skeleton(
         "proof_rule": STAGE_B_PROOF_RULE,
         "source_language": source_language,
         "implementation_mode": implementation_mode,
+        "runtime_entry_policy": runtime_entry_policy,
         "source_policy": {
             "upstream_source_read": False,
             "manual_behavioral_fixups": False,
             "allowed_inputs": allowed_inputs,
+            "runtime_entry_policy": runtime_entry_policy,
         },
         "reverse_engineering": {
             "tools": ["pefile", "capstone"],
@@ -1418,6 +1440,7 @@ def _render_skeleton_source(
     functions: list[dict[str, Any]],
     source_language: str,
     implementation_mode: str,
+    runtime_entry_policy: str = "bridge",
     external_function_names: list[str] | tuple[str, ...] | None = None,
     behavior_recovery: dict[str, Any] | None = None,
 ) -> str:
@@ -1425,6 +1448,7 @@ def _render_skeleton_source(
         return _render_decompiled_c_source(
             target_name=target_name,
             functions=functions,
+            runtime_entry_policy=runtime_entry_policy,
             external_function_names=external_function_names,
         )
 
@@ -1531,11 +1555,20 @@ def _skeleton_source_map(
         name = str(function.get("name") or "")
         if not name:
             continue
-        line = _source_anchor_line(lines, name, source_language=source_language, implementation_mode=implementation_mode)
+        aliases = [alias for alias in function.get("aliases", []) if isinstance(alias, str) and alias]
+        decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
+        has_decompiler_body = bool(str(decompiler.get("code") or "").strip())
+        line = _source_anchor_line(
+            lines,
+            name,
+            source_language=source_language,
+            implementation_mode=implementation_mode,
+            aliases=aliases,
+            prefer_definition=has_decompiler_body,
+        )
         if line is None:
             continue
         source_kind = _source_anchor_kind(lines, line=line, function=function)
-        aliases = [alias for alias in function.get("aliases", []) if isinstance(alias, str) and alias]
         generated_identifier = _c_identifier_from_name(name) if source_language == "c" else name
         if generated_identifier and generated_identifier != name:
             aliases.append(generated_identifier)
@@ -1571,14 +1604,23 @@ def _source_anchor_line(
     *,
     source_language: str,
     implementation_mode: str,
+    aliases: list[str] | tuple[str, ...] | None = None,
+    prefer_definition: bool = True,
 ) -> int | None:
     candidates = [name]
+    candidates.extend(alias for alias in (aliases or []) if alias)
     c_identifier = _c_identifier_from_name(name)
     if c_identifier != name:
         candidates.append(c_identifier)
     if implementation_mode == "scaffold":
         ident = _identifier(name, 0)
         candidates.append(f"stage_b_fn_{ident}")
+    candidates = list(dict.fromkeys(candidates))
+    if prefer_definition:
+        for candidate in candidates:
+            line = _source_definition_after(lines, start=1, name=candidate)
+            if line is not None:
+                return line
     for candidate in candidates:
         line = _source_body_anchor_line(lines, candidate)
         if line is not None:
@@ -1591,11 +1633,17 @@ def _source_anchor_line(
 
 def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]) -> str:
     name = str(function.get("name") or "")
-    if name == "mainCRTStartup" and _source_line_contains_definition(lines, line=line, name=name):
+    aliases = [alias for alias in function.get("aliases", []) if isinstance(alias, str) and alias]
+    definition_names = list(dict.fromkeys([name, *aliases, _c_identifier_from_name(name)]))
+    if name == "mainCRTStartup" and any(_source_line_contains_definition(lines, line=line, name=item) for item in definition_names):
         return "generated_runtime_bridge"
-    definition = _source_definition_after(lines, start=line, name=name)
+    definition = None
+    for item in definition_names:
+        definition = _source_definition_after(lines, start=line, name=item)
+        if definition is not None:
+            break
     window = "\n".join(lines[max(0, line - 2) : min(len(lines), line + 2)])
-    if "MinGW CRT entry body replaced by a generated runtime bridge" in window:
+    if "MinGW CRT entry body" in window:
         return "omitted_runtime_entry"
     if "import thunk for" in window:
         return "omitted_import_thunk"
@@ -1633,7 +1681,7 @@ def _source_definition_after(lines: list[str], *, start: int, name: str) -> int 
         if name not in line:
             continue
         stripped = line.strip()
-        if not stripped or stripped.startswith(("extern ", "typedef ", "#")) or stripped.endswith(";"):
+        if not stripped or stripped.startswith(("/*", "//", "extern ", "typedef ", "#")) or stripped.endswith(";"):
             continue
         if "{" in stripped or _source_next_nonempty_line(lines, index + 1) == "{":
             return index
@@ -1662,8 +1710,11 @@ def _render_decompiled_c_source(
     *,
     target_name: str,
     functions: list[dict[str, Any]],
+    runtime_entry_policy: str = "bridge",
     external_function_names: list[str] | tuple[str, ...] | None = None,
 ) -> str:
+    if runtime_entry_policy not in _DECOMPILED_C_RUNTIME_ENTRY_POLICIES:
+        raise StageAInputError(f"unsupported Stage B runtime entry policy {runtime_entry_policy!r}")
     lines = [
         "/* Generated by wincr stage-b-generate-skeleton.",
         " * Implementation mode: decompiled-c.",
@@ -1970,7 +2021,8 @@ def _render_decompiled_c_source(
     implemented_functions = [
         function
         for function in functions
-        if not _decompiled_c_is_import_thunk(function) and not _decompiled_c_is_runtime_entry(function)
+        if not _decompiled_c_is_import_thunk(function)
+        and not _decompiled_c_is_runtime_entry(function, runtime_entry_policy=runtime_entry_policy)
     ]
     import_thunk_symbols = [
         str(function.get("linkage", {}).get("symbol") or function.get("name") or "")
@@ -1979,9 +2031,15 @@ def _render_decompiled_c_source(
     ]
     import_thunk_alias_symbols = _decompiled_c_import_thunk_alias_symbol_names(functions)
     direct_import_alias_symbols = _decompiled_c_direct_import_alias_symbol_names(functions)
-    runtime_bridge = _decompiled_c_runtime_entry_bridge(functions)
+    runtime_bridge = _decompiled_c_runtime_entry_bridge(functions) if runtime_entry_policy == "bridge" else []
     runtime_bridge_externs = _decompiled_c_runtime_entry_bridge_externs(functions) if runtime_bridge else []
-    prototypes = [_decompiled_c_prototype(function) for function in implemented_functions]
+    prototypes = [
+        _decompiled_c_prototype(
+            function,
+            emitted_name=_decompiled_c_emitted_function_name(function, runtime_entry_policy=runtime_entry_policy),
+        )
+        for function in implemented_functions
+    ]
     prototypes = [prototype for prototype in prototypes if prototype]
     externs = _decompiled_c_external_prototypes(
         [*(external_function_names or ()), *import_thunk_symbols, *direct_import_alias_symbols, *runtime_bridge_externs],
@@ -2028,11 +2086,16 @@ def _render_decompiled_c_source(
                 ]
             )
             continue
-        if _decompiled_c_is_runtime_entry(function):
+        if _decompiled_c_is_runtime_entry(function, runtime_entry_policy=runtime_entry_policy):
+            runtime_entry_comment = (
+                "/* MinGW CRT entry body replaced by a generated runtime bridge. */"
+                if runtime_entry_policy == "bridge"
+                else "/* MinGW CRT entry body omitted; supplied by the MinGW CRT link policy. */"
+            )
             lines.extend(
                 [
                     f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
-                    "/* MinGW CRT entry body replaced by a generated runtime bridge. */",
+                    runtime_entry_comment,
                     "",
                 ]
             )
@@ -2043,6 +2106,12 @@ def _render_decompiled_c_source(
             continue
         decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
         code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=str(function.get("name") or "")).strip()
+        emitted_name = _decompiled_c_emitted_function_name(function, runtime_entry_policy=runtime_entry_policy)
+        code = _rename_decompiled_c_function_definition(
+            code,
+            original_name=str(function.get("name") or ""),
+            new_name=emitted_name,
+        )
         if not code:
             lines.extend(
                 [
@@ -2136,8 +2205,11 @@ def _decompiled_c_preserved_import_thunk_alias_lines(functions: list[dict[str, A
         )
     return lines
 
-def _decompiled_c_is_runtime_entry(function: dict[str, Any]) -> bool:
-    return str(function.get("name") or "") in _DECOMPILED_C_RUNTIME_ENTRY_NAMES
+def _decompiled_c_is_runtime_entry(function: dict[str, Any], *, runtime_entry_policy: str = "bridge") -> bool:
+    name = str(function.get("name") or "")
+    if name in _DECOMPILED_C_RUNTIME_ENTRY_NAMES:
+        return True
+    return runtime_entry_policy == "mingw-crt" and name in _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES
 
 def _decompiled_c_runtime_entry_bridge(functions: list[dict[str, Any]]) -> list[str]:
     names = {str(function.get("name") or "") for function in functions}
@@ -2564,9 +2636,20 @@ _DECOMPILED_C_RESERVED_IDENTIFIERS = {
 def _decompiled_c_external_symbol_is_declared_by_headers(symbol: str) -> bool:
     return symbol in _DECOMPILED_C_RESERVED_IDENTIFIERS or symbol in {"_errno", "va_arg", "va_copy", "va_end", "va_start"}
 
-def _decompiled_c_prototype(function: dict[str, Any]) -> str:
+def _decompiled_c_emitted_function_name(function: dict[str, Any], *, runtime_entry_policy: str = "bridge") -> str:
+    name = str(function.get("name") or "")
+    aliases = {alias for alias in function.get("aliases", []) if isinstance(alias, str) and alias}
+    if runtime_entry_policy == "mingw-crt" and name == "_wmain" and "wmain" in aliases:
+        return "wmain"
+    return name
+
+
+def _decompiled_c_prototype(function: dict[str, Any], *, emitted_name: str | None = None) -> str:
     decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
-    code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=str(function.get("name") or ""))
+    function_name = str(function.get("name") or "")
+    code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=function_name)
+    if emitted_name:
+        code = _rename_decompiled_c_function_definition(code, original_name=function_name, new_name=emitted_name)
     if not code:
         return ""
     before_body = code.split("{", 1)[0]
