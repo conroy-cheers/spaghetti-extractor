@@ -2422,6 +2422,69 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["___chkstk_ms"]["source_kind"], "omitted_runtime_helper")
         self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
 
+    def test_decompiled_c_renderer_recovers_mingw_wmain_wide_argv_bridge(self):
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "umain",
+                    "rva_start": 0x245E,
+                    "rva_end": 0x490C,
+                    "size": 0x24AE,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t umain(int argc,undefined4 *argv) {\n  return (uintptr_t)argc;\n}",
+                    },
+                },
+                {
+                    "name": "_wmain",
+                    "rva_start": 0x490C,
+                    "rva_end": 0x4A07,
+                    "size": 0xFB,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "int __cdecl _wmain(int _Argc,wchar_t **_Argv,wchar_t **_Env)",
+                                "{",
+                                "  int iVar2;",
+                                "  uint uVar3;",
+                                "  UINT *pUVar4;",
+                                "  UINT *pUVar5;",
+                                "  int iVar8;",
+                                "  undefined1 auStack_4c [44];",
+                                "  undefined4 local_20;",
+                                "  uVar3 = ___chkstk_ms();",
+                                "  iVar8 = -uVar3;",
+                                "  pUVar4 = (UINT *)(auStack_4c + iVar8);",
+                                "  local_20 = (int)&local_20 + iVar8 + 3 & 0xfffffff0;",
+                                "  pUVar4[7] = 0;",
+                                "  *pUVar4 = 0xfde9;",
+                                "  pUVar5 = pUVar4 + -1;",
+                                "  WideCharToMultiByte(*pUVar4,pUVar4[1],(LPCWSTR)pUVar4[2],pUVar4[3],",
+                                "                      (LPSTR)pUVar4[4],pUVar4[5],(LPCSTR)pUVar4[6],(LPBOOL)pUVar4[7]);",
+                                "  uVar3 = ___chkstk_ms();",
+                                "  iVar2 = -uVar3;",
+                                "  *(uint *)(local_20 + iVar8 * 4) = (uint)((int)pUVar5 + iVar2 + 0xf) & 0xfffffff0;",
+                                "  umain(_Argc,(undefined4 *)local_20);",
+                                "  return 0;",
+                                "}",
+                            ]
+                        ),
+                    },
+                },
+            ],
+        )
+
+        self.assertIn("int __cdecl _wmain(int _Argc,wchar_t **_Argv,wchar_t **_Env)", source)
+        self.assertIn("char **stage_b_wmain_argv = (char **)malloc(((size_t)_Argc + 1U) * sizeof(char *));", source)
+        self.assertIn("WideCharToMultiByte(65001,0,", source)
+        self.assertIn("stage_b_wmain_rc = (int)umain(_Argc,(undefined4 *)stage_b_wmain_argv);", source)
+        self.assertIn("free(stage_b_wmain_argv[stage_b_wmain_i]);", source)
+        self.assertNotIn("uVar3 = ___chkstk_ms();", source)
+        self.assertNotIn("local_20 = (int)&local_20", source)
+        self.assertNotIn("*(uint *)(local_20 + iVar8 * 4)", source)
+
     def test_decompiled_c_source_map_marks_multiline_definition_and_aliases(self):
         source = "\n".join(
             [
@@ -5163,6 +5226,24 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(result[0]["likely_repair_class"], "candidate_crash_unmapped")
         self.assertIsNone(result[0]["original_function"])
         self.assertIn("module, RVA, or backtrace", result[0]["next_action"])
+
+    def test_explain_delta_ignores_not_detected_candidate_crash_report(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "not_detected",
+                "crash_kind": "",
+                "stderr_preview": "",
+                "repair_hints": ["no candidate crash signature detected"],
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result, [])
 
     def test_explain_delta_maps_candidate_crash_pc_inside_image_to_source(self):
         result = _stage_b_delta_repair_items(

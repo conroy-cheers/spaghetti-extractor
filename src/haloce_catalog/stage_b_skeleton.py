@@ -2803,6 +2803,8 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
         code = _normalize_jq_isoption_dispatch_calls(code)
     if function_name == "jq_init":
         code = _normalize_jq_init_stack_init_call(code)
+    if function_name in {"_wmain", "wmain"}:
+        code = _normalize_mingw_wmain_wide_argv_bridge(code, function_name=function_name)
     if "Treating indirect jump as call" in code:
         code = re.sub(
             r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\(([^;{}]*)\);\s*\n\1return(?:\s+0)?;",
@@ -3007,6 +3009,61 @@ def _normalize_jq_init_stack_init_call(code: str) -> str:
         r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\[0x1b\]\s*=\s*0;\s*\n\1stack_init\(\);",
         r"\1\2[0x1b] = 0;\n\1\2[10] = 0;\n\1\2[11] = 8;\n\1\2[12] = 0;",
         code,
+    )
+
+def _normalize_mingw_wmain_wide_argv_bridge(code: str, *, function_name: str) -> str:
+    if "WideCharToMultiByte" not in code or "umain" not in code or "___chkstk_ms" not in code:
+        return code
+    match = re.search(
+        rf"\b(?:int|uintptr_t)\s+(?:(?:__cdecl|__fastcall)\s+)?{re.escape(function_name)}\s*\("
+        r"\s*int\s+([A-Za-z_][A-Za-z0-9_]*)\s*,"
+        r"\s*wchar_t\s*\*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*,"
+        r"\s*wchar_t\s*\*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+        code,
+    )
+    if match is None:
+        return code
+    argc_name, argv_name, env_name = match.groups()
+    return "\n".join(
+        [
+            f"int __cdecl {function_name}(int {argc_name},wchar_t **{argv_name},wchar_t **{env_name})",
+            "{",
+            f"  char **stage_b_wmain_argv = (char **)malloc(((size_t){argc_name} + 1U) * sizeof(char *));",
+            "  int stage_b_wmain_i = 0;",
+            "  int stage_b_wmain_rc = 8;",
+            f"  (void){env_name};",
+            "  if (stage_b_wmain_argv == (char **)0) {",
+            "    return 8;",
+            "  }",
+            f"  for (stage_b_wmain_i = 0; stage_b_wmain_i < {argc_name}; stage_b_wmain_i = stage_b_wmain_i + 1) {{",
+            "    int stage_b_wmain_len = WideCharToMultiByte(65001,0,",
+            f"        {argv_name}[stage_b_wmain_i],-1,(LPSTR)0,0,(LPCSTR)0,(LPBOOL)0);",
+            "    if (stage_b_wmain_len <= 0) {",
+            "      stage_b_wmain_len = 1;",
+            "    }",
+            "    stage_b_wmain_argv[stage_b_wmain_i] = (char *)malloc((size_t)stage_b_wmain_len + 1U);",
+            "    if (stage_b_wmain_argv[stage_b_wmain_i] == (char *)0) {",
+            "      stage_b_wmain_argv[stage_b_wmain_i] = (char *)0;",
+            "      break;",
+            "    }",
+            "    if (WideCharToMultiByte(65001,0,",
+            f"        {argv_name}[stage_b_wmain_i],-1,stage_b_wmain_argv[stage_b_wmain_i],stage_b_wmain_len,",
+            "        (LPCSTR)0,(LPBOOL)0) <= 0) {",
+            "      stage_b_wmain_argv[stage_b_wmain_i][0] = '\\0';",
+            "    }",
+            "  }",
+            f"  if (stage_b_wmain_i == {argc_name}) {{",
+            f"    stage_b_wmain_argv[{argc_name}] = (char *)0;",
+            f"    stage_b_wmain_rc = (int)umain({argc_name},(undefined4 *)stage_b_wmain_argv);",
+            "  }",
+            "  while (stage_b_wmain_i > 0) {",
+            "    stage_b_wmain_i = stage_b_wmain_i - 1;",
+            "    free(stage_b_wmain_argv[stage_b_wmain_i]);",
+            "  }",
+            "  free(stage_b_wmain_argv);",
+            "  return stage_b_wmain_rc;",
+            "}",
+        ]
     )
 
 _DECOMPILED_C_ALLOCATOR_RETURN_FUNCTION_NAMES = {

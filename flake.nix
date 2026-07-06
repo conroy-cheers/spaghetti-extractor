@@ -2187,7 +2187,7 @@
                     "args": ["--version"],
                     "stdin": "",
                     "expected_returncode": 0,
-                    "expected_stdout": "jq-1.8.1\n",
+                    "expected_stdout": "jq-1.8.1\r\n",
                     "expected_stderr": "",
                     "timeout_seconds": 30,
                     "candidate_timeout_seconds": 30
@@ -3043,7 +3043,7 @@
                     "args": ["--version"],
                     "stdin": "",
                     "expected_returncode": 0,
-                    "expected_stdout": "jq-1.8.1\n",
+                    "expected_stdout": "jq-1.8.1\r\n",
                     "expected_stderr": "",
                     "timeout_seconds": 30,
                     "candidate_timeout_seconds": 30
@@ -3186,15 +3186,20 @@
                     instruction_address: (if $crash.instruction_address then "0x\($crash.instruction_address)" else null end),
                     thread: ($crash.thread // ""),
                     stderr_preview: stderr_preview,
-                    repair_hints: [
-                      "candidate-only crash",
-                      (
-                        if ($stack | length) > 0 then "stack overflow during public jq upstream suite"
-                        else "page fault during public jq upstream suite"
-                        end
-                      ),
-                      "inspect ABI, stack, hidden sret/out-param, and recovered function-pointer evidence"
-                    ]
+                    repair_hints: (
+                      if ($crash | length) > 0 then [
+                        "candidate-only crash",
+                        (
+                          if ($stack | length) > 0 then "stack overflow during public jq upstream suite"
+                          else "page fault during public jq upstream suite"
+                          end
+                        ),
+                        "inspect ABI, stack, hidden sret/out-param, and recovered function-pointer evidence"
+                      ] else [
+                        "no candidate crash signature detected in failed functional case",
+                        "inspect functional mismatch fields and Stage A contract deltas"
+                      ] end
+                    )
                   }
                 ' > "$work/candidate-crash.json"
 
@@ -3268,10 +3273,23 @@
                 and .status == "incomplete"
                 and .counts.repair_items > 0
                 and .candidate_crash_report != null
-                and ([.repair_items[].violated_contract_family] | index("candidate_crash"))
                 and (
-                  ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
-                  or ([.repair_items[].likely_repair_class] | index("stack_scratch_buffer_or_out_param"))
+                  if (.candidate_crash_report.status // "not_detected") == "detected" then
+                    ([.repair_items[].violated_contract_family] | index("candidate_crash"))
+                    and (
+                      ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
+                      or ([.repair_items[].likely_repair_class] | index("stack_scratch_buffer_or_out_param"))
+                    )
+                  else
+                    ([.repair_items[].violated_contract_family] | index("candidate_crash") | not)
+                    and (
+                      if (.functional_diagnostics.status // "") == "fail" then
+                        ([.repair_items[].violated_contract_family] | index("functional_expected_output"))
+                      else
+                        true
+                      end
+                    )
+                  end
                 )
               ' "$work/delta/stage-b-delta.json" >/dev/null
 

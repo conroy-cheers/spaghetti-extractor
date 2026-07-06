@@ -1361,7 +1361,7 @@ def stage_b_explain_delta(
         "skeleton_manifest": {"path": str(skeleton_manifest), "sha256": sha256_file(skeleton_manifest)},
         "candidate_crash_report": None
         if candidate_crash_report is None
-        else {"path": str(candidate_crash_report), "sha256": sha256_file(Path(candidate_crash_report))},
+        else _stage_b_candidate_crash_report_artifact(Path(candidate_crash_report), crash),
         "functional_report": None if functional_report is None else {"path": str(functional_report), "sha256": sha256_file(Path(functional_report))},
         "contract_candidate_validation": contract_validation,
         "functional_diagnostics": functional_diagnostics,
@@ -1374,6 +1374,14 @@ def stage_b_explain_delta(
     }
     write_json(out / "stage-b-delta.json", result)
     return result
+
+def _stage_b_candidate_crash_report_artifact(path: Path, crash: dict[str, Any] | None) -> dict[str, Any]:
+    artifact: dict[str, Any] = {"path": str(path), "sha256": sha256_file(path)}
+    if isinstance(crash, dict):
+        artifact["status"] = crash.get("status")
+        artifact["crash_kind"] = crash.get("crash_kind")
+        artifact["case_id"] = crash.get("case_id")
+    return artifact
 
 
 def _load_optional_stage_b_json(path: Path) -> dict[str, Any] | None:
@@ -2512,6 +2520,8 @@ def _stage_b_crash_repair_items(
     candidate_binary: Any | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(crash, dict):
+        return []
+    if str(crash.get("status") or "").lower() not in {"detected", "crash", "failed"}:
         return []
     location = _stage_b_candidate_crash_location(crash, candidate_binary)
     fault_rva = location.get("rva")
