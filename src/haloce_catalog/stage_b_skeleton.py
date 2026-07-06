@@ -3304,36 +3304,6 @@ def _decompiled_c_prototype(function: dict[str, Any], *, emitted_name: str | Non
     return signature.rstrip(";") + ";"
 
 def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
-    if function_name == "___mingw_printf":
-        return "\n".join(
-            [
-                "int __cdecl ___mingw_printf(byte *param_1,...)",
-                "{",
-                "  FILE *stream;",
-                "  int result;",
-                "  va_list args;",
-                "  va_start(args,param_1);",
-                "  stream = (FILE *)___acrt_iob_func(1);",
-                "  result = vfprintf(stream,(const char *)param_1,args);",
-                "  va_end(args);",
-                "  return result;",
-                "}",
-            ]
-        )
-    if function_name == "___mingw_fprintf":
-        return "\n".join(
-            [
-                "int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2,...)",
-                "{",
-                "  int result;",
-                "  va_list args;",
-                "  va_start(args,param_2);",
-                "  result = vfprintf(param_1,(const char *)param_2,args);",
-                "  va_end(args);",
-                "  return result;",
-                "}",
-            ]
-        )
     jq_value_abi_replacement = _decompiled_c_jq_value_abi_replacement(function_name)
     if jq_value_abi_replacement:
         return jq_value_abi_replacement

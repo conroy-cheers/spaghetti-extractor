@@ -3691,25 +3691,65 @@ class StageBTests(unittest.TestCase):
                     "rva_start": 0x8C00,
                     "rva_end": 0x8C20,
                     "size": 0x20,
-                    "decompiler": {"status": "success", "code": "int __cdecl ___mingw_printf(byte *param_1)\n{\n  return 0;\n}"},
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "int __cdecl ___mingw_printf(byte *param_1)",
+                                "{",
+                                "  FILE *pFVar1;",
+                                "  int iVar2;",
+                                "  ",
+                                "  pFVar1 = (FILE *)___acrt_iob_func(1);",
+                                "  __lock_file(pFVar1);",
+                                "  pFVar1 = (FILE *)___acrt_iob_func(1);",
+                                "  iVar2 = ___mingw_pformat(0x6000,pFVar1,0,param_1,(float10 *)&stack0x00000008);",
+                                "  pFVar1 = (FILE *)___acrt_iob_func(1);",
+                                "  __unlock_file(pFVar1);",
+                                "  return iVar2;",
+                                "}",
+                            ]
+                        ),
+                    },
                 },
                 {
                     "name": "___mingw_fprintf",
                     "rva_start": 0x6090,
                     "rva_end": 0x60B0,
                     "size": 0x20,
-                    "decompiler": {"status": "success", "code": "int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2)\n{\n  return 0;\n}"},
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2)",
+                                "{",
+                                "  int iVar1;",
+                                "  ",
+                                "  __lock_file(param_1);",
+                                "  iVar1 = ___mingw_pformat(0x6000,param_1,0,param_2,(float10 *)&stack0x0000000c);",
+                                "  __unlock_file(param_1);",
+                                "  return iVar1;",
+                                "}",
+                            ]
+                        ),
+                    },
                 },
             ],
         )
 
         self.assertIn("int __cdecl ___mingw_printf(byte *param_1,...);", source)
         self.assertIn("int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2,...);", source)
-        self.assertIn("extern int vfprintf(FILE *, const char *, va_list);", source)
         self.assertIn("int __cdecl ___mingw_printf(byte *param_1,...)\n", source)
         self.assertIn("int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2,...)\n", source)
-        self.assertIn("result = vfprintf(stream,(const char *)param_1,args);", source)
-        self.assertIn("result = vfprintf(param_1,(const char *)param_2,args);", source)
+        self.assertIn("pFVar1 = (FILE *)___acrt_iob_func(1);", source)
+        self.assertIn("__lock_file(pFVar1);", source)
+        self.assertIn("iVar2 = ___mingw_pformat(0x6000,pFVar1,0,param_1,(float10 *)&stack0x00000008);", source)
+        self.assertIn("__unlock_file(pFVar1);", source)
+        self.assertIn("__lock_file(param_1);", source)
+        self.assertIn("iVar1 = ___mingw_pformat(0x6000,param_1,0,param_2,(float10 *)&stack0x0000000c);", source)
+        self.assertIn("__unlock_file(param_1);", source)
+        self.assertNotIn("extern int vfprintf(FILE *, const char *, va_list);", source)
+        self.assertNotIn("vfprintf(", source)
         self.assertNotIn("extern uintptr_t va_start();", source)
         self.assertNotIn("__attribute__((weak)) uintptr_t va_start()", source)
         self.assertNotIn("extern uintptr_t va_end();", source)
