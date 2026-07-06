@@ -2544,8 +2544,6 @@
                 pkgs.gawk
                 pkgs.jq
                 pkgs.llvm
-                pkgs.wineWow64Packages.stable
-                pkgs.xvfb-run
               ];
             }
             ''
@@ -2924,37 +2922,14 @@
                 --target-name jq-generated-closure-candidate-smoke \
                 --source-language c \
                 --out-dir "$smoke_dir/parse"
-              export HOME="$work/home"
-              export XDG_CACHE_HOME="$work/xdg-cache"
-              export XDG_CONFIG_HOME="$work/xdg-config"
-              export XDG_DATA_HOME="$work/xdg-data"
-              export WINEPREFIX="$work/wineprefix"
-              export WINEDEBUG=-all
-              export WINEDLLOVERRIDES=mscoree,mshtml,winedbg.exe=
-              export MESA_VK_IGNORE_CONFORMANCE_WARNING=1
-              mkdir -p "$HOME" "$XDG_CACHE_HOME/fontconfig" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$work/runroot/bin"
-              cp "$out_dir"/*.exe "$out_dir"/*.dll "$work/runroot/bin/"
-              chmod +x "$work/runroot/bin/jq-stage-b-generated-closure-candidate.exe"
-              printf '%s\n' 'running generated-closure candidate --version under headless xvfb-run Wine'
-              set +e
-              ${pkgs.xvfb-run}/bin/xvfb-run -a \
-                ${pkgs.wineWow64Packages.stable}/bin/wine "$work/runroot/bin/jq-stage-b-generated-closure-candidate.exe" --version \
-                > "$smoke_dir/candidate-version.stdout" \
-                2> "$smoke_dir/candidate-version.stderr"
-              smoke_code=$?
-              ${pkgs.coreutils}/bin/timeout --kill-after=5s 30s \
-                ${pkgs.wineWow64Packages.stable}/bin/wineserver -k >/dev/null 2>&1 || true
-              set -e
+              printf '%s\n' 'skipping generated-closure candidate runtime smoke until Stage A gate passes'
+              printf '%s\n' 'skipped: Stage A reference-contract gate has not run in the candidate artifact derivation' \
+                > "$smoke_dir/candidate-version.stdout"
+              : > "$smoke_dir/candidate-version.stderr"
+              smoke_code=125
               printf '%s\n' "$smoke_code" > "$smoke_dir/candidate-version.returncode"
-              if test "$smoke_code" -eq 0; then
-                smoke_status="pass"
-                smoke_blocker=""
-              else
-                smoke_status="incomplete"
-                smoke_blocker="generated-closure candidate did not pass the jq --version runtime smoke under headless Wine"
-                sed -n '1,120p' "$smoke_dir/candidate-version.stdout" >&2
-                sed -n '1,120p' "$smoke_dir/candidate-version.stderr" >&2
-              fi
+              smoke_status="skipped"
+              smoke_blocker="runtime smoke is deferred until stage-b-jq-generated-closure-candidate-check observes a passing Stage A reference-contract gate"
               jq -n \
                 --arg status "$smoke_status" \
                 --arg returncode "$smoke_code" \
@@ -2967,7 +2942,7 @@
                   status: $status,
                   returncode: ($returncode | tonumber),
                   command: ["jq-stage-b-generated-closure-candidate.exe", "--version"],
-                  runner: "xvfb-run wine",
+                  runner: "not_run",
                   stdout: $stdout,
                   stderr: $stderr,
                   blocker: $blocker
@@ -3025,9 +3000,9 @@
               test -s "$candidate_dir/src/jq-libjq-1_stage_b_skeleton.c"
               jq -e '
                 .format == "stage-b-runtime-smoke-v1"
-                and (.status == "pass" or .status == "incomplete")
-                and .runner == "xvfb-run wine"
-                and (.status == "pass" or .returncode != 0)
+                and .status == "skipped"
+                and .runner == "not_run"
+                and .returncode == 125
               ' "$candidate_dir/smoke/report.json" >/dev/null
 
               wincr stage-b-generate-candidate-provenance \

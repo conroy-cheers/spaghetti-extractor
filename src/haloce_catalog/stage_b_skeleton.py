@@ -59,7 +59,6 @@ _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
         "__mingw_setusermatherr",
         "___dyn_tls_dtor_12",
         "___dyn_tls_init_12",
-        "___mingw_pformat",
         "__mingw_enum_import_library_names",
         "__mingw_raise_matherr",
         "__pei386_runtime_relocator",
@@ -83,17 +82,10 @@ _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES = frozenset(
         "___dyn_tls_dtor_12",
         "___dyn_tls_init_12",
         "___mingw_TLScallback",
-        "___mingw_pformat",
     }
 )
-_DECOMPILED_C_MINGW_CRT_FORCED_ROOT_FUNCTION_NAMES = frozenset(
-    {
-        "___mingw_pformat",
-    }
-)
-_DECOMPILED_C_MINGW_CRT_FORCED_ROOT_OBJECT_SYMBOLS = {
-    "___mingw_pformat": "___mingw_pformat",
-}
+_DECOMPILED_C_MINGW_CRT_FORCED_ROOT_FUNCTION_NAMES = frozenset()
+_DECOMPILED_C_MINGW_CRT_FORCED_ROOT_OBJECT_SYMBOLS: dict[str, str] = {}
 _DECOMPILED_C_STACK_PROBE_HELPER_MACROS = {
     "___chkstk_ms": "stage_b_stack_probe_size()",
     "___chkstk": "stage_b_stack_probe_size()",

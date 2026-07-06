@@ -854,11 +854,11 @@ class StageBTests(unittest.TestCase):
             )
 
             self.assertEqual(result["status"], "incomplete")
-            self.assertEqual(result["counts"]["runtime_crt_roots"], 1)
-            self.assertEqual(result["runtime_crt_linker_flags"], ["-Wl,--undefined,___mingw_pformat"])
+            self.assertEqual(result["counts"]["runtime_crt_roots"], 0)
+            self.assertEqual(result["runtime_crt_linker_flags"], [])
             self.assertEqual(
                 (root / "roots" / "runtime-crt-root-flags.txt").read_text(encoding="utf-8"),
-                "-Wl,--undefined,___mingw_pformat\n",
+                "",
             )
             self.assertEqual(result["counts"]["budgeted_runtime_crt_roots"], 0)
             self.assertEqual(result["budgeted_runtime_crt_linker_flags"], [])
@@ -868,14 +868,9 @@ class StageBTests(unittest.TestCase):
             )
             self.assertEqual(
                 {root["contract_function"]: root["object_symbol"] for root in result["runtime_crt_roots"]},
-                {
-                    "__mingw_pformat": "___mingw_pformat",
-                },
+                {},
             )
-            self.assertEqual(
-                {root["reason"] for root in result["runtime_crt_roots"]},
-                {"omitted_mingw_crt_support_function_requires_archive_root"},
-            )
+            self.assertEqual({root["reason"] for root in result["runtime_crt_roots"]}, set())
 
     def test_generate_link_roots_rejects_ambiguous_object_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2561,7 +2556,7 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("void *__GetPEImageBase(void)", source)
         self.assertNotIn("Stage B contract placeholder for missing decompiler body at RVA 0x5370", source)
         self.assertNotIn("int __pei386_runtime_relocator(void)", source)
-        self.assertNotIn("int __cdecl ___mingw_pformat", source)
+        self.assertIn("int __cdecl ___mingw_pformat", source)
         self.assertIn("int __cdecl __d2b_D2A", source)
         self.assertIn("char * __cdecl __strcp_D2A", source)
         self.assertIn("int __cdecl wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
@@ -2580,7 +2575,7 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["atexit"]["source_kind"], "omitted_runtime_entry")
         self.assertEqual(by_function["___dyn_tls_init_12"]["source_kind"], "omitted_runtime_helper")
         self.assertEqual(by_function["___mingw_TLScallback"]["source_kind"], "omitted_runtime_helper")
-        self.assertEqual(by_function["___mingw_pformat"]["source_kind"], "omitted_runtime_helper")
+        self.assertEqual(by_function["___mingw_pformat"]["source_kind"], "decompiled_function")
         self.assertEqual(by_function["__d2b_D2A"]["source_kind"], "decompiled_function")
         self.assertEqual(by_function["__strcp_D2A"]["source_kind"], "decompiled_function")
         self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
