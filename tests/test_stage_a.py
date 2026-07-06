@@ -2287,8 +2287,131 @@ class StageAValidateTests(unittest.TestCase):
 
         self.assertEqual(gaps["counts"]["callsite_mismatches"], 1)
         self.assertEqual(mismatch["issues"][0]["category"], "call_target_mismatch")
+        self.assertEqual(mismatch["repair_class"], "call_target_mismatch")
         self.assertEqual(mismatch["issues"][0]["expected"]["resolved_functions"][0]["name"], "_target")
         self.assertEqual(mismatch["issues"][0]["observed"]["resolved_functions"][0]["name"], "other")
+
+    def test_contract_candidate_abi_coverage_gaps_classify_call_target_before_argument_roles(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "_caller",
+                        "blocks": [{"block_id": "caller", "rva_start": 0x1000, "rva_end": 0x1010}],
+                        "callsites": [
+                            {
+                                "id": "callsite:caller:1004",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x2000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 2,
+                                    "stack_args": [
+                                        {"index": 0, "role": "register"},
+                                        {"index": 1, "role": "memory"},
+                                    ],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "_target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x2000, "rva_end": 0x2010}],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "blocks": [{"block_id": "caller", "rva_start": 0x3000, "rva_end": 0x3010}],
+                        "callsites": [
+                            {
+                                "id": "callsite:caller:3004",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x5000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "register"}],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "other",
+                        "blocks": [{"block_id": "other", "rva_start": 0x5000, "rva_end": 0x5010}],
+                    },
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+        mismatch = gaps["callsite_mismatches"][0]
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 1)
+        self.assertEqual(mismatch["repair_class"], "call_target_mismatch")
+        self.assertIn("call target", mismatch["next_action"])
+        self.assertNotIn("save/restore", mismatch["next_action"])
+
+    def test_contract_candidate_abi_coverage_gaps_classify_argument_inventory_before_register_text(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "_caller",
+                        "callsites": [
+                            {
+                                "id": "callsite:caller:1004",
+                                "block_id": "caller",
+                                "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "memcmp"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "memory"}],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "callsites": [
+                            {
+                                "id": "callsite:caller:3004",
+                                "block_id": "caller",
+                                "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "memcmp"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "register"}],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+        mismatch = gaps["callsite_mismatches"][0]
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 1)
+        self.assertEqual(mismatch["issues"][0]["category"], "callsite_argument_inventory_mismatch")
+        self.assertEqual(mismatch["repair_class"], "callsite_argument_inventory_mismatch")
+        self.assertIn("argument order/count/roles", mismatch["next_action"])
+        self.assertNotIn("save/restore", mismatch["next_action"])
 
     def test_contract_candidate_abi_coverage_gaps_accept_candidate_specific_stack_out_param_role(self):
         reference_abi = {

@@ -4986,6 +4986,34 @@ def _missing_counted_roles(reference: Any, candidate: Any) -> dict[str, int]:
 
 
 def _contract_candidate_abi_mismatch_repair_class(issues: list[dict[str, Any]]) -> str:
+    categories = [
+        str(issue.get("category") or "").lower()
+        for issue in issues
+        if isinstance(issue, dict) and issue.get("category")
+    ]
+    category_text = " ".join(categories)
+    if "varargs" in category_text or "stdio" in category_text or "printf" in category_text:
+        return "varargs_or_stdio_bridge"
+    if "sret" in category_text or "out_param" in category_text:
+        return "hidden_sret_or_out_param"
+    if "switch" in category_text or "jump_table" in category_text:
+        return "switch_or_jump_table_dispatch"
+    if "loop" in category_text:
+        return "loop_or_state_machine"
+    if "function_pointer" in category_text:
+        return "function_pointer_target"
+    if "call_target_mismatch" in categories:
+        return "call_target_mismatch"
+    if "callsite_argument_inventory_mismatch" in categories:
+        return "callsite_argument_inventory_mismatch"
+    if "register" in category_text or "clobber" in category_text or "preserved" in category_text:
+        return "preserved_register_mismatch"
+    if "stack" in category_text:
+        return "stack_delta_mismatch"
+    if "memory" in category_text:
+        return "memory_effect_mismatch"
+    if categories:
+        return "abi_callsite_mismatch"
     text = json.dumps(issues, sort_keys=True, default=str).lower()
     if "varargs" in text or "stdio" in text or "printf" in text:
         return "varargs_or_stdio_bridge"
@@ -4997,6 +5025,10 @@ def _contract_candidate_abi_mismatch_repair_class(issues: list[dict[str, Any]]) 
         return "loop_or_state_machine"
     if "function_pointer" in text:
         return "function_pointer_target"
+    if "call target" in text or "target" in text:
+        return "call_target_mismatch"
+    if "argument" in text:
+        return "callsite_argument_inventory_mismatch"
     if "register" in text or "clobber" in text or "preserved" in text:
         return "preserved_register_mismatch"
     if "stack" in text:
@@ -5018,6 +5050,10 @@ def _contract_candidate_abi_mismatch_next_action(name: str, issues: list[dict[st
         return f"repair {name} loop backedges, loop-carried state, and exit predicates"
     if repair_class == "function_pointer_target":
         return f"recover {name} function-pointer target set or represent it as a checked indirect target contract"
+    if repair_class == "call_target_mismatch":
+        return f"repair {name} call target mapping, import thunk linkage, or direct-call callee selection"
+    if repair_class == "callsite_argument_inventory_mismatch":
+        return f"repair {name} call argument order/count/roles and stack/register argument materialization"
     if repair_class == "preserved_register_mismatch":
         return f"repair {name} register save/restore and clobber behavior before rerunning Stage A contract validation"
     if repair_class == "stack_delta_mismatch":
