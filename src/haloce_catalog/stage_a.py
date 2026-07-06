@@ -3783,7 +3783,7 @@ def _contract_candidate_families(
     )
     ambiguous_functions = sorted(str(item["name"]) for item in expected_functions if str(item["name"]) in alias_ambiguities)
     abi_contract = constraints.get("abi_callsites") if isinstance(constraints.get("abi_callsites"), dict) else {}
-    candidate_abi = _candidate_abi_constraint_from_functions(candidate, candidate_functions)
+    candidate_abi = _candidate_abi_constraint_from_functions(candidate, candidate_functions, reference_abi=abi_contract)
     abi_coverage_gaps = _contract_candidate_abi_coverage_gaps(abi_contract, candidate_abi, alias_evidence=alias_evidence)
     original_imports = _contract_import_signature(original)
     candidate_imports = _contract_import_signature(_binary_reference_layout(candidate))
@@ -4355,7 +4355,12 @@ def _contract_import_signature(layout: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(result, key=lambda value: (str(value.get("dll")), str(value.get("symbol")), str(value.get("ordinal"))))
 
 
-def _candidate_abi_constraint_from_functions(candidate: StageABinary, candidate_functions: list[dict[str, Any]]) -> dict[str, Any]:
+def _candidate_abi_constraint_from_functions(
+    candidate: StageABinary,
+    candidate_functions: list[dict[str, Any]],
+    *,
+    reference_abi: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     mappings = [
         BlockMapping(
             id=_artifact_name(str(function.get("name") or f"function-{index:04d}")),
@@ -4369,17 +4374,90 @@ def _candidate_abi_constraint_from_functions(candidate: StageABinary, candidate_
         for index, function in enumerate(candidate_functions)
         if int(function.get("rva_end") or 0) > int(function.get("rva_start") or 0)
     ]
+    reference_section_gap_mappings = _candidate_reference_section_gap_abi_mappings(candidate, reference_abi)
+    mappings.extend(reference_section_gap_mappings)
     functions = _abi_function_evidence(candidate, mappings, side="candidate")
     return {
         "status": "satisfied" if functions else "incomplete",
         "evidence_kind": "capstone-static-abi-callsites",
-        "candidate": {"functions": functions, "import_prototypes": _abi_import_prototypes(candidate)},
+        "candidate": {
+            "functions": functions,
+            "import_prototypes": _abi_import_prototypes(candidate),
+            "reference_section_gap_probes": {
+                "kind": "candidate_same_rva_section_gap_probe",
+                "count": len(reference_section_gap_mappings),
+            },
+        },
         "counts": {
             "functions": len(functions),
             "callsites": sum(len(item.get("callsites", [])) for item in functions),
             "import_prototypes": len(candidate.imports),
+            "reference_section_gap_probes": len(reference_section_gap_mappings),
         },
     }
+
+
+def _candidate_reference_section_gap_abi_mappings(
+    candidate: StageABinary,
+    reference_abi: dict[str, Any] | None,
+) -> list[BlockMapping]:
+    if not isinstance(reference_abi, dict):
+        return []
+    reference = reference_abi.get("original") if isinstance(reference_abi.get("original"), dict) else {}
+    functions = reference.get("functions") if isinstance(reference.get("functions"), list) else []
+    mappings: list[BlockMapping] = []
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or not name.startswith("section-gap-"):
+            continue
+        blocks = function.get("blocks") if isinstance(function.get("blocks"), list) else []
+        for index, block in enumerate(blocks):
+            if not isinstance(block, dict):
+                continue
+            start = _optional_contract_int(block.get("rva_start"))
+            end = _optional_contract_int(block.get("rva_end"))
+            if start is None or end is None or end <= start:
+                continue
+            section = _section_for_rva(candidate, start)
+            if section is None or not section.executable or end > section.rva_end:
+                continue
+            block_id = block.get("block_id") if isinstance(block.get("block_id"), str) and block.get("block_id") else f"{name}-{index:04d}"
+            mappings.append(
+                BlockMapping(
+                    id=_artifact_name(block_id),
+                    kind="code",
+                    original=BlockSide(start, end),
+                    candidate=BlockSide(start, end),
+                    reachable=True,
+                    invariant_checked=False,
+                    source={
+                        "source": {
+                            "function": name,
+                            "kind": "candidate_same_rva_section_gap_probe",
+                            "reference_block_id": block_id,
+                        }
+                    },
+                )
+            )
+    return mappings
+
+
+def _optional_contract_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text, 0)
+        except ValueError:
+            return None
+    return None
 
 
 def _contract_candidate_abi_status(reference_abi: dict[str, Any], candidate_abi: dict[str, Any]) -> str:

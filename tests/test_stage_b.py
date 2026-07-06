@@ -5311,6 +5311,43 @@ class StageBTests(unittest.TestCase):
         self.assertIn("1 named missing functions", coverage_item["next_action"])
         self.assertLess(function_item["rank"], coverage_item["rank"])
 
+    def test_explain_delta_abi_coverage_guidance_prefers_callsites_when_functions_are_present(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "contract_status": "satisfied",
+                    "evidence": {
+                        "reference_counts": {"functions": 10, "callsites": 20},
+                        "candidate_counts": {"functions": 10, "callsites": 12},
+                        "coverage_gaps": {
+                            "counts": {
+                                "missing_functions": 0,
+                                "incomplete_callsite_functions": 4,
+                                "missing_callsites": 8,
+                            }
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        coverage_item = next(item for item in result if item["likely_repair_class"] == "abi_callsite_coverage")
+        self.assertIn("ABI callsite coverage gaps", coverage_item["next_action"])
+        self.assertIn("0 functions, 8 callsites", coverage_item["next_action"])
+        self.assertIn("missing callsites or mismatched call targets", coverage_item["next_action"])
+        self.assertNotIn("missing linker-root/function coverage", coverage_item["next_action"])
+
     def test_explain_delta_classifies_stack_out_param_as_scratch_buffer_verification(self):
         validation = {
             "families": [

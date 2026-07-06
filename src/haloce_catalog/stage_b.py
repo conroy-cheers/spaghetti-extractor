@@ -2246,6 +2246,21 @@ def _stage_b_abi_repair_items(
         named_missing_functions = coverage_gap_counts.get("missing_functions")
         partial_callsite_functions = coverage_gap_counts.get("incomplete_callsite_functions")
         named_missing_callsites = coverage_gap_counts.get("missing_callsites")
+        if int(named_missing_functions or 0) == 0 and int(named_missing_callsites or 0) > 0:
+            next_action = (
+                f"recover ABI callsite coverage gaps: {named_missing_callsites} missing callsites"
+                f" across {partial_callsite_functions if partial_callsite_functions is not None else 'unknown'} partially matched functions"
+                f" (raw count deficit: {missing_functions} functions, {missing_callsites} callsites); "
+                "start with functions that have missing callsites or mismatched call targets, then rerun Stage A contract validation"
+            )
+        else:
+            next_action = (
+                f"recover ABI coverage gaps: {named_missing_functions if named_missing_functions is not None else missing_functions} named missing functions"
+                f" and {named_missing_callsites if named_missing_callsites is not None else missing_callsites} missing callsites"
+                f" across {partial_callsite_functions if partial_callsite_functions is not None else 'unknown'} partially matched functions"
+                f" (raw count deficit: {missing_functions} functions, {missing_callsites} callsites); "
+                "start with missing linker-root/function coverage, then rerun Stage A contract validation"
+            )
         items.append(
             _stage_b_repair_item(
                 family="abi_callsites",
@@ -2253,13 +2268,7 @@ def _stage_b_abi_repair_items(
                 block_id=None,
                 source_map=source_map,
                 repair_class="abi_callsite_coverage",
-                next_action=(
-                    f"recover ABI coverage gaps: {named_missing_functions if named_missing_functions is not None else missing_functions} named missing functions"
-                    f" and {named_missing_callsites if named_missing_callsites is not None else missing_callsites} missing callsites"
-                    f" across {partial_callsite_functions if partial_callsite_functions is not None else 'unknown'} partially matched functions"
-                    f" (raw count deficit: {missing_functions} functions, {missing_callsites} callsites); "
-                    "start with missing linker-root/function coverage, then rerun Stage A contract validation"
-                ),
+                next_action=next_action,
                 evidence={
                     "family": _stage_b_contract_family_summary(family),
                     "reference_counts": reference_counts,

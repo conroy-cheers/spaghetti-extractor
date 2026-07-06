@@ -2155,6 +2155,53 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(gaps["counts"]["ambiguous_functions"], 0)
         self.assertEqual(alias_evidence["matches_by_reference"]["__dyn_tls_dtor@12"]["source_function"], "___dyn_tls_dtor_12")
 
+    def test_candidate_abi_probes_reference_section_gap_units_at_same_rva(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            candidate_bin = stage_a._parse_stage_a_pe(candidate)
+            reference_abi = {
+                "original": {
+                    "functions": [
+                        {
+                            "name": "section-gap--text-0000",
+                            "blocks": [
+                                {
+                                    "block_id": "section-gap--text-0000",
+                                    "rva_start": 0x1000,
+                                    "rva_end": 0x1001,
+                                    "size": 1,
+                                }
+                            ],
+                            "callsites": [],
+                        },
+                        {
+                            "name": "ordinary_missing",
+                            "blocks": [
+                                {
+                                    "block_id": "ordinary_missing-0000",
+                                    "rva_start": 0x1000,
+                                    "rva_end": 0x1001,
+                                    "size": 1,
+                                }
+                            ],
+                            "callsites": [],
+                        },
+                    ]
+                },
+                "counts": {"functions": 2, "callsites": 0},
+            }
+
+            candidate_abi = stage_a._candidate_abi_constraint_from_functions(candidate_bin, [], reference_abi=reference_abi)
+            gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        by_name = {item["name"]: item for item in candidate_abi["candidate"]["functions"]}
+        self.assertIn("section-gap--text-0000", by_name)
+        self.assertEqual(by_name["section-gap--text-0000"]["blocks"][0]["block_id"], "section-gap--text-0000")
+        self.assertNotIn("ordinary_missing", by_name)
+        self.assertEqual(gaps["counts"]["missing_functions"], 1)
+        self.assertEqual(gaps["missing_functions"][0]["name"], "ordinary_missing")
+
     def test_contract_candidate_alias_evidence_matches_generated_c_identifier_alias(self):
         alias_evidence = stage_a._contract_candidate_skeleton_alias_evidence(
             {
