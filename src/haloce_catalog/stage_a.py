@@ -53,6 +53,31 @@ NORETURN_IMPORT_SYMBOLS = {
     "exitprocess",
     "terminateprocess",
 }
+ABI_FIXED_STDCALL_IMPORT_STACK_ARG_COUNTS = {
+    "arefileapisansi": 0,
+    "deletecriticalsection": 1,
+    "entercriticalsection": 1,
+    "getconsolemode": 2,
+    "getlasterror": 0,
+    "getmodulehandlea": 1,
+    "getprocaddress": 2,
+    "getstdhandle": 1,
+    "gettimezoneinformation": 1,
+    "initializecriticalsection": 1,
+    "isdbcsleadbyteex": 2,
+    "leavecriticalsection": 1,
+    "multibytetowidechar": 6,
+    "pathisrelativea": 1,
+    "setconsolemode": 2,
+    "setunhandledexceptionfilter": 1,
+    "sleep": 1,
+    "tlsgetvalue": 1,
+    "virtualprotect": 4,
+    "virtualquery": 3,
+    "widechartomultibyte": 8,
+    "writeconsolew": 5,
+    "writefile": 5,
+}
 OBLIGATION_STATUSES = {
     "proved",
     "failed",
@@ -4540,16 +4565,22 @@ def _contract_candidate_abi_coverage_gaps(
                 }
             )
         candidate_callsites = best_candidate.get("callsites") if isinstance(best_candidate.get("callsites"), list) else []
-        for index, reference_callsite in enumerate(reference_callsites):
-            if index >= len(candidate_callsites) or not isinstance(reference_callsite, dict) or not isinstance(candidate_callsites[index], dict):
-                continue
+        callsite_pairs = _contract_candidate_abi_callsite_pairs(
+            reference_callsites,
+            candidate_callsites,
+            reference_function_index=reference_function_index,
+            candidate_function_index=candidate_function_index,
+            alias_matches=alias_matches,
+        )
+        for index, candidate_index, reference_callsite, candidate_callsite in callsite_pairs:
             callsite_mismatch = _contract_candidate_abi_callsite_mismatch(
                 name,
                 key,
                 index,
                 reference_callsite,
-                candidate_callsites[index],
+                candidate_callsite,
                 _contract_candidate_abi_alias_sample(alias_matches.get(name)),
+                candidate_callsite_index=candidate_index,
                 reference_function_index=reference_function_index,
                 candidate_function_index=candidate_function_index,
                 alias_matches=alias_matches,
@@ -4598,6 +4629,82 @@ def _abi_function_range_index(functions: list[dict[str, Any]]) -> list[dict[str,
                 }
             )
     return ranges
+
+
+def _contract_candidate_abi_callsite_pairs(
+    reference_callsites: list[Any],
+    candidate_callsites: list[Any],
+    *,
+    reference_function_index: list[dict[str, Any]],
+    candidate_function_index: list[dict[str, Any]],
+    alias_matches: dict[str, Any],
+) -> list[tuple[int, int, dict[str, Any], dict[str, Any]]]:
+    valid_candidates = [
+        (index, callsite)
+        for index, callsite in enumerate(candidate_callsites)
+        if isinstance(callsite, dict)
+    ]
+    unused_candidate_indexes = {index for index, _ in valid_candidates}
+    pairs: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
+    for reference_index, reference_callsite in enumerate(reference_callsites):
+        if not isinstance(reference_callsite, dict):
+            continue
+        best: tuple[int, int, dict[str, Any]] | None = None
+        for candidate_index, candidate_callsite in valid_candidates:
+            if candidate_index not in unused_candidate_indexes:
+                continue
+            score = _contract_candidate_abi_callsite_pair_score(
+                reference_callsite,
+                candidate_callsite,
+                reference_function_index=reference_function_index,
+                candidate_function_index=candidate_function_index,
+                alias_matches=alias_matches,
+            )
+            if best is None or score > best[0] or (score == best[0] and candidate_index < best[1]):
+                best = (score, candidate_index, candidate_callsite)
+        if best is not None and best[0] > 0:
+            unused_candidate_indexes.remove(best[1])
+            pairs.append((reference_index, best[1], reference_callsite, best[2]))
+            continue
+        if reference_index in unused_candidate_indexes and isinstance(candidate_callsites[reference_index], dict):
+            unused_candidate_indexes.remove(reference_index)
+            pairs.append((reference_index, reference_index, reference_callsite, candidate_callsites[reference_index]))
+    return pairs
+
+
+def _contract_candidate_abi_callsite_pair_score(
+    reference_callsite: dict[str, Any],
+    candidate_callsite: dict[str, Any],
+    *,
+    reference_function_index: list[dict[str, Any]],
+    candidate_function_index: list[dict[str, Any]],
+    alias_matches: dict[str, Any],
+) -> int:
+    score = 0
+    target_match = _contract_candidate_abi_target_match(
+        reference_callsite.get("target"),
+        candidate_callsite.get("target"),
+        reference_function_index=reference_function_index,
+        candidate_function_index=candidate_function_index,
+        alias_matches=alias_matches,
+    )
+    if target_match["reference"] and target_match["candidate"]:
+        if target_match["matched"]:
+            score += 100
+        elif target_match["reference"].get("kind") == target_match["candidate"].get("kind"):
+            score += 10
+    reference_inventory = _abi_argument_inventory_signature(reference_callsite.get("argument_inventory"))
+    candidate_inventory = _abi_argument_inventory_signature(candidate_callsite.get("argument_inventory"))
+    if reference_inventory and candidate_inventory:
+        if _contract_candidate_abi_argument_inventory_match(reference_inventory, candidate_inventory):
+            score += 20
+        elif reference_inventory.get("calling_convention") == candidate_inventory.get("calling_convention"):
+            score += 2
+    reference_varargs = reference_callsite.get("varargs_evidence") if isinstance(reference_callsite.get("varargs_evidence"), dict) else {}
+    candidate_varargs = candidate_callsite.get("varargs_evidence") if isinstance(candidate_callsite.get("varargs_evidence"), dict) else {}
+    if reference_varargs and candidate_varargs and _contract_candidate_abi_varargs_issue(reference_varargs, candidate_varargs) is None:
+        score += 5
+    return score
 
 
 def _contract_candidate_abi_function_mismatch(
@@ -4713,6 +4820,7 @@ def _contract_candidate_abi_callsite_mismatch(
     candidate_callsite: dict[str, Any],
     alias_match: dict[str, Any] | None,
     *,
+    candidate_callsite_index: int | None = None,
     reference_function_index: list[dict[str, Any]] | None = None,
     candidate_function_index: list[dict[str, Any]] | None = None,
     alias_matches: dict[str, Any] | None = None,
@@ -4787,6 +4895,7 @@ def _contract_candidate_abi_callsite_mismatch(
         "match_key": match_key,
         "alias_match": alias_match,
         "callsite_index": callsite_index,
+        "candidate_callsite_index": candidate_callsite_index if candidate_callsite_index is not None else callsite_index,
         "block_id": reference_callsite.get("block_id"),
         "callsite_id": reference_callsite.get("id"),
         "reference_callsite": _abi_callsite_gap_sample(reference_callsite),
@@ -5828,7 +5937,7 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
                     binary,
                     insn,
                     block_id,
-                    _abi_pending_argument_sources(pushes, stack_argument_writes),
+                    _abi_pending_argument_sources(pushes, stack_argument_writes, word_size=4 if binary.bitness == 32 else 8),
                     register_definitions,
                 )
             )
@@ -6282,12 +6391,22 @@ def _abi_address_class(addressing: dict[str, Any]) -> str:
     return "computed_address"
 
 
-def _abi_pending_argument_sources(pushes: list[dict[str, Any]], stack_argument_writes: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
-    stack_sources = [
-        stack_argument_writes[offset]
-        for offset in sorted(stack_argument_writes, reverse=True)
-        if offset >= 0
-    ]
+def _abi_pending_argument_sources(
+    pushes: list[dict[str, Any]],
+    stack_argument_writes: dict[int, dict[str, Any]],
+    *,
+    word_size: int,
+) -> list[dict[str, Any]]:
+    contiguous_offsets: list[int] = []
+    expected_offset = 0
+    for offset in sorted(offset for offset in stack_argument_writes if offset >= 0):
+        if offset < expected_offset:
+            continue
+        if offset != expected_offset:
+            break
+        contiguous_offsets.append(offset)
+        expected_offset += word_size
+    stack_sources = [stack_argument_writes[offset] for offset in reversed(contiguous_offsets)]
     return list(pushes[-8:]) + stack_sources
 
 
@@ -6338,7 +6457,7 @@ def _abi_callsite_evidence(
 ) -> dict[str, Any]:
     target = _abi_call_target(binary, insn, register_definitions)
     symbol = str(target.get("symbol") or "")
-    inventory = _abi_call_argument_inventory(binary, argument_sources, register_definitions)
+    inventory = _abi_call_argument_inventory(binary, argument_sources, register_definitions, target=target)
     varargs = _abi_varargs_evidence(symbol, inventory)
     return {
         "id": f"callsite:{block_id}:{int(insn.address - binary.image_base):x}",
@@ -6522,8 +6641,13 @@ def _abi_call_argument_inventory(
     binary: StageABinary,
     argument_sources: list[dict[str, Any]],
     register_definitions: dict[str, dict[str, Any]] | None,
+    *,
+    target: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ordered_stack_args = list(reversed(argument_sources))
+    fixed_stack_arg_count = _abi_fixed_stack_arg_count_for_target(target, binary)
+    if fixed_stack_arg_count is not None:
+        ordered_stack_args = ordered_stack_args[:fixed_stack_arg_count]
     stack_args = [
         {
             "index": index,
@@ -6545,6 +6669,19 @@ def _abi_call_argument_inventory(
         "argument_count": len(stack_args) + len(register_args),
         "calling_convention": "cdecl_or_stdcall_stack" if binary.bitness == 32 else "x86_64_mixed",
     }
+
+
+def _abi_fixed_stack_arg_count_for_target(target: dict[str, Any] | None, binary: StageABinary) -> int | None:
+    if binary.bitness != 32 or not isinstance(target, dict) or target.get("kind") != "import":
+        return None
+    symbol = target.get("symbol")
+    if not isinstance(symbol, str) or not symbol:
+        return None
+    decorated = re.search(r"@([0-9]+)$", symbol)
+    if decorated is not None:
+        byte_count = _safe_int(decorated.group(1))
+        return byte_count // 4 if byte_count is not None and byte_count >= 0 else None
+    return ABI_FIXED_STDCALL_IMPORT_STACK_ARG_COUNTS.get(symbol.lower().lstrip("_"))
 
 
 def _abi_call_register_argument_order(binary: StageABinary) -> tuple[str, ...]:

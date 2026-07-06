@@ -1991,6 +1991,99 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(callsite["target"]["source"]["memory_role"], "import_address_table")
         self.assertEqual(callsite["function_pointer_targets"], [])
 
+    def test_abi_callsites_bound_known_stdcall_import_arguments(self):
+        class FakePE:
+            def __init__(self, data: bytes):
+                self.data = data
+
+            def get_data(self, rva: int, size: int) -> bytes:
+                if rva < 0x1000:
+                    return b""
+                offset = rva - 0x1000
+                return self.data[offset : offset + size]
+
+        code = bytes.fromhex(
+            "8944241c"  # mov dword ptr [esp + 0x1c], eax
+            "c7042400104000"  # mov dword ptr [esp], 0x401000
+            "ff1564234100"  # call dword ptr [0x412364]
+        )
+        binary = stage_a.StageABinary(
+            path=Path("candidate.exe"),
+            sha256="",
+            size=len(code),
+            machine="i386",
+            bitness=32,
+            image_base=0x400000,
+            entrypoint_rva=0x1000,
+            size_of_image=0x20000,
+            subsystem="console",
+            sections=(),
+            imports=(
+                stage_a.StageAImport(
+                    dll="kernel32.dll",
+                    symbol="LeaveCriticalSection",
+                    ordinal=None,
+                    thunk_rva=0x12364,
+                ),
+            ),
+            pe=FakePE(code),
+        )
+
+        evidence = stage_a._abi_block_evidence(
+            binary,
+            stage_a.BlockSide(rva_start=0x1000, rva_end=0x1000 + len(code)),
+            "stdcall-spill",
+        )
+
+        callsite = evidence["callsites"][0]
+        self.assertEqual([source["stack_offset"] for source in callsite["argument_sources"]], [0])
+        inventory = callsite["argument_inventory"]
+        self.assertEqual(inventory["argument_count"], 1)
+        self.assertEqual(len(inventory["stack_args"]), 1)
+        self.assertEqual(inventory["stack_args"][0]["source"]["stack_offset"], 0)
+        self.assertEqual(inventory["stack_args"][0]["role"], "immediate")
+
+    def test_abi_callsites_ignore_noncontiguous_stack_spills_before_call(self):
+        class FakePE:
+            def __init__(self, data: bytes):
+                self.data = data
+
+            def get_data(self, rva: int, size: int) -> bytes:
+                if rva < 0x1000:
+                    return b""
+                offset = rva - 0x1000
+                return self.data[offset : offset + size]
+
+        code = bytes.fromhex(
+            "8954241c"  # mov dword ptr [esp + 0x1c], edx
+            "e800000000"  # call next instruction
+        )
+        binary = stage_a.StageABinary(
+            path=Path("candidate.exe"),
+            sha256="",
+            size=len(code),
+            machine="i386",
+            bitness=32,
+            image_base=0x400000,
+            entrypoint_rva=0x1000,
+            size_of_image=0x20000,
+            subsystem="console",
+            sections=(),
+            imports=(),
+            pe=FakePE(code),
+        )
+
+        evidence = stage_a._abi_block_evidence(
+            binary,
+            stage_a.BlockSide(rva_start=0x1000, rva_end=0x1000 + len(code)),
+            "local-spill-before-call",
+        )
+
+        callsite = evidence["callsites"][0]
+        self.assertEqual(callsite["argument_sources"], [])
+        self.assertEqual(callsite["argument_inventory"]["argument_count"], 0)
+        self.assertEqual(callsite["hidden_sret_or_out_param_evidence"]["reason"], "no_static_arguments")
+
     def test_abi_callsites_classify_global_function_pointer_slot(self):
         class FakePE:
             def __init__(self, data: bytes):
@@ -2213,6 +2306,78 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(gaps["function_mismatches"][0]["repair_class"], "hidden_sret_or_out_param")
         self.assertEqual(gaps["callsite_mismatches"][0]["repair_class"], "varargs_or_stdio_bridge")
         self.assertIn("varargs", gaps["callsite_mismatches"][0]["next_action"])
+
+    def test_contract_candidate_abi_coverage_gaps_match_callsites_by_signature_before_index(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "_allocator",
+                        "callsites": [
+                            {
+                                "id": "callsite:allocator:1004",
+                                "block_id": "allocator:0",
+                                "target": {"kind": "import", "dll": "kernel32.dll", "symbol": "LeaveCriticalSection"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "immediate"}],
+                                    "register_args": [],
+                                },
+                            },
+                            {
+                                "id": "callsite:allocator:1020",
+                                "block_id": "allocator:1",
+                                "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "malloc"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "register"}],
+                                    "register_args": [],
+                                },
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "allocator",
+                        "callsites": [
+                            {
+                                "id": "callsite:allocator:2020",
+                                "block_id": "allocator:1",
+                                "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "malloc"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "register"}],
+                                    "register_args": [],
+                                },
+                            },
+                            {
+                                "id": "callsite:allocator:2004",
+                                "block_id": "allocator:0",
+                                "target": {"kind": "import", "dll": "kernel32.dll", "symbol": "LeaveCriticalSection"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "immediate"}],
+                                    "register_args": [],
+                                },
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
 
     def test_contract_candidate_abi_coverage_gaps_normalize_direct_targets_by_resolved_alias(self):
         reference_abi = {

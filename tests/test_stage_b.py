@@ -2248,6 +2248,52 @@ class StageBTests(unittest.TestCase):
             self.assertIn("  return (uintptr_t)puVar1;", i2b_source)
             self.assertNotIn("  puVar1[5] = param_1;\n  return 0;", i2b_source)
 
+    def test_decompiled_c_renderer_materializes_jq_dtoa_lock_helper(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "___Bfree_D2A",
+                    "rva_start": 0xAD80,
+                    "rva_end": 0xADE9,
+                    "size": 0x69,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "void __cdecl ___Bfree_D2A(undefined4 *param_1)",
+                                "{",
+                                "  dtoa_lock();",
+                                "  if (_dtoa_CS_init == 2) {",
+                                "    LeaveCriticalSection((LPCRITICAL_SECTION)&_dtoa_CritSec);",
+                                "  }",
+                                "  return;",
+                                "}",
+                            ]
+                        ),
+                    },
+                }
+            ],
+        )
+
+        self.assertIn("extern byte _dtoa_CS_init;", source)
+        self.assertIn("extern byte _dtoa_CritSec[0x30];", source)
+        self.assertIn("__attribute__((weak)) byte _dtoa_CS_init;", source)
+        self.assertIn("__attribute__((weak)) byte _dtoa_CritSec[0x30];", source)
+        self.assertIn("extern void __attribute__((stdcall, dllimport)) InitializeCriticalSection(LPCRITICAL_SECTION);", source)
+        self.assertIn("extern void __attribute__((stdcall, dllimport)) EnterCriticalSection(LPCRITICAL_SECTION);", source)
+        self.assertIn("extern void __attribute__((stdcall, dllimport)) DeleteCriticalSection(LPCRITICAL_SECTION);", source)
+        self.assertIn("extern void __attribute__((stdcall, dllimport)) Sleep(DWORD);", source)
+        self.assertIn("extern uintptr_t __crt_atexit();", source)
+        self.assertIn("static void stage_b_dtoa_lock_cleanup(void)", source)
+        self.assertIn("uintptr_t dtoa_lock(void)", source)
+        self.assertIn("InitializeCriticalSection((LPCRITICAL_SECTION)((byte *)&_dtoa_CritSec + 0x00U));", source)
+        self.assertIn("InitializeCriticalSection((LPCRITICAL_SECTION)((byte *)&_dtoa_CritSec + 0x18U));", source)
+        self.assertIn("__crt_atexit((void *)stage_b_dtoa_lock_cleanup);", source)
+        self.assertIn("Sleep(1);", source)
+        self.assertIn("EnterCriticalSection(stage_b_dtoa_lock_section(selector));", source)
+        self.assertNotIn("__attribute__((weak)) uintptr_t dtoa_lock() { return 0; }", source)
+
     def test_decompiled_c_renderer_preserves_atexit_forwarder_shape(self):
         source = _render_decompiled_c_source(
             target_name="jq",

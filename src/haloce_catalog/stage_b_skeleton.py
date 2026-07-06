@@ -93,6 +93,15 @@ _DECOMPILED_C_STACK_PROBE_HELPER_MACROS = {
     "___alloca_probe_8": "stage_b_stack_probe_size()",
     "___alloca_probe_16": "stage_b_stack_probe_size()",
 }
+_DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL = "dtoa_lock"
+_DECOMPILED_C_DTOA_LOCK_HELPER_DATA_SYMBOLS = ("_dtoa_CS_init", "_dtoa_CritSec")
+_DECOMPILED_C_DTOA_LOCK_HELPER_IMPORTS = (
+    "DeleteCriticalSection",
+    "EnterCriticalSection",
+    "InitializeCriticalSection",
+    "Sleep",
+    "__crt_atexit",
+)
 
 _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
 
@@ -2578,7 +2587,13 @@ def _decompiled_c_external_prototypes(
     defined = _decompiled_c_defined_symbol_names(functions)
     result: list[str] = []
     seen: set[str] = set()
-    for name in [*external_function_names, *_decompiled_c_external_call_symbols(functions)]:
+    external_call_symbols = _decompiled_c_external_call_symbols(functions)
+    helper_imports = (
+        list(_DECOMPILED_C_DTOA_LOCK_HELPER_IMPORTS)
+        if _decompiled_c_needs_dtoa_lock_helper(external_function_names, functions, external_call_symbols=external_call_symbols)
+        else []
+    )
+    for name in [*external_function_names, *external_call_symbols, *helper_imports]:
         symbol = str(name)
         if symbol in seen or symbol in defined:
             continue
@@ -2632,11 +2647,15 @@ def _decompiled_c_external_data_symbol_names(functions: list[dict[str, Any]]) ->
 def _decompiled_c_external_data_declaration(symbol: str) -> str:
     if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
         return f"extern pseudoRelocItemV2 {symbol}[2];"
+    if symbol == "_dtoa_CritSec":
+        return "extern byte _dtoa_CritSec[0x30];"
     return f"extern {_decompiled_c_external_data_type(symbol)} {symbol};"
 
 def _decompiled_c_external_data_definition(symbol: str) -> str:
     if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
         return f"__attribute__((weak)) pseudoRelocItemV2 {symbol}[2];"
+    if symbol == "_dtoa_CritSec":
+        return "__attribute__((weak)) byte _dtoa_CritSec[0x30];"
     return f"__attribute__((weak)) {_decompiled_c_external_data_type(symbol)} {symbol};"
 
 def _decompiled_c_external_data_type(symbol: str) -> str:
@@ -2680,18 +2699,84 @@ def _decompiled_c_link_placeholder_definitions(
     external_function_names: list[str] | tuple[str, ...],
     functions: list[dict[str, Any]],
 ) -> list[str]:
-    lines = [_decompiled_c_external_data_definition(symbol) for symbol in _decompiled_c_external_data_symbol_names(functions)]
+    external_call_symbols = _decompiled_c_external_call_symbols(functions)
+    needs_dtoa_lock_helper = _decompiled_c_needs_dtoa_lock_helper(
+        external_function_names,
+        functions,
+        external_call_symbols=external_call_symbols,
+    )
+    data_symbols = list(_decompiled_c_external_data_symbol_names(functions))
+    if needs_dtoa_lock_helper:
+        for symbol in _DECOMPILED_C_DTOA_LOCK_HELPER_DATA_SYMBOLS:
+            if symbol not in data_symbols:
+                data_symbols.append(symbol)
+    lines = [_decompiled_c_external_data_definition(symbol) for symbol in data_symbols]
     imported_or_recovered = {str(name) for name in external_function_names}
     defined = _decompiled_c_defined_symbol_names(functions)
-    for symbol in _decompiled_c_external_call_symbols(functions):
+    for symbol in external_call_symbols:
         if symbol in imported_or_recovered or symbol in defined:
             continue
         if not _is_c_identifier(symbol) or _decompiled_c_external_symbol_is_declared_by_headers(symbol):
             continue
         if symbol in _DECOMPILED_C_STDCALL_PROTOTYPES:
             continue
+        if symbol == _DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL:
+            lines.extend(_decompiled_c_dtoa_lock_helper_lines())
+            continue
         lines.append(f"__attribute__((weak)) uintptr_t {symbol}() {{ return 0; }}")
     return lines
+
+def _decompiled_c_needs_dtoa_lock_helper(
+    external_function_names: list[str] | tuple[str, ...],
+    functions: list[dict[str, Any]],
+    *,
+    external_call_symbols: list[str] | None = None,
+) -> bool:
+    call_symbols = external_call_symbols if external_call_symbols is not None else _decompiled_c_external_call_symbols(functions)
+    if _DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL not in call_symbols:
+        return False
+    imported_or_recovered = {str(name) for name in external_function_names}
+    defined = _decompiled_c_defined_symbol_names(functions)
+    return _DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL not in imported_or_recovered and _DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL not in defined
+
+def _decompiled_c_dtoa_lock_helper_lines() -> list[str]:
+    return [
+        "static LPCRITICAL_SECTION stage_b_dtoa_lock_section(uintptr_t selector) {",
+        "    uintptr_t offset = ((uintptr_t)(-(intptr_t)selector)) & 0x18U;",
+        "    return (LPCRITICAL_SECTION)((byte *)&_dtoa_CritSec + offset);",
+        "}",
+        "static void stage_b_dtoa_lock_cleanup(void) {",
+        "    if (_dtoa_CS_init == 2U) {",
+        "        _dtoa_CS_init = 3U;",
+        "        DeleteCriticalSection((LPCRITICAL_SECTION)((byte *)&_dtoa_CritSec + 0x00U));",
+        "        DeleteCriticalSection((LPCRITICAL_SECTION)((byte *)&_dtoa_CritSec + 0x18U));",
+        "    }",
+        "}",
+        "uintptr_t dtoa_lock(void) {",
+        "    uintptr_t selector = 0;",
+        "    for (;;) {",
+        "        unsigned state = (unsigned)_dtoa_CS_init;",
+        "        if (state == 2U) {",
+        "            break;",
+        "        }",
+        "        if (state == 0U) {",
+        "            _dtoa_CS_init = 1U;",
+        "            InitializeCriticalSection((LPCRITICAL_SECTION)((byte *)&_dtoa_CritSec + 0x00U));",
+        "            InitializeCriticalSection((LPCRITICAL_SECTION)((byte *)&_dtoa_CritSec + 0x18U));",
+        "            __crt_atexit((void *)stage_b_dtoa_lock_cleanup);",
+        "            _dtoa_CS_init = 2U;",
+        "            break;",
+        "        }",
+        "        if (state == 1U) {",
+        "            Sleep(1);",
+        "            continue;",
+        "        }",
+        "        return 0;",
+        "    }",
+        "    EnterCriticalSection(stage_b_dtoa_lock_section(selector));",
+        "    return 0;",
+        "}",
+    ]
 
 def _decompiled_c_external_call_symbols(functions: list[dict[str, Any]]) -> list[str]:
     symbols: set[str] = set()
