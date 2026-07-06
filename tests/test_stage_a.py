@@ -1448,6 +1448,39 @@ class StageAValidateTests(unittest.TestCase):
             smoke = stage_a_smoke_contract(reference_contract=root / "reference-contract.json")
             self.assertEqual(smoke["status"], "pass")
 
+    def test_stage_a_reference_contract_records_coff_symbol_aliases_on_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe_with_coff_symbol(root / "original.exe", b"\xc3", "_tinyh")
+            candidate = self._write_pe_with_coff_symbol(root / "candidate.exe", b"\xc3", "_tinyh")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+            )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            block = result["constraints"]["basic_blocks_and_cfg"]["basic_blocks"][0]
+            self.assertEqual(block["id"], "tiny-0000")
+            self.assertIn("_tinyh", block["symbol_aliases"]["original"])
+            self.assertIn("tinyh", block["symbol_aliases"]["original"])
+            self.assertIn("_tinyh", block["symbol_aliases"]["candidate"])
+            self.assertIn("tinyh", block["symbol_aliases"]["candidate"])
+
     def test_stage_a_export_reference_contract_writes_unit_contract_sidecars(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3531,6 +3564,20 @@ class StageAValidateTests(unittest.TestCase):
 
     def _write_pe(self, path: Path, code: bytes, *, virtual_size: int | None = None) -> Path:
         path.write_bytes(_pe32_image(code, virtual_size=virtual_size))
+        return path
+
+    def _write_pe_with_coff_symbol(self, path: Path, code: bytes, symbol: str) -> Path:
+        image = bytearray(_pe32_image(code))
+        pointer_to_symbol_table = len(image)
+        name = symbol.encode("ascii")
+        if len(name) > 8:
+            raise AssertionError("test COFF symbol helper only supports short names")
+        symbol_entry = name.ljust(8, b"\0") + struct.pack("<IhHBB", 0, 1, 0x20, 3, 0)
+        image.extend(symbol_entry)
+        image.extend(struct.pack("<I", 4))
+        struct.pack_into("<I", image, 0x8C, pointer_to_symbol_table)
+        struct.pack_into("<I", image, 0x90, 1)
+        path.write_bytes(bytes(image))
         return path
 
     def _write_reference_contract(self, path: Path, binary: stage_a.StageABinary, *, functions: list[str]) -> Path:

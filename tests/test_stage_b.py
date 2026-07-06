@@ -2295,6 +2295,166 @@ class StageBTests(unittest.TestCase):
         self.assertIn("___Balloc_D2A(1);", source)
         self.assertIn("stage_b_contract_anchor ^= (uintptr_t)0xb846;", source)
 
+    def test_decompiled_c_placeholder_anchors_section_gap_symbol_alias_callsites(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {
+                            "id": "section-gap--text-0142",
+                            "symbol_aliases": {
+                                "original": ["_do_get_path_info", "do_get_path_info"],
+                                "candidate": ["_do_get_path_info", "do_get_path_info"],
+                            },
+                        }
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0142",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0142",
+                                        "rva_start": 0x5C20,
+                                        "rva_end": 0x5C61,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "basename",
+                    "aliases": ["basename"],
+                    "rva_start": 0x5F70,
+                    "rva_end": 0x5FE0,
+                    "size": 0x70,
+                    "reference_contract": {
+                        "abi_callsites": [
+                            {
+                                "id": "callsite:basename-0004:5f98",
+                                "instruction": {"rva": 0x5F98},
+                                "target": {"kind": "direct", "target_rva": 0x5C20},
+                                "arguments": [],
+                            }
+                        ]
+                    },
+                }
+            ],
+            external_function_names=["do_get_path_info"],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn("Stage A direct-call anchor: callsite:basename-0004:5f98 at RVA 0x5f98", source)
+        self.assertIn("do_get_path_info();", source)
+        self.assertIn("stage_b_contract_anchor ^= (uintptr_t)0x5f98;", source)
+
+    def test_decompiled_c_external_section_gap_helper_preserves_contract_callsites(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {
+                            "id": "section-gap--text-0057",
+                            "symbol_aliases": {
+                                "original": ["_jv_is_valid", "jv_is_valid"],
+                                "candidate": ["_jv_is_valid", "jv_is_valid"],
+                            },
+                        }
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0057",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0057",
+                                        "rva_start": 0x149F,
+                                        "rva_end": 0x14D2,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0057:14c1",
+                                        "instruction": {"rva": 0x14C1},
+                                        "target": {"kind": "direct", "target_rva": 0x4A80},
+                                        "argument_inventory": {
+                                            "argument_count": 2,
+                                            "stack_args": [
+                                                {
+                                                    "index": 0,
+                                                    "role": "stack_pointer_slot",
+                                                    "source": {"kind": "register", "register": "eax"},
+                                                },
+                                                {
+                                                    "index": 1,
+                                                    "role": "stack_pointer_slot",
+                                                    "source": {"kind": "memory", "addressing": {"base": "esp"}},
+                                                },
+                                            ],
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        functions = [
+                {
+                    "name": "jv_get_kind",
+                    "rva_start": 0x4A80,
+                    "rva_end": 0x4A86,
+                    "size": 6,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __cdecl jv_get_kind(uintptr_t param_1, uintptr_t param_2)\n{\n  return param_1 ^ param_2;\n}",
+                    },
+                },
+                {
+                    "name": "caller",
+                    "rva_start": 0x6000,
+                    "rva_end": 0x6010,
+                    "size": 0x10,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __cdecl caller(void)\n{\n  return jv_is_valid();\n}",
+                    },
+                },
+        ]
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+        )
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=functions,
+            source_language="c",
+            implementation_mode="decompiled-c",
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn("uintptr_t __cdecl jv_is_valid()", source)
+        self.assertIn("uintptr_t __cdecl jv_get_kind(uintptr_t param_1, uintptr_t param_2);", source)
+        self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0057:14c1 at RVA 0x14c1", source)
+        self.assertIn("jv_get_kind((uintptr_t)0, (uintptr_t)0);", source)
+        self.assertNotIn("__attribute__((weak)) uintptr_t jv_is_valid() { return 0; }", source)
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function["jv_is_valid"]["source_kind"], "generated_contract_placeholder_from_section_gap_alias")
+        self.assertIn("section-gap--text-0057", by_function["jv_is_valid"]["aliases"])
+
     def test_decompiled_c_renderer_materializes_jq_dtoa_lock_helper(self):
         source = _render_decompiled_c_source(
             target_name="jq",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -228,6 +229,77 @@ def _parse_linker_map_functions(path: Path, binary: StageABinary) -> list[dict[s
             }
         )
     return functions
+
+
+def _coff_symbol_aliases_by_rva(binary: StageABinary) -> dict[int, list[str]]:
+    pointer = int(getattr(binary.pe.FILE_HEADER, "PointerToSymbolTable", 0) or 0)
+    count = int(getattr(binary.pe.FILE_HEADER, "NumberOfSymbols", 0) or 0)
+    if pointer <= 0 or count <= 0:
+        return {}
+    try:
+        data = binary.path.read_bytes()
+    except OSError:
+        return {}
+    symbol_table_size = count * 18
+    symbol_table_end = pointer + symbol_table_size
+    if symbol_table_end > len(data):
+        return {}
+    string_table_start = symbol_table_end
+    string_table_size = 0
+    if string_table_start + 4 <= len(data):
+        string_table_size = int.from_bytes(data[string_table_start : string_table_start + 4], "little", signed=False)
+    result: dict[int, list[str]] = {}
+    index = 0
+    while index < count:
+        offset = pointer + index * 18
+        if offset + 18 > len(data):
+            break
+        entry = data[offset : offset + 18]
+        name = _coff_symbol_name(entry[:8], data, string_table_start, string_table_size)
+        value, section_number, symbol_type, storage_class, auxiliary_count = struct.unpack("<IhHBB", entry[8:18])
+        if name and section_number > 0 and section_number <= len(binary.sections):
+            section = binary.sections[section_number - 1]
+            rva = section.rva_start + int(value)
+            if section.executable and section.rva_start <= rva < section.rva_end and _coff_symbol_is_code_like(symbol_type, storage_class):
+                aliases = result.setdefault(rva, [])
+                for alias in _coff_symbol_aliases(name):
+                    if alias not in aliases:
+                        aliases.append(alias)
+        index += 1 + int(auxiliary_count)
+    return result
+
+
+def _coff_symbol_name(name_field: bytes, data: bytes, string_table_start: int, string_table_size: int) -> str:
+    if len(name_field) != 8:
+        return ""
+    if name_field[:4] == b"\0\0\0\0":
+        offset = int.from_bytes(name_field[4:8], "little", signed=False)
+        if offset < 4 or string_table_size <= 4 or offset >= string_table_size:
+            return ""
+        start = string_table_start + offset
+        end_limit = min(string_table_start + string_table_size, len(data))
+        end = data.find(b"\0", start, end_limit)
+        if end < 0:
+            end = end_limit
+        return data[start:end].decode("utf-8", errors="replace")
+    return name_field.rstrip(b"\0").decode("utf-8", errors="replace")
+
+
+def _coff_symbol_aliases(name: str) -> list[str]:
+    aliases = [name]
+    stripped = name.lstrip("_")
+    if stripped and stripped != name:
+        aliases.append(stripped)
+    return aliases
+
+
+def _coff_symbol_is_code_like(symbol_type: int, storage_class: int) -> bool:
+    # IMAGE_SYM_DTYPE_FUNCTION is encoded in the high nibble of the COFF type.
+    if symbol_type & 0x20:
+        return True
+    # GNU ld often leaves local/static function labels with type 0 but class
+    # external/static. Section executability is the primary guard above.
+    return storage_class in {2, 3}
 
 
 def _parse_linker_map_text_boundary_line(line: str, binary: StageABinary) -> int | None:

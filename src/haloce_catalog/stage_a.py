@@ -23,7 +23,7 @@ from .pe import (
     IMAGE_SCN_MEM_WRITE,
     mapped_section_size,
 )
-from .stage_binary import StageAInputError, _artifact_name
+from .stage_binary import StageAInputError, _artifact_name, _coff_symbol_aliases_by_rva
 from .util import sha256_bytes, sha256_file, utc_now, write_json
 
 
@@ -5684,6 +5684,8 @@ def _reference_basic_blocks_and_cfg(
 ) -> dict[str, Any]:
     blocks = []
     cfg_edges = []
+    original_symbol_aliases = _coff_symbol_aliases_by_rva(original)
+    candidate_symbol_aliases = _coff_symbol_aliases_by_rva(candidate) if candidate is not None else {}
     for mapped in mappings:
         source = _mapping_source(mapped)
         proof = mapped.source.get("proof") if isinstance(mapped.source.get("proof"), dict) else {}
@@ -5698,6 +5700,12 @@ def _reference_basic_blocks_and_cfg(
             "proof_rule": proof.get("rule"),
             "byte_identical": source.get("byte_identical"),
         }
+        symbol_aliases = {
+            "original": _symbol_aliases_for_range(original_symbol_aliases, mapped.original),
+            "candidate": _symbol_aliases_for_range(candidate_symbol_aliases, mapped.candidate) if candidate is not None else [],
+        }
+        if symbol_aliases["original"] or symbol_aliases["candidate"]:
+            block["symbol_aliases"] = symbol_aliases
         blocks.append(block)
         if mapped.kind != "code":
             continue
@@ -5713,6 +5721,15 @@ def _reference_basic_blocks_and_cfg(
         "basic_blocks": blocks,
         "cfg_edges": cfg_edges,
     }
+
+
+def _symbol_aliases_for_range(symbols_by_rva: dict[int, list[str]], span: BlockSide) -> list[str]:
+    aliases: list[str] = []
+    for rva in sorted(rva for rva in symbols_by_rva if span.rva_start <= rva < span.rva_end):
+        for alias in symbols_by_rva[rva]:
+            if alias and alias not in aliases:
+                aliases.append(alias)
+    return aliases
 
 
 def _mapping_source(mapped: BlockMapping) -> dict[str, Any]:

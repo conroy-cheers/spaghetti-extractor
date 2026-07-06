@@ -566,6 +566,7 @@ def stage_b_generate_skeleton(
         runtime_entry_policy=runtime_entry_policy,
         external_function_names=external_function_names,
         behavior_recovery=behavior_recovery,
+        reference_contract_payload=reference_contract_payload,
     )
     (out_dir / source_rel).write_text(source_text, encoding="utf-8")
     (out_dir / readme_rel).write_text(_render_skeleton_readme(target_name, source_language, implementation_mode), encoding="utf-8")
@@ -1641,6 +1642,7 @@ def _render_skeleton_source(
     runtime_entry_policy: str = "bridge",
     external_function_names: list[str] | tuple[str, ...] | None = None,
     behavior_recovery: dict[str, Any] | None = None,
+    reference_contract_payload: dict[str, Any] | None = None,
 ) -> str:
     if implementation_mode in {"decompiled-c", "contract-guided-c"}:
         return _render_decompiled_c_source(
@@ -1648,6 +1650,7 @@ def _render_skeleton_source(
             functions=functions,
             runtime_entry_policy=runtime_entry_policy,
             external_function_names=external_function_names,
+            reference_contract_payload=reference_contract_payload,
         )
 
     if source_language == "rust":
@@ -1796,6 +1799,17 @@ def _skeleton_source_map(
             decompiler_functions=decompiler_functions or [],
         )
     )
+    anchors.extend(
+        _skeleton_section_gap_placeholder_source_anchors(
+            lines,
+            source_rel=source_rel,
+            source_language=source_language,
+            implementation_mode=implementation_mode,
+            existing_functions={str(anchor.get("function") or "") for anchor in anchors},
+            reference_contract_payload=reference_contract_payload,
+            functions=functions,
+        )
+    )
     anchors.sort(key=lambda item: (str(item["file"]), int(item["line_start"]), str(item["function"])))
     for index, anchor in enumerate(anchors):
         next_line = anchors[index + 1]["line_start"] if index + 1 < len(anchors) else len(lines) + 1
@@ -1891,11 +1905,70 @@ def _skeleton_decompiler_section_gap_helper_aliases(
     return helpers
 
 
+def _skeleton_section_gap_placeholder_source_anchors(
+    lines: list[str],
+    *,
+    source_rel: Path,
+    source_language: str,
+    implementation_mode: str,
+    existing_functions: set[str],
+    reference_contract_payload: dict[str, Any] | None,
+    functions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if source_language != "c" or reference_contract_payload is None:
+        return []
+    known_symbols = set(_decompiled_c_external_call_symbols(functions))
+    anchors: list[dict[str, Any]] = []
+    for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
+        rva_start = _optional_int(entry.get("rva_start"))
+        rva_end = _optional_int(entry.get("rva_end"))
+        if rva_start is None or rva_end is None or rva_end <= rva_start:
+            continue
+        aliases = [alias for alias in entry.get("aliases", []) if isinstance(alias, str) and alias]
+        symbol = next(
+            (
+                alias
+                for alias in aliases
+                if alias in known_symbols and _is_c_identifier(alias) and not alias.startswith("section-gap-")
+            ),
+            None,
+        )
+        if symbol is None or symbol in existing_functions:
+            continue
+        line = _source_exact_function_definition_line(lines, symbol)
+        if line is None:
+            line = _source_anchor_line(
+                lines,
+                symbol,
+                source_language=source_language,
+                implementation_mode=implementation_mode,
+                aliases=aliases,
+                prefer_definition=True,
+            )
+        if line is None:
+            continue
+        anchors.append(
+            {
+                "function": symbol,
+                "aliases": _dedupe_strings([symbol, *aliases]),
+                "file": source_rel.as_posix(),
+                "line_start": line,
+                "line_end": line,
+                "source_kind": "generated_contract_placeholder_from_section_gap_alias",
+                "rva_start": rva_start,
+                "rva_end": rva_end,
+                "reference_section_gap": entry,
+            }
+        )
+    return anchors
+
+
 def _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
     constraints = reference_contract_payload.get("constraints") if isinstance(reference_contract_payload.get("constraints"), dict) else {}
     abi = constraints.get("abi_callsites") if isinstance(constraints.get("abi_callsites"), dict) else {}
     original = abi.get("original") if isinstance(abi.get("original"), dict) else {}
     functions = original.get("functions") if isinstance(original.get("functions"), list) else []
+    block_aliases = _reference_contract_basic_block_aliases_by_id(reference_contract_payload)
     result: dict[int, dict[str, Any]] = {}
     for function in functions:
         if not isinstance(function, dict):
@@ -1924,12 +1997,63 @@ def _reference_contract_abi_section_gap_entries_by_start(reference_contract_payl
         entry_start = min(starts)
         if entry_start in result:
             continue
+        aliases = _dedupe_strings(
+            [
+                name,
+                *block_ids,
+                *[
+                    alias
+                    for block_id in block_ids
+                    for alias in block_aliases.get(block_id, [])
+                    if isinstance(alias, str) and alias
+                ],
+            ]
+        )
         result[entry_start] = {
             "name": name,
+            "aliases": aliases,
             "rva_start": entry_start,
             "rva_end": max(ends),
             "block_ids": _dedupe_strings(block_ids),
+            "abi_callsites": _reference_contract_abi_callsite_summaries(function),
         }
+    return result
+
+
+def _reference_contract_abi_callsite_summaries(function: dict[str, Any]) -> list[dict[str, Any]]:
+    callsites = function.get("callsites") if isinstance(function.get("callsites"), list) else []
+    summaries: list[dict[str, Any]] = []
+    for callsite in callsites:
+        if not isinstance(callsite, dict):
+            continue
+        summary = _reference_contract_abi_callsite_summary(callsite)
+        if summary is not None:
+            summaries.append(summary)
+    return summaries
+
+
+def _reference_contract_basic_block_aliases_by_id(reference_contract_payload: dict[str, Any]) -> dict[str, list[str]]:
+    constraints = reference_contract_payload.get("constraints") if isinstance(reference_contract_payload.get("constraints"), dict) else {}
+    cfg = constraints.get("basic_blocks_and_cfg") if isinstance(constraints.get("basic_blocks_and_cfg"), dict) else {}
+    blocks = cfg.get("basic_blocks") if isinstance(cfg.get("basic_blocks"), list) else []
+    result: dict[str, list[str]] = {}
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_id = block.get("id")
+        if not isinstance(block_id, str) or not block_id:
+            continue
+        symbol_aliases = block.get("symbol_aliases") if isinstance(block.get("symbol_aliases"), dict) else {}
+        aliases = _dedupe_strings(
+            [
+                alias
+                for key in ("original", "candidate")
+                for alias in (symbol_aliases.get(key) if isinstance(symbol_aliases.get(key), list) else [])
+                if isinstance(alias, str) and alias
+            ]
+        )
+        if aliases:
+            result[block_id] = aliases
     return result
 
 
@@ -2076,6 +2200,7 @@ def _render_decompiled_c_source(
     functions: list[dict[str, Any]],
     runtime_entry_policy: str = "bridge",
     external_function_names: list[str] | tuple[str, ...] | None = None,
+    reference_contract_payload: dict[str, Any] | None = None,
 ) -> str:
     if runtime_entry_policy not in _DECOMPILED_C_RUNTIME_ENTRY_POLICIES:
         raise StageAInputError(f"unsupported Stage B runtime entry policy {runtime_entry_policy!r}")
@@ -2413,7 +2538,12 @@ def _render_decompiled_c_source(
     runtime_helper_aliases = _decompiled_c_runtime_helper_alias_lines(functions)
     runtime_bridge = _decompiled_c_runtime_entry_bridge(functions) if runtime_entry_policy == "bridge" else []
     runtime_bridge_externs = _decompiled_c_runtime_entry_bridge_externs(functions) if runtime_bridge else []
-    contract_call_targets = _decompiled_c_contract_call_targets(functions, runtime_entry_policy=runtime_entry_policy)
+    contract_call_targets = _decompiled_c_contract_call_targets(
+        functions,
+        runtime_entry_policy=runtime_entry_policy,
+        reference_contract_payload=reference_contract_payload,
+        external_function_names=external_function_names or (),
+    )
     prototypes = [
         _decompiled_c_prototype(
             function,
@@ -2433,6 +2563,11 @@ def _render_decompiled_c_source(
         implemented_functions,
     )
     data_symbols = _decompiled_c_external_data_symbols(implemented_functions)
+    contract_call_target_profiles = _decompiled_c_contract_call_target_profiles(
+        contract_call_targets,
+        implemented_functions,
+        runtime_entry_policy=runtime_entry_policy,
+    )
     placeholders = _decompiled_c_link_placeholder_definitions(
         [
             *(external_function_names or ()),
@@ -2442,6 +2577,9 @@ def _render_decompiled_c_source(
             *runtime_helper_alias_symbols,
         ],
         implemented_functions,
+        reference_contract_payload=reference_contract_payload,
+        call_targets=contract_call_targets,
+        call_target_profiles=contract_call_target_profiles,
     )
     preserved_import_thunks = _decompiled_c_preserved_import_thunk_alias_lines(functions)
     import_aliases = _decompiled_c_import_thunk_alias_lines(functions)
@@ -2453,6 +2591,9 @@ def _render_decompiled_c_source(
         lines.append("")
     if data_symbols:
         lines.extend(data_symbols)
+        lines.append("")
+    if contract_call_target_profiles:
+        lines.extend(profile["prototype"] for _, profile in sorted(contract_call_target_profiles.items()))
         lines.append("")
     if placeholders:
         lines.extend(placeholders)
@@ -2522,7 +2663,11 @@ def _render_decompiled_c_source(
             lines.extend(
                 [
                     f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
-                    _decompiled_c_contract_placeholder(function, call_targets=contract_call_targets),
+                    _decompiled_c_contract_placeholder(
+                        function,
+                        call_targets=contract_call_targets,
+                        call_target_profiles=contract_call_target_profiles,
+                    ),
                     "",
                 ]
             )
@@ -2541,13 +2686,20 @@ def _decompiled_c_contract_placeholder(
     function: dict[str, Any],
     *,
     call_targets: dict[int, str] | None = None,
+    call_target_profiles: dict[str, dict[str, Any]] | None = None,
+    unspecified_parameters: bool = False,
 ) -> str:
     name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
     rva_start = int(function.get("rva_start") or 0)
     size = int(function.get("size") or 0)
-    anchors = _decompiled_c_contract_callsite_anchor_lines(function, call_targets=call_targets or {})
+    anchors = _decompiled_c_contract_callsite_anchor_lines(
+        function,
+        call_targets=call_targets or {},
+        call_target_profiles=call_target_profiles or {},
+    )
+    parameters = "" if unspecified_parameters else "void"
     lines = [
-        f"uintptr_t __cdecl {name}(void)",
+        f"uintptr_t __cdecl {name}({parameters})",
         "{",
         f"  /* Stage B contract placeholder for missing decompiler body at RVA 0x{rva_start:x}, size {size}. */",
     ]
@@ -2565,6 +2717,8 @@ def _decompiled_c_contract_call_targets(
     functions: list[dict[str, Any]],
     *,
     runtime_entry_policy: str,
+    reference_contract_payload: dict[str, Any] | None = None,
+    external_function_names: list[str] | tuple[str, ...] = (),
 ) -> dict[int, str]:
     targets: dict[int, str] = {}
     for function in functions:
@@ -2574,10 +2728,80 @@ def _decompiled_c_contract_call_targets(
         name = _decompiled_c_emitted_function_name(function, runtime_entry_policy=runtime_entry_policy)
         if _is_c_identifier(name):
             targets[rva_start] = name
+    if reference_contract_payload is not None:
+        known_symbols = set(_decompiled_c_external_call_symbols(functions))
+        known_symbols.update(str(name) for name in external_function_names)
+        known_symbols.update(_decompiled_c_defined_symbol_names(functions))
+        targets.update(_decompiled_c_contract_section_gap_call_targets(reference_contract_payload, known_symbols=known_symbols))
     return targets
 
 
-def _decompiled_c_contract_callsite_anchor_lines(function: dict[str, Any], *, call_targets: dict[int, str]) -> list[str]:
+def _decompiled_c_contract_section_gap_call_targets(
+    reference_contract_payload: dict[str, Any],
+    *,
+    known_symbols: set[str],
+) -> dict[int, str]:
+    result: dict[int, str] = {}
+    for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
+        rva_start = _optional_int(entry.get("rva_start"))
+        if rva_start is None:
+            continue
+        for alias in entry.get("aliases", []):
+            if not isinstance(alias, str) or alias.startswith("section-gap-") or not _is_c_identifier(alias):
+                continue
+            if alias in known_symbols:
+                result.setdefault(rva_start, alias)
+                break
+    return result
+
+
+def _decompiled_c_contract_call_target_profiles(
+    call_targets: dict[int, str],
+    functions: list[dict[str, Any]],
+    *,
+    runtime_entry_policy: str,
+) -> dict[str, dict[str, Any]]:
+    needed = set(call_targets.values())
+    profiles: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
+    for function in functions:
+        emitted_name = _decompiled_c_emitted_function_name(function, runtime_entry_policy=runtime_entry_policy)
+        if emitted_name not in needed or emitted_name in seen or not _is_c_identifier(emitted_name):
+            continue
+        prototype = _decompiled_c_prototype(function, emitted_name=emitted_name)
+        profile = _decompiled_c_prototype_parameter_profile(prototype)
+        if profile is None:
+            continue
+        seen.add(emitted_name)
+        profile["prototype"] = prototype
+        profiles[emitted_name] = profile
+    return profiles
+
+
+def _decompiled_c_prototype_parameter_profile(prototype: str) -> dict[str, Any] | None:
+    text = prototype.strip()
+    if not text.endswith(";"):
+        return None
+    text = text[:-1].strip()
+    start = text.find("(")
+    end = text.rfind(")")
+    if start < 0 or end < start:
+        return None
+    raw_parameters = text[start + 1 : end].strip()
+    if not raw_parameters or raw_parameters == "void":
+        return {"fixed_arg_count": 0, "variadic": False}
+    parameters = [parameter.strip() for parameter in raw_parameters.split(",") if parameter.strip()]
+    variadic = bool(parameters and parameters[-1] == "...")
+    fixed_arg_count = len(parameters) - (1 if variadic else 0)
+    return {"fixed_arg_count": fixed_arg_count, "variadic": variadic}
+
+
+def _decompiled_c_contract_callsite_anchor_lines(
+    function: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+) -> list[str]:
     reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
     callsites = reference_contract.get("abi_callsites") if isinstance(reference_contract.get("abi_callsites"), list) else []
     lines: list[str] = []
@@ -2591,7 +2815,7 @@ def _decompiled_c_contract_callsite_anchor_lines(function: dict[str, Any], *, ca
         target_name = call_targets.get(target_rva)
         if not target_name or not _is_c_identifier(target_name):
             continue
-        rendered_args = _decompiled_c_contract_callsite_arguments(callsite)
+        rendered_args = _decompiled_c_contract_callsite_arguments(callsite, target_profile=call_target_profiles.get(target_name))
         if rendered_args is None:
             continue
         callsite_id = str(callsite.get("id") or f"callsite:0x{target_rva:x}")
@@ -2604,16 +2828,37 @@ def _decompiled_c_contract_callsite_anchor_lines(function: dict[str, Any], *, ca
     return lines
 
 
-def _decompiled_c_contract_callsite_arguments(callsite: dict[str, Any]) -> list[str] | None:
+def _decompiled_c_contract_callsite_arguments(
+    callsite: dict[str, Any],
+    *,
+    target_profile: dict[str, Any] | None = None,
+) -> list[str] | None:
     arguments = callsite.get("arguments") if isinstance(callsite.get("arguments"), list) else []
     rendered: list[str] = []
     for argument in arguments:
-        if not isinstance(argument, dict) or argument.get("kind") != "immediate":
+        if not isinstance(argument, dict):
             return None
-        value = argument.get("value")
-        if not isinstance(value, int) or isinstance(value, bool):
-            return None
-        rendered.append(str(value))
+        if argument.get("kind") == "immediate":
+            value = argument.get("value")
+            if not isinstance(value, int) or isinstance(value, bool):
+                return None
+            rendered.append(str(value))
+            continue
+        # Preserve known call arity even when the ABI contract cannot express
+        # the source-level value. Stage A remains responsible for rejecting the
+        # placeholder if the resulting candidate does not match argument
+        # sources, stack deltas, or callee effects.
+        rendered.append("(uintptr_t)0")
+    if target_profile is not None:
+        fixed_arg_count = target_profile.get("fixed_arg_count")
+        if isinstance(fixed_arg_count, int) and fixed_arg_count >= 0:
+            if target_profile.get("variadic"):
+                while len(rendered) < fixed_arg_count:
+                    rendered.append("(uintptr_t)0")
+            else:
+                rendered = rendered[:fixed_arg_count]
+                while len(rendered) < fixed_arg_count:
+                    rendered.append("(uintptr_t)0")
     return rendered
 
 def _decompiled_c_is_import_thunk(function: dict[str, Any]) -> bool:
@@ -3003,12 +3248,24 @@ def _decompiled_c_external_data_type(symbol: str) -> str:
 def _decompiled_c_link_placeholder_definitions(
     external_function_names: list[str] | tuple[str, ...],
     functions: list[dict[str, Any]],
+    *,
+    reference_contract_payload: dict[str, Any] | None = None,
+    call_targets: dict[int, str] | None = None,
+    call_target_profiles: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     external_call_symbols = _decompiled_c_external_call_symbols(functions)
     needs_dtoa_lock_helper = _decompiled_c_needs_dtoa_lock_helper(
         external_function_names,
         functions,
         external_call_symbols=external_call_symbols,
+    )
+    section_gap_placeholders = (
+        _decompiled_c_section_gap_placeholders_by_symbol(
+            reference_contract_payload,
+            known_symbols=set(external_call_symbols) | {str(name) for name in external_function_names},
+        )
+        if reference_contract_payload is not None
+        else {}
     )
     data_symbols = list(_decompiled_c_external_data_symbol_names(functions))
     if needs_dtoa_lock_helper:
@@ -3028,8 +3285,49 @@ def _decompiled_c_link_placeholder_definitions(
         if symbol == _DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL:
             lines.extend(_decompiled_c_dtoa_lock_helper_lines())
             continue
+        section_gap_function = section_gap_placeholders.get(symbol)
+        if section_gap_function is not None:
+            lines.append(
+                _decompiled_c_contract_placeholder(
+                    section_gap_function,
+                    call_targets=call_targets or {},
+                    call_target_profiles=call_target_profiles or {},
+                    unspecified_parameters=True,
+                )
+            )
+            continue
         lines.append(f"__attribute__((weak)) uintptr_t {symbol}() {{ return 0; }}")
     return lines
+
+
+def _decompiled_c_section_gap_placeholders_by_symbol(
+    reference_contract_payload: dict[str, Any],
+    *,
+    known_symbols: set[str],
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
+        rva_start = _optional_int(entry.get("rva_start"))
+        rva_end = _optional_int(entry.get("rva_end"))
+        if rva_start is None or rva_end is None or rva_end <= rva_start:
+            continue
+        for alias in entry.get("aliases", []):
+            if not isinstance(alias, str) or alias.startswith("section-gap-") or not _is_c_identifier(alias):
+                continue
+            if alias not in known_symbols:
+                continue
+            result.setdefault(
+                alias,
+                {
+                    "name": alias,
+                    "rva_start": rva_start,
+                    "rva_end": rva_end,
+                    "size": rva_end - rva_start,
+                    "reference_contract": {"abi_callsites": entry.get("abi_callsites") if isinstance(entry.get("abi_callsites"), list) else []},
+                },
+            )
+            break
+    return result
 
 def _decompiled_c_needs_dtoa_lock_helper(
     external_function_names: list[str] | tuple[str, ...],
