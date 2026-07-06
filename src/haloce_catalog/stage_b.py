@@ -2611,7 +2611,7 @@ def _stage_b_candidate_abi_callsite_sample(function_name: str, callsite: dict[st
 def _stage_b_hidden_address_repair_class(function_name: str, hidden: dict[str, Any]) -> str:
     role = _stage_b_hidden_address_role(hidden)
     if role == "stack_out_param_or_scratch_buffer":
-        if _stage_b_is_runtime_crt_bridge_function(function_name):
+        if _stage_b_is_runtime_crt_support_function(function_name):
             return "runtime_crt_stack_bridge"
         return "stack_scratch_buffer_or_out_param"
     if role == "computed_out_param_or_hidden_sret":
@@ -2634,7 +2634,7 @@ def _stage_b_hidden_address_role(hidden: dict[str, Any]) -> str:
 def _stage_b_hidden_address_next_action(function_name: str, callsite: dict[str, Any], repair_class: str) -> str:
     callsite_id = callsite.get("id")
     actions = {
-        "runtime_crt_stack_bridge": "verify generated runtime/CRT bridge and linker policy for this stack out-param helper",
+        "runtime_crt_stack_bridge": "verify generated runtime/CRT support implementation, bridge, and linker policy for this stack out-param helper",
         "stack_scratch_buffer_or_out_param": "verify generated prototype and local stack scratch/out-param handling",
         "stack_out_param_or_scratch_buffer": "verify generated prototype and local stack scratch/out-param handling",
         "computed_out_param_or_hidden_sret": "recover generated prototype and computed out-param or hidden-return bridge",
@@ -3350,6 +3350,7 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "hidden_sret_or_out_param": 1,
         "computed_out_param_or_hidden_sret": 1,
         "runtime_crt_entrypoint_layout": 1,
+        "runtime_crt_stack_bridge": 1,
         "stack_probe_or_frame_layout": 1,
         "stack_scratch_buffer_or_out_param": 1,
         "abi_function_coverage": 2,
@@ -3391,7 +3392,6 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "function_pointer_target": 7,
         "candidate_crash_external_module": 8,
         "pe_import_table_layout": 8,
-        "runtime_crt_stack_bridge": 8,
         "stack_out_param_or_scratch_buffer": 8,
         "jump_table_target": 8,
         "function_mapping": 9,

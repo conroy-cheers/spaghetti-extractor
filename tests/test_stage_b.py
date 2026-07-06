@@ -4916,7 +4916,90 @@ class StageBTests(unittest.TestCase):
 
         self.assertEqual(result[0]["likely_repair_class"], "runtime_crt_stack_bridge")
         self.assertEqual(result[0]["generated_source_location"]["source_kind"], "omitted_runtime_entry")
-        self.assertIn("runtime/CRT bridge", result[0]["next_action"])
+        self.assertIn("runtime/CRT support implementation", result[0]["next_action"])
+
+    def test_explain_delta_classifies_runtime_crt_support_stack_helper_separately(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 1, "callsites": 1},
+                        "candidate_counts": {"functions": 1, "callsites": 1},
+                        "coverage_gaps": {
+                            "missing_functions": [
+                                {
+                                    "name": "section-gap--text-0000",
+                                    "match_key": "section-gap--text-0000",
+                                    "blocks": [],
+                                    "callsites": 0,
+                                }
+                            ],
+                            "counts": {
+                                "missing_functions": 1,
+                                "incomplete_callsite_functions": 0,
+                                "missing_callsites": 0,
+                            },
+                        },
+                        "candidate_abi": {
+                            "candidate": {
+                                "functions": [
+                                    {
+                                        "name": "_FindPESectionByName",
+                                        "callsites": [
+                                            {
+                                                "id": "callsite:_FindPESectionByName:10d0",
+                                                "block_id": "_FindPESectionByName",
+                                                "hidden_sret_or_out_param_evidence": {
+                                                    "status": "candidate",
+                                                    "address_role": "stack_out_param_or_scratch_buffer",
+                                                    "address_source": {
+                                                        "kind": "address",
+                                                        "address_class": "stack_address",
+                                                    },
+                                                },
+                                                "varargs_evidence": {"status": "not_observed"},
+                                                "function_pointer_targets": [],
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "_FindPESectionByName",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 212,
+                            "line_end": 215,
+                            "source_kind": "omitted_runtime_entry",
+                        }
+                    ]
+                }
+            },
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        by_function = {item["original_function"]: item for item in result}
+        crt_item = by_function["_FindPESectionByName"]
+        section_gap_item = by_function["section-gap--text-0000"]
+        self.assertEqual(crt_item["likely_repair_class"], "runtime_crt_stack_bridge")
+        self.assertEqual(crt_item["generated_source_location"]["source_kind"], "omitted_runtime_entry")
+        self.assertIn("runtime/CRT support implementation", crt_item["next_action"])
+        self.assertLess(crt_item["rank"], section_gap_item["rank"])
 
     def test_explain_delta_classifies_runtime_crt_function_coverage_gap(self):
         validation = {

@@ -3261,6 +3261,7 @@
                     and (
                       ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
                       or ([.repair_items[].likely_repair_class] | index("stack_scratch_buffer_or_out_param"))
+                      or ([.repair_items[].likely_repair_class] | index("runtime_crt_stack_bridge"))
                     )
                   else
                     ([.repair_items[].violated_contract_family] | index("candidate_crash") | not)
