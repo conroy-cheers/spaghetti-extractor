@@ -7,6 +7,7 @@ from unittest import mock
 
 from haloce_catalog import cli as catalog_cli
 from haloce_catalog import stage_a
+from haloce_catalog import stage_binary
 from haloce_catalog.stage_a import (
     STAGE_A_MODEL_ID,
     stage_a_diff_obligations,
@@ -1093,6 +1094,42 @@ class StageAValidateTests(unittest.TestCase):
             self.assertTrue(contract["facts"]["all_executable_bytes_classified"])
             self.assertTrue(contract["facts"]["matching_section_rvas"])
             self.assertTrue(contract["facts"]["matching_normalized_executable_section_spans"])
+
+    def test_linker_map_parser_uses_split_text_fragment_as_weak_function_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary_path = self._write_pe(root / "candidate.exe", b"\xc3" * 0x60)
+            linker_map = root / "candidate.map"
+            linker_map.write_text(
+                "\n".join(
+                    [
+                        " .text$dirname  0x00401000       0x20 object.o",
+                        "                0x00401000                dirname",
+                        " .text$dtoa_lock",
+                        "                0x00401020        0xc object.o",
+                        "                0x00401020                .weak._dtoa_lock.___crt_atexit",
+                        " .text$isoptish",
+                        "                0x0040102c        0xc object.o",
+                        "                0x0040102c                .weak._isoptish.___crt_atexit",
+                        " .text$process  0x00401038        0xc object.o",
+                        "                0x00401038                process",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            stage_a_functions = stage_a._parse_linker_map_functions(linker_map, stage_a._parse_stage_a_pe(binary_path))
+            stage_binary_functions = stage_binary._parse_linker_map_functions(linker_map, stage_binary._parse_stage_a_pe(binary_path))
+
+        for functions in (stage_a_functions, stage_binary_functions):
+            by_name = {item["name"]: item for item in functions}
+            self.assertEqual(by_name["dirname"]["rva_start"], 0x1000)
+            self.assertEqual(by_name["dirname"]["rva_end"], 0x1020)
+            self.assertEqual(by_name["dtoa_lock"]["rva_start"], 0x1020)
+            self.assertEqual(by_name["dtoa_lock"]["rva_end"], 0x102C)
+            self.assertEqual(by_name["isoptish"]["rva_start"], 0x102C)
+            self.assertEqual(by_name["isoptish"]["rva_end"], 0x1038)
+            self.assertEqual(by_name["process"]["rva_start"], 0x1038)
 
     def test_stage_a_generate_map_splits_basic_blocks_and_uses_cfg_reachability(self):
         with tempfile.TemporaryDirectory() as tmp:

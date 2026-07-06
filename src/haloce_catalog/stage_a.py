@@ -7016,6 +7016,7 @@ def _parse_linker_map_functions(path: Path, binary: StageABinary) -> list[dict[s
         raise StageAInputError(f"cannot read linker map {path}: {exc}") from exc
     symbol_starts: dict[int, list[str]] = {}
     boundary_starts: set[int] = set()
+    pending_text_section: str | None = None
     for line in text.splitlines():
         parsed = _parse_linker_map_symbol_line(line, binary)
         if parsed is not None:
@@ -7029,6 +7030,29 @@ def _parse_linker_map_functions(path: Path, binary: StageABinary) -> list[dict[s
         boundary = _parse_linker_map_text_boundary_line(line, binary)
         if boundary is not None:
             boundary_starts.add(boundary)
+            fragment_symbol = _linker_map_text_fragment_symbol(line)
+            if fragment_symbol is not None:
+                symbol_starts.setdefault(boundary, [])
+                if fragment_symbol not in symbol_starts[boundary]:
+                    symbol_starts[boundary].append(fragment_symbol)
+            pending_text_section = None
+            continue
+        continuation = _parse_linker_map_text_boundary_continuation_line(line, binary)
+        if continuation is not None and pending_text_section is not None:
+            boundary_starts.add(continuation)
+            fragment_symbol = _linker_map_section_fragment_symbol(pending_text_section)
+            if fragment_symbol is not None:
+                symbol_starts.setdefault(continuation, [])
+                if fragment_symbol not in symbol_starts[continuation]:
+                    symbol_starts[continuation].append(fragment_symbol)
+            pending_text_section = None
+            continue
+        text_section = _parse_linker_map_text_section_only_line(line)
+        if text_section is not None:
+            pending_text_section = text_section
+            continue
+        if line.strip():
+            pending_text_section = None
 
     functions: list[dict[str, Any]] = []
     ordered = sorted(symbol_starts)
@@ -7066,6 +7090,41 @@ def _parse_linker_map_text_boundary_line(line: str, binary: StageABinary) -> int
     if _executable_section_for_rva(binary, rva) is None:
         return None
     return rva
+
+
+def _parse_linker_map_text_boundary_continuation_line(line: str, binary: StageABinary) -> int | None:
+    match = re.match(r"^\s*(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\b", line)
+    if match is None:
+        return None
+    address = int(match.group(1), 16)
+    if address >= binary.image_base:
+        rva = address - binary.image_base
+    else:
+        rva = address
+    if _executable_section_for_rva(binary, rva) is None:
+        return None
+    return rva
+
+
+def _parse_linker_map_text_section_only_line(line: str) -> str | None:
+    match = re.match(r"^\s*(\.text\S*)\s*$", line)
+    return match.group(1) if match is not None else None
+
+
+def _linker_map_text_fragment_symbol(line: str) -> str | None:
+    match = re.match(r"^\s*(\.text\S*)\b", line)
+    if match is None:
+        return None
+    return _linker_map_section_fragment_symbol(match.group(1))
+
+
+def _linker_map_section_fragment_symbol(section_name: str) -> str | None:
+    if "$" not in section_name:
+        return None
+    fragment = section_name.split("$", 1)[1].strip()
+    if not fragment or fragment.startswith("."):
+        return None
+    return fragment
 
 
 def _parse_linker_map_symbol_line(line: str, binary: StageABinary) -> tuple[int, str] | None:
