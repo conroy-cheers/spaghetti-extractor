@@ -2972,6 +2972,63 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["_gnu_exception_handler@4"]["line_start"], 10)
         self.assertEqual(by_function["_gnu_exception_handler@4"]["aliases"], ["_gnu_exception_handler@4", "_gnu_exception_handler_4"])
 
+    def test_decompiled_c_source_map_aliases_generated_helper_to_section_gap_entry(self):
+        source = "\n".join(
+            [
+                "extern uintptr_t dtoa_lock();",
+                "static void stage_b_dtoa_lock_cleanup(void) {",
+                "}",
+                "uintptr_t dtoa_lock(void) {",
+                "  return 0;",
+                "}",
+            ]
+        )
+        reference_contract = {
+            "constraints": {
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0724",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0724",
+                                        "rva_start": 0xAB80,
+                                        "rva_end": 0xAB94,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=[],
+            source_language="c",
+            implementation_mode="decompiled-c",
+            reference_contract_payload=reference_contract,
+            decompiler_functions=[
+                {
+                    "name": "dtoa_lock",
+                    "aliases": ["dtoa_lock"],
+                    "rva_start": 0xAB80,
+                    "rva_end": 0xAC13,
+                }
+            ],
+        )
+
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        helper = by_function["dtoa_lock"]
+        self.assertEqual(helper["source_kind"], "generated_helper_from_decompiler_section_gap")
+        self.assertEqual(helper["line_start"], 4)
+        self.assertIn("section-gap--text-0724", helper["aliases"])
+        self.assertEqual(helper["reference_section_gap"]["name"], "section-gap--text-0724")
+        self.assertEqual(helper["rva_start"], 0xAB80)
+
     def test_decompiled_c_renderer_returns_import_tail_call_result(self):
         source = _render_decompiled_c_source(
             target_name="jq",

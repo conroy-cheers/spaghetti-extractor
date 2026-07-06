@@ -4,7 +4,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import capstone
 
@@ -102,6 +102,7 @@ _DECOMPILED_C_DTOA_LOCK_HELPER_IMPORTS = (
     "Sleep",
     "__crt_atexit",
 )
+_DECOMPILED_C_GENERATED_HELPER_SYMBOLS = (_DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL,)
 
 _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
 
@@ -588,6 +589,11 @@ def stage_b_generate_skeleton(
     allowed_inputs = [_pe_input_kind(binary), "linker-map", "decompiler-export", "capstone-disassembly"]
     if reference_contract is not None or coverage_reference_contract_path is not None:
         allowed_inputs.append("stage-a-reference-contract")
+    source_map_decompiler_functions = (
+        _parse_decompiler_export_functions(Path(decompiler_export), binary, include_decompiler_code=False)
+        if decompiler_export is not None and reference_contract_payload is not None
+        else []
+    )
 
     manifest: dict[str, Any] = {
         "format": "stage-b-skeleton-v1",
@@ -627,6 +633,8 @@ def stage_b_generate_skeleton(
             functions=functions,
             source_language=source_language,
             implementation_mode=implementation_mode,
+            reference_contract_payload=reference_contract_payload,
+            decompiler_functions=source_map_decompiler_functions,
         ),
         "counts": {
             "functions": len(functions),
@@ -1510,6 +1518,15 @@ def _optional_int(value: Any) -> int | None:
         return int(text, 0)
     return None
 
+
+def _dedupe_strings(values: Iterable[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
 def _decompiler_function_summary(row: dict[str, Any], *, include_code: bool = False) -> dict[str, Any] | None:
     decompiler = row.get("decompiler")
     if not isinstance(decompiler, dict):
@@ -1669,6 +1686,8 @@ def _skeleton_source_map(
     functions: list[dict[str, Any]],
     source_language: str,
     implementation_mode: str,
+    reference_contract_payload: dict[str, Any] | None = None,
+    decompiler_functions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     lines = source_text.splitlines()
     anchors: list[dict[str, Any]] = []
@@ -1706,6 +1725,17 @@ def _skeleton_source_map(
                 "rva_end": function.get("rva_end"),
             }
         )
+    anchors.extend(
+        _skeleton_generated_helper_source_anchors(
+            lines,
+            source_rel=source_rel,
+            source_language=source_language,
+            implementation_mode=implementation_mode,
+            existing_functions={str(anchor.get("function") or "") for anchor in anchors},
+            reference_contract_payload=reference_contract_payload,
+            decompiler_functions=decompiler_functions or [],
+        )
+    )
     anchors.sort(key=lambda item: (str(item["file"]), int(item["line_start"]), str(item["function"])))
     for index, anchor in enumerate(anchors):
         next_line = anchors[index + 1]["line_start"] if index + 1 < len(anchors) else len(lines) + 1
@@ -1718,6 +1748,155 @@ def _skeleton_source_map(
         "functions": anchors,
         "counts": {"functions": len(anchors)},
     }
+
+
+def _skeleton_generated_helper_source_anchors(
+    lines: list[str],
+    *,
+    source_rel: Path,
+    source_language: str,
+    implementation_mode: str,
+    existing_functions: set[str],
+    reference_contract_payload: dict[str, Any] | None,
+    decompiler_functions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if source_language != "c" or reference_contract_payload is None:
+        return []
+    helper_aliases = _skeleton_decompiler_section_gap_helper_aliases(reference_contract_payload, decompiler_functions)
+    anchors: list[dict[str, Any]] = []
+    for helper_name in _DECOMPILED_C_GENERATED_HELPER_SYMBOLS:
+        if helper_name in existing_functions:
+            continue
+        helper = helper_aliases.get(helper_name)
+        if helper is None:
+            continue
+        line = _source_exact_function_definition_line(lines, helper_name)
+        if line is None:
+            line = _source_anchor_line(
+                lines,
+                helper_name,
+                source_language=source_language,
+                implementation_mode=implementation_mode,
+                aliases=helper.get("aliases", []),
+                prefer_definition=True,
+            )
+        if line is None:
+            continue
+        anchors.append(
+            {
+                "function": helper_name,
+                "aliases": helper["aliases"],
+                "file": source_rel.as_posix(),
+                "line_start": line,
+                "line_end": line,
+                "source_kind": "generated_helper_from_decompiler_section_gap",
+                "rva_start": helper.get("rva_start"),
+                "rva_end": helper.get("rva_end"),
+                "reference_section_gap": helper.get("reference_section_gap"),
+            }
+        )
+    return anchors
+
+
+def _skeleton_decompiler_section_gap_helper_aliases(
+    reference_contract_payload: dict[str, Any],
+    decompiler_functions: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    gap_entries = _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload)
+    helpers: dict[str, dict[str, Any]] = {}
+    for function in decompiler_functions:
+        name = str(function.get("name") or "")
+        if name not in _DECOMPILED_C_GENERATED_HELPER_SYMBOLS:
+            continue
+        rva_start = _optional_int(function.get("rva_start"))
+        if rva_start is None:
+            continue
+        gap = gap_entries.get(rva_start)
+        if gap is None:
+            continue
+        aliases = _dedupe_strings(
+            [
+                name,
+                *[alias for alias in function.get("aliases", []) if isinstance(alias, str)],
+                str(gap["name"]),
+                *[str(block_id) for block_id in gap.get("block_ids", []) if block_id],
+            ]
+        )
+        helpers[name] = {
+            "aliases": aliases,
+            "rva_start": rva_start,
+            "rva_end": function.get("rva_end"),
+            "reference_section_gap": gap,
+        }
+    return helpers
+
+
+def _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    constraints = reference_contract_payload.get("constraints") if isinstance(reference_contract_payload.get("constraints"), dict) else {}
+    abi = constraints.get("abi_callsites") if isinstance(constraints.get("abi_callsites"), dict) else {}
+    original = abi.get("original") if isinstance(abi.get("original"), dict) else {}
+    functions = original.get("functions") if isinstance(original.get("functions"), list) else []
+    result: dict[int, dict[str, Any]] = {}
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "")
+        if not name.startswith("section-gap-"):
+            continue
+        blocks = function.get("blocks") if isinstance(function.get("blocks"), list) else []
+        block_ids: list[str] = []
+        starts: list[int] = []
+        ends: list[int] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            start = _optional_int(block.get("rva_start"))
+            end = _optional_int(block.get("rva_end"))
+            if start is None or end is None or end <= start:
+                continue
+            starts.append(start)
+            ends.append(end)
+            block_id = block.get("block_id")
+            if isinstance(block_id, str) and block_id:
+                block_ids.append(block_id)
+        if not starts:
+            continue
+        entry_start = min(starts)
+        if entry_start in result:
+            continue
+        result[entry_start] = {
+            "name": name,
+            "rva_start": entry_start,
+            "rva_end": max(ends),
+            "block_ids": _dedupe_strings(block_ids),
+        }
+    return result
+
+
+def _source_exact_function_definition_line(lines: list[str], name: str) -> int | None:
+    if not name:
+        return None
+    pattern = re.compile(r"\b" + re.escape(name) + r"\s*\(")
+    for index, line in enumerate(lines, start=1):
+        if pattern.search(line) is None:
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("/*", "//", "extern ", "typedef ", "#")) or stripped.endswith(";"):
+            continue
+        if "{" in stripped or _source_next_nonempty_line(lines, index + 1) == "{":
+            return index
+        for lookahead in range(index + 1, min(len(lines), index + 16) + 1):
+            lookahead_stripped = lines[lookahead - 1].strip()
+            if not lookahead_stripped:
+                continue
+            if lookahead_stripped.startswith(("/*", "//", "extern ", "typedef ", "#")):
+                break
+            if lookahead_stripped.endswith(";"):
+                break
+            if "{" in lookahead_stripped:
+                return index
+    return None
+
 
 def _source_anchor_line(
     lines: list[str],
