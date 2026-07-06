@@ -38,10 +38,13 @@ _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
         "___w64_mingwthr_add_key_dtor",
         "___w64_mingwthr_remove_key_dtor",
         "__do_global_dtors",
+        "__d2b_D2A",
         "___dyn_tls_dtor_12",
         "___dyn_tls_init_12",
+        "___mingw_pformat",
         "__mingw_enum_import_library_names",
         "__mingw_raise_matherr",
+        "__strcp_D2A",
         "__tlregdtor",
         "___mingw_TLScallback",
         "_FindPESectionByName",
@@ -54,6 +57,14 @@ _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES = frozenset(
         "___dyn_tls_dtor_12",
         "___dyn_tls_init_12",
         "___mingw_TLScallback",
+        "___mingw_pformat",
+        "__d2b_D2A",
+        "__strcp_D2A",
+    }
+)
+_DECOMPILED_C_MINGW_CRT_FORCED_ROOT_FUNCTION_NAMES = frozenset(
+    {
+        "___mingw_pformat",
     }
 )
 _DECOMPILED_C_STACK_PROBE_HELPER_MACROS = {
@@ -146,6 +157,7 @@ def stage_b_generate_link_roots(
 
     roots: list[dict[str, Any]] = []
     import_thunk_roots: list[dict[str, Any]] = []
+    runtime_crt_roots: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
     for key in sorted(contract_by_key):
         contract_entries = contract_by_key[key]
@@ -176,6 +188,9 @@ def stage_b_generate_link_roots(
                 skeleton_evidence = _missing_root_skeleton_evidence(item, skeleton_by_key=skeleton_by_key, skeleton_by_start=skeleton_by_start)
                 if skeleton_evidence is not None:
                     missing_item["skeleton"] = skeleton_evidence
+                    runtime_crt_root = _runtime_crt_missing_root(missing_item)
+                    if runtime_crt_root is not None:
+                        runtime_crt_roots.append(runtime_crt_root)
                 missing.append(missing_item)
             continue
         contract = contract_entries[0]
@@ -211,11 +226,15 @@ def stage_b_generate_link_roots(
         for root in import_thunk_roots
         if root.get("symbol")
     ]
+    runtime_crt_root_symbols = sorted({root["object_symbol"] for root in runtime_crt_roots})
+    runtime_crt_linker_flags = [f"-Wl,--undefined,{symbol}" for symbol in runtime_crt_root_symbols]
     (out / "link-root-symbols.txt").write_text("".join(f"{symbol}\n" for symbol in root_symbols), encoding="utf-8")
     (out / "link-root-flags.txt").write_text("".join(f"{flag}\n" for flag in linker_flags), encoding="utf-8")
     (out / "budgeted-link-root-flags.txt").write_text("".join(f"{flag}\n" for flag in budgeted_linker_flags), encoding="utf-8")
     (out / "import-thunk-root-flags.txt").write_text("".join(f"{flag}\n" for flag in import_thunk_linker_flags), encoding="utf-8")
+    (out / "runtime-crt-root-flags.txt").write_text("".join(f"{flag}\n" for flag in runtime_crt_linker_flags), encoding="utf-8")
     write_json(out / "import-thunk-roots.json", {"format": "stage-b-import-thunk-roots-v1", "roots": import_thunk_roots})
+    write_json(out / "runtime-crt-roots.json", {"format": "stage-b-runtime-crt-roots-v1", "roots": runtime_crt_roots})
     missing_by_representation = _missing_root_representation_counts(missing)
     result = {
         "format": "stage-b-link-roots-v1",
@@ -236,13 +255,17 @@ def stage_b_generate_link_roots(
             "budgeted_link_root_flags": str(out / "budgeted-link-root-flags.txt"),
             "import_thunk_roots": str(out / "import-thunk-roots.json"),
             "import_thunk_root_flags": str(out / "import-thunk-root-flags.txt"),
+            "runtime_crt_roots": str(out / "runtime-crt-roots.json"),
+            "runtime_crt_root_flags": str(out / "runtime-crt-root-flags.txt"),
         },
         "roots": roots,
         "budgeted_roots": budgeted_roots,
         "import_thunk_roots": import_thunk_roots,
+        "runtime_crt_roots": runtime_crt_roots,
         "linker_flags": linker_flags,
         "budgeted_linker_flags": budgeted_linker_flags,
         "import_thunk_linker_flags": import_thunk_linker_flags,
+        "runtime_crt_linker_flags": runtime_crt_linker_flags,
         "issues": issues,
         "counts": {
             "contract_functions": len(contract_functions),
@@ -251,6 +274,8 @@ def stage_b_generate_link_roots(
             "budgeted_roots": len(budgeted_roots),
             "import_thunk_roots": len(import_thunk_roots),
             "import_thunk_roots_with_linker_flags": len(import_thunk_linker_flags),
+            "runtime_crt_roots": len(runtime_crt_roots),
+            "runtime_crt_roots_with_linker_flags": len(runtime_crt_linker_flags),
             "missing": len(missing),
             "missing_with_skeleton_evidence": sum(1 for item in missing if isinstance(item.get("skeleton"), dict)),
             "missing_by_skeleton_representation": missing_by_representation,
@@ -269,6 +294,26 @@ def stage_b_generate_link_roots(
     }
     write_json(out / "link-roots.json", result)
     return result
+
+def _runtime_crt_missing_root(missing_item: dict[str, Any]) -> dict[str, Any] | None:
+    skeleton = missing_item.get("skeleton") if isinstance(missing_item.get("skeleton"), dict) else {}
+    if skeleton.get("representation") != "runtime_entry_replaced_by_generated_bridge":
+        return None
+    source_name = str(skeleton.get("name") or "")
+    if source_name not in _DECOMPILED_C_MINGW_CRT_FORCED_ROOT_FUNCTION_NAMES:
+        return None
+    contract_function = str(missing_item.get("name") or "")
+    if _has_linker_stdcall_suffix(contract_function):
+        return None
+    return {
+        "contract_function": contract_function,
+        "source_function": source_name,
+        "object_symbol": source_name,
+        "match_key": missing_item.get("match_key"),
+        "rva_start": missing_item.get("rva_start"),
+        "rva_end": missing_item.get("rva_end"),
+        "reason": "omitted_mingw_crt_support_function_requires_archive_root",
+    }
 
 def _stage_b_import_thunk_coff_symbol(root: dict[str, Any]) -> str:
     symbol = str(root.get("symbol") or "")

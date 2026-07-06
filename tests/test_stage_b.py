@@ -779,6 +779,55 @@ class StageBTests(unittest.TestCase):
             missing = result["issues"][0]["details"]["functions"][0]
             self.assertEqual(missing["skeleton"]["representation"], "runtime_entry_replaced_by_generated_bridge")
 
+    def test_generate_link_roots_emits_forced_roots_for_omitted_mingw_crt_support(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "jq.exe", b"\xc3")
+            linker_map = root / "jq.map"
+            linker_map.write_text("                0x00401000                __mingw_pformat\n", encoding="utf-8")
+            skeleton_functions = root / "functions.json"
+            skeleton_functions.write_text(
+                json.dumps(
+                    {
+                        "format": "stage-b-functions-v1",
+                        "target_name": "jq",
+                        "functions": [
+                            {
+                                "name": "___mingw_pformat",
+                                "aliases": ["__mingw_pformat"],
+                                "rva_start": 0x1000,
+                                "rva_end": 0x1BEC,
+                                "decompiler": {"status": "success"},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            obj = root / "candidate.o"
+            obj.write_bytes(b"not really coff")
+            nm = root / "fake-nm"
+            nm.write_text("#!/bin/sh\n:", encoding="utf-8")
+            nm.chmod(0o755)
+
+            result = stage_b_generate_link_roots(
+                original=original,
+                linker_map_original=linker_map,
+                skeleton_functions=skeleton_functions,
+                object_file=obj,
+                nm=str(nm),
+                out=root / "roots",
+            )
+
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(result["counts"]["runtime_crt_roots"], 1)
+            self.assertEqual(result["runtime_crt_linker_flags"], ["-Wl,--undefined,___mingw_pformat"])
+            self.assertEqual(
+                (root / "roots" / "runtime-crt-root-flags.txt").read_text(encoding="utf-8"),
+                "-Wl,--undefined,___mingw_pformat\n",
+            )
+            self.assertEqual(result["runtime_crt_roots"][0]["reason"], "omitted_mingw_crt_support_function_requires_archive_root")
+
     def test_generate_link_roots_rejects_ambiguous_object_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2337,6 +2386,36 @@ class StageBTests(unittest.TestCase):
                 },
             },
             {
+                "name": "___mingw_pformat",
+                "rva_start": 0x7FF0,
+                "rva_end": 0x8BDC,
+                "size": 0xBEC,
+                "decompiler": {
+                    "status": "success",
+                    "code": "int __cdecl ___mingw_pformat(uint flags,FILE *stream,int width,byte *fmt,float10 *args) {\n  return width;\n}",
+                },
+            },
+            {
+                "name": "__d2b_D2A",
+                "rva_start": 0x8BE0,
+                "rva_end": 0x8D8E,
+                "size": 0x1AE,
+                "decompiler": {
+                    "status": "success",
+                    "code": "int __cdecl __d2b_D2A(double value) {\n  return 0;\n}",
+                },
+            },
+            {
+                "name": "__strcp_D2A",
+                "rva_start": 0x8D90,
+                "rva_end": 0x8DC4,
+                "size": 0x34,
+                "decompiler": {
+                    "status": "success",
+                    "code": "char * __cdecl __strcp_D2A(char *dst,char *src) {\n  return dst;\n}",
+                },
+            },
+            {
                 "name": "_wmain",
                 "aliases": ["wmain"],
                 "rva_start": 0x490C,
@@ -2362,6 +2441,9 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("int atexit(void)", source)
         self.assertNotIn("ulonglong __fastcall ___dyn_tls_init_12", source)
         self.assertNotIn("undefined8 __cdecl ___mingw_TLScallback", source)
+        self.assertNotIn("int __cdecl ___mingw_pformat", source)
+        self.assertNotIn("int __cdecl __d2b_D2A", source)
+        self.assertNotIn("char * __cdecl __strcp_D2A", source)
         self.assertIn("int __cdecl wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
         self.assertNotIn("int __cdecl _wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
 
@@ -2378,6 +2460,9 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["atexit"]["source_kind"], "omitted_runtime_entry")
         self.assertEqual(by_function["___dyn_tls_init_12"]["source_kind"], "omitted_runtime_helper")
         self.assertEqual(by_function["___mingw_TLScallback"]["source_kind"], "omitted_runtime_helper")
+        self.assertEqual(by_function["___mingw_pformat"]["source_kind"], "omitted_runtime_helper")
+        self.assertEqual(by_function["__d2b_D2A"]["source_kind"], "omitted_runtime_helper")
+        self.assertEqual(by_function["__strcp_D2A"]["source_kind"], "omitted_runtime_helper")
         self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
         self.assertIn("wmain", by_function["_wmain"]["aliases"])
         wmain_line = source.splitlines()[by_function["_wmain"]["line_start"] - 1]
