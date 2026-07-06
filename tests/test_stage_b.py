@@ -2365,6 +2365,63 @@ class StageBTests(unittest.TestCase):
         bridge_line = source.splitlines()[by_function["mainCRTStartup"]["line_start"] - 1]
         self.assertIn("void __cdecl mainCRTStartup(void)", bridge_line)
 
+    def test_decompiled_c_skeleton_omits_stack_probe_helper_body(self):
+        functions = [
+            {
+                "name": "___chkstk_ms",
+                "rva_start": 0x5BF0,
+                "rva_end": 0x5C1A,
+                "size": 0x2A,
+                "decompiler": {
+                    "status": "success",
+                    "code": "\n".join(
+                        [
+                            "uint ___chkstk_ms(void)",
+                            "{",
+                            "  uint in_EAX;",
+                            "  undefined4 *puVar1;",
+                            "  puVar1 = (undefined4 *)&stack0x00000004;",
+                            "  *(undefined4 *)((int)puVar1 - in_EAX) = *(undefined4 *)((int)puVar1 - in_EAX);",
+                            "  return in_EAX;",
+                            "}",
+                        ]
+                    ),
+                },
+            },
+            {
+                "name": "_wmain",
+                "aliases": ["wmain"],
+                "rva_start": 0x490C,
+                "rva_end": 0x4A07,
+                "size": 0xFB,
+                "decompiler": {
+                    "status": "success",
+                    "code": "int _wmain(int argc,wchar_t **argv,wchar_t **envp) {\n  return (int)___chkstk_ms();\n}",
+                },
+            },
+        ]
+        source = _render_skeleton_decompiled_c_source(target_name="jq", functions=functions)
+
+        self.assertIn("static uintptr_t stage_b_stack_probe_size(void)", source)
+        self.assertIn("#define ___chkstk_ms() stage_b_stack_probe_size()", source)
+        self.assertIn("stack-probe helper body omitted", source)
+        self.assertNotIn("extern uintptr_t ___chkstk_ms();", source)
+        self.assertNotIn("__attribute__((weak)) uintptr_t ___chkstk_ms()", source)
+        self.assertNotIn("uint ___chkstk_ms(void)", source)
+        self.assertNotIn("stack0x00000004", source)
+        self.assertIn("return (int)___chkstk_ms();", source)
+
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=functions,
+            source_language="c",
+            implementation_mode="decompiled-c",
+        )
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function["___chkstk_ms"]["source_kind"], "omitted_runtime_helper")
+        self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
+
     def test_decompiled_c_source_map_marks_multiline_definition_and_aliases(self):
         source = "\n".join(
             [
@@ -5177,6 +5234,86 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(result[0]["generated_source_location"]["line_start"], 2100)
         self.assertIn("stack-probe", result[0]["next_action"])
         self.assertEqual(result[0]["evidence"]["candidate_location"]["rva"], 0x2E63)
+
+    def test_explain_delta_classifies_stack_overflow_in_linked_stack_probe(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "___chkstk_ms",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 1176,
+                            "line_end": 1178,
+                            "source_kind": "omitted_runtime_helper",
+                        }
+                    ]
+                }
+            },
+            candidate_functions=[
+                {"name": "__chkstk_ms", "rva_start": 0x2620, "rva_end": 0x264C},
+            ],
+            candidate_binary={"image_base": 0x400000, "size_of_image": 0x20000},
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "crash_kind": "wine_unhandled_stack_overflow",
+                "instruction_address": "0x00402633",
+                "stderr_preview": "wine: Unhandled stack overflow at address 00402633\n",
+                "repair_hints": ["candidate-only crash", "stack overflow during public jq upstream suite"],
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["violated_contract_family"], "candidate_crash")
+        self.assertEqual(result[0]["likely_repair_class"], "stack_probe_or_frame_layout")
+        self.assertEqual(result[0]["original_function"], "__chkstk_ms")
+        self.assertEqual(result[0]["generated_source_location"]["source_kind"], "omitted_runtime_helper")
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["rva"], 0x2633)
+
+    def test_explain_delta_classifies_wmain_stack_scratch_write_fault(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "_wmain",
+                            "aliases": ["wmain"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 6038,
+                            "line_end": 6150,
+                            "source_kind": "decompiled_function",
+                        }
+                    ]
+                }
+            },
+            candidate_functions=[
+                {"name": "_wmain", "rva_start": 0xD074, "rva_end": 0xD3E0},
+            ],
+            candidate_binary={"image_base": 0x400000, "size_of_image": 0x20000},
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "crash_kind": "wine_unhandled_page_fault",
+                "access": "write",
+                "fault_address": "0xFDE90040",
+                "instruction_address": "0x0040D22C",
+                "stderr_preview": "wine: Unhandled page fault on write access to FDE90040 at address 0040D22C\n",
+                "repair_hints": ["candidate-only crash", "inspect ABI and stack scratch recovery"],
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["violated_contract_family"], "candidate_crash")
+        self.assertEqual(result[0]["likely_repair_class"], "stack_scratch_buffer_or_out_param")
+        self.assertEqual(result[0]["original_function"], "_wmain")
+        self.assertEqual(result[0]["generated_source_location"]["line_start"], 6038)
+        self.assertIn("local stack scratch", result[0]["next_action"])
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["rva"], 0xD22C)
 
     def test_explain_delta_ranks_external_module_crash_behind_source_mapped_abi_repairs(self):
         validation = {

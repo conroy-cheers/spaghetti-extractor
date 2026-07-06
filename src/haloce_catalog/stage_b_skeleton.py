@@ -46,6 +46,13 @@ _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
         "atexit",
     }
 )
+_DECOMPILED_C_STACK_PROBE_HELPER_MACROS = {
+    "___chkstk_ms": "stage_b_stack_probe_size()",
+    "___chkstk": "stage_b_stack_probe_size()",
+    "___alloca_probe": "stage_b_stack_probe_size()",
+    "___alloca_probe_8": "stage_b_stack_probe_size()",
+    "___alloca_probe_16": "stage_b_stack_probe_size()",
+}
 
 _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
 
@@ -1645,6 +1652,8 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
     window = "\n".join(lines[max(0, line - 2) : min(len(lines), line + 2)])
     if "MinGW CRT entry body" in window:
         return "omitted_runtime_entry"
+    if "stack-probe helper body omitted" in window:
+        return "omitted_runtime_helper"
     if "import thunk for" in window:
         return "omitted_import_thunk"
     decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
@@ -2023,6 +2032,7 @@ def _render_decompiled_c_source(
         for function in functions
         if not _decompiled_c_is_import_thunk(function)
         and not _decompiled_c_is_runtime_entry(function, runtime_entry_policy=runtime_entry_policy)
+        and not _decompiled_c_is_stack_probe_helper(function)
     ]
     import_thunk_symbols = [
         str(function.get("linkage", {}).get("symbol") or function.get("name") or "")
@@ -2031,6 +2041,8 @@ def _render_decompiled_c_source(
     ]
     import_thunk_alias_symbols = _decompiled_c_import_thunk_alias_symbol_names(functions)
     direct_import_alias_symbols = _decompiled_c_direct_import_alias_symbol_names(functions)
+    runtime_helper_alias_symbols = _decompiled_c_runtime_helper_alias_symbol_names(functions)
+    runtime_helper_aliases = _decompiled_c_runtime_helper_alias_lines(functions)
     runtime_bridge = _decompiled_c_runtime_entry_bridge(functions) if runtime_entry_policy == "bridge" else []
     runtime_bridge_externs = _decompiled_c_runtime_entry_bridge_externs(functions) if runtime_bridge else []
     prototypes = [
@@ -2042,16 +2054,31 @@ def _render_decompiled_c_source(
     ]
     prototypes = [prototype for prototype in prototypes if prototype]
     externs = _decompiled_c_external_prototypes(
-        [*(external_function_names or ()), *import_thunk_symbols, *direct_import_alias_symbols, *runtime_bridge_externs],
+        [
+            *(external_function_names or ()),
+            *import_thunk_symbols,
+            *direct_import_alias_symbols,
+            *runtime_helper_alias_symbols,
+            *runtime_bridge_externs,
+        ],
         implemented_functions,
     )
     data_symbols = _decompiled_c_external_data_symbols(implemented_functions)
     placeholders = _decompiled_c_link_placeholder_definitions(
-        [*(external_function_names or ()), *import_thunk_symbols, *import_thunk_alias_symbols, *direct_import_alias_symbols],
+        [
+            *(external_function_names or ()),
+            *import_thunk_symbols,
+            *import_thunk_alias_symbols,
+            *direct_import_alias_symbols,
+            *runtime_helper_alias_symbols,
+        ],
         implemented_functions,
     )
     preserved_import_thunks = _decompiled_c_preserved_import_thunk_alias_lines(functions)
     import_aliases = _decompiled_c_import_thunk_alias_lines(functions)
+    if runtime_helper_aliases:
+        lines.extend(runtime_helper_aliases)
+        lines.append("")
     if externs:
         lines.extend(externs)
         lines.append("")
@@ -2103,6 +2130,15 @@ def _render_decompiled_c_source(
                 lines.extend(runtime_bridge)
                 lines.append("")
                 runtime_bridge_emitted = True
+            continue
+        if _decompiled_c_is_stack_probe_helper(function):
+            lines.extend(
+                [
+                    f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
+                    "/* MinGW/libgcc stack-probe helper body omitted; supplied by the runtime helper alias above. */",
+                    "",
+                ]
+            )
             continue
         decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
         code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=str(function.get("name") or "")).strip()
@@ -2210,6 +2246,51 @@ def _decompiled_c_is_runtime_entry(function: dict[str, Any], *, runtime_entry_po
     if name in _DECOMPILED_C_RUNTIME_ENTRY_NAMES:
         return True
     return runtime_entry_policy == "mingw-crt" and name in _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES
+
+def _decompiled_c_is_stack_probe_helper(function: dict[str, Any]) -> bool:
+    name = str(function.get("name") or "")
+    if name in _DECOMPILED_C_STACK_PROBE_HELPER_MACROS:
+        return True
+    key = _linker_function_match_key(name)
+    return key in {"chkstk", "chkstk_ms", "alloca_probe", "alloca_probe_8", "alloca_probe_16"} or key.startswith("chkstk_")
+
+def _decompiled_c_runtime_helper_alias_lines(functions: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    helper_symbols = _decompiled_c_runtime_helper_alias_symbol_names(functions)
+    if helper_symbols:
+        lines.extend(
+            [
+                "static uintptr_t stage_b_stack_probe_size(void) {",
+                "    uintptr_t value = 0;",
+                "    __asm__ __volatile__(\"movl %%eax, %0\" : \"=r\"(value));",
+                "    if (value > (uintptr_t)0x10000U) {",
+                "        return 0;",
+                "    }",
+                "    return value;",
+                "}",
+            ]
+        )
+    for left in _decompiled_c_runtime_helper_alias_symbol_names(functions):
+        right = _DECOMPILED_C_STACK_PROBE_HELPER_MACROS.get(left)
+        if right is None or left in seen:
+            continue
+        if not _is_c_identifier(left):
+            continue
+        seen.add(left)
+        lines.append(f"#define {left}() {right}")
+    return lines
+
+def _decompiled_c_runtime_helper_alias_symbol_names(functions: list[dict[str, Any]]) -> list[str]:
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for function in functions:
+        left = str(function.get("name") or "")
+        if left in seen or left not in _DECOMPILED_C_STACK_PROBE_HELPER_MACROS or not _is_c_identifier(left):
+            continue
+        seen.add(left)
+        symbols.append(left)
+    return symbols
 
 def _decompiled_c_runtime_entry_bridge(functions: list[dict[str, Any]]) -> list[str]:
     names = {str(function.get("name") or "") for function in functions}
@@ -2333,6 +2414,8 @@ def _decompiled_c_external_prototypes(
         if symbol in seen or symbol in defined:
             continue
         seen.add(symbol)
+        if symbol in _DECOMPILED_C_STACK_PROBE_HELPER_MACROS:
+            continue
         if not _is_c_identifier(symbol) or _decompiled_c_external_symbol_is_declared_by_headers(symbol):
             continue
         result.append(

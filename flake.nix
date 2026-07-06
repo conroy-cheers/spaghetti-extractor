@@ -3154,7 +3154,12 @@
                 def page_fault:
                   stderr_preview
                   | capture("wine: Unhandled page fault on (?<access>[^ ]+) access to (?<fault_address>[0-9A-Fa-f]+) at address (?<instruction_address>[0-9A-Fa-f]+) \\(thread (?<thread>[0-9A-Fa-f]+)\\)")?;
+                def stack_overflow:
+                  stderr_preview
+                  | capture("wine: Unhandled stack overflow at address (?<instruction_address>[0-9A-Fa-f]+) \\(thread (?<thread>[0-9A-Fa-f]+)\\)")?;
                 (page_fault // {}) as $fault
+                | (stack_overflow // {}) as $stack
+                | (if ($fault | length) > 0 then $fault elif ($stack | length) > 0 then $stack else {} end) as $crash
                 | {
                     format: "stage-b-candidate-crash-v1",
                     source: "stage-b-functional-report",
@@ -3169,16 +3174,25 @@
                       sha256: $functional_report_sha256
                     },
                     case_id: (first_failed_case.id // ""),
-                    status: (if ($fault | length) == 0 then "not_detected" else "detected" end),
-                    crash_kind: (if ($fault | length) == 0 then "" else "wine_unhandled_page_fault" end),
-                    access: ($fault.access // ""),
-                    fault_address: (if $fault.fault_address then "0x\($fault.fault_address)" else null end),
-                    instruction_address: (if $fault.instruction_address then "0x\($fault.instruction_address)" else null end),
-                    thread: ($fault.thread // ""),
+                    status: (if ($crash | length) == 0 then "not_detected" else "detected" end),
+                    crash_kind: (
+                      if ($fault | length) > 0 then "wine_unhandled_page_fault"
+                      elif ($stack | length) > 0 then "wine_unhandled_stack_overflow"
+                      else ""
+                      end
+                    ),
+                    access: ($crash.access // ""),
+                    fault_address: (if $crash.fault_address then "0x\($crash.fault_address)" else null end),
+                    instruction_address: (if $crash.instruction_address then "0x\($crash.instruction_address)" else null end),
+                    thread: ($crash.thread // ""),
                     stderr_preview: stderr_preview,
                     repair_hints: [
                       "candidate-only crash",
-                      "page fault during public jq upstream suite",
+                      (
+                        if ($stack | length) > 0 then "stack overflow during public jq upstream suite"
+                        else "page fault during public jq upstream suite"
+                        end
+                      ),
                       "inspect ABI, stack, hidden sret/out-param, and recovered function-pointer evidence"
                     ]
                   }
@@ -3255,7 +3269,10 @@
                 and .counts.repair_items > 0
                 and .candidate_crash_report != null
                 and ([.repair_items[].violated_contract_family] | index("candidate_crash"))
-                and ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
+                and (
+                  ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
+                  or ([.repair_items[].likely_repair_class] | index("stack_scratch_buffer_or_out_param"))
+                )
               ' "$work/delta/stage-b-delta.json" >/dev/null
 
               mkdir -p "$out"

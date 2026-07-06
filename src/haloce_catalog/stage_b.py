@@ -2526,7 +2526,13 @@ def _stage_b_crash_repair_items(
                 "repair generated stack-frame size, stack-probe helper linkage, or PE stack/layout before "
                 "treating this as a source-level ABI fix"
             )
-        elif "realloc" in text or "stack" in text or "esp" in text:
+        elif _stage_b_crash_looks_like_stack_scratch_fault(crash):
+            repair_class = "stack_scratch_buffer_or_out_param"
+            next_action = (
+                "repair the generated local stack scratch/allocation rewrite or recovered out-param for the "
+                "source-mapped function"
+            )
+        elif "realloc" in text:
             repair_class = "hidden_sret_or_out_param"
     elif location.get("classification") == "outside_candidate_image":
         repair_class = "candidate_crash_external_module"
@@ -2548,6 +2554,17 @@ def _stage_b_crash_repair_items(
             evidence={"crash": crash, "candidate_location": location},
         )
     ]
+
+
+def _stage_b_crash_looks_like_stack_scratch_fault(crash: dict[str, Any]) -> bool:
+    access = str(crash.get("access") or "").lower()
+    kind = str(crash.get("crash_kind") or "").lower()
+    text = json.dumps(crash, sort_keys=True, default=str).lower()
+    if "stack" in text or "esp" in text:
+        return True
+    if access == "write" and kind == "wine_unhandled_page_fault":
+        return True
+    return False
 
 
 def _stage_b_candidate_crash_location(crash: dict[str, Any], candidate_binary: Any | None) -> dict[str, Any]:
@@ -2623,6 +2640,7 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "computed_out_param_or_hidden_sret": 1,
         "runtime_crt_entrypoint_layout": 1,
         "stack_probe_or_frame_layout": 1,
+        "stack_scratch_buffer_or_out_param": 1,
         "abi_function_coverage": 2,
         "runtime_crt_function_coverage": 2,
         "import_thunk_linkage": 2,
@@ -2661,7 +2679,6 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "candidate_crash_external_module": 8,
         "pe_import_table_layout": 8,
         "runtime_crt_stack_bridge": 8,
-        "stack_scratch_buffer_or_out_param": 8,
         "stack_out_param_or_scratch_buffer": 8,
         "jump_table_target": 8,
         "function_mapping": 9,
