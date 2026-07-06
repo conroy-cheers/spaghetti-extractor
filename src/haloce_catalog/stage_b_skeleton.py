@@ -771,6 +771,7 @@ def _reference_contract_function_ranges(payload: dict[str, Any], binary: StageAB
     if not isinstance(rows, list) or not rows:
         raise StageAInputError("Stage A reference contract does not contain function_ranges.functions")
 
+    abi_callsites_by_function = _reference_contract_abi_callsites_by_function(payload)
     functions: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -786,6 +787,13 @@ def _reference_contract_function_ranges(payload: dict[str, Any], binary: StageAB
         if section is None or not section.executable or rva_end > int(section.rva_end):
             raise StageAInputError(f"Stage A reference contract function #{index} is outside an executable section")
         name = str(row.get("name") or f"contract_function_{index:04d}")
+        reference_contract = {
+            "block_ids": list(row.get("block_ids") or []),
+            "candidate": row.get("candidate") if isinstance(row.get("candidate"), dict) else None,
+        }
+        abi_callsites = abi_callsites_by_function.get(name, [])
+        if abi_callsites:
+            reference_contract["abi_callsites"] = abi_callsites
         functions.append(
             {
                 "name": name,
@@ -793,13 +801,65 @@ def _reference_contract_function_ranges(payload: dict[str, Any], binary: StageAB
                 "section": section.name,
                 "rva_start": rva_start,
                 "rva_end": rva_end,
-                "reference_contract": {
-                    "block_ids": list(row.get("block_ids") or []),
-                    "candidate": row.get("candidate") if isinstance(row.get("candidate"), dict) else None,
-                },
+                "reference_contract": reference_contract,
             }
         )
     return functions
+
+
+def _reference_contract_abi_callsites_by_function(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    constraints = payload.get("constraints") if isinstance(payload.get("constraints"), dict) else {}
+    abi = constraints.get("abi_callsites") if isinstance(constraints.get("abi_callsites"), dict) else {}
+    original = abi.get("original") if isinstance(abi.get("original"), dict) else {}
+    functions = original.get("functions") if isinstance(original.get("functions"), list) else []
+    result: dict[str, list[dict[str, Any]]] = {}
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "")
+        if not name:
+            continue
+        callsites = function.get("callsites") if isinstance(function.get("callsites"), list) else []
+        summaries = [
+            summary
+            for callsite in callsites
+            if isinstance(callsite, dict)
+            for summary in [_reference_contract_abi_callsite_summary(callsite)]
+            if summary is not None
+        ]
+        if summaries:
+            result[name] = summaries
+    return result
+
+
+def _reference_contract_abi_callsite_summary(callsite: dict[str, Any]) -> dict[str, Any] | None:
+    target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
+    if target.get("kind") != "direct":
+        return None
+    target_rva = _optional_int(target.get("target_rva"))
+    if target_rva is None:
+        return None
+    return {
+        "id": callsite.get("id"),
+        "block_id": callsite.get("block_id"),
+        "instruction": callsite.get("instruction") if isinstance(callsite.get("instruction"), dict) else {},
+        "target": {"kind": "direct", "target_rva": target_rva},
+        "arguments": _reference_contract_abi_callsite_arguments(callsite),
+    }
+
+
+def _reference_contract_abi_callsite_arguments(callsite: dict[str, Any]) -> list[dict[str, Any]]:
+    inventory = callsite.get("argument_inventory") if isinstance(callsite.get("argument_inventory"), dict) else {}
+    stack_args = inventory.get("stack_args") if isinstance(inventory.get("stack_args"), list) else []
+    arguments: list[dict[str, Any]] = []
+    for arg in sorted([arg for arg in stack_args if isinstance(arg, dict)], key=lambda item: int(item.get("index") or 0)):
+        source = arg.get("source") if isinstance(arg.get("source"), dict) else {}
+        value = source.get("value")
+        if source.get("kind") == "immediate" and isinstance(value, int) and not isinstance(value, bool):
+            arguments.append({"kind": "immediate", "value": value})
+        else:
+            arguments.append({"kind": "unrenderable", "role": arg.get("role")})
+    return arguments
 
 def _skeleton_reference_contract_function_coverage(
     reference_contract_payload: dict[str, Any] | None,
@@ -2353,6 +2413,7 @@ def _render_decompiled_c_source(
     runtime_helper_aliases = _decompiled_c_runtime_helper_alias_lines(functions)
     runtime_bridge = _decompiled_c_runtime_entry_bridge(functions) if runtime_entry_policy == "bridge" else []
     runtime_bridge_externs = _decompiled_c_runtime_entry_bridge_externs(functions) if runtime_bridge else []
+    contract_call_targets = _decompiled_c_contract_call_targets(functions, runtime_entry_policy=runtime_entry_policy)
     prototypes = [
         _decompiled_c_prototype(
             function,
@@ -2461,7 +2522,7 @@ def _render_decompiled_c_source(
             lines.extend(
                 [
                     f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
-                    _decompiled_c_contract_placeholder(function),
+                    _decompiled_c_contract_placeholder(function, call_targets=contract_call_targets),
                     "",
                 ]
             )
@@ -2476,19 +2537,84 @@ def _render_decompiled_c_source(
     return "\n".join(lines)
 
 
-def _decompiled_c_contract_placeholder(function: dict[str, Any]) -> str:
+def _decompiled_c_contract_placeholder(
+    function: dict[str, Any],
+    *,
+    call_targets: dict[int, str] | None = None,
+) -> str:
     name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
     rva_start = int(function.get("rva_start") or 0)
     size = int(function.get("size") or 0)
-    return "\n".join(
-        [
-            f"uintptr_t __cdecl {name}(void)",
-            "{",
-            f"  /* Stage B contract placeholder for missing decompiler body at RVA 0x{rva_start:x}, size {size}. */",
-            "  return 0;",
-            "}",
-        ]
-    )
+    anchors = _decompiled_c_contract_callsite_anchor_lines(function, call_targets=call_targets or {})
+    lines = [
+        f"uintptr_t __cdecl {name}(void)",
+        "{",
+        f"  /* Stage B contract placeholder for missing decompiler body at RVA 0x{rva_start:x}, size {size}. */",
+    ]
+    if anchors:
+        lines.append("  volatile uintptr_t stage_b_contract_anchor = 0;")
+        lines.extend(anchors)
+        lines.append("  return stage_b_contract_anchor;")
+    else:
+        lines.append("  return 0;")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _decompiled_c_contract_call_targets(
+    functions: list[dict[str, Any]],
+    *,
+    runtime_entry_policy: str,
+) -> dict[int, str]:
+    targets: dict[int, str] = {}
+    for function in functions:
+        rva_start = _optional_int(function.get("rva_start"))
+        if rva_start is None:
+            continue
+        name = _decompiled_c_emitted_function_name(function, runtime_entry_policy=runtime_entry_policy)
+        if _is_c_identifier(name):
+            targets[rva_start] = name
+    return targets
+
+
+def _decompiled_c_contract_callsite_anchor_lines(function: dict[str, Any], *, call_targets: dict[int, str]) -> list[str]:
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    callsites = reference_contract.get("abi_callsites") if isinstance(reference_contract.get("abi_callsites"), list) else []
+    lines: list[str] = []
+    for callsite in callsites[:8]:
+        if not isinstance(callsite, dict):
+            continue
+        target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
+        target_rva = _optional_int(target.get("target_rva"))
+        if target_rva is None:
+            continue
+        target_name = call_targets.get(target_rva)
+        if not target_name or not _is_c_identifier(target_name):
+            continue
+        rendered_args = _decompiled_c_contract_callsite_arguments(callsite)
+        if rendered_args is None:
+            continue
+        callsite_id = str(callsite.get("id") or f"callsite:0x{target_rva:x}")
+        instruction = callsite.get("instruction") if isinstance(callsite.get("instruction"), dict) else {}
+        instruction_rva = _optional_int(instruction.get("rva"))
+        suffix = f" at RVA 0x{instruction_rva:x}" if instruction_rva is not None else ""
+        lines.append(f"  /* Stage A direct-call anchor: {callsite_id}{suffix}. */")
+        lines.append(f"  {target_name}({', '.join(rendered_args)});")
+        lines.append(f"  stage_b_contract_anchor ^= (uintptr_t)0x{(instruction_rva if instruction_rva is not None else target_rva):x};")
+    return lines
+
+
+def _decompiled_c_contract_callsite_arguments(callsite: dict[str, Any]) -> list[str] | None:
+    arguments = callsite.get("arguments") if isinstance(callsite.get("arguments"), list) else []
+    rendered: list[str] = []
+    for argument in arguments:
+        if not isinstance(argument, dict) or argument.get("kind") != "immediate":
+            return None
+        value = argument.get("value")
+        if not isinstance(value, int) or isinstance(value, bool):
+            return None
+        rendered.append(str(value))
+    return rendered
 
 def _decompiled_c_is_import_thunk(function: dict[str, Any]) -> bool:
     linkage = function.get("linkage")

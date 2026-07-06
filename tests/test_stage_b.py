@@ -2249,6 +2249,52 @@ class StageBTests(unittest.TestCase):
             self.assertIn("  return (uintptr_t)puVar1;", i2b_source)
             self.assertNotIn("  puVar1[5] = param_1;\n  return 0;", i2b_source)
 
+    def test_decompiled_c_placeholder_preserves_reference_contract_direct_callsites(self):
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "___Balloc_D2A",
+                    "aliases": ["__Balloc_D2A", "___Balloc_D2A"],
+                    "rva_start": 0xACA0,
+                    "rva_end": 0xAD7F,
+                    "size": 0xDF,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "uintptr_t __cdecl ___Balloc_D2A(int param_1)",
+                                "{",
+                                "  return (uintptr_t)param_1;",
+                                "}",
+                            ]
+                        ),
+                    },
+                },
+                {
+                    "name": "__d2b_D2A",
+                    "aliases": ["__d2b_D2A"],
+                    "rva_start": 0xB830,
+                    "rva_end": 0xB9DE,
+                    "size": 0x1AE,
+                    "reference_contract": {
+                        "abi_callsites": [
+                            {
+                                "id": "callsite:__d2b_D2A-0000:b846",
+                                "instruction": {"rva": 0xB846},
+                                "target": {"kind": "direct", "target_rva": 0xACA0},
+                                "arguments": [{"kind": "immediate", "value": 1}],
+                            }
+                        ]
+                    },
+                },
+            ],
+        )
+
+        self.assertIn("Stage A direct-call anchor: callsite:__d2b_D2A-0000:b846 at RVA 0xb846", source)
+        self.assertIn("___Balloc_D2A(1);", source)
+        self.assertIn("stage_b_contract_anchor ^= (uintptr_t)0xb846;", source)
+
     def test_decompiled_c_renderer_materializes_jq_dtoa_lock_helper(self):
         source = _render_decompiled_c_source(
             target_name="jq",
@@ -5148,6 +5194,96 @@ class StageBTests(unittest.TestCase):
             {"stage-a-contract-candidate-validation": 2, "stage-a-unit-contract": 1},
         )
 
+    def test_explain_delta_ranks_explicit_contract_gap_before_candidate_abi_sample(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 2, "callsites": 2},
+                        "candidate_counts": {"functions": 2, "callsites": 1},
+                        "coverage_gaps": {
+                            "incomplete_callsites": [
+                                {
+                                    "name": "__d2b_D2A",
+                                    "match_key": "__d2b_D2A",
+                                    "reference_callsites": 1,
+                                    "candidate_callsites": 0,
+                                    "missing_callsites": 1,
+                                }
+                            ],
+                            "counts": {
+                                "missing_functions": 0,
+                                "incomplete_callsite_functions": 1,
+                                "missing_callsites": 1,
+                            },
+                        },
+                        "candidate_abi": {
+                            "candidate": {
+                                "functions": [
+                                    {
+                                        "name": "_FindPESectionByName",
+                                        "callsites": [
+                                            {
+                                                "id": "callsite:_FindPESectionByName:22df",
+                                                "block_id": "_FindPESectionByName",
+                                                "hidden_sret_or_out_param_evidence": {
+                                                    "status": "candidate",
+                                                    "address_role": "stack_out_param_or_scratch_buffer",
+                                                    "address_source": {
+                                                        "kind": "address",
+                                                        "address_class": "stack_address",
+                                                    },
+                                                },
+                                                "varargs_evidence": {"status": "not_observed"},
+                                                "function_pointer_targets": [],
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "__d2b_D2A",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 1148,
+                            "line_end": 1154,
+                        },
+                        {
+                            "function": "_FindPESectionByName",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 976,
+                            "line_end": 978,
+                            "source_kind": "omitted_runtime_entry",
+                        },
+                    ]
+                }
+            },
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        gap_item = next(item for item in result if item["original_function"] == "__d2b_D2A")
+        sample_item = next(item for item in result if item["original_function"] == "_FindPESectionByName")
+        self.assertEqual(gap_item["evidence"]["source"], "stage-a-contract-candidate-validation")
+        self.assertIn("coverage_gap", gap_item["evidence"])
+        self.assertIn("callsite", sample_item["evidence"])
+        self.assertLess(gap_item["rank"], sample_item["rank"])
+        self.assertEqual(result[0]["original_function"], "__d2b_D2A")
+
     def test_abi_coverage_gap_items_surface_callsite_and_function_mismatch_repairs(self):
         evidence = {
             "coverage_gaps": {
@@ -5821,7 +5957,7 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(crt_item["likely_repair_class"], "runtime_crt_stack_bridge")
         self.assertEqual(crt_item["generated_source_location"]["source_kind"], "omitted_runtime_entry")
         self.assertIn("runtime/CRT support implementation", crt_item["next_action"])
-        self.assertLess(crt_item["rank"], section_gap_item["rank"])
+        self.assertLess(section_gap_item["rank"], crt_item["rank"])
 
     def test_explain_delta_classifies_runtime_crt_function_coverage_gap(self):
         validation = {

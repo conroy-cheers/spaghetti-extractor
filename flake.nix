@@ -2899,6 +2899,16 @@
                   or (
                     ((.counts.by_evidence_source["stage-a-contract-candidate-validation"] // 0) > 0)
                     and .repair_items[0].evidence.source == "stage-a-contract-candidate-validation"
+                    and (
+                      .repair_items[0].evidence
+                      | has("coverage_gap")
+                        or has("missing_function_detail")
+                        or has("section_delta")
+                        or has("entrypoint_delta")
+                        or has("header_delta")
+                        or has("import_delta")
+                        or has("family")
+                    )
                   )
                 )
               ' "$work/delta/stage-b-delta.json" >/dev/null

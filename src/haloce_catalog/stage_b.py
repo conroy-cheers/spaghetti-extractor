@@ -3324,7 +3324,7 @@ def _stage_b_function_for_rva(candidate_functions: list[dict[str, Any]], rva: in
     return None
 
 
-def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, int, str]:
+def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, int, int, str]:
     class_rank = {
         "candidate_crash": 0,
         "candidate_crash_fault_address_context": 0,
@@ -3394,9 +3394,37 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, int, str]:
     }
     return (
         source_rank.get(_stage_b_repair_item_source(item), 4),
+        _stage_b_repair_signal_rank(item),
         class_rank.get(str(item.get("likely_repair_class")), 20),
         str(item.get("original_function") or ""),
     )
+
+
+def _stage_b_repair_signal_rank(item: dict[str, Any]) -> int:
+    source = _stage_b_repair_item_source(item)
+    repair_class = str(item.get("likely_repair_class") or "")
+    if source == "candidate-crash-report":
+        if repair_class == "candidate_crash_external_module":
+            return 3
+        return 0
+    if source != "stage-a-contract-candidate-validation":
+        return 0
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    explicit_contract_keys = {
+        "coverage_gap",
+        "entrypoint_delta",
+        "header_delta",
+        "import_delta",
+        "missing_function_detail",
+        "section_delta",
+    }
+    if explicit_contract_keys & set(evidence):
+        return 0
+    if "family" in evidence:
+        return 1
+    if "callsite" in evidence:
+        return 2
+    return 1
 
 
 def _stage_b_repair_item_source(item: dict[str, Any]) -> str:
