@@ -1113,8 +1113,9 @@ def stage_b_validate_candidate(
 
     pre_stage_a_issues = list(issues)
     pre_stage_a_issue_count = len(issues)
+    stage_a_blocking_preissues = _stage_b_stage_a_blocking_preissues(pre_stage_a_issues)
 
-    if not issues:
+    if not stage_a_blocking_preissues:
         work = out / "generated"
         work.mkdir(parents=True, exist_ok=True)
         functional_coverage = (
@@ -1326,7 +1327,10 @@ def stage_b_extract_candidate_crash(
     diagnostic_stderr_artifact: dict[str, Any] = {}
     diagnostic_stderr_text = ""
     if diagnostic_report is not None and diagnostic_functional_report is not None:
-        diagnostic_case = _stage_b_first_failed_functional_case(diagnostic_report)
+        diagnostic_case = _stage_b_matching_failed_functional_case(
+            diagnostic_report,
+            str(failed_case.get("id") or ""),
+        )
         diagnostic_stderr_artifact = _stage_b_failed_case_stream_artifact(diagnostic_case, "stderr")
         diagnostic_stderr_text = _stage_b_stream_artifact_text(Path(diagnostic_functional_report), diagnostic_stderr_artifact)
     combined_stderr_text = stderr_text + ("\n" + diagnostic_stderr_text if diagnostic_stderr_text else "")
@@ -1379,6 +1383,15 @@ def _stage_b_first_failed_functional_case(report: dict[str, Any]) -> dict[str, A
         if isinstance(case, dict) and case.get("status") != "pass":
             return case
     return {}
+
+
+def _stage_b_matching_failed_functional_case(report: dict[str, Any], case_id: str) -> dict[str, Any]:
+    cases = report.get("cases") if isinstance(report.get("cases"), list) else []
+    if case_id:
+        for case in cases:
+            if isinstance(case, dict) and case.get("id") == case_id and case.get("status") != "pass":
+                return case
+    return _stage_b_first_failed_functional_case(report)
 
 
 def _stage_b_failed_case_stream_artifact(case: dict[str, Any], stream: str) -> dict[str, Any]:
@@ -3250,6 +3263,7 @@ def _stage_b_crash_repair_items(
     )
     location = _stage_b_candidate_crash_location(crash, modules)
     location_module = _stage_b_crash_location_module(location, modules)
+    fault_context = _stage_b_candidate_fault_context_location(crash, modules)
     module_functions = (
         location_module.get("functions")
         if isinstance(location_module, dict) and isinstance(location_module.get("functions"), list)
@@ -3279,6 +3293,20 @@ def _stage_b_crash_repair_items(
                         if isinstance(register_module.get("source_map"), dict)
                         else source_map
                     )
+        if function is None and fault_context is not None:
+            fault_module = _stage_b_crash_location_module(fault_context, modules)
+            if isinstance(fault_module, dict):
+                fault_functions = fault_module.get("functions") if isinstance(fault_module.get("functions"), list) else []
+                fault_rva = fault_context.get("rva")
+                fault_function = _stage_b_function_for_rva(fault_functions, fault_rva) if isinstance(fault_rva, int) else None
+                if fault_function is not None:
+                    function = fault_function
+                    location["candidate_fault_context"] = fault_context
+                    module_source_map = (
+                        fault_module.get("source_map")
+                        if isinstance(fault_module.get("source_map"), dict)
+                        else source_map
+                    )
     if function is not None:
         repair_class = "stack_delta_mismatch"
         module_name = ""
@@ -3302,6 +3330,12 @@ def _stage_b_crash_repair_items(
                     "candidate-only SEH context has a register pointing into this generated function; inspect "
                     "callback, import-thunk, TLS, or ABI state that could hand Wine an invalid runtime pointer"
                 )
+        elif fault_context is not None and "candidate_fault_context" in location:
+            repair_class = "candidate_crash_fault_address_context"
+            next_action = (
+                "candidate-only crash fault address points into this generated function; inspect ABI, import, "
+                "stdio, callback, or out-param state that could hand an external runtime an invalid candidate pointer"
+            )
         elif _stage_b_is_stack_probe_function(function):
             repair_class = "stack_probe_or_frame_layout"
             next_action = (
@@ -3316,6 +3350,14 @@ def _stage_b_crash_repair_items(
             )
         elif "realloc" in text:
             repair_class = "hidden_sret_or_out_param"
+    elif fault_context is not None:
+        repair_class = "candidate_crash_fault_address_context"
+        next_action = (
+            "candidate crash PC is outside the candidate image, but the fault address points into the candidate image; "
+            "inspect ABI/import/stdio pointer recovery and generated read-only data handoff before treating the external "
+            "runtime as the cause"
+        )
+        location["candidate_fault_context"] = fault_context
     elif location.get("classification") == "outside_candidate_image":
         repair_class = "candidate_crash_external_module"
         next_action = (
@@ -3411,6 +3453,26 @@ def _stage_b_candidate_register_context_location(crash: dict[str, Any], modules:
         location["classification"] = "candidate_seh_register"
         location["register"] = register_name
         location["value"] = _stage_b_prefixed_hex(registers.get(register_name))
+        return location
+    return None
+
+
+def _stage_b_candidate_fault_context_location(crash: dict[str, Any], modules: list[dict[str, Any]]) -> dict[str, Any] | None:
+    seh = crash.get("seh_exception") if isinstance(crash.get("seh_exception"), dict) else {}
+    info = seh.get("info") if isinstance(seh.get("info"), dict) else {}
+    for address in (
+        crash.get("fault_address"),
+        seh.get("fault_address"),
+        info.get("1"),
+    ):
+        value = _optional_crash_address_int(address)
+        if value is None:
+            continue
+        location = _stage_b_candidate_location_for_pc(value, modules)
+        if location is None:
+            continue
+        location["classification"] = "candidate_fault_address"
+        location["fault_address"] = _stage_b_prefixed_hex(address)
         return location
     return None
 
@@ -3659,6 +3721,7 @@ def _stage_b_function_for_rva(candidate_functions: list[dict[str, Any]], rva: in
 def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
     class_rank = {
         "candidate_crash": 0,
+        "candidate_crash_fault_address_context": 0,
         "candidate_crash_unmapped": 0,
         "hidden_sret_or_out_param": 1,
         "computed_out_param_or_hidden_sret": 1,
@@ -4824,6 +4887,68 @@ _STAGE_B_BEHAVIORAL_BLOCKING_ISSUES = {
 }
 
 
+_STAGE_B_STAGE_A_NON_BLOCKING_ISSUES = {
+    "functional_binary_binding_contains_original",
+    "functional_binary_command_not_bound",
+    "functional_binary_hash_mismatch",
+    "functional_test_failure",
+    "functional_test_report_binary_hash_mismatch",
+    "functional_test_report_case_count_mismatch",
+    "functional_test_report_case_hash_mismatch",
+    "functional_test_report_case_ids_mismatch",
+    "functional_test_report_case_manifest_hash_mismatch",
+    "functional_test_report_contains_original_runtime_observation",
+    "functional_test_report_coverage_case_manifest_hash_mismatch",
+    "functional_test_report_coverage_kind_mismatch",
+    "functional_test_report_coverage_suite_hash_mismatch",
+    "functional_test_report_coverage_suite_mismatch",
+    "functional_test_report_empty",
+    "functional_test_report_failed",
+    "functional_test_report_failed_case_records",
+    "functional_test_report_failed_cases",
+    "functional_test_report_hash_mismatch",
+    "functional_test_report_incomplete_cases",
+    "functional_test_report_incomplete_coverage_scope",
+    "functional_test_report_missing_case_manifest",
+    "functional_test_report_missing_counts",
+    "functional_test_report_missing_coverage",
+    "functional_test_report_missing_coverage_source",
+    "functional_test_report_missing_required_suite_id",
+    "functional_test_report_missing_source_hash",
+    "functional_test_report_missing_source_revision",
+    "functional_test_report_missing_suite_hash",
+    "functional_test_report_not_upstream",
+    "functional_test_report_original_baseline_failed",
+    "functional_test_report_runner_mismatch",
+    "functional_test_report_target_mismatch",
+    "functional_test_report_wrong_materializer",
+    "functional_test_report_wrong_source_kind",
+    "functional_test_report_wrong_suite_id",
+    "functional_test_report_wrong_suite_kind",
+    "functional_test_report_wrong_suite_name",
+    "functional_report_not_passing",
+    "functional_report_not_upstream",
+    "functional_tests_not_passing",
+    "invalid_functional_test_report",
+    "missing_functional_binary_binding",
+    "missing_functional_binary_bindings",
+    "missing_functional_report",
+    "missing_functional_test_report",
+    "missing_functional_test_suites",
+    "missing_functional_tests",
+    "missing_required_functional_suite",
+    "required_functional_suite_not_passing",
+}
+
+
+def _stage_b_stage_a_blocking_preissues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        issue
+        for issue in issues
+        if str(issue.get("category") or "") not in _STAGE_B_STAGE_A_NON_BLOCKING_ISSUES
+    ]
+
+
 def _stage_b_stage_a_gate(
     *,
     pre_stage_a_issues: list[dict[str, Any]],
@@ -4832,12 +4957,18 @@ def _stage_b_stage_a_gate(
     map_result: dict[str, Any] | None,
 ) -> dict[str, Any]:
     pre_stage_a_categories = _issue_categories(pre_stage_a_issues)
-    behavioral_blockers = [
+    stage_a_blocking_categories = _issue_categories(_stage_b_stage_a_blocking_preissues(pre_stage_a_issues))
+    non_blocking_categories = [
         category
         for category in pre_stage_a_categories
+        if category not in stage_a_blocking_categories
+    ]
+    behavioral_blockers = [
+        category
+        for category in stage_a_blocking_categories
         if category in _STAGE_B_BEHAVIORAL_BLOCKING_ISSUES
     ]
-    if pre_stage_a_categories:
+    if stage_a_blocking_categories:
         reason = "functional_behavior_mismatch" if behavioral_blockers else "pre_stage_a_requirements_incomplete"
         next_action = (
             "repair the Stage B candidate until public expected-output smoke tests pass before invoking Stage A"
@@ -4849,7 +4980,8 @@ def _stage_b_stage_a_gate(
             "ran": False,
             "status": "blocked",
             "reason": reason,
-            "blocking_issue_categories": pre_stage_a_categories,
+            "blocking_issue_categories": stage_a_blocking_categories,
+            "non_blocking_issue_categories": non_blocking_categories,
             "behavioral_mismatch_blocks_stage_a": bool(behavioral_blockers),
             "behavioral_blocking_issue_categories": behavioral_blockers,
             "next_action": next_action,
@@ -4867,6 +4999,7 @@ def _stage_b_stage_a_gate(
             "status": "incomplete",
             "reason": "stage_a_unavailable",
             "blocking_issue_categories": stage_a_categories,
+            "non_blocking_issue_categories": non_blocking_categories,
             "behavioral_mismatch_blocks_stage_a": False,
             "behavioral_blocking_issue_categories": [],
             "next_action": "inspect the Stage A input error and provide supported binaries, maps, and model inputs",
@@ -4876,12 +5009,18 @@ def _stage_b_stage_a_gate(
     map_status = str(map_result.get("status") or "") if isinstance(map_result, dict) else ""
     map_closed = map_result is None or map_status == "pass"
     passed = stage_a_verdict == "pass" and map_closed
+    stage_a_categories = [
+        category
+        for category in _issue_categories(all_issues)
+        if category.startswith("stage_a_")
+    ]
     return {
         "eligible": True,
         "ran": True,
         "status": "pass" if passed else "incomplete",
         "reason": "stage_a_final_pass" if passed else "stage_a_validation_incomplete",
-        "blocking_issue_categories": [] if passed else _issue_categories(all_issues),
+        "blocking_issue_categories": [] if passed else stage_a_categories,
+        "non_blocking_issue_categories": non_blocking_categories,
         "behavioral_mismatch_blocks_stage_a": False,
         "behavioral_blocking_issue_categories": [],
         "next_action": "" if passed else "inspect generated Stage A verdict artifacts and repair the candidate or mapping inputs",
@@ -5779,6 +5918,9 @@ def _render_decompiled_c_source(
         "}",
         "static undefined4 stage_b_jq_jv_array_sized(undefined4 out_value, uint32_t capacity) {",
         "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
+        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
+        "        return out_value;",
+        "    }",
         "    out[0] = 0x86;",
         "    out[1] = 0;",
         "    out[2] = (uint32_t)stage_b_jq_jvp_array_alloc(capacity);",
@@ -5800,6 +5942,13 @@ def _render_decompiled_c_source(
         "    size_t safe_length = length < 0 ? 0U : (size_t)length;",
         "    uint8_t *payload = (uint8_t *)(uintptr_t)stage_b_jq_jvp_string_alloc(safe_length);",
         "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
+        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
+        "        return out_value;",
+        "    }",
+        "    if (safe_length != 0U && (uintptr_t)data < (uintptr_t)0x10000U) {",
+        "        safe_length = 0U;",
+        "        data = (const uint8_t *)0;",
+        "    }",
         "    if (data != (const uint8_t *)0) {",
         "        for (size_t index = 0; index < safe_length; index++) {",
         "            payload[0x10U + index] = data[index];",
@@ -5834,6 +5983,9 @@ def _render_decompiled_c_source(
         "}",
         "static undefined4 stage_b_jq_jv_object(undefined4 out_value) {",
         "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
+        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
+        "        return out_value;",
+        "    }",
         "    out[0] = 0x87;",
         "    out[1] = 8;",
         "    out[2] = (uint32_t)stage_b_jq_jvp_object_alloc(8);",
@@ -6557,6 +6709,7 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
     if function_name == "umain":
         code = _inject_jq_umain_run_tests_fast_path(code)
         code = _normalize_umain_iob_stream_calls(code)
+        code = _normalize_jq_getenv_argument_calls(code)
         code = _normalize_jq_jv_constructor_sret_calls(code)
         code = _normalize_jq_isoption_dispatch_calls(code)
     if function_name == "jq_init":
@@ -6674,6 +6827,12 @@ def _decompiled_c_jq_value_abi_replacement(function_name: str) -> str:
                 "undefined4 __cdecl jv_string(undefined4 param_1,char *param_2)",
                 "{",
                 "  size_t length = 0;",
+                "  if ((uintptr_t)param_1 < (uintptr_t)0x10000U) {",
+                "    return param_1;",
+                "  }",
+                "  if ((uintptr_t)param_2 < (uintptr_t)0x10000U) {",
+                "    param_2 = (char *)0;",
+                "  }",
                 "  if (param_2 != (char *)0) {",
                 "    while (param_2[length] != '\\0') {",
                 "      length++;",
@@ -6899,6 +7058,14 @@ def _normalize_umain_iob_stream_calls(code: str) -> str:
         replace,
         code,
         count=4,
+    )
+
+
+def _normalize_jq_getenv_argument_calls(code: str) -> str:
+    return re.sub(
+        r'(?m)^(\s*)getenv\("JQ_COLORS"\);\s*\n\1([A-Za-z_][A-Za-z0-9_]*)\s*=\s*jq_set_colors\(\);',
+        r'\1\2 = jq_set_colors((char *)getenv("JQ_COLORS"));',
+        code,
     )
 
 

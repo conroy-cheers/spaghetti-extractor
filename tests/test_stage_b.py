@@ -808,9 +808,17 @@ class StageBTests(unittest.TestCase):
     def test_generate_link_roots_emits_forced_roots_for_omitted_mingw_crt_support(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            original = self._write_pe(root / "jq.exe", b"\xc3")
+            original = self._write_pe(root / "jq.exe", b"\xc3" * 0x1BEC)
             linker_map = root / "jq.map"
-            linker_map.write_text("                0x00401000                __mingw_pformat\n", encoding="utf-8")
+            linker_map.write_text(
+                "".join(
+                    [
+                        "                0x00401000                __mingw_pformat\n",
+                        " .text$after    0x00401bec        0x0 synthetic.o\n",
+                    ]
+                ),
+                encoding="utf-8",
+            )
             skeleton_functions = root / "functions.json"
             skeleton_functions.write_text(
                 json.dumps(
@@ -852,7 +860,22 @@ class StageBTests(unittest.TestCase):
                 (root / "roots" / "runtime-crt-root-flags.txt").read_text(encoding="utf-8"),
                 "-Wl,--undefined,___mingw_pformat\n",
             )
-            self.assertEqual(result["runtime_crt_roots"][0]["reason"], "omitted_mingw_crt_support_function_requires_archive_root")
+            self.assertEqual(result["counts"]["budgeted_runtime_crt_roots"], 0)
+            self.assertEqual(result["budgeted_runtime_crt_linker_flags"], [])
+            self.assertEqual(
+                (root / "roots" / "budgeted-runtime-crt-root-flags.txt").read_text(encoding="utf-8"),
+                "",
+            )
+            self.assertEqual(
+                {root["contract_function"]: root["object_symbol"] for root in result["runtime_crt_roots"]},
+                {
+                    "__mingw_pformat": "___mingw_pformat",
+                },
+            )
+            self.assertEqual(
+                {root["reason"] for root in result["runtime_crt_roots"]},
+                {"omitted_mingw_crt_support_function_requires_archive_root"},
+            )
 
     def test_generate_link_roots_rejects_ambiguous_object_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1791,7 +1814,9 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(validation["status"], "incomplete")
             self.assertIn("functional_tests_not_passing", categories)
             self.assertIn("functional_test_report_failed", categories)
-            self.assertFalse((root / "report" / "stage-a").exists())
+            self.assertTrue(validation["stage_a"]["gate"]["ran"])
+            self.assertIn("functional_test_report_failed", validation["stage_a"]["gate"]["non_blocking_issue_categories"])
+            self.assertTrue((root / "report" / "stage-a").exists())
 
     def test_generate_skeleton_from_pe32plus_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2391,6 +2416,39 @@ class StageBTests(unittest.TestCase):
                 "decompiler": {"status": "success", "code": "int atexit(void) { return 0; }"},
             },
             {
+                "name": "_DllMainCRTStartup_12",
+                "aliases": ["_DllMainCRTStartup@12"],
+                "rva_start": 0x1200,
+                "rva_end": 0x1337,
+                "size": 0x137,
+                "decompiler": {
+                    "status": "success",
+                    "code": "int _DllMainCRTStartup_12(void) { return 1; }",
+                },
+            },
+            {
+                "name": "___do_global_ctors",
+                "aliases": ["__do_global_ctors"],
+                "rva_start": 0x4BD0,
+                "rva_end": 0x4C32,
+                "size": 0x62,
+                "decompiler": {
+                    "status": "success",
+                    "code": "int ___do_global_ctors(void) { return 0; }",
+                },
+            },
+            {
+                "name": "___main",
+                "aliases": ["__main"],
+                "rva_start": 0x4C40,
+                "rva_end": 0x4C5F,
+                "size": 0x1F,
+                "decompiler": {
+                    "status": "success",
+                    "code": "int ___main(void) { return ___do_global_ctors(); }",
+                },
+            },
+            {
                 "name": "___dyn_tls_init_12",
                 "rva_start": 0x4CB0,
                 "rva_end": 0x4D35,
@@ -2409,6 +2467,36 @@ class StageBTests(unittest.TestCase):
                 "decompiler": {
                     "status": "success",
                     "code": "undefined8 __cdecl ___mingw_TLScallback(undefined4 a,uint b) {\n  return 0;\n}",
+                },
+            },
+            {
+                "name": "__GetPEImageBase",
+                "aliases": ["_GetPEImageBase"],
+                "rva_start": 0x5A40,
+                "rva_end": 0x5A7C,
+                "size": 0x3C,
+                "decompiler": {
+                    "status": "success",
+                    "code": "void *__GetPEImageBase(void) { return (void *)0x400000; }",
+                },
+            },
+            {
+                "name": "_gnu_exception_handler@4",
+                "aliases": ["_gnu_exception_handler_4"],
+                "rva_start": 0x5370,
+                "rva_end": 0x5504,
+                "size": 0x194,
+                "decompiler": {"status": "incomplete", "code": ""},
+            },
+            {
+                "name": "__pei386_runtime_relocator",
+                "aliases": ["_pei386_runtime_relocator"],
+                "rva_start": 0x4F90,
+                "rva_end": 0x52F0,
+                "size": 0x360,
+                "decompiler": {
+                    "status": "success",
+                    "code": "int __pei386_runtime_relocator(void) { return 0; }",
                 },
             },
             {
@@ -2465,11 +2553,17 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("void __cdecl mainCRTStartup(void)", source)
         self.assertNotIn("__wgetmainargs", source)
         self.assertNotIn("int atexit(void)", source)
+        self.assertNotIn("int _DllMainCRTStartup_12(void)", source)
+        self.assertNotIn("int ___do_global_ctors(void)", source)
+        self.assertNotIn("int ___main(void)", source)
         self.assertNotIn("ulonglong __fastcall ___dyn_tls_init_12", source)
         self.assertNotIn("undefined8 __cdecl ___mingw_TLScallback", source)
+        self.assertNotIn("void *__GetPEImageBase(void)", source)
+        self.assertNotIn("Stage B contract placeholder for missing decompiler body at RVA 0x5370", source)
+        self.assertNotIn("int __pei386_runtime_relocator(void)", source)
         self.assertNotIn("int __cdecl ___mingw_pformat", source)
-        self.assertNotIn("int __cdecl __d2b_D2A", source)
-        self.assertNotIn("char * __cdecl __strcp_D2A", source)
+        self.assertIn("int __cdecl __d2b_D2A", source)
+        self.assertIn("char * __cdecl __strcp_D2A", source)
         self.assertIn("int __cdecl wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
         self.assertNotIn("int __cdecl _wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
 
@@ -2487,8 +2581,8 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["___dyn_tls_init_12"]["source_kind"], "omitted_runtime_helper")
         self.assertEqual(by_function["___mingw_TLScallback"]["source_kind"], "omitted_runtime_helper")
         self.assertEqual(by_function["___mingw_pformat"]["source_kind"], "omitted_runtime_helper")
-        self.assertEqual(by_function["__d2b_D2A"]["source_kind"], "omitted_runtime_helper")
-        self.assertEqual(by_function["__strcp_D2A"]["source_kind"], "omitted_runtime_helper")
+        self.assertEqual(by_function["__d2b_D2A"]["source_kind"], "decompiled_function")
+        self.assertEqual(by_function["__strcp_D2A"]["source_kind"], "decompiled_function")
         self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
         self.assertIn("wmain", by_function["_wmain"]["aliases"])
         wmain_line = source.splitlines()[by_function["_wmain"]["line_start"] - 1]
@@ -2874,8 +2968,12 @@ class StageBTests(unittest.TestCase):
 
         self.assertIn("static uintptr_t stage_b_jq_jvp_array_alloc(uint32_t capacity)", source)
         self.assertIn("static undefined4 stage_b_jq_jv_string_sized", source)
+        self.assertIn("if ((uintptr_t)out < (uintptr_t)0x10000U)", source)
+        self.assertIn("if (safe_length != 0U && (uintptr_t)data < (uintptr_t)0x10000U)", source)
         self.assertIn("uintptr_t __cdecl jvp_array_alloc()\n{\n  return stage_b_jq_jvp_array_alloc(0);\n}", source)
         self.assertIn("undefined4 __cdecl jv_array(undefined4 param_1)\n{\n  return stage_b_jq_jv_array_sized(param_1,0);\n}", source)
+        self.assertIn("if ((uintptr_t)param_1 < (uintptr_t)0x10000U)", source)
+        self.assertIn("if ((uintptr_t)param_2 < (uintptr_t)0x10000U)", source)
         self.assertIn("return stage_b_jq_jv_string_sized(param_1,(const uint8_t *)param_2,(int)length);", source)
         self.assertIn("undefined4 __cdecl jv_object(undefined4 param_1)\n{\n  return stage_b_jq_jv_object(param_1);\n}", source)
         self.assertNotIn("int in_EAX;", source)
@@ -2977,6 +3075,36 @@ class StageBTests(unittest.TestCase):
         self.assertIn("(*(code *)puVar1)(2);", source)
         self.assertNotIn("___acrt_iob_func)();", source)
         self.assertNotIn("puVar1)();", source)
+
+    def test_decompiled_c_renderer_recovers_jq_set_colors_getenv_argument(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "umain",
+                    "rva_start": 0x245E,
+                    "rva_end": 0x2490,
+                    "size": 0x32,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "uintptr_t umain(int argc,undefined4 *argv)",
+                                "{",
+                                "  int iVar5;",
+                                "  getenv(\"JQ_COLORS\");",
+                                "  iVar5 = jq_set_colors();",
+                                "  return iVar5;",
+                                "}",
+                            ]
+                        ),
+                    },
+                }
+            ],
+        )
+
+        self.assertIn('iVar5 = jq_set_colors((char *)getenv("JQ_COLORS"));', source)
+        self.assertNotIn('getenv("JQ_COLORS");\n  iVar5 = jq_set_colors();', source)
 
     def test_decompiled_c_renderer_recovers_jq_jv_constructor_return_buffers(self):
         source = _render_decompiled_c_source(
@@ -3809,6 +3937,81 @@ class StageBTests(unittest.TestCase):
             self.assertIn("missing_functional_tests", categories)
             self.assertFalse((root / "report" / "stage-a").exists())
 
+    def test_validate_candidate_runs_stage_a_contract_before_functional_evidence_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = self._write_map(root / "original.map", "tiny")
+            candidate_map = self._write_map(root / "candidate.map", "tiny")
+            skeleton_dir = root / "skeleton"
+            stage_b_generate_skeleton(
+                original=original,
+                linker_map=original_map,
+                target_name="jq",
+                out_dir=skeleton_dir,
+            )
+            provenance_dir = root / "provenance"
+            stage_b_generate_candidate_provenance(
+                target_name="jq",
+                skeleton_manifest=skeleton_dir / "manifest.json",
+                candidate=candidate,
+                build_target="i686-w64-mingw32",
+                build_compiler="i686-w64-mingw32-cc",
+                out=provenance_dir,
+            )
+            reference_block_map = root / "reference-block-map.json"
+            reference_layout = root / "reference-layout-contract.json"
+            reference_report = root / "reference-stage-a"
+            reference_contract = root / "reference-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=reference_block_map,
+                layout_contract_out=reference_layout,
+            )
+            with _LeanCheckedMock():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=reference_block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=reference_report,
+                    layout_contract=reference_layout,
+                )
+                stage_a_export_reference_contract(
+                    original=original,
+                    candidate=candidate,
+                    mapping=reference_block_map,
+                    validation_report=reference_report,
+                    layout_contract=reference_layout,
+                    out=reference_contract,
+                )
+                result = stage_b_validate_candidate(
+                    original=original,
+                    candidate=candidate,
+                    linker_map_original=original_map,
+                    linker_map_candidate=candidate_map,
+                    skeleton_manifest=skeleton_dir / "manifest.json",
+                    candidate_provenance=provenance_dir / "candidate-provenance.json",
+                    reference_contract=reference_contract,
+                    target_name="jq",
+                    out=root / "report",
+                )
+
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(result["stage_a"]["verdict"], "pass")
+            self.assertTrue(result["stage_a"]["gate"]["ran"])
+            self.assertEqual(result["stage_a"]["gate"]["status"], "pass")
+            categories = {issue["category"] for issue in result["issues"]}
+            self.assertIn("missing_functional_tests", categories)
+            self.assertIn("missing_functional_test_suites", categories)
+            self.assertIn("missing_required_functional_suite", categories)
+            self.assertIn("missing_functional_tests", result["stage_a"]["gate"]["non_blocking_issue_categories"])
+            self.assertTrue((root / "report" / "stage-a").exists())
+
     def test_stage_a_direct_stage_b_rule_requires_checked_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3966,13 +4169,13 @@ class StageBTests(unittest.TestCase):
             self.assertIn("functional_test_report_failed", categories)
             self.assertIn("functional_test_report_failed_cases", categories)
             self.assertEqual(result["stage_a"]["gate"]["status"], "blocked")
-            self.assertEqual(result["stage_a"]["gate"]["reason"], "functional_behavior_mismatch")
+            self.assertEqual(result["stage_a"]["gate"]["reason"], "pre_stage_a_requirements_incomplete")
             self.assertFalse(result["stage_a"]["gate"]["eligible"])
             self.assertFalse(result["stage_a"]["gate"]["ran"])
-            self.assertTrue(result["stage_a"]["gate"]["behavioral_mismatch_blocks_stage_a"])
+            self.assertFalse(result["stage_a"]["gate"]["behavioral_mismatch_blocks_stage_a"])
             self.assertIn(
                 "functional_test_report_failed",
-                result["stage_a"]["gate"]["behavioral_blocking_issue_categories"],
+                result["stage_a"]["gate"]["non_blocking_issue_categories"],
             )
             diagnostics = result["functional_diagnostics"]
             self.assertEqual(diagnostics["status"], "fail")
@@ -4044,7 +4247,9 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["status"], "incomplete")
             self.assertIn("required_functional_suite_not_passing", categories)
             self.assertNotIn("missing_required_functional_suite", categories)
-            self.assertFalse((root / "report" / "stage-a").exists())
+            self.assertTrue(result["stage_a"]["gate"]["ran"])
+            self.assertIn("required_functional_suite_not_passing", result["stage_a"]["gate"]["non_blocking_issue_categories"])
+            self.assertTrue((root / "report" / "stage-a").exists())
 
     def test_validate_candidate_rejects_smoke_report_without_required_upstream_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4174,7 +4379,9 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["status"], "incomplete")
             self.assertIn("functional_test_report_missing_source_hash", categories)
             self.assertIn("functional_test_report_wrong_materializer", categories)
-            self.assertFalse((root / "report" / "stage-a").exists())
+            self.assertTrue(result["stage_a"]["gate"]["ran"])
+            self.assertIn("functional_test_report_wrong_materializer", result["stage_a"]["gate"]["non_blocking_issue_categories"])
+            self.assertTrue((root / "report" / "stage-a").exists())
 
     def test_validate_candidate_rejects_wrong_architecture_candidate_before_stage_a(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5787,6 +5994,11 @@ class StageBTests(unittest.TestCase):
                 status="fail",
                 candidate_binary=candidate,
             )
+            noisy_diagnostic_stderr = root / "diagnostic-version.stderr"
+            noisy_diagnostic_stderr.write_text(
+                "002c:fixme:ntdll:init_logical_proc_info diagnostic noise before the real failing case\n",
+                encoding="utf-8",
+            )
             diagnostic_stderr = root / "diagnostic.stderr"
             diagnostic_stderr.write_text(
                 "\n".join(
@@ -5804,7 +6016,12 @@ class StageBTests(unittest.TestCase):
                 encoding="utf-8",
             )
             diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
-            diagnostic["cases"][0]["candidate"]["stderr"] = self._stream_artifact(diagnostic_stderr)
+            diagnostic_case = diagnostic["cases"][0]
+            noisy_case = json.loads(json.dumps(diagnostic_case))
+            noisy_case["id"] = "version"
+            noisy_case["candidate"]["stderr"] = self._stream_artifact(noisy_diagnostic_stderr)
+            diagnostic_case["candidate"]["stderr"] = self._stream_artifact(diagnostic_stderr)
+            diagnostic["cases"] = [noisy_case, diagnostic_case]
             diagnostic_path.write_text(json.dumps(diagnostic), encoding="utf-8")
 
             result = stage_b_extract_candidate_crash(
@@ -5819,6 +6036,7 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["instruction_address"], "0x7BB482A3")
             self.assertIsNotNone(result["diagnostic_functional_report"])
             self.assertIsNotNone(result["diagnostic_stderr_artifact"])
+            self.assertEqual(result["diagnostic_stderr_artifact"]["path"], str(diagnostic_stderr))
             self.assertEqual(result["seh_exception"]["code"], "0xC0000005")
             self.assertEqual(result["seh_exception"]["access"], "write")
             self.assertEqual(result["seh_exception"]["fault_address"], "0x7BB4A716")
@@ -6209,6 +6427,43 @@ class StageBTests(unittest.TestCase):
         self.assertIn("outside the candidate image", crash_item["next_action"])
         self.assertEqual(crash_item["evidence"]["candidate_location"]["classification"], "outside_candidate_image")
 
+    def test_explain_delta_ranks_external_pc_fault_into_candidate_image_as_pointer_context(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            candidate_binary={"image_base": 0x400000, "size_of_image": 0x20000},
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "crash_kind": "wine_unhandled_page_fault",
+                "access": "write",
+                "instruction_address": "0x7BB0165B",
+                "fault_address": "0x0040E0F3",
+                "seh_exception": {
+                    "code": "0xC0000005",
+                    "fault_address": "0x0040E0F3",
+                    "info": {"0": "0x00000001", "1": "0x0040E0F3"},
+                    "registers": {
+                        "eip": "0x7BB0165B",
+                        "eax": "0x0040E0F3",
+                    },
+                },
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["violated_contract_family"], "candidate_crash")
+        self.assertEqual(result[0]["likely_repair_class"], "candidate_crash_fault_address_context")
+        self.assertIsNone(result[0]["original_function"])
+        self.assertIn("fault address points into the candidate image", result[0]["next_action"])
+        location = result[0]["evidence"]["candidate_location"]
+        self.assertEqual(location["classification"], "outside_candidate_image")
+        fault_context = location["candidate_fault_context"]
+        self.assertEqual(fault_context["classification"], "candidate_fault_address")
+        self.assertEqual(fault_context["rva"], 0xE0F3)
+
     def test_validate_candidate_reports_stage_a_failure_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -6461,7 +6716,9 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["status"], "incomplete")
             self.assertEqual(result["provenance_status"], "incomplete")
             self.assertIn("functional_binary_hash_mismatch", categories)
-            self.assertFalse((root / "report" / "stage-a").exists())
+            self.assertTrue(result["stage_a"]["gate"]["ran"])
+            self.assertIn("functional_binary_hash_mismatch", result["stage_a"]["gate"]["non_blocking_issue_categories"])
+            self.assertTrue((root / "report" / "stage-a").exists())
 
     def _write_pe(self, path: Path, code: bytes) -> Path:
         path.write_bytes(_pe32_image(code))

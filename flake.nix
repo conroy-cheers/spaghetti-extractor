@@ -2009,65 +2009,56 @@
                 ]
               }
               JSON
-              wincr stage-a-validate-suite \
-                --suite "$work/suite.json" \
-                --model x86-pe32-env-v1 \
-                --out "$TMPDIR/stage-a-jq-suite"
-              wincr stage-a-export-reference-contract \
-                --original "$fixture_dir/jq-original.exe" \
-                --candidate "$fixture_dir/jq-candidate.exe" \
-                --mapping "$work/jq-block-map.json" \
-                --validation-report "$TMPDIR/stage-a-jq-suite/cases/jq-o2-alignment-windows-x86" \
-                --layout-contract "$work/jq-layout-contract.json" \
-                --out "$work/jq-reference-contract.json" \
-                --quiet
-              jq -e '
-                .format == "stage-a-reference-contract-v1"
-                and .status == "pass"
-                and all(.families[].status; . != "represented")
-                and .constraints.executable_byte_coverage.status == "satisfied"
-                and .constraints.proof_obligation_inventory.status == "satisfied"
-              ' "$work/jq-reference-contract.json" >/dev/null
-              wincr stage-a-smoke-contract \
-                --reference-contract "$work/jq-reference-contract.json" \
-                --out "$work/jq-reference-contract-smoke.json"
-              if wincr stage-a-semantic-coverage \
-                --reference-contract "$work/jq-reference-contract.json" \
-                --out "$work/jq-semantic-coverage.json" \
-                --quiet
-              then
-                semantic_coverage_status=pass
-              else
-                semantic_coverage_status=incomplete
-              fi
-              jq -e '
-                .format == "stage-a-semantic-coverage-v1"
-                and (.status == "pass" or .status == "incomplete")
-              ' "$work/jq-semantic-coverage.json" >/dev/null
-              mkdir -p "$out/generated" "$out/report"
-              cp "$work/jq-block-map.json" \
-                "$work/jq-layout-contract.json" \
-                "$work/jq-reference-contract.json" \
-                "$work/coverage_gaps.json" \
-                "$work/obligation_index.json" \
-                "$work/contract_summary.json" \
-                "$work/abi_callsites.json" \
-                "$work/block-contracts.jsonl" \
-                "$work/function-contracts.jsonl" \
-                "$work/cluster-contracts.jsonl" \
-                "$work/repair-units.json" \
-                "$work/source-obligations.json" \
-                "$work/semantic-transfer-contracts.jsonl" \
-                "$work/memory-frame-contracts.json" \
-                "$work/call-summary-contracts.json" \
-                "$work/cluster-semantic-contracts.jsonl" \
-                "$work/jq-semantic-coverage.json" \
-                "$work/jq-reference-contract-smoke.json" \
-                "$work/suite.json" \
-                "$out/generated/"
-              printf '%s\n' "$semantic_coverage_status" > "$out/generated/jq-semantic-coverage.status"
-              cp -R "$TMPDIR/stage-a-jq-suite/." "$out/report/"
-            '';
+                            wincr stage-a-validate-suite \
+                              --suite "$work/suite.json" \
+                              --model x86-pe32-env-v1 \
+                              --out "$TMPDIR/stage-a-jq-suite"
+                            mkdir -p "$out/generated" "$out/report"
+                            cp "$work/jq-block-map.json" \
+                              "$work/jq-layout-contract.json" \
+                              "$work/suite.json" \
+                              "$out/generated/"
+                            cp -R "$TMPDIR/stage-a-jq-suite/." "$out/report/"
+                            wincr stage-a-export-reference-contract \
+                              --original "$fixture_dir/jq-original.exe" \
+                              --candidate "$fixture_dir/jq-candidate.exe" \
+                              --mapping "$out/generated/jq-block-map.json" \
+                              --validation-report "$out/report/cases/jq-o2-alignment-windows-x86" \
+                              --layout-contract "$out/generated/jq-layout-contract.json" \
+                              --sidecar-dir "$out/generated" \
+                              --unit-contract-dir "$out/generated" \
+                              --out "$out/generated/jq-reference-contract.json" \
+                              --quiet
+                            jq -e '
+                              .format == "stage-a-reference-contract-v1"
+                              and .status == "pass"
+                              and all(.families[].status; . != "represented")
+                              and .constraints.executable_byte_coverage.status == "satisfied"
+                              and .constraints.proof_obligation_inventory.status == "satisfied"
+                            ' "$out/generated/jq-reference-contract.json" >/dev/null
+                            wincr stage-a-smoke-contract \
+                              --reference-contract "$out/generated/jq-reference-contract.json" \
+                              --out "$out/generated/jq-reference-contract-smoke.json"
+                            jq -e '
+                              .format == "stage-a-contract-smoke-v1"
+                              and .status == "pass"
+                              and .counts.issues == 0
+                            ' "$out/generated/jq-reference-contract-smoke.json" >/dev/null
+                            if wincr stage-a-semantic-coverage \
+                              --reference-contract "$out/generated/jq-reference-contract.json" \
+                              --out "$out/generated/jq-semantic-coverage.json" \
+                              --quiet
+                            then
+                              semantic_coverage_status=pass
+                            else
+                              semantic_coverage_status=incomplete
+                            fi
+                            jq -e '
+                              .format == "stage-a-semantic-coverage-v1"
+                              and (.status == "pass" or .status == "incomplete")
+                            ' "$out/generated/jq-semantic-coverage.json" >/dev/null
+                            printf '%s\n' "$semantic_coverage_status" > "$out/generated/jq-semantic-coverage.status"
+                          '';
 
           stage-b-jq-skeleton = pkgs.runCommand "stage-b-jq-skeleton"
             {
@@ -2651,6 +2642,12 @@
                   link_root_flags+=("$flag")
                 fi
               done < "$diagnostic_dir/link-roots/link-root-flags.txt"
+              budgeted_runtime_crt_root_flags=()
+              while IFS= read -r flag; do
+                if test -n "$flag"; then
+                  budgeted_runtime_crt_root_flags+=("$flag")
+                fi
+              done < "$diagnostic_dir/link-roots/budgeted-runtime-crt-root-flags.txt"
               budgeted_link_root_flags=()
               while IFS= read -r flag; do
                 if test -n "$flag"; then
@@ -2676,6 +2673,7 @@
                 "$diagnostic_dir/libstage_b_msvcrt_atexit.a" \
                 "''${import_thunk_root_flags[@]}" \
                 "''${link_root_flags[@]}" \
+                "''${budgeted_runtime_crt_root_flags[@]}" \
                 -L"$work" \
                 -l:libstage_b_target_closure_libjq_1.dll.a \
                 -L${mingw32Oniguruma.lib}/lib \
@@ -2716,6 +2714,7 @@
                   "$diagnostic_dir/libstage_b_msvcrt_atexit.a" \
                   "''${import_thunk_root_flags[@]}" \
                   "''${link_root_flags[@]}" \
+                  "''${budgeted_runtime_crt_root_flags[@]}" \
                   -L"$work" \
                   -l:libstage_b_target_closure_libjq_1.dll.a \
                   -L${mingw32Oniguruma.lib}/lib \
@@ -2809,6 +2808,7 @@
                     ["-municode", "libstage_b_msvcrt_atexit.a"]
                     + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                     + (($link_root_flags[0].linker_flags // []) | map(tostring))
+                    + (($link_root_flags[0].budgeted_runtime_crt_linker_flags // []) | map(tostring))
                     + ["generated-target-closure/libstage_b_target_closure_libjq_1.dll.a", "-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.generated-closure.link.map"]
                   ),
                   standalone_link_diagnostic: {
@@ -2819,6 +2819,7 @@
                       ["-municode", "libstage_b_msvcrt_atexit.a"]
                       + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                       + (($link_root_flags[0].linker_flags // []) | map(tostring))
+                      + (($link_root_flags[0].budgeted_runtime_crt_linker_flags // []) | map(tostring))
                       + ["generated-target-closure/libstage_b_target_closure_libjq_1.dll.a", "-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.generated-closure.link.map"]
                     ),
                     executable: $exe,
@@ -3029,7 +3030,84 @@
                 and (.status == "pass" or .returncode != 0)
               ' "$candidate_dir/smoke/report.json" >/dev/null
 
-              tar -C "$work" -xf "${pkgs.jq.src}" jq-1.8.1/tests
+              wincr stage-b-generate-candidate-provenance \
+                --target-name jq \
+                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --build-target i686-w64-mingw32 \
+                --build-compiler i686-w64-mingw32-cc \
+                --build-output jq-stage-b-generated-closure-candidate.exe \
+                --build-report "$candidate_dir/decompiled-c-generated-closure-link-report.json" \
+                --target-closure-manifest "$closure_manifest" \
+                --out "$work/provenance" \
+                > "$work/provenance.stdout"
+              claimed_provenance="$work/provenance/candidate-provenance.json"
+
+              set +e
+              wincr stage-b-validate-candidate \
+                --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --linker-map-candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.map" \
+                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --candidate-provenance "$claimed_provenance" \
+                --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
+                --target-name jq \
+                --out "$work/validate" \
+                > "$work/validate.stdout"
+              validate_code=$?
+              wincr stage-b-explain-delta \
+                --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
+                --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --linker-map-candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.map" \
+                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --candidate-module "name=libjq-1.dll,candidate=$candidate_dir/libjq-1.dll,linker_map=$candidate_dir/libjq-1.generated-closure.link.map,skeleton_manifest=$candidate_dir/libjq-1-skeleton-manifest.json" \
+                --out "$work/delta" \
+                > "$work/delta.stdout"
+              delta_code=$?
+              set -e
+
+              functional_report=""
+              functional_code=125
+              jq -n \
+                --arg candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                '{
+                  format: "stage-b-candidate-crash-v1",
+                  source: "contract-first-static-gate",
+                  target_name: "jq",
+                  original_runtime_observations: false,
+                  candidate: {path: $candidate},
+                  functional_report: null,
+                  diagnostic_functional_report: null,
+                  case_id: "",
+                  status: "not_detected",
+                  crash_kind: "",
+                  access: "",
+                  fault_address: null,
+                  instruction_address: null,
+                  thread: "",
+                  stderr_artifact: null,
+                  diagnostic_stderr_artifact: null,
+                  stderr_preview: "",
+                  stderr_crash_excerpt: "",
+                  backtrace: [],
+                  loaded_modules: [],
+                  seh_exception: null,
+                  repair_hints: [
+                    "runtime smoke skipped because Stage A reference-contract validation is not yet clean"
+                  ]
+                }' > "$work/candidate-crash.json"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/materialized-suite.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/smoke-suite.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/full-suite.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/functional.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/candidate-crash.stdout"
+              mkdir -p "$work/materialized-suite" "$work/smoke-suite" "$work/functional"
+
+              if jq -e '
+                .stage_a.gate.ran == true
+                and .stage_a.gate.status == "pass"
+                and .stage_a.verdict == "pass"
+              ' "$work/validate/stage-b.json" >/dev/null; then
+                tar -C "$work" -xf "${pkgs.jq.src}" jq-1.8.1/tests
               (
                 cd "$work/jq-1.8.1"
                 find tests -type f -print0 | sort -z | xargs -0 sha256sum
@@ -3073,6 +3151,16 @@
                     "stdin": "",
                     "expected_returncode": 0,
                     "expected_stdout": "jq-1.8.1\r\n",
+                    "expected_stderr": "",
+                    "timeout_seconds": 30,
+                    "candidate_timeout_seconds": 30
+                  },
+                  {
+                    "id": "jq-smoke-null-generated-closure",
+                    "args": ["-n", "null"],
+                    "stdin": "",
+                    "expected_returncode": 0,
+                    "expected_stdout": "null\r\n",
                     "expected_stderr": "",
                     "timeout_seconds": 30,
                     "candidate_timeout_seconds": 30
@@ -3242,6 +3330,7 @@
                 --out "$work/delta" \
                 > "$work/delta.stdout"
               delta_code=$?
+              fi
               set -e
               test "$validate_code" -ne 0
               test "$delta_code" -ne 0
@@ -3266,37 +3355,55 @@
                 )
                 and ([.issues[].category] | index("target_library_linkage") | not)
                 and ([.issues[].category] | index("target_import_closure_incomplete") | not)
-                and .functional.oracle.original_runtime_observations == false
-                and (.functional.commands | has("original") | not)
-                and (.functional.binary_bindings | has("original") | not)
                 and .reference_contract_coverage.provided == true
+                and .stage_a.gate.ran == true
+                and (
+                  if .functional == null then
+                    .functional_report == null
+                    and .functional_diagnostics.status == "not_provided"
+                    and .stage_a.gate.status != "pass"
+                  else
+                    .functional.oracle.original_runtime_observations == false
+                    and (.functional.commands | has("original") | not)
+                    and (.functional.binary_bindings | has("original") | not)
+                  end
+                )
               ' "$work/validate/stage-b.json" >/dev/null
               jq -e '
                 .format == "stage-b-delta-explanation-v1"
                 and .status == "incomplete"
                 and .counts.repair_items > 0
-                and .candidate_crash_report != null
                 and (.candidate_modules | length) == 1
                 and (
-                  if (.candidate_crash_report.status // "not_detected") == "detected" then
-                    ([.repair_items[].violated_contract_family] | index("candidate_crash"))
-                    and (.candidate_crash_report.has_seh_exception == true)
-                    and (
-                      ([.repair_items[].likely_repair_class] | index("candidate_crash_register_context"))
-                      or ([.repair_items[].likely_repair_class] | index("runtime_crt_tls_callback_context"))
-                    )
-                    and (
-                      ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
-                      or ([.repair_items[].likely_repair_class] | index("stack_scratch_buffer_or_out_param"))
-                      or ([.repair_items[].likely_repair_class] | index("runtime_crt_stack_bridge"))
-                    )
+                  if .candidate_crash_report == null then
+                    .functional_report == null
+                    and .functional_diagnostics.status == "not_provided"
+                    and ([.repair_items[].violated_contract_family] | index("candidate_crash") | not)
                   else
-                    ([.repair_items[].violated_contract_family] | index("candidate_crash") | not)
-                    and (
-                      if (.functional_diagnostics.status // "") == "fail" then
-                        ([.repair_items[].violated_contract_family] | index("functional_expected_output"))
+                    (
+                      if (.candidate_crash_report.status // "not_detected") == "detected" then
+                        ([.repair_items[].violated_contract_family] | index("candidate_crash"))
+                        and (.candidate_crash_report.has_seh_exception == true)
+                        and (
+                          ([.repair_items[].likely_repair_class] | index("candidate_crash_register_context"))
+                          or ([.repair_items[].likely_repair_class] | index("candidate_crash_fault_address_context"))
+                          or ([.repair_items[].likely_repair_class] | index("runtime_crt_tls_callback_context"))
+                        )
+                        and (
+                          ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
+                          or ([.repair_items[].likely_repair_class] | index("stack_scratch_buffer_or_out_param"))
+                          or ([.repair_items[].likely_repair_class] | index("runtime_crt_stack_bridge"))
+                          or ([.repair_items[].likely_repair_class] | index("candidate_crash_fault_address_context"))
+                        )
                       else
-                        true
+                        ([.repair_items[].violated_contract_family] | index("candidate_crash") | not)
+                        and (
+                          if (.functional_diagnostics.status // "") == "fail" then
+                            ([.repair_items[].violated_contract_family] | index("functional_expected_output"))
+                          else
+                            true
+                          end
+                        )
                       end
                     )
                   end
@@ -3308,10 +3415,13 @@
               cp "$candidate_dir/jq-stage-b-generated-closure-candidate.map" "$out/"
               cp "$candidate_dir/libjq-1.dll" "$out/"
               cp "$candidate_dir/decompiled-c-generated-closure-link-report.json" "$out/"
+              cp "$candidate_dir/decompiled-c-link-roots.json" "$out/"
               cp -R "$candidate_dir/src" "$out/src"
               cp "$candidate_dir/candidate-provenance.json" "$out/initial-candidate-provenance.json"
               cp "$claimed_provenance" "$out/candidate-provenance.json"
-              cp "$functional_report" "$out/functional-report.json"
+              if test -n "$functional_report"; then
+                cp "$functional_report" "$out/functional-report.json"
+              fi
               cp "$work/validate/stage-b.json" "$out/stage-b.json"
               cp "$work/delta/stage-b-delta.json" "$out/stage-b-delta.json"
               cp "$work/candidate-crash.json" "$out/candidate-crash.json"

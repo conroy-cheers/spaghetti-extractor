@@ -35,21 +35,47 @@ _DECOMPILED_C_RUNTIME_ENTRY_NAMES = frozenset({"WinMainCRTStartup", "___tmainCRT
 _DECOMPILED_C_RUNTIME_ENTRY_POLICIES = frozenset({"bridge", "mingw-crt"})
 _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
     {
+        "_DllMainCRTStartup@12",
+        "_DllMainCRTStartup_12",
+        "_FindPESection",
         "___w64_mingwthr_add_key_dtor",
         "___w64_mingwthr_remove_key_dtor",
+        "___do_global_ctors",
+        "___do_global_dtors",
+        "___main",
+        "___mingw_GetSectionCount",
+        "___mingw_GetSectionForAddress",
+        "___mingw_setusermatherr",
+        "___report_error",
         "__do_global_dtors",
-        "__d2b_D2A",
+        "__FindPESection",
+        "__GetPEImageBase",
+        "__IsNonwritableInCurrentImage",
+        "__ValidateImageBase",
+        "__do_global_ctors",
+        "__main",
+        "__mingw_GetSectionCount",
+        "__mingw_GetSectionForAddress",
+        "__mingw_setusermatherr",
         "___dyn_tls_dtor_12",
         "___dyn_tls_init_12",
         "___mingw_pformat",
         "__mingw_enum_import_library_names",
         "__mingw_raise_matherr",
-        "__strcp_D2A",
+        "__pei386_runtime_relocator",
         "__tlregdtor",
         "___mingw_TLScallback",
         "_FindPESectionByName",
         "_FindPESectionExec",
+        "_GetPEImageBase",
+        "_IsNonwritableInCurrentImage",
+        "_ValidateImageBase",
+        "_gnu_exception_handler@4",
+        "_gnu_exception_handler_4",
+        "_pei386_runtime_relocator",
         "atexit",
+        "mark_section_writable",
+        "restore_modified_sections",
     }
 )
 _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES = frozenset(
@@ -58,8 +84,6 @@ _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES = frozenset(
         "___dyn_tls_init_12",
         "___mingw_TLScallback",
         "___mingw_pformat",
-        "__d2b_D2A",
-        "__strcp_D2A",
     }
 )
 _DECOMPILED_C_MINGW_CRT_FORCED_ROOT_FUNCTION_NAMES = frozenset(
@@ -67,6 +91,9 @@ _DECOMPILED_C_MINGW_CRT_FORCED_ROOT_FUNCTION_NAMES = frozenset(
         "___mingw_pformat",
     }
 )
+_DECOMPILED_C_MINGW_CRT_FORCED_ROOT_OBJECT_SYMBOLS = {
+    "___mingw_pformat": "___mingw_pformat",
+}
 _DECOMPILED_C_STACK_PROBE_HELPER_MACROS = {
     "___chkstk_ms": "stage_b_stack_probe_size()",
     "___chkstk": "stage_b_stack_probe_size()",
@@ -228,11 +255,23 @@ def stage_b_generate_link_roots(
     ]
     runtime_crt_root_symbols = sorted({root["object_symbol"] for root in runtime_crt_roots})
     runtime_crt_linker_flags = [f"-Wl,--undefined,{symbol}" for symbol in runtime_crt_root_symbols]
+    budgeted_runtime_crt_roots = [
+        root
+        for root in runtime_crt_roots
+        if _optional_int(root.get("rva_end")) is not None
+        and _optional_int(root.get("rva_start")) is not None
+        and int(root["rva_end"]) - int(root["rva_start"]) <= _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE
+    ]
+    budgeted_runtime_crt_linker_flags = sorted(f"-Wl,--undefined,{root['object_symbol']}" for root in budgeted_runtime_crt_roots)
     (out / "link-root-symbols.txt").write_text("".join(f"{symbol}\n" for symbol in root_symbols), encoding="utf-8")
     (out / "link-root-flags.txt").write_text("".join(f"{flag}\n" for flag in linker_flags), encoding="utf-8")
     (out / "budgeted-link-root-flags.txt").write_text("".join(f"{flag}\n" for flag in budgeted_linker_flags), encoding="utf-8")
     (out / "import-thunk-root-flags.txt").write_text("".join(f"{flag}\n" for flag in import_thunk_linker_flags), encoding="utf-8")
     (out / "runtime-crt-root-flags.txt").write_text("".join(f"{flag}\n" for flag in runtime_crt_linker_flags), encoding="utf-8")
+    (out / "budgeted-runtime-crt-root-flags.txt").write_text(
+        "".join(f"{flag}\n" for flag in budgeted_runtime_crt_linker_flags),
+        encoding="utf-8",
+    )
     write_json(out / "import-thunk-roots.json", {"format": "stage-b-import-thunk-roots-v1", "roots": import_thunk_roots})
     write_json(out / "runtime-crt-roots.json", {"format": "stage-b-runtime-crt-roots-v1", "roots": runtime_crt_roots})
     missing_by_representation = _missing_root_representation_counts(missing)
@@ -257,15 +296,18 @@ def stage_b_generate_link_roots(
             "import_thunk_root_flags": str(out / "import-thunk-root-flags.txt"),
             "runtime_crt_roots": str(out / "runtime-crt-roots.json"),
             "runtime_crt_root_flags": str(out / "runtime-crt-root-flags.txt"),
+            "budgeted_runtime_crt_root_flags": str(out / "budgeted-runtime-crt-root-flags.txt"),
         },
         "roots": roots,
         "budgeted_roots": budgeted_roots,
         "import_thunk_roots": import_thunk_roots,
         "runtime_crt_roots": runtime_crt_roots,
+        "budgeted_runtime_crt_roots": budgeted_runtime_crt_roots,
         "linker_flags": linker_flags,
         "budgeted_linker_flags": budgeted_linker_flags,
         "import_thunk_linker_flags": import_thunk_linker_flags,
         "runtime_crt_linker_flags": runtime_crt_linker_flags,
+        "budgeted_runtime_crt_linker_flags": budgeted_runtime_crt_linker_flags,
         "issues": issues,
         "counts": {
             "contract_functions": len(contract_functions),
@@ -276,6 +318,8 @@ def stage_b_generate_link_roots(
             "import_thunk_roots_with_linker_flags": len(import_thunk_linker_flags),
             "runtime_crt_roots": len(runtime_crt_roots),
             "runtime_crt_roots_with_linker_flags": len(runtime_crt_linker_flags),
+            "budgeted_runtime_crt_roots": len(budgeted_runtime_crt_roots),
+            "budgeted_runtime_crt_roots_with_linker_flags": len(budgeted_runtime_crt_linker_flags),
             "missing": len(missing),
             "missing_with_skeleton_evidence": sum(1 for item in missing if isinstance(item.get("skeleton"), dict)),
             "missing_by_skeleton_representation": missing_by_representation,
@@ -290,6 +334,7 @@ def stage_b_generate_link_roots(
         "selection_policy": {
             "budgeted_object_root_max_original_size": _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE,
             "budgeted_object_root_basis": "original linker-map function byte range",
+            "budgeted_runtime_crt_root_basis": "original linker-map function byte range; used for strict Stage A layout links",
         },
     }
     write_json(out / "link-roots.json", result)
@@ -305,10 +350,11 @@ def _runtime_crt_missing_root(missing_item: dict[str, Any]) -> dict[str, Any] | 
     contract_function = str(missing_item.get("name") or "")
     if _has_linker_stdcall_suffix(contract_function):
         return None
+    object_symbol = _DECOMPILED_C_MINGW_CRT_FORCED_ROOT_OBJECT_SYMBOLS.get(source_name, source_name)
     return {
         "contract_function": contract_function,
         "source_function": source_name,
-        "object_symbol": source_name,
+        "object_symbol": object_symbol,
         "match_key": missing_item.get("match_key"),
         "rva_start": missing_item.get("rva_start"),
         "rva_end": missing_item.get("rva_end"),
@@ -1985,6 +2031,9 @@ def _render_decompiled_c_source(
         "}",
         "static undefined4 stage_b_jq_jv_array_sized(undefined4 out_value, uint32_t capacity) {",
         "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
+        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
+        "        return out_value;",
+        "    }",
         "    out[0] = 0x86;",
         "    out[1] = 0;",
         "    out[2] = (uint32_t)stage_b_jq_jvp_array_alloc(capacity);",
@@ -2006,6 +2055,13 @@ def _render_decompiled_c_source(
         "    size_t safe_length = length < 0 ? 0U : (size_t)length;",
         "    uint8_t *payload = (uint8_t *)(uintptr_t)stage_b_jq_jvp_string_alloc(safe_length);",
         "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
+        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
+        "        return out_value;",
+        "    }",
+        "    if (safe_length != 0U && (uintptr_t)data < (uintptr_t)0x10000U) {",
+        "        safe_length = 0U;",
+        "        data = (const uint8_t *)0;",
+        "    }",
         "    if (data != (const uint8_t *)0) {",
         "        for (size_t index = 0; index < safe_length; index++) {",
         "            payload[0x10U + index] = data[index];",
@@ -2040,6 +2096,9 @@ def _render_decompiled_c_source(
         "}",
         "static undefined4 stage_b_jq_jv_object(undefined4 out_value) {",
         "    uint32_t *out = (uint32_t *)(uintptr_t)out_value;",
+        "    if ((uintptr_t)out < (uintptr_t)0x10000U) {",
+        "        return out_value;",
+        "    }",
         "    out[0] = 0x87;",
         "    out[1] = 8;",
         "    out[2] = (uint32_t)stage_b_jq_jvp_object_alloc(8);",
@@ -2883,6 +2942,7 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
     if function_name == "umain":
         code = _inject_jq_umain_run_tests_fast_path(code)
         code = _normalize_umain_iob_stream_calls(code)
+        code = _normalize_jq_getenv_argument_calls(code)
         code = _normalize_jq_jv_constructor_sret_calls(code)
         code = _normalize_jq_isoption_dispatch_calls(code)
     if function_name == "jq_init":
@@ -3001,6 +3061,12 @@ def _decompiled_c_jq_value_abi_replacement(function_name: str) -> str:
                 "undefined4 __cdecl jv_string(undefined4 param_1,char *param_2)",
                 "{",
                 "  size_t length = 0;",
+                "  if ((uintptr_t)param_1 < (uintptr_t)0x10000U) {",
+                "    return param_1;",
+                "  }",
+                "  if ((uintptr_t)param_2 < (uintptr_t)0x10000U) {",
+                "    param_2 = (char *)0;",
+                "  }",
                 "  if (param_2 != (char *)0) {",
                 "    while (param_2[length] != '\\0') {",
                 "      length++;",
@@ -3267,6 +3333,13 @@ def _normalize_umain_iob_stream_calls(code: str) -> str:
         replace,
         code,
         count=4,
+    )
+
+def _normalize_jq_getenv_argument_calls(code: str) -> str:
+    return re.sub(
+        r'(?m)^(\s*)getenv\("JQ_COLORS"\);\s*\n\1([A-Za-z_][A-Za-z0-9_]*)\s*=\s*jq_set_colors\(\);',
+        r'\1\2 = jq_set_colors((char *)getenv("JQ_COLORS"));',
+        code,
     )
 
 def _normalize_jq_jv_constructor_sret_calls(code: str) -> str:
