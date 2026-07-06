@@ -15,6 +15,7 @@ from haloce_catalog.stage_b import (
     STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
     stage_b_audit_readiness,
     stage_b_explain_delta,
+    stage_b_extract_candidate_crash,
     stage_b_export_decompiler,
     stage_b_generate_candidate_provenance,
     stage_b_generate_link_roots,
@@ -5245,6 +5246,144 @@ class StageBTests(unittest.TestCase):
 
         self.assertEqual(result, [])
 
+    def test_extract_candidate_crash_reads_full_stderr_and_backtrace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "jq.exe"
+            candidate.write_bytes(b"candidate")
+            report_path = self._write_functional_report(
+                root / "functional-report.json",
+                target_name="jq",
+                status="fail",
+                candidate_binary=candidate,
+            )
+            stderr_path = root / "cases" / "identity" / "candidate.stderr"
+            stderr_path.parent.mkdir(parents=True, exist_ok=True)
+            stderr_text = (
+                ("noise before crash\n" * 400)
+                + "wine: Unhandled page fault on write access to 7BA5A716 at address 7BB482A3 (thread 0118), starting debugger...\n"
+                + "Backtrace:\n"
+                + "=>0 0x7BB482A3 NtRaiseException+0x43() in ntdll (0x0063f610)\n"
+                + "  1 0x65741234 jq_testsuite+0x24() in libjq-1 (+0x1234) (0x0063f690)\n"
+                + "Modules:\n"
+                + "PE 65740000-65817000 Deferred        libjq-1\n"
+            )
+            stderr_path.write_text(stderr_text, encoding="utf-8")
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["cases"][0]["candidate"]["returncode"] = 5
+            report["cases"][0]["candidate"]["stderr"] = self._stream_artifact(stderr_path)
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = stage_b_extract_candidate_crash(
+                functional_report=report_path,
+                candidate=candidate,
+                target_name="jq",
+                out=root / "crash",
+            )
+
+            self.assertEqual(result["status"], "detected")
+            self.assertEqual(result["crash_kind"], "wine_unhandled_page_fault")
+            self.assertEqual(result["access"], "write")
+            self.assertEqual(result["fault_address"], "0x7BA5A716")
+            self.assertEqual(result["instruction_address"], "0x7BB482A3")
+            self.assertEqual(result["thread"], "0118")
+            self.assertEqual(result["case_id"], "identity")
+            self.assertFalse(result["original_runtime_observations"])
+            self.assertNotIn("Unhandled page fault", result["stderr_preview"])
+            self.assertIn("Unhandled page fault", result["stderr_crash_excerpt"])
+            self.assertEqual(result["backtrace"][1]["module"], "libjq-1")
+            self.assertEqual(result["backtrace"][1]["rva"], "0x1234")
+            self.assertEqual(result["loaded_modules"][0]["name"], "libjq-1")
+            self.assertTrue((root / "crash" / "candidate-crash.json").exists())
+
+    def test_extract_candidate_crash_reports_not_detected_for_functional_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = self._write_functional_report(
+                root / "functional-report.json",
+                target_name="jq",
+                status="fail",
+            )
+            stderr_path = root / "candidate.stderr"
+            stderr_path.write_text("usage mismatch only\n", encoding="utf-8")
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["cases"][0]["candidate"]["stderr"] = self._stream_artifact(stderr_path)
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = stage_b_extract_candidate_crash(
+                functional_report=report_path,
+                out=root / "crash",
+            )
+
+            self.assertEqual(result["status"], "not_detected")
+            self.assertEqual(result["crash_kind"], "")
+            self.assertEqual(result["backtrace"], [])
+            self.assertEqual(result["loaded_modules"], [])
+            self.assertIn("no candidate crash signature", result["repair_hints"][0])
+
+    def test_extract_candidate_crash_merges_candidate_only_seh_diagnostic_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "jq.exe"
+            candidate.write_bytes(b"candidate")
+            report_path = self._write_functional_report(
+                root / "functional-report.json",
+                target_name="jq",
+                status="fail",
+                candidate_binary=candidate,
+            )
+            stderr_path = root / "candidate.stderr"
+            stderr_path.write_text(
+                "wine: Unhandled page fault on write access to 7BA5A716 at address 7BB482A3 (thread 0118), starting debugger...\n",
+                encoding="utf-8",
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["cases"][0]["candidate"]["stderr"] = self._stream_artifact(stderr_path)
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            diagnostic_path = self._write_functional_report(
+                root / "diagnostic-functional-report.json",
+                target_name="jq",
+                status="fail",
+                candidate_binary=candidate,
+            )
+            diagnostic_stderr = root / "diagnostic.stderr"
+            diagnostic_stderr.write_text(
+                "\n".join(
+                    [
+                        "0024:trace:seh:dispatch_exception code=c0000005 (EXCEPTION_ACCESS_VIOLATION) flags=0 addr=7A7382A3",
+                        "0024:trace:seh:dispatch_exception  info[0]=00000001",
+                        "0024:trace:seh:dispatch_exception  info[1]=7BB4A716",
+                        "0024:trace:seh:dispatch_exception eip=7a7382a3 esp=0061f808 ebp=0061f818 eflags=00010202",
+                        "0024:trace:seh:dispatch_exception eax=7bb4a716 ebx=004016f0 ecx=00000000 edx=c90cec82",
+                        "0024:trace:seh:dispatch_exception esi=00000000 edi=00256878 cs=0023 ds=002b es=002b fs=0063 gs=006b ss=002b",
+                        "wine: Unhandled page fault on write access to 7BB4A716 at address 7A7382A3 (thread 0024), starting debugger...",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+            diagnostic["cases"][0]["candidate"]["stderr"] = self._stream_artifact(diagnostic_stderr)
+            diagnostic_path.write_text(json.dumps(diagnostic), encoding="utf-8")
+
+            result = stage_b_extract_candidate_crash(
+                functional_report=report_path,
+                diagnostic_functional_report=diagnostic_path,
+                candidate=candidate,
+                target_name="jq",
+                out=root / "crash",
+            )
+
+            self.assertEqual(result["status"], "detected")
+            self.assertEqual(result["instruction_address"], "0x7BB482A3")
+            self.assertIsNotNone(result["diagnostic_functional_report"])
+            self.assertIsNotNone(result["diagnostic_stderr_artifact"])
+            self.assertEqual(result["seh_exception"]["code"], "0xC0000005")
+            self.assertEqual(result["seh_exception"]["access"], "write")
+            self.assertEqual(result["seh_exception"]["fault_address"], "0x7BB4A716")
+            self.assertEqual(result["seh_exception"]["registers"]["ebx"], "0x004016F0")
+
     def test_explain_delta_maps_candidate_crash_pc_inside_image_to_source(self):
         result = _stage_b_delta_repair_items(
             contract={},
@@ -5274,6 +5413,133 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(result[0]["generated_source_location"]["line_start"], 70)
         self.assertEqual(result[0]["evidence"]["candidate_location"]["classification"], "inside_candidate_image")
         self.assertEqual(result[0]["evidence"]["candidate_location"]["rva"], 0x1020)
+
+    def test_explain_delta_maps_candidate_crash_pc_inside_generated_module_to_source(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            candidate_binary={"image_base": 0x400000, "size_of_image": 0x20000},
+            candidate_modules=[
+                {
+                    "name": "libjq-1.dll",
+                    "path": "build/libjq-1.dll",
+                    "image": {"image_base": 0x65740000, "size_of_image": 0xC000, "image_end": 0x65800000},
+                    "functions": [{"name": "jq_testsuite", "rva_start": 0x1200, "rva_end": 0x1300}],
+                    "source_map": {
+                        "jq_testsuite": {
+                            "file": "src/jq-libjq-1_stage_b_skeleton.c",
+                            "line_start": 410,
+                            "line_end": 455,
+                        }
+                    },
+                }
+            ],
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "instruction_address": "0x65741234",
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["violated_contract_family"], "candidate_crash")
+        self.assertEqual(result[0]["likely_repair_class"], "stack_delta_mismatch")
+        self.assertEqual(result[0]["original_function"], "jq_testsuite")
+        self.assertEqual(result[0]["generated_source_location"]["line_start"], 410)
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["classification"], "inside_candidate_module_image")
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["module"]["name"], "libjq-1.dll")
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["rva"], 0x1234)
+
+    def test_explain_delta_maps_candidate_backtrace_frame_inside_generated_module(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            candidate_binary={"image_base": 0x400000, "size_of_image": 0x20000},
+            candidate_modules=[
+                {
+                    "name": "libjq-1.dll",
+                    "image": {"image_base": 0x65740000, "size_of_image": 0xC000, "image_end": 0x65800000},
+                    "functions": [{"name": "jv_string", "rva_start": 0x1210, "rva_end": 0x1260}],
+                    "source_map": {
+                        "jv_string": {
+                            "file": "src/jq-libjq-1_stage_b_skeleton.c",
+                            "line_start": 120,
+                            "line_end": 140,
+                        }
+                    },
+                }
+            ],
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "instruction_address": "0x7BB482A3",
+                "backtrace": [
+                    {"index": 0, "module": "ntdll.dll", "address": "0x7BB482A3"},
+                    {"index": 1, "module": "libjq-1.dll", "address": "65741234"},
+                ],
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["violated_contract_family"], "candidate_crash")
+        self.assertEqual(result[0]["original_function"], "jv_string")
+        self.assertEqual(result[0]["generated_source_location"]["line_start"], 120)
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["classification"], "candidate_backtrace_frame")
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["frame_index"], 1)
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["module"]["name"], "libjq-1.dll")
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["rva"], 0x1234)
+
+    def test_explain_delta_maps_candidate_seh_register_context_to_source(self):
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation={"families": []},
+            skeleton={
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "__dyn_tls_init@12",
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 1700,
+                            "line_end": 1725,
+                        }
+                    ]
+                }
+            },
+            candidate_functions=[
+                {"name": "__dyn_tls_init@12", "rva_start": 0x16F0, "rva_end": 0x1780},
+            ],
+            candidate_binary={"image_base": 0x400000, "size_of_image": 0x20000},
+            crash={
+                "format": "stage-b-candidate-crash-v1",
+                "status": "detected",
+                "crash_kind": "wine_unhandled_page_fault",
+                "instruction_address": "0x7BB482A3",
+                "seh_exception": {
+                    "code": "0xC0000005",
+                    "registers": {
+                        "eip": "0x7BB482A3",
+                        "eax": "0x7BA5A716",
+                        "ebx": "0x004016F0",
+                    },
+                },
+            },
+            functional=None,
+        )
+
+        self.assertEqual(result[0]["violated_contract_family"], "candidate_crash")
+        self.assertEqual(result[0]["likely_repair_class"], "candidate_crash_register_context")
+        self.assertEqual(result[0]["original_function"], "__dyn_tls_init@12")
+        self.assertEqual(result[0]["generated_source_location"]["line_start"], 1700)
+        self.assertEqual(result[0]["evidence"]["candidate_location"]["classification"], "outside_candidate_image")
+        register_context = result[0]["evidence"]["candidate_location"]["candidate_register_context"]
+        self.assertEqual(register_context["classification"], "candidate_seh_register")
+        self.assertEqual(register_context["register"], "ebx")
+        self.assertEqual(register_context["rva"], 0x16F0)
+        self.assertIn("SEH context", result[0]["next_action"])
 
     def test_explain_delta_classifies_stack_probe_crash_separately(self):
         result = _stage_b_delta_repair_items(

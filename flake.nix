@@ -3119,6 +3119,7 @@
               smoke_functional_code=$?
               set -e
               if [ "$smoke_functional_code" -eq 0 ]; then
+                failed_suite="$work/materialized-suite/functional-suite.json"
                 set +e
                 stage-b-functional-wincr stage-b-run-functional-suite \
                   --suite "$work/materialized-suite/functional-suite.json" \
@@ -3133,75 +3134,47 @@
                 functional_code=$?
                 set -e
               else
+                failed_suite="$work/smoke-suite/functional-suite.json"
                 printf 'skipped: jq generated-closure smoke check failed before the full upstream integration suite\n' \
                   > "$work/full-suite.stdout"
                 functional_code="$smoke_functional_code"
               fi
               functional_report="$work/functional/functional-report.json"
-              jq -n \
-                --slurpfile report "$functional_report" \
-                --arg functional_report "$functional_report" \
-                --arg functional_report_sha256 "$(sha256sum "$functional_report" | cut -d' ' -f1)" \
-                --arg candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
-                --arg candidate_sha256 "$(sha256sum "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" | cut -d' ' -f1)" \
-                '
-                def first_failed_case:
-                  ($report[0].cases // [])
-                  | map(select(.status != "pass"))
-                  | .[0] // {};
-                def stderr_preview:
-                  first_failed_case.candidate.stderr.preview // "";
-                def page_fault:
-                  stderr_preview
-                  | capture("wine: Unhandled page fault on (?<access>[^ ]+) access to (?<fault_address>[0-9A-Fa-f]+) at address (?<instruction_address>[0-9A-Fa-f]+) \\(thread (?<thread>[0-9A-Fa-f]+)\\)")?;
-                def stack_overflow:
-                  stderr_preview
-                  | capture("wine: Unhandled stack overflow at address (?<instruction_address>[0-9A-Fa-f]+) \\(thread (?<thread>[0-9A-Fa-f]+)\\)")?;
-                (page_fault // {}) as $fault
-                | (stack_overflow // {}) as $stack
-                | (if ($fault | length) > 0 then $fault elif ($stack | length) > 0 then $stack else {} end) as $crash
-                | {
-                    format: "stage-b-candidate-crash-v1",
-                    source: "stage-b-functional-report",
-                    target_name: "jq",
-                    original_runtime_observations: false,
-                    candidate: {
-                      path: $candidate,
-                      sha256: $candidate_sha256
-                    },
-                    functional_report: {
-                      path: $functional_report,
-                      sha256: $functional_report_sha256
-                    },
-                    case_id: (first_failed_case.id // ""),
-                    status: (if ($crash | length) == 0 then "not_detected" else "detected" end),
-                    crash_kind: (
-                      if ($fault | length) > 0 then "wine_unhandled_page_fault"
-                      elif ($stack | length) > 0 then "wine_unhandled_stack_overflow"
-                      else ""
-                      end
-                    ),
-                    access: ($crash.access // ""),
-                    fault_address: (if $crash.fault_address then "0x\($crash.fault_address)" else null end),
-                    instruction_address: (if $crash.instruction_address then "0x\($crash.instruction_address)" else null end),
-                    thread: ($crash.thread // ""),
-                    stderr_preview: stderr_preview,
-                    repair_hints: (
-                      if ($crash | length) > 0 then [
-                        "candidate-only crash",
-                        (
-                          if ($stack | length) > 0 then "stack overflow during public jq upstream suite"
-                          else "page fault during public jq upstream suite"
-                          end
-                        ),
-                        "inspect ABI, stack, hidden sret/out-param, and recovered function-pointer evidence"
-                      ] else [
-                        "no candidate crash signature detected in failed functional case",
-                        "inspect functional mismatch fields and Stage A contract deltas"
-                      ] end
-                    )
-                  }
-                ' > "$work/candidate-crash.json"
+              diagnostic_functional_report=""
+              if [ "$functional_code" -ne 0 ]; then
+                old_winedebug="$WINEDEBUG"
+                export WINEDEBUG=+seh
+                set +e
+                stage-b-functional-wincr stage-b-run-functional-suite \
+                  --suite "$failed_suite" \
+                  --candidate-command-json "$candidate_cmd" \
+                  --candidate-binary "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                  --strip-stderr-line-regex '^wine: created the configuration directory ' \
+                  --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
+                  --strip-stderr-line-regex '^      after [0-9]+ requests .* with [0-9]+ events remaining\.$' \
+                  --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
+                  --out "$work/functional-seh" \
+                  > "$work/functional-seh.stdout"
+                seh_functional_code=$?
+                set -e
+                export WINEDEBUG="$old_winedebug"
+                printf '%s\n' "$seh_functional_code" > "$work/functional-seh.returncode"
+                if test -s "$work/functional-seh/functional-report.json"; then
+                  diagnostic_functional_report="$work/functional-seh/functional-report.json"
+                fi
+              fi
+              if test -n "$diagnostic_functional_report"; then
+                diagnostic_args=(--diagnostic-functional-report "$diagnostic_functional_report")
+              else
+                diagnostic_args=()
+              fi
+              wincr stage-b-extract-candidate-crash \
+                --functional-report "$functional_report" \
+                "''${diagnostic_args[@]}" \
+                --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
+                --target-name jq \
+                --out "$work" \
+                > "$work/candidate-crash.stdout"
 
               wincr stage-b-generate-candidate-provenance \
                 --target-name jq \
@@ -3234,6 +3207,7 @@
                 --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
                 --linker-map-candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.map" \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
+                --candidate-module "name=libjq-1.dll,candidate=$candidate_dir/libjq-1.dll,linker_map=$candidate_dir/libjq-1.generated-closure.link.map,skeleton_manifest=$candidate_dir/libjq-1-skeleton-manifest.json" \
                 --functional-report "$functional_report" \
                 --candidate-crash-report "$work/candidate-crash.json" \
                 --out "$work/delta" \
@@ -3273,9 +3247,12 @@
                 and .status == "incomplete"
                 and .counts.repair_items > 0
                 and .candidate_crash_report != null
+                and (.candidate_modules | length) == 1
                 and (
                   if (.candidate_crash_report.status // "not_detected") == "detected" then
                     ([.repair_items[].violated_contract_family] | index("candidate_crash"))
+                    and (.candidate_crash_report.has_seh_exception == true)
+                    and ([.repair_items[].likely_repair_class] | index("candidate_crash_register_context"))
                     and (
                       ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
                       or ([.repair_items[].likely_repair_class] | index("stack_scratch_buffer_or_out_param"))

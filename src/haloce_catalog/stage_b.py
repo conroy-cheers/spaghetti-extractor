@@ -1305,6 +1305,346 @@ def stage_b_audit_readiness(*, reports: dict[str, Path], out: Path) -> dict[str,
     return result
 
 
+def stage_b_extract_candidate_crash(
+    *,
+    functional_report: Path,
+    out: Path,
+    candidate: Path | None = None,
+    target_name: str | None = None,
+    diagnostic_functional_report: Path | None = None,
+) -> dict[str, Any]:
+    functional_report = Path(functional_report)
+    report = _load_json(functional_report)
+    if not isinstance(report, dict) or report.get("format") != "stage-b-functional-report-v1":
+        raise StageAInputError("Stage B candidate crash extraction requires a stage-b-functional-report-v1 report")
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    failed_case = _stage_b_first_failed_functional_case(report)
+    stderr_artifact = _stage_b_failed_case_stream_artifact(failed_case, "stderr")
+    stderr_text = _stage_b_stream_artifact_text(functional_report, stderr_artifact)
+    diagnostic_report = _stage_b_optional_functional_report(diagnostic_functional_report)
+    diagnostic_stderr_artifact: dict[str, Any] = {}
+    diagnostic_stderr_text = ""
+    if diagnostic_report is not None and diagnostic_functional_report is not None:
+        diagnostic_case = _stage_b_first_failed_functional_case(diagnostic_report)
+        diagnostic_stderr_artifact = _stage_b_failed_case_stream_artifact(diagnostic_case, "stderr")
+        diagnostic_stderr_text = _stage_b_stream_artifact_text(Path(diagnostic_functional_report), diagnostic_stderr_artifact)
+    combined_stderr_text = stderr_text + ("\n" + diagnostic_stderr_text if diagnostic_stderr_text else "")
+    crash = _stage_b_wine_crash_signature(combined_stderr_text)
+    frames = _stage_b_wine_backtrace_frames(combined_stderr_text)
+    loaded_modules = _stage_b_wine_loaded_modules(combined_stderr_text)
+    seh_exception = _stage_b_wine_seh_exception(combined_stderr_text)
+    result = {
+        "format": "stage-b-candidate-crash-v1",
+        "source": "stage-b-functional-report",
+        "target_name": target_name or str(report.get("target_name") or ""),
+        "original_runtime_observations": False,
+        "candidate": _stage_b_candidate_artifact_from_functional_report(report, candidate),
+        "functional_report": {"path": str(functional_report), "sha256": sha256_file(functional_report)},
+        "diagnostic_functional_report": None
+        if diagnostic_functional_report is None
+        else {"path": str(diagnostic_functional_report), "sha256": sha256_file(Path(diagnostic_functional_report))},
+        "case_id": str(failed_case.get("id") or ""),
+        "status": "detected" if crash else "not_detected",
+        "crash_kind": str(crash.get("crash_kind") or "") if crash else "",
+        "access": str(crash.get("access") or "") if crash else "",
+        "fault_address": crash.get("fault_address") if crash else None,
+        "instruction_address": crash.get("instruction_address") if crash else None,
+        "thread": str(crash.get("thread") or "") if crash else "",
+        "stderr_artifact": stderr_artifact or None,
+        "diagnostic_stderr_artifact": diagnostic_stderr_artifact or None,
+        "stderr_preview": stderr_text[:4096],
+        "stderr_crash_excerpt": _stage_b_stderr_crash_excerpt(combined_stderr_text, crash),
+        "backtrace": frames,
+        "loaded_modules": loaded_modules,
+        "seh_exception": seh_exception,
+        "repair_hints": _stage_b_candidate_crash_repair_hints(crash),
+    }
+    write_json(out / "candidate-crash.json", result)
+    return result
+
+
+def _stage_b_optional_functional_report(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    payload = _load_json(Path(path))
+    if not isinstance(payload, dict) or payload.get("format") != "stage-b-functional-report-v1":
+        raise StageAInputError("Stage B diagnostic crash extraction requires a stage-b-functional-report-v1 report")
+    return payload
+
+
+def _stage_b_first_failed_functional_case(report: dict[str, Any]) -> dict[str, Any]:
+    cases = report.get("cases") if isinstance(report.get("cases"), list) else []
+    for case in cases:
+        if isinstance(case, dict) and case.get("status") != "pass":
+            return case
+    return {}
+
+
+def _stage_b_failed_case_stream_artifact(case: dict[str, Any], stream: str) -> dict[str, Any]:
+    candidate = case.get("candidate") if isinstance(case.get("candidate"), dict) else {}
+    artifact = candidate.get(stream) if isinstance(candidate.get(stream), dict) else {}
+    return dict(artifact)
+
+
+def _stage_b_stream_artifact_text(report_path: Path, artifact: dict[str, Any]) -> str:
+    path_value = artifact.get("path") if isinstance(artifact, dict) else None
+    if isinstance(path_value, str) and path_value:
+        paths = [Path(path_value)]
+        if not Path(path_value).is_absolute():
+            paths.append(report_path.parent / path_value)
+        for path in paths:
+            try:
+                if path.is_file():
+                    return path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+    preview = artifact.get("preview") if isinstance(artifact, dict) else ""
+    return preview if isinstance(preview, str) else ""
+
+
+def _stage_b_candidate_artifact_from_functional_report(report: dict[str, Any], candidate: Path | None) -> dict[str, Any]:
+    if candidate is not None:
+        path = Path(candidate)
+        artifact: dict[str, Any] = {"path": str(path)}
+        if path.exists():
+            artifact["sha256"] = sha256_file(path)
+        return artifact
+    bindings = report.get("binary_bindings") if isinstance(report.get("binary_bindings"), dict) else {}
+    binding = bindings.get("candidate") if isinstance(bindings.get("candidate"), dict) else {}
+    artifact = {}
+    for key in ("path", "sha256", "size"):
+        if key in binding:
+            artifact[key] = binding[key]
+    return artifact
+
+
+def _stage_b_candidate_crash_repair_hints(crash: dict[str, Any] | None) -> list[str]:
+    if not crash:
+        return [
+            "no candidate crash signature detected in failed functional case",
+            "inspect functional mismatch fields and Stage A contract deltas",
+        ]
+    kind = str(crash.get("crash_kind") or "")
+    if kind == "wine_unhandled_stack_overflow":
+        failure_kind = "stack overflow during public functional suite"
+    elif kind == "wine_unhandled_page_fault":
+        failure_kind = "page fault during public functional suite"
+    else:
+        failure_kind = "candidate runtime crash during public functional suite"
+    return [
+        "candidate-only crash",
+        failure_kind,
+        "inspect ABI, stack, hidden sret/out-param, and recovered function-pointer evidence",
+    ]
+
+
+def _stage_b_stderr_crash_excerpt(stderr_text: str, crash: dict[str, Any] | None) -> str:
+    if not crash:
+        return ""
+    needle = str(crash.get("instruction_address") or "").removeprefix("0x").removeprefix("0X")
+    for line in stderr_text.splitlines():
+        if needle and needle.lower() in line.lower():
+            return line[:1000]
+    for line in stderr_text.splitlines():
+        if "Unhandled page fault" in line or "Unhandled stack overflow" in line or "Unhandled exception" in line:
+            return line[:1000]
+    return ""
+
+
+_WINE_PAGE_FAULT_RE = re.compile(
+    r"wine: Unhandled page fault on (?P<access>\S+) access to (?P<fault_address>0x[0-9A-Fa-f]+|[0-9A-Fa-f]+) "
+    r"at address (?P<instruction_address>0x[0-9A-Fa-f]+|[0-9A-Fa-f]+)(?: \(thread (?P<thread>[0-9A-Fa-f]+)\))?"
+)
+_WINE_STACK_OVERFLOW_RE = re.compile(
+    r"wine: Unhandled stack overflow at address (?P<instruction_address>0x[0-9A-Fa-f]+|[0-9A-Fa-f]+)"
+    r"(?: \(thread (?P<thread>[0-9A-Fa-f]+)\))?"
+)
+_WINE_UNHANDLED_EXCEPTION_RE = re.compile(
+    r"Unhandled exception: page fault on (?P<access>\S+) access to (?P<fault_address>0x[0-9A-Fa-f]+|[0-9A-Fa-f]+) "
+    r"in .* code \((?P<instruction_address>0x[0-9A-Fa-f]+|[0-9A-Fa-f]+)\)"
+)
+_WINE_BACKTRACE_FRAME_RE = re.compile(
+    r"^\s*(?P<current>=>)?\s*(?P<index>\d+)\s+(?P<address>0x[0-9A-Fa-f]+|[0-9A-Fa-f]{6,16})(?P<rest>.*)$"
+)
+_WINE_MODULE_LINE_RE = re.compile(
+    r"^\s*(?P<kind>PE|ELF)\s+(?P<start>[0-9A-Fa-f]+)-(?P<end>[0-9A-Fa-f]+)\s+\S+\s+(?P<name>\S+)"
+)
+_WINE_SEH_DISPATCH_RE = re.compile(
+    r"^(?P<thread>[0-9A-Fa-f]+):trace:seh:dispatch_exception code=(?P<code>[0-9A-Fa-f]+)"
+    r"(?: \((?P<code_name>[^)]+)\))? flags=(?P<flags>[0-9A-Fa-f]+) addr=(?P<addr>[0-9A-Fa-f]+)"
+)
+_WINE_SEH_INFO_RE = re.compile(
+    r"^(?P<thread>[0-9A-Fa-f]+):trace:seh:dispatch_exception\s+info\[(?P<index>\d+)\]=(?P<value>[0-9A-Fa-f]+)"
+)
+_WINE_SEH_REGS_RE = re.compile(
+    r"^(?P<thread>[0-9A-Fa-f]+):trace:seh:dispatch_exception\s+(?P<body>(?:[a-z]{2,6}=[0-9A-Fa-f]+\s*)+)$"
+)
+
+
+def _stage_b_wine_crash_signature(stderr_text: str) -> dict[str, Any] | None:
+    for pattern, kind in (
+        (_WINE_PAGE_FAULT_RE, "wine_unhandled_page_fault"),
+        (_WINE_STACK_OVERFLOW_RE, "wine_unhandled_stack_overflow"),
+        (_WINE_UNHANDLED_EXCEPTION_RE, "wine_unhandled_page_fault"),
+    ):
+        match = pattern.search(stderr_text)
+        if match is None:
+            continue
+        groups = match.groupdict()
+        return {
+            "crash_kind": kind,
+            "access": groups.get("access") or "",
+            "fault_address": _stage_b_prefixed_hex(groups.get("fault_address")),
+            "instruction_address": _stage_b_prefixed_hex(groups.get("instruction_address")),
+            "thread": groups.get("thread") or "",
+        }
+    return None
+
+
+def _stage_b_wine_backtrace_frames(stderr_text: str) -> list[dict[str, Any]]:
+    frames: list[dict[str, Any]] = []
+    for line in stderr_text.splitlines():
+        match = _WINE_BACKTRACE_FRAME_RE.match(line)
+        if match is None:
+            continue
+        rest = match.group("rest") or ""
+        frame: dict[str, Any] = {
+            "index": int(match.group("index")),
+            "address": _stage_b_prefixed_hex(match.group("address")),
+        }
+        module = _stage_b_wine_frame_module(rest)
+        if module:
+            frame["module"] = module
+        symbol = _stage_b_wine_frame_symbol(rest)
+        if symbol:
+            frame["symbol"] = symbol
+        rva = _stage_b_wine_frame_rva(rest, module)
+        if rva:
+            frame["rva"] = rva
+        if match.group("current"):
+            frame["current"] = True
+        frames.append(frame)
+    return frames
+
+
+def _stage_b_wine_frame_module(rest: str) -> str:
+    module_match = re.search(r"\bin\s+(?P<module>[A-Za-z0-9_.+-]+)(?:\s|$)", rest)
+    if module_match is not None:
+        return module_match.group("module")
+    bang_match = re.search(r"\b(?P<module>[A-Za-z0-9_.+-]+)!", rest)
+    if bang_match is not None:
+        return bang_match.group("module")
+    plus_match = re.search(r"\b(?P<module>[A-Za-z0-9_.+-]+\.(?:dll|exe))\+0x[0-9A-Fa-f]+", rest, flags=re.IGNORECASE)
+    if plus_match is not None:
+        return plus_match.group("module")
+    return ""
+
+
+def _stage_b_wine_frame_symbol(rest: str) -> str:
+    symbol_match = re.match(r"\s*(?P<symbol>[A-Za-z_.$?@][A-Za-z0-9_.$?@<>~-]*)(?:\+0x[0-9A-Fa-f]+)?", rest)
+    if symbol_match is not None:
+        symbol = symbol_match.group("symbol")
+        if symbol not in {"in", "at"}:
+            return symbol
+    bang_match = re.search(r"!(?P<symbol>[A-Za-z_.$?@][A-Za-z0-9_.$?@<>~-]*)", rest)
+    if bang_match is not None:
+        return bang_match.group("symbol")
+    return ""
+
+
+def _stage_b_wine_frame_rva(rest: str, module: str) -> str:
+    rva_match = re.search(r"\(\+(?P<rva>0x[0-9A-Fa-f]+|[0-9A-Fa-f]+)\)", rest)
+    if rva_match is not None:
+        return _stage_b_prefixed_hex(rva_match.group("rva")) or ""
+    if module:
+        escaped = re.escape(module)
+        module_rva = re.search(rf"\b{escaped}\+(?P<rva>0x[0-9A-Fa-f]+|[0-9A-Fa-f]+)", rest, flags=re.IGNORECASE)
+        if module_rva is not None:
+            return _stage_b_prefixed_hex(module_rva.group("rva")) or ""
+    return ""
+
+
+def _stage_b_wine_loaded_modules(stderr_text: str) -> list[dict[str, Any]]:
+    modules: list[dict[str, Any]] = []
+    for line in stderr_text.splitlines():
+        match = _WINE_MODULE_LINE_RE.match(line)
+        if match is None:
+            continue
+        modules.append(
+            {
+                "kind": match.group("kind"),
+                "name": match.group("name"),
+                "image_base": _stage_b_prefixed_hex(match.group("start")),
+                "image_end": _stage_b_prefixed_hex(match.group("end")),
+            }
+        )
+    return modules
+
+
+def _stage_b_wine_seh_exception(stderr_text: str) -> dict[str, Any] | None:
+    active: dict[str, Any] | None = None
+    best: dict[str, Any] | None = None
+    for line in stderr_text.splitlines():
+        dispatch = _WINE_SEH_DISPATCH_RE.match(line)
+        if dispatch is not None:
+            code = dispatch.group("code").lower()
+            active = {
+                "thread": dispatch.group("thread"),
+                "code": "0x" + code.upper(),
+                "code_name": dispatch.group("code_name") or "",
+                "flags": "0x" + dispatch.group("flags").upper(),
+                "address": _stage_b_prefixed_hex(dispatch.group("addr")),
+                "info": {},
+                "registers": {},
+            }
+            if code == "c0000005":
+                best = active
+            continue
+        if active is None:
+            continue
+        info = _WINE_SEH_INFO_RE.match(line)
+        if info is not None and info.group("thread").lower() == str(active.get("thread", "")).lower():
+            active["info"][str(info.group("index"))] = _stage_b_prefixed_hex(info.group("value"))
+            continue
+        regs = _WINE_SEH_REGS_RE.match(line)
+        if regs is not None and regs.group("thread").lower() == str(active.get("thread", "")).lower():
+            active["registers"].update(_stage_b_wine_register_assignments(regs.group("body")))
+            continue
+        if "Unhandled page fault" in line or "Unhandled stack overflow" in line:
+            best = active
+    if best is None:
+        return None
+    info = best.get("info") if isinstance(best.get("info"), dict) else {}
+    if info.get("0") == "0x00000001":
+        best["access"] = "write"
+    elif info.get("0") == "0x00000000":
+        best["access"] = "read"
+    if "1" in info:
+        best["fault_address"] = info["1"]
+    return best
+
+
+def _stage_b_wine_register_assignments(text: str) -> dict[str, str]:
+    registers: dict[str, str] = {}
+    for name, value in re.findall(r"\b([a-z]{2,6})=([0-9A-Fa-f]+)\b", text):
+        registers[name] = _stage_b_prefixed_hex(value) or value
+    return registers
+
+
+def _stage_b_prefixed_hex(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.lower().startswith("0x"):
+        return "0x" + text[2:].upper()
+    if re.fullmatch(r"[0-9A-Fa-f]+", text):
+        return "0x" + text.upper()
+    return text
+
+
 def stage_b_explain_delta(
     *,
     reference_contract: Path,
@@ -1314,6 +1654,7 @@ def stage_b_explain_delta(
     out: Path,
     candidate_crash_report: Path | None = None,
     functional_report: Path | None = None,
+    candidate_modules: list[dict[str, Any]] | None = None,
     model: str = STAGE_A_MODEL_ID,
 ) -> dict[str, Any]:
     from .stage_a import stage_a_validate_contract_candidate
@@ -1342,12 +1683,14 @@ def stage_b_explain_delta(
     )
     candidate_bin = _parse_stage_a_pe(candidate)
     candidate_functions = _parse_linker_map_functions(linker_map_candidate, candidate_bin)
+    candidate_module_contexts = _stage_b_candidate_module_contexts(candidate_modules)
     items = _stage_b_delta_repair_items(
         contract=contract,
         validation=contract_validation,
         skeleton=skeleton,
         candidate_functions=candidate_functions,
         candidate_binary=candidate_bin,
+        candidate_modules=candidate_module_contexts,
         crash=crash,
         functional=functional,
     )
@@ -1359,6 +1702,7 @@ def stage_b_explain_delta(
         "candidate": {"path": str(candidate), "sha256": sha256_file(candidate)},
         "linker_map_candidate": {"path": str(linker_map_candidate), "sha256": sha256_file(linker_map_candidate)},
         "skeleton_manifest": {"path": str(skeleton_manifest), "sha256": sha256_file(skeleton_manifest)},
+        "candidate_modules": [_stage_b_candidate_module_artifact(module) for module in candidate_module_contexts],
         "candidate_crash_report": None
         if candidate_crash_report is None
         else _stage_b_candidate_crash_report_artifact(Path(candidate_crash_report), crash),
@@ -1375,12 +1719,63 @@ def stage_b_explain_delta(
     write_json(out / "stage-b-delta.json", result)
     return result
 
+def _stage_b_candidate_module_contexts(candidate_modules: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    contexts: list[dict[str, Any]] = []
+    for index, module in enumerate(candidate_modules or []):
+        if not isinstance(module, dict):
+            raise StageAInputError("Stage B candidate module entries must be objects")
+        candidate_path = module.get("candidate") or module.get("binary") or module.get("path")
+        linker_map = module.get("linker_map") or module.get("linker_map_candidate") or module.get("map")
+        skeleton_manifest = module.get("skeleton_manifest") or module.get("manifest")
+        if candidate_path is None or linker_map is None or skeleton_manifest is None:
+            raise StageAInputError(
+                "Stage B candidate modules require candidate, linker_map, and skeleton_manifest paths"
+            )
+        candidate_path = Path(candidate_path)
+        linker_map = Path(linker_map)
+        skeleton_manifest = Path(skeleton_manifest)
+        binary = _parse_stage_a_pe(candidate_path)
+        functions = _parse_linker_map_functions(linker_map, binary)
+        skeleton = _load_json(skeleton_manifest)
+        contexts.append(
+            {
+                "name": str(module.get("name") or candidate_path.name or f"candidate-module-{index}"),
+                "role": str(module.get("role") or "candidate_module"),
+                "path": str(candidate_path),
+                "sha256": sha256_file(candidate_path),
+                "linker_map": {"path": str(linker_map), "sha256": sha256_file(linker_map)},
+                "skeleton_manifest": {"path": str(skeleton_manifest), "sha256": sha256_file(skeleton_manifest)},
+                "image": _stage_b_candidate_image_range(binary),
+                "functions": functions,
+                "source_map": _stage_b_source_map_by_function(skeleton),
+            }
+        )
+    return contexts
+
+
+def _stage_b_candidate_module_artifact(module: dict[str, Any]) -> dict[str, Any]:
+    artifact = {
+        "name": module.get("name"),
+        "role": module.get("role"),
+        "path": module.get("path"),
+        "sha256": module.get("sha256"),
+        "linker_map": module.get("linker_map"),
+        "skeleton_manifest": module.get("skeleton_manifest"),
+        "image": module.get("image"),
+    }
+    return {key: value for key, value in artifact.items() if value is not None}
+
+
 def _stage_b_candidate_crash_report_artifact(path: Path, crash: dict[str, Any] | None) -> dict[str, Any]:
     artifact: dict[str, Any] = {"path": str(path), "sha256": sha256_file(path)}
     if isinstance(crash, dict):
         artifact["status"] = crash.get("status")
         artifact["crash_kind"] = crash.get("crash_kind")
         artifact["case_id"] = crash.get("case_id")
+        artifact["has_backtrace"] = bool(crash.get("backtrace"))
+        artifact["has_seh_exception"] = isinstance(crash.get("seh_exception"), dict)
+        if isinstance(crash.get("diagnostic_functional_report"), dict):
+            artifact["diagnostic_functional_report"] = crash.get("diagnostic_functional_report")
     return artifact
 
 
@@ -1398,6 +1793,7 @@ def _stage_b_delta_repair_items(
     crash: dict[str, Any] | None,
     functional: dict[str, Any] | None,
     candidate_binary: Any | None = None,
+    candidate_modules: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     source_map = _stage_b_source_map_by_function(skeleton)
     contract_functions = _stage_b_contract_functions(contract)
@@ -1478,7 +1874,15 @@ def _stage_b_delta_repair_items(
             )
         )
     items.extend(_stage_b_functional_repair_items(functional, source_map))
-    items.extend(_stage_b_crash_repair_items(crash, candidate_functions, source_map, candidate_binary))
+    items.extend(
+        _stage_b_crash_repair_items(
+            crash,
+            candidate_functions,
+            source_map,
+            candidate_binary,
+            candidate_modules=candidate_modules,
+        )
+    )
     for index, item in enumerate(sorted(items, key=_stage_b_repair_rank), start=1):
         item["rank"] = index
     return sorted(items, key=lambda item: int(item["rank"]))
@@ -2518,19 +2922,64 @@ def _stage_b_crash_repair_items(
     candidate_functions: list[dict[str, Any]],
     source_map: dict[str, dict[str, Any]],
     candidate_binary: Any | None = None,
+    *,
+    candidate_modules: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(crash, dict):
         return []
     if str(crash.get("status") or "").lower() not in {"detected", "crash", "failed"}:
         return []
-    location = _stage_b_candidate_crash_location(crash, candidate_binary)
+    modules = _stage_b_crash_candidate_modules(
+        candidate_functions=candidate_functions,
+        source_map=source_map,
+        candidate_binary=candidate_binary,
+        candidate_modules=candidate_modules,
+    )
+    location = _stage_b_candidate_crash_location(crash, modules)
+    location_module = _stage_b_crash_location_module(location, modules)
+    module_functions = (
+        location_module.get("functions")
+        if isinstance(location_module, dict) and isinstance(location_module.get("functions"), list)
+        else candidate_functions
+    )
+    module_source_map = (
+        location_module.get("source_map")
+        if isinstance(location_module, dict) and isinstance(location_module.get("source_map"), dict)
+        else source_map
+    )
     fault_rva = location.get("rva")
-    function = _stage_b_function_for_rva(candidate_functions, fault_rva) if isinstance(fault_rva, int) else None
+    function = _stage_b_function_for_rva(module_functions, fault_rva) if isinstance(fault_rva, int) else None
+    register_context = None
+    if function is None:
+        register_context = _stage_b_candidate_register_context_location(crash, modules)
+        if register_context is not None:
+            register_module = _stage_b_crash_location_module(register_context, modules)
+            if isinstance(register_module, dict):
+                register_functions = register_module.get("functions") if isinstance(register_module.get("functions"), list) else []
+                register_rva = register_context.get("rva")
+                register_function = _stage_b_function_for_rva(register_functions, register_rva) if isinstance(register_rva, int) else None
+                if register_function is not None:
+                    function = register_function
+                    location["candidate_register_context"] = register_context
+                    module_source_map = (
+                        register_module.get("source_map")
+                        if isinstance(register_module.get("source_map"), dict)
+                        else source_map
+                    )
     if function is not None:
         repair_class = "stack_delta_mismatch"
-        next_action = "inspect the candidate-only crash report and repair the mapped generated source span"
+        module_name = ""
+        if isinstance(location.get("module"), dict) and location["module"].get("name"):
+            module_name = f" in {location['module']['name']}"
+        next_action = f"inspect the candidate-only crash report and repair the mapped generated source span{module_name}"
         text = json.dumps(crash, sort_keys=True, default=str).lower()
-        if _stage_b_is_stack_probe_function(function):
+        if register_context is not None:
+            repair_class = "candidate_crash_register_context"
+            next_action = (
+                "candidate-only SEH context has a register pointing into this generated function; inspect "
+                "callback, import-thunk, TLS, or ABI state that could hand Wine an invalid runtime pointer"
+            )
+        elif _stage_b_is_stack_probe_function(function):
             repair_class = "stack_probe_or_frame_layout"
             next_action = (
                 "repair generated stack-frame size, stack-probe helper linkage, or PE stack/layout before "
@@ -2558,12 +3007,89 @@ def _stage_b_crash_repair_items(
             family="candidate_crash",
             function=function,
             block_id=None,
-            source_map=source_map,
+            source_map=module_source_map,
             repair_class=repair_class,
             next_action=next_action,
             evidence={"crash": crash, "candidate_location": location},
         )
     ]
+
+
+def _stage_b_crash_candidate_modules(
+    *,
+    candidate_functions: list[dict[str, Any]],
+    source_map: dict[str, dict[str, Any]],
+    candidate_binary: Any | None,
+    candidate_modules: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    modules = [
+        {
+            "name": "candidate",
+            "role": "primary_candidate",
+            "image": _stage_b_candidate_image_range(candidate_binary),
+            "functions": candidate_functions,
+            "source_map": source_map,
+        }
+    ]
+    for index, module in enumerate(candidate_modules or []):
+        modules.append(_stage_b_normalize_crash_candidate_module(module, index))
+    return modules
+
+
+def _stage_b_normalize_crash_candidate_module(module: dict[str, Any], index: int) -> dict[str, Any]:
+    name = str(module.get("name") or Path(str(module.get("path") or "")).name or f"candidate-module-{index}")
+    image = module.get("image")
+    if not isinstance(image, dict):
+        image = _stage_b_candidate_image_range(module.get("candidate_binary") or module.get("binary"))
+    functions = module.get("functions") or module.get("candidate_functions") or []
+    if not isinstance(functions, list):
+        functions = []
+    source_map = _stage_b_normalize_candidate_module_source_map(module.get("source_map") or module.get("skeleton"))
+    return {
+        "name": name,
+        "role": str(module.get("role") or "candidate_module"),
+        "path": str(module.get("path") or ""),
+        "image": image,
+        "functions": functions,
+        "source_map": source_map,
+    }
+
+
+def _stage_b_normalize_candidate_module_source_map(value: Any) -> dict[str, dict[str, Any]]:
+    if isinstance(value, dict) and isinstance(value.get("source_map"), dict):
+        return _stage_b_source_map_by_function(value)
+    if isinstance(value, dict):
+        normalized: dict[str, dict[str, Any]] = {}
+        for key, location in value.items():
+            if isinstance(key, str) and isinstance(location, dict):
+                normalized[key] = location
+                normalized.setdefault(_linker_function_match_key(key), location)
+        return normalized
+    return {}
+
+
+def _stage_b_crash_location_module(location: dict[str, Any], modules: list[dict[str, Any]]) -> dict[str, Any] | None:
+    index = location.get("module_index")
+    if isinstance(index, int) and 0 <= index < len(modules):
+        return modules[index]
+    return None
+
+
+def _stage_b_candidate_register_context_location(crash: dict[str, Any], modules: list[dict[str, Any]]) -> dict[str, Any] | None:
+    seh = crash.get("seh_exception") if isinstance(crash.get("seh_exception"), dict) else {}
+    registers = seh.get("registers") if isinstance(seh.get("registers"), dict) else {}
+    for register_name in ("eip", "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"):
+        value = _optional_crash_address_int(registers.get(register_name))
+        if value is None:
+            continue
+        location = _stage_b_candidate_location_for_pc(value, modules)
+        if location is None:
+            continue
+        location["classification"] = "candidate_seh_register"
+        location["register"] = register_name
+        location["value"] = _stage_b_prefixed_hex(registers.get(register_name))
+        return location
+    return None
 
 
 def _stage_b_crash_looks_like_stack_scratch_fault(crash: dict[str, Any]) -> bool:
@@ -2577,40 +3103,205 @@ def _stage_b_crash_looks_like_stack_scratch_fault(crash: dict[str, Any]) -> bool
     return False
 
 
-def _stage_b_candidate_crash_location(crash: dict[str, Any], candidate_binary: Any | None) -> dict[str, Any]:
-    explicit_rva = _optional_int(crash.get("exception_rva") or crash.get("instruction_rva") or crash.get("fault_rva"))
-    image = _stage_b_candidate_image_range(candidate_binary)
+def _stage_b_candidate_crash_location(crash: dict[str, Any], modules: list[dict[str, Any]]) -> dict[str, Any]:
+    explicit_rva = _optional_crash_address_int(crash.get("exception_rva") or crash.get("instruction_rva") or crash.get("fault_rva"))
     if explicit_rva is not None:
         return {
             "classification": "candidate_rva_explicit",
             "rva": explicit_rva,
-            "candidate_image": image,
+            "candidate_image": _stage_b_primary_candidate_image(modules),
+            "module_index": 0,
+            "module": _stage_b_crash_module_summary(modules, 0),
         }
-    pc = _optional_int(
+    pc = _optional_crash_address_int(
         crash.get("instruction_address")
         or crash.get("exception_address")
         or crash.get("program_counter")
         or crash.get("pc")
     )
+    if pc is not None:
+        location = _stage_b_candidate_location_for_pc(pc, modules)
+        if location is not None:
+            return location
+    for frame_index, frame in enumerate(_stage_b_crash_frames(crash)):
+        location = _stage_b_candidate_location_for_frame(frame, modules)
+        if location is not None:
+            location["classification"] = "candidate_backtrace_frame"
+            location["frame_index"] = frame_index
+            location["frame"] = _stage_b_crash_frame_evidence(frame)
+            return location
+    image = _stage_b_primary_candidate_image(modules)
     if pc is None:
         return {"classification": "missing_candidate_pc", "rva": None, "candidate_image": image}
     if image is None:
         return {"classification": "candidate_image_unknown", "pc": pc, "rva": None, "candidate_image": None}
-    image_base = int(image["image_base"])
-    image_end = int(image["image_end"])
-    if image_base <= pc < image_end:
-        return {
-            "classification": "inside_candidate_image",
-            "pc": pc,
-            "rva": pc - image_base,
-            "candidate_image": image,
-        }
     return {
         "classification": "outside_candidate_image",
         "pc": pc,
         "rva": None,
         "candidate_image": image,
     }
+
+
+def _stage_b_primary_candidate_image(modules: list[dict[str, Any]]) -> dict[str, int] | None:
+    if not modules:
+        return None
+    image = modules[0].get("image")
+    return image if isinstance(image, dict) else None
+
+
+def _stage_b_candidate_location_for_pc(pc: int, modules: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for index, module in enumerate(modules):
+        image = module.get("image")
+        if not isinstance(image, dict):
+            continue
+        image_base = _optional_int(image.get("image_base"))
+        image_end = _optional_int(image.get("image_end"))
+        if image_base is None or image_end is None:
+            continue
+        if image_base <= pc < image_end:
+            return {
+                "classification": "inside_candidate_image" if index == 0 else "inside_candidate_module_image",
+                "pc": pc,
+                "rva": pc - image_base,
+                "candidate_image": _stage_b_primary_candidate_image(modules),
+                "module_index": index,
+                "module": _stage_b_crash_module_summary(modules, index),
+            }
+    return None
+
+
+def _stage_b_candidate_location_for_frame(frame: dict[str, Any], modules: list[dict[str, Any]]) -> dict[str, Any] | None:
+    module_indices = _stage_b_matching_frame_module_indices(frame, modules)
+    explicit_rva = _optional_crash_address_int(frame.get("rva") or frame.get("instruction_rva") or frame.get("exception_rva"))
+    if explicit_rva is not None and module_indices:
+        index = module_indices[0]
+        return {
+            "pc": _optional_crash_address_int(frame.get("address") or frame.get("instruction_address") or frame.get("pc")),
+            "rva": explicit_rva,
+            "candidate_image": _stage_b_primary_candidate_image(modules),
+            "module_index": index,
+            "module": _stage_b_crash_module_summary(modules, index),
+        }
+    pc = _optional_crash_address_int(
+        frame.get("address")
+        or frame.get("instruction_address")
+        or frame.get("exception_address")
+        or frame.get("program_counter")
+        or frame.get("pc")
+    )
+    if pc is None:
+        return None
+    if module_indices:
+        for index in module_indices:
+            image = modules[index].get("image")
+            if not isinstance(image, dict):
+                continue
+            image_base = _optional_int(image.get("image_base"))
+            image_end = _optional_int(image.get("image_end"))
+            if image_base is not None and image_end is not None and image_base <= pc < image_end:
+                return {
+                    "pc": pc,
+                    "rva": pc - image_base,
+                    "candidate_image": _stage_b_primary_candidate_image(modules),
+                    "module_index": index,
+                    "module": _stage_b_crash_module_summary(modules, index),
+                }
+    return _stage_b_candidate_location_for_pc(pc, modules)
+
+
+def _stage_b_crash_frames(crash: dict[str, Any]) -> list[dict[str, Any]]:
+    for key in ("backtrace", "frames", "stack_frames", "trace"):
+        value = crash.get(key)
+        if isinstance(value, dict):
+            value = value.get("frames")
+        if isinstance(value, list):
+            return [frame for frame in value if isinstance(frame, dict)]
+    return []
+
+
+def _stage_b_matching_frame_module_indices(frame: dict[str, Any], modules: list[dict[str, Any]]) -> list[int]:
+    frame_keys = _stage_b_crash_frame_module_keys(frame)
+    if not frame_keys:
+        return []
+    result: list[int] = []
+    for index, module in enumerate(modules):
+        if frame_keys & _stage_b_crash_module_keys(module):
+            result.append(index)
+    return result
+
+
+def _stage_b_crash_frame_module_keys(frame: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for key in ("module", "module_name", "module_path", "image", "binary", "path", "dll"):
+        value = frame.get(key)
+        if isinstance(value, str):
+            keys.update(_stage_b_module_name_keys(value))
+    return keys
+
+
+def _stage_b_crash_module_keys(module: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for key in ("name", "path"):
+        value = module.get(key)
+        if isinstance(value, str):
+            keys.update(_stage_b_module_name_keys(value))
+    return keys
+
+
+def _stage_b_module_name_keys(value: str) -> set[str]:
+    text = value.strip().replace("\\", "/").lower()
+    if not text:
+        return set()
+    path = Path(text)
+    name = path.name
+    return {item for item in {text, name, name.removesuffix(".dll"), name.removesuffix(".exe")} if item}
+
+
+def _stage_b_crash_module_summary(modules: list[dict[str, Any]], index: int) -> dict[str, Any] | None:
+    if index < 0 or index >= len(modules):
+        return None
+    module = modules[index]
+    summary = {
+        "index": index,
+        "name": module.get("name"),
+        "role": module.get("role"),
+        "path": module.get("path"),
+        "image": module.get("image"),
+    }
+    return {key: value for key, value in summary.items() if value not in (None, "")}
+
+
+def _stage_b_crash_frame_evidence(frame: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "index",
+        "module",
+        "module_name",
+        "module_path",
+        "image",
+        "binary",
+        "path",
+        "dll",
+        "address",
+        "instruction_address",
+        "exception_address",
+        "program_counter",
+        "pc",
+        "rva",
+        "instruction_rva",
+        "exception_rva",
+        "symbol",
+        "function",
+    }
+    return {key: value for key, value in frame.items() if key in allowed}
+
+
+def _optional_crash_address_int(value: Any) -> int | None:
+    if isinstance(value, str):
+        text = value.strip()
+        if re.fullmatch(r"[0-9A-Fa-f]{6,16}", text):
+            return int(text, 16)
+    return _optional_int(value)
 
 
 def _stage_b_candidate_image_range(candidate_binary: Any | None) -> dict[str, int] | None:
@@ -2680,6 +3371,7 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "ripgrep_upstream_harness_behavior": 6,
         "import_prototype_mismatch": 7,
         "abi_contract_coverage": 7,
+        "candidate_crash_register_context": 7,
         "global_callback_slot": 7,
         "argument_callback_table": 7,
         "global_callback_table": 7,
@@ -4383,7 +5075,12 @@ def _optional_int(value: Any) -> int | None:
         text = value.strip()
         if not text:
             return None
-        return int(text, 0)
+        try:
+            return int(text, 0)
+        except ValueError:
+            if re.fullmatch(r"[0-9A-Fa-f]+", text):
+                return int(text, 16)
+            raise
     return None
 
 

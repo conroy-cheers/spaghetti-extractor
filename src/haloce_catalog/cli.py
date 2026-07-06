@@ -94,6 +94,7 @@ from .stage_a import (
 from .stage_b import (
     stage_b_audit_readiness,
     stage_b_explain_delta,
+    stage_b_extract_candidate_crash,
     stage_b_export_decompiler,
     stage_b_generate_candidate_provenance,
     stage_b_generate_link_roots,
@@ -369,6 +370,17 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_b_functional.add_argument("--out", type=Path, required=True, help="functional report output directory")
     stage_b_functional.set_defaults(func=_cmd_stage_b_run_functional_suite)
 
+    stage_b_crash = subcommands.add_parser(
+        "stage-b-extract-candidate-crash",
+        help="extract candidate-only crash evidence from a Stage B functional report",
+    )
+    stage_b_crash.add_argument("--functional-report", type=Path, required=True)
+    stage_b_crash.add_argument("--diagnostic-functional-report", type=Path)
+    stage_b_crash.add_argument("--candidate", type=Path)
+    stage_b_crash.add_argument("--target-name")
+    stage_b_crash.add_argument("--out", type=Path, required=True)
+    stage_b_crash.set_defaults(func=_cmd_stage_b_extract_candidate_crash)
+
     stage_b_provenance = subcommands.add_parser(
         "stage-b-generate-candidate-provenance",
         help="generate a Stage B candidate provenance manifest from measured skeleton, build, and functional artifacts",
@@ -449,6 +461,15 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_b_delta.add_argument("--candidate", type=Path, required=True)
     stage_b_delta.add_argument("--linker-map-candidate", type=Path, required=True)
     stage_b_delta.add_argument("--skeleton-manifest", type=Path, required=True)
+    stage_b_delta.add_argument(
+        "--candidate-module",
+        action="append",
+        default=[],
+        help=(
+            "additional generated candidate module for crash explanation as "
+            "name=NAME,candidate=PATH,linker_map=PATH,skeleton_manifest=PATH; repeatable"
+        ),
+    )
     stage_b_delta.add_argument("--candidate-crash-report", type=Path)
     stage_b_delta.add_argument("--functional-report", type=Path)
     stage_b_delta.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
@@ -1537,6 +1558,18 @@ def _cmd_stage_b_run_functional_suite(args: Any) -> int:
     return 0 if result["status"] == "pass" else 1
 
 
+def _cmd_stage_b_extract_candidate_crash(args: Any) -> int:
+    result = stage_b_extract_candidate_crash(
+        functional_report=args.functional_report,
+        diagnostic_functional_report=args.diagnostic_functional_report,
+        candidate=args.candidate,
+        target_name=args.target_name,
+        out=args.out,
+    )
+    _print_json(result)
+    return 0
+
+
 def _cmd_stage_b_generate_candidate_provenance(args: Any) -> int:
     result = stage_b_generate_candidate_provenance(
         target_name=args.target_name,
@@ -1601,6 +1634,7 @@ def _cmd_stage_b_explain_delta(args: Any) -> int:
         candidate=args.candidate,
         linker_map_candidate=args.linker_map_candidate,
         skeleton_manifest=args.skeleton_manifest,
+        candidate_modules=_stage_b_candidate_module_specs(args.candidate_module),
         candidate_crash_report=args.candidate_crash_report,
         functional_report=args.functional_report,
         model=args.model,
@@ -1633,6 +1667,42 @@ def _target_path_map(values: list[str], option_name: str) -> dict[str, Path]:
             raise SystemExit(f"{option_name} target {target!r} was supplied more than once")
         result[target] = Path(path)
     return result
+
+
+def _stage_b_candidate_module_specs(values: list[str]) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    for value in values:
+        parts = [part for part in value.split(",") if part]
+        spec: dict[str, Any] = {}
+        for part in parts:
+            if "=" not in part:
+                raise SystemExit(f"--candidate-module entries must use key=value fields, got {part!r}")
+            key, raw = part.split("=", 1)
+            key = key.strip().replace("-", "_")
+            raw = raw.strip()
+            if key in {"candidate", "binary", "path", "linker_map", "linker_map_candidate", "map", "skeleton_manifest", "manifest"}:
+                spec[key] = Path(raw)
+            elif key in {"name", "role"}:
+                spec[key] = raw
+            else:
+                raise SystemExit(f"--candidate-module field {key!r} is not supported")
+        if "candidate" not in spec:
+            for alias in ("binary", "path"):
+                if alias in spec:
+                    spec["candidate"] = spec[alias]
+                    break
+        if "linker_map" not in spec:
+            for alias in ("linker_map_candidate", "map"):
+                if alias in spec:
+                    spec["linker_map"] = spec[alias]
+                    break
+        if "skeleton_manifest" not in spec and "manifest" in spec:
+            spec["skeleton_manifest"] = spec["manifest"]
+        missing = [key for key in ("candidate", "linker_map", "skeleton_manifest") if key not in spec]
+        if missing:
+            raise SystemExit(f"--candidate-module is missing required field(s): {', '.join(missing)}")
+        specs.append(spec)
+    return specs
 
 
 def _cmd_export_private_artifacts(args: Any) -> int:
