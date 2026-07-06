@@ -23,7 +23,9 @@ from haloce_catalog.stage_b import (
     stage_b_materialize_upstream_suite,
     stage_b_run_functional_suite,
     stage_b_validate_candidate,
+    _stage_b_abi_coverage_gap_items,
     _stage_b_delta_repair_items,
+    _stage_b_semantic_contract_repair_items,
     _render_decompiled_c_source,
 )
 from haloce_catalog.stage_b_skeleton import (
@@ -94,6 +96,30 @@ class StageBTests(unittest.TestCase):
             functions = json.loads((out / "functions.json").read_text(encoding="utf-8"))
             self.assertEqual(functions["functions"][0]["name"], "tiny")
             self.assertEqual(functions["functions"][0]["instruction_preview"][0]["mnemonic"], "ret")
+
+    def test_generate_skeleton_contract_guided_c_allows_partial_ugly_c_anchors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "jq.exe", b"\xc3")
+            linker_map = self._write_map(root / "jq.map", "tiny")
+            out = root / "skeleton"
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                linker_map=linker_map,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=out,
+            )
+
+            self.assertEqual(result["status"], "generated")
+            self.assertEqual(result["implementation_mode"], "contract-guided-c")
+            self.assertEqual(result["implementation_recovery"]["generated_source_kind"], "contract_guided_c_partial")
+            self.assertFalse(result["implementation_recovery"]["source_implements_behavior"])
+            source = (out / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn("Stage B contract placeholder", source)
+            self.assertEqual(result["source_map"]["functions"][0]["function"], "tiny")
 
     def test_generate_skeleton_uses_pe_exports_when_no_map_is_available(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4520,6 +4546,177 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(item["likely_repair_class"], "missing_decompiler_body")
             self.assertEqual(item["generated_source_location"]["file"], "src/jq_stage_b_skeleton.c")
             self.assertTrue((root / "delta" / "stage-b-delta.json").exists())
+
+    def test_explain_delta_imports_unit_contracts_and_candidate_probe_repairs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = self._write_map(root / "original.map", "tiny")
+            candidate_map = self._write_map(root / "candidate.map", "tiny")
+            delta_candidate_map = root / "delta-candidate.map"
+            delta_candidate_map.write_text("", encoding="utf-8")
+            skeleton_dir = root / "skeleton"
+            stage_b_generate_skeleton(
+                original=original,
+                linker_map=original_map,
+                target_name="jq",
+                out_dir=skeleton_dir,
+            )
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            units = root / "units"
+            reference_contract = root / "reference-contract.json"
+            with _LeanCheckedMock():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "stage-a",
+                    layout_contract=layout_contract,
+                )
+                stage_a_export_reference_contract(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    validation_report=root / "stage-a",
+                    layout_contract=layout_contract,
+                    unit_contract_dir=units,
+                    out=reference_contract,
+                )
+            repair_units = json.loads((units / "repair-units.json").read_text(encoding="utf-8"))
+            repair_units["work_items"] = [
+                {
+                    "id": "work:stdio-bridge",
+                    "family": "abi_callsites",
+                    "category": "abi_varargs_callsite",
+                    "severity": "incomplete",
+                    "original_function": "tiny",
+                    "original_block": "tiny:0",
+                    "repair_class": "varargs_or_stdio_bridge",
+                    "next_action": "repair the generated stdio varargs bridge for tiny",
+                }
+            ]
+            (units / "repair-units.json").write_text(json.dumps(repair_units, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            probe_report = root / "candidate-probe.json"
+            probe_report.write_text(
+                json.dumps(
+                    {
+                        "format": "stage-b-candidate-probe-report-v1",
+                        "status": "incomplete",
+                        "probes": [
+                            {
+                                "id": "probe:tiny:preserved-register",
+                                "status": "fail",
+                                "function": "tiny",
+                                "family": "abi_callsites",
+                                "category": "preserved_register_mismatch",
+                                "next_action": "repair candidate register save/restore in tiny",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = stage_b_explain_delta(
+                reference_contract=reference_contract,
+                candidate=candidate,
+                linker_map_candidate=delta_candidate_map,
+                skeleton_manifest=skeleton_dir / "manifest.json",
+                unit_contract_dir=units,
+                candidate_probe_report=probe_report,
+                out=root / "delta",
+            )
+
+            repair_classes = {item["likely_repair_class"] for item in result["repair_items"]}
+            self.assertEqual(result["status"], "incomplete")
+            self.assertIn("varargs_or_stdio_bridge", repair_classes)
+            self.assertIn("preserved_register_mismatch", repair_classes)
+            self.assertEqual(result["unit_contracts"]["counts"]["work_items"], 1)
+            self.assertEqual(result["candidate_probe_report"]["counts"]["failing"], 1)
+
+    def test_abi_coverage_gap_items_surface_callsite_and_function_mismatch_repairs(self):
+        evidence = {
+            "coverage_gaps": {
+                "callsite_mismatches": [
+                    {
+                        "name": "___mingw_fprintf",
+                        "block_id": "fprintf:0",
+                        "repair_class": "varargs_or_stdio_bridge",
+                        "next_action": "repair ___mingw_fprintf varargs/stdio bridge",
+                        "issues": [{"category": "varargs_format_inventory_mismatch"}],
+                    }
+                ],
+                "function_mismatches": [
+                    {
+                        "name": "jq_init",
+                        "repair_class": "hidden_sret_or_out_param",
+                        "next_action": "repair jq_init hidden sret/out-param representation",
+                        "issues": [{"category": "register_carried_out_param_missing"}],
+                    }
+                ],
+                "counts": {"callsite_mismatches": 1, "function_mismatches": 1},
+            }
+        }
+        source_map = {
+            "___mingw_fprintf": {"file": "src/jq_stage_b_skeleton.c", "line_start": 40, "line_end": 45},
+            "jq_init": {"file": "src/jq_stage_b_skeleton.c", "line_start": 80, "line_end": 95},
+        }
+
+        items = _stage_b_abi_coverage_gap_items(evidence, source_map)
+
+        by_function = {item["original_function"]: item for item in items}
+        self.assertEqual(by_function["___mingw_fprintf"]["likely_repair_class"], "varargs_or_stdio_bridge")
+        self.assertEqual(by_function["jq_init"]["likely_repair_class"], "hidden_sret_or_out_param")
+        self.assertEqual(by_function["jq_init"]["generated_source_location"]["line_start"], 80)
+
+    def test_semantic_contract_repair_items_surface_transfer_and_cluster_blockers(self):
+        unit_contracts = {
+            "semantic_transfer_contracts": [
+                {
+                    "id": "semantic-transfer:umain:42",
+                    "status": "incomplete",
+                    "function": "umain",
+                    "block_id": "umain:42",
+                    "blocker_category": "unsupported_semantics",
+                    "blocker": "instruction setcc is not modeled",
+                    "next_action": "add setcc transfer semantics",
+                }
+            ],
+            "cluster_semantic_contracts": [
+                {
+                    "id": "semantic-cluster:switch",
+                    "status": "incomplete",
+                    "function": "dispatch",
+                    "block_id": "dispatch:0",
+                    "cluster_kind": "abi_switch_or_jump_table_candidate",
+                    "repair_class": "switch_or_jump_table_dispatch",
+                    "blocker": "switch table bounds are not fully recovered",
+                    "next_action": "recover switch table bounds and default edge",
+                }
+            ],
+        }
+        source_map = {
+            "umain": {"file": "src/jq_stage_b_skeleton.c", "line_start": 120, "line_end": 240},
+            "dispatch": {"file": "src/jq_stage_b_skeleton.c", "line_start": 300, "line_end": 340},
+        }
+
+        items = _stage_b_semantic_contract_repair_items(unit_contracts, source_map)
+
+        by_function = {item["original_function"]: item for item in items}
+        self.assertEqual(by_function["umain"]["likely_repair_class"], "semantic_transfer_contract")
+        self.assertEqual(by_function["umain"]["generated_source_location"]["line_start"], 120)
+        self.assertEqual(by_function["dispatch"]["likely_repair_class"], "switch_or_jump_table_dispatch")
 
     def test_explain_delta_classifies_missing_function_range_by_source_kind(self):
         validation = {

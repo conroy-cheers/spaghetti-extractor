@@ -1992,7 +1992,8 @@
                 --original-flags "${stageAJqOriginalCflags}" \
                 --candidate-flags "${stageAJqCandidateCflags}" \
                 --out "$work/jq-block-map.json" \
-                --layout-contract-out "$work/jq-layout-contract.json"
+                --layout-contract-out "$work/jq-layout-contract.json" \
+                --quiet
               cat > "$work/suite.json" <<JSON
               {
                 "model": "x86-pe32-env-v1",
@@ -2018,7 +2019,8 @@
                 --mapping "$work/jq-block-map.json" \
                 --validation-report "$TMPDIR/stage-a-jq-suite/cases/jq-o2-alignment-windows-x86" \
                 --layout-contract "$work/jq-layout-contract.json" \
-                --out "$work/jq-reference-contract.json"
+                --out "$work/jq-reference-contract.json" \
+                --quiet
               jq -e '
                 .format == "stage-a-reference-contract-v1"
                 and .status == "pass"
@@ -2029,6 +2031,19 @@
               wincr stage-a-smoke-contract \
                 --reference-contract "$work/jq-reference-contract.json" \
                 --out "$work/jq-reference-contract-smoke.json"
+              if wincr stage-a-semantic-coverage \
+                --reference-contract "$work/jq-reference-contract.json" \
+                --out "$work/jq-semantic-coverage.json" \
+                --quiet
+              then
+                semantic_coverage_status=pass
+              else
+                semantic_coverage_status=incomplete
+              fi
+              jq -e '
+                .format == "stage-a-semantic-coverage-v1"
+                and (.status == "pass" or .status == "incomplete")
+              ' "$work/jq-semantic-coverage.json" >/dev/null
               mkdir -p "$out/generated" "$out/report"
               cp "$work/jq-block-map.json" \
                 "$work/jq-layout-contract.json" \
@@ -2036,9 +2051,21 @@
                 "$work/coverage_gaps.json" \
                 "$work/obligation_index.json" \
                 "$work/contract_summary.json" \
+                "$work/abi_callsites.json" \
+                "$work/block-contracts.jsonl" \
+                "$work/function-contracts.jsonl" \
+                "$work/cluster-contracts.jsonl" \
+                "$work/repair-units.json" \
+                "$work/source-obligations.json" \
+                "$work/semantic-transfer-contracts.jsonl" \
+                "$work/memory-frame-contracts.json" \
+                "$work/call-summary-contracts.json" \
+                "$work/cluster-semantic-contracts.jsonl" \
+                "$work/jq-semantic-coverage.json" \
                 "$work/jq-reference-contract-smoke.json" \
                 "$work/suite.json" \
                 "$out/generated/"
+              printf '%s\n' "$semantic_coverage_status" > "$out/generated/jq-semantic-coverage.status"
               cp -R "$TMPDIR/stage-a-jq-suite/." "$out/report/"
             '';
 

@@ -1652,7 +1652,9 @@ def stage_b_explain_delta(
     linker_map_candidate: Path,
     skeleton_manifest: Path,
     out: Path,
+    unit_contract_dir: Path | None = None,
     candidate_crash_report: Path | None = None,
+    candidate_probe_report: Path | None = None,
     functional_report: Path | None = None,
     candidate_modules: list[dict[str, Any]] | None = None,
     model: str = STAGE_A_MODEL_ID,
@@ -1668,7 +1670,13 @@ def stage_b_explain_delta(
     contract = _load_json(reference_contract)
     skeleton = _load_json(skeleton_manifest)
     crash = _load_optional_stage_b_json(Path(candidate_crash_report)) if candidate_crash_report is not None else None
+    candidate_probe = _load_optional_stage_b_json(Path(candidate_probe_report)) if candidate_probe_report is not None else None
     functional = _load_optional_stage_b_json(Path(functional_report)) if functional_report is not None else None
+    unit_contracts = _stage_b_load_unit_contracts(
+        reference_contract=reference_contract,
+        contract=contract,
+        unit_contract_dir=Path(unit_contract_dir) if unit_contract_dir is not None else None,
+    )
     functional_diagnostics = _stage_b_functional_diagnostics(
         functional_report_path=Path(functional_report) if functional_report is not None else None,
         functional_report_payload=functional,
@@ -1692,6 +1700,8 @@ def stage_b_explain_delta(
         candidate_binary=candidate_bin,
         candidate_modules=candidate_module_contexts,
         crash=crash,
+        unit_contracts=unit_contracts,
+        candidate_probe=candidate_probe,
         functional=functional,
     )
     result = {
@@ -1706,6 +1716,10 @@ def stage_b_explain_delta(
         "candidate_crash_report": None
         if candidate_crash_report is None
         else _stage_b_candidate_crash_report_artifact(Path(candidate_crash_report), crash),
+        "candidate_probe_report": None
+        if candidate_probe_report is None
+        else _stage_b_candidate_probe_report_artifact(Path(candidate_probe_report), candidate_probe),
+        "unit_contracts": unit_contracts.get("artifact") if isinstance(unit_contracts, dict) else None,
         "functional_report": None if functional_report is None else {"path": str(functional_report), "sha256": sha256_file(Path(functional_report))},
         "contract_candidate_validation": contract_validation,
         "functional_diagnostics": functional_diagnostics,
@@ -1784,6 +1798,113 @@ def _load_optional_stage_b_json(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else {"format": "unknown", "payload": payload}
 
 
+def _stage_b_load_unit_contracts(
+    *,
+    reference_contract: Path,
+    contract: dict[str, Any],
+    unit_contract_dir: Path | None,
+) -> dict[str, Any]:
+    directory = _stage_b_unit_contract_dir(reference_contract, contract, unit_contract_dir)
+    paths = {
+        "block_contracts": directory / "block-contracts.jsonl",
+        "function_contracts": directory / "function-contracts.jsonl",
+        "cluster_contracts": directory / "cluster-contracts.jsonl",
+        "repair_units": directory / "repair-units.json",
+        "source_obligations": directory / "source-obligations.json",
+        "semantic_transfer_contracts": directory / "semantic-transfer-contracts.jsonl",
+        "memory_frame_contracts": directory / "memory-frame-contracts.json",
+        "call_summary_contracts": directory / "call-summary-contracts.json",
+        "cluster_semantic_contracts": directory / "cluster-semantic-contracts.jsonl",
+    }
+    block_contracts = _load_stage_b_jsonl(paths["block_contracts"])
+    function_contracts = _load_stage_b_jsonl(paths["function_contracts"])
+    cluster_contracts = _load_stage_b_jsonl(paths["cluster_contracts"])
+    repair_units = _load_stage_b_optional_json(paths["repair_units"])
+    source_obligations = _load_stage_b_optional_json(paths["source_obligations"])
+    semantic_transfer_contracts = _load_stage_b_jsonl(paths["semantic_transfer_contracts"])
+    memory_frame_contracts = _load_stage_b_optional_json(paths["memory_frame_contracts"])
+    call_summary_contracts = _load_stage_b_optional_json(paths["call_summary_contracts"])
+    cluster_semantic_contracts = _load_stage_b_jsonl(paths["cluster_semantic_contracts"])
+    return {
+        "artifact": {
+            "status": "available" if any(path.is_file() for path in paths.values()) else "derived_or_missing",
+            "directory": str(directory),
+            "paths": {name: str(path) for name, path in paths.items()},
+            "counts": {
+                "block_contracts": len(block_contracts),
+                "function_contracts": len(function_contracts),
+                "cluster_contracts": len(cluster_contracts),
+                "work_items": len(repair_units.get("work_items", [])) if isinstance(repair_units.get("work_items"), list) else 0,
+                "source_obligations": len(source_obligations.get("obligations", [])) if isinstance(source_obligations.get("obligations"), list) else 0,
+                "semantic_transfer_contracts": len(semantic_transfer_contracts),
+                "memory_accesses": len(memory_frame_contracts.get("accesses", [])) if isinstance(memory_frame_contracts.get("accesses"), list) else 0,
+                "call_summaries": len(call_summary_contracts.get("calls", [])) if isinstance(call_summary_contracts.get("calls"), list) else 0,
+                "cluster_semantic_contracts": len(cluster_semantic_contracts),
+            },
+        },
+        "block_contracts": block_contracts,
+        "function_contracts": function_contracts,
+        "cluster_contracts": cluster_contracts,
+        "repair_units": repair_units,
+        "source_obligations": source_obligations,
+        "semantic_transfer_contracts": semantic_transfer_contracts,
+        "memory_frame_contracts": memory_frame_contracts,
+        "call_summary_contracts": call_summary_contracts,
+        "cluster_semantic_contracts": cluster_semantic_contracts,
+    }
+
+
+def _stage_b_unit_contract_dir(reference_contract: Path, contract: dict[str, Any], explicit: Path | None) -> Path:
+    if explicit is not None:
+        return explicit
+    sidecars = contract.get("sidecars") if isinstance(contract.get("sidecars"), dict) else {}
+    unit = sidecars.get("unit_contracts") if isinstance(sidecars.get("unit_contracts"), dict) else {}
+    directory = unit.get("directory")
+    if isinstance(directory, str) and directory:
+        path = Path(directory)
+        return path if path.is_absolute() else reference_contract.parent / path
+    return reference_contract.parent
+
+
+def _load_stage_b_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            if isinstance(value, dict):
+                rows.append(value)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return rows
+
+
+def _load_stage_b_optional_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        value = _load_json(path)
+    except StageAInputError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _stage_b_candidate_probe_report_artifact(path: Path, probe: dict[str, Any] | None) -> dict[str, Any]:
+    artifact: dict[str, Any] = {"path": str(path), "sha256": sha256_file(path)}
+    if isinstance(probe, dict):
+        probes = probe.get("probes") if isinstance(probe.get("probes"), list) else []
+        artifact["format"] = probe.get("format")
+        artifact["status"] = probe.get("status")
+        artifact["counts"] = {
+            "probes": len(probes),
+            "failing": sum(1 for item in probes if isinstance(item, dict) and item.get("status") not in {"pass", "satisfied"}),
+        }
+    return artifact
+
+
 def _stage_b_delta_repair_items(
     *,
     contract: dict[str, Any],
@@ -1794,6 +1915,8 @@ def _stage_b_delta_repair_items(
     functional: dict[str, Any] | None,
     candidate_binary: Any | None = None,
     candidate_modules: list[dict[str, Any]] | None = None,
+    unit_contracts: dict[str, Any] | None = None,
+    candidate_probe: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     source_map = _stage_b_source_map_by_function(skeleton)
     contract_functions = _stage_b_contract_functions(contract)
@@ -1874,6 +1997,8 @@ def _stage_b_delta_repair_items(
             )
         )
     items.extend(_stage_b_functional_repair_items(functional, source_map))
+    items.extend(_stage_b_unit_contract_repair_items(unit_contracts, source_map, validation=validation))
+    items.extend(_stage_b_candidate_probe_repair_items(candidate_probe, source_map))
     items.extend(
         _stage_b_crash_repair_items(
             crash,
@@ -1908,6 +2033,161 @@ def _stage_b_repair_item(
         "next_action": next_action,
         "evidence": evidence,
     }
+
+
+def _stage_b_unit_contract_repair_items(
+    unit_contracts: dict[str, Any] | None,
+    source_map: dict[str, dict[str, Any]],
+    *,
+    validation: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not isinstance(unit_contracts, dict):
+        return []
+    if validation.get("verdict") == "pass":
+        return []
+    repair_units = unit_contracts.get("repair_units") if isinstance(unit_contracts.get("repair_units"), dict) else {}
+    work_items = repair_units.get("work_items") if isinstance(repair_units.get("work_items"), list) else []
+    items: list[dict[str, Any]] = []
+    for work in work_items:
+        if not isinstance(work, dict):
+            continue
+        function = _stage_b_work_item_function(work)
+        items.append(
+            _stage_b_repair_item(
+                family=str(work.get("family") or "unit_contract"),
+                function=function,
+                block_id=str(work.get("original_block") or "") or None,
+                source_map=source_map,
+                repair_class=str(work.get("repair_class") or "contract_guided_repair_unit"),
+                next_action=str(work.get("next_action") or "repair this unit contract and re-run candidate-only delta explanation"),
+                evidence={
+                    "source": "stage-a-unit-contract",
+                    "work_item": work,
+                    "unit_contract_artifact": unit_contracts.get("artifact"),
+                },
+            )
+        )
+    has_semantic_work_items = any(
+        isinstance(work, dict)
+        and (isinstance(work.get("source_semantic_transfer"), dict) or isinstance(work.get("source_semantic_cluster"), dict))
+        for work in work_items
+    )
+    if not has_semantic_work_items:
+        items.extend(_stage_b_semantic_contract_repair_items(unit_contracts, source_map))
+    return items
+
+
+def _stage_b_semantic_contract_repair_items(
+    unit_contracts: dict[str, Any],
+    source_map: dict[str, dict[str, Any]],
+    *,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    transfers = unit_contracts.get("semantic_transfer_contracts") if isinstance(unit_contracts.get("semantic_transfer_contracts"), list) else []
+    for transfer in transfers:
+        if not isinstance(transfer, dict) or transfer.get("status") in {"reimplementable", "complete"}:
+            continue
+        item_id = str(transfer.get("id") or "")
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        items.append(
+            _stage_b_repair_item(
+                family="semantic_transfer",
+                function=str(transfer.get("function") or "") or None,
+                block_id=str(transfer.get("block_id") or "") or None,
+                source_map=source_map,
+                repair_class=_stage_b_semantic_repair_class(transfer),
+                next_action=str(
+                    transfer.get("next_action")
+                    or "complete this semantic transfer contract before expecting guided reimplementation"
+                ),
+                evidence={"source": "stage-a-semantic-transfer-contract", "semantic_transfer": transfer},
+            )
+        )
+        if len(items) >= limit:
+            return items
+    clusters = unit_contracts.get("cluster_semantic_contracts") if isinstance(unit_contracts.get("cluster_semantic_contracts"), list) else []
+    for cluster in clusters:
+        if not isinstance(cluster, dict) or cluster.get("status") in {"reimplementable", "complete"}:
+            continue
+        item_id = str(cluster.get("id") or "")
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        items.append(
+            _stage_b_repair_item(
+                family="semantic_cluster",
+                function=str(cluster.get("function") or "") or None,
+                block_id=str(cluster.get("block_id") or "") or None,
+                source_map=source_map,
+                repair_class=str(cluster.get("repair_class") or _stage_b_semantic_repair_class(cluster)),
+                next_action=str(cluster.get("next_action") or "recover the missing facts for this semantic cluster"),
+                evidence={"source": "stage-a-cluster-semantic-contract", "semantic_cluster": cluster},
+            )
+        )
+        if len(items) >= limit:
+            return items
+    return items
+
+
+def _stage_b_semantic_repair_class(row: dict[str, Any]) -> str:
+    text = json.dumps(row, sort_keys=True, default=str).lower()
+    if "varargs" in text or "printf" in text or "stdio" in text:
+        return "varargs_or_stdio_bridge"
+    if "sret" in text or "out_param" in text:
+        return "hidden_sret_or_out_param"
+    if "switch" in text or "jump_table" in text or "indirect_jump" in text:
+        return "switch_or_jump_table_dispatch"
+    if "loop" in text or "backedge" in text or "state_machine" in text:
+        return "loop_or_state_machine"
+    if "function_pointer" in text or "unknown_target" in text:
+        return "function_pointer_target"
+    if "memory" in text or "frame" in text or "alias" in text:
+        return "memory_effect_mismatch"
+    return "semantic_transfer_contract"
+
+
+def _stage_b_candidate_probe_repair_items(
+    candidate_probe: dict[str, Any] | None,
+    source_map: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not isinstance(candidate_probe, dict):
+        return []
+    probes = candidate_probe.get("probes") if isinstance(candidate_probe.get("probes"), list) else []
+    items: list[dict[str, Any]] = []
+    for probe in probes:
+        if not isinstance(probe, dict) or probe.get("status") in {"pass", "satisfied"}:
+            continue
+        function = probe.get("function") or probe.get("original_function")
+        items.append(
+            _stage_b_repair_item(
+                family=str(probe.get("family") or "candidate_probe"),
+                function=str(function) if function else None,
+                block_id=str(probe.get("block_id") or probe.get("original_block") or "") or None,
+                source_map=source_map,
+                repair_class=str(probe.get("repair_class") or probe.get("category") or "candidate_runtime_probe"),
+                next_action=str(probe.get("next_action") or "repair the candidate-only runtime probe failure; do not trace the original binary"),
+                evidence={"source": "candidate-only-probe-report", "probe": probe},
+            )
+        )
+    return items
+
+
+def _stage_b_work_item_function(work: dict[str, Any]) -> str | None:
+    for key in ("original_function", "function"):
+        value = work.get(key)
+        if isinstance(value, str) and value:
+            return value
+    for key in ("source_cluster", "source_gap"):
+        value = work.get(key)
+        if isinstance(value, dict):
+            nested = value.get("function") or value.get("original_function")
+            if isinstance(nested, str) and nested:
+                return nested
+    return None
 
 
 def _stage_b_source_map_by_function(skeleton: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1969,6 +2249,14 @@ def _stage_b_repair_class_for_family(family: str, evidence: dict[str, Any]) -> s
             return "hidden_sret_or_out_param"
         if "printf" in text or "varargs" in text or "stdio" in text:
             return "varargs_or_stdio_bridge"
+        if "switch" in text or "jump_table" in text:
+            return "switch_or_jump_table_dispatch"
+        if "loop" in text or "state_machine" in text:
+            return "loop_or_state_machine"
+        if "function_pointer" in text:
+            return "function_pointer_target"
+        if "memory" in text or "field_access" in text:
+            return "memory_effect_mismatch"
         if "register" in text or "clobber" in text or "preserved" in text:
             return "preserved_register_mismatch"
         if "stack" in text:
@@ -2468,6 +2756,31 @@ def _stage_b_abi_coverage_gap_items(
         )
         if len(items) >= limit:
             return items
+
+    for key, default_repair_class in (
+        ("callsite_mismatches", "abi_callsite_mismatch"),
+        ("function_mismatches", "abi_function_contract_mismatch"),
+    ):
+        samples = coverage_gaps.get(key) if isinstance(coverage_gaps.get(key), list) else []
+        for sample in samples:
+            if not isinstance(sample, dict):
+                continue
+            name = sample.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            items.append(
+                _stage_b_repair_item(
+                    family="abi_callsites",
+                    function=name,
+                    block_id=str(sample.get("block_id") or "") or None,
+                    source_map=source_map,
+                    repair_class=str(sample.get("repair_class") or default_repair_class),
+                    next_action=str(sample.get("next_action") or "repair this ABI contract mismatch and rerun Stage A contract validation"),
+                    evidence={"coverage_gap": sample},
+                )
+            )
+            if len(items) >= limit:
+                return items
     return items
 
 
@@ -3370,6 +3683,10 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "varargs_or_stdio_bridge": 5,
         "stderr_behavior": 5,
         "stdout_behavior": 5,
+        "semantic_transfer_contract": 5,
+        "memory_effect_mismatch": 5,
+        "switch_or_jump_table_dispatch": 6,
+        "loop_or_state_machine": 6,
         "short_option_state_machine": 6,
         "candidate_timeout": 6,
         "cli_exit_status_behavior": 6,

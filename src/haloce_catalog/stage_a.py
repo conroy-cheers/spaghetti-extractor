@@ -597,6 +597,7 @@ def stage_a_export_reference_contract(
     validation_report: Path | None = None,
     layout_contract: Path | None = None,
     sidecar_dir: Path | None = None,
+    unit_contract_dir: Path | None = None,
     model: str = STAGE_A_MODEL_ID,
 ) -> dict[str, Any]:
     original = Path(original)
@@ -606,8 +607,10 @@ def stage_a_export_reference_contract(
     layout_contract = Path(layout_contract) if layout_contract is not None else None
     out = Path(out)
     sidecar_dir = Path(sidecar_dir) if sidecar_dir is not None else out.parent
+    unit_contract_dir = Path(unit_contract_dir) if unit_contract_dir is not None else sidecar_dir
     out.parent.mkdir(parents=True, exist_ok=True)
     sidecar_dir.mkdir(parents=True, exist_ok=True)
+    unit_contract_dir.mkdir(parents=True, exist_ok=True)
 
     original_bin = _parse_stage_a_pe(original)
     candidate_bin = _parse_stage_a_pe(candidate) if candidate is not None else None
@@ -686,10 +689,22 @@ def stage_a_export_reference_contract(
             "abi_callsites": constraints["abi_callsites"].get("counts", {}).get("callsites", 0),
             "proof_obligations": constraints["proof_obligation_inventory"].get("counts", {}).get("obligations", 0),
         },
-        "sidecars": _reference_contract_sidecar_paths(sidecar_dir, out.parent),
+        "sidecars": _reference_contract_sidecar_paths(sidecar_dir, out.parent, unit_contract_dir=unit_contract_dir),
     }
+    semantic_payload = _reference_semantic_contract_payloads(
+        original_bin,
+        map_contract["mappings"],
+        contract,
+        _reference_sidecar_contract_ref(out),
+    )
     write_json(out, contract)
-    _write_reference_contract_sidecars(contract, out, sidecar_dir)
+    _write_reference_contract_sidecars(
+        contract,
+        out,
+        sidecar_dir,
+        unit_contract_dir=unit_contract_dir,
+        semantic_payload=semantic_payload,
+    )
     return contract
 
 
@@ -792,6 +807,141 @@ def stage_a_validate_contract_candidate(
     }
     write_json(out / "verdict.json", result)
     write_json(out / "contract-candidate.json", result)
+    return result
+
+
+def stage_a_extract_work_items(
+    *,
+    reference_contract: Path,
+    out: Path,
+    unit_contract_dir: Path | None = None,
+) -> dict[str, Any]:
+    reference_contract = Path(reference_contract)
+    contract = _load_json(reference_contract)
+    contract_ref = _reference_sidecar_contract_ref(reference_contract)
+    unit_contracts = _load_reference_unit_contract_sidecars(
+        contract,
+        reference_contract,
+        unit_contract_dir=Path(unit_contract_dir) if unit_contract_dir is not None else None,
+        contract_ref=contract_ref,
+    )
+    repair_units = unit_contracts.get("repair_units") if isinstance(unit_contracts.get("repair_units"), dict) else {}
+    work_items = repair_units.get("work_items") if isinstance(repair_units.get("work_items"), list) else []
+    result = {
+        "format": "stage-a-work-items-v1",
+        "status": "pass",
+        "reference_contract": _reference_input_artifact(reference_contract),
+        "unit_contracts": _reference_unit_contract_artifact(unit_contracts),
+        "work_items": work_items,
+        "counts": {
+            "work_items": len(work_items),
+            "by_family": _count_by([item for item in work_items if isinstance(item, dict)], "family"),
+            "by_repair_class": _count_by([item for item in work_items if isinstance(item, dict)], "repair_class"),
+        },
+    }
+    write_json(Path(out), result)
+    return result
+
+
+def stage_a_semantic_coverage(
+    *,
+    reference_contract: Path,
+    out: Path,
+    unit_contract_dir: Path | None = None,
+) -> dict[str, Any]:
+    reference_contract = Path(reference_contract)
+    contract = _load_json(reference_contract)
+    contract_ref = _reference_sidecar_contract_ref(reference_contract)
+    unit_contracts = _load_reference_unit_contract_sidecars(
+        contract,
+        reference_contract,
+        unit_contract_dir=Path(unit_contract_dir) if unit_contract_dir is not None else None,
+        contract_ref=contract_ref,
+    )
+    blockers = _semantic_coverage_blockers(unit_contracts)
+    status = "pass" if not blockers else "incomplete"
+    result = {
+        "format": "stage-a-semantic-coverage-v1",
+        "status": status,
+        "reference_contract": _reference_input_artifact(reference_contract),
+        "unit_contracts": _reference_unit_contract_artifact(unit_contracts),
+        "families": _semantic_coverage_families(unit_contracts, blockers),
+        "counts": _semantic_coverage_counts(unit_contracts, blockers),
+        "blockers": blockers[:250],
+        "next_work": _semantic_coverage_next_work(blockers),
+        "acceptance": {
+            "jq_full_reimplementation_ready": status == "pass",
+            "requirement": "all executable jq regions must have implementable transfer/cluster contracts or explicit external-boundary contracts",
+            "final_acceptance": "compiled candidates still require full Stage A validation; this ledger only gates analysis coverage",
+        },
+    }
+    write_json(Path(out), result)
+    return result
+
+
+def stage_a_validate_unit(
+    *,
+    reference_contract: Path,
+    candidate: Path,
+    linker_map_candidate: Path,
+    skeleton_manifest: Path | None,
+    focus: str,
+    out: Path,
+    unit_contract_dir: Path | None = None,
+    model: str = STAGE_A_MODEL_ID,
+) -> dict[str, Any]:
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    validation = stage_a_validate_contract_candidate(
+        reference_contract=reference_contract,
+        candidate=candidate,
+        linker_map_candidate=linker_map_candidate,
+        skeleton_manifest=skeleton_manifest,
+        model=model,
+        out=out / "contract-candidate",
+    )
+    reference_contract = Path(reference_contract)
+    contract = _load_json(reference_contract)
+    unit_contracts = _load_reference_unit_contract_sidecars(
+        contract,
+        reference_contract,
+        unit_contract_dir=Path(unit_contract_dir) if unit_contract_dir is not None else None,
+        contract_ref=_reference_sidecar_contract_ref(reference_contract),
+    )
+    focus_lower = focus.lower()
+    focused_families = [
+        item
+        for item in validation.get("families", [])
+        if isinstance(item, dict) and _matches_focus(item, focus_lower)
+    ]
+    focused_issues = [
+        item
+        for item in validation.get("issues", [])
+        if isinstance(item, dict) and _matches_focus(item, focus_lower)
+    ]
+    focused_units = _matching_unit_contracts(unit_contracts, focus_lower)
+    matched = bool(focused_families or focused_issues or focused_units)
+    status = "pass" if validation.get("verdict") == "pass" and matched else "incomplete"
+    result = {
+        "format": "stage-a-unit-validation-v1",
+        "status": status,
+        "focus": focus,
+        "reference_contract": _reference_input_artifact(reference_contract),
+        "candidate": _reference_input_artifact(Path(candidate)),
+        "contract_candidate_validation": validation,
+        "families": focused_families,
+        "issues": focused_issues,
+        "unit_contracts": focused_units,
+        "counts": {
+            "families": len(focused_families),
+            "issues": len(focused_issues),
+            "unit_contracts": len(focused_units),
+        },
+    }
+    if not matched:
+        result["blocker"] = "no contract unit or validation evidence matched the requested focus"
+        result["next_action"] = "pick a function name, block id, family, obligation id, or work-item id from the reference contract sidecars"
+    write_json(out / "unit-validation.json", result)
     return result
 
 
@@ -1228,26 +1378,41 @@ _REFERENCE_CONTRACT_FAMILY_KEYS = (
 )
 
 
-def _reference_contract_sidecar_paths(sidecar_dir: Path, contract_dir: Path) -> dict[str, Any]:
+def _reference_contract_sidecar_paths(sidecar_dir: Path, contract_dir: Path, *, unit_contract_dir: Path | None = None) -> dict[str, Any]:
+    unit_contract_dir = unit_contract_dir or sidecar_dir
+
     def display_path(path: Path) -> str:
-        if sidecar_dir.resolve() == contract_dir.resolve():
+        if path.parent.resolve() == contract_dir.resolve():
             return path.name
         return str(path)
 
+    unit_paths = _reference_unit_contract_paths(unit_contract_dir)
     return {
         "coverage_gaps": {"path": display_path(sidecar_dir / "coverage_gaps.json")},
         "obligation_index": {"path": display_path(sidecar_dir / "obligation_index.json")},
         "contract_summary": {"path": display_path(sidecar_dir / "contract_summary.json")},
         "abi_callsites": {"path": display_path(sidecar_dir / "abi_callsites.json")},
+        "unit_contracts": {
+            "directory": "." if unit_contract_dir.resolve() == contract_dir.resolve() else str(unit_contract_dir),
+            **{name: {"path": display_path(path)} for name, path in unit_paths.items()},
+        },
     }
 
 
-def _write_reference_contract_sidecars(contract: dict[str, Any], contract_path: Path, sidecar_dir: Path) -> None:
+def _write_reference_contract_sidecars(
+    contract: dict[str, Any],
+    contract_path: Path,
+    sidecar_dir: Path,
+    *,
+    unit_contract_dir: Path,
+    semantic_payload: dict[str, Any] | None = None,
+) -> None:
     contract_ref = _reference_sidecar_contract_ref(contract_path)
     write_json(sidecar_dir / "coverage_gaps.json", _reference_coverage_gaps_sidecar(contract, contract_ref))
     write_json(sidecar_dir / "obligation_index.json", _reference_obligation_index_sidecar(contract, contract_ref))
     write_json(sidecar_dir / "contract_summary.json", _reference_contract_summary_sidecar(contract, contract_ref))
     write_json(sidecar_dir / "abi_callsites.json", _reference_abi_callsites_sidecar(contract, contract_ref))
+    _write_reference_unit_contract_sidecars(contract, contract_ref, unit_contract_dir, semantic_payload=semantic_payload)
 
 
 def _reference_sidecar_contract_ref(contract_path: Path) -> dict[str, Any]:
@@ -1401,6 +1566,1835 @@ def _reference_abi_callsites_sidecar(contract: dict[str, Any], contract_ref: dic
     }
 
 
+def _reference_unit_contract_paths(unit_contract_dir: Path) -> dict[str, Path]:
+    return {
+        "block_contracts": unit_contract_dir / "block-contracts.jsonl",
+        "function_contracts": unit_contract_dir / "function-contracts.jsonl",
+        "cluster_contracts": unit_contract_dir / "cluster-contracts.jsonl",
+        "repair_units": unit_contract_dir / "repair-units.json",
+        "source_obligations": unit_contract_dir / "source-obligations.json",
+        "semantic_transfer_contracts": unit_contract_dir / "semantic-transfer-contracts.jsonl",
+        "memory_frame_contracts": unit_contract_dir / "memory-frame-contracts.json",
+        "call_summary_contracts": unit_contract_dir / "call-summary-contracts.json",
+        "cluster_semantic_contracts": unit_contract_dir / "cluster-semantic-contracts.jsonl",
+    }
+
+
+def _write_reference_unit_contract_sidecars(
+    contract: dict[str, Any],
+    contract_ref: dict[str, Any],
+    unit_contract_dir: Path,
+    *,
+    semantic_payload: dict[str, Any] | None = None,
+) -> None:
+    unit_contract_dir.mkdir(parents=True, exist_ok=True)
+    payload = _reference_unit_contract_payloads(contract, contract_ref, semantic_payload=semantic_payload)
+    paths = _reference_unit_contract_paths(unit_contract_dir)
+    _write_jsonl(paths["block_contracts"], payload["block_contracts"])
+    _write_jsonl(paths["function_contracts"], payload["function_contracts"])
+    _write_jsonl(paths["cluster_contracts"], payload["cluster_contracts"])
+    write_json(paths["repair_units"], payload["repair_units"])
+    write_json(paths["source_obligations"], payload["source_obligations"])
+    _write_jsonl(paths["semantic_transfer_contracts"], payload["semantic_transfer_contracts"])
+    write_json(paths["memory_frame_contracts"], payload["memory_frame_contracts"])
+    write_json(paths["call_summary_contracts"], payload["call_summary_contracts"])
+    _write_jsonl(paths["cluster_semantic_contracts"], payload["cluster_semantic_contracts"])
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+
+
+def _reference_semantic_contract_payloads(
+    original: StageABinary,
+    mappings: list[BlockMapping],
+    contract: dict[str, Any],
+    contract_ref: dict[str, Any],
+) -> dict[str, Any]:
+    transfer_contracts = _semantic_transfer_contracts(original, mappings, contract_ref)
+    memory_frames = _semantic_memory_frame_contracts(contract, contract_ref)
+    call_summaries = _semantic_call_summary_contracts(contract, contract_ref)
+    cluster_contracts = _semantic_cluster_contracts(contract, contract_ref)
+    return {
+        "semantic_transfer_contracts": transfer_contracts,
+        "memory_frame_contracts": memory_frames,
+        "call_summary_contracts": call_summaries,
+        "cluster_semantic_contracts": cluster_contracts,
+    }
+
+
+def _fallback_reference_semantic_contract_payloads(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "semantic_transfer_contracts": [],
+        "memory_frame_contracts": _semantic_memory_frame_contracts(contract, contract_ref),
+        "call_summary_contracts": _semantic_call_summary_contracts(contract, contract_ref),
+        "cluster_semantic_contracts": _semantic_cluster_contracts(contract, contract_ref),
+    }
+
+
+def _semantic_transfer_contracts(
+    binary: StageABinary,
+    mappings: list[BlockMapping],
+    contract_ref: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for mapped in mappings:
+        if mapped.kind != "code":
+            continue
+        source = _mapping_source(mapped)
+        function_name = source.get("function") if isinstance(source.get("function"), str) and source.get("function") else mapped.id
+        rows.append(_semantic_transfer_contract(binary, mapped, function_name, contract_ref))
+    return sorted(rows, key=lambda item: (str(item.get("function") or ""), str(item.get("block_id") or "")))
+
+
+def _semantic_transfer_contract(
+    binary: StageABinary,
+    mapped: BlockMapping,
+    function_name: str,
+    contract_ref: dict[str, Any],
+) -> dict[str, Any]:
+    side = mapped.original
+    data = binary.pe.get_data(side.rva_start, side.size)
+    instructions = _semantic_disassemble_block(binary, side, data)
+    base_row: dict[str, Any] = {
+        "format": "stage-a-semantic-transfer-contract-v1",
+        "id": f"semantic-transfer:{_safe_gap_part(mapped.id)}",
+        "unit_kind": "semantic_transfer",
+        "expression_model": "stage-a-semantic-ir-v1",
+        "status": "incomplete",
+        "reference_contract": contract_ref,
+        "function": function_name or None,
+        "block_id": mapped.id,
+        "reachable": mapped.reachable,
+        "original": _range_report(side),
+        "instruction_bytes_sha256": sha256_bytes(data),
+        "instructions": instructions,
+        "pre_state": _semantic_pre_state(binary),
+        "register_writes": [],
+        "flag_writes": [],
+        "memory_events": [],
+        "external_events": [],
+        "edge_conditions": [],
+        "outcome": {"kind": "unknown"},
+        "acceptance": "guidance contract only; final acceptance requires Stage A binary proof",
+    }
+    if len(data) != side.size:
+        return {
+            **base_row,
+            "blocker_category": "unreadable_block_bytes",
+            "blocker": f"expected {side.size} block bytes, read {len(data)}",
+            "next_action": "fix block range or PE section mapping before generating a semantic transfer contract",
+        }
+    symbolic = _symbolic_execute(binary, side, data, "original", mapped)
+    if symbolic.get("status") != "ok":
+        instruction = symbolic.get("instruction") if isinstance(symbolic.get("instruction"), dict) else None
+        return {
+            **base_row,
+            "blocker_category": symbolic.get("category") or "unsupported_semantics",
+            "blocker": symbolic.get("blocker") or "block is outside the current semantic transfer model",
+            "next_action": symbolic.get("next_action") or "add instruction semantics or a checked cluster summary",
+            "blocking_instruction": instruction,
+        }
+    observables = symbolic.get("observables") if isinstance(symbolic.get("observables"), dict) else {}
+    effects = _semantic_effects_from_observables(observables)
+    return {
+        **base_row,
+        "status": "reimplementable",
+        "blocker_category": None,
+        "blocker": None,
+        "next_action": "implement this block so the compiled candidate reproduces the transfer contract, then rerun Stage A",
+        **effects,
+    }
+
+
+def _semantic_disassemble_block(binary: StageABinary, side: BlockSide, data: bytes) -> list[dict[str, Any]]:
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    return [_instruction_report(binary, insn) for insn in dis.disasm(data, binary.image_base + side.rva_start)]
+
+
+def _semantic_pre_state(binary: StageABinary) -> dict[str, Any]:
+    registers = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp") if binary.bitness == 32 else ("rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp")
+    flags = ("cf", "zf", "sf", "of", "pf", "df")
+    return {
+        "registers": {name: _semantic_expr_json(("reg", name)) for name in registers},
+        "flags": {name: _semantic_expr_json(("flag", name)) for name in flags},
+        "memory": {"op": "memory", "name": "mem0", "address_width": binary.bitness, "value_width": 8},
+    }
+
+
+def _semantic_effects_from_observables(observables: dict[str, Any]) -> dict[str, Any]:
+    register_writes = []
+    flag_writes = []
+    for key, value in sorted(observables.items()):
+        if key.startswith("reg:"):
+            name = key.split(":", 1)[1]
+            if value != ("reg", name):
+                register_writes.append({"register": name, "value": _semantic_expr_json(value)})
+        elif key.startswith("flag:"):
+            name = key.split(":", 1)[1]
+            if value != ("flag", name):
+                flag_writes.append({"flag": name, "value": _semantic_expr_json(value)})
+    memory_events = [_semantic_memory_event_json(event) for event in observables.get("memory_events", [])]
+    external_events = [_semantic_external_event_json(event) for event in observables.get("external_events", [])]
+    outcome = _semantic_outcome_json(observables.get("outcome"))
+    return {
+        "register_writes": register_writes,
+        "flag_writes": flag_writes,
+        "memory_events": memory_events,
+        "external_events": external_events,
+        "fpu_state": _semantic_fpu_state_from_observables(observables),
+        "edge_conditions": _semantic_edge_conditions(outcome),
+        "outcome": outcome,
+        "stack_delta": _semantic_stack_delta_from_observables(observables),
+        "counts": {
+            "register_writes": len(register_writes),
+            "flag_writes": len(flag_writes),
+            "memory_events": len(memory_events),
+            "external_events": len(external_events),
+            "edge_conditions": len(_semantic_edge_conditions(outcome)),
+        },
+    }
+
+
+def _semantic_fpu_state_from_observables(observables: dict[str, Any]) -> dict[str, Any] | None:
+    if "fpu_stack" not in observables and "fpu_control" not in observables and "fpu_status" not in observables:
+        return None
+    stack = observables.get("fpu_stack")
+    return {
+        "stack": [_semantic_expr_json(item) for item in stack] if isinstance(stack, tuple) else [],
+        "control": _semantic_expr_json(observables.get("fpu_control")),
+        "status": _semantic_expr_json(observables.get("fpu_status")),
+        "model": "symbolic_x87_stack_v1",
+    }
+
+
+def _semantic_expr_json(value: Any) -> Any:
+    if not isinstance(value, tuple) or not value:
+        if isinstance(value, list):
+            return [_semantic_expr_json(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): _semantic_expr_json(item) for key, item in value.items()}
+        return value
+    op = str(value[0])
+    if op == "const":
+        return {"op": "const", "width": 32, "value": int(value[1]) & 0xFFFFFFFF}
+    if op == "reg":
+        return {"op": "reg", "width": 32, "name": str(value[1])}
+    if op == "flag":
+        return {"op": "flag", "name": str(value[1])}
+    if op == "mem32":
+        return {"op": "load", "width": 4, "address": _semantic_expr_json(value[1])}
+    if op == "mem":
+        return {"op": "load", "width": int(value[1]) // 8, "address": _semantic_expr_json(value[2])}
+    if op == "env_response":
+        return {"op": "env_response", "width": 32, "index": int(value[1])}
+    if op == "call_response":
+        return {"op": "call_response", "width": 32, "call_index": int(value[1]), "register": str(value[2])}
+    if op == "call_mem":
+        return {"op": "call_memory_load", "width": int(value[2]) // 8, "call_index": int(value[1]), "address": _semantic_expr_json(value[3])}
+    if op == "call_flag":
+        return {"op": "call_flag", "call_index": int(value[1]), "flag": str(value[2])}
+    if op == "undefined_bv":
+        return {"op": "undefined_bv", "width": 32, "reason": str(value[1]), "id": str(value[2])}
+    if op == "undefined_flag":
+        return {"op": "undefined_flag", "reason": str(value[1]), "id": str(value[2])}
+    if op in {"true", "false"}:
+        return {"op": op}
+    op_map = {
+        "add": "add32",
+        "sub": "sub32",
+        "mul": "mul32",
+        "xor": "xor32",
+        "and": "and32",
+        "or": "or32",
+        "bvnot": "not32",
+        "neg": "neg32",
+        "shl": "shl32",
+        "lshr": "lshr32",
+        "ashr": "sar",
+        "sext": "sign_extend",
+        "ite": "ite",
+        "ult": "ult32",
+        "eq": "eq",
+        "msb": "msb32",
+        "msb_w": "msb",
+        "not": "not",
+        "bool_and": "and_bool",
+        "bool_or": "or_bool",
+        "bool_xor": "xor_bool",
+        "bool_eq": "eq_bool",
+        "add_overflow": "add_overflow32",
+        "sub_overflow": "sub_overflow32",
+        "add_overflow_w": "add_overflow",
+        "sub_overflow_w": "sub_overflow",
+        "shift_cf": "shift_cf",
+        "shift_of": "shift_of",
+        "bool_bit": "bool_to_bit",
+        "adc_carry": "adc_carry",
+        "adc_overflow": "adc_overflow",
+        "sbb_borrow": "sbb_borrow",
+        "sbb_overflow": "sbb_overflow",
+        "imul_low": "imul_low32",
+        "imul_high": "imul_high32",
+        "imul_overflow": "imul_overflow",
+        "mul_low": "mul_low32",
+        "mul_high": "mul_high32",
+        "mul_carry": "mul_carry",
+        "parity": "parity",
+        "udiv_quot": "udiv_quot32",
+        "udiv_rem": "udiv_rem32",
+        "bsr_index": "bsr_index",
+        "tzcnt": "tzcnt",
+        "fpu_bits_lo": "fpu_bits_lo32",
+        "fpu_bits_hi": "fpu_bits_hi32",
+        "fpu_int32": "fpu_int32",
+        "fpu_status_word": "fpu_status_word",
+        "fpu_control_word": "fpu_control_word",
+    }
+    return {"op": op_map.get(op, op), "args": [_semantic_expr_json(item) for item in value[1:]]}
+
+
+def _semantic_memory_event_json(event: Any) -> dict[str, Any]:
+    if isinstance(event, tuple) and len(event) >= 2 and event[0] == "read":
+        mem = event[1]
+        if isinstance(mem, tuple) and len(mem) > 1 and mem[0] == "mem32":
+            return {"kind": "read", "width": 4, "address": _semantic_expr_json(mem[1])}
+        if isinstance(mem, tuple) and len(mem) > 2 and mem[0] == "mem":
+            return {"kind": "read", "width": int(mem[1]) // 8, "address": _semantic_expr_json(mem[2])}
+        if isinstance(mem, tuple) and len(mem) > 3 and mem[0] == "call_mem":
+            return {"kind": "read", "width": int(mem[2]) // 8, "address": _semantic_expr_json(mem[3]), "memory_epoch": {"kind": "internal_call", "call_index": int(mem[1])}}
+        return {"kind": "read", "width": 4, "address": _semantic_expr_json(mem)}
+    if isinstance(event, tuple) and len(event) >= 3 and event[0] == "write":
+        mem = event[1]
+        if isinstance(mem, tuple) and len(mem) > 1 and mem[0] == "mem32":
+            return {"kind": "write", "width": 4, "address": _semantic_expr_json(mem[1]), "value": _semantic_expr_json(event[2])}
+        if isinstance(mem, tuple) and len(mem) > 2 and mem[0] == "mem":
+            return {"kind": "write", "width": int(mem[1]) // 8, "address": _semantic_expr_json(mem[2]), "value": _semantic_expr_json(event[2])}
+        if isinstance(mem, tuple) and len(mem) > 3 and mem[0] == "call_mem":
+            return {
+                "kind": "write",
+                "width": int(mem[2]) // 8,
+                "address": _semantic_expr_json(mem[3]),
+                "value": _semantic_expr_json(event[2]),
+                "memory_epoch": {"kind": "internal_call", "call_index": int(mem[1])},
+            }
+        return {"kind": "write", "width": 4, "address": _semantic_expr_json(mem), "value": _semantic_expr_json(event[2])}
+    return {"kind": "unknown", "raw": _expr_json(event)}
+
+
+def _semantic_external_event_json(event: Any) -> dict[str, Any]:
+    if isinstance(event, tuple) and len(event) >= 5 and event[0] == "external_call":
+        result = {
+            "kind": "external_call",
+            "dll": event[1],
+            "symbol": event[2],
+            "ordinal": event[3],
+            "arguments": [_semantic_expr_json(item) for item in event[4]],
+        }
+        if len(event) >= 6 and isinstance(event[5], tuple) and event[5] and event[5][0] == "auto_call_inputs":
+            result["input_model"] = "captured_visible_register_and_stack_inputs_v1"
+            result["register_inputs"] = _semantic_call_register_inputs_json(event[5][1] if len(event[5]) > 1 else ())
+            result["stack_inputs"] = _semantic_call_stack_inputs_json(event[5][2] if len(event[5]) > 2 else ())
+        return result
+    if isinstance(event, tuple) and len(event) >= 5 and event[0] == "internal_call":
+        return {
+            "kind": "internal_call",
+            "target_rva": int(event[1]),
+            "return_rva": int(event[2]),
+            "register_inputs": _semantic_call_register_inputs_json(event[3]),
+            "stack_inputs": _semantic_call_stack_inputs_json(event[4]),
+            "effect_model": "uninterpreted_internal_call_response_v1",
+        }
+    if isinstance(event, tuple) and len(event) >= 5 and event[0] == "indirect_call":
+        return {
+            "kind": "indirect_call",
+            "target": _semantic_expr_json(event[1]),
+            "return_rva": int(event[2]),
+            "register_inputs": _semantic_call_register_inputs_json(event[3]),
+            "stack_inputs": _semantic_call_stack_inputs_json(event[4]),
+            "effect_model": "uninterpreted_indirect_call_response_v1",
+        }
+    if isinstance(event, tuple) and len(event) >= 6 and event[0] == "rep_movsd":
+        return {
+            "kind": "rep_movsd",
+            "index": int(event[1]),
+            "destination": _semantic_expr_json(event[2]),
+            "source": _semantic_expr_json(event[3]),
+            "count": _semantic_expr_json(event[4]),
+            "direction_flag": _semantic_expr_json(event[5]),
+            "effect_model": "symbolic_string_copy_v1",
+        }
+    return {"kind": "unknown_external_event", "raw": _expr_json(event)}
+
+
+def _semantic_call_register_inputs_json(items: Any) -> dict[str, Any]:
+    result = {}
+    for item in items if isinstance(items, tuple) else ():
+        if isinstance(item, tuple) and len(item) == 2:
+            result[str(item[0])] = _semantic_expr_json(item[1])
+    return result
+
+
+def _semantic_call_stack_inputs_json(items: Any) -> list[dict[str, Any]]:
+    result = []
+    for item in items if isinstance(items, tuple) else ():
+        if isinstance(item, tuple) and len(item) == 3:
+            result.append({"offset": int(item[0]), "width": int(item[1]) // 8, "value": _semantic_expr_json(item[2])})
+    return result
+
+
+def _semantic_outcome_json(outcome: Any) -> dict[str, Any]:
+    if not isinstance(outcome, tuple) or not outcome:
+        return {"kind": "unknown", "raw": _expr_json(outcome)}
+    kind = str(outcome[0])
+    if kind == "fallthrough":
+        return {"kind": "fallthrough", "target_rva": outcome[1]}
+    if kind == "jump":
+        return {"kind": "jump", "target_rva": outcome[1]}
+    if kind == "branch":
+        return {
+            "kind": "branch",
+            "condition": _semantic_expr_json(outcome[1]),
+            "true_target_rva": outcome[2],
+            "false_target_rva": outcome[3],
+        }
+    if kind == "return":
+        return {"kind": "return", "value": _semantic_expr_json(outcome[1])}
+    if kind == "call":
+        return {"kind": "direct_call", "target_rva": outcome[1], "return_rva": outcome[2]}
+    if kind == "indirect_jump":
+        return {"kind": "indirect_jump", "target": _semantic_expr_json(outcome[1])}
+    if kind == "external_jump":
+        return {"kind": "external_jump", "dll": outcome[1], "symbol": outcome[2], "ordinal": outcome[3]}
+    return {"kind": kind, "raw": _expr_json(outcome)}
+
+
+def _semantic_edge_conditions(outcome: dict[str, Any]) -> list[dict[str, Any]]:
+    kind = outcome.get("kind")
+    if kind == "branch":
+        return [
+            {"target_rva": outcome.get("true_target_rva"), "condition": outcome.get("condition")},
+            {"target_rva": outcome.get("false_target_rva"), "condition": {"op": "not", "args": [outcome.get("condition")]}},
+        ]
+    if kind in {"fallthrough", "jump"}:
+        return [{"target_rva": outcome.get("target_rva"), "condition": {"op": "true"}}]
+    return []
+
+
+def _semantic_stack_delta_from_observables(observables: dict[str, Any]) -> dict[str, Any]:
+    esp = observables.get("reg:esp")
+    delta = _semantic_stack_delta_expr(esp)
+    if delta is None:
+        return {"status": "unknown", "expression": _semantic_expr_json(esp)}
+    return {"status": "derived", "net_bytes": delta, "expression": _semantic_expr_json(esp)}
+
+
+def _semantic_stack_delta_expr(expr: Any) -> int | None:
+    if expr == ("reg", "esp"):
+        return 0
+    if isinstance(expr, tuple) and expr and expr[0] == "add":
+        total = 0
+        saw_esp = False
+        for part in expr[1:]:
+            if part == ("reg", "esp"):
+                saw_esp = True
+            elif isinstance(part, tuple) and len(part) == 2 and part[0] == "const":
+                total += int(part[1])
+            else:
+                return None
+        return total if saw_esp else None
+    if isinstance(expr, tuple) and len(expr) == 3 and expr[0] == "sub" and expr[1] == ("reg", "esp"):
+        right = expr[2]
+        if isinstance(right, tuple) and len(right) == 2 and right[0] == "const":
+            return -int(right[1])
+    return None
+
+
+def _semantic_memory_frame_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
+    frames: dict[str, dict[str, Any]] = {}
+    accesses: list[dict[str, Any]] = []
+    for function in _abi_functions(contract):
+        function_name = str(function.get("name") or "")
+        for access_kind, access_list_name in (("read", "memory_reads"), ("write", "memory_writes")):
+            for index, access in enumerate(function.get(access_list_name, []) if isinstance(function.get(access_list_name), list) else []):
+                if not isinstance(access, dict):
+                    continue
+                frame = _semantic_memory_frame_for_access(access)
+                frames.setdefault(str(frame["id"]), frame)
+                instruction = access.get("instruction") if isinstance(access.get("instruction"), dict) else {}
+                accesses.append(
+                    {
+                        "id": f"memory-access:{_safe_gap_part(function_name)}:{instruction.get('rva', 'unknown')}:{access_kind}:{index}",
+                        "function": function_name or None,
+                        "block_id": _block_id_for_instruction(function, instruction),
+                        "access": access_kind,
+                        "width": access.get("width"),
+                        "frame_id": frame["id"],
+                        "frame_kind": frame["frame_kind"],
+                        "addressing": access.get("addressing") if isinstance(access.get("addressing"), dict) else {},
+                        "instruction": instruction,
+                        "status": "classified" if frame["frame_kind"] != "unknown" else "incomplete",
+                        "blocker": None if frame["frame_kind"] != "unknown" else "memory frame could not be classified from static addressing evidence",
+                        "source_access": access,
+                    }
+                )
+    return {
+        "format": "stage-a-memory-frame-contracts-v1",
+        "reference_contract": contract_ref,
+        "frames": sorted(frames.values(), key=lambda item: str(item.get("id") or "")),
+        "accesses": sorted(accesses, key=lambda item: str(item.get("id") or "")),
+        "counts": {
+            "frames": len(frames),
+            "accesses": len(accesses),
+            "by_frame_kind": _count_by(list(frames.values()), "frame_kind"),
+            "by_access": _count_by(accesses, "access"),
+        },
+    }
+
+
+def _semantic_memory_frame_for_access(access: dict[str, Any]) -> dict[str, Any]:
+    role = str(access.get("memory_role") or "unknown")
+    section = access.get("memory_section") if isinstance(access.get("memory_section"), dict) else {}
+    addressing = access.get("addressing") if isinstance(access.get("addressing"), dict) else {}
+    base = str(addressing.get("base") or "")
+    entry_pointer = access.get("entry_register_pointer") if isinstance(access.get("entry_register_pointer"), dict) else {}
+    if role == "import_address_table":
+        frame_kind = "iat.import"
+        frame_key = str(access.get("memory_rva") or "unknown")
+    elif role.startswith("global_"):
+        frame_kind = "global.rw" if section.get("writable") is True else "global.ro"
+        frame_key = str(section.get("name") or access.get("memory_rva") or "unknown")
+    elif role == "stack_argument_slot":
+        frame_kind = "stack.arg"
+        frame_key = base or "stack"
+    elif role in {"stack_local_slot", "stack_pointer_slot"}:
+        frame_kind = "stack.local"
+        frame_key = base or "stack"
+    elif entry_pointer:
+        frame_kind = "object.pointer_candidate"
+        frame_key = str(entry_pointer.get("register") or base or "entry")
+    elif role == "argument_pointer_deref":
+        frame_kind = "object.argument_pointer"
+        frame_key = base or "argument"
+    elif role == "global_pointer_deref":
+        frame_kind = "object.global_pointer"
+        frame_key = base or str(access.get("memory_rva") or "global")
+    elif role == "computed_pointer_deref":
+        frame_kind = "object.computed_pointer"
+        frame_key = base or "computed"
+    elif role == "absolute_memory_slot":
+        frame_kind = "absolute.memory"
+        frame_key = str(access.get("memory_rva") or "absolute")
+    elif role == "computed_memory":
+        frame_kind = "computed.memory"
+        frame_key = base or "computed"
+    else:
+        frame_kind = f"role.{_safe_gap_part(role)}" if role else "role.unknown"
+        frame_key = role
+    return {
+        "id": f"frame:{_safe_gap_part(frame_kind)}:{_safe_gap_part(frame_key)}",
+        "frame_kind": frame_kind,
+        "memory_role": role,
+        "section": section or None,
+        "base_register": base or None,
+        "entry_register_pointer": entry_pointer or None,
+        "status": "classified",
+    }
+
+
+def _semantic_call_summary_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
+    summaries: list[dict[str, Any]] = []
+    for function in _abi_functions(contract):
+        function_name = str(function.get("name") or "")
+        for index, callsite in enumerate(function.get("callsites", []) if isinstance(function.get("callsites"), list) else []):
+            if not isinstance(callsite, dict):
+                continue
+            summary = _semantic_call_summary(function_name, index, callsite)
+            summaries.append(summary)
+    return {
+        "format": "stage-a-call-summary-contracts-v1",
+        "reference_contract": contract_ref,
+        "calls": sorted(summaries, key=lambda item: str(item.get("id") or "")),
+        "counts": {
+            "calls": len(summaries),
+            "by_status": _count_by(summaries, "status"),
+            "by_target_kind": _count_by(summaries, "target_kind"),
+        },
+    }
+
+
+def _semantic_call_summary(function_name: str, index: int, callsite: dict[str, Any]) -> dict[str, Any]:
+    target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
+    inventory = callsite.get("argument_inventory") if isinstance(callsite.get("argument_inventory"), dict) else {}
+    hidden = callsite.get("hidden_sret_or_out_param_evidence") if isinstance(callsite.get("hidden_sret_or_out_param_evidence"), dict) else {}
+    varargs = callsite.get("varargs_evidence") if isinstance(callsite.get("varargs_evidence"), dict) else {}
+    targets = callsite.get("function_pointer_targets") if isinstance(callsite.get("function_pointer_targets"), list) else []
+    blockers: list[str] = []
+    indirect_boundary = (target.get("kind") == "function_pointer" and target.get("status") == "unresolved")
+    if any(isinstance(item, dict) and item.get("status") == "unresolved" for item in targets) and not indirect_boundary:
+        blockers.append("function-pointer target set is unresolved")
+    fmt = varargs.get("format_string") if isinstance(varargs.get("format_string"), dict) else {}
+    if fmt.get("status") == "incomplete":
+        blockers.append(str(fmt.get("reason") or "varargs format-string inventory is incomplete"))
+    status = "complete" if not blockers else "incomplete"
+    return {
+        "id": str(callsite.get("id") or f"callsite:{_safe_gap_part(function_name)}:{index}"),
+        "function": function_name or None,
+        "block_id": callsite.get("block_id"),
+        "status": status,
+        "target_kind": target.get("kind") or "unknown",
+        "target": target,
+        "calling_convention": inventory.get("calling_convention") or "unknown",
+        "argument_inventory": inventory,
+        "return_value": {"register": "eax", "status": "environment_response_or_direct_call_result"},
+        "stack_delta": callsite.get("stack_delta") if isinstance(callsite.get("stack_delta"), dict) else {"status": "unknown"},
+        "hidden_sret_or_out_param_evidence": hidden,
+        "varargs_evidence": varargs,
+        "function_pointer_targets": targets,
+        "indirect_boundary": {"status": "explicit", "effect_model": "preserve_target_expression_and_call_response"} if indirect_boundary else None,
+        "blockers": blockers,
+        "next_action": _semantic_call_summary_next_action(function_name, target, blockers, varargs, hidden),
+        "source_callsite": callsite,
+    }
+
+
+def _semantic_call_summary_next_action(
+    function_name: str,
+    target: dict[str, Any],
+    blockers: list[str],
+    varargs: dict[str, Any],
+    hidden: dict[str, Any],
+) -> str:
+    if blockers:
+        if any("function-pointer" in item for item in blockers):
+            return f"recover finite function-pointer targets for {function_name} or keep the indirect boundary explicit"
+        if varargs.get("status") == "candidate" or any("varargs" in item or "format" in item for item in blockers):
+            return f"recover the format-string and variadic argument inventory for {function_name}"
+        return f"complete the call summary for {function_name}"
+    if varargs.get("status") == "candidate":
+        return "preserve the variadic import/prototype boundary exactly in generated C"
+    if hidden.get("status") == "candidate":
+        return "preserve the hidden sret/out-param channel across this call"
+    if target.get("kind") == "import":
+        return "preserve this call as an import/environment boundary"
+    return "preserve this call target, argument inventory, and return-value use"
+
+
+def _semantic_cluster_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for cluster in _reference_cluster_contracts(contract, contract_ref):
+        if not isinstance(cluster, dict):
+            continue
+        status, blocker, next_action = _semantic_cluster_status(cluster)
+        rows.append(
+            {
+                "format": "stage-a-cluster-semantic-contract-v1",
+                "id": f"semantic-{cluster.get('id')}",
+                "unit_kind": "semantic_cluster",
+                "status": status,
+                "reference_contract": contract_ref,
+                "function": cluster.get("function"),
+                "block_id": cluster.get("block_id"),
+                "cluster_kind": cluster.get("cluster_kind"),
+                "repair_class": cluster.get("repair_class"),
+                "source_cluster_id": cluster.get("id"),
+                "blocker": blocker,
+                "next_action": next_action,
+                "source_cluster": cluster,
+                "acceptance": "guidance cluster only; final acceptance requires Stage A binary proof",
+            }
+        )
+    return sorted(rows, key=lambda item: str(item.get("id") or ""))
+
+
+def _semantic_cluster_status(cluster: dict[str, Any]) -> tuple[str, str | None, str]:
+    kind = str(cluster.get("cluster_kind") or "")
+    evidence = cluster.get("evidence") if isinstance(cluster.get("evidence"), dict) else {}
+    if kind == "recoverable_function_pointer_target":
+        return (
+            "complete",
+            None,
+            "preserve this indirect call as an explicit target-expression boundary unless a finite target set is later recovered",
+        )
+    if kind == "abi_switch_or_jump_table_candidate":
+        switch = evidence.get("switch_contract") if isinstance(evidence.get("switch_contract"), dict) else {}
+        if switch.get("table_bounds") and switch.get("case_targets"):
+            return ("complete", None, "represent this switch dispatch with the recovered selector, bounds, cases, and default edge")
+        return (
+            "complete",
+            None,
+            "preserve this dispatch as an indirect-jump contract with the recovered index expression until source switch bounds are recovered",
+        )
+    if kind == "abi_loop_backedge_candidate":
+        return (
+            "complete",
+            None,
+            "preserve this loop as low-level CFG backedges; source-level loop-carried summaries are optional refinement",
+        )
+    if kind == "abi_varargs_callsite":
+        varargs = evidence.get("varargs_evidence") if isinstance(evidence.get("varargs_evidence"), dict) else {}
+        fmt = varargs.get("format_string") if isinstance(varargs.get("format_string"), dict) else {}
+        if fmt.get("status") == "incomplete":
+            return (
+                "incomplete",
+                str(fmt.get("reason") or "varargs format-string evidence is incomplete"),
+                "recover the format string and observed variadic argument inventory",
+            )
+    return ("complete", None, str(cluster.get("next_action") or "preserve this semantic cluster in generated C"))
+
+
+def _reference_unit_contract_payloads(
+    contract: dict[str, Any],
+    contract_ref: dict[str, Any],
+    *,
+    semantic_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    semantic_payload = semantic_payload or _fallback_reference_semantic_contract_payloads(contract, contract_ref)
+    block_contracts = _reference_block_contracts(contract, contract_ref)
+    function_contracts = _reference_function_contracts(contract, contract_ref, block_contracts)
+    cluster_contracts = _reference_cluster_contracts(contract, contract_ref)
+    source_obligations = _reference_source_obligations_sidecar(contract, contract_ref, block_contracts, function_contracts, cluster_contracts)
+    repair_units = _reference_repair_units_sidecar(
+        contract,
+        contract_ref,
+        block_contracts,
+        function_contracts,
+        cluster_contracts,
+        semantic_payload=semantic_payload,
+    )
+    return {
+        "block_contracts": block_contracts,
+        "function_contracts": function_contracts,
+        "cluster_contracts": cluster_contracts,
+        "repair_units": repair_units,
+        "source_obligations": source_obligations,
+        "semantic_transfer_contracts": semantic_payload["semantic_transfer_contracts"],
+        "memory_frame_contracts": semantic_payload["memory_frame_contracts"],
+        "call_summary_contracts": semantic_payload["call_summary_contracts"],
+        "cluster_semantic_contracts": semantic_payload["cluster_semantic_contracts"],
+    }
+
+
+def _reference_block_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> list[dict[str, Any]]:
+    cfg = _contract_constraint(contract, "basic_blocks_and_cfg")
+    blocks = cfg.get("basic_blocks") if isinstance(cfg.get("basic_blocks"), list) else []
+    cfg_by_block = {
+        str(item.get("block_id")): item
+        for item in cfg.get("cfg_edges", [])
+        if isinstance(item, dict) and item.get("block_id")
+    }
+    abi_by_block = _abi_evidence_by_block(contract)
+    functions_by_block = _function_names_by_block(contract)
+    result = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_id = str(block.get("id") or "")
+        function_name = str(block.get("function") or functions_by_block.get(block_id) or "")
+        abi = abi_by_block.get(block_id, {})
+        result.append(
+            {
+                "format": "stage-a-block-contract-v1",
+                "id": f"block:{_safe_gap_part(block_id)}",
+                "unit_kind": "basic_block",
+                "status": "specified" if block.get("kind") == "code" else "non_code",
+                "reference_contract": contract_ref,
+                "function": function_name or None,
+                "block_id": block_id,
+                "kind": block.get("kind"),
+                "reachable": block.get("reachable"),
+                "original": block.get("original") if isinstance(block.get("original"), dict) else {},
+                "candidate": block.get("candidate") if isinstance(block.get("candidate"), dict) else {},
+                "byte_contract": {
+                    "proof_rule": block.get("proof_rule"),
+                    "byte_identical": block.get("byte_identical"),
+                    "source_kind": block.get("source_kind"),
+                },
+                "cfg": _block_cfg_contract(block_id, cfg_by_block),
+                "state_contract": {
+                    "register_reads": abi.get("register_reads", []),
+                    "register_writes": abi.get("register_writes", []),
+                    "preserved_register_candidates": abi.get("preserved_candidates", []),
+                    "clobbered_register_candidates": abi.get("clobbered_candidates", []),
+                    "stack_delta": abi.get("stack_delta", {"status": "unknown"}),
+                    "callsites": abi.get("callsites", []),
+                    "register_value_provenance": abi.get("register_value_provenance", []),
+                    "register_out_param_candidates": abi.get("register_out_param_candidates", []),
+                    "memory_reads": abi.get("memory_reads", []),
+                    "memory_writes": abi.get("memory_writes", []),
+                    "field_accesses": abi.get("field_accesses", []),
+                    "memory_access_summary": abi.get("memory_effect_summary")
+                    if isinstance(abi.get("memory_effect_summary"), dict)
+                    else _block_memory_access_summary(abi.get("callsites", [])),
+                    "switch_contracts": abi.get("switch_contracts", []),
+                    "loop_hints": abi.get("loop_hints", []),
+                },
+                "composition": {
+                    "pre_state": "caller-provided machine state constrained by function and predecessor contracts",
+                    "post_state": "successor-visible machine state and environment events in state_contract",
+                    "acceptance": "informational unit contract only; final acceptance requires Stage A pass",
+                },
+            }
+        )
+    return sorted(result, key=lambda item: (str(item.get("function") or ""), str(item.get("block_id") or "")))
+
+
+def _reference_function_contracts(
+    contract: dict[str, Any],
+    contract_ref: dict[str, Any],
+    block_contracts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    ranges = _contract_constraint(contract, "function_ranges")
+    functions = ranges.get("functions") if isinstance(ranges.get("functions"), list) else []
+    abi_by_function = _abi_evidence_by_function(contract)
+    blocks_by_function: dict[str, list[dict[str, Any]]] = {}
+    for block in block_contracts:
+        function_name = str(block.get("function") or "")
+        if function_name:
+            blocks_by_function.setdefault(function_name, []).append(block)
+    result = []
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "")
+        abi = abi_by_function.get(name, {})
+        block_rows = blocks_by_function.get(name, [])
+        callsites = abi.get("callsites") if isinstance(abi.get("callsites"), list) else []
+        result.append(
+            {
+                "format": "stage-a-function-contract-v1",
+                "id": f"function:{_safe_gap_part(name)}",
+                "unit_kind": "function",
+                "status": _proof_family_status(ranges.get("status")),
+                "reference_contract": contract_ref,
+                "function": name,
+                "aliases": function.get("aliases") if isinstance(function.get("aliases"), list) else [],
+                "original": function.get("original") if isinstance(function.get("original"), dict) else {},
+                "candidate": function.get("candidate") if isinstance(function.get("candidate"), dict) else {},
+                "block_ids": function.get("block_ids") if isinstance(function.get("block_ids"), list) else [row.get("block_id") for row in block_rows],
+                "block_contract_ids": [row.get("id") for row in block_rows],
+                "abi": {
+                    "callsites": callsites,
+                    "registers": abi.get("registers") if isinstance(abi.get("registers"), dict) else {},
+                    "stack_delta": abi.get("stack_delta", {"status": "unknown"}),
+                    "register_value_provenance": abi.get("register_value_provenance", []),
+                    "register_out_param_candidates": abi.get("register_out_param_candidates", []),
+                    "switch_contracts": abi.get("switch_contracts", []),
+                    "loop_hints": abi.get("loop_hints", []),
+                },
+                "memory_effect_summary": abi.get("memory_effect_summary")
+                if isinstance(abi.get("memory_effect_summary"), dict)
+                else {},
+                "memory_reads": abi.get("memory_reads", []),
+                "memory_writes": abi.get("memory_writes", []),
+                "field_accesses": abi.get("field_accesses", []),
+                "implementation_spec": {
+                    "source_shape": "ugly C is acceptable if the candidate binary satisfies this function contract under Stage A",
+                    "next_action": _function_contract_next_action(name, abi),
+                },
+                "counts": {
+                    "blocks": len(block_rows),
+                    "callsites": len(callsites),
+                },
+            }
+        )
+    return sorted(result, key=lambda item: str(item.get("function") or ""))
+
+
+def _reference_cluster_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> list[dict[str, Any]]:
+    clusters: list[dict[str, Any]] = []
+    clusters.extend(_abi_cluster_contracts(contract, contract_ref))
+    clusters.extend(_import_thunk_cluster_contracts(contract, contract_ref))
+    clusters.extend(_jump_target_cluster_contracts(contract, contract_ref))
+    clusters.extend(_tls_cluster_contracts(contract, contract_ref))
+    return sorted(_dedupe_unit_rows(clusters), key=lambda item: str(item.get("id") or ""))
+
+
+def _abi_cluster_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> list[dict[str, Any]]:
+    clusters: list[dict[str, Any]] = []
+    for function in _abi_functions(contract):
+        function_name = str(function.get("name") or "")
+        for callsite in function.get("callsites", []) if isinstance(function.get("callsites"), list) else []:
+            if not isinstance(callsite, dict):
+                continue
+            callsite_id = str(callsite.get("id") or "")
+            hidden = callsite.get("hidden_sret_or_out_param_evidence") if isinstance(callsite.get("hidden_sret_or_out_param_evidence"), dict) else {}
+            if hidden.get("status") == "candidate":
+                clusters.append(
+                    _cluster_contract(
+                        contract_ref=contract_ref,
+                        cluster_id=f"hidden-sret:{callsite_id}",
+                        cluster_kind="abi_hidden_sret_or_out_param",
+                        function=function_name,
+                        block_id=str(callsite.get("block_id") or ""),
+                        repair_class="hidden_sret_or_out_param",
+                        next_action="preserve the first address-like stack argument as an explicit out parameter or hidden sret bridge in generated C",
+                        evidence={"callsite": callsite, "hidden_sret_or_out_param_evidence": hidden},
+                    )
+                )
+            varargs = callsite.get("varargs_evidence") if isinstance(callsite.get("varargs_evidence"), dict) else {}
+            if varargs.get("status") == "candidate":
+                clusters.append(
+                    _cluster_contract(
+                        contract_ref=contract_ref,
+                        cluster_id=f"varargs:{callsite_id}",
+                        cluster_kind="abi_varargs_callsite",
+                        function=function_name,
+                        block_id=str(callsite.get("block_id") or ""),
+                        repair_class="varargs_or_stdio_bridge",
+                        next_action="model the variadic call bridge exactly enough for the candidate ABI and imported stdio target",
+                        evidence={"callsite": callsite, "varargs_evidence": varargs},
+                    )
+                )
+            for target in callsite.get("function_pointer_targets", []) if isinstance(callsite.get("function_pointer_targets"), list) else []:
+                if isinstance(target, dict) and target.get("status") == "unresolved":
+                    clusters.append(
+                        _cluster_contract(
+                            contract_ref=contract_ref,
+                            cluster_id=f"function-pointer:{callsite_id}",
+                            cluster_kind="recoverable_function_pointer_target",
+                            function=function_name,
+                            block_id=str(callsite.get("block_id") or ""),
+                            repair_class="function_pointer_target",
+                            next_action="recover the function-pointer target set or add a checked indirect-call/jump-table target contract",
+                            evidence={"callsite": callsite, "function_pointer_target": target},
+                        )
+                    )
+        for candidate in function.get("register_out_param_candidates", []) if isinstance(function.get("register_out_param_candidates"), list) else []:
+            if not isinstance(candidate, dict):
+                continue
+            instruction = _nested_dict(candidate, "write", "instruction")
+            rva = instruction.get("rva") if isinstance(instruction, dict) else "unknown"
+            register = str(candidate.get("register") or "unknown")
+            clusters.append(
+                _cluster_contract(
+                    contract_ref=contract_ref,
+                    cluster_id=f"register-out-param:{function_name}:{register}:{rva}",
+                    cluster_kind="abi_register_carried_out_param",
+                    function=function_name,
+                    block_id=_block_id_for_instruction(function, instruction),
+                    repair_class="hidden_sret_or_out_param",
+                    next_action="preserve writes through entry register pointers as explicit out parameters or hidden result storage in generated C",
+                    evidence={"register_out_param_candidate": candidate},
+                )
+            )
+        for switch in function.get("switch_contracts", []) if isinstance(function.get("switch_contracts"), list) else []:
+            if not isinstance(switch, dict):
+                continue
+            instruction = switch.get("instruction") if isinstance(switch.get("instruction"), dict) else {}
+            clusters.append(
+                _cluster_contract(
+                    contract_ref=contract_ref,
+                    cluster_id=f"switch:{function_name}:{instruction.get('rva', 'unknown')}",
+                    cluster_kind="abi_switch_or_jump_table_candidate",
+                    function=function_name,
+                    block_id=_block_id_for_instruction(function, instruction),
+                    repair_class="switch_or_jump_table_dispatch",
+                    next_action="recover switch table bounds, default edge, and case target mapping in generated control flow",
+                    evidence={"switch_contract": switch},
+                )
+            )
+        for loop in function.get("loop_hints", []) if isinstance(function.get("loop_hints"), list) else []:
+            if not isinstance(loop, dict):
+                continue
+            instruction = loop.get("instruction") if isinstance(loop.get("instruction"), dict) else {}
+            clusters.append(
+                _cluster_contract(
+                    contract_ref=contract_ref,
+                    cluster_id=f"loop:{function_name}:{instruction.get('rva', 'unknown')}",
+                    cluster_kind="abi_loop_backedge_candidate",
+                    function=function_name,
+                    block_id=_block_id_for_instruction(function, instruction),
+                    repair_class="loop_or_state_machine",
+                    next_action="preserve the loop backedge, loop-carried state, and exit predicate in generated control flow",
+                    evidence={"loop_hint": loop},
+                )
+            )
+    return clusters
+
+
+def _nested_dict(value: dict[str, Any], *path: str) -> dict[str, Any]:
+    current: Any = value
+    for key in path:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
+def _block_id_for_instruction(function: dict[str, Any], instruction: dict[str, Any]) -> str | None:
+    rva = _safe_int(instruction.get("rva")) if isinstance(instruction, dict) else None
+    if rva is None:
+        return None
+    for block in function.get("blocks", []) if isinstance(function.get("blocks"), list) else []:
+        if not isinstance(block, dict):
+            continue
+        start = _safe_int(block.get("rva_start"))
+        end = _safe_int(block.get("rva_end"))
+        if start is not None and end is not None and start <= rva < end:
+            block_id = block.get("block_id")
+            return str(block_id) if block_id not in {None, ""} else None
+    return None
+
+
+def _import_thunk_cluster_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> list[dict[str, Any]]:
+    thunks = _contract_constraint(contract, "import_thunks").get("mapped_import_thunks")
+    result = []
+    for thunk in thunks if isinstance(thunks, list) else []:
+        if not isinstance(thunk, dict):
+            continue
+        block_id = str(thunk.get("block_id") or "")
+        source = thunk.get("source") if isinstance(thunk.get("source"), dict) else {}
+        result.append(
+            _cluster_contract(
+                contract_ref=contract_ref,
+                cluster_id=f"import-thunk:{block_id}",
+                cluster_kind="import_thunk",
+                function=str(source.get("function") or ""),
+                block_id=block_id,
+                repair_class="import_prototype_mismatch",
+                next_action="preserve the import thunk as an import boundary, not as target-owned C logic",
+                evidence={"import_thunk": thunk},
+            )
+        )
+    return result
+
+
+def _jump_target_cluster_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> list[dict[str, Any]]:
+    roots = _contract_constraint(contract, "roots_and_jump_tables")
+    targets = roots.get("jump_table_targets") if isinstance(roots.get("jump_table_targets"), list) else []
+    result = []
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        block_id = str(target.get("block_id") or "")
+        result.append(
+            _cluster_contract(
+                contract_ref=contract_ref,
+                cluster_id=f"jump-target:{block_id}:{target.get('rva', target.get('target_rva', 'unknown'))}",
+                cluster_kind="jump_table_target",
+                function=str(target.get("function") or ""),
+                block_id=block_id,
+                repair_class="jump_table_target",
+                next_action="represent this target as a reachable switch/computed-goto destination in generated C",
+                evidence={"jump_table_target": target},
+            )
+        )
+    return result
+
+
+def _tls_cluster_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> list[dict[str, Any]]:
+    result = []
+    for function in _contract_constraint(contract, "function_ranges").get("functions", []):
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "")
+        if "tls" not in name.lower():
+            continue
+        result.append(
+            _cluster_contract(
+                contract_ref=contract_ref,
+                cluster_id=f"tls-callback:{name}",
+                cluster_kind="tls_or_crt_callback",
+                function=name,
+                block_id=None,
+                repair_class="tls_callback_abi",
+                next_action="preserve the callback calling convention, stack cleanup, and CRT ownership boundary",
+                evidence={"function": function},
+            )
+        )
+    return result
+
+
+def _cluster_contract(
+    *,
+    contract_ref: dict[str, Any],
+    cluster_id: str,
+    cluster_kind: str,
+    function: str,
+    block_id: str | None,
+    repair_class: str,
+    next_action: str,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "format": "stage-a-cluster-contract-v1",
+        "id": f"cluster:{_safe_gap_part(cluster_id)}",
+        "unit_kind": "cluster",
+        "cluster_kind": cluster_kind,
+        "status": "specified",
+        "reference_contract": contract_ref,
+        "function": function or None,
+        "block_id": block_id or None,
+        "repair_class": repair_class,
+        "next_action": next_action,
+        "evidence": evidence,
+        "acceptance": "informational unit contract only; final acceptance requires Stage A pass",
+    }
+
+
+def _reference_source_obligations_sidecar(
+    contract: dict[str, Any],
+    contract_ref: dict[str, Any],
+    block_contracts: list[dict[str, Any]],
+    function_contracts: list[dict[str, Any]],
+    cluster_contracts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    proof = _contract_constraint(contract, "proof_obligation_inventory")
+    obligations = proof.get("obligations") if isinstance(proof.get("obligations"), list) else []
+    unit_lookup = _unit_contract_obligation_lookup(block_contracts, function_contracts, cluster_contracts)
+    rows = []
+    for obligation in obligations:
+        if not isinstance(obligation, dict):
+            continue
+        obligation_id = str(obligation.get("id") or "")
+        rows.append(
+            {
+                "id": f"source-obligation:{_safe_gap_part(obligation_id)}",
+                "obligation_id": obligation_id,
+                "kind": obligation.get("kind"),
+                "status": obligation.get("status"),
+                "proof_rule": obligation.get("proof_rule"),
+                "family": _obligation_family(obligation_id),
+                "unit_contract_ids": _unit_contract_ids_for_obligation(obligation_id, unit_lookup),
+            }
+        )
+    return {
+        "format": "stage-a-source-obligations-v1",
+        "reference_contract": contract_ref,
+        "contract_status": contract.get("status"),
+        "obligations": rows,
+        "counts": {
+            "obligations": len(rows),
+            "by_status": _count_by(rows, "status"),
+            "by_family": _count_by(rows, "family"),
+        },
+    }
+
+
+def _reference_repair_units_sidecar(
+    contract: dict[str, Any],
+    contract_ref: dict[str, Any],
+    block_contracts: list[dict[str, Any]],
+    function_contracts: list[dict[str, Any]],
+    cluster_contracts: list[dict[str, Any]],
+    *,
+    semantic_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    gaps = _reference_contract_gap_items(contract)
+    work_items: list[dict[str, Any]] = []
+    for gap in gaps:
+        work_items.append(_repair_unit_from_gap(gap, block_contracts, function_contracts, cluster_contracts))
+    for cluster in cluster_contracts:
+        work_items.append(_repair_unit_from_cluster(cluster))
+    if isinstance(semantic_payload, dict):
+        work_items.extend(_repair_units_from_semantic_payload(semantic_payload))
+    work_items = sorted(_dedupe_unit_rows(work_items), key=lambda item: (_repair_unit_priority(item), str(item.get("id") or "")))
+    for index, item in enumerate(work_items, start=1):
+        item["rank"] = index
+    return {
+        "format": "stage-a-repair-units-v1",
+        "reference_contract": contract_ref,
+        "contract_status": contract.get("status"),
+        "work_items": work_items,
+        "counts": {
+            "work_items": len(work_items),
+            "by_family": _count_by(work_items, "family"),
+            "by_repair_class": _count_by(work_items, "repair_class"),
+        },
+    }
+
+
+def _repair_units_from_semantic_payload(semantic_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    transfers = semantic_payload.get("semantic_transfer_contracts") if isinstance(semantic_payload.get("semantic_transfer_contracts"), list) else []
+    for transfer in transfers:
+        if not isinstance(transfer, dict) or transfer.get("status") == "reimplementable":
+            continue
+        items.append(
+            {
+                "id": f"work:{_safe_gap_part(str(transfer.get('id') or 'semantic-transfer'))}",
+                "unit_kind": "semantic_transfer",
+                "family": "semantic_transfer",
+                "category": transfer.get("blocker_category") or "semantic_transfer_incomplete",
+                "severity": "incomplete",
+                "original_function": transfer.get("function"),
+                "original_block": transfer.get("block_id"),
+                "repair_class": _semantic_repair_class(transfer),
+                "expected": "complete per-block transfer contract",
+                "observed": transfer.get("status"),
+                "cause_hint": transfer.get("blocker"),
+                "next_action": transfer.get("next_action")
+                or "add instruction semantics, memory-frame facts, or a cluster summary for this block",
+                "unit_contract_id": transfer.get("id"),
+                "source_semantic_transfer": transfer,
+            }
+        )
+    clusters = semantic_payload.get("cluster_semantic_contracts") if isinstance(semantic_payload.get("cluster_semantic_contracts"), list) else []
+    for cluster in clusters:
+        if not isinstance(cluster, dict) or cluster.get("status") in {"complete", "reimplementable"}:
+            continue
+        items.append(
+            {
+                "id": f"work:{_safe_gap_part(str(cluster.get('id') or 'semantic-cluster'))}",
+                "unit_kind": "semantic_cluster",
+                "family": "semantic_cluster",
+                "category": cluster.get("cluster_kind") or "semantic_cluster_incomplete",
+                "severity": "incomplete",
+                "original_function": cluster.get("function"),
+                "original_block": cluster.get("block_id"),
+                "repair_class": cluster.get("repair_class") or _semantic_repair_class(cluster),
+                "expected": "complete composable semantic cluster contract",
+                "observed": cluster.get("status"),
+                "cause_hint": cluster.get("blocker"),
+                "next_action": cluster.get("next_action") or "recover the missing semantic facts for this cluster",
+                "unit_contract_id": cluster.get("id"),
+                "source_semantic_cluster": cluster,
+            }
+        )
+    return items
+
+
+def _semantic_repair_class(row: dict[str, Any]) -> str:
+    text = json.dumps(row, sort_keys=True, default=str).lower()
+    if "varargs" in text or "stdio" in text or "printf" in text:
+        return "varargs_or_stdio_bridge"
+    if "sret" in text or "out_param" in text:
+        return "hidden_sret_or_out_param"
+    if "switch" in text or "jump_table" in text or "indirect_jump" in text:
+        return "switch_or_jump_table_dispatch"
+    if "loop" in text or "backedge" in text or "state_machine" in text:
+        return "loop_or_state_machine"
+    if "function_pointer" in text or "unknown_target" in text:
+        return "function_pointer_target"
+    if "memory" in text or "frame" in text or "alias" in text:
+        return "memory_effect_mismatch"
+    return "semantic_transfer_contract"
+
+
+def _repair_unit_from_gap(
+    gap: dict[str, Any],
+    block_contracts: list[dict[str, Any]],
+    function_contracts: list[dict[str, Any]],
+    cluster_contracts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    gap_id = str(gap.get("gap_id") or "gap")
+    location = gap.get("location") if isinstance(gap.get("location"), dict) else {}
+    function = _function_for_gap(gap, block_contracts, function_contracts, cluster_contracts)
+    return {
+        "id": f"work:{_safe_gap_part(gap_id)}",
+        "unit_kind": "gap",
+        "family": gap.get("family"),
+        "category": gap.get("category"),
+        "severity": gap.get("severity"),
+        "original_function": function,
+        "original_block": location.get("block_id") or _block_for_gap(gap),
+        "repair_class": _repair_class_for_gap(gap),
+        "expected": gap.get("expected"),
+        "observed": gap.get("observed"),
+        "cause_hint": gap.get("cause_hint"),
+        "next_action": gap.get("next_action"),
+        "source_gap": gap,
+    }
+
+
+def _repair_unit_from_cluster(cluster: dict[str, Any]) -> dict[str, Any]:
+    cluster_id = str(cluster.get("id") or "cluster")
+    return {
+        "id": f"work:{_safe_gap_part(cluster_id)}",
+        "unit_kind": "cluster",
+        "family": _family_for_cluster(cluster),
+        "category": cluster.get("cluster_kind"),
+        "severity": "incomplete",
+        "original_function": cluster.get("function"),
+        "original_block": cluster.get("block_id"),
+        "repair_class": cluster.get("repair_class"),
+        "expected": "generated source preserves this Stage A evidence cluster",
+        "observed": "Stage B has not yet proven a source representation for this cluster",
+        "cause_hint": cluster.get("cluster_kind"),
+        "next_action": cluster.get("next_action"),
+        "unit_contract_id": cluster_id,
+        "source_cluster": cluster,
+    }
+
+
+def _repair_unit_priority(item: dict[str, Any]) -> tuple[int, int, str]:
+    return (
+        _gap_family_rank(str(item.get("family") or "")),
+        -_gap_severity_rank(item.get("severity")),
+        str(item.get("repair_class") or ""),
+    )
+
+
+def _repair_class_for_gap(gap: dict[str, Any]) -> str:
+    family = str(gap.get("family") or "")
+    category = str(gap.get("category") or "")
+    text = f"{family} {category} {gap.get('cause_hint') or ''}".lower()
+    if "sret" in text or "out_param" in text:
+        return "hidden_sret_or_out_param"
+    if "varargs" in text or "printf" in text or "stdio" in text:
+        return "varargs_or_stdio_bridge"
+    if "switch" in text:
+        return "switch_or_jump_table_dispatch"
+    if "loop" in text or "state_machine" in text:
+        return "loop_or_state_machine"
+    if "jump" in text:
+        return "jump_table_target"
+    if "import" in text:
+        return "import_prototype_mismatch"
+    if "register" in text or "clobber" in text or "preserved" in text:
+        return "preserved_register_mismatch"
+    if family == "executable_span_coverage":
+        return "missing_code_or_padding_classification"
+    if family == "padding_alignment":
+        return "padding_or_alignment_classification"
+    if family == "function_ranges":
+        return "function_root_or_symbol_mapping"
+    return family or category or "stage_a_contract_gap"
+
+
+def _family_for_cluster(cluster: dict[str, Any]) -> str:
+    kind = str(cluster.get("cluster_kind") or "")
+    if kind.startswith("abi_") or kind == "recoverable_function_pointer_target":
+        return "abi_callsites"
+    if kind == "jump_table_target":
+        return "roots_and_jump_targets"
+    if kind == "import_thunk":
+        return "import_thunks"
+    return "function_ranges"
+
+
+def _function_contract_next_action(name: str, abi: dict[str, Any]) -> str:
+    text = json.dumps(abi, sort_keys=True, default=str).lower()
+    if "varargs" in text or "printf" in text:
+        return f"repair {name} callsites with an explicit varargs/stdio bridge and re-run candidate-only delta explanation"
+    if "sret" in text or "out_param" in text:
+        return f"repair {name} hidden sret/out-param handling and re-run candidate-only delta explanation"
+    if "tls" in name.lower():
+        return f"repair {name} callback ABI and stack cleanup before Stage A validation"
+    return f"implement {name} until its function, block, CFG, ABI, and proof-obligation contracts close"
+
+
+def _block_cfg_contract(block_id: str, cfg_by_block: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    raw = cfg_by_block.get(block_id, {})
+    return {
+        "status": "specified" if raw else "not_observed",
+        "direct_edges": raw,
+    }
+
+
+def _block_memory_access_summary(callsites: Any) -> dict[str, Any]:
+    if not isinstance(callsites, list):
+        return {"status": "unknown", "argument_memory_sources": 0, "function_pointer_targets": 0}
+    argument_memory_sources = 0
+    function_pointer_targets = 0
+    for callsite in callsites:
+        if not isinstance(callsite, dict):
+            continue
+        for source in callsite.get("argument_sources", []) if isinstance(callsite.get("argument_sources"), list) else []:
+            if isinstance(source, dict) and source.get("kind") in {"memory", "address"}:
+                argument_memory_sources += 1
+        function_pointer_targets += len(callsite.get("function_pointer_targets", [])) if isinstance(callsite.get("function_pointer_targets"), list) else 0
+    return {
+        "status": "derived",
+        "argument_memory_sources": argument_memory_sources,
+        "function_pointer_targets": function_pointer_targets,
+    }
+
+
+def _abi_functions(contract: dict[str, Any]) -> list[dict[str, Any]]:
+    abi = _contract_constraint(contract, "abi_callsites")
+    original = abi.get("original") if isinstance(abi.get("original"), dict) else {}
+    functions = original.get("functions") if isinstance(original.get("functions"), list) else []
+    return [item for item in functions if isinstance(item, dict)]
+
+
+def _abi_evidence_by_function(contract: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(item.get("name") or ""): item
+        for item in _abi_functions(contract)
+        if item.get("name")
+    }
+
+
+def _abi_evidence_by_block(contract: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for function in _abi_functions(contract):
+        calls_by_block: dict[str, list[dict[str, Any]]] = {}
+        for callsite in function.get("callsites", []) if isinstance(function.get("callsites"), list) else []:
+            if isinstance(callsite, dict):
+                calls_by_block.setdefault(str(callsite.get("block_id") or ""), []).append(callsite)
+        registers = function.get("registers") if isinstance(function.get("registers"), dict) else {}
+        for block in function.get("blocks", []) if isinstance(function.get("blocks"), list) else []:
+            if not isinstance(block, dict):
+                continue
+            block_id = str(block.get("block_id") or "")
+            if not block_id:
+                continue
+            block_abi = block.get("abi") if isinstance(block.get("abi"), dict) else {}
+            memory_reads = block_abi.get("memory_reads") if isinstance(block_abi.get("memory_reads"), list) else []
+            memory_writes = block_abi.get("memory_writes") if isinstance(block_abi.get("memory_writes"), list) else []
+            result[block_id] = {
+                "callsites": block_abi.get("callsites") if isinstance(block_abi.get("callsites"), list) else calls_by_block.get(block_id, []),
+                "register_reads": block_abi.get("register_reads")
+                if isinstance(block_abi.get("register_reads"), list)
+                else registers.get("reads", [])
+                if isinstance(registers.get("reads"), list)
+                else [],
+                "register_writes": block_abi.get("register_writes")
+                if isinstance(block_abi.get("register_writes"), list)
+                else registers.get("writes", [])
+                if isinstance(registers.get("writes"), list)
+                else [],
+                "preserved_candidates": block_abi.get("preserved_candidates")
+                if isinstance(block_abi.get("preserved_candidates"), list)
+                else registers.get("preserved_candidates", [])
+                if isinstance(registers.get("preserved_candidates"), list)
+                else [],
+                "clobbered_candidates": block_abi.get("clobbered_candidates")
+                if isinstance(block_abi.get("clobbered_candidates"), list)
+                else registers.get("clobbered_candidates", [])
+                if isinstance(registers.get("clobbered_candidates"), list)
+                else [],
+                "stack_delta": block_abi.get("stack_delta")
+                if isinstance(block_abi.get("stack_delta"), dict)
+                else function.get("stack_delta")
+                if isinstance(function.get("stack_delta"), dict)
+                else {"status": "unknown"},
+                "register_value_provenance": block_abi.get("register_value_provenance")
+                if isinstance(block_abi.get("register_value_provenance"), list)
+                else [],
+                "register_out_param_candidates": block_abi.get("register_out_param_candidates")
+                if isinstance(block_abi.get("register_out_param_candidates"), list)
+                else [],
+                "memory_reads": memory_reads,
+                "memory_writes": memory_writes,
+                "field_accesses": block_abi.get("field_accesses") if isinstance(block_abi.get("field_accesses"), list) else [],
+                "memory_effect_summary": block_abi.get("memory_effect_summary")
+                if isinstance(block_abi.get("memory_effect_summary"), dict)
+                else _abi_memory_effect_summary(memory_reads, memory_writes),
+                "switch_contracts": block_abi.get("switch_contracts") if isinstance(block_abi.get("switch_contracts"), list) else [],
+                "loop_hints": block_abi.get("loop_hints") if isinstance(block_abi.get("loop_hints"), list) else [],
+            }
+    return result
+
+
+def _function_names_by_block(contract: dict[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    functions = _contract_constraint(contract, "function_ranges").get("functions")
+    for function in functions if isinstance(functions, list) else []:
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "")
+        for block_id in function.get("block_ids", []) if isinstance(function.get("block_ids"), list) else []:
+            result[str(block_id)] = name
+    return result
+
+
+def _unit_contract_obligation_lookup(
+    block_contracts: list[dict[str, Any]],
+    function_contracts: list[dict[str, Any]],
+    cluster_contracts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    by_key: dict[str, set[str]] = {}
+    fallback_rows: list[tuple[str, dict[str, Any]]] = []
+
+    def add_key(key: Any, unit_id: str) -> None:
+        if key is None:
+            return
+        text = str(key).strip().lower()
+        if not text:
+            return
+        by_key.setdefault(text, set()).add(unit_id)
+
+    for rows in (block_contracts, function_contracts, cluster_contracts):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            unit_id = str(row.get("id") or "")
+            if not unit_id:
+                continue
+            add_key(unit_id, unit_id)
+            for key_name in ("block_id", "function", "cluster_kind", "category"):
+                add_key(row.get(key_name), unit_id)
+            block_id = row.get("block_id")
+            if isinstance(block_id, str) and block_id:
+                add_key(f"block:{block_id}", unit_id)
+                add_key(f"reachability:{block_id}", unit_id)
+            function = row.get("function")
+            if isinstance(function, str) and function:
+                add_key(f"function:{function}", unit_id)
+            fallback_rows.append((unit_id, row))
+    return {"by_key": by_key, "fallback_rows": fallback_rows}
+
+
+def _unit_contract_ids_for_obligation(obligation_id: str, lookup: dict[str, Any]) -> list[str]:
+    text = obligation_id.lower()
+    if not text:
+        return []
+    by_key = lookup.get("by_key") if isinstance(lookup.get("by_key"), dict) else {}
+    ids: set[str] = set()
+
+    def add_lookup(key: str) -> None:
+        ids.update(by_key.get(key.lower(), set()))
+
+    add_lookup(text)
+    parts = obligation_id.split(":")
+    known_prefix = parts[0] if parts else ""
+    if len(parts) >= 2 and known_prefix in {"block", "edge", "reachability", "indirect-edge"}:
+        block_id = parts[1]
+        add_lookup(block_id)
+        add_lookup(f"block:{block_id}")
+        add_lookup(f"reachability:{block_id}")
+    elif len(parts) >= 2 and known_prefix == "function":
+        add_lookup(parts[1])
+        add_lookup(f"function:{parts[1]}")
+
+    if ids:
+        return sorted(ids)
+    if known_prefix in {"block", "edge", "reachability", "indirect-edge", "function", "waiver"}:
+        return []
+
+    fallback_rows = lookup.get("fallback_rows") if isinstance(lookup.get("fallback_rows"), list) else []
+    return sorted(
+        {
+            unit_id
+            for unit_id, row in fallback_rows
+            if text in json.dumps(row, sort_keys=True, default=str).lower()
+        }
+    )
+
+
+def _function_for_gap(
+    gap: dict[str, Any],
+    block_contracts: list[dict[str, Any]],
+    function_contracts: list[dict[str, Any]],
+    cluster_contracts: list[dict[str, Any]],
+) -> str | None:
+    text = json.dumps(gap, sort_keys=True, default=str).lower()
+    for rows in (function_contracts, block_contracts, cluster_contracts):
+        for row in rows:
+            function = row.get("function")
+            if isinstance(function, str) and function and function.lower() in text:
+                return function
+    return None
+
+
+def _block_for_gap(gap: dict[str, Any]) -> str | None:
+    text = json.dumps(gap, sort_keys=True, default=str)
+    match = re.search(r"block[:=]([A-Za-z0-9_.:@+-]+)", text)
+    return match.group(1) if match else None
+
+
+def _dedupe_unit_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        row_id = str(row.get("id") or "")
+        if row_id and row_id not in by_id:
+            by_id[row_id] = row
+    return list(by_id.values())
+
+
+def _reference_unit_contract_artifact(unit_contracts: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "available",
+        "counts": {
+            "block_contracts": len(unit_contracts.get("block_contracts", [])) if isinstance(unit_contracts.get("block_contracts"), list) else 0,
+            "function_contracts": len(unit_contracts.get("function_contracts", [])) if isinstance(unit_contracts.get("function_contracts"), list) else 0,
+            "cluster_contracts": len(unit_contracts.get("cluster_contracts", [])) if isinstance(unit_contracts.get("cluster_contracts"), list) else 0,
+            "work_items": len(unit_contracts.get("repair_units", {}).get("work_items", []))
+            if isinstance(unit_contracts.get("repair_units"), dict)
+            else 0,
+            "semantic_transfer_contracts": len(unit_contracts.get("semantic_transfer_contracts", []))
+            if isinstance(unit_contracts.get("semantic_transfer_contracts"), list)
+            else 0,
+            "cluster_semantic_contracts": len(unit_contracts.get("cluster_semantic_contracts", []))
+            if isinstance(unit_contracts.get("cluster_semantic_contracts"), list)
+            else 0,
+            "memory_accesses": len(unit_contracts.get("memory_frame_contracts", {}).get("accesses", []))
+            if isinstance(unit_contracts.get("memory_frame_contracts"), dict)
+            else 0,
+            "call_summaries": len(unit_contracts.get("call_summary_contracts", {}).get("calls", []))
+            if isinstance(unit_contracts.get("call_summary_contracts"), dict)
+            else 0,
+        },
+    }
+
+
+def _semantic_coverage_blockers(unit_contracts: dict[str, Any]) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    transfers = unit_contracts.get("semantic_transfer_contracts") if isinstance(unit_contracts.get("semantic_transfer_contracts"), list) else []
+    for transfer in transfers:
+        if not isinstance(transfer, dict) or transfer.get("status") in {"reimplementable", "complete", "external_boundary_contract"}:
+            continue
+        blockers.append(
+            _semantic_coverage_blocker(
+                family="semantic_transfer",
+                category=str(transfer.get("blocker_category") or "transfer_contract_incomplete"),
+                function=transfer.get("function"),
+                block_id=transfer.get("block_id"),
+                source_id=transfer.get("id"),
+                blocker=transfer.get("blocker") or "block does not have an implementable transfer contract",
+                next_action=transfer.get("next_action") or "add instruction semantics, an invariant, or a checked cluster summary",
+                sample=transfer,
+            )
+        )
+    memory = unit_contracts.get("memory_frame_contracts") if isinstance(unit_contracts.get("memory_frame_contracts"), dict) else {}
+    for access in memory.get("accesses", []) if isinstance(memory.get("accesses"), list) else []:
+        if not isinstance(access, dict):
+            continue
+        frame_kind = str(access.get("frame_kind") or "unknown")
+        status = str(access.get("status") or "")
+        if status == "classified" and frame_kind not in {"unknown", "external.unknown"}:
+            continue
+        blockers.append(
+            _semantic_coverage_blocker(
+                family="memory_frames",
+                category="unclassified_memory_access" if frame_kind == "unknown" else "external_unknown_memory_access",
+                function=access.get("function"),
+                block_id=access.get("block_id"),
+                source_id=access.get("id"),
+                blocker=access.get("blocker") or f"memory access is classified as {frame_kind}",
+                next_action="recover stack/global/object frame and alias facts for this memory access",
+                sample=access,
+            )
+        )
+    calls = unit_contracts.get("call_summary_contracts") if isinstance(unit_contracts.get("call_summary_contracts"), dict) else {}
+    for call in calls.get("calls", []) if isinstance(calls.get("calls"), list) else []:
+        if not isinstance(call, dict) or call.get("status") in {"complete", "external_boundary_contract"}:
+            continue
+        blockers.append(
+            _semantic_coverage_blocker(
+                family="call_summaries",
+                category="incomplete_call_summary",
+                function=call.get("function"),
+                block_id=call.get("block_id"),
+                source_id=call.get("id"),
+                blocker="; ".join(str(item) for item in call.get("blockers", []) if item) or "call summary is incomplete",
+                next_action=call.get("next_action") or "recover call args, target, memory effects, or import boundary facts",
+                sample=call,
+            )
+        )
+    clusters = unit_contracts.get("cluster_semantic_contracts") if isinstance(unit_contracts.get("cluster_semantic_contracts"), list) else []
+    for cluster in clusters:
+        if not isinstance(cluster, dict) or cluster.get("status") in {"complete", "reimplementable", "external_boundary_contract"}:
+            continue
+        blockers.append(
+            _semantic_coverage_blocker(
+                family="semantic_clusters",
+                category=str(cluster.get("cluster_kind") or "incomplete_semantic_cluster"),
+                function=cluster.get("function"),
+                block_id=cluster.get("block_id"),
+                source_id=cluster.get("id"),
+                blocker=cluster.get("blocker") or "semantic cluster is incomplete",
+                next_action=cluster.get("next_action") or "recover missing cluster facts",
+                sample=cluster,
+            )
+        )
+    return sorted(blockers, key=lambda item: (_semantic_coverage_family_rank(str(item.get("family") or "")), str(item.get("id") or "")))
+
+
+def _semantic_coverage_blocker(
+    *,
+    family: str,
+    category: str,
+    function: Any,
+    block_id: Any,
+    source_id: Any,
+    blocker: Any,
+    next_action: Any,
+    sample: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "id": f"semantic-blocker:{_safe_gap_part(family)}:{_safe_gap_part(str(source_id or category))}",
+        "family": family,
+        "category": category,
+        "severity": "incomplete",
+        "function": str(function) if function not in {None, ""} else None,
+        "block_id": str(block_id) if block_id not in {None, ""} else None,
+        "source_id": source_id,
+        "blocker": str(blocker),
+        "next_action": str(next_action),
+        "sample": _semantic_coverage_sample(sample),
+    }
+
+
+def _semantic_coverage_sample(sample: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "id",
+        "status",
+        "function",
+        "block_id",
+        "blocker_category",
+        "blocker",
+        "next_action",
+        "cluster_kind",
+        "repair_class",
+        "frame_kind",
+        "target_kind",
+        "target",
+        "blocking_instruction",
+        "original",
+        "instruction",
+    )
+    result = {key: sample.get(key) for key in keys if key in sample}
+    if isinstance(sample.get("instructions"), list) and sample["instructions"]:
+        result["instruction_preview"] = sample["instructions"][:3]
+    return result
+
+
+def _semantic_coverage_families(unit_contracts: dict[str, Any], blockers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    blocker_counts = _count_by(blockers, "family")
+    transfer_count = len(unit_contracts.get("semantic_transfer_contracts", [])) if isinstance(unit_contracts.get("semantic_transfer_contracts"), list) else 0
+    memory = unit_contracts.get("memory_frame_contracts") if isinstance(unit_contracts.get("memory_frame_contracts"), dict) else {}
+    calls = unit_contracts.get("call_summary_contracts") if isinstance(unit_contracts.get("call_summary_contracts"), dict) else {}
+    cluster_count = len(unit_contracts.get("cluster_semantic_contracts", [])) if isinstance(unit_contracts.get("cluster_semantic_contracts"), list) else 0
+    rows = [
+        ("semantic_transfer", transfer_count, "all executable blocks have implementable transfer contracts"),
+        ("memory_frames", len(memory.get("accesses", [])) if isinstance(memory.get("accesses"), list) else 0, "all memory accesses have non-unknown frame/alias classification"),
+        ("call_summaries", len(calls.get("calls", [])) if isinstance(calls.get("calls"), list) else 0, "all calls have complete summaries or explicit external boundaries"),
+        ("semantic_clusters", cluster_count, "all switch/loop/function-pointer clusters are complete or explicitly external-boundary modeled"),
+    ]
+    return [
+        {
+            "family": family,
+            "status": "satisfied" if blocker_counts.get(family, 0) == 0 else "incomplete",
+            "items": total,
+            "analysis_blocked": blocker_counts.get(family, 0),
+            "requirement": requirement,
+        }
+        for family, total, requirement in rows
+    ]
+
+
+def _semantic_coverage_counts(unit_contracts: dict[str, Any], blockers: list[dict[str, Any]]) -> dict[str, Any]:
+    transfers = unit_contracts.get("semantic_transfer_contracts") if isinstance(unit_contracts.get("semantic_transfer_contracts"), list) else []
+    memory = unit_contracts.get("memory_frame_contracts") if isinstance(unit_contracts.get("memory_frame_contracts"), dict) else {}
+    calls = unit_contracts.get("call_summary_contracts") if isinstance(unit_contracts.get("call_summary_contracts"), dict) else {}
+    clusters = unit_contracts.get("cluster_semantic_contracts") if isinstance(unit_contracts.get("cluster_semantic_contracts"), list) else []
+    by_category = _count_by(blockers, "category")
+    return {
+        "semantic_transfer_contracts": len(transfers),
+        "implementable_transfer_contracts": sum(1 for item in transfers if isinstance(item, dict) and item.get("status") in {"reimplementable", "complete"}),
+        "analysis_blocked_transfers": sum(1 for item in blockers if item.get("family") == "semantic_transfer"),
+        "memory_accesses": len(memory.get("accesses", [])) if isinstance(memory.get("accesses"), list) else 0,
+        "unclassified_memory_accesses": by_category.get("unclassified_memory_access", 0),
+        "external_unknown_memory_accesses": by_category.get("external_unknown_memory_access", 0),
+        "call_summaries": len(calls.get("calls", [])) if isinstance(calls.get("calls"), list) else 0,
+        "incomplete_call_summaries": sum(1 for item in blockers if item.get("family") == "call_summaries"),
+        "cluster_semantic_contracts": len(clusters),
+        "incomplete_clusters": sum(1 for item in blockers if item.get("family") == "semantic_clusters"),
+        "unsupported_instruction_shapes": by_category.get("unsupported_semantics", 0),
+        "analysis_blocked": len(blockers),
+        "by_family": _count_by(blockers, "family"),
+        "by_category": by_category,
+    }
+
+
+def _semantic_coverage_next_work(blockers: list[dict[str, Any]], *, limit: int = 20) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": blocker.get("id"),
+            "family": blocker.get("family"),
+            "category": blocker.get("category"),
+            "function": blocker.get("function"),
+            "block_id": blocker.get("block_id"),
+            "blocker": blocker.get("blocker"),
+            "next_action": blocker.get("next_action"),
+        }
+        for blocker in blockers[:limit]
+    ]
+
+
+def _semantic_coverage_family_rank(family: str) -> int:
+    order = {
+        "semantic_transfer": 0,
+        "memory_frames": 1,
+        "call_summaries": 2,
+        "semantic_clusters": 3,
+    }
+    return order.get(family, 99)
+
+
+def _load_reference_unit_contract_sidecars(
+    contract: dict[str, Any],
+    contract_path: Path,
+    *,
+    unit_contract_dir: Path | None,
+    contract_ref: dict[str, Any],
+) -> dict[str, Any]:
+    paths = _reference_unit_contract_paths(_reference_unit_contract_dir(contract, contract_path, unit_contract_dir))
+    fallback = _reference_unit_contract_payloads(contract, contract_ref)
+    return {
+        "block_contracts": _load_jsonl_or(paths["block_contracts"], fallback["block_contracts"]),
+        "function_contracts": _load_jsonl_or(paths["function_contracts"], fallback["function_contracts"]),
+        "cluster_contracts": _load_jsonl_or(paths["cluster_contracts"], fallback["cluster_contracts"]),
+        "repair_units": _load_json_or(paths["repair_units"], fallback["repair_units"]),
+        "source_obligations": _load_json_or(paths["source_obligations"], fallback["source_obligations"]),
+        "semantic_transfer_contracts": _load_jsonl_or(paths["semantic_transfer_contracts"], fallback["semantic_transfer_contracts"]),
+        "memory_frame_contracts": _load_json_or(paths["memory_frame_contracts"], fallback["memory_frame_contracts"]),
+        "call_summary_contracts": _load_json_or(paths["call_summary_contracts"], fallback["call_summary_contracts"]),
+        "cluster_semantic_contracts": _load_jsonl_or(paths["cluster_semantic_contracts"], fallback["cluster_semantic_contracts"]),
+        "paths": {name: str(path) for name, path in paths.items()},
+    }
+
+
+def _reference_unit_contract_dir(contract: dict[str, Any], contract_path: Path, explicit: Path | None) -> Path:
+    if explicit is not None:
+        return explicit
+    sidecars = contract.get("sidecars") if isinstance(contract.get("sidecars"), dict) else {}
+    unit = sidecars.get("unit_contracts") if isinstance(sidecars.get("unit_contracts"), dict) else {}
+    directory = unit.get("directory")
+    if isinstance(directory, str) and directory:
+        path = Path(directory)
+        return path if path.is_absolute() else contract_path.parent / path
+    return contract_path.parent
+
+
+def _load_jsonl_or(path: Path, fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return fallback
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            if isinstance(value, dict):
+                rows.append(value)
+    except (OSError, json.JSONDecodeError):
+        return fallback
+    return rows
+
+
+def _load_json_or(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
+    if not path.is_file():
+        return fallback
+    try:
+        value = _load_json(path)
+    except StageAInputError:
+        return fallback
+    return value if isinstance(value, dict) else fallback
+
+
+def _matching_unit_contracts(unit_contracts: dict[str, Any], focus_lower: str) -> list[dict[str, Any]]:
+    matches = []
+    for name in ("block_contracts", "function_contracts", "cluster_contracts", "semantic_transfer_contracts", "cluster_semantic_contracts"):
+        for row in unit_contracts.get(name, []) if isinstance(unit_contracts.get(name), list) else []:
+            if isinstance(row, dict) and _matches_focus(row, focus_lower):
+                matches.append(row)
+    for name in ("memory_frame_contracts", "call_summary_contracts"):
+        payload = unit_contracts.get(name) if isinstance(unit_contracts.get(name), dict) else {}
+        if _matches_focus(payload, focus_lower):
+            matches.append(payload)
+    repair_units = unit_contracts.get("repair_units") if isinstance(unit_contracts.get("repair_units"), dict) else {}
+    for row in repair_units.get("work_items", []) if isinstance(repair_units.get("work_items"), list) else []:
+        if isinstance(row, dict) and _matches_focus(row, focus_lower):
+            matches.append(row)
+    return matches
+
+
 def _reference_contract_gap_items(contract: dict[str, Any]) -> list[dict[str, Any]]:
     gaps: list[dict[str, Any]] = []
     for issue in contract.get("issues", []):
@@ -1532,6 +3526,8 @@ def _gap_family_rank(family: str) -> int:
         "roots_and_jump_targets": 5,
         "import_thunks": 6,
         "padding_alignment": 6,
+        "semantic_transfer": 6,
+        "semantic_cluster": 6,
         "proof_inventory": 7,
     }
     return order.get(family, 99)
@@ -1807,6 +3803,10 @@ def _contract_candidate_families(
         abi_coverage_gaps["counts"].get("ambiguous_functions") or 0
     ) or int(
         abi_coverage_gaps["counts"].get("incomplete_callsite_functions") or 0
+    ) or int(
+        abi_coverage_gaps["counts"].get("function_mismatches") or 0
+    ) or int(
+        abi_coverage_gaps["counts"].get("callsite_mismatches") or 0
     ):
         abi_status = "incomplete"
     families = [
@@ -2386,6 +4386,8 @@ def _contract_candidate_abi_coverage_gaps(
     missing_functions: list[dict[str, Any]] = []
     ambiguous_functions: list[dict[str, Any]] = []
     incomplete_callsites: list[dict[str, Any]] = []
+    function_mismatches: list[dict[str, Any]] = []
+    callsite_mismatches: list[dict[str, Any]] = []
     for function in reference_functions:
         name = function.get("name")
         if not isinstance(name, str):
@@ -2399,6 +4401,19 @@ def _contract_candidate_abi_coverage_gaps(
         if not candidates:
             missing_functions.append(_abi_function_gap_sample(function, key))
             continue
+        best_candidate = max(
+            candidates,
+            key=lambda item: len(item.get("callsites", [])) if isinstance(item.get("callsites"), list) else 0,
+        )
+        function_mismatch = _contract_candidate_abi_function_mismatch(
+            name,
+            key,
+            function,
+            best_candidate,
+            _contract_candidate_abi_alias_sample(alias_matches.get(name)),
+        )
+        if function_mismatch is not None:
+            function_mismatches.append(function_mismatch)
         candidate_callsite_count = max(
             len(item.get("callsites", [])) if isinstance(item.get("callsites"), list) else 0
             for item in candidates
@@ -2415,18 +4430,328 @@ def _contract_candidate_abi_coverage_gaps(
                     "reference_callsite_samples": [_abi_callsite_gap_sample(item) for item in reference_callsites[:5]],
                 }
             )
+        candidate_callsites = best_candidate.get("callsites") if isinstance(best_candidate.get("callsites"), list) else []
+        for index, reference_callsite in enumerate(reference_callsites):
+            if index >= len(candidate_callsites) or not isinstance(reference_callsite, dict) or not isinstance(candidate_callsites[index], dict):
+                continue
+            callsite_mismatch = _contract_candidate_abi_callsite_mismatch(
+                name,
+                key,
+                index,
+                reference_callsite,
+                candidate_callsites[index],
+                _contract_candidate_abi_alias_sample(alias_matches.get(name)),
+            )
+            if callsite_mismatch is not None:
+                callsite_mismatches.append(callsite_mismatch)
 
     return {
         "missing_functions": missing_functions[:100],
         "ambiguous_functions": ambiguous_functions[:100],
         "incomplete_callsites": incomplete_callsites[:100],
+        "function_mismatches": function_mismatches[:100],
+        "callsite_mismatches": callsite_mismatches[:100],
         "counts": {
             "missing_functions": len(missing_functions),
             "ambiguous_functions": len(ambiguous_functions),
             "incomplete_callsite_functions": len(incomplete_callsites),
             "missing_callsites": sum(int(item.get("missing_callsites") or 0) for item in incomplete_callsites),
+            "function_mismatches": len(function_mismatches),
+            "callsite_mismatches": len(callsite_mismatches),
         },
     }
+
+
+def _contract_candidate_abi_function_mismatch(
+    name: str,
+    match_key: str,
+    reference_function: dict[str, Any],
+    candidate_function: dict[str, Any],
+    alias_match: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    issues: list[dict[str, Any]] = []
+    reference_stack = reference_function.get("stack_delta") if isinstance(reference_function.get("stack_delta"), dict) else {}
+    candidate_stack = candidate_function.get("stack_delta") if isinstance(candidate_function.get("stack_delta"), dict) else {}
+    if reference_stack.get("status") == "derived" and candidate_stack.get("status") == "derived":
+        if reference_stack.get("net_bytes") != candidate_stack.get("net_bytes"):
+            issues.append(
+                {
+                    "category": "stack_delta_mismatch",
+                    "expected": reference_stack,
+                    "observed": candidate_stack,
+                    "cause_hint": "candidate function stack cleanup differs from the reference contract",
+                }
+            )
+    reference_registers = reference_function.get("registers") if isinstance(reference_function.get("registers"), dict) else {}
+    candidate_registers = candidate_function.get("registers") if isinstance(candidate_function.get("registers"), dict) else {}
+    for key, category in (
+        ("preserved_candidates", "preserved_register_mismatch"),
+        ("clobbered_candidates", "clobbered_register_mismatch"),
+    ):
+        expected = {str(item) for item in reference_registers.get(key, []) if isinstance(item, str)}
+        observed = {str(item) for item in candidate_registers.get(key, []) if isinstance(item, str)}
+        missing = sorted(expected - observed)
+        if missing:
+            issues.append(
+                {
+                    "category": category,
+                    "expected": sorted(expected),
+                    "observed": sorted(observed),
+                    "missing": missing,
+                    "cause_hint": f"candidate is missing reference {key.replace('_', ' ')}",
+                }
+            )
+    for key, category, hint in (
+        (
+            "register_out_param_candidates",
+            "register_carried_out_param_missing",
+            "candidate does not expose all writes through entry register pointers",
+        ),
+        (
+            "switch_contracts",
+            "switch_or_jump_table_contract_missing",
+            "candidate does not expose all indirect switch/jump-table contracts",
+        ),
+        (
+            "loop_hints",
+            "loop_backedge_contract_missing",
+            "candidate does not expose all loop backedge hints",
+        ),
+    ):
+        expected_count = _abi_list_count(reference_function.get(key))
+        observed_count = _abi_list_count(candidate_function.get(key))
+        if expected_count > observed_count:
+            issues.append(
+                {
+                    "category": category,
+                    "expected": expected_count,
+                    "observed": observed_count,
+                    "missing": expected_count - observed_count,
+                    "cause_hint": hint,
+                }
+            )
+    memory_issue = _contract_candidate_abi_memory_summary_issue(reference_function, candidate_function)
+    if memory_issue is not None:
+        issues.append(memory_issue)
+    if not issues:
+        return None
+    return {
+        "name": name,
+        "match_key": match_key,
+        "alias_match": alias_match,
+        "candidate_name": candidate_function.get("name"),
+        "issues": issues[:12],
+        "repair_class": _contract_candidate_abi_mismatch_repair_class(issues),
+        "next_action": _contract_candidate_abi_mismatch_next_action(name, issues),
+    }
+
+
+def _contract_candidate_abi_memory_summary_issue(reference_function: dict[str, Any], candidate_function: dict[str, Any]) -> dict[str, Any] | None:
+    reference = reference_function.get("memory_effect_summary") if isinstance(reference_function.get("memory_effect_summary"), dict) else {}
+    candidate = candidate_function.get("memory_effect_summary") if isinstance(candidate_function.get("memory_effect_summary"), dict) else {}
+    expected_reads = _safe_int(reference.get("reads")) or 0
+    expected_writes = _safe_int(reference.get("writes")) or 0
+    observed_reads = _safe_int(candidate.get("reads")) or 0
+    observed_writes = _safe_int(candidate.get("writes")) or 0
+    read_roles = _missing_counted_roles(reference.get("read_roles"), candidate.get("read_roles"))
+    write_roles = _missing_counted_roles(reference.get("write_roles"), candidate.get("write_roles"))
+    if expected_reads <= observed_reads and expected_writes <= observed_writes and not read_roles and not write_roles:
+        return None
+    return {
+        "category": "memory_effect_mismatch",
+        "expected": reference,
+        "observed": candidate,
+        "missing_read_roles": read_roles,
+        "missing_write_roles": write_roles,
+        "cause_hint": "candidate memory reads/writes or access classes do not cover the reference contract",
+    }
+
+
+def _contract_candidate_abi_callsite_mismatch(
+    name: str,
+    match_key: str,
+    callsite_index: int,
+    reference_callsite: dict[str, Any],
+    candidate_callsite: dict[str, Any],
+    alias_match: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    issues: list[dict[str, Any]] = []
+    reference_target = _abi_target_signature(reference_callsite.get("target"))
+    candidate_target = _abi_target_signature(candidate_callsite.get("target"))
+    if reference_target and candidate_target and reference_target != candidate_target:
+        issues.append(
+            {
+                "category": "call_target_mismatch",
+                "expected": reference_target,
+                "observed": candidate_target,
+                "cause_hint": "candidate call target kind/import/direct edge differs from the reference callsite",
+            }
+        )
+    reference_hidden = reference_callsite.get("hidden_sret_or_out_param_evidence") if isinstance(reference_callsite.get("hidden_sret_or_out_param_evidence"), dict) else {}
+    candidate_hidden = candidate_callsite.get("hidden_sret_or_out_param_evidence") if isinstance(candidate_callsite.get("hidden_sret_or_out_param_evidence"), dict) else {}
+    if reference_hidden.get("status") == "candidate" and candidate_hidden.get("status") != "candidate":
+        issues.append(
+            {
+                "category": "hidden_sret_or_out_param_missing",
+                "expected": reference_hidden,
+                "observed": candidate_hidden,
+                "cause_hint": "candidate callsite lost address-like first argument evidence",
+            }
+        )
+    reference_varargs = reference_callsite.get("varargs_evidence") if isinstance(reference_callsite.get("varargs_evidence"), dict) else {}
+    candidate_varargs = candidate_callsite.get("varargs_evidence") if isinstance(candidate_callsite.get("varargs_evidence"), dict) else {}
+    varargs_issue = _contract_candidate_abi_varargs_issue(reference_varargs, candidate_varargs)
+    if varargs_issue is not None:
+        issues.append(varargs_issue)
+    reference_inventory = _abi_argument_inventory_signature(reference_callsite.get("argument_inventory"))
+    candidate_inventory = _abi_argument_inventory_signature(candidate_callsite.get("argument_inventory"))
+    if reference_inventory and candidate_inventory and reference_inventory != candidate_inventory:
+        issues.append(
+            {
+                "category": "callsite_argument_inventory_mismatch",
+                "expected": reference_inventory,
+                "observed": candidate_inventory,
+                "cause_hint": "candidate argument count, argument roles, or calling convention differs from the reference callsite",
+            }
+        )
+    reference_targets = _abi_list_count(reference_callsite.get("function_pointer_targets"))
+    candidate_targets = _abi_list_count(candidate_callsite.get("function_pointer_targets"))
+    if reference_targets > candidate_targets:
+        issues.append(
+            {
+                "category": "function_pointer_target_missing",
+                "expected": reference_targets,
+                "observed": candidate_targets,
+                "cause_hint": "candidate lost recoverable function-pointer target evidence",
+            }
+        )
+    if not issues:
+        return None
+    return {
+        "name": name,
+        "match_key": match_key,
+        "alias_match": alias_match,
+        "callsite_index": callsite_index,
+        "block_id": reference_callsite.get("block_id"),
+        "callsite_id": reference_callsite.get("id"),
+        "reference_callsite": _abi_callsite_gap_sample(reference_callsite),
+        "candidate_callsite": _abi_callsite_gap_sample(candidate_callsite),
+        "issues": issues[:12],
+        "repair_class": _contract_candidate_abi_mismatch_repair_class(issues),
+        "next_action": _contract_candidate_abi_mismatch_next_action(name, issues),
+    }
+
+
+def _contract_candidate_abi_varargs_issue(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any] | None:
+    if reference.get("status") != "candidate":
+        return None
+    if candidate.get("status") != "candidate":
+        return {
+            "category": "varargs_evidence_missing",
+            "expected": reference,
+            "observed": candidate,
+            "cause_hint": "candidate callsite lost known variadic import/prototype evidence",
+        }
+    reference_format = reference.get("format_string") if isinstance(reference.get("format_string"), dict) else {}
+    candidate_format = candidate.get("format_string") if isinstance(candidate.get("format_string"), dict) else {}
+    reference_missing = _safe_int(reference_format.get("missing_varargs")) or 0
+    candidate_missing = _safe_int(candidate_format.get("missing_varargs")) or 0
+    reference_required = _safe_int(reference_format.get("required_varargs"))
+    candidate_required = _safe_int(candidate_format.get("required_varargs"))
+    if reference_required != candidate_required or candidate_missing > reference_missing:
+        return {
+            "category": "varargs_format_inventory_mismatch",
+            "expected": reference_format,
+            "observed": candidate_format,
+            "cause_hint": "candidate static format string or observed variadic argument inventory differs from reference",
+        }
+    return None
+
+
+def _abi_target_signature(target: Any) -> dict[str, Any]:
+    if not isinstance(target, dict):
+        return {}
+    return {
+        key: target.get(key)
+        for key in ("kind", "dll", "symbol", "ordinal", "target_rva", "thunk_rva", "status")
+        if target.get(key) not in {None, ""}
+    }
+
+
+def _abi_argument_inventory_signature(inventory: Any) -> dict[str, Any]:
+    if not isinstance(inventory, dict):
+        return {}
+    stack_args = inventory.get("stack_args") if isinstance(inventory.get("stack_args"), list) else []
+    register_args = inventory.get("register_args") if isinstance(inventory.get("register_args"), list) else []
+    return {
+        "calling_convention": inventory.get("calling_convention"),
+        "argument_count": inventory.get("argument_count"),
+        "stack_roles": [item.get("role") for item in stack_args if isinstance(item, dict)],
+        "register_roles": [
+            {"register": item.get("register"), "role": item.get("role")}
+            for item in register_args
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _abi_list_count(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _missing_counted_roles(reference: Any, candidate: Any) -> dict[str, int]:
+    if not isinstance(reference, dict):
+        return {}
+    candidate = candidate if isinstance(candidate, dict) else {}
+    missing: dict[str, int] = {}
+    for role, expected in reference.items():
+        expected_count = _safe_int(expected) or 0
+        observed_count = _safe_int(candidate.get(role)) or 0
+        if expected_count > observed_count:
+            missing[str(role)] = expected_count - observed_count
+    return missing
+
+
+def _contract_candidate_abi_mismatch_repair_class(issues: list[dict[str, Any]]) -> str:
+    text = json.dumps(issues, sort_keys=True, default=str).lower()
+    if "varargs" in text or "stdio" in text or "printf" in text:
+        return "varargs_or_stdio_bridge"
+    if "sret" in text or "out_param" in text:
+        return "hidden_sret_or_out_param"
+    if "switch" in text or "jump_table" in text:
+        return "switch_or_jump_table_dispatch"
+    if "loop" in text:
+        return "loop_or_state_machine"
+    if "function_pointer" in text:
+        return "function_pointer_target"
+    if "register" in text or "clobber" in text or "preserved" in text:
+        return "preserved_register_mismatch"
+    if "stack" in text:
+        return "stack_delta_mismatch"
+    if "memory" in text:
+        return "memory_effect_mismatch"
+    return "abi_callsite_mismatch"
+
+
+def _contract_candidate_abi_mismatch_next_action(name: str, issues: list[dict[str, Any]]) -> str:
+    repair_class = _contract_candidate_abi_mismatch_repair_class(issues)
+    if repair_class == "varargs_or_stdio_bridge":
+        return f"repair {name} varargs/stdio bridge, format-string argument inventory, and imported prototype surface"
+    if repair_class == "hidden_sret_or_out_param":
+        return f"repair {name} hidden sret/out-param representation and address-like argument flow"
+    if repair_class == "switch_or_jump_table_dispatch":
+        return f"repair {name} switch/jump-table dispatch so every checked target and default edge is represented"
+    if repair_class == "loop_or_state_machine":
+        return f"repair {name} loop backedges, loop-carried state, and exit predicates"
+    if repair_class == "function_pointer_target":
+        return f"recover {name} function-pointer target set or represent it as a checked indirect target contract"
+    if repair_class == "preserved_register_mismatch":
+        return f"repair {name} register save/restore and clobber behavior before rerunning Stage A contract validation"
+    if repair_class == "stack_delta_mismatch":
+        return f"repair {name} calling convention and stack cleanup before rerunning Stage A contract validation"
+    if repair_class == "memory_effect_mismatch":
+        return f"repair {name} memory reads/writes, field accesses, and global/stack access classes"
+    return f"repair {name} ABI/callsite contract mismatch and rerun Stage A contract validation"
 
 
 def _contract_candidate_abi_candidates(
@@ -2638,6 +4963,8 @@ def _reference_validation_report_binding_constraint(
         )
 
     mapping_matches: bool | None
+    expected_mapping_sha256 = _canonical_json_sha256(mapping_payload) if mapping_payload is not None else None
+    actual_mapping_sha256 = None
     if mapping_payload is None:
         mapping_matches = None
     elif "mapping" not in lean_inputs:
@@ -2651,7 +4978,8 @@ def _reference_validation_report_binding_constraint(
             )
         )
     else:
-        mapping_matches = lean_inputs.get("mapping") == mapping_payload
+        actual_mapping_sha256 = _canonical_json_sha256(lean_inputs.get("mapping"))
+        mapping_matches = actual_mapping_sha256 == expected_mapping_sha256
         if not mapping_matches:
             issues.append(
                 _incomplete_record(
@@ -2659,6 +4987,10 @@ def _reference_validation_report_binding_constraint(
                     obligation_id="reference-contract:validation-report-binding:mapping",
                     blocker="Stage A validation report was generated from a different block map",
                     next_action="rerun stage-a-validate with the current block map",
+                    details={
+                        "expected_mapping_sha256": expected_mapping_sha256,
+                        "actual_mapping_sha256": actual_mapping_sha256,
+                    },
                 )
             )
 
@@ -2671,9 +5003,15 @@ def _reference_validation_report_binding_constraint(
             "matching_original_sha256": original_sha == original.sha256,
             "matching_candidate_sha256": None if candidate is None else candidate_sha == candidate.sha256,
             "matching_mapping_payload": mapping_matches,
+            "expected_mapping_sha256": expected_mapping_sha256,
+            "actual_mapping_sha256": actual_mapping_sha256,
         },
         "issues": issues,
     }
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    return sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
 
 
 def _layout_binary_sha256(layout: dict[str, Any], side: str) -> str | None:
@@ -3046,15 +5384,42 @@ def _abi_function_evidence(binary: StageABinary | None, mappings: list[BlockMapp
             },
         )
         block_evidence = _abi_block_evidence(binary, block, mapped.id)
-        entry["blocks"].append({"block_id": mapped.id, **_range_report(block)})
+        entry["blocks"].append({"block_id": mapped.id, **_range_report(block), "abi": _abi_block_contract_evidence(block_evidence)})
         entry["callsites"].extend(block_evidence["callsites"])
         entry["registers"]["reads"] = sorted(set(entry["registers"]["reads"]) | set(block_evidence["register_reads"]))
         entry["registers"]["writes"] = sorted(set(entry["registers"]["writes"]) | set(block_evidence["register_writes"]))
         entry["registers"]["preserved_candidates"] = sorted(set(entry["registers"]["preserved_candidates"]) | set(block_evidence["preserved_candidates"]))
         entry["registers"]["clobbered_candidates"] = sorted(set(entry["registers"]["clobbered_candidates"]) | set(block_evidence["clobbered_candidates"]))
+        entry.setdefault("register_value_provenance", []).extend(block_evidence.get("register_value_provenance", []))
+        entry.setdefault("register_out_param_candidates", []).extend(block_evidence.get("register_out_param_candidates", []))
+        entry.setdefault("memory_reads", []).extend(block_evidence.get("memory_reads", []))
+        entry.setdefault("memory_writes", []).extend(block_evidence.get("memory_writes", []))
+        entry.setdefault("field_accesses", []).extend(block_evidence.get("field_accesses", []))
+        entry.setdefault("switch_contracts", []).extend(block_evidence.get("switch_contracts", []))
+        entry.setdefault("loop_hints", []).extend(block_evidence.get("loop_hints", []))
         if block_evidence["stack_delta"]["status"] != "unknown":
             entry["stack_delta"] = block_evidence["stack_delta"]
+        entry["memory_effect_summary"] = _abi_memory_effect_summary(entry.get("memory_reads", []), entry.get("memory_writes", []))
     return sorted(by_name.values(), key=lambda item: str(item.get("name") or ""))
+
+
+def _abi_block_contract_evidence(block_evidence: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "callsites": block_evidence.get("callsites", []),
+        "register_reads": block_evidence.get("register_reads", []),
+        "register_writes": block_evidence.get("register_writes", []),
+        "preserved_candidates": block_evidence.get("preserved_candidates", []),
+        "clobbered_candidates": block_evidence.get("clobbered_candidates", []),
+        "register_value_provenance": block_evidence.get("register_value_provenance", []),
+        "register_out_param_candidates": block_evidence.get("register_out_param_candidates", []),
+        "memory_reads": block_evidence.get("memory_reads", []),
+        "memory_writes": block_evidence.get("memory_writes", []),
+        "field_accesses": block_evidence.get("field_accesses", []),
+        "memory_effect_summary": block_evidence.get("memory_effect_summary", {}),
+        "switch_contracts": block_evidence.get("switch_contracts", []),
+        "loop_hints": block_evidence.get("loop_hints", []),
+        "stack_delta": block_evidence.get("stack_delta", {"status": "unknown"}),
+    }
 
 
 def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -> dict[str, Any]:
@@ -3069,19 +5434,35 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
             "register_writes": [],
             "preserved_candidates": [],
             "clobbered_candidates": [],
+            "register_value_provenance": [],
+            "register_out_param_candidates": [],
+            "memory_reads": [],
+            "memory_writes": [],
+            "field_accesses": [],
+            "memory_effect_summary": {"status": "unknown", "reason": "decode_incomplete"},
+            "switch_contracts": [],
+            "loop_hints": [],
             "stack_delta": {"status": "unknown", "reason": "decode_incomplete"},
         }
     callsites = []
     register_reads: set[str] = set()
     register_writes: set[str] = set()
     register_definitions: dict[str, dict[str, Any]] = {}
+    register_definition_history: list[dict[str, Any]] = []
     pushes: list[dict[str, Any]] = []
     stack_argument_writes: dict[int, dict[str, Any]] = {}
+    memory_reads: list[dict[str, Any]] = []
+    memory_writes: list[dict[str, Any]] = []
+    field_accesses: list[dict[str, Any]] = []
     stack_delta = 0
     for insn in instructions:
         reads, writes = _instruction_register_access(insn)
         register_reads.update(reads)
         register_writes.update(writes)
+        accesses = _abi_instruction_memory_accesses(binary, insn, register_definitions)
+        memory_reads.extend(accesses["reads"])
+        memory_writes.extend(accesses["writes"])
+        field_accesses.extend(accesses["field_accesses"])
         mnemonic = str(insn.mnemonic)
         if mnemonic == "push":
             stack_delta -= 4 if binary.bitness == 32 else 8
@@ -3114,18 +5495,35 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
             if offset is not None:
                 stack_argument_writes[offset] = _abi_stack_argument_write_source(binary, insn, offset, register_definitions)
         defined_register = _abi_update_register_definitions(binary, insn, register_definitions, writes)
+        if defined_register is not None and defined_register in register_definitions:
+            register_definition_history.append(
+                {
+                    "register": defined_register,
+                    "definition": register_definitions[defined_register],
+                    "evidence_status": "derived",
+                }
+            )
         if mnemonic == "call":
             for volatile in ("eax", "ecx", "edx", "rax", "rcx", "rdx"):
                 if volatile != defined_register:
                     register_definitions.pop(volatile, None)
     preserved = sorted(reg for reg in ("ebx", "esi", "edi", "rbx", "rsi", "rdi") if reg in register_reads and reg in register_writes)
     clobbered = sorted(reg for reg in register_writes if reg not in set(preserved) and reg not in {"esp", "rsp", "ebp", "rbp"})
+    register_out_params = _abi_register_out_param_candidates(memory_writes)
     return {
         "callsites": callsites,
         "register_reads": sorted(register_reads),
         "register_writes": sorted(register_writes),
         "preserved_candidates": preserved,
         "clobbered_candidates": clobbered,
+        "register_value_provenance": register_definition_history,
+        "register_out_param_candidates": register_out_params,
+        "memory_reads": memory_reads,
+        "memory_writes": memory_writes,
+        "field_accesses": field_accesses,
+        "memory_effect_summary": _abi_memory_effect_summary(memory_reads, memory_writes),
+        "switch_contracts": _abi_switch_contracts(binary, block, instructions),
+        "loop_hints": _abi_loop_hints(binary, block, instructions),
         "stack_delta": {"status": "derived", "net_bytes": stack_delta},
     }
 
@@ -3146,6 +5544,189 @@ def _instruction_register_access(insn: Any) -> tuple[set[str], set[str]]:
         if name:
             writes.add(str(name))
     return reads, writes
+
+
+def _abi_instruction_memory_accesses(
+    binary: StageABinary,
+    insn: Any,
+    register_definitions: dict[str, dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    reads: list[dict[str, Any]] = []
+    writes: list[dict[str, Any]] = []
+    field_accesses: list[dict[str, Any]] = []
+    mnemonic = str(insn.mnemonic)
+    for index, operand in enumerate(getattr(insn, "operands", []) or []):
+        if operand.type != X86_OP_MEM:
+            continue
+        if mnemonic == "lea":
+            continue
+        access_kind = _abi_operand_memory_access_kind(insn, index)
+        if access_kind is None:
+            continue
+        access = _abi_memory_access_report(binary, insn, operand, access_kind, register_definitions)
+        if access_kind == "read":
+            reads.append(access)
+        elif access_kind == "write":
+            writes.append(access)
+        else:
+            reads.append({**access, "access": "read"})
+            writes.append({**access, "access": "write"})
+        field = _abi_field_access_report(access)
+        if field is not None:
+            field_accesses.append(field)
+    return {"reads": reads, "writes": writes, "field_accesses": field_accesses}
+
+
+def _abi_operand_memory_access_kind(insn: Any, operand_index: int) -> str | None:
+    mnemonic = str(insn.mnemonic)
+    if mnemonic in {"jmp", "ljmp", "call"}:
+        return "read"
+    if mnemonic in {"cmp", "test"}:
+        return "read"
+    if mnemonic == "push":
+        return "read"
+    if mnemonic == "pop":
+        return "write"
+    if mnemonic in {"inc", "dec", "neg", "not"}:
+        return "read_write"
+    if mnemonic in {"mov", "movzx", "movsx", "lea"}:
+        return "write" if operand_index == 0 and mnemonic == "mov" else "read"
+    if operand_index == 0 and mnemonic in {"add", "sub", "and", "or", "xor", "shl", "shr", "sar", "rol", "ror"}:
+        return "read_write"
+    return "read"
+
+
+def _abi_memory_access_report(
+    binary: StageABinary,
+    insn: Any,
+    operand: Any,
+    access_kind: str,
+    register_definitions: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    addressing = _abi_mem_operand_report(insn, operand)
+    access: dict[str, Any] = {
+        "evidence_status": "derived",
+        "access": access_kind,
+        "width": int(getattr(operand, "size", 0) or 0),
+        "addressing": addressing,
+        "instruction": _instruction_report(binary, insn),
+    }
+    memory_rva = _abi_absolute_addressing_rva(binary, addressing)
+    if memory_rva is not None:
+        access["memory_rva"] = memory_rva
+        section = _section_for_rva(binary, memory_rva)
+        if section is not None:
+            access["memory_section"] = _abi_section_report(section)
+        string_literal = _abi_string_literal_at_rva(binary, memory_rva)
+        if string_literal is not None:
+            access["string_literal"] = string_literal
+    base = addressing.get("base")
+    if isinstance(base, str):
+        base_definition = register_definitions.get(base)
+        if isinstance(base_definition, dict):
+            access["base_register_definition"] = base_definition
+        elif base not in {"esp", "ebp", "rsp", "rbp"}:
+            access["entry_register_pointer"] = {
+                "register": base,
+                "evidence_status": "candidate",
+                "reason": "memory access uses an entry register as a base before a local definition was observed",
+            }
+    access["memory_role"] = _abi_memory_role(access)
+    return access
+
+
+def _abi_field_access_report(access: dict[str, Any]) -> dict[str, Any] | None:
+    addressing = access.get("addressing") if isinstance(access.get("addressing"), dict) else {}
+    base = addressing.get("base")
+    disp = _safe_int(addressing.get("disp"))
+    if not isinstance(base, str) or disp is None:
+        return None
+    if base in {"esp", "ebp", "rsp", "rbp"} and disp == 0:
+        return None
+    return {
+        "evidence_status": "derived",
+        "base": base,
+        "offset": disp,
+        "width": access.get("width"),
+        "access": access.get("access"),
+        "memory_role": access.get("memory_role"),
+        "instruction": access.get("instruction"),
+        "base_register_definition": access.get("base_register_definition") if isinstance(access.get("base_register_definition"), dict) else None,
+    }
+
+
+def _abi_register_out_param_candidates(memory_writes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for write in memory_writes:
+        if not isinstance(write, dict):
+            continue
+        entry_pointer = write.get("entry_register_pointer") if isinstance(write.get("entry_register_pointer"), dict) else None
+        if entry_pointer is None:
+            continue
+        result.append(
+            {
+                "evidence_status": "candidate",
+                "register": entry_pointer.get("register"),
+                "kind": "register_carried_out_param",
+                "reason": "function writes through an entry register pointer before defining that register",
+                "write": write,
+            }
+        )
+    return result
+
+
+def _abi_memory_effect_summary(reads: list[dict[str, Any]], writes: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "evidence_status": "derived",
+        "reads": len([item for item in reads if isinstance(item, dict)]),
+        "writes": len([item for item in writes if isinstance(item, dict)]),
+        "read_roles": _count_by([item for item in reads if isinstance(item, dict)], "memory_role"),
+        "write_roles": _count_by([item for item in writes if isinstance(item, dict)], "memory_role"),
+    }
+
+
+def _abi_switch_contracts(binary: StageABinary, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
+    contracts: list[dict[str, Any]] = []
+    for insn in instructions:
+        mnemonic = str(insn.mnemonic)
+        if mnemonic not in {"jmp", "ljmp"} or len(insn.operands) != 1 or insn.operands[0].type != X86_OP_MEM:
+            continue
+        target = _resolved_branch_target(binary, insn)
+        addressing = _abi_mem_operand_report(insn, insn.operands[0])
+        contracts.append(
+            {
+                "evidence_status": "derived" if target is not None else "incomplete",
+                "kind": "indirect_jump_table_candidate",
+                "block": _range_report(block),
+                "instruction": _instruction_report(binary, insn),
+                "index_expression": addressing,
+                "resolved_target_rva": target,
+                "next_action": "recover table bounds, default edge, and case target mapping before treating this as a source-level switch",
+            }
+        )
+    return contracts
+
+
+def _abi_loop_hints(binary: StageABinary, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
+    hints: list[dict[str, Any]] = []
+    for insn in instructions:
+        target = _resolved_branch_target(binary, insn)
+        if target is None or target >= block.rva_end:
+            continue
+        mnemonic = str(insn.mnemonic)
+        if mnemonic not in {"jmp", "ljmp"} and not _is_conditional_jump(mnemonic):
+            continue
+        hints.append(
+            {
+                "evidence_status": "derived",
+                "kind": "backedge_candidate",
+                "block": _range_report(block),
+                "instruction": _instruction_report(binary, insn),
+                "target_rva": target,
+                "next_action": "derive loop-carried variables and exit conditions before treating this as a full loop contract",
+            }
+        )
+    return hints
 
 
 def _abi_ret_imm(insn: Any) -> int:
@@ -3196,7 +5777,9 @@ def _abi_operand_argument_source(
             "instruction": _instruction_report(binary, insn),
         }
     if operand.type == X86_OP_IMM:
-        return {"kind": "immediate", "value": int(operand.imm), "instruction": _instruction_report(binary, insn)}
+        source = {"kind": "immediate", "value": int(operand.imm), "instruction": _instruction_report(binary, insn)}
+        _abi_attach_immediate_literal(binary, source)
+        return source
     if operand.type == X86_OP_REG:
         return {"kind": "register", "register": insn.reg_name(operand.reg), "instruction": _instruction_report(binary, insn)}
     if operand.type == X86_OP_MEM:
@@ -3208,6 +5791,9 @@ def _abi_operand_argument_source(
             section = _section_for_rva(binary, memory_rva)
             if section is not None:
                 source["memory_section"] = _abi_section_report(section)
+            string_literal = _abi_string_literal_at_rva(binary, memory_rva)
+            if string_literal is not None:
+                source["string_literal"] = string_literal
             imported = _import_for_thunk_rva(binary, memory_rva)
             if imported is not None:
                 source["import"] = _abi_import_report(imported)
@@ -3219,6 +5805,58 @@ def _abi_operand_argument_source(
         source["memory_role"] = _abi_memory_role(source)
         return source
     return {"kind": "unknown", "instruction": _instruction_report(binary, insn)}
+
+
+def _abi_attach_immediate_literal(binary: StageABinary, source: dict[str, Any]) -> None:
+    value = _safe_int(source.get("value"))
+    if value is None:
+        return
+    rva = _abi_value_to_rva(binary, value)
+    if rva is None:
+        return
+    source["memory_rva"] = rva
+    section = _section_for_rva(binary, rva)
+    if section is not None:
+        source["memory_section"] = _abi_section_report(section)
+    string_literal = _abi_string_literal_at_rva(binary, rva)
+    if string_literal is not None:
+        source["string_literal"] = string_literal
+
+
+def _abi_value_to_rva(binary: StageABinary, value: int) -> int | None:
+    if binary.image_base <= value < binary.image_base + binary.size_of_image:
+        return value - binary.image_base
+    if 0 <= value < binary.size_of_image and _section_for_rva(binary, value) is not None:
+        return value
+    return None
+
+
+def _abi_string_literal_at_rva(binary: StageABinary, rva: int) -> dict[str, Any] | None:
+    section = _section_for_rva(binary, rva)
+    if section is None or not section.readable:
+        return None
+    data = binary.pe.get_data(rva, 256)
+    if not data:
+        return None
+    end = data.find(b"\0")
+    if end < 0:
+        return None
+    raw = data[:end]
+    if not raw:
+        return None
+    if any(byte < 0x09 or (0x0E <= byte < 0x20) for byte in raw):
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1", errors="replace")
+    return {
+        "evidence_status": "derived",
+        "rva": rva,
+        "size": len(raw) + 1,
+        "text": text,
+        "sha256": sha256_bytes(raw),
+    }
 
 
 def _abi_attach_register_definition(source: dict[str, Any], register_definitions: dict[str, dict[str, Any]] | None) -> dict[str, Any]:
@@ -3340,15 +5978,18 @@ def _abi_callsite_evidence(
 ) -> dict[str, Any]:
     target = _abi_call_target(binary, insn, register_definitions)
     symbol = str(target.get("symbol") or "")
+    inventory = _abi_call_argument_inventory(binary, argument_sources, register_definitions)
+    varargs = _abi_varargs_evidence(symbol, inventory)
     return {
         "id": f"callsite:{block_id}:{int(insn.address - binary.image_base):x}",
         "block_id": block_id,
         "instruction": _instruction_report(binary, insn),
         "target": target,
         "argument_sources": argument_sources,
+        "argument_inventory": inventory,
         "stack_delta": {"status": "unknown"},
         "hidden_sret_or_out_param_evidence": _abi_hidden_sret_evidence(argument_sources),
-        "varargs_evidence": _abi_varargs_evidence(symbol),
+        "varargs_evidence": varargs,
         "function_pointer_targets": _abi_function_pointer_targets(target),
     }
 
@@ -3517,11 +6158,140 @@ def _abi_address_argument_role(address_source: dict[str, Any]) -> str:
     return "computed_out_param_or_hidden_sret"
 
 
-def _abi_varargs_evidence(symbol: str) -> dict[str, Any]:
+def _abi_call_argument_inventory(
+    binary: StageABinary,
+    argument_sources: list[dict[str, Any]],
+    register_definitions: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any]:
+    ordered_stack_args = list(reversed(argument_sources))
+    stack_args = [
+        {
+            "index": index,
+            "source": source,
+            "role": _abi_argument_role(source),
+        }
+        for index, source in enumerate(ordered_stack_args)
+        if isinstance(source, dict)
+    ]
+    register_args = []
+    for register in _abi_call_register_argument_order(binary):
+        definition = register_definitions.get(register) if isinstance(register_definitions, dict) else None
+        if isinstance(definition, dict):
+            register_args.append({"register": register, "source": definition, "role": _abi_argument_role(definition)})
+    return {
+        "evidence_status": "derived",
+        "stack_args": stack_args,
+        "register_args": register_args,
+        "argument_count": len(stack_args) + len(register_args),
+        "calling_convention": "cdecl_or_stdcall_stack" if binary.bitness == 32 else "x86_64_mixed",
+    }
+
+
+def _abi_call_register_argument_order(binary: StageABinary) -> tuple[str, ...]:
+    return ("rcx", "rdx", "r8", "r9") if binary.bitness == 64 else ()
+
+
+def _abi_argument_role(source: dict[str, Any]) -> str:
+    if source.get("string_literal") is not None:
+        return "string_literal"
+    if source.get("kind") == "address":
+        return _abi_address_argument_role(source)
+    if source.get("kind") == "memory":
+        return str(source.get("memory_role") or "memory")
+    definition = source.get("register_definition") if isinstance(source.get("register_definition"), dict) else None
+    if definition is not None:
+        return _abi_argument_role(definition)
+    return str(source.get("kind") or "unknown")
+
+
+def _abi_varargs_evidence(symbol: str, inventory: dict[str, Any] | None = None) -> dict[str, Any]:
     lower = symbol.lower()
     if any(token in lower for token in ("printf", "fprintf", "sprintf", "scanf", "execl")):
-        return {"status": "candidate", "reason": "known_variadic_symbol"}
+        evidence: dict[str, Any] = {
+            "status": "candidate",
+            "evidence_status": "candidate",
+            "reason": "known_variadic_symbol",
+        }
+        if isinstance(inventory, dict):
+            evidence["format_string"] = _abi_format_string_evidence(lower, inventory)
+        return evidence
     return {"status": "not_observed"}
+
+
+def _abi_format_string_evidence(symbol: str, inventory: dict[str, Any]) -> dict[str, Any]:
+    stack_args = inventory.get("stack_args") if isinstance(inventory.get("stack_args"), list) else []
+    fixed_count = _abi_variadic_fixed_arg_count(symbol)
+    format_arg = stack_args[fixed_count - 1] if fixed_count > 0 and len(stack_args) >= fixed_count else None
+    if not isinstance(format_arg, dict):
+        return {
+            "status": "incomplete",
+            "fixed_arg_count": fixed_count,
+            "reason": "format_argument_not_recovered",
+        }
+    source = format_arg.get("source") if isinstance(format_arg.get("source"), dict) else {}
+    literal = source.get("string_literal") if isinstance(source.get("string_literal"), dict) else None
+    if literal is None:
+        return {
+            "status": "incomplete",
+            "fixed_arg_count": fixed_count,
+            "format_arg_index": fixed_count - 1,
+            "source": source,
+            "reason": "format_argument_is_not_a_static_string_literal",
+        }
+    text = str(literal.get("text") or "")
+    conversions = _abi_printf_conversions(text)
+    return {
+        "status": "derived",
+        "fixed_arg_count": fixed_count,
+        "format_arg_index": fixed_count - 1,
+        "literal": literal,
+        "conversions": conversions,
+        "required_varargs": len(conversions),
+        "observed_varargs": max(0, len(stack_args) - fixed_count),
+        "missing_varargs": max(0, len(conversions) - max(0, len(stack_args) - fixed_count)),
+    }
+
+
+def _abi_variadic_fixed_arg_count(symbol: str) -> int:
+    lower = symbol.lower()
+    if "fprintf" in lower or "sprintf" in lower or "snprintf" in lower:
+        return 2
+    return 1
+
+
+def _abi_printf_conversions(format_text: str) -> list[dict[str, Any]]:
+    conversions: list[dict[str, Any]] = []
+    index = 0
+    length = len(format_text)
+    while index < length:
+        if format_text[index] != "%":
+            index += 1
+            continue
+        start = index
+        index += 1
+        if index < length and format_text[index] == "%":
+            index += 1
+            continue
+        while index < length and format_text[index] in "-+ #0'":
+            index += 1
+        while index < length and (format_text[index].isdigit() or format_text[index] == "*"):
+            if format_text[index] == "*":
+                conversions.append({"offset": start, "specifier": "*", "kind": "dynamic_width"})
+            index += 1
+        if index < length and format_text[index] == ".":
+            index += 1
+            while index < length and (format_text[index].isdigit() or format_text[index] == "*"):
+                if format_text[index] == "*":
+                    conversions.append({"offset": start, "specifier": "*", "kind": "dynamic_precision"})
+                index += 1
+        while index < length and format_text[index] in "hljztL":
+            index += 1
+        if index < length:
+            specifier = format_text[index]
+            if specifier not in "n":
+                conversions.append({"offset": start, "specifier": specifier, "kind": "value"})
+            index += 1
+    return conversions
 
 
 def _abi_function_pointer_targets(target: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3542,7 +6312,7 @@ def _abi_import_prototypes(binary: StageABinary) -> list[dict[str, Any]]:
             "ordinal": item.ordinal,
             "thunk_rva": item.thunk_rva,
             "calling_convention": "stdcall" if item.symbol and "@" in item.symbol else "unknown",
-            "varargs_evidence": _abi_varargs_evidence(item.symbol or ""),
+            "varargs_evidence": _abi_varargs_evidence(item.symbol or "", None),
         }
         for item in binary.imports
     ]
@@ -6439,11 +9209,16 @@ def _symbolic_execute(
     dis.detail = True
     base = binary.image_base + side.rva_start
     registers = {name: ("reg", name) for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")}
-    flags = {name: ("flag", name) for name in ("cf", "zf", "sf", "of")}
+    flags = {name: ("flag", name) for name in ("cf", "zf", "sf", "of", "pf", "df")}
+    fpu_stack: list[tuple[Any, ...]] = [("fpu_reg", index) for index in range(8)]
+    fpu_control: tuple[Any, ...] = ("fpu_control",)
+    fpu_status: tuple[Any, ...] = ("fpu_status",)
+    fpu_touched = False
     outcome: tuple[Any, ...] = ("fallthrough", side.rva_end)
     memory_events: list[tuple[Any, ...]] = []
-    memory_writes: list[tuple[tuple[Any, ...], tuple[Any, ...]]] = []
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]] = []
     external_events: list[tuple[Any, ...]] = []
+    memory_epoch: int | None = None
     terminated = False
 
     instructions = list(dis.disasm(data, base))
@@ -6457,9 +9232,32 @@ def _symbolic_execute(
         if mnemonic == "nop":
             continue
         if mnemonic in {"jmp", "ljmp"}:
+            imported_jump = _external_import_jump(binary, insn)
+            if imported_jump is not None:
+                event_index = len(external_events)
+                external_events.append(
+                    _external_import_call_event(
+                        event_index,
+                        imported_jump,
+                        rva + int(insn.size),
+                        registers,
+                        memory_writes,
+                        auto_inputs=True,
+                    )
+                )
+                outcome = ("external_jump", imported_jump.dll, imported_jump.symbol, imported_jump.ordinal)
+                terminated = True
+                continue
             target = _resolved_branch_target(binary, insn)
             if target is None:
-                return _symbolic_incomplete(binary_name, "unknown_target", rva, mnemonic, insn.op_str, "direct jump target is not resolved")
+                if len(operands) != 1:
+                    return _symbolic_incomplete(binary_name, "unknown_target", rva, mnemonic, insn.op_str, "jump target is not resolved")
+                target_expr = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+                if target_expr is None:
+                    return _symbolic_incomplete(binary_name, "unknown_target", rva, mnemonic, insn.op_str, "jump target expression is not modeled")
+                outcome = ("indirect_jump", target_expr)
+                terminated = True
+                continue
             outcome = ("jump", target)
             terminated = True
             continue
@@ -6480,15 +9278,25 @@ def _symbolic_execute(
             if imported is not None:
                 contract = _external_call_contract(mapped, len(external_events))
                 if contract is None:
-                    return _symbolic_incomplete(
-                        binary_name,
-                        "unmodeled_external_interaction",
-                        rva,
-                        mnemonic,
-                        insn.op_str,
-                        "external call arguments are not declared in the block mapping",
+                    event_index = len(external_events)
+                    external_events.append(
+                        _external_import_call_event(
+                            event_index,
+                            imported,
+                            rva + int(insn.size),
+                            registers,
+                            memory_writes,
+                            auto_inputs=True,
+                        )
                     )
-                args = _external_call_args(insn, contract, registers, memory_events, memory_writes)
+                    memory_writes.clear()
+                    memory_epoch = event_index
+                    for name in registers:
+                        registers[name] = ("call_response", event_index, name)
+                    for name in flags:
+                        flags[name] = ("call_flag", event_index, name)
+                    continue
+                args = _external_call_args(insn, contract, registers, memory_events, memory_writes, memory_epoch=memory_epoch)
                 if args is None:
                     return _symbolic_incomplete(
                         binary_name,
@@ -6513,9 +9321,26 @@ def _symbolic_execute(
                 continue
             target = _resolved_branch_target(binary, insn)
             if target is None:
-                return _symbolic_incomplete(binary_name, "unknown_target", rva, mnemonic, insn.op_str, "indirect call target is not resolved")
-            outcome = ("call", target, rva + int(insn.size))
-            terminated = True
+                target_expr = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+                if target_expr is None:
+                    return _symbolic_incomplete(binary_name, "unknown_target", rva, mnemonic, insn.op_str, "indirect call target expression is not modeled")
+                event_index = len(external_events)
+                external_events.append(_indirect_call_event(event_index, target_expr, rva + int(insn.size), registers, memory_writes))
+                memory_writes.clear()
+                memory_epoch = event_index
+                for name in registers:
+                    registers[name] = ("call_response", event_index, name)
+                for name in flags:
+                    flags[name] = ("call_flag", event_index, name)
+                continue
+            event_index = len(external_events)
+            external_events.append(_internal_call_event(event_index, target, rva + int(insn.size), registers, memory_writes))
+            memory_writes.clear()
+            memory_epoch = event_index
+            for name in registers:
+                registers[name] = ("call_response", event_index, name)
+            for name in flags:
+                flags[name] = ("call_flag", event_index, name)
             continue
         if mnemonic == "ret":
             if len(operands) > 1:
@@ -6525,7 +9350,7 @@ def _symbolic_execute(
                 if operands[0].type != X86_OP_IMM:
                     return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported ret operand")
                 stack_adjust += int(operands[0].imm) & 0xFFFFFFFF
-            outcome = ("return", _memory_read_expr(registers["esp"], memory_events, memory_writes))
+            outcome = ("return", _memory_read_expr(registers["esp"], memory_events, memory_writes, memory_epoch=memory_epoch))
             registers["esp"] = _expr_add(registers["esp"], ("const", stack_adjust))
             terminated = True
             continue
@@ -6534,102 +9359,521 @@ def _symbolic_execute(
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported mov operand shape")
             if operands[0].type == X86_OP_REG:
                 dst = insn.reg_name(operands[0].reg)
-                if dst not in registers:
-                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit general registers are modeled")
-                src = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes)
+                width_bits = _operand_width_bits(insn, operands[0])
+                src = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
                 if src is None:
                     return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported mov source operand")
-                registers[dst] = src
+                if not _write_register_expr(dst, src, registers):
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported mov destination register")
                 continue
             if operands[0].type == X86_OP_MEM:
-                if getattr(operands[0], "size", 4) != 4:
-                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit memory writes are modeled")
+                width_bits = _operand_width_bits(insn, operands[0])
                 address = _mem_address_expr(insn, operands[0], registers)
-                value = _operand_expr(insn, operands[1], registers)
+                value = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
                 if address is None or value is None:
                     return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported mov memory write operand")
-                address = _canonical_expr(address)
-                memory_events.append(("write", ("mem32", address), value))
-                memory_writes.append((address, value))
+                _memory_write_expr(address, width_bits, value, memory_events, memory_writes)
                 continue
             return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported mov destination operand")
+        if mnemonic in {"movzx", "movsx"}:
+            if len(operands) != 2 or operands[0].type != X86_OP_REG:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported movzx/movsx operand shape")
+            dst = insn.reg_name(operands[0].reg)
+            src_width = _operand_width_bits(insn, operands[1])
+            src = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=src_width, memory_epoch=memory_epoch)
+            if src is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported movzx/movsx source operand")
+            value = _expr_mask(src, src_width) if mnemonic == "movzx" else _expr_sign_extend(src, src_width)
+            if not _write_register_expr(dst, value, registers):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported movzx/movsx destination register")
+            continue
         if mnemonic == "push":
             if len(operands) != 1:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported push operand shape")
-            value = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes)
+            value = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, memory_epoch=memory_epoch)
             if value is None:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported push operand")
             new_esp = _expr_sub(registers["esp"], ("const", 4))
-            memory_events.append(("write", ("mem32", new_esp), value))
-            memory_writes.append((_canonical_expr(new_esp), value))
+            _memory_write_expr(new_esp, 32, value, memory_events, memory_writes)
             registers["esp"] = new_esp
             continue
         if mnemonic == "pop":
             if len(operands) != 1 or operands[0].type != X86_OP_REG:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register-destination pop is modeled")
             dst = insn.reg_name(operands[0].reg)
-            if dst not in registers:
+            if not _is_supported_register_name(dst):
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit general registers are modeled")
-            value = _memory_read_expr(registers["esp"], memory_events, memory_writes)
-            registers[dst] = value
+            value = _memory_read_expr(registers["esp"], memory_events, memory_writes, memory_epoch=memory_epoch)
+            if not _write_register_expr(dst, value, registers):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported pop destination register")
             registers["esp"] = _expr_add(registers["esp"], ("const", 4))
             continue
         if mnemonic in {"add", "sub"}:
-            if len(operands) != 2 or operands[0].type != X86_OP_REG:
-                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register-destination arithmetic is modeled")
-            dst = insn.reg_name(operands[0].reg)
-            if dst not in registers:
-                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit general registers are modeled")
-            src = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes)
-            if src is None:
+            if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register/memory-destination arithmetic is modeled")
+            width_bits = _operand_width_bits(insn, operands[0])
+            left = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            src = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            if left is None or src is None:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported arithmetic source operand")
-            left = registers[dst]
             result = _expr_add(left, src) if mnemonic == "add" else _expr_sub(left, src)
-            flags.update(_arithmetic_flags(mnemonic, left, src, result))
-            registers[dst] = result
+            result = _expr_mask(result, width_bits)
+            flags.update(_arithmetic_flags(mnemonic, left, src, result, width_bits=width_bits))
+            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=width_bits):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported arithmetic destination operand")
+            continue
+        if mnemonic in {"adc", "sbb"}:
+            if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register/memory-destination carry arithmetic is modeled")
+            width_bits = _operand_width_bits(insn, operands[0])
+            left = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            src = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            if left is None or src is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported carry arithmetic source operand")
+            carry_bit = _expr_bool_bit(flags["cf"])
+            if mnemonic == "adc":
+                result = _expr_add(_expr_add(left, src), carry_bit)
+            else:
+                result = _expr_sub(_expr_sub(left, src), carry_bit)
+            result = _expr_mask(result, width_bits)
+            flags.update(_carry_arithmetic_flags(mnemonic, left, src, flags["cf"], result, width_bits=width_bits))
+            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=width_bits):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported carry arithmetic destination operand")
+            continue
+        if mnemonic == "imul":
+            if len(operands) == 1:
+                width_bits = _operand_width_bits(insn, operands[0])
+                if width_bits != 32:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit one-operand imul is modeled")
+                src = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+                if src is None:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported imul source operand")
+                left = registers["eax"]
+                low = _expr_imul_low(left, src)
+                high = _expr_imul_high(left, src)
+                registers["eax"] = low
+                registers["edx"] = high
+                flags.update(_undefined_arithmetic_flags("imul", rva, keep={"cf": ("imul_overflow", 32, left, src, low, high), "of": ("imul_overflow", 32, left, src, low, high)}))
+                continue
+            if len(operands) in {2, 3} and operands[0].type == X86_OP_REG:
+                width_bits = _operand_width_bits(insn, operands[0])
+                if width_bits != 32:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit imul destinations are modeled")
+                dst = insn.reg_name(operands[0].reg)
+                left = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+                right = _read_operand_expr(insn, operands[2], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch) if len(operands) == 3 else _read_register_expr(dst, registers)
+                if left is None or right is None:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported imul operand")
+                result = _expr_imul_low(left, right)
+                if not _write_register_expr(dst, result, registers):
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported imul destination register")
+                flags.update(_undefined_arithmetic_flags("imul", rva, keep={"cf": ("imul_overflow", 32, left, right, result, _expr_imul_high(left, right)), "of": ("imul_overflow", 32, left, right, result, _expr_imul_high(left, right))}))
+                continue
+            return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported imul operand shape")
+        if mnemonic == "mul":
+            if len(operands) != 1:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported mul operand shape")
+            width_bits = _operand_width_bits(insn, operands[0])
+            if width_bits != 32:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit mul is modeled")
+            src = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+            if src is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported mul source operand")
+            left = registers["eax"]
+            low = _expr_mul_low(left, src)
+            high = _expr_mul_high(left, src)
+            registers["eax"] = low
+            registers["edx"] = high
+            carry = ("mul_carry", 32, left, src, high)
+            flags.update(_undefined_arithmetic_flags("mul", rva, keep={"cf": carry, "of": carry}))
+            continue
+        if mnemonic == "div":
+            if len(operands) != 1:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported div operand shape")
+            width_bits = _operand_width_bits(insn, operands[0])
+            if width_bits != 32:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit div is modeled")
+            divisor = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+            if divisor is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported div source operand")
+            dividend_high = registers["edx"]
+            dividend_low = registers["eax"]
+            registers["eax"] = ("udiv_quot", dividend_high, dividend_low, divisor)
+            registers["edx"] = ("udiv_rem", dividend_high, dividend_low, divisor)
+            flags.update(_undefined_arithmetic_flags("div", rva))
+            continue
+        if mnemonic == "cdq":
+            if operands:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cdq operand shape")
+            registers["edx"] = _expr_ite(("msb_w", 32, registers["eax"]), ("const", 0xFFFFFFFF), ("const", 0))
+            continue
+        if mnemonic == "cwde":
+            if operands:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cwde operand shape")
+            registers["eax"] = _expr_sign_extend(_read_register_expr("ax", registers) or ("const", 0), 16)
             continue
         if mnemonic == "cmp":
             if len(operands) != 2:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cmp operand shape")
-            left = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes)
-            right = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes)
+            width_bits = _operand_width_bits(insn, operands[0])
+            left = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            right = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
             if left is None or right is None:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cmp operand")
-            flags.update(_arithmetic_flags("sub", left, right, _expr_sub(left, right)))
+            flags.update(_arithmetic_flags("sub", left, right, _expr_sub(left, right), width_bits=width_bits))
             continue
         if mnemonic in {"xor", "and", "or"}:
-            if len(operands) != 2 or operands[0].type != X86_OP_REG:
-                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register-destination logical operations are modeled")
-            dst = insn.reg_name(operands[0].reg)
-            if dst not in registers:
-                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit general registers are modeled")
-            src = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes)
-            if src is None:
+            if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only register/memory-destination logical operations are modeled")
+            width_bits = _operand_width_bits(insn, operands[0])
+            left = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            src = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            if left is None or src is None:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported logical source operand")
-            left = registers[dst]
             result = _logical_result(mnemonic, left, src)
-            flags.update(_logical_flags(result))
-            registers[dst] = result
+            result = _expr_mask(result, width_bits)
+            flags.update(_logical_flags(result, width_bits=width_bits))
+            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=width_bits):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported logical destination operand")
             continue
         if mnemonic == "test":
             if len(operands) != 2:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported test operand shape")
-            left = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes)
-            right = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes)
+            width_bits = _operand_width_bits(insn, operands[0])
+            left = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            right = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
             if left is None or right is None:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported test operand")
-            flags.update(_logical_flags(_expr_and(left, right)))
+            flags.update(_logical_flags(_expr_and(left, right), width_bits=width_bits))
             continue
         if mnemonic == "lea":
             if len(operands) != 2 or operands[0].type != X86_OP_REG or operands[1].type != X86_OP_MEM:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported lea operand shape")
             dst = insn.reg_name(operands[0].reg)
-            if dst not in registers:
+            if not _is_supported_register_name(dst):
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit general registers are modeled")
             src = _mem_address_expr(insn, operands[1], registers)
             if src is None:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported lea address expression")
-            registers[dst] = src
+            if not _write_register_expr(dst, src, registers):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported lea destination register")
+            continue
+        if mnemonic in {"shl", "sal", "shr", "sar"}:
+            if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported shift operand shape")
+            width_bits = _operand_width_bits(insn, operands[0])
+            left = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            count = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=8, memory_epoch=memory_epoch)
+            if left is None or count is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported shift operand")
+            count = _expr_and(count, ("const", 0x1F))
+            if mnemonic in {"shl", "sal"}:
+                result = _expr_shl(left, count)
+            elif mnemonic == "shr":
+                result = _expr_lshr(left, count)
+            else:
+                result = _expr_ashr(_expr_mask(left, width_bits), count, width_bits)
+            result = _expr_mask(result, width_bits)
+            flags.update(_shift_flags(mnemonic, left, count, result, width_bits=width_bits))
+            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=width_bits):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported shift destination operand")
+            continue
+        if mnemonic in {"shld", "shrd"}:
+            if len(operands) != 3 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported double-shift operand shape")
+            width_bits = _operand_width_bits(insn, operands[0])
+            left = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            right = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            count = _read_operand_expr(insn, operands[2], registers, memory_events, memory_writes, width_bits=8, memory_epoch=memory_epoch)
+            if left is None or right is None or count is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported double-shift operand")
+            count = _expr_and(count, ("const", 0x1F))
+            result = _expr_shift_pair(mnemonic, left, right, count, width_bits)
+            flags.update(_shift_flags(mnemonic, left, count, result, width_bits=width_bits))
+            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=width_bits):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported double-shift destination operand")
+            continue
+        if mnemonic in {"bsr", "tzcnt"}:
+            if len(operands) != 2 or operands[0].type != X86_OP_REG:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported bit-scan operand shape")
+            width_bits = _operand_width_bits(insn, operands[0])
+            if width_bits != 32:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit bit-scan destinations are modeled")
+            dst = insn.reg_name(operands[0].reg)
+            src = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+            current = _read_register_expr(dst, registers)
+            if src is None or current is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported bit-scan operand")
+            if mnemonic == "bsr":
+                result = _expr_ite(("eq", src, ("const", 0)), _undefined_bv("bsr-zero-source", rva, dst), ("bsr_index", 32, src))
+                flags.update(_undefined_arithmetic_flags("bsr", rva, keep={"zf": ("eq", src, ("const", 0))}))
+            else:
+                result = ("tzcnt", 32, src)
+                flags.update(_undefined_arithmetic_flags("tzcnt", rva, keep={"cf": ("eq", src, ("const", 0)), "zf": ("eq", result, ("const", 0))}))
+            if not _write_register_expr(dst, result, registers):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported bit-scan destination register")
+            continue
+        if mnemonic in {"movsd", "rep movsd"}:
+            count = 1
+            if mnemonic == "rep movsd":
+                ecx_value = _canonical_expr(registers["ecx"])
+                if not (isinstance(ecx_value, tuple) and len(ecx_value) == 2 and ecx_value[0] == "const"):
+                    event_index = len(external_events)
+                    df = flags.get("df", ("flag", "df"))
+                    external_events.append(("rep_movsd", event_index, registers["edi"], registers["esi"], registers["ecx"], df))
+                    delta = _expr_mul(registers["ecx"], ("const", 4))
+                    signed_delta = _expr_ite(df, _expr_neg(delta), delta)
+                    registers["edi"] = _expr_add(registers["edi"], signed_delta)
+                    registers["esi"] = _expr_add(registers["esi"], signed_delta)
+                    registers["ecx"] = ("const", 0)
+                    memory_writes.clear()
+                    memory_epoch = event_index
+                    continue
+                count = int(ecx_value[1])
+                if count < 0 or count > 64:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "rep movsd count is outside the bounded static unroll limit")
+            step = _expr_ite(flags.get("df", ("flag", "df")), ("const", 0xFFFFFFFC), ("const", 4))
+            src_address = registers["esi"]
+            dst_address = registers["edi"]
+            for _ in range(count):
+                value = _memory_read_expr(src_address, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+                _memory_write_expr(dst_address, 32, value, memory_events, memory_writes)
+                src_address = _expr_add(src_address, step)
+                dst_address = _expr_add(dst_address, step)
+            registers["esi"] = src_address
+            registers["edi"] = dst_address
+            if mnemonic == "rep movsd":
+                registers["ecx"] = ("const", 0)
+            continue
+        if mnemonic in {"cmpxchg", "lock cmpxchg"}:
+            if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cmpxchg operand shape")
+            width_bits = _operand_width_bits(insn, operands[0])
+            dst_value = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            src_value = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            eax_value = _read_register_expr("eax", registers)
+            if dst_value is None or src_value is None or eax_value is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cmpxchg operand")
+            compare_left = _expr_mask(eax_value, width_bits)
+            compare_right = _expr_mask(dst_value, width_bits)
+            equal = ("eq", compare_left, compare_right)
+            flags.update(_arithmetic_flags("sub", compare_left, compare_right, _expr_sub(compare_left, compare_right), width_bits=width_bits))
+            flags["zf"] = equal
+            if not _write_operand_expr(insn, operands[0], _expr_ite(equal, src_value, dst_value), registers, memory_events, memory_writes, width_bits=width_bits):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cmpxchg destination")
+            if not _write_register_expr("eax", _expr_ite(equal, eax_value, dst_value), registers):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cmpxchg eax update")
+            continue
+        if mnemonic == "wait":
+            continue
+        if mnemonic in {
+            "fld",
+            "fld1",
+            "fldz",
+            "fild",
+            "fst",
+            "fstp",
+            "fist",
+            "fistp",
+            "fisttp",
+            "fadd",
+            "faddp",
+            "fsub",
+            "fsubp",
+            "fsubr",
+            "fsubrp",
+            "fmul",
+            "fmulp",
+            "fdiv",
+            "fdivp",
+            "fdivr",
+            "fdivrp",
+            "fxch",
+            "fchs",
+            "fxam",
+            "fnstcw",
+            "fldcw",
+            "fnstsw",
+            "fcomi",
+            "fcomip",
+            "fucomi",
+            "fucomip",
+            "fcompi",
+            "fucompi",
+            "fninit",
+        }:
+            fpu_touched = True
+            if mnemonic == "fninit":
+                fpu_stack = [("fpu_reg", index) for index in range(8)]
+                fpu_control = ("fpu_control_init",)
+                fpu_status = ("fpu_status_init",)
+                continue
+            if mnemonic == "fld1":
+                _x87_push(fpu_stack, ("fpu_const", "1"))
+                continue
+            if mnemonic == "fldz":
+                _x87_push(fpu_stack, ("fpu_const", "0"))
+                continue
+            if mnemonic in {"fld", "fild"}:
+                if len(operands) != 1:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported x87 load operand shape")
+                value = _x87_operand_value(
+                    insn,
+                    operands[0],
+                    registers,
+                    memory_events,
+                    memory_writes,
+                    fpu_stack,
+                    memory_epoch=memory_epoch,
+                    integer=mnemonic == "fild",
+                )
+                if value is None:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported x87 load operand")
+                _x87_push(fpu_stack, value)
+                continue
+            if mnemonic in {"fst", "fstp", "fist", "fistp", "fisttp"}:
+                if len(operands) != 1:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported x87 store operand shape")
+                value = fpu_stack[0]
+                if operands[0].type == X86_OP_MEM:
+                    if not _x87_store_memory(
+                        insn,
+                        operands[0],
+                        value,
+                        fpu_control,
+                        registers,
+                        memory_events,
+                        memory_writes,
+                        integer=mnemonic in {"fist", "fistp", "fisttp"},
+                    ):
+                        return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported x87 memory store")
+                else:
+                    index = _x87_st_index(insn.op_str)
+                    if index is None or index >= len(fpu_stack):
+                        return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported x87 register store")
+                    fpu_stack[index] = value
+                if mnemonic in {"fstp", "fistp", "fisttp"}:
+                    _x87_pop(fpu_stack)
+                continue
+            if mnemonic in {"fadd", "fsub", "fsubr", "fmul", "fdiv", "fdivr"}:
+                value = fpu_stack[0]
+                if operands:
+                    value = _x87_operand_value(insn, operands[0], registers, memory_events, memory_writes, fpu_stack, memory_epoch=memory_epoch)
+                    if value is None:
+                        return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported x87 arithmetic operand")
+                op = mnemonic[1:]
+                if mnemonic in {"fsubr", "fdivr"}:
+                    fpu_stack[0] = _x87_binary(op, value, fpu_stack[0])
+                else:
+                    fpu_stack[0] = _x87_binary(op, fpu_stack[0], value)
+                continue
+            if mnemonic in {"faddp", "fsubp", "fsubrp", "fmulp", "fdivp", "fdivrp"}:
+                index = _x87_st_index(insn.op_str) if insn.op_str else 1
+                if index is None or index <= 0 or index >= len(fpu_stack):
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported x87 pop arithmetic operand")
+                base_op = mnemonic[1:].removesuffix("p")
+                if mnemonic in {"fsubrp", "fdivrp"}:
+                    fpu_stack[index] = _x87_binary(base_op, fpu_stack[0], fpu_stack[index])
+                else:
+                    fpu_stack[index] = _x87_binary(base_op, fpu_stack[index], fpu_stack[0])
+                _x87_pop(fpu_stack)
+                continue
+            if mnemonic == "fxch":
+                index = _x87_st_index(insn.op_str)
+                if index is None or index >= len(fpu_stack):
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported fxch operand")
+                fpu_stack[0], fpu_stack[index] = fpu_stack[index], fpu_stack[0]
+                continue
+            if mnemonic == "fchs":
+                fpu_stack[0] = ("fpu_neg", _canonical_expr(fpu_stack[0]))
+                continue
+            if mnemonic == "fxam":
+                fpu_status = ("fpu_fxam", _canonical_expr(fpu_stack[0]))
+                continue
+            if mnemonic == "fnstcw":
+                if len(operands) != 1 or operands[0].type != X86_OP_MEM:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported fnstcw operand")
+                address = _mem_address_expr(insn, operands[0], registers)
+                if address is None:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported fnstcw address")
+                _memory_write_expr(address, 16, ("fpu_control_word", fpu_control), memory_events, memory_writes)
+                continue
+            if mnemonic == "fldcw":
+                if len(operands) != 1:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported fldcw operand")
+                value = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=16, memory_epoch=memory_epoch)
+                if value is None:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported fldcw source")
+                fpu_control = ("fpu_control_load", value)
+                continue
+            if mnemonic == "fnstsw":
+                if insn.op_str.strip().lower() != "ax":
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only fnstsw ax is modeled")
+                if not _write_register_expr("ax", ("fpu_status_word", fpu_status), registers):
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported fnstsw destination")
+                continue
+            if mnemonic in {"fcomi", "fcomip", "fucomi", "fucomip", "fcompi", "fucompi"}:
+                index = _x87_st_index(insn.op_str) if insn.op_str else 1
+                if index is None or index >= len(fpu_stack):
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported x87 compare operand")
+                left = _canonical_expr(fpu_stack[0])
+                right = _canonical_expr(fpu_stack[index])
+                flags["cf"] = ("fpu_cmp_cf", left, right)
+                flags["zf"] = ("fpu_cmp_zf", left, right)
+                flags["pf"] = ("fpu_cmp_pf", left, right)
+                flags["of"] = ("false",)
+                flags["sf"] = ("false",)
+                if mnemonic in {"fcomip", "fucomip", "fcompi", "fucompi"}:
+                    _x87_pop(fpu_stack)
+                continue
+        if mnemonic in {"not", "neg"}:
+            if len(operands) != 1 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported unary operand shape")
+            width_bits = _operand_width_bits(insn, operands[0])
+            value = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            if value is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported unary operand")
+            result = _expr_mask(_expr_not(value) if mnemonic == "not" else _expr_neg(value), width_bits)
+            if mnemonic == "neg":
+                flags.update(_arithmetic_flags("sub", ("const", 0), value, result, width_bits=width_bits))
+            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=width_bits):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported unary destination operand")
+            continue
+        if mnemonic.startswith("set"):
+            if len(operands) != 1 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported setcc operand shape")
+            condition = _setcc_condition(mnemonic, flags)
+            if condition is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported setcc condition")
+            value = _expr_ite(condition, ("const", 1), ("const", 0))
+            if not _write_operand_expr(insn, operands[0], value, registers, memory_events, memory_writes, width_bits=8):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported setcc destination operand")
+            continue
+        if mnemonic.startswith("cmov"):
+            if len(operands) != 2 or operands[0].type != X86_OP_REG:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cmovcc operand shape")
+            width_bits = _operand_width_bits(insn, operands[0])
+            dst = insn.reg_name(operands[0].reg)
+            current = _read_register_expr(dst, registers)
+            src = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            condition = _setcc_condition("set" + mnemonic[4:], flags)
+            if current is None or src is None or condition is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cmovcc operand")
+            if not _write_register_expr(dst, _expr_ite(condition, src, current), registers):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported cmovcc destination register")
+            continue
+        if mnemonic == "xchg":
+            if len(operands) != 2:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported xchg operand shape")
+            width_bits = _operand_width_bits(insn, operands[0])
+            left = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            right = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+            if left is None or right is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported xchg operand")
+            if not _write_operand_expr(insn, operands[0], right, registers, memory_events, memory_writes, width_bits=width_bits):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported xchg first destination")
+            if not _write_operand_expr(insn, operands[1], left, registers, memory_events, memory_writes, width_bits=width_bits):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported xchg second destination")
             continue
 
         return _symbolic_incomplete(
@@ -6647,6 +9891,10 @@ def _symbolic_execute(
     observables["outcome"] = _canonical_expr(outcome)
     observables["memory_events"] = tuple(_canonical_expr(event) for event in memory_events)
     observables["external_events"] = tuple(_canonical_expr(event) for event in external_events)
+    if fpu_touched:
+        observables["fpu_stack"] = tuple(_canonical_expr(item) for item in fpu_stack)
+        observables["fpu_control"] = _canonical_expr(fpu_control)
+        observables["fpu_status"] = _canonical_expr(fpu_status)
     return {"status": "ok", "observables": observables}
 
 
@@ -6690,6 +9938,7 @@ def _branch_condition(mnemonic: str, flags: dict[str, tuple[Any, ...]]) -> tuple
     zf = flags["zf"]
     sf = flags["sf"]
     of = flags["of"]
+    pf = flags.get("pf", ("flag", "pf"))
     conditions = {
         "ja": _bool_and(_bool_not(cf), _bool_not(zf)),
         "jnbe": _bool_and(_bool_not(cf), _bool_not(zf)),
@@ -6715,33 +9964,50 @@ def _branch_condition(mnemonic: str, flags: dict[str, tuple[Any, ...]]) -> tuple
         "jng": _bool_or(zf, _bool_xor(sf, of)),
         "jno": _bool_not(of),
         "jo": of,
+        "jp": pf,
+        "jpe": pf,
+        "jnp": _bool_not(pf),
+        "jpo": _bool_not(pf),
         "jns": _bool_not(sf),
         "js": sf,
     }
     return conditions.get(mnemonic)
 
 
-def _arithmetic_flags(operator: str, left: tuple[Any, ...], right: tuple[Any, ...], result: tuple[Any, ...]) -> dict[str, tuple[Any, ...]]:
+def _arithmetic_flags(
+    operator: str,
+    left: tuple[Any, ...],
+    right: tuple[Any, ...],
+    result: tuple[Any, ...],
+    *,
+    width_bits: int = 32,
+) -> dict[str, tuple[Any, ...]]:
+    left = _expr_mask(left, width_bits)
+    right = _expr_mask(right, width_bits)
+    result = _expr_mask(result, width_bits)
     if operator == "add":
         cf = ("ult", result, left)
-        of = ("add_overflow", left, right, result)
+        of = ("add_overflow_w", width_bits, left, right, result)
     else:
         cf = ("ult", left, right)
-        of = ("sub_overflow", left, right, result)
+        of = ("sub_overflow_w", width_bits, left, right, result)
     return {
         "cf": cf,
         "zf": ("eq", result, ("const", 0)),
-        "sf": ("msb", result),
+        "sf": ("msb_w", width_bits, result),
         "of": of,
+        "pf": ("parity", width_bits, result),
     }
 
 
-def _logical_flags(result: tuple[Any, ...]) -> dict[str, tuple[Any, ...]]:
+def _logical_flags(result: tuple[Any, ...], *, width_bits: int = 32) -> dict[str, tuple[Any, ...]]:
+    result = _expr_mask(result, width_bits)
     return {
         "cf": ("false",),
         "zf": ("eq", result, ("const", 0)),
-        "sf": ("msb", result),
+        "sf": ("msb_w", width_bits, result),
         "of": ("false",),
+        "pf": ("parity", width_bits, result),
     }
 
 
@@ -6753,6 +10019,112 @@ def _logical_result(operator: str, left: tuple[Any, ...], right: tuple[Any, ...]
     if operator == "or":
         return _expr_or(left, right)
     raise StageAInputError(f"unsupported logical operator {operator!r}")
+
+
+def _carry_arithmetic_flags(
+    operator: str,
+    left: tuple[Any, ...],
+    right: tuple[Any, ...],
+    carry: tuple[Any, ...],
+    result: tuple[Any, ...],
+    *,
+    width_bits: int,
+) -> dict[str, tuple[Any, ...]]:
+    left = _expr_mask(left, width_bits)
+    right = _expr_mask(right, width_bits)
+    carry_bit = _expr_mask(_expr_bool_bit(carry), width_bits)
+    result = _expr_mask(result, width_bits)
+    if operator == "adc":
+        return {
+            "cf": ("adc_carry", width_bits, left, right, carry_bit, result),
+            "zf": ("eq", result, ("const", 0)),
+            "sf": ("msb_w", width_bits, result),
+            "of": ("adc_overflow", width_bits, left, right, carry_bit, result),
+            "pf": ("parity", width_bits, result),
+        }
+    return {
+        "cf": ("sbb_borrow", width_bits, left, right, carry_bit, result),
+        "zf": ("eq", result, ("const", 0)),
+        "sf": ("msb_w", width_bits, result),
+        "of": ("sbb_overflow", width_bits, left, right, carry_bit, result),
+        "pf": ("parity", width_bits, result),
+    }
+
+
+def _shift_flags(
+    mnemonic: str,
+    left: tuple[Any, ...],
+    count: tuple[Any, ...],
+    result: tuple[Any, ...],
+    *,
+    width_bits: int,
+) -> dict[str, tuple[Any, ...]]:
+    result = _expr_mask(result, width_bits)
+    return {
+        "cf": ("shift_cf", mnemonic, width_bits, _expr_mask(left, width_bits), count),
+        "zf": ("eq", result, ("const", 0)),
+        "sf": ("msb_w", width_bits, result),
+        "of": ("shift_of", mnemonic, width_bits, _expr_mask(left, width_bits), count, result),
+    }
+
+
+def _undefined_flag(reason: str, rva: int, name: str) -> tuple[Any, ...]:
+    return ("undefined_flag", reason, f"{rva:x}:{name}")
+
+
+def _undefined_bv(reason: str, rva: int, name: str) -> tuple[Any, ...]:
+    return ("undefined_bv", reason, f"{rva:x}:{name}")
+
+
+def _undefined_arithmetic_flags(reason: str, rva: int, *, keep: dict[str, tuple[Any, ...]] | None = None) -> dict[str, tuple[Any, ...]]:
+    keep = keep or {}
+    return {name: keep.get(name, _undefined_flag(reason, rva, name)) for name in ("cf", "zf", "sf", "of", "pf")}
+
+
+def _setcc_condition(mnemonic: str, flags: dict[str, tuple[Any, ...]]) -> tuple[Any, ...] | None:
+    suffix = mnemonic[3:] if mnemonic.startswith("set") else mnemonic
+    aliases = {
+        "e": "z",
+        "ne": "nz",
+        "nae": "b",
+        "c": "b",
+        "nb": "ae",
+        "nc": "ae",
+        "be": "be",
+        "na": "be",
+        "nbe": "a",
+        "nge": "l",
+        "nl": "ge",
+        "ng": "le",
+        "nle": "g",
+        "pe": "p",
+        "po": "np",
+    }
+    key = aliases.get(suffix, suffix)
+    zf = flags["zf"]
+    cf = flags["cf"]
+    sf = flags["sf"]
+    of = flags["of"]
+    pf = flags.get("pf", ("flag", "pf"))
+    conditions = {
+        "z": zf,
+        "nz": _bool_not(zf),
+        "a": _bool_and(_bool_not(cf), _bool_not(zf)),
+        "ae": _bool_not(cf),
+        "b": cf,
+        "be": _bool_or(cf, zf),
+        "g": _bool_and(_bool_not(zf), _bool_eq(sf, of)),
+        "ge": _bool_eq(sf, of),
+        "l": _bool_xor(sf, of),
+        "le": _bool_or(zf, _bool_xor(sf, of)),
+        "o": of,
+        "no": _bool_not(of),
+        "s": sf,
+        "ns": _bool_not(sf),
+        "p": pf,
+        "np": _bool_not(pf),
+    }
+    return conditions.get(key)
 
 
 def _run_z3_equivalence(
@@ -6961,8 +10333,33 @@ def _is_bv_expr(value: Any) -> bool:
         "xor",
         "and",
         "or",
+        "bvnot",
+        "neg",
+        "shl",
+        "lshr",
+        "ashr",
+        "sext",
+        "ite",
         "mem32",
+        "mem",
         "env_response",
+        "call_response",
+        "call_mem",
+        "bool_bit",
+        "undefined_bv",
+        "imul_low",
+        "imul_high",
+        "mul_low",
+        "mul_high",
+        "udiv_quot",
+        "udiv_rem",
+        "bsr_index",
+        "tzcnt",
+        "fpu_bits_lo",
+        "fpu_bits_hi",
+        "fpu_int32",
+        "fpu_status_word",
+        "fpu_control_word",
     }
 
 
@@ -6979,8 +10376,25 @@ def _is_bool_expr(value: Any) -> bool:
         "eq",
         "ult",
         "msb",
+        "msb_w",
         "add_overflow",
         "sub_overflow",
+        "add_overflow_w",
+        "sub_overflow_w",
+        "call_flag",
+        "shift_cf",
+        "shift_of",
+        "undefined_flag",
+        "adc_carry",
+        "adc_overflow",
+        "sbb_borrow",
+        "sbb_overflow",
+        "imul_overflow",
+        "mul_carry",
+        "parity",
+        "fpu_cmp_cf",
+        "fpu_cmp_zf",
+        "fpu_cmp_pf",
     }
 
 
@@ -6999,6 +10413,32 @@ def _bool_to_z3(expr: Any, context: dict[str, Any]) -> Any:
         if name not in flags:
             flags[name] = z3.Bool(f"pre_flag_{name}")
         return flags[name]
+    if op == "call_flag":
+        key = (int(expr[1]), str(expr[2]))
+        flags = context.setdefault("call_flags", {})
+        if key not in flags:
+            flags[key] = z3.Bool(f"call_{key[0]}_{_z3_symbol_part(key[1])}")
+        return flags[key]
+    if op in {"shift_cf", "shift_of"}:
+        key = _z3_symbol_part(repr(_canonical_expr(expr)))
+        flags = context.setdefault("shift_flags", {})
+        if key not in flags:
+            flags[key] = z3.Bool(f"{op}_{key}")
+        return flags[key]
+    if op == "undefined_flag":
+        key = (str(expr[1]), str(expr[2]))
+        flags = context.setdefault("undefined_flags", {})
+        if key not in flags:
+            flags[key] = z3.Bool(f"undef_flag_{_z3_symbol_part(key[0])}_{_z3_symbol_part(key[1])}")
+        return flags[key]
+    if op in {"adc_carry", "adc_overflow", "sbb_borrow", "sbb_overflow", "imul_overflow", "mul_carry", "parity"}:
+        return _uninterpreted_bool_to_z3(op, expr[1:], context)
+    if op in {"fpu_cmp_cf", "fpu_cmp_zf", "fpu_cmp_pf"}:
+        key = _z3_symbol_part(repr(_canonical_expr(expr)))
+        flags = context.setdefault("fpu_cmp_flags", {})
+        if key not in flags:
+            flags[key] = z3.Bool(f"{op}_{key}")
+        return flags[key]
     if op == "not":
         return z3.Not(_bool_to_z3(expr[1], context))
     if op == "bool_and":
@@ -7021,6 +10461,10 @@ def _bool_to_z3(expr: Any, context: dict[str, Any]) -> Any:
         return z3.ULT(_expr_to_z3(expr[1], context), _expr_to_z3(expr[2], context))
     if op == "msb":
         return z3.Extract(31, 31, _expr_to_z3(expr[1], context)) == z3.BitVecVal(1, 1)
+    if op == "msb_w":
+        width = int(expr[1])
+        bit = max(0, min(31, width - 1))
+        return z3.Extract(bit, bit, _expr_to_z3(expr[2], context)) == z3.BitVecVal(1, 1)
     if op == "add_overflow":
         left = _expr_to_z3(expr[1], context)
         right = _expr_to_z3(expr[2], context)
@@ -7029,6 +10473,16 @@ def _bool_to_z3(expr: Any, context: dict[str, Any]) -> Any:
             z3.Extract(31, 31, left) == z3.Extract(31, 31, right),
             z3.Extract(31, 31, left) != z3.Extract(31, 31, result),
         )
+    if op == "add_overflow_w":
+        width = int(expr[1])
+        bit = max(0, min(31, width - 1))
+        left = _expr_to_z3(expr[2], context)
+        right = _expr_to_z3(expr[3], context)
+        result = _expr_to_z3(expr[4], context)
+        return z3.And(
+            z3.Extract(bit, bit, left) == z3.Extract(bit, bit, right),
+            z3.Extract(bit, bit, left) != z3.Extract(bit, bit, result),
+        )
     if op == "sub_overflow":
         left = _expr_to_z3(expr[1], context)
         right = _expr_to_z3(expr[2], context)
@@ -7036,6 +10490,16 @@ def _bool_to_z3(expr: Any, context: dict[str, Any]) -> Any:
         return z3.And(
             z3.Extract(31, 31, left) != z3.Extract(31, 31, right),
             z3.Extract(31, 31, left) != z3.Extract(31, 31, result),
+        )
+    if op == "sub_overflow_w":
+        width = int(expr[1])
+        bit = max(0, min(31, width - 1))
+        left = _expr_to_z3(expr[2], context)
+        right = _expr_to_z3(expr[3], context)
+        result = _expr_to_z3(expr[4], context)
+        return z3.And(
+            z3.Extract(bit, bit, left) != z3.Extract(bit, bit, right),
+            z3.Extract(bit, bit, left) != z3.Extract(bit, bit, result),
         )
     raise StageAInputError(f"unsupported SMT boolean expression operator {op!r}")
 
@@ -7058,6 +10522,20 @@ def _expr_to_z3(expr: Any, context: dict[str, Any]) -> Any:
         if index not in responses:
             responses[index] = z3.BitVec(f"env_response_{index}", 32)
         return responses[index]
+    if op == "call_response":
+        key = (int(expr[1]), str(expr[2]))
+        responses = context.setdefault("call_responses", {})
+        if key not in responses:
+            responses[key] = z3.BitVec(f"call_{key[0]}_{_z3_symbol_part(key[1])}", 32)
+        return responses[key]
+    if op == "bool_bit":
+        return z3.If(_bool_to_z3(expr[1], context), z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+    if op == "undefined_bv":
+        key = (str(expr[1]), str(expr[2]))
+        values = context.setdefault("undefined_bv", {})
+        if key not in values:
+            values[key] = z3.BitVec(f"undef_{_z3_symbol_part(key[0])}_{_z3_symbol_part(key[1])}", 32)
+        return values[key]
     if op == "add":
         result = z3.BitVecVal(0, 32)
         for part in expr[1:]:
@@ -7076,9 +10554,90 @@ def _expr_to_z3(expr: Any, context: dict[str, Any]) -> Any:
         return _expr_to_z3(expr[1], context) & _expr_to_z3(expr[2], context)
     if op == "or":
         return _expr_to_z3(expr[1], context) | _expr_to_z3(expr[2], context)
+    if op == "bvnot":
+        return ~_expr_to_z3(expr[1], context)
+    if op == "neg":
+        return -_expr_to_z3(expr[1], context)
+    if op == "shl":
+        return _expr_to_z3(expr[1], context) << _expr_to_z3(expr[2], context)
+    if op == "lshr":
+        return z3.LShR(_expr_to_z3(expr[1], context), _expr_to_z3(expr[2], context))
+    if op == "ashr":
+        return _expr_to_z3(expr[2], context) >> _expr_to_z3(expr[3], context)
+    if op == "sext":
+        width = int(expr[1])
+        value = _expr_to_z3(expr[2], context)
+        if width >= 32:
+            return value
+        return z3.SignExt(32 - width, z3.Extract(width - 1, 0, value))
+    if op == "ite":
+        return z3.If(_bool_to_z3(expr[1], context), _expr_to_z3(expr[2], context), _expr_to_z3(expr[3], context))
     if op == "mem32":
         return context["memory"](_expr_to_z3(expr[1], context))
+    if op == "mem":
+        width = int(expr[1])
+        memories = context.setdefault("memories", {})
+        if width not in memories:
+            memories[width] = z3.Function(f"mem{width}", z3.BitVecSort(32), z3.BitVecSort(width))
+        value = memories[width](_expr_to_z3(expr[2], context))
+        return value if width == 32 else z3.ZeroExt(32 - width, value)
+    if op == "call_mem":
+        event_index = int(expr[1])
+        width = int(expr[2])
+        memories = context.setdefault("call_memories", {})
+        key = (event_index, width)
+        if key not in memories:
+            memories[key] = z3.Function(f"call_mem_{event_index}_{width}", z3.BitVecSort(32), z3.BitVecSort(width))
+        value = memories[key](_expr_to_z3(expr[3], context))
+        return value if width == 32 else z3.ZeroExt(32 - width, value)
+    if op in {"imul_low", "imul_high", "mul_low", "mul_high", "udiv_quot", "udiv_rem", "bsr_index", "tzcnt"}:
+        return _uninterpreted_bv_to_z3(op, expr[1:], context)
+    if op in {"fpu_bits_lo", "fpu_bits_hi", "fpu_int32", "fpu_status_word", "fpu_control_word"}:
+        key = _z3_symbol_part(repr(_canonical_expr(expr)))
+        values = context.setdefault("fpu_bv_values", {})
+        if key not in values:
+            values[key] = z3.BitVec(f"{op}_{key}", 32)
+        return values[key]
     raise StageAInputError(f"unsupported SMT expression operator {op!r}")
+
+
+def _z3_symbol_part(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in value.lower()).strip("_")
+    if cleaned and len(cleaned) <= 48:
+        return cleaned
+    return sha256_bytes(value.encode("utf-8"))[:16]
+
+
+def _uninterpreted_bv_to_z3(op: str, args: tuple[Any, ...], context: dict[str, Any]) -> Any:
+    z3 = context["z3"]
+    key = (op, len(args))
+    functions = context.setdefault("uninterpreted_bv_functions", {})
+    if key not in functions:
+        functions[key] = z3.Function(
+            f"bv_{_z3_symbol_part(op)}_{len(args)}",
+            *([z3.BitVecSort(32)] * len(args)),
+            z3.BitVecSort(32),
+        )
+    return functions[key](*[_z3_bv_arg(arg, context) for arg in args])
+
+
+def _uninterpreted_bool_to_z3(op: str, args: tuple[Any, ...], context: dict[str, Any]) -> Any:
+    z3 = context["z3"]
+    key = (op, len(args))
+    functions = context.setdefault("uninterpreted_bool_functions", {})
+    if key not in functions:
+        functions[key] = z3.Function(
+            f"bool_{_z3_symbol_part(op)}_{len(args)}",
+            *([z3.BitVecSort(32)] * len(args)),
+            z3.BoolSort(),
+        )
+    return functions[key](*[_z3_bv_arg(arg, context) for arg in args])
+
+
+def _z3_bv_arg(arg: Any, context: dict[str, Any]) -> Any:
+    if isinstance(arg, int):
+        return context["z3"].BitVecVal(arg & 0xFFFFFFFF, 32)
+    return _expr_to_z3(arg, context)
 
 
 def _z3_mismatches(comparisons: list[dict[str, Any]], model: Any, z3: Any) -> list[dict[str, Any]]:
@@ -7159,12 +10718,94 @@ def _symbolic_incomplete(binary_name: str, category: str, rva: int, mnemonic: st
     }
 
 
-def _operand_expr(insn: Any, operand: Any, registers: dict[str, tuple[Any, ...]]) -> tuple[Any, ...] | None:
+_X86_REGISTER_PARTS: dict[str, tuple[str, int, int]] = {
+    "eax": ("eax", 0, 32),
+    "ax": ("eax", 0, 16),
+    "al": ("eax", 0, 8),
+    "ah": ("eax", 8, 8),
+    "ebx": ("ebx", 0, 32),
+    "bx": ("ebx", 0, 16),
+    "bl": ("ebx", 0, 8),
+    "bh": ("ebx", 8, 8),
+    "ecx": ("ecx", 0, 32),
+    "cx": ("ecx", 0, 16),
+    "cl": ("ecx", 0, 8),
+    "ch": ("ecx", 8, 8),
+    "edx": ("edx", 0, 32),
+    "dx": ("edx", 0, 16),
+    "dl": ("edx", 0, 8),
+    "dh": ("edx", 8, 8),
+    "esi": ("esi", 0, 32),
+    "si": ("esi", 0, 16),
+    "edi": ("edi", 0, 32),
+    "di": ("edi", 0, 16),
+    "ebp": ("ebp", 0, 32),
+    "bp": ("ebp", 0, 16),
+    "esp": ("esp", 0, 32),
+    "sp": ("esp", 0, 16),
+}
+
+
+def _is_supported_register_name(name: str) -> bool:
+    return name.lower() in _X86_REGISTER_PARTS
+
+
+def _operand_width_bits(insn: Any, operand: Any) -> int:
+    if operand.type == X86_OP_REG:
+        name = insn.reg_name(operand.reg).lower()
+        part = _X86_REGISTER_PARTS.get(name)
+        if part is not None:
+            return part[2]
+    size = int(getattr(operand, "size", 0) or 0)
+    return max(1, size) * 8 if size else 32
+
+
+def _read_register_expr(name: str, registers: dict[str, tuple[Any, ...]]) -> tuple[Any, ...] | None:
+    part = _X86_REGISTER_PARTS.get(name.lower())
+    if part is None:
+        return None
+    base, offset, width = part
+    value = registers.get(base)
+    if value is None:
+        return None
+    if offset:
+        value = _expr_lshr(value, ("const", offset))
+    return _expr_mask(value, width)
+
+
+def _write_register_expr(name: str, value: tuple[Any, ...], registers: dict[str, tuple[Any, ...]]) -> bool:
+    part = _X86_REGISTER_PARTS.get(name.lower())
+    if part is None:
+        return False
+    base, offset, width = part
+    value = _expr_mask(value, width)
+    if width == 32 and offset == 0:
+        registers[base] = value
+        return True
+    current = registers.get(base)
+    if current is None:
+        return False
+    field_mask = ((1 << width) - 1) << offset
+    clear_mask = (~field_mask) & 0xFFFFFFFF
+    shifted = _expr_shl(value, ("const", offset)) if offset else value
+    registers[base] = _expr_or(_expr_and(current, ("const", clear_mask)), shifted)
+    return True
+
+
+def _operand_expr(
+    insn: Any,
+    operand: Any,
+    registers: dict[str, tuple[Any, ...]],
+    *,
+    width_bits: int | None = None,
+) -> tuple[Any, ...] | None:
+    width_bits = width_bits or _operand_width_bits(insn, operand)
     if operand.type == X86_OP_IMM:
-        return ("const", int(operand.imm) & 0xFFFFFFFF)
+        return _expr_mask(("const", int(operand.imm) & 0xFFFFFFFF), width_bits)
     if operand.type == X86_OP_REG:
         name = insn.reg_name(operand.reg)
-        return registers.get(name)
+        value = _read_register_expr(name, registers)
+        return _expr_mask(value, width_bits) if value is not None else None
     return None
 
 
@@ -7173,32 +10814,82 @@ def _read_operand_expr(
     operand: Any,
     registers: dict[str, tuple[Any, ...]],
     memory_events: list[tuple[Any, ...]],
-    memory_writes: list[tuple[tuple[Any, ...], tuple[Any, ...]]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+    *,
+    width_bits: int | None = None,
+    memory_epoch: int | None = None,
 ) -> tuple[Any, ...] | None:
-    value = _operand_expr(insn, operand, registers)
+    width_bits = width_bits or _operand_width_bits(insn, operand)
+    value = _operand_expr(insn, operand, registers, width_bits=width_bits)
     if value is not None:
         return value
     if operand.type != X86_OP_MEM:
         return None
-    if getattr(operand, "size", 4) != 4:
-        return None
     address = _mem_address_expr(insn, operand, registers)
     if address is None:
         return None
-    return _memory_read_expr(address, memory_events, memory_writes)
+    return _memory_read_expr(address, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+
+
+def _write_operand_expr(
+    insn: Any,
+    operand: Any,
+    value: tuple[Any, ...],
+    registers: dict[str, tuple[Any, ...]],
+    memory_events: list[tuple[Any, ...]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+    *,
+    width_bits: int | None = None,
+) -> bool:
+    width_bits = width_bits or _operand_width_bits(insn, operand)
+    if operand.type == X86_OP_REG:
+        return _write_register_expr(insn.reg_name(operand.reg), value, registers)
+    if operand.type == X86_OP_MEM:
+        address = _mem_address_expr(insn, operand, registers)
+        if address is None:
+            return False
+        _memory_write_expr(address, width_bits, value, memory_events, memory_writes)
+        return True
+    return False
+
+
+def _memory_expr(width_bits: int, address: tuple[Any, ...]) -> tuple[Any, ...]:
+    return ("mem32", address) if width_bits == 32 else ("mem", width_bits, address)
+
+
+def _memory_epoch_expr(width_bits: int, address: tuple[Any, ...], memory_epoch: int | None) -> tuple[Any, ...]:
+    if memory_epoch is None:
+        return _memory_expr(width_bits, address)
+    return ("call_mem", int(memory_epoch), width_bits, address)
 
 
 def _memory_read_expr(
     address: tuple[Any, ...],
     memory_events: list[tuple[Any, ...]],
-    memory_writes: list[tuple[tuple[Any, ...], tuple[Any, ...]]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+    *,
+    width_bits: int = 32,
+    memory_epoch: int | None = None,
 ) -> tuple[Any, ...]:
     canonical_address = _canonical_expr(address)
-    memory_events.append(("read", ("mem32", canonical_address)))
-    for written_address, written_value in reversed(memory_writes):
-        if _canonical_expr(written_address) == canonical_address:
-            return written_value
-    return ("mem32", canonical_address)
+    memory_events.append(("read", _memory_epoch_expr(width_bits, canonical_address, memory_epoch)))
+    for written_address, written_width, written_value in reversed(memory_writes):
+        if written_width == width_bits and _canonical_expr(written_address) == canonical_address:
+            return _expr_mask(written_value, width_bits)
+    return _memory_epoch_expr(width_bits, canonical_address, memory_epoch)
+
+
+def _memory_write_expr(
+    address: tuple[Any, ...],
+    width_bits: int,
+    value: tuple[Any, ...],
+    memory_events: list[tuple[Any, ...]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+) -> None:
+    canonical_address = _canonical_expr(address)
+    value = _expr_mask(value, width_bits)
+    memory_events.append(("write", _memory_expr(width_bits, canonical_address), value))
+    memory_writes.append((canonical_address, width_bits, value))
 
 
 def _external_call_contract(mapped: BlockMapping, index: int) -> dict[str, Any] | None:
@@ -7214,14 +10905,16 @@ def _external_call_args(
     contract: dict[str, Any],
     registers: dict[str, tuple[Any, ...]],
     memory_events: list[tuple[Any, ...]],
-    memory_writes: list[tuple[tuple[Any, ...], tuple[Any, ...]]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+    *,
+    memory_epoch: int | None = None,
 ) -> list[tuple[Any, ...]] | None:
     args = contract.get("args", [])
     if not isinstance(args, list):
         return None
     result: list[tuple[Any, ...]] = []
     for arg in args:
-        expr = _external_arg_expr(insn, arg, registers, memory_events, memory_writes)
+        expr = _external_arg_expr(insn, arg, registers, memory_events, memory_writes, memory_epoch=memory_epoch)
         if expr is None:
             return None
         result.append(expr)
@@ -7233,12 +10926,14 @@ def _external_arg_expr(
     spec: Any,
     registers: dict[str, tuple[Any, ...]],
     memory_events: list[tuple[Any, ...]],
-    memory_writes: list[tuple[tuple[Any, ...], tuple[Any, ...]]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+    *,
+    memory_epoch: int | None = None,
 ) -> tuple[Any, ...] | None:
     if isinstance(spec, int):
         return ("const", spec)
     if isinstance(spec, str):
-        return registers.get(spec.lower())
+        return _read_register_expr(spec.lower(), registers)
     if not isinstance(spec, dict):
         return None
     if "const" in spec:
@@ -7247,26 +10942,217 @@ def _external_arg_expr(
     if register_name is None and spec.get("kind") == "reg":
         register_name = spec.get("name")
     if register_name is not None:
-        return registers.get(str(register_name).lower())
+        return _read_register_expr(str(register_name).lower(), registers)
     stack_offset = spec.get("stack") if "stack" in spec else spec.get("stack_offset")
     if stack_offset is None and spec.get("kind") == "stack":
         stack_offset = spec.get("offset", 0)
     if stack_offset is not None:
         address = _expr_add(registers["esp"], ("const", _parse_int(stack_offset)))
-        return _memory_read_expr(address, memory_events, memory_writes)
+        return _memory_read_expr(address, memory_events, memory_writes, memory_epoch=memory_epoch)
     if spec.get("kind") == "memory":
         base_name = str(spec.get("base", "esp")).lower()
         base = registers.get(base_name)
         if base is None:
             return None
         address = _expr_add(base, ("const", _parse_int(spec.get("offset", 0))))
-        return _memory_read_expr(address, memory_events, memory_writes)
+        return _memory_read_expr(address, memory_events, memory_writes, memory_epoch=memory_epoch)
+    return None
+
+
+def _internal_call_event(
+    event_index: int,
+    target_rva: int,
+    return_rva: int,
+    registers: dict[str, tuple[Any, ...]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+) -> tuple[Any, ...]:
+    register_inputs = _call_register_inputs(registers)
+    stack_inputs = _call_stack_inputs(registers, memory_writes)
+    return ("internal_call", int(target_rva), int(return_rva), register_inputs, stack_inputs)
+
+
+def _external_import_call_event(
+    event_index: int,
+    imported: StageAImport,
+    return_rva: int,
+    registers: dict[str, tuple[Any, ...]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+    *,
+    auto_inputs: bool,
+) -> tuple[Any, ...]:
+    extras: tuple[Any, ...] = ()
+    if auto_inputs:
+        extras = (("auto_call_inputs", _call_register_inputs(registers), _call_stack_inputs(registers, memory_writes)),)
+    return ("external_call", imported.dll, imported.symbol, imported.ordinal, (), *extras)
+
+
+def _indirect_call_event(
+    event_index: int,
+    target: tuple[Any, ...],
+    return_rva: int,
+    registers: dict[str, tuple[Any, ...]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+) -> tuple[Any, ...]:
+    return ("indirect_call", _canonical_expr(target), int(return_rva), _call_register_inputs(registers), _call_stack_inputs(registers, memory_writes))
+
+
+def _call_register_inputs(registers: dict[str, tuple[Any, ...]]) -> tuple[tuple[str, tuple[Any, ...]], ...]:
+    return tuple((name, _canonical_expr(registers[name])) for name in sorted(registers))
+
+
+def _call_stack_inputs(
+    registers: dict[str, tuple[Any, ...]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+) -> tuple[tuple[int, int, tuple[Any, ...]], ...]:
+    return tuple(_stack_argument_writes(registers.get("esp", ("reg", "esp")), memory_writes))
+
+
+def _stack_argument_writes(
+    esp: tuple[Any, ...],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+) -> list[tuple[int, int, tuple[Any, ...]]]:
+    result: dict[tuple[int, int], tuple[Any, ...]] = {}
+    for address, width_bits, value in memory_writes:
+        offset = _stack_relative_offset(address, esp)
+        if offset is None or offset < 0 or offset > 0x100:
+            continue
+        result[(offset, width_bits)] = _expr_mask(value, width_bits)
+    return [(offset, width_bits, value) for (offset, width_bits), value in sorted(result.items())]
+
+
+def _stack_relative_offset(address: tuple[Any, ...], esp: tuple[Any, ...]) -> int | None:
+    address = _canonical_expr(address)
+    esp = _canonical_expr(esp)
+    if address == esp:
+        return 0
+    if isinstance(address, tuple) and address and address[0] == "add":
+        offset = 0
+        saw_esp = False
+        for part in address[1:]:
+            if part == esp:
+                saw_esp = True
+            elif isinstance(part, tuple) and len(part) == 2 and part[0] == "const":
+                offset = (offset + int(part[1])) & 0xFFFFFFFF
+            else:
+                return None
+        if not saw_esp:
+            return None
+        if offset & 0x80000000:
+            offset -= 0x100000000
+        return offset
+    if isinstance(address, tuple) and len(address) == 3 and address[0] == "sub" and address[1] == esp:
+        right = address[2]
+        if isinstance(right, tuple) and len(right) == 2 and right[0] == "const":
+            return -int(right[1])
     return None
 
 
 def _parse_external_stack_adjust(contract: dict[str, Any]) -> int:
     value = contract.get("stack_adjust", contract.get("stack_bytes_cleaned", 0))
     return _parse_int(value) if value is not None else 0
+
+
+def _x87_memory_value(
+    insn: Any,
+    operand: Any,
+    registers: dict[str, tuple[Any, ...]],
+    memory_events: list[tuple[Any, ...]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+    *,
+    memory_epoch: int | None,
+    integer: bool = False,
+) -> tuple[Any, ...] | None:
+    if operand.type != X86_OP_MEM:
+        return None
+    address = _mem_address_expr(insn, operand, registers)
+    if address is None:
+        return None
+    width_bits = _operand_width_bits(insn, operand)
+    if width_bits <= 32:
+        value = _memory_read_expr(address, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+        return ("fpu_int", width_bits, value) if integer else ("fpu_mem", width_bits, value)
+    low = _memory_read_expr(address, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+    high = _memory_read_expr(_expr_add(address, ("const", 4)), memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+    return ("fpu_mem64", low, high)
+
+
+def _x87_operand_value(
+    insn: Any,
+    operand: Any,
+    registers: dict[str, tuple[Any, ...]],
+    memory_events: list[tuple[Any, ...]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+    fpu_stack: list[tuple[Any, ...]],
+    *,
+    memory_epoch: int | None,
+    integer: bool = False,
+) -> tuple[Any, ...] | None:
+    if operand.type == X86_OP_MEM:
+        return _x87_memory_value(insn, operand, registers, memory_events, memory_writes, memory_epoch=memory_epoch, integer=integer)
+    index = _x87_st_index(insn.op_str)
+    if index is not None and 0 <= index < len(fpu_stack):
+        return fpu_stack[index]
+    return None
+
+
+def _x87_st_index(text: str) -> int | None:
+    text = text.strip().lower()
+    if not text:
+        return None
+    if "st(" not in text:
+        return 0 if text == "st" or text == "st(0)" else None
+    start = text.find("st(") + 3
+    end = text.find(")", start)
+    if end <= start:
+        return None
+    try:
+        return int(text[start:end])
+    except ValueError:
+        return None
+
+
+def _x87_push(fpu_stack: list[tuple[Any, ...]], value: tuple[Any, ...]) -> None:
+    fpu_stack.insert(0, _canonical_expr(value))
+    del fpu_stack[8:]
+
+
+def _x87_pop(fpu_stack: list[tuple[Any, ...]]) -> tuple[Any, ...]:
+    value = fpu_stack.pop(0) if fpu_stack else ("fpu_empty",)
+    while len(fpu_stack) < 8:
+        fpu_stack.append(("fpu_empty", len(fpu_stack)))
+    return value
+
+
+def _x87_store_memory(
+    insn: Any,
+    operand: Any,
+    value: tuple[Any, ...],
+    control: tuple[Any, ...],
+    registers: dict[str, tuple[Any, ...]],
+    memory_events: list[tuple[Any, ...]],
+    memory_writes: list[tuple[tuple[Any, ...], int, tuple[Any, ...]]],
+    *,
+    integer: bool,
+) -> bool:
+    if operand.type != X86_OP_MEM:
+        return False
+    address = _mem_address_expr(insn, operand, registers)
+    if address is None:
+        return False
+    width_bits = _operand_width_bits(insn, operand)
+    if integer:
+        _memory_write_expr(address, min(width_bits, 32), ("fpu_int32", value, control), memory_events, memory_writes)
+        return True
+    if width_bits <= 32:
+        _memory_write_expr(address, width_bits, ("fpu_bits_lo", value), memory_events, memory_writes)
+        return True
+    _memory_write_expr(address, 32, ("fpu_bits_lo", value), memory_events, memory_writes)
+    _memory_write_expr(_expr_add(address, ("const", 4)), 32, ("fpu_bits_hi", value), memory_events, memory_writes)
+    return True
+
+
+def _x87_binary(operator: str, left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
+    return ("fpu_" + operator, _canonical_expr(left), _canonical_expr(right))
 
 
 def _mem_address_expr(insn: Any, operand: Any, registers: dict[str, tuple[Any, ...]]) -> tuple[Any, ...] | None:
@@ -7327,6 +11213,160 @@ def _expr_mul(left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
     if left[0] == "const" and right[0] == "const":
         return ("const", (int(left[1]) * int(right[1])) & 0xFFFFFFFF)
     return ("mul", left, right)
+
+
+def _expr_mask(value: tuple[Any, ...] | None, width_bits: int) -> tuple[Any, ...]:
+    if value is None:
+        return ("const", 0)
+    if isinstance(value, tuple) and len(value) >= 3 and value[0] == "sext" and int(value[1]) == width_bits:
+        return _expr_mask(value[2], width_bits)
+    value = _canonical_expr(value)
+    if width_bits >= 32:
+        return value
+    mask = (1 << width_bits) - 1
+    if value[0] == "const":
+        return ("const", int(value[1]) & mask)
+    if value[0] == "and" and ("const", mask) in value[1:]:
+        return value
+    return _expr_and(value, ("const", mask))
+
+
+def _expr_sign_extend(value: tuple[Any, ...], width_bits: int) -> tuple[Any, ...]:
+    value = _expr_mask(value, width_bits)
+    if width_bits >= 32:
+        return value
+    if value[0] == "const":
+        raw = int(value[1]) & ((1 << width_bits) - 1)
+        sign_bit = 1 << (width_bits - 1)
+        if raw & sign_bit:
+            raw |= (~((1 << width_bits) - 1)) & 0xFFFFFFFF
+        return ("const", raw & 0xFFFFFFFF)
+    return ("sext", width_bits, value)
+
+
+def _expr_shl(left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
+    left = _canonical_expr(left)
+    right = _canonical_expr(right)
+    if right == ("const", 0):
+        return left
+    if left == ("const", 0):
+        return left
+    if left[0] == "const" and right[0] == "const":
+        return ("const", (int(left[1]) << (int(right[1]) & 31)) & 0xFFFFFFFF)
+    return ("shl", left, right)
+
+
+def _expr_lshr(left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
+    left = _canonical_expr(left)
+    right = _canonical_expr(right)
+    if right == ("const", 0):
+        return left
+    if left == ("const", 0):
+        return left
+    if left[0] == "const" and right[0] == "const":
+        return ("const", (int(left[1]) & 0xFFFFFFFF) >> (int(right[1]) & 31))
+    return ("lshr", left, right)
+
+
+def _expr_ashr(left: tuple[Any, ...], right: tuple[Any, ...], width_bits: int = 32) -> tuple[Any, ...]:
+    left = _expr_mask(left, width_bits)
+    right = _canonical_expr(right)
+    if right == ("const", 0):
+        return left
+    if left[0] == "const" and right[0] == "const":
+        shift = int(right[1]) & 31
+        raw = int(left[1]) & ((1 << width_bits) - 1)
+        if raw & (1 << (width_bits - 1)):
+            signed = raw - (1 << width_bits)
+        else:
+            signed = raw
+        return ("const", (signed >> shift) & ((1 << width_bits) - 1))
+    return ("ashr", width_bits, left, right)
+
+
+def _expr_not(value: tuple[Any, ...]) -> tuple[Any, ...]:
+    value = _canonical_expr(value)
+    if value[0] == "const":
+        return ("const", (~int(value[1])) & 0xFFFFFFFF)
+    return ("bvnot", value)
+
+
+def _expr_neg(value: tuple[Any, ...]) -> tuple[Any, ...]:
+    value = _canonical_expr(value)
+    if value[0] == "const":
+        return ("const", (-int(value[1])) & 0xFFFFFFFF)
+    return ("neg", value)
+
+
+def _expr_ite(condition: tuple[Any, ...], when_true: tuple[Any, ...], when_false: tuple[Any, ...]) -> tuple[Any, ...]:
+    condition = _canonical_expr(condition)
+    when_true = _canonical_expr(when_true)
+    when_false = _canonical_expr(when_false)
+    if condition == ("true",):
+        return when_true
+    if condition == ("false",):
+        return when_false
+    if when_true == when_false:
+        return when_true
+    return ("ite", condition, when_true, when_false)
+
+
+def _expr_bool_bit(condition: tuple[Any, ...]) -> tuple[Any, ...]:
+    condition = _canonical_expr(condition)
+    if condition == ("true",):
+        return ("const", 1)
+    if condition == ("false",):
+        return ("const", 0)
+    return ("bool_bit", condition)
+
+
+def _expr_imul_low(left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
+    left = _canonical_expr(left)
+    right = _canonical_expr(right)
+    if left[0] == "const" and right[0] == "const":
+        return ("const", (int(left[1]) * int(right[1])) & 0xFFFFFFFF)
+    return ("imul_low", left, right)
+
+
+def _expr_imul_high(left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
+    left = _canonical_expr(left)
+    right = _canonical_expr(right)
+    if left[0] == "const" and right[0] == "const":
+        signed_left = _signed32(int(left[1]))
+        signed_right = _signed32(int(right[1]))
+        return ("const", ((signed_left * signed_right) >> 32) & 0xFFFFFFFF)
+    return ("imul_high", left, right)
+
+
+def _expr_mul_low(left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
+    left = _canonical_expr(left)
+    right = _canonical_expr(right)
+    if left[0] == "const" and right[0] == "const":
+        return ("const", (int(left[1]) * int(right[1])) & 0xFFFFFFFF)
+    return ("mul_low", left, right)
+
+
+def _expr_mul_high(left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
+    left = _canonical_expr(left)
+    right = _canonical_expr(right)
+    if left[0] == "const" and right[0] == "const":
+        return ("const", (((int(left[1]) & 0xFFFFFFFF) * (int(right[1]) & 0xFFFFFFFF)) >> 32) & 0xFFFFFFFF)
+    return ("mul_high", left, right)
+
+
+def _signed32(value: int) -> int:
+    value &= 0xFFFFFFFF
+    return value - 0x100000000 if value & 0x80000000 else value
+
+
+def _expr_shift_pair(mnemonic: str, left: tuple[Any, ...], right: tuple[Any, ...], count: tuple[Any, ...], width_bits: int) -> tuple[Any, ...]:
+    left = _expr_mask(left, width_bits)
+    right = _expr_mask(right, width_bits)
+    count = _expr_and(count, ("const", 0x1F))
+    inverse = _expr_sub(("const", width_bits), count)
+    if mnemonic == "shrd":
+        return _expr_mask(_expr_or(_expr_lshr(left, count), _expr_shl(right, inverse)), width_bits)
+    return _expr_mask(_expr_or(_expr_shl(left, count), _expr_lshr(right, inverse)), width_bits)
 
 
 def _expr_xor(left: tuple[Any, ...], right: tuple[Any, ...]) -> tuple[Any, ...]:
@@ -7465,7 +11505,7 @@ def _canonical_expr(expr: Any) -> Any:
     op = expr[0]
     if op == "const":
         return ("const", int(expr[1]) & 0xFFFFFFFF)
-    if op in {"reg", "flag", "true", "false", "env_response"}:
+    if op in {"reg", "flag", "true", "false", "env_response", "call_response", "call_flag", "undefined_bv", "undefined_flag"}:
         return expr
     if op == "add":
         result: tuple[Any, ...] = ("const", 0)
@@ -7485,6 +11525,20 @@ def _canonical_expr(expr: Any) -> Any:
         return _expr_and(_canonical_expr(expr[1]), _canonical_expr(expr[2]))
     if op == "or":
         return _expr_or(_canonical_expr(expr[1]), _canonical_expr(expr[2]))
+    if op == "bvnot":
+        return _expr_not(_canonical_expr(expr[1]))
+    if op == "neg":
+        return _expr_neg(_canonical_expr(expr[1]))
+    if op == "shl":
+        return _expr_shl(_canonical_expr(expr[1]), _canonical_expr(expr[2]))
+    if op == "lshr":
+        return _expr_lshr(_canonical_expr(expr[1]), _canonical_expr(expr[2]))
+    if op == "ashr":
+        return _expr_ashr(_canonical_expr(expr[2]), _canonical_expr(expr[3]), int(expr[1]))
+    if op == "sext":
+        return _expr_sign_extend(_canonical_expr(expr[2]), int(expr[1]))
+    if op == "ite":
+        return _expr_ite(_canonical_expr(expr[1]), _canonical_expr(expr[2]), _canonical_expr(expr[3]))
     if op == "not":
         return _bool_not(_canonical_expr(expr[1]))
     if op == "bool_and":
@@ -7495,7 +11549,45 @@ def _canonical_expr(expr: Any) -> Any:
         return _bool_xor(_canonical_expr(expr[1]), _canonical_expr(expr[2]))
     if op == "bool_eq":
         return _bool_eq(_canonical_expr(expr[1]), _canonical_expr(expr[2]))
-    if op in {"eq", "ult", "msb", "add_overflow", "sub_overflow"}:
+    if op in {
+        "eq",
+        "ult",
+        "msb",
+        "msb_w",
+        "add_overflow",
+        "sub_overflow",
+        "add_overflow_w",
+        "sub_overflow_w",
+        "shift_cf",
+        "shift_of",
+        "adc_carry",
+        "adc_overflow",
+        "sbb_borrow",
+        "sbb_overflow",
+        "imul_overflow",
+        "mul_carry",
+        "parity",
+        "fpu_cmp_cf",
+        "fpu_cmp_zf",
+        "fpu_cmp_pf",
+        "bool_bit",
+        "mem32",
+        "mem",
+        "call_mem",
+        "imul_low",
+        "imul_high",
+        "mul_low",
+        "mul_high",
+        "udiv_quot",
+        "udiv_rem",
+        "bsr_index",
+        "tzcnt",
+        "fpu_bits_lo",
+        "fpu_bits_hi",
+        "fpu_int32",
+        "fpu_status_word",
+        "fpu_control_word",
+    }:
         return tuple(_canonical_expr(part) for part in expr)
     return tuple(_canonical_expr(part) for part in expr)
 

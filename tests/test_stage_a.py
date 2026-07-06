@@ -11,10 +11,13 @@ from haloce_catalog.stage_a import (
     STAGE_A_MODEL_ID,
     stage_a_diff_obligations,
     stage_a_explain_obligations,
+    stage_a_extract_work_items,
     stage_a_export_reference_contract,
     stage_a_generate_map,
+    stage_a_semantic_coverage,
     stage_a_smoke_contract,
     stage_a_validate,
+    stage_a_validate_unit,
 )
 
 
@@ -774,6 +777,42 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(failure["details"]["mismatch"]["observable"], "external_events")
             self.assertEqual(failure["details"]["smt_status"], "sat")
 
+    @unittest.skipUnless(stage_a._import_z3() is not None, "requires Python Z3 bindings")
+    def test_internal_direct_call_continuation_proves_with_uninterpreted_response(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xe8\x03\x00\x00\x00\x89\xc1\xc3\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xe8\x03\x00\x00\x00\x8d\x08\xc3\xc3")
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            self._mapping_entry(size=8),
+                            self._mapping_entry(rva=0x1008, size=1, block_id="callee"),
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = root / "report"
+
+            with self._mock_lean_checked():
+                result = stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=mapping,
+                    model=STAGE_A_MODEL_ID,
+                    out=out,
+                )
+
+            self.assertEqual(result["verdict"], "pass")
+            obligation = self._obligation(out, "block:entry")
+            self.assertEqual(obligation["proof_rule"], "smt_z3_local_equivalence_v1")
+            self.assertEqual(obligation["symbolic"]["smt_status"], "unsat")
+            self.assertEqual(obligation["symbolic"]["original_observables"]["reg:ecx"], ["call_response", 0, "eax"])
+            self.assertEqual(obligation["symbolic"]["original_observables"]["external_events"][0][0], "internal_call")
+
     def test_import_thunk_equivalence_uses_import_signature_not_iat_rva_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1372,6 +1411,219 @@ class StageAValidateTests(unittest.TestCase):
             smoke = stage_a_smoke_contract(reference_contract=root / "reference-contract.json")
             self.assertEqual(smoke["status"], "pass")
 
+    def test_stage_a_export_reference_contract_writes_unit_contract_sidecars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                ___dyn_tls_init@12\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                ___dyn_tls_init@12\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+            )
+            units = root / "units"
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                unit_contract_dir=units,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            self.assertIn("unit_contracts", result["sidecars"])
+            for name in (
+                "block-contracts.jsonl",
+                "function-contracts.jsonl",
+                "cluster-contracts.jsonl",
+                "repair-units.json",
+                "source-obligations.json",
+                "semantic-transfer-contracts.jsonl",
+                "memory-frame-contracts.json",
+                "call-summary-contracts.json",
+                "cluster-semantic-contracts.jsonl",
+            ):
+                self.assertTrue((units / name).exists(), name)
+            block_contract = json.loads((units / "block-contracts.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            function_contract = json.loads((units / "function-contracts.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            cluster_contracts = [
+                json.loads(line)
+                for line in (units / "cluster-contracts.jsonl").read_text(encoding="utf-8").splitlines()
+                if line
+            ]
+            self.assertEqual(block_contract["format"], "stage-a-block-contract-v1")
+            self.assertEqual(block_contract["function"], "___dyn_tls_init@12")
+            self.assertEqual(function_contract["format"], "stage-a-function-contract-v1")
+            self.assertEqual(function_contract["function"], "___dyn_tls_init@12")
+            self.assertIn("tls_callback_abi", {item["repair_class"] for item in cluster_contracts})
+
+            work = stage_a_extract_work_items(
+                reference_contract=root / "reference-contract.json",
+                unit_contract_dir=units,
+                out=root / "work-items.json",
+            )
+            self.assertEqual(work["format"], "stage-a-work-items-v1")
+            self.assertGreater(work["counts"]["work_items"], 0)
+            self.assertIn("tls_callback_abi", {item["repair_class"] for item in work["work_items"]})
+
+    def test_reference_contract_semantic_transfer_sidecar_exports_block_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex("83c404")  # add esp, 4
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = self._write_mapping(root / "block-map.json", size=len(code), block_id="stack-adjust")
+            units = root / "units"
+
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=units,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            transfer = json.loads((units / "semantic-transfer-contracts.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(transfer["format"], "stage-a-semantic-transfer-contract-v1")
+            self.assertEqual(transfer["status"], "reimplementable")
+            self.assertEqual(transfer["stack_delta"]["net_bytes"], 4)
+            self.assertIn("esp", {item["register"] for item in transfer["register_writes"]})
+            self.assertEqual(transfer["outcome"]["kind"], "fallthrough")
+
+            coverage = stage_a_semantic_coverage(
+                reference_contract=root / "reference-contract.json",
+                unit_contract_dir=units,
+                out=root / "semantic-coverage.json",
+            )
+            self.assertEqual(coverage["status"], "pass")
+            self.assertEqual(coverage["counts"]["analysis_blocked"], 0)
+            self.assertTrue(coverage["acceptance"]["jq_full_reimplementation_ready"])
+
+    def test_reference_contract_semantic_transfer_exports_internal_call_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = b"\xe8\x03\x00\x00\x00\x89\xc1\xc3"
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = self._write_mapping(root / "block-map.json", size=len(code), block_id="internal-call")
+            units = root / "units"
+
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=units,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            transfer = json.loads((units / "semantic-transfer-contracts.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(transfer["status"], "reimplementable")
+            self.assertEqual(transfer["external_events"][0]["kind"], "internal_call")
+            self.assertEqual(transfer["external_events"][0]["target_rva"], 0x1008)
+            self.assertEqual(transfer["external_events"][0]["effect_model"], "uninterpreted_internal_call_response_v1")
+            register_writes = {item["register"]: item["value"] for item in transfer["register_writes"]}
+            self.assertEqual(register_writes["ecx"], {"op": "call_response", "width": 32, "call_index": 0, "register": "eax"})
+
+    def test_reference_contract_semantic_transfer_fail_closed_for_unsupported_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex("0f0b")  # ud2 remains outside the executable transfer model
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = self._write_mapping(root / "block-map.json", size=len(code), block_id="unsupported-ud2")
+            units = root / "units"
+
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=units,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            transfer = json.loads((units / "semantic-transfer-contracts.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(transfer["status"], "incomplete")
+            self.assertEqual(transfer["blocker_category"], "unsupported_semantics")
+            work = json.loads((units / "repair-units.json").read_text(encoding="utf-8"))["work_items"]
+            self.assertIn("semantic_transfer", {item["family"] for item in work})
+
+            coverage = stage_a_semantic_coverage(
+                reference_contract=root / "reference-contract.json",
+                unit_contract_dir=units,
+                out=root / "semantic-coverage.json",
+            )
+            self.assertEqual(coverage["status"], "incomplete")
+            self.assertEqual(coverage["counts"]["analysis_blocked"], 1)
+            self.assertEqual(coverage["counts"]["unsupported_instruction_shapes"], 1)
+            self.assertEqual(coverage["blockers"][0]["function"], "unsupported-ud2")
+
+    def test_stage_a_validate_unit_filters_contract_focus_without_original_tracing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+                stage_a_export_reference_contract(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    validation_report=root / "report",
+                    layout_contract=layout_contract,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "reference-contract.json",
+                )
+            skeleton_manifest = self._write_skeleton_manifest(
+                root / "manifest.json",
+                [{"function": "tiny", "file": "src/jq_stage_b_skeleton.c", "line_start": 10, "line_end": 12}],
+            )
+
+            result = stage_a_validate_unit(
+                reference_contract=root / "reference-contract.json",
+                candidate=candidate,
+                linker_map_candidate=candidate_map,
+                skeleton_manifest=skeleton_manifest,
+                focus="tiny",
+                model=STAGE_A_MODEL_ID,
+                out=root / "unit",
+            )
+
+            self.assertEqual(result["status"], "pass")
+            self.assertGreater(result["counts"]["unit_contracts"], 0)
+            self.assertTrue((root / "unit" / "unit-validation.json").exists())
+
     def test_reference_contract_abi_callsites_ignore_prologue_pushes_and_capture_stack_slots(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1459,6 +1711,125 @@ class StageAValidateTests(unittest.TestCase):
                 callsite["hidden_sret_or_out_param_evidence"]["reason"],
                 "first_stack_argument_has_address_provenance",
             )
+
+    def test_reference_contract_unit_sidecars_include_register_out_param_memory_and_clusters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex(
+                "c70000000000"  # mov dword ptr [eax], 0
+                "c3"  # ret
+            )
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = self._write_mapping(root / "block-map.json", size=len(code), block_id="write-through-eax")
+            units = root / "units"
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=units,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            function = result["constraints"]["abi_callsites"]["original"]["functions"][0]
+            self.assertEqual(function["register_out_param_candidates"][0]["register"], "eax")
+            self.assertEqual(function["memory_effect_summary"]["writes"], 1)
+            block_contract = json.loads((units / "block-contracts.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            state = block_contract["state_contract"]
+            self.assertEqual(state["register_out_param_candidates"][0]["kind"], "register_carried_out_param")
+            self.assertEqual(state["memory_writes"][0]["memory_role"], "computed_memory")
+            memory_frames = json.loads((units / "memory-frame-contracts.json").read_text(encoding="utf-8"))
+            self.assertEqual(memory_frames["counts"]["accesses"], 1)
+            self.assertEqual(memory_frames["accesses"][0]["frame_kind"], "object.pointer_candidate")
+            clusters = [
+                json.loads(line)
+                for line in (units / "cluster-contracts.jsonl").read_text(encoding="utf-8").splitlines()
+                if line
+            ]
+            self.assertIn("abi_register_carried_out_param", {item["cluster_kind"] for item in clusters})
+            self.assertIn("hidden_sret_or_out_param", {item["repair_class"] for item in clusters})
+
+    def test_reference_contract_unit_sidecars_include_switch_and_loop_contract_clusters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            switch_code = bytes.fromhex("ff248500504000")  # jmp dword ptr [eax * 4 + 0x405000]
+            loop_code = bytes.fromhex("ebfe")  # jmp self
+            code = switch_code + loop_code
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            self._mapping_entry(rva=0x1000, size=len(switch_code), block_id="switch-dispatch"),
+                            self._mapping_entry(rva=0x1000 + len(switch_code), size=len(loop_code), block_id="loop-backedge"),
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            units = root / "units"
+
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=units,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            clusters = [
+                json.loads(line)
+                for line in (units / "cluster-contracts.jsonl").read_text(encoding="utf-8").splitlines()
+                if line
+            ]
+            kinds = {item["cluster_kind"] for item in clusters}
+            repair_classes = {item["repair_class"] for item in clusters}
+            self.assertIn("abi_switch_or_jump_table_candidate", kinds)
+            self.assertIn("abi_loop_backedge_candidate", kinds)
+            self.assertIn("switch_or_jump_table_dispatch", repair_classes)
+            self.assertIn("loop_or_state_machine", repair_classes)
+            semantic_clusters = [
+                json.loads(line)
+                for line in (units / "cluster-semantic-contracts.jsonl").read_text(encoding="utf-8").splitlines()
+                if line
+            ]
+            complete_kinds = {item["cluster_kind"] for item in semantic_clusters if item["status"] == "complete"}
+            self.assertIn("abi_switch_or_jump_table_candidate", complete_kinds)
+            self.assertIn("abi_loop_backedge_candidate", complete_kinds)
+            switch_cluster = next(item for item in semantic_clusters if item["cluster_kind"] == "abi_switch_or_jump_table_candidate")
+            loop_cluster = next(item for item in semantic_clusters if item["cluster_kind"] == "abi_loop_backedge_candidate")
+            self.assertIn("indirect-jump contract", switch_cluster["next_action"])
+            self.assertIn("low-level CFG backedges", loop_cluster["next_action"])
+
+    def test_reference_contract_call_summary_records_import_varargs_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            call_import = b"\xff\x15\x40\x20\x40\x00"
+            original = self._write_import_pe(root / "original.exe", call_import, "___mingw_fprintf")
+            candidate = self._write_import_pe(root / "candidate.exe", call_import, "___mingw_fprintf")
+            mapping = self._write_mapping(root / "block-map.json", size=len(call_import), block_id="fprintf-call")
+            units = root / "units"
+
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=units,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            summaries = json.loads((units / "call-summary-contracts.json").read_text(encoding="utf-8"))
+            self.assertEqual(summaries["counts"]["calls"], 1)
+            call = summaries["calls"][0]
+            self.assertEqual(call["target"]["symbol"], "___mingw_fprintf")
+            self.assertEqual(call["varargs_evidence"]["status"], "candidate")
+            self.assertIn("variadic", call["next_action"])
 
     def test_abi_callsites_resolve_import_loaded_through_register(self):
         class FakePE:
@@ -1656,6 +2027,87 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(gaps["incomplete_callsites"][0]["name"], "_partial")
         self.assertEqual(gaps["incomplete_callsites"][0]["candidate_callsites"], 1)
         self.assertEqual(gaps["incomplete_callsites"][0]["reference_callsites"], 2)
+
+    def test_contract_candidate_abi_coverage_gaps_report_function_and_callsite_mismatches(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "_jq_init",
+                        "memory_effect_summary": {
+                            "reads": 0,
+                            "writes": 1,
+                            "read_roles": {},
+                            "write_roles": {"computed_memory": 1},
+                        },
+                        "register_out_param_candidates": [{"register": "eax"}],
+                        "callsites": [
+                            {
+                                "id": "callsite:jq_init:1004",
+                                "block_id": "jq_init:0",
+                                "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "___mingw_fprintf"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 2,
+                                    "stack_args": [
+                                        {"index": 0, "role": "memory"},
+                                        {"index": 1, "role": "string_literal"},
+                                    ],
+                                    "register_args": [],
+                                },
+                                "varargs_evidence": {
+                                    "status": "candidate",
+                                    "format_string": {
+                                        "status": "derived",
+                                        "required_varargs": 1,
+                                        "observed_varargs": 0,
+                                        "missing_varargs": 1,
+                                    },
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "jq_init",
+                        "memory_effect_summary": {
+                            "reads": 0,
+                            "writes": 0,
+                            "read_roles": {},
+                            "write_roles": {},
+                        },
+                        "register_out_param_candidates": [],
+                        "callsites": [
+                            {
+                                "id": "callsite:jq_init:1004",
+                                "block_id": "jq_init:0",
+                                "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "___mingw_fprintf"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "memory"}],
+                                    "register_args": [],
+                                },
+                                "varargs_evidence": {"status": "not_observed"},
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        self.assertEqual(gaps["counts"]["function_mismatches"], 1)
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 1)
+        self.assertEqual(gaps["function_mismatches"][0]["repair_class"], "hidden_sret_or_out_param")
+        self.assertEqual(gaps["callsite_mismatches"][0]["repair_class"], "varargs_or_stdio_bridge")
+        self.assertIn("varargs", gaps["callsite_mismatches"][0]["next_action"])
 
     def test_contract_candidate_abi_coverage_gaps_use_explicit_skeleton_aliases(self):
         reference_abi = {

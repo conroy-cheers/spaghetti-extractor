@@ -84,11 +84,14 @@ from .stage_a import (
     STAGE_A_MODEL_ID,
     stage_a_diff_obligations,
     stage_a_explain_obligations,
+    stage_a_extract_work_items,
     stage_a_export_reference_contract,
     stage_a_generate_map,
+    stage_a_semantic_coverage,
     stage_a_smoke_contract,
     stage_a_validate,
     stage_a_validate_contract_candidate,
+    stage_a_validate_unit,
     stage_a_validate_suite,
 )
 from .stage_b import (
@@ -242,6 +245,7 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     )
     stage_a_generate.add_argument("--out", type=Path, required=True, help="output block map JSON")
     stage_a_generate.add_argument("--layout-contract-out", type=Path, help="optional output layout contract JSON")
+    stage_a_generate.add_argument("--quiet", action="store_true", help="write artifacts without echoing the full JSON payload")
     stage_a_generate.set_defaults(func=_cmd_stage_a_generate_map)
 
     stage_a_contract = subcommands.add_parser(
@@ -254,8 +258,10 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_a_contract.add_argument("--validation-report", type=Path, help="optional stage-a-validate report directory or JSON")
     stage_a_contract.add_argument("--layout-contract", type=Path, help="optional Stage A layout contract JSON")
     stage_a_contract.add_argument("--sidecar-dir", type=Path, help="directory for coverage_gaps/obligation_index/summary sidecars")
+    stage_a_contract.add_argument("--unit-contract-dir", type=Path, help="directory for per-block/function/cluster unit contracts")
     stage_a_contract.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
     stage_a_contract.add_argument("--out", type=Path, required=True, help="output reference contract JSON")
+    stage_a_contract.add_argument("--quiet", action="store_true", help="write artifacts without echoing the full JSON payload")
     stage_a_contract.set_defaults(func=_cmd_stage_a_export_reference_contract)
 
     stage_a_smoke = subcommands.add_parser(
@@ -277,6 +283,39 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_a_contract_candidate.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
     stage_a_contract_candidate.add_argument("--out", type=Path, required=True)
     stage_a_contract_candidate.set_defaults(func=_cmd_stage_a_validate_contract_candidate)
+
+    stage_a_work = subcommands.add_parser(
+        "stage-a-extract-work-items",
+        help="extract ranked unit-sized Stage A work items from a reference contract package",
+    )
+    stage_a_work.add_argument("--reference-contract", type=Path, required=True)
+    stage_a_work.add_argument("--unit-contract-dir", type=Path)
+    stage_a_work.add_argument("--out", type=Path, required=True)
+    stage_a_work.set_defaults(func=_cmd_stage_a_extract_work_items)
+
+    stage_a_semantic = subcommands.add_parser(
+        "stage-a-semantic-coverage",
+        help="summarize semantic-contract coverage and fail closed on analysis blockers",
+    )
+    stage_a_semantic.add_argument("--reference-contract", type=Path, required=True)
+    stage_a_semantic.add_argument("--unit-contract-dir", type=Path)
+    stage_a_semantic.add_argument("--out", type=Path, required=True)
+    stage_a_semantic.add_argument("--quiet", action="store_true", help="write artifacts without echoing the full JSON payload")
+    stage_a_semantic.set_defaults(func=_cmd_stage_a_semantic_coverage)
+
+    stage_a_unit = subcommands.add_parser(
+        "stage-a-validate-unit",
+        help="validate a focused function/block/family against a reference contract and candidate without original runtime tracing",
+    )
+    stage_a_unit.add_argument("--reference-contract", type=Path, required=True)
+    stage_a_unit.add_argument("--candidate", type=Path, required=True)
+    stage_a_unit.add_argument("--linker-map-candidate", type=Path, required=True)
+    stage_a_unit.add_argument("--skeleton-manifest", type=Path)
+    stage_a_unit.add_argument("--unit-contract-dir", type=Path)
+    stage_a_unit.add_argument("--focus", required=True)
+    stage_a_unit.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
+    stage_a_unit.add_argument("--out", type=Path, required=True)
+    stage_a_unit.set_defaults(func=_cmd_stage_a_validate_unit)
 
     stage_a_explain = subcommands.add_parser(
         "stage-a-explain-obligations",
@@ -319,9 +358,9 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     )
     stage_b_generate.add_argument(
         "--implementation-mode",
-        choices=["scaffold", "decompiled-c"],
+        choices=["scaffold", "decompiled-c", "contract-guided-c"],
         default="scaffold",
-        help="source generation mode; decompiled-c requires complete decompiler C for every recovered function",
+        help="source generation mode; decompiled-c requires complete decompiler C, contract-guided-c may emit partial ugly C anchors",
     )
     stage_b_generate.add_argument(
         "--runtime-entry-policy",
@@ -471,7 +510,9 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
         ),
     )
     stage_b_delta.add_argument("--candidate-crash-report", type=Path)
+    stage_b_delta.add_argument("--candidate-probe-report", type=Path)
     stage_b_delta.add_argument("--functional-report", type=Path)
+    stage_b_delta.add_argument("--unit-contract-dir", type=Path)
     stage_b_delta.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
     stage_b_delta.add_argument("--out", type=Path, required=True)
     stage_b_delta.set_defaults(func=_cmd_stage_b_explain_delta)
@@ -1449,7 +1490,7 @@ def _cmd_stage_a_generate_map(args: Any) -> int:
         candidate_flags=args.candidate_flags,
         proof_rule=args.proof_rule,
     )
-    _print_json(result)
+    _print_json_unless_quiet(args, result)
     return 0 if result["status"] == "pass" else 1
 
 
@@ -1461,10 +1502,11 @@ def _cmd_stage_a_export_reference_contract(args: Any) -> int:
         validation_report=args.validation_report,
         layout_contract=args.layout_contract,
         sidecar_dir=args.sidecar_dir,
+        unit_contract_dir=args.unit_contract_dir,
         model=args.model,
         out=args.out,
     )
-    _print_json(result)
+    _print_json_unless_quiet(args, result)
     return 0 if result["status"] == "pass" else 1
 
 
@@ -1485,6 +1527,41 @@ def _cmd_stage_a_validate_contract_candidate(args: Any) -> int:
     )
     _print_json(result)
     return 0 if result["verdict"] == "pass" else 1
+
+
+def _cmd_stage_a_extract_work_items(args: Any) -> int:
+    result = stage_a_extract_work_items(
+        reference_contract=args.reference_contract,
+        unit_contract_dir=args.unit_contract_dir,
+        out=args.out,
+    )
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_a_semantic_coverage(args: Any) -> int:
+    result = stage_a_semantic_coverage(
+        reference_contract=args.reference_contract,
+        unit_contract_dir=args.unit_contract_dir,
+        out=args.out,
+    )
+    _print_json_unless_quiet(args, result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_a_validate_unit(args: Any) -> int:
+    result = stage_a_validate_unit(
+        reference_contract=args.reference_contract,
+        candidate=args.candidate,
+        linker_map_candidate=args.linker_map_candidate,
+        skeleton_manifest=args.skeleton_manifest,
+        unit_contract_dir=args.unit_contract_dir,
+        focus=args.focus,
+        model=args.model,
+        out=args.out,
+    )
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
 
 
 def _cmd_stage_a_explain_obligations(args: Any) -> int:
@@ -1636,7 +1713,9 @@ def _cmd_stage_b_explain_delta(args: Any) -> int:
         skeleton_manifest=args.skeleton_manifest,
         candidate_modules=_stage_b_candidate_module_specs(args.candidate_module),
         candidate_crash_report=args.candidate_crash_report,
+        candidate_probe_report=args.candidate_probe_report,
         functional_report=args.functional_report,
+        unit_contract_dir=args.unit_contract_dir,
         model=args.model,
         out=args.out,
     )
@@ -2861,6 +2940,12 @@ def _target_list(metadata: dict[str, str], key: str, default: tuple[str, ...]) -
 
 def _print_json(data: Any) -> None:
     print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def _print_json_unless_quiet(args: Any, data: Any) -> None:
+    if getattr(args, "quiet", False):
+        return
+    _print_json(data)
 
 
 def _parse_int(value: str) -> int:

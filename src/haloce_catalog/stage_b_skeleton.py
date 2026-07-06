@@ -444,16 +444,16 @@ def stage_b_generate_skeleton(
 ) -> dict[str, Any]:
     if source_language not in {"c", "rust"}:
         raise StageAInputError(f"unsupported Stage B source language {source_language!r}")
-    if implementation_mode not in {"scaffold", "decompiled-c"}:
+    if implementation_mode not in {"scaffold", "decompiled-c", "contract-guided-c"}:
         raise StageAInputError(f"unsupported Stage B implementation mode {implementation_mode!r}")
-    if implementation_mode == "decompiled-c" and source_language != "c":
-        raise StageAInputError("decompiled-c Stage B implementation mode requires source_language='c'")
+    if implementation_mode in {"decompiled-c", "contract-guided-c"} and source_language != "c":
+        raise StageAInputError(f"{implementation_mode} Stage B implementation mode requires source_language='c'")
     if implementation_mode == "decompiled-c" and decompiler_export is None:
         raise StageAInputError("decompiled-c Stage B implementation mode requires --decompiler-export")
     if runtime_entry_policy not in _DECOMPILED_C_RUNTIME_ENTRY_POLICIES:
         raise StageAInputError(f"unsupported Stage B runtime entry policy {runtime_entry_policy!r}")
-    if implementation_mode != "decompiled-c" and runtime_entry_policy != "bridge":
-        raise StageAInputError("Stage B runtime entry policy is only supported with implementation_mode='decompiled-c'")
+    if implementation_mode not in {"decompiled-c", "contract-guided-c"} and runtime_entry_policy != "bridge":
+        raise StageAInputError("Stage B runtime entry policy is only supported with C implementation modes")
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -478,7 +478,7 @@ def stage_b_generate_skeleton(
         linker_map,
         decompiler_export,
         reference_contract_payload=reference_contract_payload,
-        include_decompiler_code=implementation_mode == "decompiled-c",
+        include_decompiler_code=implementation_mode in {"decompiled-c", "contract-guided-c"},
     )
     function_filter = _function_filter(functions, function_names)
     external_function_names = function_filter["external_function_names"] + [
@@ -1376,6 +1376,18 @@ def _skeleton_implementation_recovery(
             blockers.append("duplicate_decompiler_function_names")
         status = "complete" if not blockers else "incomplete"
         generated_source_kind = "decompiler_recovered_behavior" if status == "complete" else "decompiler_recovered_partial"
+    elif implementation_mode == "contract-guided-c":
+        blockers = ["stage_a_validation_required"]
+        if not functions:
+            blockers.append("missing_functions")
+        if len(decompiler_functions) != len(functions):
+            blockers.append("missing_decompiler_exports")
+        if decompiler_successes and len(decompiler_successes) < len(functions):
+            blockers.append("incomplete_decompiler_coverage")
+        if duplicate_names:
+            blockers.append("duplicate_decompiler_function_names")
+        status = "incomplete"
+        generated_source_kind = "contract_guided_c_partial"
     else:
         blockers = ["generated_source_is_scaffold"]
         if not decompiler_successes:
@@ -1506,7 +1518,7 @@ def _render_skeleton_source(
     external_function_names: list[str] | tuple[str, ...] | None = None,
     behavior_recovery: dict[str, Any] | None = None,
 ) -> str:
-    if implementation_mode == "decompiled-c":
+    if implementation_mode in {"decompiled-c", "contract-guided-c"}:
         return _render_decompiled_c_source(
             target_name=target_name,
             functions=functions,
@@ -3324,12 +3336,18 @@ def _normalize_jq_isoption_dispatch_calls(code: str) -> str:
     return code.replace("isoption((int)puVar23)", "stage_b_jq_isoption_next(&apcStack_3c[0], (int)puVar23)")
 
 def _render_skeleton_readme(target_name: str, source_language: str, implementation_mode: str) -> str:
-    mode_description = (
-        "This directory contains decompiler-derived C source generated from private reverse-engineering evidence."
-        if implementation_mode == "decompiled-c"
-        else "This directory is generated from Windows PE reverse-engineering inputs. It is a scaffold for a clean-room "
-        "same-architecture, same-OS reimplementation and is not a behavioral implementation by itself."
-    )
+    if implementation_mode == "decompiled-c":
+        mode_description = "This directory contains decompiler-derived C source generated from private reverse-engineering evidence."
+    elif implementation_mode == "contract-guided-c":
+        mode_description = (
+            "This directory contains contract-guided C anchors generated from Stage A reverse-engineering evidence. "
+            "It is expected to need repair before Stage A can prove the candidate binary."
+        )
+    else:
+        mode_description = (
+            "This directory is generated from Windows PE reverse-engineering inputs. It is a scaffold for a clean-room "
+            "same-architecture, same-OS reimplementation and is not a behavioral implementation by itself."
+        )
     return (
         f"# Stage B Skeleton: {target_name}\n\n"
         f"{mode_description}\n\n"
