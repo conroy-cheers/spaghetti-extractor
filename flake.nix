@@ -2894,6 +2894,13 @@
                 and (.status == "pass" or .status == "incomplete")
                 and .functional_report == null
                 and .functional_diagnostics.status == "not_provided"
+                and (
+                  .status == "pass"
+                  or (
+                    ((.counts.by_evidence_source["stage-a-contract-candidate-validation"] // 0) > 0)
+                    and .repair_items[0].evidence.source == "stage-a-contract-candidate-validation"
+                  )
+                )
               ' "$work/delta/stage-b-delta.json" >/dev/null
 
               mkdir -p "$out"

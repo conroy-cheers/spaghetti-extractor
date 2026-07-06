@@ -1326,6 +1326,7 @@ def stage_b_explain_delta(
             "repair_items": len(items),
             "by_repair_class": _count_by(items, "likely_repair_class"),
             "by_family": _count_by(items, "violated_contract_family"),
+            "by_evidence_source": _count_by_evidence_source(items),
         },
     }
     write_json(out / "stage-b-delta.json", result)
@@ -1519,7 +1520,7 @@ def _stage_b_delta_repair_items(
     source_map = _stage_b_source_map_by_function(skeleton)
     contract_functions = _stage_b_contract_functions(contract)
     candidate_by_name = {str(item.get("name") or ""): item for item in candidate_functions}
-    items: list[dict[str, Any]] = []
+    validation_items: list[dict[str, Any]] = []
     for family in validation.get("families", []) if isinstance(validation.get("families"), list) else []:
         if not isinstance(family, dict) or family.get("status") in {"satisfied", "not_applicable"}:
             continue
@@ -1535,7 +1536,7 @@ def _stage_b_delta_repair_items(
                     continue
                 source_location = _stage_b_source_location(source_map, function_name)
                 repair_class = _stage_b_function_range_detail_repair_class(function_name, detail, source_location)
-                items.append(
+                validation_items.append(
                     _stage_b_repair_item(
                         family=family_name,
                         function=function_name,
@@ -1557,7 +1558,7 @@ def _stage_b_delta_repair_items(
                 function_name = str(name)
                 source_location = _stage_b_source_location(source_map, function_name)
                 repair_class = _stage_b_function_range_repair_class(function_name, source_location)
-                items.append(
+                validation_items.append(
                     _stage_b_repair_item(
                         family=family_name,
                         function=function_name,
@@ -1570,7 +1571,7 @@ def _stage_b_delta_repair_items(
                 )
             continue
         if family_name == "binary_faithfulness":
-            items.extend(
+            validation_items.extend(
                 _stage_b_binary_faithfulness_repair_items(
                     family=family,
                     evidence=evidence,
@@ -1581,9 +1582,9 @@ def _stage_b_delta_repair_items(
             )
             continue
         if family_name == "abi_callsites":
-            items.extend(_stage_b_abi_repair_items(family=family, evidence=evidence, source_map=source_map))
+            validation_items.extend(_stage_b_abi_repair_items(family=family, evidence=evidence, source_map=source_map))
             continue
-        items.append(
+        validation_items.append(
             _stage_b_repair_item(
                 family=family_name,
                 function=_stage_b_first_contract_function(contract_functions),
@@ -1594,6 +1595,9 @@ def _stage_b_delta_repair_items(
                 evidence={"family": family},
             )
         )
+    for item in validation_items:
+        _stage_b_set_repair_item_source(item, "stage-a-contract-candidate-validation")
+    items: list[dict[str, Any]] = list(validation_items)
     items.extend(_stage_b_functional_repair_items(functional, source_map))
     items.extend(_stage_b_unit_contract_repair_items(unit_contracts, source_map, validation=validation))
     items.extend(_stage_b_candidate_probe_repair_items(candidate_probe, source_map))
@@ -1631,6 +1635,14 @@ def _stage_b_repair_item(
         "next_action": next_action,
         "evidence": evidence,
     }
+
+
+def _stage_b_set_repair_item_source(item: dict[str, Any], source: str) -> None:
+    evidence = item.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+        item["evidence"] = evidence
+    evidence.setdefault("source", source)
 
 
 def _stage_b_unit_contract_repair_items(
@@ -3312,7 +3324,7 @@ def _stage_b_function_for_rva(candidate_functions: list[dict[str, Any]], rva: in
     return None
 
 
-def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
+def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, int, str]:
     class_rank = {
         "candidate_crash": 0,
         "candidate_crash_fault_address_context": 0,
@@ -3370,13 +3382,48 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, str]:
         "jump_table_target": 8,
         "function_mapping": 9,
     }
-    return (class_rank.get(str(item.get("likely_repair_class")), 20), str(item.get("original_function") or ""))
+    source_rank = {
+        "candidate-crash-report": 1,
+        "stage-a-contract-candidate-validation": 1,
+        "candidate-only-probe-report": 2,
+        "functional-report": 5,
+        "stage-a-unit-contract": 6,
+        "stage-a-semantic-transfer-contract": 6,
+        "stage-a-cluster-semantic-contract": 6,
+        "unknown": 4,
+    }
+    return (
+        source_rank.get(_stage_b_repair_item_source(item), 4),
+        class_rank.get(str(item.get("likely_repair_class")), 20),
+        str(item.get("original_function") or ""),
+    )
+
+
+def _stage_b_repair_item_source(item: dict[str, Any]) -> str:
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    source = evidence.get("source")
+    if isinstance(source, str) and source:
+        return source
+    family = str(item.get("violated_contract_family") or "")
+    repair_class = str(item.get("likely_repair_class") or "")
+    if family == "candidate_crash" or repair_class.startswith("candidate_crash"):
+        return "candidate-crash-report"
+    if family == "functional_expected_output" or repair_class.startswith("functional_"):
+        return "functional-report"
+    return "unknown"
 
 
 def _count_by(items: list[dict[str, Any]], key: str) -> dict[str, int]:
     counter: Counter[str] = Counter()
     for item in items:
         counter[str(item.get(key) or "")] += 1
+    return dict(sorted(counter.items()))
+
+
+def _count_by_evidence_source(items: list[dict[str, Any]]) -> dict[str, int]:
+    counter: Counter[str] = Counter()
+    for item in items:
+        counter[_stage_b_repair_item_source(item)] += 1
     return dict(sorted(counter.items()))
 
 

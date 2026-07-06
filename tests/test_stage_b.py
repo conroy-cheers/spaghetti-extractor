@@ -24,6 +24,7 @@ from haloce_catalog.stage_b import (
     stage_b_run_functional_suite,
     stage_b_validate_candidate,
     _stage_b_abi_coverage_gap_items,
+    _count_by_evidence_source,
     _stage_b_delta_repair_items,
     _stage_b_semantic_contract_repair_items,
     _render_decompiled_c_source,
@@ -5064,6 +5065,88 @@ class StageBTests(unittest.TestCase):
             self.assertIn("preserved_register_mismatch", repair_classes)
             self.assertEqual(result["unit_contracts"]["counts"]["work_items"], 1)
             self.assertEqual(result["candidate_probe_report"]["counts"]["failing"], 1)
+
+    def test_explain_delta_ranks_contract_candidate_validation_before_unit_backlog(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 1, "callsites": 1},
+                        "candidate_counts": {"functions": 1, "callsites": 0},
+                        "coverage_gaps": {
+                            "incomplete_callsites": [
+                                {
+                                    "name": "__d2b_D2A",
+                                    "match_key": "__d2b_D2A",
+                                    "reference_callsites": 1,
+                                    "candidate_callsites": 0,
+                                    "missing_callsites": 1,
+                                }
+                            ],
+                            "counts": {
+                                "missing_functions": 0,
+                                "incomplete_callsite_functions": 1,
+                                "missing_callsites": 1,
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+        unit_contracts = {
+            "repair_units": {
+                "work_items": [
+                    {
+                        "id": "work:__Balloc_D2A:hidden-sret",
+                        "family": "abi_callsites",
+                        "original_function": "__Balloc_D2A",
+                        "repair_class": "hidden_sret_or_out_param",
+                        "next_action": "repair __Balloc_D2A hidden sret/out-param evidence",
+                    }
+                ]
+            }
+        }
+        skeleton = {
+            "source_map": {
+                "functions": [
+                    {
+                        "function": "__d2b_D2A",
+                        "file": "src/jq_stage_b_skeleton.c",
+                        "line_start": 1148,
+                        "line_end": 1154,
+                    },
+                    {
+                        "function": "__Balloc_D2A",
+                        "file": "src/jq_stage_b_skeleton.c",
+                        "line_start": 1090,
+                        "line_end": 1130,
+                    },
+                ]
+            }
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton=skeleton,
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+            unit_contracts=unit_contracts,
+        )
+
+        callsite_item = next(item for item in result if item["original_function"] == "__d2b_D2A")
+        unit_item = next(item for item in result if item["original_function"] == "__Balloc_D2A")
+        self.assertEqual(callsite_item["evidence"]["source"], "stage-a-contract-candidate-validation")
+        self.assertEqual(unit_item["evidence"]["source"], "stage-a-unit-contract")
+        self.assertLess(callsite_item["rank"], unit_item["rank"])
+        self.assertEqual(result[0]["evidence"]["source"], "stage-a-contract-candidate-validation")
+        self.assertEqual(
+            _count_by_evidence_source(result),
+            {"stage-a-contract-candidate-validation": 2, "stage-a-unit-contract": 1},
+        )
 
     def test_abi_coverage_gap_items_surface_callsite_and_function_mismatch_repairs(self):
         evidence = {
