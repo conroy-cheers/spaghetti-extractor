@@ -1701,18 +1701,6 @@
                 --object "$compile_dir/jq_stage_b_skeleton.o" \
                 --out "$compile_dir/link-roots" \
                 > "$compile_dir/link-roots.stdout"
-              printf '%s\n' \
-                'LIBRARY msvcrt.dll' \
-                'EXPORTS' \
-                '  atexit' \
-                > "$compile_dir/stage_b_msvcrt_atexit.def"
-              i686-w64-mingw32-dlltool \
-                -d "$compile_dir/stage_b_msvcrt_atexit.def" \
-                -l "$compile_dir/libstage_b_msvcrt_atexit.a" \
-                -m i386
-              i686-w64-mingw32-objcopy \
-                --redefine-sym _atexit=___crt_atexit \
-                "$compile_dir/libstage_b_msvcrt_atexit.a"
               link_root_flags=()
               while IFS= read -r flag; do
                 if test -n "$flag"; then
@@ -1734,7 +1722,6 @@
               set +e
               i686-w64-mingw32-cc -municode \
                 "$compile_dir/jq_stage_b_skeleton.o" \
-                "$compile_dir/libstage_b_msvcrt_atexit.a" \
                 "''${import_thunk_root_flags[@]}" \
                 "''${link_root_flags[@]}" \
                 -L${stage-a-jq-original}/lib \
@@ -1760,7 +1747,6 @@
               set +e
               i686-w64-mingw32-cc -municode \
                 "$compile_dir/jq_stage_b_skeleton.o" \
-                "$compile_dir/libstage_b_msvcrt_atexit.a" \
                 "''${import_thunk_root_flags[@]}" \
                 "''${budgeted_link_root_flags[@]}" \
                 -L${stage-a-jq-original}/lib \
@@ -1786,7 +1772,6 @@
               set +e
               i686-w64-mingw32-cc -municode \
                 "$compile_dir/jq_stage_b_skeleton.o" \
-                "$compile_dir/libstage_b_msvcrt_atexit.a" \
                 "''${import_thunk_root_flags[@]}" \
                 "''${budgeted_link_root_flags[@]}" \
                 -L${mingw32Oniguruma.lib}/lib \
@@ -1839,7 +1824,6 @@
                 --arg standalone_stdout "$compile_dir/standalone-link.stdout.txt" \
                 --arg standalone_stderr "$compile_dir/standalone-link.stderr.txt" \
                 --rawfile standalone_undefined "$compile_dir/standalone-link-undefined-references.txt" \
-                --arg import_lib "$compile_dir/libstage_b_msvcrt_atexit.a" \
                 --arg link_roots "$compile_dir/link-roots/link-roots.json" \
                 --slurpfile link_root_flags "$compile_dir/link-roots/link-roots.json" \
                 --arg stdout "$compile_dir/link.stdout.txt" \
@@ -1851,7 +1835,7 @@
                   returncode: ($returncode | tonumber),
                   unresolved_reference_lines: ($unresolved_count | tonumber),
                   linker_flags: (
-                    ["-municode", "libstage_b_msvcrt_atexit.a"]
+                    ["-municode"]
                     + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                     + (($link_root_flags[0].budgeted_linker_flags // []) | map(tostring))
                     + ["-L${stage-a-jq-original}/lib", "-ljq", "-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.link.map"]
@@ -1860,7 +1844,7 @@
                     status: $rooted_status,
                     returncode: ($rooted_returncode | tonumber),
                     linker_flags: (
-                      ["-municode", "libstage_b_msvcrt_atexit.a"]
+                      ["-municode"]
                       + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                       + (($link_root_flags[0].linker_flags // []) | map(tostring))
                       + ["-L${stage-a-jq-original}/lib", "-ljq", "-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.rooted.link.map"]
@@ -1875,7 +1859,7 @@
                     returncode: ($standalone_returncode | tonumber),
                     unresolved_reference_lines: ($standalone_unresolved_count | tonumber),
                     linker_flags: (
-                      ["-municode", "libstage_b_msvcrt_atexit.a"]
+                      ["-municode"]
                       + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                       + (($link_root_flags[0].budgeted_linker_flags // []) | map(tostring))
                       + ["-L${mingw32Oniguruma.lib}/lib", "-lonig", "-L${mingw32.windows.mcfgthreads}/lib", "-Wl,--gc-sections", "-Wl,--section-start,.data=0x40d000", "-Wl,--section-start,.rdata=0x40e000", "-Wl,--section-start,.bss=0x410000", "-Wl,--section-start,.edata=0x411000", "-Wl,--section-start,.idata=0x412000", "-Wl,--section-start,.tls=0x413000", "-Wl,--section-start,.reloc=0x414000", "-Wl,-Map,jq_stage_b_skeleton.standalone.link.map"]
@@ -1886,7 +1870,7 @@
                     stderr: $standalone_stderr,
                     undefined_reference_samples: ($standalone_undefined | split("\n") | map(select(length > 0))[:100])
                   },
-                  generated_import_libraries: [$import_lib],
+                  generated_import_libraries: [],
                   link_roots_report: $link_roots,
                   blocker: $blocker,
                   executable: $exe,
@@ -2517,7 +2501,6 @@
               set +e
               i686-w64-mingw32-cc -municode \
                 "$diagnostic_dir/jq_stage_b_skeleton.o" \
-                "$diagnostic_dir/libstage_b_msvcrt_atexit.a" \
                 "''${import_thunk_root_flags[@]}" \
                 "''${link_root_flags[@]}" \
                 "''${budgeted_runtime_crt_root_flags[@]}" \
@@ -2558,7 +2541,6 @@
                 set +e
                 i686-w64-mingw32-cc -municode \
                   "$diagnostic_dir/jq_stage_b_skeleton.o" \
-                  "$diagnostic_dir/libstage_b_msvcrt_atexit.a" \
                   "''${import_thunk_root_flags[@]}" \
                   "''${link_root_flags[@]}" \
                   "''${budgeted_runtime_crt_root_flags[@]}" \
@@ -2652,7 +2634,7 @@
                   returncode: ($returncode | tonumber),
                   unresolved_reference_lines: ($unresolved_count | tonumber),
                   linker_flags: (
-                    ["-municode", "libstage_b_msvcrt_atexit.a"]
+                    ["-municode"]
                     + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                     + (($link_root_flags[0].linker_flags // []) | map(tostring))
                     + (($link_root_flags[0].budgeted_runtime_crt_linker_flags // []) | map(tostring))
@@ -2663,7 +2645,7 @@
                     returncode: ($returncode | tonumber),
                     unresolved_reference_lines: ($unresolved_count | tonumber),
                     linker_flags: (
-                      ["-municode", "libstage_b_msvcrt_atexit.a"]
+                      ["-municode"]
                       + (($link_root_flags[0].import_thunk_linker_flags // []) | map(tostring))
                       + (($link_root_flags[0].linker_flags // []) | map(tostring))
                       + (($link_root_flags[0].budgeted_runtime_crt_linker_flags // []) | map(tostring))

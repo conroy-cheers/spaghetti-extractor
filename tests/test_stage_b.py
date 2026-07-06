@@ -2198,10 +2198,11 @@ class StageBTests(unittest.TestCase):
 
         self.assertIn("extern uintptr_t __crt_atexit();", source)
         self.assertNotIn("#define __crt_atexit atexit", source)
+        self.assertIn(".globl ___crt_atexit", source)
+        self.assertIn("jmp _atexit", source)
         self.assertIn("uintptr_t __cdecl atexit(_func_4879 *param_1)", source)
         self.assertIn("return __crt_atexit(param_1);", source)
         self.assertNotIn("return atexit(param_1);", source)
-        self.assertNotIn("___crt_atexit", source)
 
     def test_decompiled_c_renderer_omits_import_thunk_bodies(self):
         source = _render_decompiled_c_source(
@@ -2297,6 +2298,35 @@ class StageBTests(unittest.TestCase):
             "isalpha",
         ]:
             self.assertIn(f"(void *)(uintptr_t)&{symbol}", source)
+
+    def test_decompiled_c_renderer_anchors_jq_atexit_through_import_alias(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            external_function_names=["atexit"],
+            functions=[
+                {
+                    "name": "__crt_atexit",
+                    "rva_start": 0xC3F0,
+                    "rva_end": 0xC3F6,
+                    "size": 6,
+                    "linkage": {"kind": "import_thunk", "symbol": "atexit", "original_symbol": "__crt_atexit"},
+                    "decompiler": {"status": "success", "code": "int __cdecl __crt_atexit(void *param_1) { return atexit(param_1); }"},
+                },
+                {
+                    "name": "atexit",
+                    "rva_start": 0x1430,
+                    "rva_end": 0x1435,
+                    "size": 5,
+                    "decompiler": {"status": "success", "code": "void __cdecl atexit(void *param_1) { atexit(param_1); }"},
+                },
+            ],
+        )
+
+        self.assertIn("extern uintptr_t __crt_atexit();", source)
+        self.assertIn(".globl ___crt_atexit", source)
+        self.assertIn("jmp _atexit", source)
+        self.assertIn("(void *)(uintptr_t)&__crt_atexit", source)
+        self.assertNotIn("(void *)(uintptr_t)&atexit,", source)
 
     def test_decompiled_c_renderer_replaces_mingw_crt_entry_with_bridge(self):
         source = _render_decompiled_c_source(

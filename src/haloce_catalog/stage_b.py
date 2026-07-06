@@ -8021,6 +8021,7 @@ def _recovered_cli_behavior(behavior_recovery: dict[str, Any] | None, behavior_i
 # Keep the existing public API stable while letting Nix skeleton derivations
 # depend on the narrower generation module instead of this validator module.
 from .stage_b_skeleton import (  # noqa: E402
+    _render_decompiled_c_source as _render_decompiled_c_source,
     stage_b_generate_link_roots as stage_b_generate_link_roots,
     stage_b_generate_skeleton as stage_b_generate_skeleton,
 )

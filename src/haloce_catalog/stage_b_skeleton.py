@@ -2217,7 +2217,7 @@ def _render_decompiled_c_source(
     if prototypes:
         lines.extend(prototypes)
         lines.append("")
-    layout_support = _decompiled_c_layout_support_lines(target_name)
+    layout_support = _decompiled_c_layout_support_lines(target_name, functions)
     if layout_support:
         lines.extend(layout_support)
         lines.append("")
@@ -2345,6 +2345,27 @@ def _decompiled_c_import_thunk_alias_pairs(functions: list[dict[str, Any]]) -> l
 
 def _decompiled_c_preserved_import_thunk_alias_lines(functions: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
+    seen_direct_aliases: set[str] = set()
+    for function in functions:
+        if not _decompiled_c_is_import_thunk(function):
+            continue
+        linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
+        left = str(linkage.get("original_symbol") or function.get("name") or "")
+        right = str(linkage.get("symbol") or "")
+        if right != "atexit" or left not in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS or left in seen_direct_aliases:
+            continue
+        seen_direct_aliases.add(left)
+        lines.extend(
+            [
+                "__asm__(",
+                "\".section .text$__crt_atexit,\\\"x\\\"\\n\"",
+                "\".globl ___crt_atexit\\n\"",
+                "\".def ___crt_atexit; .scl 2; .type 32; .endef\\n\"",
+                "\"___crt_atexit:\\n\"",
+                "\"  jmp _atexit\\n\"",
+                ");",
+            ]
+        )
     for left, right in _decompiled_c_import_thunk_alias_pairs(functions):
         if left not in _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES:
             continue
@@ -2488,9 +2509,22 @@ def _decompiled_c_runtime_entry_bridge_externs(functions: list[dict[str, Any]]) 
         return []
     return ["__wgetmainargs", "exit", "malloc"]
 
-def _decompiled_c_layout_support_lines(target_name: str) -> list[str]:
+def _decompiled_c_jq_atexit_import_anchor_symbol(functions: list[dict[str, Any]]) -> str:
+    for function in functions:
+        if not _decompiled_c_is_import_thunk(function):
+            continue
+        linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
+        if str(linkage.get("symbol") or "") != "atexit":
+            continue
+        original_symbol = str(linkage.get("original_symbol") or function.get("name") or "")
+        if original_symbol in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS and _is_c_identifier(original_symbol):
+            return original_symbol
+    return "atexit"
+
+def _decompiled_c_layout_support_lines(target_name: str, functions: list[dict[str, Any]]) -> list[str]:
     if target_name != "jq":
         return ["static void stage_b_layout_keepalive(void) { }"]
+    atexit_import_anchor = _decompiled_c_jq_atexit_import_anchor_symbol(functions)
     return [
         "__attribute__((used, section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[1];",
         "__attribute__((used, section(\".tls\"))) volatile unsigned char stage_b_jq_layout_tls_anchor[8] = {0};",
@@ -2521,7 +2555,7 @@ def _decompiled_c_layout_support_lines(target_name: str) -> list[str]:
         "    (void *)(uintptr_t)&__set_app_type,",
         "    (void *)(uintptr_t)&_amsg_exit,",
         "    (void *)(uintptr_t)&_cexit,",
-        "    (void *)(uintptr_t)&atexit,",
+        f"    (void *)(uintptr_t)&{atexit_import_anchor},",
         "    (void *)(uintptr_t)&calloc,",
         "    (void *)(uintptr_t)&fputs,",
         "    (void *)(uintptr_t)&memcpy,",
