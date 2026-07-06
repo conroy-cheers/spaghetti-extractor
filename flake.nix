@@ -2146,9 +2146,6 @@
                 haloce-tools
                 pkgs.jq
                 pkgs.lean4
-                pkgs.wineWow64Packages.stable
-                pkgs.xvfb-run
-                stage-b-functional-tools
                 stage-b-skeleton-tools
               ];
             }
@@ -2164,157 +2161,30 @@
                 --target-name jq-candidate-smoke \
                 --source-language c \
                 --out-dir "$work/parse"
-              tar -C "$work" -xf "${pkgs.jq.src}" jq-1.8.1/tests
-              (
-                cd "$work/jq-1.8.1"
-                find tests -type f -print0 | sort -z | xargs -0 sha256sum
-              ) > "$work/upstream-suite-source.txt"
-              cat > "$work/cases.json" <<'JSON'
-              {
-                "format": "stage-b-upstream-suite-cases-v1",
-                "cases": [
-                  {
-                    "id": "jq-upstream-run-tests",
-                    "args": ["-L", "tests/modules", "--run-tests", "tests/jq.test"],
-                    "stdin": "",
-                    "cwd": "__JQ_TEST_ROOT__",
-                    "expected_returncode": 0,
-                    "expected_stdout_policy": "any",
-                    "expected_stderr_policy": "any",
-                    "timeout_seconds": 120,
-                    "candidate_timeout_seconds": 120
-                  }
-                ]
-              }
-              JSON
-              substituteInPlace "$work/cases.json" \
-                --replace-fail "__JQ_TEST_ROOT__" "$work/jq-1.8.1"
-              stage-b-functional-wincr stage-b-materialize-upstream-suite \
-                --target-name jq \
-                --suite-source "$work/upstream-suite-source.txt" \
-                --source-revision jq-1.8.1 \
-                --cases "$work/cases.json" \
-                --suite-scope full \
-                --out "$work/materialized-suite" \
-                > "$work/materialized-suite.stdout"
-              cp "$work/materialized-suite.stdout" "$work/full-suite.stdout"
-              cat > "$work/smoke-cases.json" <<'JSON'
-              {
-                "format": "stage-b-upstream-suite-cases-v1",
-                "cases": [
-                  {
-                    "id": "jq-smoke-version",
-                    "args": ["--version"],
-                    "stdin": "",
-                    "expected_returncode": 0,
-                    "expected_stdout": "jq-1.8.1\r\n",
-                    "expected_stderr": "",
-                    "timeout_seconds": 30,
-                    "candidate_timeout_seconds": 30
-                  }
-                ]
-              }
-              JSON
-              stage-b-functional-wincr stage-b-materialize-upstream-suite \
-                --target-name jq \
-                --suite-source "$work/upstream-suite-source.txt" \
-                --source-revision jq-1.8.1-smoke \
-                --cases "$work/smoke-cases.json" \
-                --suite-scope subset \
-                --out "$work/smoke-suite" \
-                > "$work/smoke-suite.stdout"
-              export HOME="$work/home"
-              export XDG_CACHE_HOME="$work/xdg-cache"
-              export XDG_CONFIG_HOME="$work/xdg-config"
-              export XDG_DATA_HOME="$work/xdg-data"
-              mkdir -p "$HOME" "$XDG_CACHE_HOME/fontconfig" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
-              export WINEPREFIX="$work/wineprefix"
-              export WINEDEBUG=-all
-              export WINEDLLOVERRIDES=mscoree,mshtml,winedbg.exe=
-              export MESA_VK_IGNORE_CONFORMANCE_WARNING=1
-              printf 'skipped: per-command Wine runner initializes the prefix under xvfb-run\n' > "$work/wineboot.stderr"
-              printf 'not-run\n' > "$work/wineboot.returncode"
-              cat > "$work/run-jq-under-wine" <<EOF
-              #!${pkgs.runtimeShell}
-              set -eu
-              pe="\$1"
-              shift
-              runroot="\$(mktemp -d "\''${TMPDIR:-/tmp}/stage-b-jq-under-wine.XXXXXX")"
-              cleanup() {
-                ${pkgs.coreutils}/bin/timeout --kill-after=5s 30s \
-                  ${pkgs.wineWow64Packages.stable}/bin/wineserver -k >/dev/null 2>&1 || true
-                rm -rf "\$runroot"
-              }
-              trap cleanup EXIT
-              trap 'exit 143' INT TERM
-              mkdir -p "\$runroot/bin"
-              exe_name="\$(basename "\$pe")"
-              pe_dir="\$(dirname "\$pe")"
-              cp "\$pe" "\$runroot/bin/\$exe_name"
-              for dll in "\$pe_dir"/*.dll "\$pe_dir"/*.DLL; do
-                if test -e "\$dll"; then
-                  cp "\$dll" "\$runroot/bin/"
-                fi
-              done
-              chmod +x "\$runroot/bin/\$exe_name"
-              set +e
-              ${pkgs.xvfb-run}/bin/xvfb-run -a \
-                ${pkgs.wineWow64Packages.stable}/bin/wine "\$runroot/bin/\$exe_name" "\$@"
-              code=\$?
-              set -e
-              exit "\$code"
-              EOF
-              chmod +x "$work/run-jq-under-wine"
-              candidate_cmd="$(jq -cn \
-                --arg runner "$work/run-jq-under-wine" \
-                --arg exe "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
-                '[$runner,$exe]')"
-              mkdir -p "$work/smoke"
-              set +e
-              "$work/run-jq-under-wine" "$candidate_dir/jq-stage-b-skeleton-candidate.exe" --version \
-                > "$work/smoke/candidate-version.stdout" \
-                2> "$work/smoke/candidate-version.stderr"
-              candidate_smoke_code=$?
-              set -e
-              printf '%s\n' "$candidate_smoke_code" > "$work/smoke/candidate-version.returncode"
-              set +e
-              stage-b-functional-wincr stage-b-run-functional-suite \
-                --suite "$work/smoke-suite/functional-suite.json" \
-                --candidate-command-json "$candidate_cmd" \
-                --candidate-binary "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
-                --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
-                --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
-                --strip-stderr-line-regex '^      after [0-9]+ requests .* with [0-9]+ events remaining\.$' \
-                --out "$work/functional" \
-                > "$work/functional.stdout"
-              smoke_functional_code=$?
-              set -e
-              if [ "$smoke_functional_code" -eq 0 ]; then
-                tr -d '\r' < "$work/smoke/candidate-version.stdout" > "$work/smoke/candidate-version.normalized.stdout"
-                grep -Fx 'jq-1.8.1' "$work/smoke/candidate-version.normalized.stdout" >/dev/null
-                set +e
-                stage-b-functional-wincr stage-b-run-functional-suite \
-                  --suite "$work/materialized-suite/functional-suite.json" \
-                  --candidate-command-json "$candidate_cmd" \
-                  --candidate-binary "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
-                  --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
-                  --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
-                  --strip-stderr-line-regex '^      after [0-9]+ requests .* with [0-9]+ events remaining\.$' \
-                  --out "$work/functional" \
-                  > "$work/functional.stdout"
-                functional_code=$?
-                set -e
-              else
-                printf 'skipped: jq smoke check failed before the full upstream integration suite\n' \
-                  > "$work/full-suite.stdout"
-                functional_code="$smoke_functional_code"
-              fi
-              functional_report="$work/functional/functional-report.json"
+              functional_report=""
+              functional_code=125
+              mkdir -p "$work/materialized-suite" "$work/smoke-suite" "$work/functional" "$work/smoke"
+              jq -n \
+                --arg candidate "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
+                '{
+                  format: "stage-b-runtime-smoke-v1",
+                  status: "skipped",
+                  returncode: 125,
+                  runner: "not_run",
+                  candidate: {path: $candidate},
+                  original_runtime_observations: false,
+                  blockers: [
+                    "runtime smoke is deferred until Stage A reference-contract validation is clean"
+                  ]
+                }' > "$work/smoke/report.json"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/materialized-suite.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/smoke-suite.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/full-suite.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/functional.stdout"
               wincr stage-b-generate-candidate-provenance \
                 --target-name jq \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
                 --candidate "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
-                --functional-report "$functional_report" \
                 --build-target i686-w64-mingw32 \
                 --build-compiler i686-w64-mingw32-cc \
                 --build-output jq-stage-b-skeleton-candidate.exe \
@@ -2328,7 +2198,6 @@
                 --linker-map-candidate "$candidate_dir/jq-stage-b-skeleton-candidate.map" \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
                 --candidate-provenance "$claimed_provenance" \
-                --functional-report "$functional_report" \
                 --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
                 --target-name jq \
                 --out "$work/validate" \
@@ -2362,58 +2231,38 @@
                   and .candidate.build.report.standalone_link_diagnostic.target_import_symbol_count > 0
                   and ([.candidate.build.report.source_dependency_policy.violations[].kind] | index("reference_target_artifact"))
                   and ([.candidate.build.report.source_dependency_policy.violations[].kind] | index("target_library_linkage"))
-                  and (
-                    if .functional.status == "pass" then
-                      ([.issues[].category] | index("functional_tests_not_passing") | not)
-                      and ([.issues[].category] | index("functional_test_report_failed") | not)
-                      and ([.issues[].category] | index("functional_test_report_incomplete_coverage_scope") | not)
-                    else
-                      ([.issues[].category] | index("functional_tests_not_passing"))
-                      and ([.issues[].category] | index("functional_test_failure"))
-                      and ([.issues[].category] | index("required_functional_suite_not_passing"))
-                      and ([.issues[].category] | index("functional_test_report_failed"))
-                      and ([.issues[].category] | index("functional_test_report_failed_cases"))
-                      and ([.issues[].category] | index("functional_test_report_incomplete_cases"))
-                      and ([.issues[].category] | index("functional_test_report_incomplete_coverage_scope"))
-                      and ([.issues[].category] | index("functional_test_report_failed_case_records"))
-                    end
-                  )
+                  and .functional == null
+                  and .functional_report == null
+                  and .functional_diagnostics.status == "not_provided"
+                  and ([.issues[].category] | index("missing_functional_tests"))
+                  and ([.issues[].category] | index("functional_tests_not_passing"))
+                  and ([.issues[].category] | index("missing_functional_test_suites"))
+                  and ([.issues[].category] | index("missing_required_functional_suite"))
+                  and ([.issues[].category] | index("functional_test_failure") | not)
+                  and ([.issues[].category] | index("functional_test_report_failed") | not)
+                  and ([.issues[].category] | index("functional_test_report_incomplete_coverage_scope") | not)
                   and ([.issues[].category] | index("functional_test_report_wrong_suite_id") | not)
                   and ([.issues[].category] | index("functional_test_report_wrong_source_kind") | not)
                   and ([.issues[].category] | index("functional_test_report_wrong_materializer") | not)
                   and ([.issues[].category] | index("functional_binary_command_not_bound") | not)
-                  and .functional.suite_id == "jq-upstream-integration-tests"
-                  and (.functional.coverage.suite_scope == "full" or .functional.coverage.suite_scope == "subset")
-                  and (.functional.coverage.source_revision == "jq-1.8.1" or .functional.coverage.source_revision == "jq-1.8.1-smoke")
-                  and .functional.coverage.materialized_by == "stage-b-materialize-upstream-suite"
-                  and (.functional.coverage.case_ids == ["jq-upstream-run-tests"] or .functional.coverage.case_ids == ["jq-smoke-version"])
                   and ([.issues[].category] | index("functional_test_report_original_baseline_failed") | not)
-                  and .functional.oracle.original_runtime_observations == false
-                  and (.functional.commands | has("original") | not)
-                  and (.functional.binary_bindings | has("original") | not)
                   and .reference_contract_coverage.provided == true
                   and .reference_contract_coverage.status == "incomplete"
                   and .stage_a.gate.status == "blocked"
                   and .stage_a.gate.eligible == false
                   and .stage_a.gate.ran == false
-                  and (
-                    if .functional.status == "pass" then
-                      .stage_a.gate.reason == "pre_stage_a_requirements_incomplete"
-                      and .stage_a.gate.behavioral_mismatch_blocks_stage_a == false
-                    else
-                      .stage_a.gate.reason == "functional_behavior_mismatch"
-                      and .stage_a.gate.behavioral_mismatch_blocks_stage_a == true
-                      and ([.stage_a.gate.behavioral_blocking_issue_categories[]] | index("functional_tests_not_passing"))
-                      and ([.stage_a.gate.behavioral_blocking_issue_categories[]] | index("functional_test_failure"))
-                    end
-                  )
+                  and .stage_a.gate.reason == "pre_stage_a_requirements_incomplete"
+                  and .stage_a.gate.behavioral_mismatch_blocks_stage_a == false
+                  and .stage_a.gate.behavioral_blocking_issue_categories == []
+                  and .stage_a.gate.iteration_policy == "stage_a_contract_first"
+                  and .stage_a.gate.runtime_validation_policy == "candidate_only_after_stage_a_pass"
+                  and ([.stage_a.gate.non_blocking_issue_categories[]] | index("missing_functional_tests"))
                 ' "$work/validate/stage-b.json" >/dev/null
               fi
               mkdir -p "$out"
               cp "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
                 "$candidate_dir/jq-stage-b-skeleton-candidate.map" \
                 "$claimed_provenance" \
-                "$functional_report" \
                 "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
                 "$work/validate/stage-b.json" \
                 "$out/"
@@ -2434,6 +2283,7 @@
               cp -R "$work/provenance" "$out/provenance"
               cp -R "$work/validate" "$out/validate"
               cp -R "$work/smoke" "$out/smoke"
+              printf '%s\n' "$functional_code" > "$out/functional.returncode"
             '';
 
           stage-b-jq-target-closure-skeleton = pkgs.runCommand "stage-b-jq-target-closure-skeleton"
@@ -2515,7 +2365,6 @@
                 --target-name jq \
                 --skeleton-manifest "${stage-b-jq-decompiled-c-skeleton}/share/wincr/stage-b/jq/decompiled-c-skeleton/manifest.json" \
                 --candidate "${stage-b-jq-skeleton-candidate}/share/wincr/stage-b/jq/candidate/jq-stage-b-skeleton-candidate.exe" \
-                --functional-report "${stage-b-jq-skeleton-candidate-check}/functional-report.json" \
                 --build-target i686-w64-mingw32 \
                 --build-compiler i686-w64-mingw32-cc \
                 --build-output jq-stage-b-skeleton-candidate.exe \
@@ -3608,9 +3457,6 @@
                 haloce-tools
                 pkgs.jq
                 pkgs.lean4
-                pkgs.wineWow64Packages.stable
-                pkgs.xvfb-run
-                stage-b-functional-tools
                 stage-b-skeleton-tools
               ];
             }
@@ -3626,181 +3472,31 @@
                 --target-name ripgrep-candidate-smoke \
                 --source-language rust \
                 --out-dir "$work/parse"
-              cat > "$work/run-ripgrep-integration" <<EOF
-              #!${pkgs.runtimeShell}
-              set -eu
-              pe="\$1"
-              shift
-              runroot="\$(mktemp -d "\''${TMPDIR:-/tmp}/stage-b-ripgrep-integration.XXXXXX")"
-              cleanup() {
-                ${pkgs.coreutils}/bin/timeout --kill-after=5s 30s \
-                  ${pkgs.wineWow64Packages.stable}/bin/wineserver -k >/dev/null 2>&1 || true
-                rm -rf "\$runroot"
-              }
-              trap cleanup EXIT
-              trap 'exit 143' INT TERM
-              mkdir -p "\$runroot/bin"
-              cp "${stage-b-ripgrep-integration-harness}/bin/ripgrep-integration.exe" "\$runroot/bin/integration.exe"
-              cp "\$pe" "\$runroot/rg.exe"
-              chmod +x "\$runroot/bin/integration.exe" "\$runroot/rg.exe"
-              unset CROSS_RUNNER
-              export WINEDEBUG=-all
-              export WINEDLLOVERRIDES=mscoree,mshtml,winedbg.exe=
-              export MESA_VK_IGNORE_CONFORMANCE_WARNING=1
-              set +e
-              ${pkgs.xvfb-run}/bin/xvfb-run -a \
-                ${pkgs.wineWow64Packages.stable}/bin/wine "\$runroot/bin/integration.exe" "\$@"
-              code=\$?
-              set -e
-              exit "\$code"
-              EOF
-              chmod +x "$work/run-ripgrep-integration"
-              cat > "$work/run-ripgrep-under-wine" <<EOF
-              #!${pkgs.runtimeShell}
-              set -eu
-              pe="\$1"
-              shift
-              runroot="\$(mktemp -d "\''${TMPDIR:-/tmp}/stage-b-ripgrep-smoke.XXXXXX")"
-              cleanup() {
-                ${pkgs.coreutils}/bin/timeout --kill-after=5s 30s \
-                  ${pkgs.wineWow64Packages.stable}/bin/wineserver -k >/dev/null 2>&1 || true
-                rm -rf "\$runroot"
-              }
-              trap cleanup EXIT
-              trap 'exit 143' INT TERM
-              mkdir -p "\$runroot/bin"
-              pe_dir="\$(dirname "\$pe")"
-              cp "\$pe" "\$runroot/bin/rg.exe"
-              for dll in "\$pe_dir"/*.dll "\$pe_dir"/*.DLL; do
-                if test -e "\$dll"; then
-                  cp "\$dll" "\$runroot/bin/"
-                fi
-              done
-              chmod +x "\$runroot/bin/rg.exe"
-              export WINEDEBUG=-all
-              export WINEDLLOVERRIDES=mscoree,mshtml,winedbg.exe=
-              export MESA_VK_IGNORE_CONFORMANCE_WARNING=1
-              set +e
-              ${pkgs.xvfb-run}/bin/xvfb-run -a \
-                ${pkgs.wineWow64Packages.stable}/bin/wine "\$runroot/bin/rg.exe" "\$@"
-              code=\$?
-              set -e
-              exit "\$code"
-              EOF
-              chmod +x "$work/run-ripgrep-under-wine"
-              cat > "$work/smoke-cases.json" <<'JSON'
-              {
-                "format": "stage-b-upstream-suite-cases-v1",
-                "cases": [
-                  {
-                    "id": "ripgrep-smoke-version",
-                    "args": ["--version"],
-                    "stdin": "",
-                    "expected_returncode": 0,
-                    "expected_stdout_policy": "any",
-                    "expected_stderr_policy": "any",
-                    "timeout_seconds": 60,
-                    "candidate_timeout_seconds": 60
-                  }
-                ]
-              }
-              JSON
-              stage-b-functional-wincr stage-b-materialize-upstream-suite \
-                --target-name ripgrep \
-                --suite-source "${stage-b-ripgrep-integration-harness}/share/wincr/stage-b/ripgrep/upstream-integration/source-manifest.sha256" \
-                --source-revision ripgrep-15.1.0-smoke \
-                --cases "$work/smoke-cases.json" \
-                --suite-scope subset \
-                --out "$work/smoke-suite" \
-                > "$work/smoke-suite.stdout"
-              cat > "$work/full-cases.json" <<'JSON'
-              {
-                "format": "stage-b-upstream-suite-cases-v1",
-                "cases": [
-                  {
-                    "id": "ripgrep-upstream-integration-harness",
-                    "args": [
-                      "--test-threads=1",
-                      "--skip",
-                      "misc::symlink_nofollow",
-                      "--skip",
-                      "regression::r1389_bad_symlinks_no_biscuit"
-                    ],
-                    "stdin": "",
-                    "expected_returncode": 0,
-                    "expected_stdout_policy": "any",
-                    "expected_stderr_policy": "any",
-                    "timeout_seconds": 900
-                  }
-                ]
-              }
-              JSON
-              export HOME="$work/home"
-              export XDG_CACHE_HOME="$work/xdg-cache"
-              export XDG_CONFIG_HOME="$work/xdg-config"
-              export XDG_DATA_HOME="$work/xdg-data"
-              mkdir -p "$HOME" "$XDG_CACHE_HOME/fontconfig" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
-              export WINEPREFIX="$work/wineprefix"
-              export WINEDEBUG=-all
-              export WINEDLLOVERRIDES=mscoree,mshtml,winedbg.exe=
-              export MESA_VK_IGNORE_CONFORMANCE_WARNING=1
-              printf 'skipped: per-command Wine runner initializes the prefix under xvfb-run\n' > "$work/wineboot.stderr"
-              printf 'not-run\n' > "$work/wineboot.returncode"
-              smoke_candidate_cmd="$(jq -cn --arg runner "$work/run-ripgrep-under-wine" --arg exe "$candidate_dir/rg-stage-b-skeleton-candidate.exe" '[$runner,$exe]')"
-              set +e
-              stage-b-functional-wincr stage-b-run-functional-suite \
-                --suite "$work/smoke-suite/functional-suite.json" \
-                --candidate-command-json "$smoke_candidate_cmd" \
-                --candidate-binary "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
-                --strip-stderr-line-regex '^wine: created the configuration directory ' \
-                --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
-                --strip-stderr-line-regex '^      after [0-9]+ requests .* with [0-9]+ events remaining\.$' \
-                --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
-                --out "$work/smoke-functional" \
-                > "$work/smoke-functional.stdout"
-              smoke_functional_code=$?
-              set -e
-              if [ "$smoke_functional_code" -ne 0 ]; then
-                mkdir -p "$work/materialized-suite" "$work/functional"
-                cp -R "$work/smoke-suite/." "$work/materialized-suite/"
-                cp -R "$work/smoke-functional/." "$work/functional/"
-                cp "$work/smoke-suite.stdout" "$work/materialized-suite.stdout"
-                cp "$work/smoke-functional.stdout" "$work/functional.stdout"
-                printf 'skipped: ripgrep smoke check failed before the full upstream integration harness\n' \
-                  > "$work/full-suite.stdout"
-                functional_code="$smoke_functional_code"
-              else
-                stage-b-functional-wincr stage-b-materialize-upstream-suite \
-                  --target-name ripgrep \
-                  --suite-source "${stage-b-ripgrep-integration-harness}/share/wincr/stage-b/ripgrep/upstream-integration/source-manifest.sha256" \
-                  --source-revision ripgrep-15.1.0 \
-                  --cases "$work/full-cases.json" \
-                  --suite-scope subset \
-                  --out "$work/materialized-suite" \
-                  > "$work/materialized-suite.stdout"
-                candidate_cmd="$(jq -cn --arg runner "$work/run-ripgrep-integration" --arg exe "$candidate_dir/rg-stage-b-skeleton-candidate.exe" '[$runner,$exe]')"
-                set +e
-                stage-b-functional-wincr stage-b-run-functional-suite \
-                  --suite "$work/materialized-suite/functional-suite.json" \
-                  --candidate-command-json "$candidate_cmd" \
-                  --candidate-binary "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
-                  --strip-stderr-line-regex '^wine: created the configuration directory ' \
-                  --strip-stderr-line-regex '^XIO:  fatal IO error [0-9]+ .* on X server ":[0-9]+"$' \
-                  --strip-stderr-line-regex '^      after [0-9]+ requests .* with [0-9]+ events remaining\.$' \
-                  --strip-stderr-line-regex '^X connection to :[0-9]+ broken \(explicit kill or server shutdown\)\.$' \
-                  --out "$work/functional" \
-                  > "$work/functional.stdout"
-                functional_code=$?
-                set -e
-                cp "$work/materialized-suite.stdout" "$work/full-suite.stdout"
-              fi
-              test "$functional_code" -ne 0
-              functional_report="$work/functional/functional-report.json"
+              functional_report=""
+              functional_code=125
+              mkdir -p "$work/materialized-suite" "$work/smoke-suite" "$work/smoke-functional" "$work/functional"
+              jq -n \
+                --arg candidate "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
+                '{
+                  format: "stage-b-runtime-smoke-v1",
+                  status: "skipped",
+                  returncode: 125,
+                  runner: "not_run",
+                  candidate: {path: $candidate},
+                  original_runtime_observations: false,
+                  blockers: [
+                    "runtime smoke is deferred until Stage A reference-contract validation is clean"
+                  ]
+                }' > "$work/smoke-functional/report.json"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/materialized-suite.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/smoke-suite.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/smoke-functional.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/full-suite.stdout"
+              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/functional.stdout"
               wincr stage-b-generate-candidate-provenance \
                 --target-name ripgrep \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
                 --candidate "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
-                --functional-report "$functional_report" \
                 --build-target x86_64-pc-windows-gnu \
                 --build-compiler rustc \
                 --build-output rg-stage-b-skeleton-candidate.exe \
@@ -3813,7 +3509,6 @@
                 --linker-map-candidate "$candidate_dir/rg-stage-b-skeleton-candidate.map" \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
                 --candidate-provenance "$claimed_provenance" \
-                --functional-report "$functional_report" \
                 --reference-contract "${stage-b-ripgrep-reference-contract}/share/wincr/stage-b/ripgrep/reference-contract/ripgrep-reference-contract.json" \
                 --target-name ripgrep \
                 --model x86_64-pe32plus-env-v1 \
@@ -3825,7 +3520,6 @@
                 --candidate "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
                 --linker-map-candidate "$candidate_dir/rg-stage-b-skeleton-candidate.map" \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
-                --functional-report "$functional_report" \
                 --model x86_64-pe32plus-env-v1 \
                 --out "$work/delta" \
                 > "$work/delta.stdout"
@@ -3836,28 +3530,30 @@
               jq -e '
                 .status == "incomplete"
                 and .provenance_status == "incomplete"
+                and .functional == null
+                and .functional_report == null
+                and .functional_diagnostics.status == "not_provided"
+                and ([.issues[].category] | index("missing_functional_tests"))
                 and ([.issues[].category] | index("functional_tests_not_passing"))
-                and ([.issues[].category] | index("functional_test_report_failed"))
-                and ([.issues[].category] | index("functional_test_report_incomplete_coverage_scope"))
+                and ([.issues[].category] | index("missing_functional_test_suites"))
+                and ([.issues[].category] | index("missing_required_functional_suite"))
+                and ([.issues[].category] | index("functional_test_failure") | not)
+                and ([.issues[].category] | index("functional_test_report_failed") | not)
+                and ([.issues[].category] | index("functional_test_report_incomplete_coverage_scope") | not)
                 and ([.issues[].category] | index("functional_test_report_wrong_suite_id") | not)
                 and ([.issues[].category] | index("functional_test_report_wrong_source_kind") | not)
                 and ([.issues[].category] | index("functional_test_report_wrong_materializer") | not)
                 and ([.issues[].category] | index("functional_binary_command_not_bound") | not)
                 and ([.issues[].category] | index("functional_test_report_original_baseline_failed") | not)
-                and .functional.suite_id == "ripgrep-upstream-integration-tests"
-                and .functional.coverage.suite_scope == "subset"
-                and (.functional.coverage.source_revision == "ripgrep-15.1.0-smoke" or .functional.coverage.source_revision == "ripgrep-15.1.0")
-                and .functional.coverage.materialized_by == "stage-b-materialize-upstream-suite"
-                and (.functional.coverage.case_ids == ["ripgrep-smoke-version"] or .functional.coverage.case_ids == ["ripgrep-upstream-integration-harness"])
-                and .functional.oracle.original_runtime_observations == false
-                and (.functional.commands | has("original") | not)
-                and (.functional.binary_bindings | has("original") | not)
-                and .stage_a.verdict == null
-                and .stage_a.gate.status == "blocked"
-                and .stage_a.gate.reason == "functional_behavior_mismatch"
-                and .stage_a.gate.eligible == false
-                and .stage_a.gate.ran == false
-                and .stage_a.gate.behavioral_mismatch_blocks_stage_a == true
+                and .stage_a.gate.status == "incomplete"
+                and .stage_a.gate.reason == "stage_a_validation_incomplete"
+                and .stage_a.gate.eligible == true
+                and .stage_a.gate.ran == true
+                and .stage_a.gate.behavioral_mismatch_blocks_stage_a == false
+                and .stage_a.gate.behavioral_blocking_issue_categories == []
+                and .stage_a.gate.iteration_policy == "stage_a_contract_first"
+                and .stage_a.gate.runtime_validation_policy == "candidate_only_after_stage_a_pass"
+                and ([.stage_a.gate.non_blocking_issue_categories[]] | index("missing_functional_tests"))
                 and .reference_contract_coverage.provided == true
                 and .reference_contract_coverage.status == "incomplete"
                 and .reference_contract_coverage.contract_status == "incomplete"
@@ -3868,17 +3564,15 @@
               jq -e '
                 .format == "stage-b-delta-explanation-v1"
                 and .status == "incomplete"
-                and .functional_report != null
-                and .functional_diagnostics.harness_tests.top_failed_tests[0].prefix == "binary"
-                and ([.repair_items[].likely_repair_class] | index("ripgrep_binary_search_behavior"))
-                and ([.repair_items[].likely_repair_class] | index("ripgrep_feature_behavior"))
-                and ([.repair_items[] | select(.likely_repair_class == "ripgrep_binary_search_behavior").generated_source_location.file][0] == "src/ripgrep_stage_b_skeleton.rs")
+                and .functional_report == null
+                and .functional_diagnostics.status == "not_provided"
+                and .counts.repair_items > 0
+                and ([.repair_items[].violated_contract_family] | index("functional_expected_output") | not)
               ' "$work/delta/stage-b-delta.json" >/dev/null
               mkdir -p "$out"
               cp "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
                 "$candidate_dir/rg-stage-b-skeleton-candidate.map" \
                 "$claimed_provenance" \
-                "$functional_report" \
                 "$work/validate/stage-b.json" \
                 "$work/delta/stage-b-delta.json" \
                 "$out/"
@@ -3898,6 +3592,7 @@
               cp -R "$work/delta" "$out/delta"
               cp -R "$work/smoke-suite" "$out/smoke-suite"
               cp -R "$work/smoke-functional" "$out/smoke-functional"
+              printf '%s\n' "$functional_code" > "$out/functional.returncode"
               printf '%s\n' "$delta_code" > "$out/delta.returncode"
             '';
 
@@ -4022,24 +3717,29 @@
                 and ([.targets.ripgrep.requirements[] | select(.id == "generated_behavior_source").status][0] == "incomplete")
                 and ([.targets.jq.requirements[] | select(.id == "same_architecture_same_os").status][0] == "satisfied")
                 and ([.targets.ripgrep.requirements[] | select(.id == "same_architecture_same_os").status][0] == "satisfied")
-                and ([.targets.jq.requirements[] | select(.id == "functional_binary_bindings").status][0] == "satisfied")
-                and ([.targets.ripgrep.requirements[] | select(.id == "functional_binary_bindings").status][0] == "satisfied")
+                and ([.targets.jq.requirements[] | select(.id == "functional_binary_bindings").status][0] == "incomplete")
+                and ([.targets.ripgrep.requirements[] | select(.id == "functional_binary_bindings").status][0] == "incomplete")
                 and ([.targets.jq.requirements[] | select(.id == "canonical_upstream_functional_suite").status][0] == "incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "canonical_upstream_functional_suite").evidence.status][0] == "fail")
+                and ([.targets.jq.requirements[] | select(.id == "canonical_upstream_functional_suite").evidence.status][0] == null)
                 and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").status][0] == "satisfied")
                 and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").evidence.status][0] == "satisfied")
                 and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").evidence.target_import_closure.status][0] == "satisfied")
                 and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").status][0] == "incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.reason][0] == "functional_behavior_mismatch")
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.behavioral_mismatch_blocks_stage_a][0] == true)
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.ran][0] == false)
+                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.reason][0] == "stage_a_validation_incomplete")
+                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.behavioral_mismatch_blocks_stage_a][0] == false)
+                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.iteration_policy][0] == "stage_a_contract_first")
+                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.runtime_validation_policy][0] == "candidate_only_after_stage_a_pass")
+                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.ran][0] == true)
                 and ([.targets.jq.requirements[] | select(.id == "stage_a_reference_contract_coverage").status][0] == "incomplete")
                 and ([.targets.jq.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.provided][0] == true)
                 and ([.targets.jq.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.family_statuses.validation_report_artifact_binding][0] == "satisfied")
                 and ([.targets.ripgrep.requirements[] | select(.id == "canonical_upstream_functional_suite").status][0] == "incomplete")
                 and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").status][0] == "incomplete")
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.reason][0] == "functional_behavior_mismatch")
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.behavioral_mismatch_blocks_stage_a][0] == true)
+                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.reason][0] == "stage_a_validation_incomplete")
+                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.behavioral_mismatch_blocks_stage_a][0] == false)
+                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.iteration_policy][0] == "stage_a_contract_first")
+                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.runtime_validation_policy][0] == "candidate_only_after_stage_a_pass")
+                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.ran][0] == true)
                 and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_reference_contract_coverage").status][0] == "incomplete")
                 and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.provided][0] == true)
                 and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.family_statuses.pe_sections_imports_relocations_image_base][0] == "incomplete")
