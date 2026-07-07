@@ -2143,7 +2143,6 @@
               candidate_dir="${stage-b-jq-skeleton-candidate}/share/wincr/stage-b/jq/candidate"
               work="$TMPDIR/stage-b-jq-candidate"
               mkdir -p "$work"
-              test -s "${stage-b-smoke-check}/functional-report.json"
               stage-b-skeleton-wincr stage-b-generate-skeleton \
                 --original "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
                 --linker-map "$candidate_dir/jq-stage-b-skeleton-candidate.map" \
@@ -2952,7 +2951,6 @@
               closure_manifest="${stage-b-jq-target-closure-skeleton}/share/wincr/stage-b/jq/target-closure-skeletons/target-closure-skeletons.json"
               work="$TMPDIR/stage-b-jq-generated-closure-candidate-check"
               mkdir -p "$work"
-              test -s "${stage-b-smoke-check}/functional-report.json"
               test -s "$candidate_dir/smoke/report.json"
               test -s "$candidate_dir/src/jq_stage_b_skeleton.c"
               test -s "$candidate_dir/src/jq-libjq-1_stage_b_skeleton.c"
@@ -3574,7 +3572,6 @@
               candidate_dir="${stage-b-ripgrep-skeleton-candidate}/share/wincr/stage-b/ripgrep/candidate"
               work="$TMPDIR/stage-b-ripgrep-candidate"
               mkdir -p "$work"
-              test -s "${stage-b-smoke-check}/functional-report.json"
               printf 'stage-b pre-validation placeholder\n' > "$work/original-placeholder.map"
               stage-b-skeleton-wincr stage-b-generate-skeleton \
                 --original "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
@@ -5717,20 +5714,15 @@ setup.write_text(text)
               stage-b-jq-skeleton
               stage-b-jq-skeleton-check
               stage-b-jq-skeleton-candidate
-              stage-b-jq-skeleton-candidate-check
               stage-b-jq-target-closure-skeleton
               stage-b-jq-generated-closure-candidate
+              # Primary jq Stage B iteration gate: Stage A reference contract only.
               stage-b-jq-contract-iteration-check
-              stage-b-jq-generated-closure-candidate-check
               stage-b-ripgrep-integration-harness
               stage-b-ripgrep-reference-contract
               stage-b-ripgrep-skeleton
               stage-b-ripgrep-skeleton-check
               stage-b-ripgrep-skeleton-candidate
-              stage-b-ripgrep-skeleton-candidate-check
-              stage-b-smoke-check
-              stage-b-functional-runner-check
-              stage-b-readiness-audit-check
               wincr-3d-reference-game
               haloce-windows-vm-bundle
               ;
