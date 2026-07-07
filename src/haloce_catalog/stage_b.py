@@ -1292,6 +1292,7 @@ def stage_b_explain_delta(
         "functional_report": None if functional_report is None else {"path": str(functional_report), "sha256": sha256_file(Path(functional_report))},
         "contract_candidate_validation": contract_validation,
         "functional_diagnostics": functional_diagnostics,
+        "layout_synthesis": _stage_b_layout_synthesis(_stage_b_layout_section_deltas_from_items(items)),
         "repair_items": items,
         "counts": {
             "repair_items": len(items),
@@ -1302,6 +1303,347 @@ def stage_b_explain_delta(
     }
     write_json(out / "stage-b-delta.json", result)
     return result
+
+
+def stage_b_diff_delta(*, before: Path, after: Path, out: Path) -> dict[str, Any]:
+    before = Path(before)
+    after = Path(after)
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    before_payload = _load_json(before)
+    after_payload = _load_json(after)
+    if not isinstance(before_payload, dict) or before_payload.get("format") != "stage-b-delta-explanation-v1":
+        raise StageAInputError("before delta must have format stage-b-delta-explanation-v1")
+    if not isinstance(after_payload, dict) or after_payload.get("format") != "stage-b-delta-explanation-v1":
+        raise StageAInputError("after delta must have format stage-b-delta-explanation-v1")
+
+    before_items = [item for item in before_payload.get("repair_items", []) if isinstance(item, dict)]
+    after_items = [item for item in after_payload.get("repair_items", []) if isinstance(item, dict)]
+    before_by_key = {_stage_b_repair_item_stable_key(item): item for item in before_items}
+    after_by_key = {_stage_b_repair_item_stable_key(item): item for item in after_items}
+    before_keys = set(before_by_key)
+    after_keys = set(after_by_key)
+    resolved_keys = sorted(before_keys - after_keys)
+    introduced_keys = sorted(after_keys - before_keys)
+    persisted_keys = sorted(before_keys & after_keys)
+    changed_keys = [
+        key
+        for key in persisted_keys
+        if _stage_b_repair_item_change_fingerprint(before_by_key[key])
+        != _stage_b_repair_item_change_fingerprint(after_by_key[key])
+    ]
+    before_layout = _stage_b_layout_section_deltas_from_items(before_items)
+    after_layout = _stage_b_layout_section_deltas_from_items(after_items)
+
+    result = {
+        "format": "stage-b-delta-diff-v1",
+        "status": "pass" if after_payload.get("status") == "pass" else "incomplete",
+        "generated_at": utc_now(),
+        "before": _stage_b_delta_artifact(before, before_payload),
+        "after": _stage_b_delta_artifact(after, after_payload),
+        "counts": {
+            "before_repair_items": len(before_items),
+            "after_repair_items": len(after_items),
+            "repair_items_delta": len(after_items) - len(before_items),
+            "resolved": len(resolved_keys),
+            "introduced": len(introduced_keys),
+            "persisted": len(persisted_keys),
+            "changed": len(changed_keys),
+            "before_by_family": _count_by(before_items, "violated_contract_family"),
+            "after_by_family": _count_by(after_items, "violated_contract_family"),
+            "family_delta": _stage_b_count_delta(
+                _count_by(before_items, "violated_contract_family"),
+                _count_by(after_items, "violated_contract_family"),
+            ),
+            "before_by_repair_class": _count_by(before_items, "likely_repair_class"),
+            "after_by_repair_class": _count_by(after_items, "likely_repair_class"),
+            "repair_class_delta": _stage_b_count_delta(
+                _count_by(before_items, "likely_repair_class"),
+                _count_by(after_items, "likely_repair_class"),
+            ),
+        },
+        "resolved": [_stage_b_repair_item_diff_summary(before_by_key[key], key=key) for key in resolved_keys[:100]],
+        "introduced": [_stage_b_repair_item_diff_summary(after_by_key[key], key=key) for key in introduced_keys[:100]],
+        "persisted": [
+            _stage_b_repair_item_diff_summary(after_by_key[key], key=key, before=before_by_key.get(key))
+            for key in persisted_keys[:200]
+        ],
+        "changed": [
+            {
+                "key": key,
+                "before": _stage_b_repair_item_diff_summary(before_by_key[key], key=key),
+                "after": _stage_b_repair_item_diff_summary(after_by_key[key], key=key),
+            }
+            for key in changed_keys[:100]
+        ],
+        "layout_synthesis": _stage_b_layout_synthesis(after_layout, before_layout=before_layout),
+    }
+    write_json(out / "stage-b-delta-diff.json", result)
+    return result
+
+
+def _stage_b_delta_artifact(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "sha256": sha256_file(path),
+        "status": payload.get("status"),
+        "counts": payload.get("counts") if isinstance(payload.get("counts"), dict) else {},
+    }
+
+
+def _stage_b_repair_item_stable_key(item: dict[str, Any]) -> str:
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    section_delta = evidence.get("section_delta") if isinstance(evidence.get("section_delta"), dict) else None
+    if section_delta is not None:
+        return f"section:{section_delta.get('name')}"
+    coverage_gap = evidence.get("coverage_gap") if isinstance(evidence.get("coverage_gap"), dict) else None
+    if coverage_gap is not None:
+        gap_id = coverage_gap.get("callsite_id") or coverage_gap.get("block_id") or coverage_gap.get("name")
+        if gap_id:
+            return f"coverage:{item.get('violated_contract_family')}:{item.get('likely_repair_class')}:{gap_id}"
+    work_item = evidence.get("work_item") if isinstance(evidence.get("work_item"), dict) else None
+    if isinstance(work_item, dict) and work_item.get("id"):
+        return f"work:{work_item.get('id')}"
+    missing_detail = evidence.get("missing_function_detail") if isinstance(evidence.get("missing_function_detail"), dict) else None
+    if missing_detail is not None:
+        return f"missing-function:{missing_detail.get('function') or item.get('original_function')}"
+    parts = [
+        str(item.get("violated_contract_family") or ""),
+        str(item.get("likely_repair_class") or ""),
+        str(item.get("original_function") or ""),
+        str(item.get("original_block") or ""),
+        str(item.get("next_action") or ""),
+    ]
+    return "item:" + ":".join(parts)
+
+
+def _stage_b_repair_item_change_fingerprint(item: dict[str, Any]) -> str:
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    section_delta = evidence.get("section_delta") if isinstance(evidence.get("section_delta"), dict) else None
+    payload = {
+        "family": item.get("violated_contract_family"),
+        "repair_class": item.get("likely_repair_class"),
+        "section_delta": _stage_b_layout_section_summary(section_delta) if section_delta is not None else None,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _stage_b_repair_item_diff_summary(
+    item: dict[str, Any],
+    *,
+    key: str,
+    before: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "key": key,
+        "family": item.get("violated_contract_family"),
+        "repair_class": item.get("likely_repair_class"),
+        "original_function": item.get("original_function"),
+        "source_location": item.get("generated_source_location"),
+        "next_action": item.get("next_action"),
+    }
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    section_delta = evidence.get("section_delta") if isinstance(evidence.get("section_delta"), dict) else None
+    if section_delta is not None:
+        summary["section_delta"] = _stage_b_layout_section_summary(section_delta)
+    if before is not None:
+        before_evidence = before.get("evidence") if isinstance(before.get("evidence"), dict) else {}
+        before_section = before_evidence.get("section_delta") if isinstance(before_evidence.get("section_delta"), dict) else None
+        if section_delta is not None and before_section is not None:
+            before_delta = _stage_b_layout_delta_bytes(before_section)
+            after_delta = _stage_b_layout_delta_bytes(section_delta)
+            summary["change"] = {
+                "before_delta_bytes": before_delta,
+                "after_delta_bytes": after_delta,
+                "absolute_delta_improvement_bytes": abs(before_delta) - abs(after_delta),
+            }
+    return summary
+
+
+def _stage_b_count_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    return {
+        key: int(after.get(key, 0)) - int(before.get(key, 0))
+        for key in sorted(set(before) | set(after))
+        if int(after.get(key, 0)) - int(before.get(key, 0)) != 0
+    }
+
+
+def _stage_b_layout_section_deltas_from_items(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for item in items:
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        section_delta = evidence.get("section_delta") if isinstance(evidence.get("section_delta"), dict) else None
+        if section_delta is None:
+            continue
+        name = str(section_delta.get("name") or "")
+        if name and name not in result:
+            result[name] = section_delta
+    return result
+
+
+def _stage_b_layout_synthesis(
+    layout: dict[str, dict[str, Any]],
+    *,
+    before_layout: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    before_layout = before_layout or {}
+    sections = [
+        _stage_b_layout_suggestion(name, section, before_layout.get(name))
+        for name, section in sorted(layout.items(), key=lambda pair: _stage_b_layout_section_rank(pair[0]))
+    ]
+    return {
+        "format": "stage-b-layout-synthesis-v1",
+        "status": "satisfied" if not sections else "incomplete",
+        "counts": {
+            "sections": len(sections),
+            "needs_growth": sum(1 for item in sections if item["action"] == "grow"),
+            "needs_shrink": sum(1 for item in sections if item["action"] == "shrink"),
+            "matched": sum(1 for item in sections if item["action"] == "none"),
+        },
+        "sections": sections,
+    }
+
+
+def _stage_b_layout_suggestion(
+    name: str,
+    section_delta: dict[str, Any],
+    before_section_delta: dict[str, Any] | None,
+) -> dict[str, Any]:
+    delta = _stage_b_layout_delta_bytes(section_delta)
+    before_delta = _stage_b_layout_delta_bytes(before_section_delta) if before_section_delta is not None else None
+    expected = section_delta.get("expected") if isinstance(section_delta.get("expected"), dict) else {}
+    candidate = section_delta.get("candidate") if isinstance(section_delta.get("candidate"), dict) else {}
+    action = "none" if delta == 0 else ("grow" if delta < 0 else "shrink")
+    anchor_bytes = abs(delta)
+    candidate_step = None
+    if before_section_delta is not None:
+        before_candidate = before_section_delta.get("candidate") if isinstance(before_section_delta.get("candidate"), dict) else {}
+        before_end = _stage_b_int_value(before_candidate.get("rva_end"))
+        after_end = _stage_b_int_value(candidate.get("rva_end"))
+        if before_end is not None and after_end is not None:
+            candidate_step = after_end - before_end
+    suggestion = _stage_b_layout_source_suggestion(name, delta)
+    return {
+        "section": name,
+        "action": action,
+        "expected": _stage_b_section_span_for_synthesis(expected),
+        "candidate": _stage_b_section_span_for_synthesis(candidate),
+        "delta_bytes": delta,
+        "anchor_bytes": anchor_bytes,
+        "before_delta_bytes": before_delta,
+        "absolute_delta_improvement_bytes": None if before_delta is None else abs(before_delta) - abs(delta),
+        "observed_candidate_step_bytes": candidate_step,
+        "alignment": {
+            "status": _stage_b_layout_alignment_status(delta, before_delta, candidate_step),
+            "note": "linker input-section alignment and PE section rounding can move spans in larger steps than the requested anchor byte count",
+        },
+        "linker_gc": {
+            "risk": "unreferenced anchors can be discarded when --gc-sections is active",
+            "required_keepalive": "mark anchors used and reference them from a retained function or constructor",
+        },
+        "linker": {
+            "section_start_flag": _stage_b_layout_section_start_flag(name, expected),
+            "note": "preserve section start first; size anchors only help after section RVAs already match",
+        },
+        "source": suggestion,
+    }
+
+
+def _stage_b_layout_delta_bytes(section_delta: dict[str, Any] | None) -> int:
+    if not isinstance(section_delta, dict):
+        return 0
+    delta = section_delta.get("delta") if isinstance(section_delta.get("delta"), dict) else {}
+    size = delta.get("size") if isinstance(delta.get("size"), dict) else {}
+    value = _stage_b_int_value(size.get("delta"))
+    if value is not None:
+        return value
+    expected = section_delta.get("expected") if isinstance(section_delta.get("expected"), dict) else {}
+    candidate = section_delta.get("candidate") if isinstance(section_delta.get("candidate"), dict) else {}
+    expected_size = _stage_b_section_size(expected)
+    candidate_size = _stage_b_section_size(candidate)
+    if expected_size is None or candidate_size is None:
+        return 0
+    return candidate_size - expected_size
+
+
+def _stage_b_section_span_for_synthesis(section: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "rva_start": section.get("rva_start"),
+        "rva_end": section.get("rva_end"),
+        "size": _stage_b_section_size(section),
+        "executable": section.get("executable"),
+        "readable": section.get("readable"),
+        "writable": section.get("writable"),
+    }
+
+
+def _stage_b_layout_section_summary(section_delta: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": section_delta.get("name"),
+        "delta_bytes": _stage_b_layout_delta_bytes(section_delta),
+        "expected": _stage_b_section_span_for_synthesis(
+            section_delta.get("expected") if isinstance(section_delta.get("expected"), dict) else {}
+        ),
+        "candidate": _stage_b_section_span_for_synthesis(
+            section_delta.get("candidate") if isinstance(section_delta.get("candidate"), dict) else {}
+        ),
+    }
+
+
+def _stage_b_layout_alignment_status(delta: int, before_delta: int | None, candidate_step: int | None) -> str:
+    if delta == 0:
+        return "matched"
+    if before_delta is not None and before_delta != 0 and (before_delta > 0) != (delta > 0):
+        return "crossed_target_alignment_boundary"
+    if candidate_step not in {None, 0} and abs(delta) <= abs(candidate_step):
+        return "near_alignment_boundary"
+    return "needs_iteration"
+
+
+def _stage_b_layout_section_start_flag(name: str, expected: dict[str, Any]) -> str | None:
+    start = _stage_b_int_value(expected.get("rva_start"))
+    if start is None or not name.startswith("."):
+        return None
+    return f"-Wl,--section-start,{name}=0x{0x400000 + start:x}"
+
+
+def _stage_b_layout_source_suggestion(name: str, delta: int) -> dict[str, Any]:
+    bytes_needed = abs(delta)
+    if delta == 0:
+        return {"kind": "none", "next_action": "section span matches the reference contract"}
+    verb = "add" if delta < 0 else "remove_or_reduce"
+    if name == ".bss":
+        declaration = f'__attribute__((used, section(".bss"))) volatile unsigned char stage_b_layout_bss_pad[{bytes_needed}];'
+    elif name == ".rdata":
+        declaration = f'__attribute__((used, section(".rdata$stage_b_layout_pad"))) static const unsigned char stage_b_layout_rdata_pad[{bytes_needed}] = {{0}};'
+    elif name == ".data":
+        declaration = f'__attribute__((used, section(".data$stage_b_layout_pad"))) volatile unsigned char stage_b_layout_data_pad[{bytes_needed}] = {{0}};'
+    elif name == ".tls":
+        declaration = f'__attribute__((used, section(".tls"))) volatile unsigned char stage_b_layout_tls_pad[{bytes_needed}] = {{0}};'
+    elif name == ".text":
+        declaration = f'__asm__(".section .text$stage_b_layout_pad,\\"x\\"\\n.fill {bytes_needed},1,0x90\\n.text\\n");'
+    else:
+        declaration = ""
+    if name in {".edata", ".reloc"}:
+        return {
+            "kind": "linker_generated_section",
+            "operation": verb,
+            "bytes": bytes_needed,
+            "next_action": f"adjust exports/relocations that feed {name}; raw C padding is unlikely to control this linker-generated section exactly",
+        }
+    return {
+        "kind": "source_anchor",
+        "operation": verb,
+        "bytes": bytes_needed,
+        "declaration": declaration,
+        "next_action": f"{verb} {bytes_needed} byte(s) of retained input-section content for {name}, then rerun stage-b-diff-delta",
+    }
+
+
+def _stage_b_layout_section_rank(name: str) -> tuple[int, str]:
+    order = {".text": 0, ".rdata": 1, ".data": 2, ".bss": 3, ".tls": 4, ".edata": 5, ".reloc": 6}
+    return (order.get(name, 100), name)
+
 
 def _stage_b_candidate_module_contexts(candidate_modules: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     contexts: list[dict[str, Any]] = []

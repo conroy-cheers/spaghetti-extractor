@@ -13,6 +13,7 @@ from haloce_catalog.stage_a import STAGE_A_MODEL_ID, STAGE_A_X86_64_MODEL_ID, st
 from haloce_catalog.stage_b import (
     STAGE_B_PROOF_RULE,
     STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
+    stage_b_diff_delta,
     stage_b_explain_delta,
     stage_b_extract_candidate_crash,
     stage_b_export_decompiler,
@@ -6596,6 +6597,116 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(item["likely_repair_class"], "missing_decompiler_body")
             self.assertEqual(item["generated_source_location"]["file"], "src/jq_stage_b_skeleton.c")
             self.assertTrue((root / "delta" / "stage-b-delta.json").exists())
+
+    def test_diff_delta_reports_resolved_items_and_layout_synthesis(self):
+        def section_item(name: str, expected_end: int, candidate_end: int) -> dict:
+            expected_start = 0xE000 if name == ".rdata" else 0x1000
+            candidate_start = expected_start
+            return {
+                "violated_contract_family": "binary_faithfulness",
+                "original_function": None,
+                "original_block": None,
+                "generated_source_location": None,
+                "likely_repair_class": "pe_section_span_layout",
+                "next_action": f"adjust candidate section {name}",
+                "evidence": {
+                    "source": "stage-a-contract-candidate-validation",
+                    "section_delta": {
+                        "name": name,
+                        "expected": {
+                            "name": name,
+                            "rva_start": expected_start,
+                            "rva_end": expected_end,
+                            "readable": True,
+                            "writable": False,
+                            "executable": False,
+                        },
+                        "candidate": {
+                            "name": name,
+                            "rva_start": candidate_start,
+                            "rva_end": candidate_end,
+                            "readable": True,
+                            "writable": False,
+                            "executable": False,
+                        },
+                        "delta": {
+                            "rva_end": {"expected": expected_end, "candidate": candidate_end},
+                            "size": {"expected": expected_end - expected_start, "candidate": candidate_end - candidate_start, "delta": candidate_end - expected_end},
+                        },
+                    },
+                },
+            }
+
+        callsite_item = {
+            "violated_contract_family": "abi_callsites",
+            "original_function": "__acrt_iob_func",
+            "original_block": "__acrt_iob_func-0000",
+            "generated_source_location": {"file": "src/jq_stage_b_skeleton.c", "line_start": 20, "line_end": 30},
+            "likely_repair_class": "call_target_mismatch",
+            "next_action": "repair __acrt_iob_func call target mapping",
+            "evidence": {
+                "source": "stage-a-contract-candidate-validation",
+                "coverage_gap": {
+                    "callsite_id": "callsite:__acrt_iob_func-0000:c363",
+                    "name": "__acrt_iob_func",
+                },
+            },
+        }
+        introduced_item = {
+            "violated_contract_family": "abi_callsites",
+            "original_function": "__mingw_fprintf",
+            "original_block": "__mingw_fprintf-0000",
+            "generated_source_location": {"file": "src/jq_stage_b_skeleton.c", "line_start": 40, "line_end": 50},
+            "likely_repair_class": "callsite_argument_inventory_mismatch",
+            "next_action": "repair __mingw_fprintf call argument order/count/roles",
+            "evidence": {
+                "source": "stage-a-contract-candidate-validation",
+                "coverage_gap": {
+                    "callsite_id": "callsite:__mingw_fprintf-0000:beef",
+                    "name": "__mingw_fprintf",
+                },
+            },
+        }
+        before = {
+            "format": "stage-b-delta-explanation-v1",
+            "status": "incomplete",
+            "counts": {"repair_items": 2},
+            "repair_items": [section_item(".rdata", 0xFF6C, 0xF8BC), callsite_item],
+        }
+        after = {
+            "format": "stage-b-delta-explanation-v1",
+            "status": "incomplete",
+            "counts": {"repair_items": 2},
+            "repair_items": [section_item(".rdata", 0xFF6C, 0xFF5C), introduced_item],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            before_path = root / "before.json"
+            after_path = root / "after.json"
+            before_path.write_text(json.dumps(before), encoding="utf-8")
+            after_path.write_text(json.dumps(after), encoding="utf-8")
+
+            result = stage_b_diff_delta(before=before_path, after=after_path, out=root / "diff")
+
+            self.assertEqual(result["format"], "stage-b-delta-diff-v1")
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(result["counts"]["resolved"], 1)
+            self.assertEqual(result["counts"]["introduced"], 1)
+            self.assertEqual(result["counts"]["persisted"], 1)
+            self.assertEqual(result["counts"]["changed"], 1)
+            self.assertEqual(result["resolved"][0]["original_function"], "__acrt_iob_func")
+            self.assertEqual(result["introduced"][0]["original_function"], "__mingw_fprintf")
+            rdata = result["layout_synthesis"]["sections"][0]
+            self.assertEqual(rdata["section"], ".rdata")
+            self.assertEqual(rdata["delta_bytes"], -16)
+            self.assertEqual(rdata["before_delta_bytes"], -1712)
+            self.assertEqual(rdata["absolute_delta_improvement_bytes"], 1696)
+            self.assertEqual(rdata["source"]["operation"], "add")
+            self.assertEqual(rdata["source"]["bytes"], 16)
+            self.assertIn(".rdata$stage_b_layout_pad", rdata["source"]["declaration"])
+            self.assertIn("gc-sections", rdata["linker_gc"]["risk"])
+            self.assertIn("alignment", rdata["alignment"]["note"])
+            self.assertTrue((root / "diff" / "stage-b-delta-diff.json").exists())
 
     def test_explain_delta_imports_unit_contracts_and_candidate_probe_repairs(self):
         with tempfile.TemporaryDirectory() as tmp:

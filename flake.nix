@@ -564,7 +564,7 @@
             name = "stage-b-contract-wincr";
             text = ''
               if [ "$#" -lt 1 ]; then
-                printf 'usage: stage-b-contract-wincr <stage-b-validate-candidate|stage-b-explain-delta> [args]\n' >&2
+                printf 'usage: stage-b-contract-wincr <stage-b-validate-candidate|stage-b-explain-delta|stage-b-diff-delta> [args]\n' >&2
                 exit 2
               fi
               command="$1"
@@ -689,6 +689,26 @@
                   model=args.model,
                   out=args.out,
               )
+              json.dump(result, sys.stdout, indent=2, sort_keys=True)
+              sys.stdout.write("\n")
+              raise SystemExit(0 if result.get("status") == "pass" else 1)
+              PY
+                  ;;
+                stage-b-diff-delta)
+                  exec ${stageBContractPython}/bin/python3 - "$@" <<'PY'
+              import argparse
+              import json
+              import sys
+              from pathlib import Path
+
+              from haloce_catalog.stage_b import stage_b_diff_delta
+
+              parser = argparse.ArgumentParser(prog="stage-b-contract-wincr stage-b-diff-delta")
+              parser.add_argument("--before", type=Path, required=True)
+              parser.add_argument("--after", type=Path, required=True)
+              parser.add_argument("--out", type=Path, required=True)
+              args = parser.parse_args(sys.argv[1:])
+              result = stage_b_diff_delta(before=args.before, after=args.after, out=args.out)
               json.dump(result, sys.stdout, indent=2, sort_keys=True)
               sys.stdout.write("\n")
               raise SystemExit(0 if result.get("status") == "pass" else 1)

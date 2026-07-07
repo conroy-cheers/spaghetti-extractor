@@ -95,6 +95,7 @@ from .stage_a import (
     stage_a_validate_suite,
 )
 from .stage_b import (
+    stage_b_diff_delta,
     stage_b_explain_delta,
     stage_b_extract_candidate_crash,
     stage_b_export_decompiler,
@@ -505,6 +506,15 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_b_delta.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
     stage_b_delta.add_argument("--out", type=Path, required=True)
     stage_b_delta.set_defaults(func=_cmd_stage_b_explain_delta)
+
+    stage_b_delta_diff = subcommands.add_parser(
+        "stage-b-diff-delta",
+        help="compare two Stage B delta reports and synthesize next layout repair actions",
+    )
+    stage_b_delta_diff.add_argument("--before", type=Path, required=True, help="previous stage-b-delta.json")
+    stage_b_delta_diff.add_argument("--after", type=Path, required=True, help="current stage-b-delta.json")
+    stage_b_delta_diff.add_argument("--out", type=Path, required=True, help="delta diff output directory")
+    stage_b_delta_diff.set_defaults(func=_cmd_stage_b_diff_delta)
 
     private_artifacts = subcommands.add_parser(
         "export-private-artifacts",
@@ -1703,6 +1713,12 @@ def _cmd_stage_b_explain_delta(args: Any) -> int:
         model=args.model,
         out=args.out,
     )
+    _print_json(result)
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_stage_b_diff_delta(args: Any) -> int:
+    result = stage_b_diff_delta(before=args.before, after=args.after, out=args.out)
     _print_json(result)
     return 0 if result["status"] == "pass" else 1
 
