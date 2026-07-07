@@ -355,6 +355,353 @@
             ];
           };
 
+          stageAContractSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/haloce_catalog/__init__.py
+              ./src/haloce_catalog/pe.py
+              ./src/haloce_catalog/roles.py
+              ./src/haloce_catalog/stage_a.py
+              ./src/haloce_catalog/stage_binary.py
+              ./src/haloce_catalog/target.py
+              ./src/haloce_catalog/presets
+              ./src/haloce_catalog/util.py
+            ];
+          };
+
+          stageAContractPython = pkgs.python3.withPackages (
+            ps: with ps; [
+              capstone
+              pefile
+              z3-solver
+            ]
+          );
+
+          stageBContractSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./src/haloce_catalog/__init__.py
+              ./src/haloce_catalog/pe.py
+              ./src/haloce_catalog/roles.py
+              ./src/haloce_catalog/stage_a.py
+              ./src/haloce_catalog/stage_b.py
+              ./src/haloce_catalog/stage_binary.py
+              ./src/haloce_catalog/target.py
+              ./src/haloce_catalog/presets
+              ./src/haloce_catalog/util.py
+            ];
+          };
+
+          stageBContractPython = pkgs.python3.withPackages (
+            ps: with ps; [
+              capstone
+              pefile
+              z3-solver
+            ]
+          );
+
+          stage-a-contract-tools = pkgs.writeShellApplication {
+            name = "stage-a-contract-wincr";
+            text = ''
+              if [ "$#" -lt 1 ]; then
+                printf 'usage: stage-a-contract-wincr <stage-a-generate-map|stage-a-validate-suite|stage-a-export-reference-contract|stage-a-smoke-contract|stage-a-semantic-coverage> [args]\n' >&2
+                exit 2
+              fi
+              command="$1"
+              shift
+              export PYTHONPATH="${stageAContractSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              case "$command" in
+                stage-a-generate-map)
+                  exec ${stageAContractPython}/bin/python3 - "$@" <<'PY'
+              import argparse
+              import json
+              import sys
+              from pathlib import Path
+
+              from haloce_catalog.stage_a import stage_a_generate_map
+
+              parser = argparse.ArgumentParser(prog="stage-a-contract-wincr stage-a-generate-map")
+              parser.add_argument("--original", type=Path, required=True)
+              parser.add_argument("--candidate", type=Path, required=True)
+              parser.add_argument("--linker-map-original", type=Path, required=True)
+              parser.add_argument("--linker-map-candidate", type=Path, required=True)
+              parser.add_argument("--original-flags", default="")
+              parser.add_argument("--candidate-flags", default="")
+              parser.add_argument("--proof-rule", default="reproducible_jq_same_source_optimization_pair_v1")
+              parser.add_argument("--out", type=Path, required=True)
+              parser.add_argument("--layout-contract-out", type=Path)
+              parser.add_argument("--quiet", action="store_true")
+              args = parser.parse_args(sys.argv[1:])
+              result = stage_a_generate_map(
+                  original=args.original,
+                  candidate=args.candidate,
+                  linker_map_original=args.linker_map_original,
+                  linker_map_candidate=args.linker_map_candidate,
+                  out=args.out,
+                  layout_contract_out=args.layout_contract_out,
+                  original_flags=args.original_flags,
+                  candidate_flags=args.candidate_flags,
+                  proof_rule=args.proof_rule,
+              )
+              if not args.quiet:
+                  json.dump(result, sys.stdout, indent=2, sort_keys=True)
+                  sys.stdout.write("\n")
+              raise SystemExit(0 if result.get("status") == "pass" else 1)
+              PY
+                  ;;
+                stage-a-validate-suite)
+                  exec ${stageAContractPython}/bin/python3 - "$@" <<'PY'
+              import argparse
+              import json
+              import sys
+              from pathlib import Path
+
+              from haloce_catalog.stage_a import stage_a_validate_suite
+
+              parser = argparse.ArgumentParser(prog="stage-a-contract-wincr stage-a-validate-suite")
+              parser.add_argument("--suite", type=Path, required=True)
+              parser.add_argument("--model", default=None)
+              parser.add_argument("--out", type=Path, required=True)
+              args = parser.parse_args(sys.argv[1:])
+              result = stage_a_validate_suite(suite=args.suite, model=args.model, out=args.out)
+              json.dump(result, sys.stdout, indent=2, sort_keys=True)
+              sys.stdout.write("\n")
+              raise SystemExit(0 if result.get("status") == "pass" else 1)
+              PY
+                  ;;
+                stage-a-export-reference-contract)
+                  exec ${stageAContractPython}/bin/python3 - "$@" <<'PY'
+              import argparse
+              import json
+              import sys
+              from pathlib import Path
+
+              from haloce_catalog.stage_a import STAGE_A_MODEL_ID, stage_a_export_reference_contract
+
+              parser = argparse.ArgumentParser(prog="stage-a-contract-wincr stage-a-export-reference-contract")
+              parser.add_argument("--original", type=Path, required=True)
+              parser.add_argument("--candidate", type=Path)
+              parser.add_argument("--mapping", type=Path)
+              parser.add_argument("--validation-report", type=Path)
+              parser.add_argument("--layout-contract", type=Path)
+              parser.add_argument("--sidecar-dir", type=Path)
+              parser.add_argument("--unit-contract-dir", type=Path)
+              parser.add_argument("--model", default=STAGE_A_MODEL_ID)
+              parser.add_argument("--out", type=Path, required=True)
+              parser.add_argument("--quiet", action="store_true")
+              args = parser.parse_args(sys.argv[1:])
+              result = stage_a_export_reference_contract(
+                  original=args.original,
+                  candidate=args.candidate,
+                  mapping=args.mapping,
+                  validation_report=args.validation_report,
+                  layout_contract=args.layout_contract,
+                  sidecar_dir=args.sidecar_dir,
+                  unit_contract_dir=args.unit_contract_dir,
+                  model=args.model,
+                  out=args.out,
+              )
+              if not args.quiet:
+                  json.dump(result, sys.stdout, indent=2, sort_keys=True)
+                  sys.stdout.write("\n")
+              raise SystemExit(0 if result.get("status") == "pass" else 1)
+              PY
+                  ;;
+                stage-a-smoke-contract)
+                  exec ${stageAContractPython}/bin/python3 - "$@" <<'PY'
+              import argparse
+              import json
+              import sys
+              from pathlib import Path
+
+              from haloce_catalog.stage_a import stage_a_smoke_contract
+
+              parser = argparse.ArgumentParser(prog="stage-a-contract-wincr stage-a-smoke-contract")
+              parser.add_argument("--reference-contract", type=Path, required=True)
+              parser.add_argument("--out", type=Path)
+              args = parser.parse_args(sys.argv[1:])
+              result = stage_a_smoke_contract(reference_contract=args.reference_contract, out=args.out)
+              json.dump(result, sys.stdout, indent=2, sort_keys=True)
+              sys.stdout.write("\n")
+              raise SystemExit(0 if result.get("status") == "pass" else 1)
+              PY
+                  ;;
+                stage-a-semantic-coverage)
+                  exec ${stageAContractPython}/bin/python3 - "$@" <<'PY'
+              import argparse
+              import json
+              import sys
+              from pathlib import Path
+
+              from haloce_catalog.stage_a import stage_a_semantic_coverage
+
+              parser = argparse.ArgumentParser(prog="stage-a-contract-wincr stage-a-semantic-coverage")
+              parser.add_argument("--reference-contract", type=Path, required=True)
+              parser.add_argument("--unit-contract-dir", type=Path)
+              parser.add_argument("--out", type=Path, required=True)
+              parser.add_argument("--quiet", action="store_true")
+              args = parser.parse_args(sys.argv[1:])
+              result = stage_a_semantic_coverage(
+                  reference_contract=args.reference_contract,
+                  unit_contract_dir=args.unit_contract_dir,
+                  out=args.out,
+              )
+              if not args.quiet:
+                  json.dump(result, sys.stdout, indent=2, sort_keys=True)
+                  sys.stdout.write("\n")
+              raise SystemExit(0 if result.get("status") == "pass" else 1)
+              PY
+                  ;;
+                *)
+                  printf 'stage-a-contract-wincr does not support command: %s\n' "$command" >&2
+                  exit 2
+                  ;;
+              esac
+            '';
+          };
+
+          stage-b-contract-tools = pkgs.writeShellApplication {
+            name = "stage-b-contract-wincr";
+            text = ''
+              if [ "$#" -lt 1 ]; then
+                printf 'usage: stage-b-contract-wincr <stage-b-validate-candidate|stage-b-explain-delta> [args]\n' >&2
+                exit 2
+              fi
+              command="$1"
+              shift
+              export PYTHONPATH="${stageBContractSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              case "$command" in
+                stage-b-validate-candidate)
+                  exec ${stageBContractPython}/bin/python3 - "$@" <<'PY'
+              import argparse
+              import json
+              import sys
+              from pathlib import Path
+
+              from haloce_catalog.stage_a import STAGE_A_MODEL_ID
+              from haloce_catalog.stage_b import stage_b_validate_candidate
+
+              parser = argparse.ArgumentParser(prog="stage-b-contract-wincr stage-b-validate-candidate")
+              parser.add_argument("--original", type=Path)
+              parser.add_argument("--candidate", type=Path, required=True)
+              parser.add_argument("--linker-map-original", type=Path)
+              parser.add_argument("--linker-map-candidate", type=Path, required=True)
+              parser.add_argument("--skeleton-manifest", type=Path, required=True)
+              parser.add_argument("--candidate-provenance", type=Path, required=True)
+              parser.add_argument("--functional-report", type=Path)
+              parser.add_argument("--reference-contract", type=Path)
+              parser.add_argument("--target-name", required=True)
+              parser.add_argument("--original-flags", default="")
+              parser.add_argument("--candidate-flags", default="")
+              parser.add_argument("--model", default=STAGE_A_MODEL_ID)
+              parser.add_argument("--require-functional-evidence", action="store_true")
+              parser.add_argument("--out", type=Path, required=True)
+              args = parser.parse_args(sys.argv[1:])
+              result = stage_b_validate_candidate(
+                  original=args.original,
+                  candidate=args.candidate,
+                  linker_map_original=args.linker_map_original,
+                  linker_map_candidate=args.linker_map_candidate,
+                  skeleton_manifest=args.skeleton_manifest,
+                  candidate_provenance=args.candidate_provenance,
+                  functional_report=args.functional_report,
+                  reference_contract=args.reference_contract,
+                  target_name=args.target_name,
+                  original_flags=args.original_flags,
+                  candidate_flags=args.candidate_flags,
+                  model=args.model,
+                  require_functional_evidence=args.require_functional_evidence,
+                  out=args.out,
+              )
+              json.dump(result, sys.stdout, indent=2, sort_keys=True)
+              sys.stdout.write("\n")
+              raise SystemExit(0 if result.get("status") == "pass" else 1)
+              PY
+                  ;;
+                stage-b-explain-delta)
+                  exec ${stageBContractPython}/bin/python3 - "$@" <<'PY'
+              import argparse
+              import json
+              import sys
+              from pathlib import Path
+
+              from haloce_catalog.stage_a import STAGE_A_MODEL_ID
+              from haloce_catalog.stage_b import stage_b_explain_delta
+
+              def candidate_module_specs(values):
+                  specs = []
+                  for value in values:
+                      parts = [part for part in value.split(",") if part]
+                      spec = {}
+                      for part in parts:
+                          if "=" not in part:
+                              raise SystemExit(f"--candidate-module entries must use key=value fields, got {part!r}")
+                          key, raw = part.split("=", 1)
+                          key = key.strip().replace("-", "_")
+                          raw = raw.strip()
+                          if key in {"candidate", "binary", "path", "linker_map", "linker_map_candidate", "map", "skeleton_manifest", "manifest"}:
+                              spec[key] = Path(raw)
+                          elif key in {"name", "role"}:
+                              spec[key] = raw
+                          else:
+                              raise SystemExit(f"--candidate-module field {key!r} is not supported")
+                      if "candidate" not in spec:
+                          for alias in ("binary", "path"):
+                              if alias in spec:
+                                  spec["candidate"] = spec[alias]
+                                  break
+                      if "linker_map" not in spec:
+                          for alias in ("linker_map_candidate", "map"):
+                              if alias in spec:
+                                  spec["linker_map"] = spec[alias]
+                                  break
+                      if "skeleton_manifest" not in spec and "manifest" in spec:
+                          spec["skeleton_manifest"] = spec["manifest"]
+                      missing = [key for key in ("candidate", "linker_map", "skeleton_manifest") if key not in spec]
+                      if missing:
+                          raise SystemExit(f"--candidate-module is missing required field(s): {', '.join(missing)}")
+                      specs.append(spec)
+                  return specs
+
+              parser = argparse.ArgumentParser(prog="stage-b-contract-wincr stage-b-explain-delta")
+              parser.add_argument("--reference-contract", type=Path, required=True)
+              parser.add_argument("--candidate", type=Path, required=True)
+              parser.add_argument("--linker-map-candidate", type=Path, required=True)
+              parser.add_argument("--skeleton-manifest", type=Path, required=True)
+              parser.add_argument("--candidate-module", action="append", default=[])
+              parser.add_argument("--candidate-crash-report", type=Path)
+              parser.add_argument("--candidate-probe-report", type=Path)
+              parser.add_argument("--functional-report", type=Path)
+              parser.add_argument("--unit-contract-dir", type=Path)
+              parser.add_argument("--model", default=STAGE_A_MODEL_ID)
+              parser.add_argument("--out", type=Path, required=True)
+              args = parser.parse_args(sys.argv[1:])
+              result = stage_b_explain_delta(
+                  reference_contract=args.reference_contract,
+                  candidate=args.candidate,
+                  linker_map_candidate=args.linker_map_candidate,
+                  skeleton_manifest=args.skeleton_manifest,
+                  candidate_modules=candidate_module_specs(args.candidate_module),
+                  candidate_crash_report=args.candidate_crash_report,
+                  candidate_probe_report=args.candidate_probe_report,
+                  functional_report=args.functional_report,
+                  unit_contract_dir=args.unit_contract_dir,
+                  model=args.model,
+                  out=args.out,
+              )
+              json.dump(result, sys.stdout, indent=2, sort_keys=True)
+              sys.stdout.write("\n")
+              raise SystemExit(0 if result.get("status") == "pass" else 1)
+              PY
+                  ;;
+                *)
+                  printf 'stage-b-contract-wincr does not support command: %s\n' "$command" >&2
+                  exit 2
+                  ;;
+              esac
+            '';
+          };
+
           stage-b-skeleton-tools = pkgs.writeShellApplication {
             name = "stage-b-skeleton-wincr";
             text = ''
@@ -475,6 +822,7 @@
               parser.add_argument("--build-compiler", required=True)
               parser.add_argument("--build-output")
               parser.add_argument("--build-report", type=Path)
+              parser.add_argument("--target-closure-manifest", type=Path)
               parser.add_argument("--fixed-up-source", dest="fixed_up_sources", action="append", type=Path, default=[])
               parser.add_argument("--out", type=Path, required=True)
               args = parser.parse_args(sys.argv[1:])
@@ -488,6 +836,7 @@
                   build_compiler=args.build_compiler,
                   build_output=args.build_output,
                   build_report=args.build_report,
+                  target_closure_manifest=args.target_closure_manifest,
                   fixed_up_sources=args.fixed_up_sources,
                   out=args.out,
               )
@@ -1140,64 +1489,6 @@
               printf '%s\n' "${stage-a-jq-fixtures}"
             '';
           };
-
-          stage-b-smoke-check = pkgs.runCommand "stage-b-smoke-check"
-            {
-              nativeBuildInputs = [
-                stage-b-functional-tools
-                pkgs.jq
-              ];
-            }
-            ''
-              work="$TMPDIR/stage-b-smoke"
-              mkdir -p "$work"
-              printf 'stage-b smoke suite\n' > "$work/upstream-suite-source.txt"
-              cat > "$work/cases.json" <<'JSON'
-              {
-                "format": "stage-b-upstream-suite-cases-v1",
-                "cases": [
-                  {
-                    "id": "stage-b-smoke-echo",
-                    "args": [],
-                    "stdin": "smoke\n",
-                    "timeout_seconds": 5,
-                    "expected_returncode": 0,
-                    "expected_stdout": "smoke\n",
-                    "expected_stderr": ""
-                  }
-                ]
-              }
-              JSON
-              stage-b-functional-wincr stage-b-materialize-upstream-suite \
-                --target-name jq \
-                --suite-source "$work/upstream-suite-source.txt" \
-                --source-revision stage-b-smoke \
-                --cases "$work/cases.json" \
-                --suite-scope subset \
-                --out "$work/materialized-suite" \
-                > "$work/materialized-suite.stdout"
-              cat_cmd="$(jq -cn --arg cat "${pkgs.coreutils}/bin/cat" '[$cat]')"
-              stage-b-functional-wincr stage-b-run-functional-suite \
-                --suite "$work/materialized-suite/functional-suite.json" \
-                --candidate-command-json "$cat_cmd" \
-                --out "$work/functional" \
-                > "$work/functional.stdout"
-              jq -e '
-                .format == "stage-b-functional-report-v1"
-                and .status == "pass"
-                and .counts == {"cases":1,"passed":1,"failed":0}
-                and .suite_id == "jq-upstream-integration-tests"
-                and .coverage.suite_scope == "subset"
-                and .coverage.source_revision == "stage-b-smoke"
-                and .cases[0].status == "pass"
-              ' "$work/functional/functional-report.json" >/dev/null
-              mkdir -p "$out"
-              cp "$work/materialized-suite/functional-suite.json" \
-                "$work/functional/functional-report.json" \
-                "$work/materialized-suite.stdout" \
-                "$work/functional.stdout" \
-                "$out/"
-            '';
 
           stage-b-jq-decompiler-export = pkgs.runCommand "stage-b-jq-decompiler-export"
             {
@@ -1964,7 +2255,7 @@
           stage-a-jq-fixtures-check = pkgs.runCommand "stage-a-jq-fixtures-check"
             {
               nativeBuildInputs = [
-                haloce-tools
+                stage-a-contract-tools
                 pkgs.jq
                 pkgs.lean4
               ];
@@ -1973,7 +2264,7 @@
               fixture_dir="${stage-a-jq-fixtures}/share/wincr/stage-a-fixtures/jq-o2-alignment"
               work="$TMPDIR/stage-a-jq"
               mkdir -p "$work"
-              wincr stage-a-generate-map \
+              stage-a-contract-wincr stage-a-generate-map \
                 --original "$fixture_dir/jq-original.exe" \
                 --candidate "$fixture_dir/jq-candidate.exe" \
                 --linker-map-original "$fixture_dir/jq-original.map" \
@@ -1998,7 +2289,7 @@
                 ]
               }
               JSON
-                            wincr stage-a-validate-suite \
+                            stage-a-contract-wincr stage-a-validate-suite \
                               --suite "$work/suite.json" \
                               --model x86-pe32-env-v1 \
                               --out "$TMPDIR/stage-a-jq-suite"
@@ -2008,7 +2299,7 @@
                               "$work/suite.json" \
                               "$out/generated/"
                             cp -R "$TMPDIR/stage-a-jq-suite/." "$out/report/"
-                            wincr stage-a-export-reference-contract \
+                            stage-a-contract-wincr stage-a-export-reference-contract \
                               --original "$fixture_dir/jq-original.exe" \
                               --candidate "$fixture_dir/jq-candidate.exe" \
                               --mapping "$out/generated/jq-block-map.json" \
@@ -2025,7 +2316,7 @@
                               and .constraints.executable_byte_coverage.status == "satisfied"
                               and .constraints.proof_obligation_inventory.status == "satisfied"
                             ' "$out/generated/jq-reference-contract.json" >/dev/null
-                            wincr stage-a-smoke-contract \
+                            stage-a-contract-wincr stage-a-smoke-contract \
                               --reference-contract "$out/generated/jq-reference-contract.json" \
                               --out "$out/generated/jq-reference-contract-smoke.json"
                             jq -e '
@@ -2033,7 +2324,7 @@
                               and .status == "pass"
                               and .counts.issues == 0
                             ' "$out/generated/jq-reference-contract-smoke.json" >/dev/null
-                            if wincr stage-a-semantic-coverage \
+                            if stage-a-contract-wincr stage-a-semantic-coverage \
                               --reference-contract "$out/generated/jq-reference-contract.json" \
                               --out "$out/generated/jq-semantic-coverage.json" \
                               --quiet
@@ -2129,47 +2420,22 @@
                 > "$out_dir/candidate-provenance.stdout"
             '';
 
-          stage-b-jq-skeleton-candidate-check = pkgs.runCommand "stage-b-jq-skeleton-candidate-check"
+          stage-b-jq-target-closure-skeleton = pkgs.runCommand "stage-b-jq-target-closure-skeleton"
             {
               nativeBuildInputs = [
-                haloce-tools
-                pkgs.jq
-                pkgs.lean4
+                stage-b-provenance-tools
                 stage-b-skeleton-tools
+                pkgs.jq
               ];
             }
             ''
               fixture_dir="${stage-a-jq-fixtures}/share/wincr/stage-a-fixtures/jq-o2-alignment"
               candidate_dir="${stage-b-jq-skeleton-candidate}/share/wincr/stage-b/jq/candidate"
-              work="$TMPDIR/stage-b-jq-candidate"
-              mkdir -p "$work"
-              stage-b-skeleton-wincr stage-b-generate-skeleton \
-                --original "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
-                --linker-map "$candidate_dir/jq-stage-b-skeleton-candidate.map" \
-                --target-name jq-candidate-smoke \
-                --source-language c \
-                --out-dir "$work/parse"
-              functional_report=""
-              functional_code=125
-              mkdir -p "$work/materialized-suite" "$work/smoke-suite" "$work/functional" "$work/smoke"
-              jq -n \
-                --arg candidate "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
-                '{
-                  format: "stage-b-runtime-smoke-v1",
-                  status: "skipped",
-                  returncode: 125,
-                  runner: "not_run",
-                  candidate: {path: $candidate},
-                  original_runtime_observations: false,
-                  blockers: [
-                    "runtime smoke is deferred until Stage A reference-contract validation is clean"
-                  ]
-                }' > "$work/smoke/report.json"
-              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/materialized-suite.stdout"
-              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/smoke-suite.stdout"
-              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/full-suite.stdout"
-              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/functional.stdout"
-              wincr stage-b-generate-candidate-provenance \
+              work="$TMPDIR/stage-b-jq-target-closure-skeleton"
+              closure_dir="$out/share/wincr/stage-b/jq/target-closure-skeletons"
+              mkdir -p "$work" "$closure_dir"
+
+              stage-b-provenance-wincr stage-b-generate-candidate-provenance \
                 --target-name jq \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
                 --candidate "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
@@ -2179,123 +2445,14 @@
                 --build-report "$candidate_dir/decompiled-c-link-report.json" \
                 --out "$work/provenance" \
                 > "$work/provenance.stdout"
-              claimed_provenance="$work/provenance/candidate-provenance.json"
-              set +e
-              wincr stage-b-validate-candidate \
-                --candidate "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
-                --linker-map-candidate "$candidate_dir/jq-stage-b-skeleton-candidate.map" \
-                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
-                --candidate-provenance "$claimed_provenance" \
-                --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
-                --target-name jq \
-                --out "$work/validate" \
-                > "$work/validate.stdout"
-              code=$?
-              set -e
-              if [ "$code" -eq 0 ]; then
-                jq -e '
-                  .status == "pass"
-                  and .provenance_status == "pass"
-                  and .functional.status == "pass"
-                  and .stage_a.gate.status == "pass"
-                  and .stage_a.gate.eligible == true
-                  and .stage_a.gate.ran == true
-                  and .stage_a.gate.behavioral_mismatch_blocks_stage_a == false
-                ' "$work/validate/stage-b.json" >/dev/null
-              else
-                jq -e '
-                  .status == "incomplete"
-                  and .provenance_status == "incomplete"
-                  and ([.issues[].category] | index("upstream_source_dependency"))
-                  and ([.issues[].category] | index("reference_build_input_linkage"))
-                  and ([.issues[].category] | index("target_library_linkage"))
-                  and ([.issues[].category] | index("target_import_closure_incomplete"))
-                  and ([.issues[].category] | index("standalone_build_incomplete"))
-                  and .candidate.build.report.source_dependency_policy.status == "violated"
-                  and .candidate.build.report.target_import_closure.status == "incomplete"
-                  and .candidate.build.report.target_import_closure.dll_count == 1
-                  and .candidate.build.report.target_import_closure.dlls[0].dll == "libjq-1.dll"
-                  and .candidate.build.report.standalone_link_diagnostic.repair_plan.status == "blocked_on_target_import_closure"
-                  and .candidate.build.report.standalone_link_diagnostic.target_import_symbol_count > 0
-                  and ([.candidate.build.report.source_dependency_policy.violations[].kind] | index("reference_target_artifact"))
-                  and ([.candidate.build.report.source_dependency_policy.violations[].kind] | index("target_library_linkage"))
-                  and .functional == null
-                  and .functional_report == null
-                  and .functional_diagnostics.status == "not_provided"
-                  and ([.issues[].category] | index("missing_functional_tests"))
-                  and ([.issues[].category] | index("functional_tests_not_passing"))
-                  and ([.issues[].category] | index("missing_functional_test_suites"))
-                  and ([.issues[].category] | index("missing_required_functional_suite"))
-                  and ([.issues[].category] | index("functional_test_failure") | not)
-                  and ([.issues[].category] | index("functional_test_report_failed") | not)
-                  and ([.issues[].category] | index("functional_test_report_incomplete_coverage_scope") | not)
-                  and ([.issues[].category] | index("functional_test_report_wrong_suite_id") | not)
-                  and ([.issues[].category] | index("functional_test_report_wrong_source_kind") | not)
-                  and ([.issues[].category] | index("functional_test_report_wrong_materializer") | not)
-                  and ([.issues[].category] | index("functional_binary_command_not_bound") | not)
-                  and ([.issues[].category] | index("functional_test_report_original_baseline_failed") | not)
-                  and .reference_contract_coverage.provided == true
-                  and .reference_contract_coverage.status == "incomplete"
-                  and .stage_a.gate.status == "blocked"
-                  and .stage_a.gate.eligible == false
-                  and .stage_a.gate.ran == false
-                  and .stage_a.gate.reason == "pre_stage_a_requirements_incomplete"
-                  and .stage_a.gate.behavioral_mismatch_blocks_stage_a == false
-                  and .stage_a.gate.behavioral_blocking_issue_categories == []
-                  and .stage_a.gate.iteration_policy == "stage_a_contract_first"
-                  and .stage_a.gate.runtime_validation_policy == "candidate_only_after_stage_a_pass"
-                  and .iteration_policy == "stage_a_contract_first"
-                  and .runtime_validation_policy == "candidate_only_after_stage_a_pass"
-                  and ([.stage_a.gate.non_blocking_issue_categories[]] | index("missing_functional_tests"))
-                ' "$work/validate/stage-b.json" >/dev/null
-              fi
-              mkdir -p "$out"
-              cp "$candidate_dir/jq-stage-b-skeleton-candidate.exe" \
-                "$candidate_dir/jq-stage-b-skeleton-candidate.map" \
-                "$claimed_provenance" \
-                "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
-                "$work/validate/stage-b.json" \
-                "$out/"
-              cp "$work/materialized-suite.stdout" \
-                "$work/smoke-suite.stdout" \
-                "$work/full-suite.stdout" \
-                "$work/functional.stdout" \
-                "$work/provenance.stdout" \
-                "$work/validate.stdout" \
-                "$out/"
-              cp "$candidate_dir/decompiled-c-compile-report.json" \
-                "$candidate_dir/decompiled-c-link-report.json" \
-                "$candidate_dir/decompiled-c-link-roots.json" \
-                "$out/"
-              cp -R "$work/materialized-suite" "$out/materialized-suite"
-              cp -R "$work/smoke-suite" "$out/smoke-suite"
-              cp -R "$work/functional" "$out/functional"
-              cp -R "$work/provenance" "$out/provenance"
-              cp -R "$work/validate" "$out/validate"
-              cp -R "$work/smoke" "$out/smoke"
-              printf '%s\n' "$functional_code" > "$out/functional.returncode"
-            '';
-
-          stage-b-jq-target-closure-skeleton = pkgs.runCommand "stage-b-jq-target-closure-skeleton"
-            {
-              nativeBuildInputs = [
-                haloce-tools
-                stage-b-skeleton-tools
-                pkgs.jq
-              ];
-            }
-            ''
-              fixture_dir="${stage-a-jq-fixtures}/share/wincr/stage-a-fixtures/jq-o2-alignment"
-              report="${stage-b-jq-skeleton-candidate-check}/stage-b.json"
-              closure_dir="$out/share/wincr/stage-b/jq/target-closure-skeletons"
-              mkdir -p "$closure_dir"
+              report="$work/provenance/candidate-provenance.json"
 
               jq -e '
-                .candidate.build.report.target_import_closure.status == "incomplete"
-                and (.candidate.build.report.target_import_closure.dll_count >= 1)
+                .build.report.target_import_closure.status == "incomplete"
+                and (.build.report.target_import_closure.dll_count >= 1)
               ' "$report" >/dev/null
 
-              jq -r '.candidate.build.report.target_import_closure.dlls[].dll' "$report" \
+              jq -r '.build.report.target_import_closure.dlls[].dll' "$report" \
                 > "$closure_dir/target-dlls.txt"
               while IFS= read -r dll; do
                 test -n "$dll"
@@ -2318,7 +2475,7 @@
                   and .completion.stage_a_validated == false
                 ' "$skeleton_dir/manifest.json" >/dev/null
                 jq -r --arg dll "$dll" '
-                  .candidate.build.report.target_import_closure.dlls[]
+                  .build.report.target_import_closure.dlls[]
                   | select(.dll == $dll)
                   | .symbols[].symbol
                 ' "$report" | sort -u > "$skeleton_dir/requested-symbols.txt"
@@ -2347,18 +2504,18 @@
                     upstream_source_read: false,
                     allowed_inputs: ["stage-b-candidate-report", "target-owned-pe-dll", "pe-export-table", "capstone-disassembly"]
                   },
-                  target_import_closure: $report[0].candidate.build.report.target_import_closure,
+                  target_import_closure: $report[0].build.report.target_import_closure,
                   target_dlls: ($dlls | split("\n") | map(select(length > 0))),
                   skeleton_manifests: ($manifests | split("\n") | map(select(length > 0)))
                 }' > "$closure_dir/target-closure-skeletons.json"
-              wincr stage-b-generate-candidate-provenance \
+              stage-b-provenance-wincr stage-b-generate-candidate-provenance \
                 --target-name jq \
                 --skeleton-manifest "${stage-b-jq-decompiled-c-skeleton}/share/wincr/stage-b/jq/decompiled-c-skeleton/manifest.json" \
                 --candidate "${stage-b-jq-skeleton-candidate}/share/wincr/stage-b/jq/candidate/jq-stage-b-skeleton-candidate.exe" \
                 --build-target i686-w64-mingw32 \
                 --build-compiler i686-w64-mingw32-cc \
                 --build-output jq-stage-b-skeleton-candidate.exe \
-                --build-report "${stage-b-jq-skeleton-candidate-check}/decompiled-c-link-report.json" \
+                --build-report "$candidate_dir/decompiled-c-link-report.json" \
                 --target-closure-manifest "$closure_dir/target-closure-skeletons.json" \
                 --out "$closure_dir/closure-aware-provenance" \
                 > "$closure_dir/closure-aware-provenance.stdout"
@@ -2370,15 +2527,14 @@
                 and .build.report.standalone_link_diagnostic.repair_plan.status == "target_import_closure_not_linked"
                 and .build.report.source_dependency_policy.status == "violated"
               ' "$closure_dir/closure-aware-provenance/candidate-provenance.json" >/dev/null
-              cp "$report" "$closure_dir/jq-stage-b-report.json"
+              cp "$report" "$closure_dir/jq-stage-b-pre-closure-provenance.json"
+              cp "$work/provenance.stdout" "$closure_dir/pre-closure-provenance.stdout"
             '';
 
           stage-b-jq-generated-closure-candidate = pkgs.runCommand "stage-b-jq-generated-closure-candidate"
             {
               nativeBuildInputs = [
-                haloce-tools
                 stage-b-provenance-tools
-                stage-b-skeleton-tools
                 mingw32.stdenv.cc
                 pkgs.gawk
                 pkgs.jq
@@ -2737,7 +2893,7 @@
                 }' > "$out_dir/decompiled-c-generated-closure-link-report.json"
 
               printf '%s\n' 'generating jq Stage B provenance for generated-closure candidate'
-              wincr stage-b-generate-candidate-provenance \
+              stage-b-provenance-wincr stage-b-generate-candidate-provenance \
                 --target-name jq \
                 --skeleton-manifest "$out_dir/skeleton-manifest.json" \
                 --candidate "$out_dir/jq-stage-b-generated-closure-candidate.exe" \
@@ -2749,41 +2905,6 @@
                 --out "$out_dir/provenance" \
                 > "$out_dir/candidate-provenance.stdout"
               cp "$out_dir/provenance/candidate-provenance.json" "$out_dir/candidate-provenance.json"
-
-              smoke_dir="$out_dir/smoke"
-              mkdir -p "$smoke_dir"
-              printf '%s\n' 'smoke parsing generated-closure candidate PE and linker map'
-              stage-b-skeleton-wincr stage-b-generate-skeleton \
-                --original "$out_dir/jq-stage-b-generated-closure-candidate.exe" \
-                --linker-map "$out_dir/jq-stage-b-generated-closure-candidate.map" \
-                --target-name jq-generated-closure-candidate-smoke \
-                --source-language c \
-                --out-dir "$smoke_dir/parse"
-              printf '%s\n' 'skipping generated-closure candidate runtime smoke until Stage A gate passes'
-              printf '%s\n' 'skipped: Stage A reference-contract gate has not run in the candidate artifact derivation' \
-                > "$smoke_dir/candidate-version.stdout"
-              : > "$smoke_dir/candidate-version.stderr"
-              smoke_code=125
-              printf '%s\n' "$smoke_code" > "$smoke_dir/candidate-version.returncode"
-              smoke_status="skipped"
-              smoke_blocker="runtime smoke is deferred until stage-b-jq-generated-closure-candidate-check observes a passing Stage A reference-contract gate"
-              jq -n \
-                --arg status "$smoke_status" \
-                --arg returncode "$smoke_code" \
-                --arg stdout "$smoke_dir/candidate-version.stdout" \
-                --arg stderr "$smoke_dir/candidate-version.stderr" \
-                --arg blocker "$smoke_blocker" \
-                '{
-                  format: "stage-b-runtime-smoke-v1",
-                  target_name: "jq",
-                  status: $status,
-                  returncode: ($returncode | tonumber),
-                  command: ["jq-stage-b-generated-closure-candidate.exe", "--version"],
-                  runner: "not_run",
-                  stdout: $stdout,
-                  stderr: $stderr,
-                  blocker: $blocker
-                }' > "$smoke_dir/report.json"
 
               printf '%s\n' 'asserting generated-closure candidate provenance stays strict and behavior-incomplete'
               jq -e '
@@ -2816,27 +2937,51 @@
               }
             '';
 
-          stage-b-jq-contract-iteration-check = pkgs.runCommand "stage-b-jq-contract-iteration-check"
+          stage-b-jq-contract-smoke-check = pkgs.runCommand "stage-b-jq-contract-smoke-check"
             {
               nativeBuildInputs = [
-                haloce-tools
+                stage-a-contract-tools
                 pkgs.jq
               ];
             }
             ''
               candidate_dir="${stage-b-jq-generated-closure-candidate}/share/wincr/stage-b/jq/generated-closure-candidate"
-              closure_manifest="${stage-b-jq-target-closure-skeleton}/share/wincr/stage-b/jq/target-closure-skeletons/target-closure-skeletons.json"
-              work="$TMPDIR/stage-b-jq-contract-iteration-check"
-              mkdir -p "$work"
-              test -s "$candidate_dir/smoke/report.json"
+              test -s "$candidate_dir/jq-stage-b-generated-closure-candidate.exe"
+              test -s "$candidate_dir/jq-stage-b-generated-closure-candidate.map"
+              test -s "$candidate_dir/candidate-provenance.json"
+              test -s "$candidate_dir/skeleton-manifest.json"
+              test ! -e "$candidate_dir/smoke/report.json"
+              test ! -e "$candidate_dir/functional"
               jq -e '
-                .format == "stage-b-runtime-smoke-v1"
-                and .status == "skipped"
-                and .runner == "not_run"
-                and .returncode == 125
-              ' "$candidate_dir/smoke/report.json" >/dev/null
+                .format == "stage-b-candidate-provenance-v1"
+                and .functional_tests.status == "not_run"
+                and .upstream_source_access == false
+                and .manual_behavioral_fixups == []
+                and .build.report.target_import_closure.status == "satisfied"
+              ' "$candidate_dir/candidate-provenance.json" >/dev/null
+              stage-a-contract-wincr stage-a-smoke-contract \
+                --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
+                --out "$TMPDIR/jq-reference-contract-smoke.json"
+              mkdir -p "$out"
+              cp "$TMPDIR/jq-reference-contract-smoke.json" "$out/"
+            '';
 
-              wincr stage-b-generate-candidate-provenance \
+          stage-b-jq-contract-delta-check = pkgs.runCommand "stage-b-jq-contract-delta-check"
+            {
+              nativeBuildInputs = [
+                stage-b-contract-tools
+                stage-b-provenance-tools
+                pkgs.jq
+                pkgs.lean4
+              ];
+            }
+            ''
+              candidate_dir="${stage-b-jq-generated-closure-candidate}/share/wincr/stage-b/jq/generated-closure-candidate"
+              closure_manifest="${stage-b-jq-target-closure-skeleton}/share/wincr/stage-b/jq/target-closure-skeletons/target-closure-skeletons.json"
+              work="$TMPDIR/stage-b-jq-contract-delta-check"
+              mkdir -p "$work"
+
+              stage-b-provenance-wincr stage-b-generate-candidate-provenance \
                 --target-name jq \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
                 --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
@@ -2850,7 +2995,7 @@
               claimed_provenance="$work/provenance/candidate-provenance.json"
 
               set +e
-              wincr stage-b-validate-candidate \
+              stage-b-contract-wincr stage-b-validate-candidate \
                 --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
                 --linker-map-candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.map" \
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
@@ -2860,7 +3005,7 @@
                 --out "$work/validate" \
                 > "$work/validate.stdout"
               validate_code=$?
-              wincr stage-b-explain-delta \
+              stage-b-contract-wincr stage-b-explain-delta \
                 --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
                 --candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.exe" \
                 --linker-map-candidate "$candidate_dir/jq-stage-b-generated-closure-candidate.map" \
@@ -2896,6 +3041,10 @@
                 and .functional == null
                 and .functional_report == null
                 and .functional_diagnostics.status == "not_provided"
+                and ([.issues[].category] | index("missing_functional_tests") | not)
+                and ([.issues[].category] | index("functional_tests_not_passing") | not)
+                and ([.issues[].category] | index("missing_functional_test_suites") | not)
+                and ([.issues[].category] | index("missing_required_functional_suite") | not)
               ' "$work/validate/stage-b.json" >/dev/null
               jq -e '
                 .format == "stage-b-delta-explanation-v1"
@@ -2936,7 +3085,7 @@
               cp -R "$work/delta" "$out/delta"
             '';
 
-          stage-b-jq-generated-closure-candidate-check = pkgs.runCommand "stage-b-jq-generated-closure-candidate-check"
+          stage-b-jq-final-functional-check = pkgs.runCommand "stage-b-jq-final-functional-check"
             {
               nativeBuildInputs = [
                 haloce-tools
@@ -2949,17 +3098,10 @@
             ''
               candidate_dir="${stage-b-jq-generated-closure-candidate}/share/wincr/stage-b/jq/generated-closure-candidate"
               closure_manifest="${stage-b-jq-target-closure-skeleton}/share/wincr/stage-b/jq/target-closure-skeletons/target-closure-skeletons.json"
-              work="$TMPDIR/stage-b-jq-generated-closure-candidate-check"
+              work="$TMPDIR/stage-b-jq-final-functional-check"
               mkdir -p "$work"
-              test -s "$candidate_dir/smoke/report.json"
               test -s "$candidate_dir/src/jq_stage_b_skeleton.c"
               test -s "$candidate_dir/src/jq-libjq-1_stage_b_skeleton.c"
-              jq -e '
-                .format == "stage-b-runtime-smoke-v1"
-                and .status == "skipped"
-                and .runner == "not_run"
-                and .returncode == 125
-              ' "$candidate_dir/smoke/report.json" >/dev/null
 
               wincr stage-b-generate-candidate-provenance \
                 --target-name jq \
@@ -2995,6 +3137,23 @@
                 > "$work/delta.stdout"
               delta_code=$?
               set -e
+
+              if ! jq -e '
+                .stage_a.gate.ran == true
+                and .stage_a.gate.status == "pass"
+                and .stage_a.verdict == "pass"
+              ' "$work/validate/stage-b.json" >/dev/null; then
+                mkdir -p "$out"
+                cp "$work/validate/stage-b.json" "$out/stage-b.json"
+                cp "$work/delta/stage-b-delta.json" "$out/stage-b-delta.json"
+                cp "$claimed_provenance" "$out/candidate-provenance.json"
+                cp "$work/provenance.stdout" "$work/validate.stdout" "$work/delta.stdout" "$out/"
+                cp -R "$work/provenance" "$out/provenance"
+                cp -R "$work/validate" "$out/validate"
+                cp -R "$work/delta" "$out/delta"
+                printf '%s\n' 'refusing final functional run: Stage A contract gate has not passed' > "$out/final-functional.blocker"
+                exit 1
+              fi
 
               functional_report=""
               functional_code=125
@@ -3245,6 +3404,7 @@
                 --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
                 --candidate-provenance "$claimed_provenance" \
                 --functional-report "$functional_report" \
+                --require-functional-evidence \
                 --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
                 --target-name jq \
                 --out "$work/validate" \
@@ -3263,10 +3423,14 @@
               delta_code=$?
               fi
               set -e
-              test "$validate_code" -ne 0
-              test "$delta_code" -ne 0
+              if [ "$functional_code" -ne 0 ]; then
+                printf '%s\n' 'stage_a_pass_functional_failure: Stage A passed, but the candidate-only jq public behavior suite failed' >&2
+                exit 1
+              fi
+              test "$validate_code" -eq 0
+              test "$delta_code" -eq 0
               jq -e '
-                .status == "incomplete"
+                .status == "pass"
                 and .candidate.build.report.source_dependency_policy.status == "satisfied"
                 and .candidate.build.report.target_import_closure.status == "satisfied"
                 and (
@@ -3288,57 +3452,19 @@
                 and ([.issues[].category] | index("target_import_closure_incomplete") | not)
                 and .reference_contract_coverage.provided == true
                 and .stage_a.gate.ran == true
-                and (
-                  if .functional == null then
-                    .functional_report == null
-                    and .functional_diagnostics.status == "not_provided"
-                    and .stage_a.gate.status != "pass"
-                  else
-                    .functional.oracle.original_runtime_observations == false
-                    and (.functional.commands | has("original") | not)
-                    and (.functional.binary_bindings | has("original") | not)
-                  end
-                )
+                and .stage_a.gate.status == "pass"
+                and .functional.status == "pass"
+                and .functional.oracle.original_runtime_observations == false
+                and (.functional.commands | has("original") | not)
+                and (.functional.binary_bindings | has("original") | not)
               ' "$work/validate/stage-b.json" >/dev/null
               jq -e '
                 .format == "stage-b-delta-explanation-v1"
-                and .status == "incomplete"
-                and .counts.repair_items > 0
+                and .status == "pass"
+                and .counts.repair_items == 0
                 and (.candidate_modules | length) == 1
-                and (
-                  if .candidate_crash_report == null then
-                    .functional_report == null
-                    and .functional_diagnostics.status == "not_provided"
-                    and ([.repair_items[].violated_contract_family] | index("candidate_crash") | not)
-                  else
-                    (
-                      if (.candidate_crash_report.status // "not_detected") == "detected" then
-                        ([.repair_items[].violated_contract_family] | index("candidate_crash"))
-                        and (.candidate_crash_report.has_seh_exception == true)
-                        and (
-                          ([.repair_items[].likely_repair_class] | index("candidate_crash_register_context"))
-                          or ([.repair_items[].likely_repair_class] | index("candidate_crash_fault_address_context"))
-                          or ([.repair_items[].likely_repair_class] | index("runtime_crt_tls_callback_context"))
-                        )
-                        and (
-                          ([.repair_items[].likely_repair_class] | index("stack_probe_or_frame_layout"))
-                          or ([.repair_items[].likely_repair_class] | index("stack_scratch_buffer_or_out_param"))
-                          or ([.repair_items[].likely_repair_class] | index("runtime_crt_stack_bridge"))
-                          or ([.repair_items[].likely_repair_class] | index("candidate_crash_fault_address_context"))
-                        )
-                      else
-                        ([.repair_items[].violated_contract_family] | index("candidate_crash") | not)
-                        and (
-                          if (.functional_diagnostics.status // "") == "fail" then
-                            ([.repair_items[].violated_contract_family] | index("functional_expected_output"))
-                          else
-                            true
-                          end
-                        )
-                      end
-                    )
-                  end
-                )
+                and .functional_report != null
+                and .functional_diagnostics.status == "pass"
               ' "$work/delta/stage-b-delta.json" >/dev/null
 
               mkdir -p "$out"
@@ -3370,337 +3496,8 @@
               cp -R "$work/provenance" "$out/provenance"
               cp -R "$work/validate" "$out/validate"
               cp -R "$work/delta" "$out/delta"
-              cp -R "$candidate_dir/smoke" "$out/smoke"
               printf '%s\n' "$functional_code" > "$out/functional.returncode"
               printf '%s\n' "$validate_code" > "$out/validate.returncode"
-              printf '%s\n' "$delta_code" > "$out/delta.returncode"
-            '';
-
-          stage-b-ripgrep-toolchain-diagnostic = pkgs.runCommand "stage-b-ripgrep-toolchain-diagnostic"
-            {
-              nativeBuildInputs = [
-                pkgs.jq
-              ];
-            }
-            ''
-              out_dir="$out/share/wincr/stage-b/ripgrep"
-              mkdir -p "$out_dir"
-              jq -n \
-                --arg model "x86-pe32-env-v1" \
-                --arg attr "pkgs.pkgsCross.mingw32.ripgrep" \
-                --arg required_target "i686-pc-windows-gnu" \
-                '{
-                  format: "stage-b-ripgrep-i686-toolchain-diagnostic-v1",
-                  status: "blocked_i686",
-                  model: $model,
-                  required_target: $required_target,
-                  nix_attr: $attr,
-                  blocker: "current Nix cross Rust toolchain fails while linking i686-pc-windows-gnu std with unresolved _Unwind_* symbols before ripgrep builds",
-                  next_action: "use the x86_64 PE32+ ripgrep Stage B path for current skeleton work, or fix the i686 Windows Rust cross toolchain before adding a PE32 ripgrep validation check"
-                }' > "$out_dir/status.json"
-            '';
-
-          stage-b-ripgrep-toolchain-diagnostic-root = pkgs.writeShellApplication {
-            name = "stage-b-ripgrep-toolchain-diagnostic-root";
-            text = ''
-              printf '%s\n' "${stage-b-ripgrep-toolchain-diagnostic}"
-            '';
-          };
-
-          stage-b-ripgrep-x64-original = (mingwW64.ripgrep.override { withPCRE2 = false; }).overrideAttrs (old: {
-            pname = "stage-b-ripgrep-x64-original";
-            doCheck = false;
-            doInstallCheck = false;
-            installCheckPhase = "";
-            postFixup = "";
-            postInstall =
-              (old.postInstall or "")
-              + ''
-                mkdir -p "$out/share/wincr/stage-b/ripgrep/original"
-                cp "$out/bin/rg.exe" "$out/share/wincr/stage-b/ripgrep/original/rg.exe"
-              '';
-          });
-
-          stage-b-ripgrep-reference-contract = pkgs.runCommand "stage-b-ripgrep-reference-contract"
-            {
-              nativeBuildInputs = [
-                haloce-tools
-                pkgs.jq
-              ];
-            }
-            ''
-              original="${stage-b-ripgrep-x64-original}/share/wincr/stage-b/ripgrep/original/rg.exe"
-              out_dir="$out/share/wincr/stage-b/ripgrep/reference-contract"
-              mkdir -p "$out_dir"
-              set +e
-              wincr stage-a-export-reference-contract \
-                --original "$original" \
-                --model x86_64-pe32plus-env-v1 \
-                --out "$out_dir/ripgrep-reference-contract.json" \
-                > "$out_dir/export.stdout"
-              code=$?
-              set -e
-              test "$code" -ne 0
-              jq -e '
-                .format == "stage-a-reference-contract-v1"
-                and .model == "x86_64-pe32plus-env-v1"
-                and .status == "incomplete"
-                and .candidate == null
-                and .constraints.pe_sections_imports_relocations_image_base.status == "derived"
-                and .constraints.validation_report_artifact_binding.status == "not_provided"
-                and .constraints.proof_obligation_inventory.status == "not_provided"
-                and .original.machine == "x86_64"
-                and .original.bitness == 64
-              ' "$out_dir/ripgrep-reference-contract.json" >/dev/null
-            '';
-
-          stage-b-ripgrep-integration-harness = ((mingwW64.ripgrep.override { withPCRE2 = false; }).overrideAttrs (old: {
-            pname = "stage-b-ripgrep-integration-harness";
-            doCheck = false;
-            doInstallCheck = false;
-            postFixup = "";
-            cargoBuildFlags = (old.cargoBuildFlags or [ ]) ++ [
-              "--test"
-              "integration"
-            ];
-            installPhase = ''
-              runHook preInstall
-              test_bin="$(find target/x86_64-pc-windows-gnu/release/deps -maxdepth 1 -type f -name 'integration-*.exe' -print -quit)"
-              if [ -z "$test_bin" ]; then
-                echo "missing Windows ripgrep integration test binary" >&2
-                find target -maxdepth 5 -type f -name 'integration*' -print >&2 || true
-                exit 1
-              fi
-              mkdir -p "$out/bin" "$out/share/wincr/stage-b/ripgrep/upstream-integration"
-              cp "$test_bin" "$out/bin/ripgrep-integration.exe"
-              (
-                find tests -type f -print0 | sort -z | xargs -0 sha256sum
-                sha256sum Cargo.toml Cargo.lock
-              ) > "$out/share/wincr/stage-b/ripgrep/upstream-integration/source-manifest.sha256"
-              cp tests/tests.rs tests/macros.rs tests/util.rs "$out/share/wincr/stage-b/ripgrep/upstream-integration/"
-              runHook postInstall
-            '';
-          }));
-
-          stage-b-ripgrep-skeleton = pkgs.runCommand "stage-b-ripgrep-skeleton"
-            {
-              nativeBuildInputs = [
-                stage-b-skeleton-tools
-              ];
-            }
-            ''
-              skeleton_dir="$out/share/wincr/stage-b/ripgrep/skeleton"
-              stage-b-skeleton-wincr stage-b-generate-skeleton \
-                --original "${stage-b-ripgrep-x64-original}/share/wincr/stage-b/ripgrep/original/rg.exe" \
-                --target-name ripgrep \
-                --source-language rust \
-                --out-dir "$skeleton_dir"
-            '';
-
-          stage-b-ripgrep-skeleton-root = pkgs.writeShellApplication {
-            name = "stage-b-ripgrep-skeleton-root";
-            text = ''
-              printf '%s\n' "${stage-b-ripgrep-skeleton}"
-            '';
-          };
-
-          stage-b-ripgrep-skeleton-check = pkgs.runCommand "stage-b-ripgrep-skeleton-check"
-            {
-              nativeBuildInputs = [
-                pkgs.jq
-              ];
-            }
-            ''
-              skeleton_dir="${stage-b-ripgrep-skeleton}/share/wincr/stage-b/ripgrep/skeleton"
-              jq -e '
-                .format == "stage-b-skeleton-v1"
-                and .status == "generated"
-                and .target_name == "ripgrep"
-                and .original.machine == "x86_64"
-                and .original.bitness == 64
-                and (.source_policy.allowed_inputs | index("pe32plus-original"))
-                and .implementation_mode == "scaffold"
-                and .implementation_recovery.generated_source_kind == "scaffold"
-                and .implementation_recovery.source_implements_behavior == false
-                and .completion.stage_a_validated == false
-              ' "$skeleton_dir/manifest.json" >/dev/null
-              mkdir -p "$out"
-              cp "$skeleton_dir/manifest.json" "$skeleton_dir/functions.json" "$out/"
-            '';
-
-          stage-b-ripgrep-skeleton-candidate = pkgs.runCommand "stage-b-ripgrep-skeleton-candidate"
-            {
-              nativeBuildInputs = [
-                stage-b-provenance-tools
-                mingwW64.rustc
-                mingwW64.stdenv.cc
-              ];
-            }
-            ''
-              skeleton_dir="${stage-b-ripgrep-skeleton}/share/wincr/stage-b/ripgrep/skeleton"
-              source="$skeleton_dir/src/ripgrep_stage_b_skeleton.rs"
-              out_dir="$out/share/wincr/stage-b/ripgrep/candidate"
-              mkdir -p "$out_dir"
-              rustc --target x86_64-pc-windows-gnu -C panic=abort \
-                -L native=${mingwW64Pthreads}/lib \
-                -o "$out_dir/rg-stage-b-skeleton-candidate.exe" "$source"
-              printf 'stage-b skeleton candidate map is unavailable until final Stage A validation is attempted\n' \
-                > "$out_dir/rg-stage-b-skeleton-candidate.map"
-              cp "$skeleton_dir/manifest.json" "$out_dir/skeleton-manifest.json"
-              stage-b-provenance-wincr stage-b-generate-candidate-provenance \
-                --target-name ripgrep \
-                --skeleton-manifest "$out_dir/skeleton-manifest.json" \
-                --candidate "$out_dir/rg-stage-b-skeleton-candidate.exe" \
-                --build-target x86_64-pc-windows-gnu \
-                --build-compiler rustc \
-                --build-output rg-stage-b-skeleton-candidate.exe \
-                --out "$out_dir" \
-                > "$out_dir/candidate-provenance.stdout"
-            '';
-
-          stage-b-ripgrep-skeleton-candidate-check = pkgs.runCommand "stage-b-ripgrep-skeleton-candidate-check"
-            {
-              nativeBuildInputs = [
-                haloce-tools
-                pkgs.jq
-                pkgs.lean4
-                stage-b-skeleton-tools
-              ];
-            }
-            ''
-              original_dir="${stage-b-ripgrep-x64-original}/share/wincr/stage-b/ripgrep/original"
-              candidate_dir="${stage-b-ripgrep-skeleton-candidate}/share/wincr/stage-b/ripgrep/candidate"
-              work="$TMPDIR/stage-b-ripgrep-candidate"
-              mkdir -p "$work"
-              printf 'stage-b pre-validation placeholder\n' > "$work/original-placeholder.map"
-              stage-b-skeleton-wincr stage-b-generate-skeleton \
-                --original "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
-                --target-name ripgrep-candidate-smoke \
-                --source-language rust \
-                --out-dir "$work/parse"
-              functional_report=""
-              functional_code=125
-              mkdir -p "$work/materialized-suite" "$work/smoke-suite" "$work/smoke-functional" "$work/functional"
-              jq -n \
-                --arg candidate "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
-                '{
-                  format: "stage-b-runtime-smoke-v1",
-                  status: "skipped",
-                  returncode: 125,
-                  runner: "not_run",
-                  candidate: {path: $candidate},
-                  original_runtime_observations: false,
-                  blockers: [
-                    "runtime smoke is deferred until Stage A reference-contract validation is clean"
-                  ]
-                }' > "$work/smoke-functional/report.json"
-              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/materialized-suite.stdout"
-              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/smoke-suite.stdout"
-              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/smoke-functional.stdout"
-              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/full-suite.stdout"
-              printf 'skipped: Stage A reference-contract gate incomplete before runtime smoke\n' > "$work/functional.stdout"
-              wincr stage-b-generate-candidate-provenance \
-                --target-name ripgrep \
-                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
-                --candidate "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
-                --build-target x86_64-pc-windows-gnu \
-                --build-compiler rustc \
-                --build-output rg-stage-b-skeleton-candidate.exe \
-                --out "$work/provenance" \
-                > "$work/provenance.stdout"
-              claimed_provenance="$work/provenance/candidate-provenance.json"
-              set +e
-              wincr stage-b-validate-candidate \
-                --candidate "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
-                --linker-map-candidate "$candidate_dir/rg-stage-b-skeleton-candidate.map" \
-                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
-                --candidate-provenance "$claimed_provenance" \
-                --reference-contract "${stage-b-ripgrep-reference-contract}/share/wincr/stage-b/ripgrep/reference-contract/ripgrep-reference-contract.json" \
-                --target-name ripgrep \
-                --model x86_64-pe32plus-env-v1 \
-                --out "$work/validate" \
-                > "$work/validate.stdout"
-              code=$?
-              wincr stage-b-explain-delta \
-                --reference-contract "${stage-b-ripgrep-reference-contract}/share/wincr/stage-b/ripgrep/reference-contract/ripgrep-reference-contract.json" \
-                --candidate "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
-                --linker-map-candidate "$candidate_dir/rg-stage-b-skeleton-candidate.map" \
-                --skeleton-manifest "$candidate_dir/skeleton-manifest.json" \
-                --model x86_64-pe32plus-env-v1 \
-                --out "$work/delta" \
-                > "$work/delta.stdout"
-              delta_code=$?
-              set -e
-              test "$code" -ne 0
-              test "$delta_code" -ne 0
-              jq -e '
-                .status == "incomplete"
-                and .provenance_status == "incomplete"
-                and .functional == null
-                and .functional_report == null
-                and .functional_diagnostics.status == "not_provided"
-                and ([.issues[].category] | index("missing_functional_tests"))
-                and ([.issues[].category] | index("functional_tests_not_passing"))
-                and ([.issues[].category] | index("missing_functional_test_suites"))
-                and ([.issues[].category] | index("missing_required_functional_suite"))
-                and ([.issues[].category] | index("functional_test_failure") | not)
-                and ([.issues[].category] | index("functional_test_report_failed") | not)
-                and ([.issues[].category] | index("functional_test_report_incomplete_coverage_scope") | not)
-                and ([.issues[].category] | index("functional_test_report_wrong_suite_id") | not)
-                and ([.issues[].category] | index("functional_test_report_wrong_source_kind") | not)
-                and ([.issues[].category] | index("functional_test_report_wrong_materializer") | not)
-                and ([.issues[].category] | index("functional_binary_command_not_bound") | not)
-                and ([.issues[].category] | index("functional_test_report_original_baseline_failed") | not)
-                and .stage_a.gate.status == "incomplete"
-                and .stage_a.gate.reason == "stage_a_validation_incomplete"
-                and .stage_a.gate.eligible == true
-                and .stage_a.gate.ran == true
-                and .stage_a.gate.behavioral_mismatch_blocks_stage_a == false
-                and .stage_a.gate.behavioral_blocking_issue_categories == []
-                and .stage_a.gate.iteration_policy == "stage_a_contract_first"
-                and .stage_a.gate.runtime_validation_policy == "candidate_only_after_stage_a_pass"
-                and .iteration_policy == "stage_a_contract_first"
-                and .runtime_validation_policy == "candidate_only_after_stage_a_pass"
-                and ([.stage_a.gate.non_blocking_issue_categories[]] | index("missing_functional_tests"))
-                and .reference_contract_coverage.provided == true
-                and .reference_contract_coverage.status == "incomplete"
-                and .reference_contract_coverage.contract_status == "incomplete"
-                and ([.reference_contract_coverage.families[] | select(.family == "pe_sections_imports_relocations_image_base").status][0] == "incomplete")
-                and ([.reference_contract_coverage.families[] | select(.family == "pe_sections_imports_relocations_image_base").stage_b_status][0] == "represented")
-                and ([.reference_contract_coverage.families[] | select(.family == "validation_report_artifact_binding").status][0] == "incomplete")
-              ' "$work/validate/stage-b.json" >/dev/null
-              jq -e '
-                .format == "stage-b-delta-explanation-v1"
-                and .status == "incomplete"
-                and .functional_report == null
-                and .functional_diagnostics.status == "not_provided"
-                and .counts.repair_items > 0
-                and ([.repair_items[].violated_contract_family] | index("functional_expected_output") | not)
-              ' "$work/delta/stage-b-delta.json" >/dev/null
-              mkdir -p "$out"
-              cp "$candidate_dir/rg-stage-b-skeleton-candidate.exe" \
-                "$candidate_dir/rg-stage-b-skeleton-candidate.map" \
-                "$claimed_provenance" \
-                "$work/validate/stage-b.json" \
-                "$work/delta/stage-b-delta.json" \
-                "$out/"
-              cp "$work/materialized-suite.stdout" \
-                "$work/functional.stdout" \
-                "$work/provenance.stdout" \
-                "$work/validate.stdout" \
-                "$work/delta.stdout" \
-                "$work/smoke-suite.stdout" \
-                "$work/smoke-functional.stdout" \
-                "$work/full-suite.stdout" \
-                "$out/"
-              cp -R "$work/materialized-suite" "$out/materialized-suite"
-              cp -R "$work/functional" "$out/functional"
-              cp -R "$work/provenance" "$out/provenance"
-              cp -R "$work/validate" "$out/validate"
-              cp -R "$work/delta" "$out/delta"
-              cp -R "$work/smoke-suite" "$out/smoke-suite"
-              cp -R "$work/smoke-functional" "$out/smoke-functional"
-              printf '%s\n' "$functional_code" > "$out/functional.returncode"
               printf '%s\n' "$delta_code" > "$out/delta.returncode"
             '';
 
@@ -3792,70 +3589,6 @@
               ' "$work/materialized-suite/functional-suite.json" >/dev/null
               mkdir -p "$out"
               cp "$work/report/functional-report.json" "$out/"
-            '';
-
-          stage-b-readiness-audit-check = pkgs.runCommand "stage-b-readiness-audit-check"
-            {
-              nativeBuildInputs = [
-                haloce-tools
-                pkgs.jq
-              ];
-            }
-            ''
-              work="$TMPDIR/stage-b-readiness"
-              mkdir -p "$work"
-              set +e
-              wincr stage-b-audit-readiness \
-                --report "jq=${stage-b-jq-contract-iteration-check}/stage-b.json" \
-                --report "ripgrep=${stage-b-ripgrep-skeleton-candidate-check}/stage-b.json" \
-                --out "$work/audit" \
-                > "$work/audit.stdout"
-              code=$?
-              set -e
-              test "$code" -ne 0
-              jq -e '
-                .format == "stage-b-readiness-audit-v1"
-                and .status == "incomplete"
-                and .counts == {"targets":2,"ready":0,"incomplete":2}
-                and .targets.jq.status == "incomplete"
-                and .targets.ripgrep.status == "incomplete"
-                and ([.targets.jq.requirements[] | select(.id == "generated_skeleton_source_root").status][0] == "satisfied")
-                and ([.targets.ripgrep.requirements[] | select(.id == "generated_skeleton_source_root").status][0] == "satisfied")
-                and ([.targets.jq.requirements[] | select(.id == "generated_behavior_source").status][0] == "incomplete")
-                and ([.targets.ripgrep.requirements[] | select(.id == "generated_behavior_source").status][0] == "incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "same_architecture_same_os").status][0] == "satisfied")
-                and ([.targets.ripgrep.requirements[] | select(.id == "same_architecture_same_os").status][0] == "satisfied")
-                and ([.targets.jq.requirements[] | select(.id == "functional_binary_bindings").status][0] == "incomplete")
-                and ([.targets.ripgrep.requirements[] | select(.id == "functional_binary_bindings").status][0] == "incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "canonical_upstream_functional_suite").status][0] == "incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "canonical_upstream_functional_suite").evidence.status][0] == null)
-                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").status][0] == "satisfied")
-                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").evidence.status][0] == "satisfied")
-                and ([.targets.jq.requirements[] | select(.id == "no_upstream_source_dependency").evidence.target_import_closure.status][0] == "satisfied")
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").status][0] == "incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.reason][0] == "stage_a_validation_incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.behavioral_mismatch_blocks_stage_a][0] == false)
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.iteration_policy][0] == "stage_a_contract_first")
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.runtime_validation_policy][0] == "candidate_only_after_stage_a_pass")
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.ran][0] == true)
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_reference_contract_coverage").status][0] == "incomplete")
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.provided][0] == true)
-                and ([.targets.jq.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.family_statuses.validation_report_artifact_binding][0] == "satisfied")
-                and ([.targets.ripgrep.requirements[] | select(.id == "canonical_upstream_functional_suite").status][0] == "incomplete")
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").status][0] == "incomplete")
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.reason][0] == "stage_a_validation_incomplete")
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.behavioral_mismatch_blocks_stage_a][0] == false)
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.iteration_policy][0] == "stage_a_contract_first")
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.runtime_validation_policy][0] == "candidate_only_after_stage_a_pass")
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_final_pass").evidence.gate.ran][0] == true)
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_reference_contract_coverage").status][0] == "incomplete")
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.provided][0] == true)
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.family_statuses.pe_sections_imports_relocations_image_base][0] == "incomplete")
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.stage_b_statuses.pe_sections_imports_relocations_image_base][0] == "represented")
-                and ([.targets.ripgrep.requirements[] | select(.id == "stage_a_reference_contract_coverage").evidence.family_statuses.validation_report_artifact_binding][0] == "incomplete")
-              ' "$work/audit/stage-b-readiness.json" >/dev/null
-              mkdir -p "$out"
-              cp "$work/audit/stage-b-readiness.json" "$work/audit.stdout" "$out/"
             '';
 
           wincr-3d-reference-source-info-json = builtins.toJSON {
@@ -5508,6 +5241,7 @@ setup.write_text(text)
               stage-a-jq-fixtures
               stage-a-jq-fixtures-check
               stage-a-jq-fixtures-root
+              stage-a-contract-tools
               stage-b-jq-decompiler-export
               stage-b-jq-libjq-decompiler-export
               stage-b-jq-libjq-decompiled-c-skeleton
@@ -5516,28 +5250,17 @@ setup.write_text(text)
               stage-b-jq-skeleton
               stage-b-jq-skeleton-check
               stage-b-jq-skeleton-candidate
-              stage-b-jq-skeleton-candidate-check
               stage-b-jq-target-closure-skeleton
               stage-b-jq-generated-closure-candidate
-              stage-b-jq-contract-iteration-check
-              stage-b-jq-generated-closure-candidate-check
+              stage-b-jq-contract-smoke-check
+              stage-b-jq-contract-delta-check
+              stage-b-jq-final-functional-check
               stage-b-jq-skeleton-root
-              stage-b-ripgrep-toolchain-diagnostic
-              stage-b-ripgrep-toolchain-diagnostic-root
-              stage-b-ripgrep-x64-original
-              stage-b-ripgrep-reference-contract
-              stage-b-ripgrep-integration-harness
-              stage-b-ripgrep-skeleton
-              stage-b-ripgrep-skeleton-check
-              stage-b-ripgrep-skeleton-candidate
-              stage-b-ripgrep-skeleton-candidate-check
-              stage-b-ripgrep-skeleton-root
               stage-b-skeleton-tools
               stage-b-provenance-tools
+              stage-b-contract-tools
               stage-b-functional-tools
-              stage-b-smoke-check
               stage-b-functional-runner-check
-              stage-b-readiness-audit-check
               wincr-3d-reference-game
               wincr-3d-reference-observe
               wincr-3d-reference-root
@@ -5676,15 +5399,6 @@ setup.write_text(text)
               program = "${stage-b-jq-skeleton-root}/bin/stage-b-jq-skeleton-root";
             };
 
-            stage-b-ripgrep-toolchain-diagnostic-root = {
-              type = "app";
-              program = "${stage-b-ripgrep-toolchain-diagnostic-root}/bin/stage-b-ripgrep-toolchain-diagnostic-root";
-            };
-
-            stage-b-ripgrep-skeleton-root = {
-              type = "app";
-              program = "${stage-b-ripgrep-skeleton-root}/bin/stage-b-ripgrep-skeleton-root";
-            };
           };
 
           checks = {
@@ -5706,6 +5420,7 @@ setup.write_text(text)
               stage-a-fixtures-check
               stage-a-jq-fixtures
               stage-a-jq-fixtures-check
+              stage-a-contract-tools
               stage-b-jq-decompiler-export
               stage-b-jq-libjq-decompiler-export
               stage-b-jq-libjq-decompiled-c-skeleton
@@ -5716,13 +5431,10 @@ setup.write_text(text)
               stage-b-jq-skeleton-candidate
               stage-b-jq-target-closure-skeleton
               stage-b-jq-generated-closure-candidate
-              # Primary jq Stage B iteration gate: Stage A reference contract only.
-              stage-b-jq-contract-iteration-check
-              stage-b-ripgrep-integration-harness
-              stage-b-ripgrep-reference-contract
-              stage-b-ripgrep-skeleton
-              stage-b-ripgrep-skeleton-check
-              stage-b-ripgrep-skeleton-candidate
+              # Primary jq Stage B iteration gates: Stage A reference contract only.
+              stage-b-jq-contract-smoke-check
+              stage-b-jq-contract-delta-check
+              stage-b-contract-tools
               wincr-3d-reference-game
               haloce-windows-vm-bundle
               ;

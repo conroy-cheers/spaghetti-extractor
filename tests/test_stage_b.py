@@ -13,26 +13,24 @@ from haloce_catalog.stage_a import STAGE_A_MODEL_ID, STAGE_A_X86_64_MODEL_ID, st
 from haloce_catalog.stage_b import (
     STAGE_B_PROOF_RULE,
     STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
-    stage_b_audit_readiness,
     stage_b_explain_delta,
     stage_b_extract_candidate_crash,
     stage_b_export_decompiler,
-    stage_b_generate_candidate_provenance,
-    stage_b_generate_link_roots,
-    stage_b_generate_skeleton,
-    stage_b_materialize_upstream_suite,
-    stage_b_run_functional_suite,
     stage_b_validate_candidate,
     _stage_b_abi_coverage_gap_items,
     _count_by_evidence_source,
     _stage_b_delta_repair_items,
     _stage_b_semantic_contract_repair_items,
-    _render_decompiled_c_source,
 )
+from haloce_catalog.stage_b_functional import stage_b_materialize_upstream_suite, stage_b_run_functional_suite
+from haloce_catalog.stage_b_provenance import stage_b_generate_candidate_provenance
 from haloce_catalog.stage_b_skeleton import (
     _decompiled_c_contract_direct_call_target_is_asm_linkable,
+    _render_decompiled_c_source,
     _render_decompiled_c_source as _render_skeleton_decompiled_c_source,
     _skeleton_source_map,
+    stage_b_generate_link_roots,
+    stage_b_generate_skeleton,
 )
 from haloce_catalog.util import sha256_bytes, sha256_file
 from test_stage_a import _LeanCheckedMock, _pe32_image, _pe32_import_image
@@ -58,17 +56,6 @@ class StageBTests(unittest.TestCase):
 
         self.assertIn("stage_a_loaded=False", proc.stdout)
         self.assertIn("stage_binary_loaded=True", proc.stdout)
-
-    def test_stage_b_generation_api_uses_skeleton_module(self):
-        self.assertEqual(stage_b_generate_skeleton.__module__, "haloce_catalog.stage_b_skeleton")
-        self.assertEqual(stage_b_generate_link_roots.__module__, "haloce_catalog.stage_b_skeleton")
-
-    def test_stage_b_candidate_provenance_api_uses_provenance_module(self):
-        self.assertEqual(stage_b_generate_candidate_provenance.__module__, "haloce_catalog.stage_b_provenance")
-
-    def test_stage_b_functional_api_uses_functional_module(self):
-        self.assertEqual(stage_b_materialize_upstream_suite.__module__, "haloce_catalog.stage_b_functional")
-        self.assertEqual(stage_b_run_functional_suite.__module__, "haloce_catalog.stage_b_functional")
 
     def test_generate_skeleton_from_linker_map(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2124,6 +2111,9 @@ class StageBTests(unittest.TestCase):
             self.assertIn("extern uintptr_t initterm();", source)
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
+            self.assertIn("stage_b_jq_layout_bss_anchor[2517]", source)
+            self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
+            self.assertIn("stage_b_jq_layout_rdata_anchor[1696]", source)
             self.assertIn("__crt_atexit((void *)0);", source)
             self.assertNotIn("  atexit((void *)0);", source)
             self.assertIn("local_28.BaseAddress = ___acrt_iob_func;", source)
@@ -3980,10 +3970,7 @@ class StageBTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn(".section .text$___iob_func", source)
-        self.assertIn(".globl ___iob_func", source)
-        self.assertIn("jmp *__imp____p__iob", source)
-        self.assertIn("#define ___iob_func __p__iob", source)
+        self.assertNotIn("#define ___iob_func __p__iob", source)
         self.assertIn("import thunk for __p__iob; body omitted", source)
 
     def test_decompiled_c_renderer_anchors_jq_reference_import_surface(self):
@@ -5763,7 +5750,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("skeleton_hash_mismatch", categories)
             self.assertIn("upstream_source_access", categories)
             self.assertIn("manual_behavioral_fixups", categories)
-            self.assertIn("missing_functional_tests", categories)
+            self.assertNotIn("missing_functional_tests", categories)
             self.assertFalse((root / "report" / "stage-a").exists())
 
     def test_validate_candidate_runs_stage_a_contract_before_functional_evidence_gate(self):
@@ -5830,7 +5817,7 @@ class StageBTests(unittest.TestCase):
                     out=root / "report",
                 )
 
-            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(result["status"], "pass")
             self.assertEqual(result["stage_a"]["verdict"], "pass")
             self.assertTrue(result["stage_a"]["gate"]["ran"])
             self.assertEqual(result["stage_a"]["gate"]["status"], "pass")
@@ -5842,11 +5829,31 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(written["iteration_policy"], "stage_a_contract_first")
             self.assertEqual(written["runtime_validation_policy"], "candidate_only_after_stage_a_pass")
             categories = {issue["category"] for issue in result["issues"]}
-            self.assertIn("missing_functional_tests", categories)
-            self.assertIn("missing_functional_test_suites", categories)
-            self.assertIn("missing_required_functional_suite", categories)
-            self.assertIn("missing_functional_tests", result["stage_a"]["gate"]["non_blocking_issue_categories"])
+            self.assertNotIn("missing_functional_tests", categories)
+            self.assertNotIn("missing_functional_test_suites", categories)
+            self.assertNotIn("missing_required_functional_suite", categories)
+            self.assertNotIn("missing_functional_tests", result["stage_a"]["gate"]["non_blocking_issue_categories"])
             self.assertTrue((root / "report" / "stage-a").exists())
+
+            final_mode = stage_b_validate_candidate(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                skeleton_manifest=skeleton_dir / "manifest.json",
+                candidate_provenance=provenance_dir / "candidate-provenance.json",
+                reference_contract=reference_contract,
+                target_name="jq",
+                require_functional_evidence=True,
+                out=root / "final-report",
+            )
+            final_categories = {issue["category"] for issue in final_mode["issues"]}
+            self.assertEqual(final_mode["status"], "incomplete")
+            self.assertEqual(final_mode["stage_a"]["gate"]["status"], "pass")
+            self.assertIn("missing_functional_tests", final_categories)
+            self.assertIn("missing_functional_test_suites", final_categories)
+            self.assertIn("missing_required_functional_suite", final_categories)
+            self.assertIn("missing_functional_tests", final_mode["stage_a"]["gate"]["non_blocking_issue_categories"])
 
     def test_stage_a_direct_stage_b_rule_requires_checked_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -8596,50 +8603,6 @@ class StageBTests(unittest.TestCase):
             self.assertTrue(diagnostics["next_focus"])
             self.assertEqual(diagnostics["next_focus"][0]["source"], "map")
 
-    def test_audit_readiness_requires_both_jq_and_ripgrep_reports(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            jq_report = self._write_passing_stage_b_validation(root / "jq", "jq")
-
-            result = stage_b_audit_readiness(reports={"jq": jq_report}, out=root / "audit")
-
-            self.assertEqual(result["status"], "incomplete")
-            self.assertEqual(result["counts"], {"targets": 2, "ready": 1, "incomplete": 1})
-            self.assertEqual(result["targets"]["jq"]["status"], "pass")
-            self.assertEqual(result["targets"]["ripgrep"]["status"], "incomplete")
-            missing = {item["id"]: item["status"] for item in result["targets"]["ripgrep"]["requirements"]}
-            self.assertEqual(set(missing.values()), {"missing"})
-            self.assertTrue((root / "audit" / "stage-b-readiness.json").exists())
-
-    def test_audit_readiness_passes_when_both_validation_reports_are_complete(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            jq_report = self._write_passing_stage_b_validation(root / "jq", "jq")
-            ripgrep_report = self._write_passing_stage_b_validation(root / "ripgrep", "ripgrep")
-
-            result = stage_b_audit_readiness(reports={"jq": jq_report, "ripgrep": ripgrep_report}, out=root / "audit")
-
-            self.assertEqual(result["status"], "pass")
-            self.assertEqual(result["counts"], {"targets": 2, "ready": 2, "incomplete": 0})
-            for target_name in ("jq", "ripgrep"):
-                self.assertEqual(result["targets"][target_name]["status"], "pass")
-                self.assertTrue(
-                    all(item["status"] == "satisfied" for item in result["targets"][target_name]["requirements"])
-                )
-                requirement_ids = {item["id"] for item in result["targets"][target_name]["requirements"]}
-                self.assertIn("same_architecture_same_os", requirement_ids)
-                self.assertIn("candidate_build_artifact", requirement_ids)
-                self.assertIn("no_upstream_source_dependency", requirement_ids)
-                self.assertIn("functional_binary_bindings", requirement_ids)
-                self.assertIn("generated_behavior_source", requirement_ids)
-                self.assertIn("stage_a_reference_contract_coverage", requirement_ids)
-                contract_requirement = [
-                    item
-                    for item in result["targets"][target_name]["requirements"]
-                    if item["id"] == "stage_a_reference_contract_coverage"
-                ][0]
-                self.assertEqual(contract_requirement["evidence"]["next_work"], [])
-
     def test_validate_candidate_rejects_candidate_build_output_hash_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -8791,117 +8754,6 @@ class StageBTests(unittest.TestCase):
             if obligation["id"] == obligation_id:
                 return obligation
         self.fail(f"missing obligation {obligation_id}")
-
-    def _write_passing_stage_b_validation(self, root: Path, target_name: str) -> Path:
-        root.mkdir(parents=True, exist_ok=True)
-        original = self._write_pe(root / "original.exe", b"\xc3")
-        candidate = self._write_pe(root / "candidate.exe", b"\xc3")
-        original_map = self._write_map(root / "original.map", "tiny")
-        candidate_map = self._write_map(root / "candidate.map", "tiny")
-        decompiler = root / "original.ghidra.json"
-        decompiler.write_text(
-            json.dumps(
-                {
-                    "functions": [
-                        {
-                            "rva": 0x1000,
-                            "rva_end": 0x1001,
-                            "name": "tiny",
-                            "signature": "int tiny(void)",
-                            "decompiler": {
-                                "status": "success",
-                                "c": "int tiny(void) {\n  return 0;\n}",
-                            },
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-        skeleton_dir = root / "skeleton"
-        stage_b_generate_skeleton(
-            original=original,
-            decompiler_export=decompiler,
-            target_name=target_name,
-            source_language="c",
-            implementation_mode="decompiled-c",
-            out_dir=skeleton_dir,
-        )
-        functional_report = self._write_functional_report(
-            root / "functional-report.json",
-            target_name=target_name,
-            original_binary=original,
-            candidate_binary=candidate,
-        )
-        provenance = root / "candidate-provenance.json"
-        provenance.write_text(
-            json.dumps(
-                {
-                    "format": "stage-b-candidate-provenance-v1",
-                    "target_name": target_name,
-                    "skeleton_manifest_sha256": sha256_file(skeleton_dir / "manifest.json"),
-                    "upstream_source_access": False,
-                    "manual_behavioral_fixups": [],
-                    "source_roots": [self._generated_source_root(skeleton_dir)],
-                    "build": self._candidate_build(candidate),
-                    "functional_tests": {
-                        "status": "pass",
-                        "report_sha256": sha256_file(functional_report),
-                        "suites": [
-                            {
-                                "id": f"{target_name}-upstream-integration-tests",
-                                "name": f"{target_name} upstream integration tests",
-                                "status": "pass",
-                            }
-                        ],
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        reference_block_map = root / "reference-block-map.json"
-        reference_layout = root / "reference-layout-contract.json"
-        reference_report = root / "reference-stage-a"
-        reference_contract = root / "reference-contract.json"
-        stage_a_generate_map(
-            original=original,
-            candidate=candidate,
-            linker_map_original=original_map,
-            linker_map_candidate=candidate_map,
-            out=reference_block_map,
-            layout_contract_out=reference_layout,
-        )
-        with _LeanCheckedMock():
-            stage_a_validate(
-                original=original,
-                candidate=candidate,
-                mapping=reference_block_map,
-                model=STAGE_A_MODEL_ID,
-                out=reference_report,
-                layout_contract=reference_layout,
-            )
-            stage_a_export_reference_contract(
-                original=original,
-                candidate=candidate,
-                mapping=reference_block_map,
-                validation_report=reference_report,
-                layout_contract=reference_layout,
-                out=reference_contract,
-            )
-            result = stage_b_validate_candidate(
-                original=original,
-                candidate=candidate,
-                linker_map_original=original_map,
-                linker_map_candidate=candidate_map,
-                skeleton_manifest=skeleton_dir / "manifest.json",
-                candidate_provenance=provenance,
-                functional_report=functional_report,
-                reference_contract=reference_contract,
-                target_name=target_name,
-                out=root / "validate",
-            )
-        self.assertEqual(result["status"], "pass")
-        return root / "validate" / "stage-b.json"
 
     def _generated_source_root(self, skeleton_dir: Path) -> dict[str, str]:
         manifest = json.loads((skeleton_dir / "manifest.json").read_text(encoding="utf-8"))

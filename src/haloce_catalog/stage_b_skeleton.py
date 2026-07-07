@@ -3182,6 +3182,8 @@ def _decompiled_c_import_thunk_alias_pairs(functions: list[dict[str, Any]]) -> l
         right = str(linkage.get("symbol") or "")
         if left in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS:
             continue
+        if left in _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES:
+            continue
         if left == right or not _is_c_identifier(left) or not _is_c_identifier(right) or left in seen:
             continue
         seen.add(left)
@@ -3386,7 +3388,8 @@ def _decompiled_c_layout_support_lines(
         ]
     atexit_import_anchor = _decompiled_c_jq_atexit_import_anchor_symbol(functions)
     lines = [
-        "__attribute__((used, section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[1];",
+        "__attribute__((used, section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2517];",
+        "__attribute__((used, section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1696] = {0};",
         "__attribute__((used, section(\".tls\"))) volatile unsigned char stage_b_jq_layout_tls_anchor[8] = {0};",
         "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
         "uintptr_t __cdecl jv_mem_alloc(size_t);",
@@ -3436,6 +3439,7 @@ def _decompiled_c_layout_support_lines(
         [
             "static void stage_b_layout_keepalive(void) {",
             "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_import_anchor) : \"memory\");",
+            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_rdata_anchor) : \"memory\");",
         ]
     )
     if contract_anchor_lines:

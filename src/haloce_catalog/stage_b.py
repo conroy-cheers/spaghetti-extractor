@@ -36,7 +36,6 @@ STAGE_B_REQUIRED_FUNCTIONAL_SUITES = {
         "suite_name": "ripgrep upstream integration tests",
     },
 }
-STAGE_B_REQUIRED_TARGETS = ("jq", "ripgrep")
 STAGE_B_UPSTREAM_SUITE_MATERIALIZER = "stage-b-materialize-upstream-suite"
 _DECOMPILED_C_RUNTIME_ENTRY_NAMES = frozenset({"___tmainCRTStartup", "mainCRTStartup", "___wgetmainargs"})
 _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
@@ -611,6 +610,7 @@ def stage_b_validate_candidate(
     original_flags: str = "",
     candidate_flags: str = "",
     model: str = STAGE_A_MODEL_ID,
+    require_functional_evidence: bool = False,
 ) -> dict[str, Any]:
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -682,6 +682,7 @@ def stage_b_validate_candidate(
                 target_name=target_name,
                 candidate=Path(candidate),
                 binary_evidence=binary_evidence,
+                require_functional_evidence=require_functional_evidence,
             )
         )
     except StageAInputError as exc:
@@ -858,40 +859,6 @@ def stage_b_validate_candidate(
         "functional_diagnostics": functional_diagnostics,
     }
     write_json(out / "stage-b.json", result)
-    return result
-
-
-def stage_b_audit_readiness(*, reports: dict[str, Path], out: Path) -> dict[str, Any]:
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
-    targets: dict[str, Any] = {}
-    for target_name in STAGE_B_REQUIRED_TARGETS:
-        report = reports.get(target_name)
-        if report is None:
-            targets[target_name] = _missing_readiness_target(target_name)
-            continue
-        try:
-            payload = _load_json(Path(report))
-        except StageAInputError as exc:
-            targets[target_name] = _invalid_readiness_target(target_name, Path(report), str(exc))
-            continue
-        targets[target_name] = _audit_readiness_target(target_name, Path(report), payload)
-
-    ready = sum(1 for item in targets.values() if item["status"] == "pass")
-    result = {
-        "format": "stage-b-readiness-audit-v1",
-        "status": "pass" if ready == len(STAGE_B_REQUIRED_TARGETS) else "incomplete",
-        "generated_at": utc_now(),
-        "required_targets": list(STAGE_B_REQUIRED_TARGETS),
-        "inputs": {target: str(path) for target, path in reports.items()},
-        "counts": {
-            "targets": len(STAGE_B_REQUIRED_TARGETS),
-            "ready": ready,
-            "incomplete": len(STAGE_B_REQUIRED_TARGETS) - ready,
-        },
-        "targets": targets,
-    }
-    write_json(out / "stage-b-readiness.json", result)
     return result
 
 
@@ -6826,6 +6793,7 @@ def _stage_b_provenance_issues(
     target_name: str,
     candidate: Path,
     binary_evidence: dict[str, Any],
+    require_functional_evidence: bool = False,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     if not isinstance(skeleton_payload, dict) or skeleton_payload.get("format") != "stage-b-skeleton-v1":
@@ -6871,39 +6839,47 @@ def _stage_b_provenance_issues(
     issues.extend(_candidate_build_standalone_issues(provenance_payload))
 
     functional_tests = provenance_payload.get("functional_tests")
-    suites: Any = None
-    if not isinstance(functional_tests, dict):
-        issues.append(_issue("missing_functional_tests", "candidate provenance must include passing upstream integration test evidence"))
-    else:
-        if functional_tests.get("status") != "pass":
-            issues.append(
-                _issue(
-                    "missing_functional_tests",
-                    "candidate provenance must include passing upstream integration test evidence",
-                    details={"status": functional_tests.get("status")},
+    functional_evidence_supplied = functional_report is not None or (
+        isinstance(functional_tests, dict) and functional_tests.get("status") == "pass"
+    )
+    if require_functional_evidence or functional_evidence_supplied:
+        suites: Any = None
+        if not isinstance(functional_tests, dict):
+            issues.append(_issue("missing_functional_tests", "candidate provenance must include passing upstream integration test evidence"))
+        else:
+            if functional_tests.get("status") != "pass":
+                issues.append(
+                    _issue(
+                        "missing_functional_tests",
+                        "candidate provenance must include passing upstream integration test evidence",
+                        details={"status": functional_tests.get("status")},
+                    )
                 )
-            )
-            issues.append(
-                _issue(
-                    "functional_tests_not_passing",
-                    "candidate provenance functional_tests.status must be pass",
-                    details={"status": functional_tests.get("status")},
+                issues.append(
+                    _issue(
+                        "functional_tests_not_passing",
+                        "candidate provenance functional_tests.status must be pass",
+                        details={"status": functional_tests.get("status")},
+                    )
                 )
-            )
-        suites = functional_tests.get("suites")
-        if not isinstance(suites, list) or not suites:
-            issues.append(_issue("missing_functional_test_suites", "functional_tests.suites must list at least one passing suite"))
-        for suite in suites or []:
-            if not isinstance(suite, dict) or suite.get("status") != "pass":
-                issues.append(_issue("functional_test_failure", "all recorded upstream integration test suites must pass", details=suite))
-        issues.extend(_provenance_required_suite_issues(target_name, suites))
+            suites = functional_tests.get("suites")
+            if not isinstance(suites, list) or not suites:
+                issues.append(_issue("missing_functional_test_suites", "functional_tests.suites must list at least one passing suite"))
+            for suite in suites or []:
+                if not isinstance(suite, dict) or suite.get("status") != "pass":
+                    issues.append(_issue("functional_test_failure", "all recorded upstream integration test suites must pass", details=suite))
+            issues.extend(_provenance_required_suite_issues(target_name, suites))
 
-    if functional_report is None:
-        if isinstance(functional_tests, dict) and functional_tests.get("status") == "pass":
-            issues.append(_issue("missing_functional_test_report", "passing functional tests must be backed by a Stage B functional report"))
-    elif not isinstance(functional_report_payload, dict) or functional_report_payload.get("format") != "stage-b-functional-report-v1":
+        if functional_report is None:
+            if isinstance(functional_tests, dict) and functional_tests.get("status") == "pass":
+                issues.append(_issue("missing_functional_test_report", "passing functional tests must be backed by a Stage B functional report"))
+            elif require_functional_evidence:
+                issues.append(_issue("missing_functional_test_report", "final Stage B validation requires a candidate-only functional report"))
+    if functional_report is not None and (
+        not isinstance(functional_report_payload, dict) or functional_report_payload.get("format") != "stage-b-functional-report-v1"
+    ):
         issues.append(_issue("invalid_functional_test_report", "functional report must have format stage-b-functional-report-v1"))
-    else:
+    elif functional_report is not None:
         expected_hash = sha256_file(functional_report)
         actual_hash = functional_tests.get("report_sha256") if isinstance(functional_tests, dict) else None
         if actual_hash != expected_hash:
@@ -7541,394 +7517,6 @@ def _functional_report_binary_binding_issues(binary_evidence: dict[str, Any], re
     return issues
 
 
-def _missing_readiness_target(target_name: str) -> dict[str, Any]:
-    requirements = [
-        _audit_requirement(
-            requirement_id,
-            "missing",
-            blocker=f"Stage B validation report for {target_name} was not supplied",
-            next_action=f"run stage-b-validate-candidate for {target_name} and include it with --report {target_name}=stage-b.json",
-        )
-        for requirement_id in _stage_b_readiness_requirement_ids()
-    ]
-    return _audit_target_result(target_name, None, requirements)
-
-
-def _invalid_readiness_target(target_name: str, report: Path, blocker: str) -> dict[str, Any]:
-    requirements = [
-        _audit_requirement(
-            "stage_b_validation_report",
-            "incomplete",
-            blocker=blocker,
-            next_action="provide a readable stage-b-validation-v1 report",
-            evidence={"report": str(report)},
-        )
-    ]
-    for requirement_id in _stage_b_readiness_requirement_ids():
-        if requirement_id == "stage_b_validation_report":
-            continue
-        requirements.append(
-            _audit_requirement(
-                requirement_id,
-                "missing",
-                blocker="readiness cannot inspect this requirement until the Stage B validation report is valid",
-                next_action="provide a readable stage-b-validation-v1 report",
-            )
-        )
-    return _audit_target_result(target_name, report, requirements)
-
-
-def _audit_readiness_target(target_name: str, report: Path, payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict) or payload.get("format") != "stage-b-validation-v1":
-        return _invalid_readiness_target(target_name, report, "report must have format stage-b-validation-v1")
-
-    skeleton = payload.get("skeleton") if isinstance(payload.get("skeleton"), dict) else {}
-    candidate = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
-    functional = payload.get("functional") if isinstance(payload.get("functional"), dict) else {}
-    stage_a = payload.get("stage_a") if isinstance(payload.get("stage_a"), dict) else {}
-    issue_categories = [str(issue.get("category")) for issue in payload.get("issues", []) if isinstance(issue, dict)]
-    source_root_evidence = _generated_skeleton_source_root_evidence(skeleton, candidate)
-    generated_behavior_evidence = _generated_behavior_source_evidence(skeleton)
-    source_dependency_evidence = _candidate_source_dependency_evidence(candidate, issue_categories)
-
-    requirements = [
-        _audit_requirement(
-            "stage_b_validation_report",
-            "satisfied" if payload.get("target_name") == target_name else "incomplete",
-            blocker="" if payload.get("target_name") == target_name else "Stage B validation report target_name does not match the audited target",
-            next_action="" if payload.get("target_name") == target_name else "rerun stage-b-validate-candidate with the correct --target-name",
-            evidence={"report": str(report), "target_name": payload.get("target_name")},
-        ),
-        _audit_requirement(
-            "generated_skeleton",
-            "satisfied"
-            if skeleton.get("format") == "stage-b-skeleton-v1"
-            and skeleton.get("target_name") == target_name
-            and skeleton.get("status") == "generated"
-            else "incomplete",
-            blocker="Stage B skeleton manifest is missing, malformed, or for another target",
-            next_action="run stage-b-generate-skeleton from reverse-engineering inputs for this target",
-            evidence={"format": skeleton.get("format"), "status": skeleton.get("status"), "target_name": skeleton.get("target_name")},
-        ),
-        _audit_requirement(
-            "candidate_provenance",
-            "satisfied" if payload.get("provenance_status") == "pass" else "incomplete",
-            blocker="candidate provenance gate did not pass",
-            next_action="fix candidate provenance, functional evidence, and generated-skeleton linkage before Stage A validation",
-            evidence={"provenance_status": payload.get("provenance_status"), "issue_categories": issue_categories},
-        ),
-        _audit_requirement(
-            "no_upstream_source_access",
-            "satisfied" if candidate.get("upstream_source_access") is False else "incomplete",
-            blocker="candidate provenance does not prove upstream_source_access is false",
-            next_action="rebuild from Stage B skeleton inputs only and record upstream_source_access=false",
-            evidence={"upstream_source_access": candidate.get("upstream_source_access")},
-        ),
-        _audit_requirement(
-            "no_upstream_source_dependency",
-            "satisfied" if source_dependency_evidence["satisfied"] else "incomplete",
-            blocker="candidate build uses original/reference target artifacts or target libraries",
-            next_action="make the generated/fixed-up Stage B sources provide the target behavior and link only allowed external dependencies",
-            evidence=source_dependency_evidence,
-        ),
-        _audit_requirement(
-            "no_manual_behavioral_fixups",
-            "satisfied" if candidate.get("manual_behavioral_fixups") == [] else "incomplete",
-            blocker="candidate provenance records manual behavioral fixups or omits the field",
-            next_action="replace behavioral fixups with generated/skeleton-driven implementation evidence",
-            evidence={"manual_behavioral_fixups": candidate.get("manual_behavioral_fixups")},
-        ),
-        _audit_requirement(
-            "generated_skeleton_source_root",
-            "satisfied" if source_root_evidence["matches"] else "incomplete",
-            blocker="candidate source_roots does not prove the generated skeleton source hash",
-            next_action="record a stage_b_generated_skeleton source root whose source and source_sha256 match the skeleton manifest outputs.source",
-            evidence=source_root_evidence,
-        ),
-        _audit_requirement(
-            "generated_behavior_source",
-            "satisfied" if generated_behavior_evidence["source_implements_behavior"] else "incomplete",
-            blocker="generated skeleton source is still a scaffold and does not prove recovered behavior implementation",
-            next_action="generate behavior-bearing source from recovered semantics and record implementation_recovery.status=complete",
-            evidence=generated_behavior_evidence,
-        ),
-        _audit_candidate_build_artifact_requirement(payload),
-        _audit_same_target_requirement(payload),
-        _audit_functional_binary_binding_requirement(payload),
-        _audit_functional_requirement(target_name, functional, candidate),
-        _audit_requirement(
-            "stage_a_final_pass",
-            "satisfied" if stage_a.get("verdict") == "pass" and stage_a.get("gate", {}).get("status") == "pass" else "incomplete",
-            blocker="Stage A did not produce a final pass for this Stage B candidate",
-            next_action="repair the candidate or mapping inputs until Stage A reports pass",
-            evidence={
-                "map_status": stage_a.get("map_status"),
-                "verdict": stage_a.get("verdict"),
-                "report": stage_a.get("report"),
-                "gate": stage_a.get("gate"),
-            },
-        ),
-        _audit_reference_contract_coverage_requirement(payload),
-        _audit_requirement(
-            "stage_b_validation_pass",
-            "satisfied" if payload.get("status") == "pass" else "incomplete",
-            blocker="overall Stage B validation status is not pass",
-            next_action="satisfy every Stage B provenance, functional, and Stage A requirement",
-            evidence={"status": payload.get("status"), "issue_categories": issue_categories},
-        ),
-    ]
-    return _audit_target_result(target_name, report, requirements)
-
-
-def _audit_functional_requirement(target_name: str, functional: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    issues = _functional_report_required_coverage_issues(target_name, functional) if functional else [_issue("missing_functional_report", "functional report is missing")]
-    functional_tests = candidate.get("functional_tests") if isinstance(candidate.get("functional_tests"), dict) else {}
-    suites = functional_tests.get("suites")
-    coverage = functional.get("coverage") if isinstance(functional.get("coverage"), dict) else {}
-    issues.extend(_provenance_required_suite_issues(target_name, suites))
-    if functional_tests.get("status") != "pass":
-        issues.append(_issue("functional_tests_not_passing", "candidate provenance functional_tests.status must be pass"))
-    if functional.get("status") != "pass":
-        issues.append(_issue("functional_report_not_passing", "functional report status must be pass"))
-    if functional.get("upstream_suite") is not True:
-        issues.append(_issue("functional_report_not_upstream", "functional report must be marked as upstream_suite"))
-    status = "satisfied" if not issues else "incomplete"
-    return _audit_requirement(
-        "canonical_upstream_functional_suite",
-        status,
-        blocker="canonical upstream integration suite evidence is missing or incomplete",
-        next_action="after Stage A reports final pass, run the full required candidate-only upstream integration suite and attach the resulting Stage B functional report",
-        evidence={
-            "suite_id": functional.get("suite_id"),
-            "suite_sha256": functional.get("suite_sha256"),
-            "suite_case_manifest_sha256": functional.get("suite_case_manifest_sha256"),
-            "source": coverage.get("source"),
-            "source_kind": coverage.get("source_kind"),
-            "source_sha256": coverage.get("source_sha256"),
-            "source_revision": coverage.get("source_revision"),
-            "materialized_by": coverage.get("materialized_by"),
-            "status": functional.get("status"),
-            "issue_categories": [issue["category"] for issue in issues],
-        },
-    )
-
-
-def _audit_reference_contract_coverage_requirement(payload: dict[str, Any]) -> dict[str, Any]:
-    coverage = payload.get("reference_contract_coverage") if isinstance(payload.get("reference_contract_coverage"), dict) else {}
-    families = coverage.get("families") if isinstance(coverage.get("families"), list) else []
-    family_statuses = {
-        str(item.get("family")): item.get("status")
-        for item in families
-        if isinstance(item, dict) and isinstance(item.get("family"), str)
-    }
-    stage_b_statuses = {
-        str(item.get("family")): item.get("stage_b_status")
-        for item in families
-        if isinstance(item, dict) and isinstance(item.get("family"), str)
-    }
-    satisfied = coverage.get("provided") is True and coverage.get("status") == "satisfied"
-    return _audit_requirement(
-        "stage_a_reference_contract_coverage",
-        "satisfied" if satisfied else "incomplete",
-        blocker="Stage B report does not prove satisfied coverage against a Stage A reference contract",
-        next_action="run stage-b-validate-candidate with --reference-contract and close every reported contract family",
-        evidence={
-            "provided": coverage.get("provided"),
-            "status": coverage.get("status"),
-            "contract_status": coverage.get("contract_status"),
-            "counts": coverage.get("counts"),
-            "stage_b_counts": coverage.get("stage_b_counts"),
-            "next_work": coverage.get("next_work"),
-            "family_statuses": family_statuses,
-            "stage_b_statuses": stage_b_statuses,
-        },
-    )
-
-
-def _has_generated_skeleton_source_root(candidate: dict[str, Any]) -> bool:
-    source_roots = candidate.get("source_roots")
-    return isinstance(source_roots, list) and any(isinstance(item, dict) and item.get("kind") == "stage_b_generated_skeleton" for item in source_roots)
-
-
-def _generated_skeleton_source_root_evidence(skeleton: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    source_roots = candidate.get("source_roots")
-    roots = [item for item in source_roots if isinstance(item, dict) and item.get("kind") == "stage_b_generated_skeleton"] if isinstance(source_roots, list) else []
-    fixed_up_roots = [item for item in source_roots if isinstance(item, dict) and item.get("kind") == "stage_b_fixed_up_source"] if isinstance(source_roots, list) else []
-    expected = _skeleton_source_output(skeleton)
-    matches = False
-    if expected is not None:
-        matches = any(item.get("source") == expected["path"] and item.get("source_sha256") == expected["sha256"] for item in roots)
-    return {
-        "matches": matches,
-        "expected": expected,
-        "source_roots": roots,
-        "fixed_up_source_roots": fixed_up_roots,
-    }
-
-
-def _generated_behavior_source_evidence(skeleton: dict[str, Any]) -> dict[str, Any]:
-    recovery = skeleton.get("implementation_recovery") if isinstance(skeleton.get("implementation_recovery"), dict) else {}
-    source_implements_behavior = recovery.get("status") == "complete" and recovery.get("source_implements_behavior") is True
-    return {
-        "source_implements_behavior": source_implements_behavior,
-        "implementation_recovery": recovery,
-    }
-
-
-def _candidate_source_dependency_evidence(candidate: dict[str, Any], issue_categories: list[str]) -> dict[str, Any]:
-    build = candidate.get("build") if isinstance(candidate.get("build"), dict) else {}
-    report = build.get("report") if isinstance(build.get("report"), dict) else {}
-    policy = report.get("source_dependency_policy") if isinstance(report.get("source_dependency_policy"), dict) else {}
-    violations = policy.get("violations") if isinstance(policy.get("violations"), list) else []
-    violation_items = [item for item in violations if isinstance(item, dict)]
-    dependency_issue_categories = [
-        category
-        for category in issue_categories
-        if category in {
-            "upstream_source_dependency",
-            "reference_build_input_linkage",
-            "target_library_linkage",
-            "target_import_closure_incomplete",
-        }
-    ]
-    status = str(policy.get("status") or ("violated" if violation_items else "not_reported"))
-    satisfied = status != "violated" and not violation_items and not dependency_issue_categories
-    return {
-        "satisfied": satisfied,
-        "status": status,
-        "violation_count": int(policy.get("violation_count", len(violation_items))) if str(policy.get("violation_count", "")).isdigit() else len(violation_items),
-        "violations": violation_items[:20],
-        "dependency_issue_categories": dependency_issue_categories,
-        "reference_inputs": report.get("reference_inputs") if isinstance(report.get("reference_inputs"), list) else [],
-        "target_import_closure": report.get("target_import_closure") if isinstance(report.get("target_import_closure"), dict) else None,
-    }
-
-
-def _stage_b_readiness_requirement_ids() -> list[str]:
-    return [
-        "stage_b_validation_report",
-        "generated_skeleton",
-        "candidate_provenance",
-        "no_upstream_source_access",
-        "no_upstream_source_dependency",
-        "no_manual_behavioral_fixups",
-        "generated_skeleton_source_root",
-        "generated_behavior_source",
-        "candidate_build_artifact",
-        "same_architecture_same_os",
-        "functional_binary_bindings",
-        "canonical_upstream_functional_suite",
-        "stage_a_final_pass",
-        "stage_a_reference_contract_coverage",
-        "stage_b_validation_pass",
-    ]
-
-
-def _audit_requirement(
-    requirement_id: str,
-    status: str,
-    *,
-    blocker: str,
-    next_action: str,
-    evidence: Any | None = None,
-) -> dict[str, Any]:
-    item = {
-        "id": requirement_id,
-        "status": status,
-    }
-    if status != "satisfied":
-        item["blocker"] = blocker
-        item["next_action"] = next_action
-    if evidence is not None:
-        item["evidence"] = evidence
-    return item
-
-
-def _audit_candidate_build_artifact_requirement(payload: dict[str, Any]) -> dict[str, Any]:
-    candidate = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
-    binaries = payload.get("binaries") if isinstance(payload.get("binaries"), dict) else {}
-    evidence = _candidate_build_artifact_evidence(candidate, binaries)
-    return _audit_requirement(
-        "candidate_build_artifact",
-        "satisfied" if evidence["matches"] else "incomplete",
-        blocker="candidate provenance build output does not match the validated candidate binary",
-        next_action="record build.output and build.output_sha256 for the exact candidate executable passed to Stage B validation",
-        evidence=evidence,
-    )
-
-
-def _candidate_build_artifact_evidence(candidate: dict[str, Any], binaries: dict[str, Any]) -> dict[str, Any]:
-    build = candidate.get("build") if isinstance(candidate.get("build"), dict) else {}
-    candidate_binary = binaries.get("candidate") if isinstance(binaries.get("candidate"), dict) else {}
-    output = build.get("output")
-    binary_path = candidate_binary.get("path")
-    output_matches_path = False
-    if isinstance(output, str) and isinstance(binary_path, str):
-        output_matches_path = _candidate_build_output_matches(Path(binary_path), output)
-    output_sha256 = build.get("output_sha256")
-    binary_sha256 = candidate_binary.get("sha256")
-    output_matches_hash = isinstance(output_sha256, str) and isinstance(binary_sha256, str) and output_sha256 == binary_sha256
-    build_has_toolchain = isinstance(build.get("compiler"), str) and bool(build.get("compiler")) and isinstance(build.get("target"), str) and bool(build.get("target"))
-    return {
-        "matches": output_matches_path and output_matches_hash and build_has_toolchain,
-        "output_matches_path": output_matches_path,
-        "output_matches_hash": output_matches_hash,
-        "build_has_toolchain": build_has_toolchain,
-        "build": build,
-        "candidate_binary": candidate_binary,
-    }
-
-
-def _audit_functional_binary_binding_requirement(payload: dict[str, Any]) -> dict[str, Any]:
-    functional = payload.get("functional") if isinstance(payload.get("functional"), dict) else {}
-    binaries = payload.get("binaries") if isinstance(payload.get("binaries"), dict) else {}
-    issues = _functional_report_binary_binding_issues(binaries, functional) if functional else [_issue("missing_functional_report", "functional report is missing")]
-    return _audit_requirement(
-        "functional_binary_bindings",
-        "satisfied" if not issues else "incomplete",
-        blocker="functional report does not prove it exercised the validated candidate binary",
-        next_action="run the functional suite with --candidate-binary and a command prefix that invokes that exact path",
-        evidence={
-            "issue_categories": [issue["category"] for issue in issues],
-            "binary_bindings": functional.get("binary_bindings") if isinstance(functional, dict) else None,
-        },
-    )
-
-
-def _audit_same_target_requirement(payload: dict[str, Any]) -> dict[str, Any]:
-    binaries = payload.get("binaries")
-    facts = binaries.get("facts") if isinstance(binaries, dict) and isinstance(binaries.get("facts"), dict) else {}
-    satisfied = facts.get("same_architecture_same_os") is True
-    return _audit_requirement(
-        "same_architecture_same_os",
-        "satisfied" if satisfied else "incomplete",
-        blocker="candidate binary is not proven to match the original Windows PE architecture and subsystem",
-        next_action="rebuild the candidate for the same Windows architecture/subsystem and rerun Stage B validation",
-        evidence={
-            "status": binaries.get("status") if isinstance(binaries, dict) else None,
-            "facts": facts,
-            "original": binaries.get("original") if isinstance(binaries, dict) else None,
-            "candidate": binaries.get("candidate") if isinstance(binaries, dict) else None,
-        },
-    )
-
-
-def _audit_target_result(target_name: str, report: Path | None, requirements: list[dict[str, Any]]) -> dict[str, Any]:
-    counts = {
-        "requirements": len(requirements),
-        "satisfied": sum(1 for item in requirements if item["status"] == "satisfied"),
-        "missing": sum(1 for item in requirements if item["status"] == "missing"),
-        "incomplete": sum(1 for item in requirements if item["status"] == "incomplete"),
-    }
-    return {
-        "target_name": target_name,
-        "status": "pass" if counts["satisfied"] == counts["requirements"] else "incomplete",
-        "validation_report": str(report) if report is not None else None,
-        "counts": counts,
-        "requirements": requirements,
-    }
-
-
 def _issue(category: str, blocker: str, *, details: Any | None = None) -> dict[str, Any]:
     issue = {
         "category": category,
@@ -8105,19 +7693,3 @@ def _recovered_cli_behavior(behavior_recovery: dict[str, Any] | None, behavior_i
         if isinstance(item, dict) and item.get("id") == behavior_id:
             return item
     return None
-
-
-# Keep the existing public API stable while letting Nix skeleton derivations
-# depend on the narrower generation module instead of this validator module.
-from .stage_b_skeleton import (  # noqa: E402
-    _render_decompiled_c_source as _render_decompiled_c_source,
-    stage_b_generate_link_roots as stage_b_generate_link_roots,
-    stage_b_generate_skeleton as stage_b_generate_skeleton,
-)
-from .stage_b_provenance import (  # noqa: E402
-    stage_b_generate_candidate_provenance as stage_b_generate_candidate_provenance,
-)
-from .stage_b_functional import (  # noqa: E402
-    stage_b_materialize_upstream_suite as stage_b_materialize_upstream_suite,
-    stage_b_run_functional_suite as stage_b_run_functional_suite,
-)

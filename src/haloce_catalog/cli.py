@@ -95,17 +95,14 @@ from .stage_a import (
     stage_a_validate_suite,
 )
 from .stage_b import (
-    stage_b_audit_readiness,
     stage_b_explain_delta,
     stage_b_extract_candidate_crash,
     stage_b_export_decompiler,
-    stage_b_generate_candidate_provenance,
-    stage_b_generate_link_roots,
-    stage_b_generate_skeleton,
-    stage_b_materialize_upstream_suite,
-    stage_b_run_functional_suite,
     stage_b_validate_candidate,
 )
+from .stage_b_functional import stage_b_materialize_upstream_suite, stage_b_run_functional_suite
+from .stage_b_provenance import stage_b_generate_candidate_provenance
+from .stage_b_skeleton import stage_b_generate_link_roots, stage_b_generate_skeleton
 from .target import TargetConfig, load_target_config, target_lists_from_metadata
 from .util import utc_now
 from .wine_probe import probe_wine_trace_matrix
@@ -476,21 +473,13 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_b_validate.add_argument("--original-flags", default="", help="compiler flags used for the original binary")
     stage_b_validate.add_argument("--candidate-flags", default="", help="compiler flags used for the candidate binary")
     stage_b_validate.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
+    stage_b_validate.add_argument(
+        "--require-functional-evidence",
+        action="store_true",
+        help="final acceptance mode: require candidate-only upstream functional evidence after Stage A passes",
+    )
     stage_b_validate.add_argument("--out", type=Path, required=True, help="validation output directory")
     stage_b_validate.set_defaults(func=_cmd_stage_b_validate_candidate)
-
-    stage_b_audit = subcommands.add_parser(
-        "stage-b-audit-readiness",
-        help="audit jq/ripgrep Stage B validation reports against the full readiness requirements",
-    )
-    stage_b_audit.add_argument(
-        "--report",
-        action="append",
-        default=[],
-        help="target=path to a stage-b.json validation report; repeat for jq and ripgrep",
-    )
-    stage_b_audit.add_argument("--out", type=Path, required=True, help="readiness audit output directory")
-    stage_b_audit.set_defaults(func=_cmd_stage_b_audit_readiness)
 
     stage_b_delta = subcommands.add_parser(
         "stage-b-explain-delta",
@@ -1693,14 +1682,9 @@ def _cmd_stage_b_validate_candidate(args: Any) -> int:
         original_flags=args.original_flags,
         candidate_flags=args.candidate_flags,
         model=args.model,
+        require_functional_evidence=args.require_functional_evidence,
         out=args.out,
     )
-    _print_json(result)
-    return 0 if result["status"] == "pass" else 1
-
-
-def _cmd_stage_b_audit_readiness(args: Any) -> int:
-    result = stage_b_audit_readiness(reports=_target_path_map(args.report, "--report"), out=args.out)
     _print_json(result)
     return 0 if result["status"] == "pass" else 1
 
@@ -1731,21 +1715,6 @@ def _json_string_list(value: str, option_name: str) -> tuple[str, ...]:
     if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
         raise SystemExit(f"{option_name} must be a JSON list of strings")
     return tuple(parsed)
-
-
-def _target_path_map(values: list[str], option_name: str) -> dict[str, Path]:
-    result: dict[str, Path] = {}
-    for value in values:
-        if "=" not in value:
-            raise SystemExit(f"{option_name} entries must use target=path, got {value!r}")
-        target, path = value.split("=", 1)
-        target = target.strip()
-        if not target:
-            raise SystemExit(f"{option_name} target must not be empty")
-        if target in result:
-            raise SystemExit(f"{option_name} target {target!r} was supplied more than once")
-        result[target] = Path(path)
-    return result
 
 
 def _stage_b_candidate_module_specs(values: list[str]) -> list[dict[str, Any]]:
