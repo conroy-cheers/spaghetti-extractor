@@ -2455,6 +2455,93 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["jv_is_valid"]["source_kind"], "generated_contract_placeholder_from_section_gap_alias")
         self.assertIn("section-gap--text-0057", by_function["jv_is_valid"]["aliases"])
 
+    def test_decompiled_c_synthesizes_unaliased_section_gap_contract_placeholder(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {
+                            "id": "section-gap--text-0052",
+                        }
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0052",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0052",
+                                        "rva_start": 0x145F,
+                                        "rva_end": 0x1471,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0052:146c",
+                                        "instruction": {"rva": 0x146C},
+                                        "target": {"kind": "direct", "target_rva": 0xC4B0},
+                                        "argument_inventory": {
+                                            "argument_count": 2,
+                                            "stack_args": [
+                                                {
+                                                    "index": 0,
+                                                    "role": "computed_memory",
+                                                    "source": {"kind": "register", "register": "eax"},
+                                                },
+                                                {
+                                                    "index": 1,
+                                                    "role": "immediate",
+                                                    "source": {"kind": "immediate", "value": 7},
+                                                },
+                                            ],
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        functions = [
+            {
+                "name": "strcmp",
+                "rva_start": 0xC4B0,
+                "rva_end": 0xC4B6,
+                "size": 6,
+                "decompiler": {
+                    "status": "success",
+                    "code": "uintptr_t __cdecl strcmp(uintptr_t param_1, uintptr_t param_2)\n{\n  return param_1 ^ param_2;\n}",
+                },
+            }
+        ]
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+        )
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=functions,
+            source_language="c",
+            implementation_mode="decompiled-c",
+            reference_contract_payload=reference_contract,
+        )
+
+        generated_name = "stage_b_contract_section_gap__text_0052"
+        self.assertIn(f"uintptr_t __cdecl {generated_name}();", source)
+        self.assertIn(f"(void *)(uintptr_t)&{generated_name},", source)
+        self.assertIn('section(".CRT$XCU")', source)
+        self.assertIn(f"uintptr_t __cdecl {generated_name}()", source)
+        self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0052:146c at RVA 0x146c", source)
+        self.assertIn("strcmp((uintptr_t)0, 7);", source)
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_placeholder_from_section_gap")
+        self.assertIn("section-gap--text-0052", by_function[generated_name]["aliases"])
+
     def test_decompiled_c_renderer_materializes_jq_dtoa_lock_helper(self):
         source = _render_decompiled_c_source(
             target_name="jq",
