@@ -105,7 +105,7 @@ _DECOMPILED_C_DTOA_LOCK_HELPER_IMPORTS = (
 _DECOMPILED_C_GENERATED_HELPER_SYMBOLS = (_DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL,)
 
 _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
-_DECOMPILED_C_SYNTHETIC_SECTION_GAP_PLACEHOLDER_LIMIT = 7
+_DECOMPILED_C_SYNTHETIC_SECTION_GAP_PLACEHOLDER_LIMIT = 8
 
 _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS = frozenset({"_crt_atexit", "__crt_atexit"})
 _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES = frozenset({"___iob_func"})
@@ -836,18 +836,38 @@ def _reference_contract_abi_callsites_by_function(payload: dict[str, Any]) -> di
 
 def _reference_contract_abi_callsite_summary(callsite: dict[str, Any]) -> dict[str, Any] | None:
     target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
-    if target.get("kind") != "direct":
-        return None
-    target_rva = _optional_int(target.get("target_rva"))
-    if target_rva is None:
+    target_summary = _reference_contract_abi_callsite_target_summary(target)
+    if target_summary is None:
         return None
     return {
         "id": callsite.get("id"),
         "block_id": callsite.get("block_id"),
         "instruction": callsite.get("instruction") if isinstance(callsite.get("instruction"), dict) else {},
-        "target": {"kind": "direct", "target_rva": target_rva},
+        "target": target_summary,
         "arguments": _reference_contract_abi_callsite_arguments(callsite),
     }
+
+
+def _reference_contract_abi_callsite_target_summary(target: dict[str, Any]) -> dict[str, Any] | None:
+    if target.get("kind") == "direct":
+        target_rva = _optional_int(target.get("target_rva"))
+        if target_rva is None:
+            return None
+        return {"kind": "direct", "target_rva": target_rva}
+    if target.get("kind") == "function_pointer":
+        summary: dict[str, Any] = {
+            "kind": "function_pointer",
+            "status": str(target.get("status") or "unresolved"),
+        }
+        for key in ("operand", "memory_role"):
+            value = target.get(key)
+            if isinstance(value, str) and value:
+                summary[key] = value
+        memory_rva = _optional_int(target.get("memory_rva"))
+        if memory_rva is not None:
+            summary["memory_rva"] = memory_rva
+        return summary
+    return None
 
 
 def _reference_contract_abi_callsite_arguments(callsite: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2736,14 +2756,13 @@ def _decompiled_c_contract_placeholder(
     unspecified_parameters: bool = False,
 ) -> str:
     name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
-    synthetic_section_gap = name.startswith("stage_b_contract_section_gap__")
     rva_start = int(function.get("rva_start") or 0)
     size = int(function.get("size") or 0)
     anchors = _decompiled_c_contract_callsite_anchor_lines(
         function,
         call_targets=call_targets or {},
         call_target_profiles=call_target_profiles or {},
-        emit_accumulator=not synthetic_section_gap,
+        emit_accumulator=False,
     )
     parameters = "" if unspecified_parameters else "void"
     lines = [
@@ -2752,13 +2771,8 @@ def _decompiled_c_contract_placeholder(
         f"  /* Stage B contract placeholder for missing decompiler body at RVA 0x{rva_start:x}, size {size}. */",
     ]
     if anchors:
-        if not synthetic_section_gap:
-            lines.append("  volatile uintptr_t stage_b_contract_anchor = 0;")
         lines.extend(anchors)
-        if synthetic_section_gap:
-            lines.append("  return 0;")
-        else:
-            lines.append("  return stage_b_contract_anchor;")
+        lines.append("  return 0;")
     else:
         lines.append("  return 0;")
     lines.append("}")
@@ -2880,27 +2894,42 @@ def _decompiled_c_contract_callsite_anchor_lines(
     reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
     callsites = reference_contract.get("abi_callsites") if isinstance(reference_contract.get("abi_callsites"), list) else []
     lines: list[str] = []
-    for callsite in callsites[:8]:
+    for callsite_index, callsite in enumerate(callsites[:8]):
         if not isinstance(callsite, dict):
             continue
         target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
-        target_rva = _optional_int(target.get("target_rva"))
-        if target_rva is None:
-            continue
-        target_name = call_targets.get(target_rva)
-        if not target_name or not _is_c_identifier(target_name):
-            continue
-        rendered_args = _decompiled_c_contract_callsite_arguments(callsite, target_profile=call_target_profiles.get(target_name))
-        if rendered_args is None:
-            continue
-        callsite_id = str(callsite.get("id") or f"callsite:0x{target_rva:x}")
         instruction = callsite.get("instruction") if isinstance(callsite.get("instruction"), dict) else {}
         instruction_rva = _optional_int(instruction.get("rva"))
+        callsite_id = str(callsite.get("id") or f"callsite:0x{(instruction_rva if instruction_rva is not None else 0):x}")
         suffix = f" at RVA 0x{instruction_rva:x}" if instruction_rva is not None else ""
-        lines.append(f"  /* Stage A direct-call anchor: {callsite_id}{suffix}. */")
-        lines.append(f"  {target_name}({', '.join(rendered_args)});")
-        if emit_accumulator:
-            lines.append(f"  stage_b_contract_anchor ^= (uintptr_t)0x{(instruction_rva if instruction_rva is not None else target_rva):x};")
+        if target.get("kind") == "direct":
+            target_rva = _optional_int(target.get("target_rva"))
+            if target_rva is None:
+                continue
+            target_name = call_targets.get(target_rva)
+            if not target_name or not _is_c_identifier(target_name):
+                continue
+            rendered_args = _decompiled_c_contract_callsite_arguments(callsite, target_profile=call_target_profiles.get(target_name))
+            if rendered_args is None:
+                continue
+            lines.append(f"  /* Stage A direct-call anchor: {callsite_id}{suffix}. */")
+            lines.append(f"  {target_name}({', '.join(rendered_args)});")
+            if emit_accumulator:
+                lines.append(f"  stage_b_contract_anchor ^= (uintptr_t)0x{(instruction_rva if instruction_rva is not None else target_rva):x};")
+            continue
+        if target.get("kind") == "function_pointer":
+            rendered_args = _decompiled_c_contract_callsite_arguments(callsite)
+            if rendered_args is None:
+                continue
+            pointer_name = f"stage_b_contract_fp_{callsite_index}"
+            lines.append(f"  /* Stage A function-pointer-call anchor: {callsite_id}{suffix}. */")
+            if rendered_args:
+                lines.append(f"  volatile uintptr_t {pointer_name} = 0;")
+                lines.append(f"  ((uintptr_t (__cdecl *)())(uintptr_t){pointer_name})({', '.join(rendered_args)});")
+            else:
+                lines.append('  __asm__ __volatile__("xorl %%eax, %%eax; call *%%eax" : : : "eax", "memory");')
+            if emit_accumulator:
+                lines.append(f"  stage_b_contract_anchor ^= (uintptr_t)0x{(instruction_rva if instruction_rva is not None else 0):x};")
     return lines
 
 

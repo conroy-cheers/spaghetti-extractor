@@ -2293,7 +2293,7 @@ class StageBTests(unittest.TestCase):
 
         self.assertIn("Stage A direct-call anchor: callsite:__d2b_D2A-0000:b846 at RVA 0xb846", source)
         self.assertIn("___Balloc_D2A(1);", source)
-        self.assertIn("stage_b_contract_anchor ^= (uintptr_t)0xb846;", source)
+        self.assertNotIn("stage_b_contract_anchor ^= (uintptr_t)0xb846;", source)
 
     def test_decompiled_c_placeholder_anchors_section_gap_symbol_alias_callsites(self):
         reference_contract = {
@@ -2354,7 +2354,96 @@ class StageBTests(unittest.TestCase):
 
         self.assertIn("Stage A direct-call anchor: callsite:basename-0004:5f98 at RVA 0x5f98", source)
         self.assertIn("do_get_path_info();", source)
-        self.assertIn("stage_b_contract_anchor ^= (uintptr_t)0x5f98;", source)
+        self.assertNotIn("stage_b_contract_anchor ^= (uintptr_t)0x5f98;", source)
+
+    def test_decompiled_c_placeholder_anchors_section_gap_function_pointer_callsites(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {
+                            "id": "section-gap--text-0058",
+                            "symbol_aliases": {
+                                "original": ["die"],
+                                "candidate": ["die"],
+                            },
+                        }
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0058",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0058",
+                                        "rva_start": 0x14D2,
+                                        "rva_end": 0x153A,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0058:14e3",
+                                        "block_id": "section-gap--text-0058",
+                                        "instruction": {"rva": 0x14E3},
+                                        "target": {
+                                            "kind": "function_pointer",
+                                            "operand": "ebx",
+                                            "status": "unresolved",
+                                            "memory_rva": 0xD058,
+                                            "memory_role": "global_writable_pointer_slot",
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "caller",
+                    "rva_start": 0x6000,
+                    "rva_end": 0x6010,
+                    "size": 0x10,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __cdecl caller(void)\n{\n  return die();\n}",
+                    },
+                }
+            ],
+            reference_contract_payload=reference_contract,
+        )
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=[
+                {
+                    "name": "caller",
+                    "rva_start": 0x6000,
+                    "rva_end": 0x6010,
+                    "size": 0x10,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __cdecl caller(void)\n{\n  return die();\n}",
+                    },
+                }
+            ],
+            source_language="c",
+            implementation_mode="decompiled-c",
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn("uintptr_t __cdecl die()", source)
+        self.assertIn("Stage A function-pointer-call anchor: callsite:section-gap--text-0058:14e3 at RVA 0x14e3", source)
+        self.assertIn('__asm__ __volatile__("xorl %%eax, %%eax; call *%%eax" : : : "eax", "memory");', source)
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function["die"]["source_kind"], "generated_contract_placeholder_from_section_gap_alias")
+        self.assertIn("section-gap--text-0058", by_function["die"]["aliases"])
 
     def test_decompiled_c_external_section_gap_helper_preserves_contract_callsites(self):
         reference_contract = {
