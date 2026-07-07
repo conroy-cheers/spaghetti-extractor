@@ -2113,7 +2113,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
             self.assertIn(".text$stage_b_jq_layout_pad", source)
-            self.assertIn(".fill 6283,1,0x90", source)
+            self.assertIn(".fill 5067,1,0x90", source)
             self.assertIn('((void *)stage_b_jq_layout_text_anchor)', source)
             self.assertIn("stage_b_jq_layout_bss_anchor[2516]", source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
@@ -2122,9 +2122,10 @@ class StageBTests(unittest.TestCase):
             self.assertNotIn("stage_b_jq_layout_tls_anchor", source)
             self.assertIn("__crt_atexit((void *)0);", source)
             self.assertNotIn("  atexit((void *)0);", source)
-            self.assertIn("local_28.BaseAddress = ___acrt_iob_func;", source)
-            self.assertIn("(*(code *)___acrt_iob_func)(2);", source)
-            self.assertNotIn("__imp____acrt_iob_func", source)
+            self.assertIn("extern void * __imp____acrt_iob_func;", source)
+            self.assertIn("local_28.BaseAddress = __imp____acrt_iob_func;", source)
+            self.assertIn("(*(code *)__imp____acrt_iob_func)(2);", source)
+            self.assertNotIn("__attribute__((weak)) void * __imp____acrt_iob_func;", source)
             self.assertIn("extern byte stack0x00000004;", source)
             self.assertIn("__attribute__((weak)) byte stack0x00000004;", source)
             self.assertIn("extern uintptr_t pcRam0000011d;", source)
@@ -2691,10 +2692,12 @@ class StageBTests(unittest.TestCase):
             reference_contract_payload=reference_contract,
         )
 
-        self.assertIn("uintptr_t __cdecl jv_is_valid()", source)
+        self.assertIn("__attribute__((naked, noinline, used))\nuintptr_t __cdecl jv_is_valid()", source)
         self.assertIn("uintptr_t __cdecl jv_get_kind(uintptr_t param_1, uintptr_t param_2);", source)
         self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0057:14c1 at RVA 0x14c1", source)
-        self.assertIn("jv_get_kind((uintptr_t)0, (uintptr_t)0);", source)
+        self.assertIn('"call _jv_get_kind\\n\\t"', source)
+        self.assertIn('"setne %al\\n\\t"', source)
+        self.assertNotIn("jv_get_kind((uintptr_t)0, (uintptr_t)0);", source)
         self.assertNotIn("__attribute__((weak)) uintptr_t jv_is_valid() { return 0; }", source)
         self.assertIn("(void *)(uintptr_t)&jv_is_valid,", source)
         by_function = {item["function"]: item for item in source_map["functions"]}
@@ -4837,8 +4840,8 @@ class StageBTests(unittest.TestCase):
                                 "uintptr_t umain(int argc,undefined4 *argv)",
                                 "{",
                                 "  code *puVar1;",
-                                "  puVar1 = ___acrt_iob_func;",
-                                "  (*(code *)___acrt_iob_func)();",
+                                "  puVar1 = __imp____acrt_iob_func;",
+                                "  (*(code *)__imp____acrt_iob_func)();",
                                 "  (*(code *)puVar1)();",
                                 "  (*(code *)puVar1)();",
                                 "  (*(code *)puVar1)();",
@@ -4851,11 +4854,11 @@ class StageBTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("(*(code *)___acrt_iob_func)(1);", source)
+        self.assertIn("(*(code *)__imp____acrt_iob_func)(1);", source)
         self.assertIn("(*(code *)puVar1)(2);", source)
         self.assertIn("(*(code *)puVar1)(1);", source)
         self.assertIn("(*(code *)puVar1)(2);", source)
-        self.assertNotIn("___acrt_iob_func)();", source)
+        self.assertNotIn("__imp____acrt_iob_func)();", source)
         self.assertNotIn("puVar1)();", source)
 
     def test_decompiled_c_renderer_preserves_acrt_iob_func_call_boundary(self):
@@ -7428,6 +7431,14 @@ class StageBTests(unittest.TestCase):
                                     "readable": True,
                                     "writable": True,
                                 },
+                                {
+                                    "name": ".data",
+                                    "rva_start": 0xD000,
+                                    "rva_end": 0xD05C,
+                                    "executable": False,
+                                    "readable": True,
+                                    "writable": True,
+                                },
                             ],
                             "imports": [
                                 {"dll": "msvcrt.dll", "symbol": "fprintf", "ordinal": None},
@@ -7456,6 +7467,14 @@ class StageBTests(unittest.TestCase):
                                     "executable": False,
                                     "readable": True,
                                     "writable": False,
+                                },
+                                {
+                                    "name": ".data",
+                                    "rva_start": 0xD000,
+                                    "rva_end": 0xD0A8,
+                                    "executable": False,
+                                    "readable": True,
+                                    "writable": True,
                                 },
                             ],
                             "imports": [
@@ -7493,6 +7512,16 @@ class StageBTests(unittest.TestCase):
                     "rva_end": 0x8500,
                 }
             ],
+            candidate_symbols=[
+                {
+                    "name": "_dtoa_CritSec",
+                    "rva": 0xD060,
+                    "rva_end": 0xD0A0,
+                    "section": ".data",
+                    "source": "section_fragment",
+                    "size": 0x40,
+                }
+            ],
             crash=None,
             functional=None,
         )
@@ -7516,6 +7545,13 @@ class StageBTests(unittest.TestCase):
         )
         self.assertEqual(text_item["evidence"]["section_delta"]["delta"]["size"]["delta"], -0x34C)
         self.assertIn("0x1000-0xc500", text_item["next_action"])
+        data_item = next(
+            item
+            for item in result
+            if item["likely_repair_class"] == "pe_section_span_layout" and item["original_function"] == "section:.data"
+        )
+        self.assertEqual(data_item["evidence"]["section_delta"]["candidate_overflow_symbols"][0]["name"], "_dtoa_CritSec")
+        self.assertIn("_dtoa_CritSec at 0xd060", data_item["next_action"])
         section_table_items = [
             item for item in result if item["likely_repair_class"] == "pe_section_table_layout"
         ]
@@ -7800,6 +7836,92 @@ class StageBTests(unittest.TestCase):
         self.assertIn("arg0=2", item["next_action"])
         self.assertIn("preserve indirect stack-slot call dword ptr [esp + 0x64]", item["next_action"])
         self.assertIn("prevent compiler folding to a direct call", item["next_action"])
+
+    def test_explain_delta_reports_candidate_global_slot_owner(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 1, "callsites": 2},
+                        "candidate_counts": {"functions": 1, "callsites": 1},
+                        "coverage_gaps": {
+                            "incomplete_callsites": [
+                                {
+                                    "name": "umain",
+                                    "match_key": "umain",
+                                    "reference_callsites": 2,
+                                    "candidate_callsites": 1,
+                                    "missing_callsites": 1,
+                                    "missing_callsite_signatures": [
+                                        {
+                                            "signature_id": "callsite-signature:feedfacefeedface",
+                                            "missing": 1,
+                                            "signature": {
+                                                "target": {
+                                                    "kind": "function_pointer",
+                                                    "operand": "esi",
+                                                    "memory_role": "global_writable_pointer_slot",
+                                                    "memory_rva": 0xD058,
+                                                    "status": "unresolved",
+                                                },
+                                                "argument_inventory": {
+                                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                                    "argument_count": 1,
+                                                    "stack_roles": ["immediate"],
+                                                    "stack_args": [
+                                                        {
+                                                            "index": 0,
+                                                            "role": "immediate",
+                                                            "source": {"kind": "immediate", "value": 1},
+                                                        }
+                                                    ],
+                                                    "register_roles": [],
+                                                },
+                                            },
+                                            "reference_examples": [
+                                                {"index": 0, "callsite": {"id": "callsite:umain-0000:24b4"}}
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                            "counts": {"incomplete_callsite_functions": 1, "missing_callsites": 1},
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            candidate_symbols=[
+                {
+                    "name": "_dtoa_CS_init",
+                    "rva": 0xD058,
+                    "rva_hex": "0xd058",
+                    "section": ".data",
+                    "source": "section_fragment",
+                    "size": 4,
+                    "rva_end": 0xD05C,
+                }
+            ],
+            crash=None,
+            functional=None,
+        )
+
+        item = next(item for item in result if item["original_function"] == "umain")
+        self.assertEqual(item["likely_repair_class"], "function_pointer_callsite_coverage")
+        self.assertIn("candidate RVA 0xd058", item["next_action"])
+        self.assertIn("_dtoa_CS_init", item["next_action"])
+        self.assertIn("preserve or relocate the reference global function-pointer slot", item["next_action"])
+        context = item["evidence"]["candidate_memory_context"]
+        self.assertEqual(context["symbols_at_rva"][0]["name"], "_dtoa_CS_init")
+        self.assertEqual(context["symbols_at_rva"][0]["section"], ".data")
 
     def test_explain_delta_classifies_stack_out_param_as_scratch_buffer_verification(self):
         validation = {

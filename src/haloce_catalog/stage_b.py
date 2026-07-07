@@ -1260,12 +1260,14 @@ def stage_b_explain_delta(
     )
     candidate_bin = _parse_stage_a_pe(candidate)
     candidate_functions = _parse_linker_map_functions(linker_map_candidate, candidate_bin)
+    candidate_symbols = _stage_b_parse_linker_map_symbols(linker_map_candidate, candidate_bin)
     candidate_module_contexts = _stage_b_candidate_module_contexts(candidate_modules)
     items = _stage_b_delta_repair_items(
         contract=contract,
         validation=contract_validation,
         skeleton=skeleton,
         candidate_functions=candidate_functions,
+        candidate_symbols=candidate_symbols,
         candidate_binary=candidate_bin,
         candidate_modules=candidate_module_contexts,
         crash=crash,
@@ -1825,6 +1827,7 @@ def _stage_b_delta_repair_items(
     candidate_functions: list[dict[str, Any]],
     crash: dict[str, Any] | None,
     functional: dict[str, Any] | None,
+    candidate_symbols: list[dict[str, Any]] | None = None,
     candidate_binary: Any | None = None,
     candidate_modules: list[dict[str, Any]] | None = None,
     unit_contracts: dict[str, Any] | None = None,
@@ -1891,11 +1894,19 @@ def _stage_b_delta_repair_items(
                     source_map=source_map,
                     contract_functions=contract_functions,
                     candidate_functions=candidate_functions,
+                    candidate_symbols=candidate_symbols,
                 )
             )
             continue
         if family_name == "abi_callsites":
-            validation_items.extend(_stage_b_abi_repair_items(family=family, evidence=evidence, source_map=source_map))
+            validation_items.extend(
+                _stage_b_abi_repair_items(
+                    family=family,
+                    evidence=evidence,
+                    source_map=source_map,
+                    candidate_symbols=candidate_symbols,
+                )
+            )
             continue
         validation_items.append(
             _stage_b_repair_item(
@@ -2217,6 +2228,7 @@ def _stage_b_binary_faithfulness_repair_items(
     source_map: dict[str, dict[str, Any]],
     contract_functions: dict[str, dict[str, Any]] | None = None,
     candidate_functions: list[dict[str, Any]] | None = None,
+    candidate_symbols: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     expected = evidence.get("expected") if isinstance(evidence.get("expected"), dict) else {}
     candidate = evidence.get("candidate") if isinstance(evidence.get("candidate"), dict) else {}
@@ -2266,7 +2278,15 @@ def _stage_b_binary_faithfulness_repair_items(
             )
         )
 
-    items.extend(_stage_b_section_layout_repair_items(family, expected, candidate, source_map))
+    items.extend(
+        _stage_b_section_layout_repair_items(
+            family,
+            expected,
+            candidate,
+            source_map,
+            candidate_symbols=candidate_symbols,
+        )
+    )
     import_delta = _stage_b_import_layout_delta(expected.get("imports"), candidate.get("imports"))
     if import_delta["missing"] or import_delta["extra"]:
         items.append(
@@ -2421,6 +2441,8 @@ def _stage_b_section_layout_repair_items(
     expected: dict[str, Any],
     candidate: dict[str, Any],
     source_map: dict[str, dict[str, Any]],
+    *,
+    candidate_symbols: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     expected_sections = _stage_b_sections_by_name(expected.get("sections"))
     candidate_sections = _stage_b_sections_by_name(candidate.get("sections"))
@@ -2451,6 +2473,26 @@ def _stage_b_section_layout_repair_items(
             continue
         expected_span = _stage_b_section_span_text(expected_section)
         candidate_span = _stage_b_section_span_text(candidate_section)
+        overflow_symbols = _stage_b_section_overflow_symbols(
+            expected_section,
+            candidate_section,
+            candidate_symbols or [],
+        )
+        overflow_hint = _stage_b_section_overflow_symbol_hint(overflow_symbols)
+        next_action = (
+            f"adjust candidate section {name!r} to match reference span {expected_span} "
+            f"and permissions (candidate is {candidate_span})"
+        )
+        if overflow_hint:
+            next_action = f"{next_action}; {overflow_hint}"
+        section_delta = {
+            "name": name,
+            "expected": expected_section,
+            "candidate": candidate_section,
+            "delta": delta,
+        }
+        if overflow_symbols:
+            section_delta["candidate_overflow_symbols"] = overflow_symbols
         items.append(
             _stage_b_repair_item(
                 family="binary_faithfulness",
@@ -2458,18 +2500,10 @@ def _stage_b_section_layout_repair_items(
                 block_id=None,
                 source_map=source_map,
                 repair_class="pe_section_span_layout",
-                next_action=(
-                    f"adjust candidate section {name!r} to match reference span {expected_span} "
-                    f"and permissions (candidate is {candidate_span})"
-                ),
+                next_action=next_action,
                 evidence={
                     "family": _stage_b_contract_family_summary(family),
-                    "section_delta": {
-                        "name": name,
-                        "expected": expected_section,
-                        "candidate": candidate_section,
-                        "delta": delta,
-                    },
+                    "section_delta": section_delta,
                 },
             )
         )
@@ -2511,6 +2545,47 @@ def _stage_b_section_size(section: dict[str, Any]) -> int | None:
     if start is None or end is None:
         return None
     return max(0, end - start)
+
+
+def _stage_b_section_overflow_symbols(
+    expected_section: dict[str, Any],
+    candidate_section: dict[str, Any],
+    candidate_symbols: list[dict[str, Any]],
+    *,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    expected_end = _stage_b_int_value(expected_section.get("rva_end"))
+    candidate_end = _stage_b_int_value(candidate_section.get("rva_end"))
+    section_name = str(candidate_section.get("name") or "")
+    if expected_end is None or candidate_end is None or candidate_end <= expected_end or not section_name:
+        return []
+    result: list[dict[str, Any]] = []
+    for symbol in candidate_symbols:
+        if not isinstance(symbol, dict) or str(symbol.get("section") or "") != section_name:
+            continue
+        rva = _stage_b_int_value(symbol.get("rva"))
+        if rva is None or rva < expected_end or rva >= candidate_end:
+            continue
+        result.append(_stage_b_candidate_symbol_summary(symbol))
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _stage_b_section_overflow_symbol_hint(symbols: list[dict[str, Any]]) -> str:
+    if not symbols:
+        return ""
+    names = []
+    for symbol in symbols[:4]:
+        if not isinstance(symbol, dict):
+            continue
+        name = str(symbol.get("name") or "")
+        rva = _stage_b_hex(symbol.get("rva"))
+        if name:
+            names.append(f"{name} at {rva}")
+    if not names:
+        return ""
+    return "first candidate symbols in the overflowing tail: " + ", ".join(names)
 
 
 def _stage_b_section_span_text(section: dict[str, Any]) -> str:
@@ -2569,11 +2644,151 @@ def _stage_b_hex(value: Any) -> str:
     return f"0x{numeric:x}"
 
 
+def _stage_b_parse_linker_map_symbols(path: Path, binary: StageABinary) -> list[dict[str, Any]]:
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    symbols: list[dict[str, Any]] = []
+    seen: set[tuple[int, str, str]] = set()
+    pending_section_fragment: str | None = None
+    for line in text.splitlines():
+        fragment = _stage_b_linker_map_fragment_symbol_line(line, binary)
+        if fragment is not None:
+            _stage_b_append_linker_map_symbol(symbols, seen, fragment)
+            pending_section_fragment = None
+            continue
+        continuation = _stage_b_linker_map_fragment_continuation_line(line, binary, pending_section_fragment)
+        if continuation is not None:
+            _stage_b_append_linker_map_symbol(symbols, seen, continuation)
+            pending_section_fragment = None
+            continue
+        section_fragment = _stage_b_linker_map_section_fragment_name(line)
+        if section_fragment is not None:
+            pending_section_fragment = section_fragment
+            continue
+        symbol = _stage_b_linker_map_symbol_line(line, binary)
+        if symbol is not None:
+            _stage_b_append_linker_map_symbol(symbols, seen, symbol)
+            pending_section_fragment = None
+            continue
+        if line.strip():
+            pending_section_fragment = None
+    return sorted(symbols, key=lambda item: (int(item.get("rva") or 0), str(item.get("name") or "")))
+
+
+def _stage_b_append_linker_map_symbol(
+    symbols: list[dict[str, Any]],
+    seen: set[tuple[int, str, str]],
+    symbol: dict[str, Any],
+) -> None:
+    key = (int(symbol["rva"]), str(symbol["name"]), str(symbol.get("source") or ""))
+    if key in seen:
+        return
+    seen.add(key)
+    symbols.append(symbol)
+
+
+def _stage_b_linker_map_symbol_line(line: str, binary: StageABinary) -> dict[str, Any] | None:
+    match = re.match(r"^\s*(0x[0-9a-fA-F]+)\s+([A-Za-z_.$@?][A-Za-z0-9_.$@?~-]*)\s*$", line)
+    if match is None:
+        return None
+    name = match.group(2)
+    if name.startswith(".") or name in {"PROVIDE", "CREATE_OBJECT_SYMBOLS"}:
+        return None
+    rva = _stage_b_linker_map_address_to_rva(int(match.group(1), 16), binary)
+    return _stage_b_linker_map_symbol_record(binary=binary, rva=rva, name=name, source="symbol")
+
+
+def _stage_b_linker_map_fragment_symbol_line(line: str, binary: StageABinary) -> dict[str, Any] | None:
+    match = re.match(r"^\s*(\.[A-Za-z0-9_.$@?+-]+)\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\b", line)
+    if match is None:
+        return None
+    name = _stage_b_linker_map_section_fragment_name_from_section(match.group(1))
+    if name is None:
+        return None
+    rva = _stage_b_linker_map_address_to_rva(int(match.group(2), 16), binary)
+    return _stage_b_linker_map_symbol_record(
+        binary=binary,
+        rva=rva,
+        name=name,
+        source="section_fragment",
+        size=int(match.group(3), 16),
+    )
+
+
+def _stage_b_linker_map_fragment_continuation_line(
+    line: str,
+    binary: StageABinary,
+    fragment_name: str | None,
+) -> dict[str, Any] | None:
+    if fragment_name is None:
+        return None
+    match = re.match(r"^\s*(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\b", line)
+    if match is None:
+        return None
+    rva = _stage_b_linker_map_address_to_rva(int(match.group(1), 16), binary)
+    return _stage_b_linker_map_symbol_record(
+        binary=binary,
+        rva=rva,
+        name=fragment_name,
+        source="section_fragment",
+        size=int(match.group(2), 16),
+    )
+
+
+def _stage_b_linker_map_section_fragment_name(line: str) -> str | None:
+    match = re.match(r"^\s*(\.[A-Za-z0-9_.$@?+-]+)\s*$", line)
+    if match is None:
+        return None
+    return _stage_b_linker_map_section_fragment_name_from_section(match.group(1))
+
+
+def _stage_b_linker_map_section_fragment_name_from_section(section_name: str) -> str | None:
+    if "$" not in section_name:
+        return None
+    fragment = section_name.split("$", 1)[1].strip()
+    if not fragment or fragment.startswith("."):
+        return None
+    return fragment
+
+
+def _stage_b_linker_map_address_to_rva(address: int, binary: StageABinary) -> int:
+    return address - binary.image_base if address >= binary.image_base else address
+
+
+def _stage_b_linker_map_symbol_record(
+    *,
+    binary: StageABinary,
+    rva: int,
+    name: str,
+    source: str,
+    size: int | None = None,
+) -> dict[str, Any] | None:
+    section = _section_for_rva(binary, rva)
+    if section is None:
+        return None
+    record: dict[str, Any] = {
+        "name": name,
+        "rva": rva,
+        "rva_hex": f"0x{rva:x}",
+        "section": section.name,
+        "section_rva_start": int(section.rva_start),
+        "section_rva_end": int(section.rva_end),
+        "source": source,
+    }
+    if size is not None:
+        record["size"] = size
+        record["rva_end"] = min(int(section.rva_end), rva + max(0, size))
+    return record
+
+
 def _stage_b_abi_repair_items(
     *,
     family: dict[str, Any],
     evidence: dict[str, Any],
     source_map: dict[str, dict[str, Any]],
+    candidate_symbols: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     reference_counts = evidence.get("reference_counts") if isinstance(evidence.get("reference_counts"), dict) else {}
     candidate_counts = evidence.get("candidate_counts") if isinstance(evidence.get("candidate_counts"), dict) else {}
@@ -2582,7 +2797,7 @@ def _stage_b_abi_repair_items(
     coverage_gaps = evidence.get("coverage_gaps") if isinstance(evidence.get("coverage_gaps"), dict) else {}
     coverage_gap_counts = coverage_gaps.get("counts") if isinstance(coverage_gaps.get("counts"), dict) else {}
     items: list[dict[str, Any]] = []
-    items.extend(_stage_b_abi_coverage_gap_items(evidence, source_map))
+    items.extend(_stage_b_abi_coverage_gap_items(evidence, source_map, candidate_symbols=candidate_symbols))
     if missing_functions or missing_callsites:
         named_missing_functions = coverage_gap_counts.get("missing_functions")
         partial_callsite_functions = coverage_gap_counts.get("incomplete_callsite_functions")
@@ -2650,6 +2865,7 @@ def _stage_b_abi_coverage_gap_items(
     evidence: dict[str, Any],
     source_map: dict[str, dict[str, Any]],
     *,
+    candidate_symbols: list[dict[str, Any]] | None = None,
     limit: int = 8,
 ) -> list[dict[str, Any]]:
     coverage_gaps = evidence.get("coverage_gaps") if isinstance(evidence.get("coverage_gaps"), dict) else {}
@@ -2689,6 +2905,13 @@ def _stage_b_abi_coverage_gap_items(
         if not isinstance(name, str) or not name:
             continue
         for signature_item in _stage_b_missing_callsite_signature_items(sample):
+            candidate_context = _stage_b_missing_callsite_signature_candidate_context(
+                signature_item,
+                candidate_symbols or [],
+            )
+            item_evidence = {"coverage_gap": sample, "missing_callsite_signature": signature_item}
+            if candidate_context is not None:
+                item_evidence["candidate_memory_context"] = candidate_context
             items.append(
                 _stage_b_repair_item(
                     family="abi_callsites",
@@ -2696,8 +2919,12 @@ def _stage_b_abi_coverage_gap_items(
                     block_id=_stage_b_missing_callsite_signature_block_id(signature_item),
                     source_map=source_map,
                     repair_class=_stage_b_missing_callsite_signature_repair_class(signature_item),
-                    next_action=_stage_b_missing_callsite_signature_next_action(name, signature_item),
-                    evidence={"coverage_gap": sample, "missing_callsite_signature": signature_item},
+                    next_action=_stage_b_missing_callsite_signature_next_action(
+                        name,
+                        signature_item,
+                        candidate_context=candidate_context,
+                    ),
+                    evidence=item_evidence,
                 )
             )
             if len(items) >= limit:
@@ -2771,7 +2998,12 @@ def _stage_b_missing_callsite_signature_repair_class(signature_item: dict[str, A
     return "abi_callsite_signature_coverage"
 
 
-def _stage_b_missing_callsite_signature_next_action(name: str, signature_item: dict[str, Any]) -> str:
+def _stage_b_missing_callsite_signature_next_action(
+    name: str,
+    signature_item: dict[str, Any],
+    *,
+    candidate_context: dict[str, Any] | None = None,
+) -> str:
     missing = signature_item.get("missing")
     if missing not in {None, ""}:
         signature_text = f"{missing} missing callsite signature{'s' if missing != 1 else ''}"
@@ -2779,7 +3011,100 @@ def _stage_b_missing_callsite_signature_next_action(name: str, signature_item: d
         signature_text = "missing callsite signature"
     action = f"recover {signature_text} for {name}; preserve the target and argument shape, then rerun Stage A contract validation"
     hint = _stage_b_missing_callsite_signature_hint({"missing_callsite_signatures": [signature_item]})
-    return f"{action}; {hint}" if hint else action
+    context_hint = _stage_b_candidate_memory_context_hint(candidate_context)
+    hints = [item for item in (hint, context_hint) if item]
+    return f"{action}; {'; '.join(hints)}" if hints else action
+
+
+def _stage_b_missing_callsite_signature_candidate_context(
+    signature_item: dict[str, Any],
+    candidate_symbols: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    signature = signature_item.get("signature") if isinstance(signature_item.get("signature"), dict) else {}
+    target = signature.get("target") if isinstance(signature.get("target"), dict) else {}
+    if target.get("kind") != "function_pointer":
+        return None
+    memory_rva = _stage_b_int_value(target.get("memory_rva"))
+    if memory_rva is None:
+        return None
+    symbols = [item for item in candidate_symbols if isinstance(item, dict) and _stage_b_int_value(item.get("rva")) is not None]
+    exact = [_stage_b_candidate_symbol_summary(item) for item in symbols if _stage_b_int_value(item.get("rva")) == memory_rva]
+    covering = [
+        _stage_b_candidate_symbol_summary(item)
+        for item in symbols
+        if _stage_b_symbol_covers_rva(item, memory_rva) and _stage_b_int_value(item.get("rva")) != memory_rva
+    ]
+    before = [
+        item
+        for item in symbols
+        if (symbol_rva := _stage_b_int_value(item.get("rva"))) is not None and symbol_rva < memory_rva
+    ]
+    after = [
+        item
+        for item in symbols
+        if (symbol_rva := _stage_b_int_value(item.get("rva"))) is not None and symbol_rva > memory_rva
+    ]
+    before.sort(key=lambda item: int(_stage_b_int_value(item.get("rva")) or 0), reverse=True)
+    after.sort(key=lambda item: int(_stage_b_int_value(item.get("rva")) or 0))
+    context: dict[str, Any] = {
+        "memory_rva": memory_rva,
+        "memory_rva_hex": f"0x{memory_rva:x}",
+        "symbols_at_rva": exact[:8],
+        "covering_symbols": covering[:8],
+        "nearest_before": [_stage_b_candidate_symbol_summary(item) for item in before[:3]],
+        "nearest_after": [_stage_b_candidate_symbol_summary(item) for item in after[:3]],
+    }
+    return context
+
+
+def _stage_b_candidate_symbol_summary(symbol: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        "name": str(symbol.get("name") or ""),
+        "rva": _stage_b_int_value(symbol.get("rva")),
+        "rva_hex": _stage_b_hex(symbol.get("rva")),
+        "section": str(symbol.get("section") or ""),
+        "source": str(symbol.get("source") or ""),
+    }
+    if symbol.get("size") is not None:
+        result["size"] = _stage_b_int_value(symbol.get("size"))
+    if symbol.get("rva_end") is not None:
+        result["rva_end"] = _stage_b_int_value(symbol.get("rva_end"))
+        result["rva_end_hex"] = _stage_b_hex(symbol.get("rva_end"))
+    return result
+
+
+def _stage_b_symbol_covers_rva(symbol: dict[str, Any], rva: int) -> bool:
+    start = _stage_b_int_value(symbol.get("rva"))
+    end = _stage_b_int_value(symbol.get("rva_end"))
+    return start is not None and end is not None and start <= rva < end
+
+
+def _stage_b_candidate_memory_context_hint(candidate_context: dict[str, Any] | None) -> str:
+    if not isinstance(candidate_context, dict):
+        return ""
+    rva_hex = str(candidate_context.get("memory_rva_hex") or _stage_b_hex(candidate_context.get("memory_rva")))
+    symbols = candidate_context.get("symbols_at_rva") if isinstance(candidate_context.get("symbols_at_rva"), list) else []
+    symbol = symbols[0] if symbols and isinstance(symbols[0], dict) else None
+    if symbol is None:
+        covering = candidate_context.get("covering_symbols") if isinstance(candidate_context.get("covering_symbols"), list) else []
+        symbol = covering[0] if covering and isinstance(covering[0], dict) else None
+    if symbol is None:
+        before = candidate_context.get("nearest_before") if isinstance(candidate_context.get("nearest_before"), list) else []
+        after = candidate_context.get("nearest_after") if isinstance(candidate_context.get("nearest_after"), list) else []
+        neighbors = [
+            str(item.get("name") or "")
+            for item in (before[:1] + after[:1])
+            if isinstance(item, dict) and item.get("name")
+        ]
+        if neighbors:
+            return f"candidate RVA {rva_hex} has no exact symbol; nearest candidate map symbols are {', '.join(neighbors)}"
+        return f"candidate RVA {rva_hex} has no symbol in the candidate linker map"
+    section = str(symbol.get("section") or "unknown section")
+    name = str(symbol.get("name") or "unnamed symbol")
+    return (
+        f"candidate RVA {rva_hex} currently maps to {section} symbol {name}; "
+        "preserve or relocate the reference global function-pointer slot instead of compiling this call as a direct call"
+    )
 
 
 def _stage_b_missing_callsite_signature_example_callsite(signature_item: dict[str, Any]) -> dict[str, Any]:
@@ -6546,6 +6871,8 @@ def _decompiled_c_external_data_declaration(symbol: str) -> str:
 def _decompiled_c_external_data_definition(symbol: str) -> str:
     if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
         return f"__attribute__((weak)) pseudoRelocItemV2 {symbol}[2];"
+    if symbol == "__imp____acrt_iob_func":
+        return f"extern {_decompiled_c_external_data_type(symbol)} {symbol};"
     return f"__attribute__((weak)) {_decompiled_c_external_data_type(symbol)} {symbol};"
 
 
@@ -6837,7 +7164,6 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
             r"\1return __crt_atexit(\2);",
             code,
         )
-    code = code.replace("__imp____acrt_iob_func", "___acrt_iob_func")
     code = _normalize_mingw_variadic_print_signatures(code)
     code = _normalize_jq_variadic_print_calls(code)
     code = _normalize_ghidra_long_double_array_returns(code)

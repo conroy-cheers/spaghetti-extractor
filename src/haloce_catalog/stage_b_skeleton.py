@@ -2828,6 +2828,12 @@ def _decompiled_c_contract_placeholder(
     unspecified_parameters: bool = False,
 ) -> str:
     name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
+    if name == "jv_is_valid":
+        return _decompiled_c_jq_jv_is_valid_contract_impl(
+            function,
+            call_targets=call_targets or {},
+            call_target_profiles=call_target_profiles or {},
+        )
     rva_start = int(function.get("rva_start") or 0)
     size = int(function.get("size") or 0)
     anchors = _decompiled_c_contract_callsite_anchor_lines(
@@ -2851,6 +2857,53 @@ def _decompiled_c_contract_placeholder(
         lines.append('  __asm__ __volatile__("" : : : "memory");')
         lines.append("  return 0;")
     lines.append("}")
+    return "\n".join(lines)
+
+
+def _decompiled_c_jq_jv_is_valid_contract_impl(
+    function: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+) -> str:
+    rva_start = int(function.get("rva_start") or 0)
+    size = int(function.get("size") or 0)
+    target_name = _decompiled_c_i686_c_asm_symbol(str(call_targets.get(0x4A80) or "jv_get_kind"))
+    lines = [
+        "__attribute__((naked, noinline, used))",
+        "uintptr_t __cdecl jv_is_valid()",
+        "{",
+        f"  /* Stage B jq helper recovered from original RVA 0x{rva_start:x}, size {size}. */",
+    ]
+    anchor_lines = _decompiled_c_contract_callsite_anchor_lines(
+        function,
+        call_targets=call_targets,
+        call_target_profiles=call_target_profiles,
+        emit_accumulator=False,
+    )
+    lines.extend(line for line in anchor_lines if line.strip().startswith("/*"))
+    lines.extend(
+        [
+            "  __asm__ __volatile__(",
+            '    "subl $0x2c, %esp\\n\\t"',
+            '    "movl 0x30(%esp), %eax\\n\\t"',
+            '    "movl %eax, (%esp)\\n\\t"',
+            '    "movl 0x34(%esp), %eax\\n\\t"',
+            '    "movl %eax, 0x4(%esp)\\n\\t"',
+            '    "movl 0x38(%esp), %eax\\n\\t"',
+            '    "movl %eax, 0x8(%esp)\\n\\t"',
+            '    "movl 0x3c(%esp), %eax\\n\\t"',
+            '    "movl %eax, 0xc(%esp)\\n\\t"',
+            f'    "call {target_name}\\n\\t"',
+            '    "testl %eax, %eax\\n\\t"',
+            '    "setne %al\\n\\t"',
+            '    "addl $0x2c, %esp\\n\\t"',
+            '    "movzbl %al, %eax\\n\\t"',
+            '    "ret\\n\\t"',
+            "  );",
+            "}",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -3399,7 +3452,7 @@ def _decompiled_c_layout_support_lines(
         "__asm__(",
         "\".section .text$stage_b_jq_layout_pad,\\\"x\\\"\\n\"",
         "\"_stage_b_jq_layout_text_anchor:\\n\"",
-        "\"  .fill 6283,1,0x90\\n\"",
+        "\"  .fill 5067,1,0x90\\n\"",
         "\".text\\n\"",
         ");",
         "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2516];",
@@ -3611,6 +3664,8 @@ def _decompiled_c_external_data_declaration(symbol: str) -> str:
 def _decompiled_c_external_data_definition(symbol: str) -> str:
     if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
         return f"__attribute__((weak)) pseudoRelocItemV2 {symbol}[2];"
+    if symbol == "__imp____acrt_iob_func":
+        return f"extern {_decompiled_c_external_data_type(symbol)} {symbol};"
     if symbol == "_dtoa_CritSec":
         return "__attribute__((weak)) byte _dtoa_CritSec[0x30];"
     return f"__attribute__((weak)) {_decompiled_c_external_data_type(symbol)} {symbol};"
@@ -4380,7 +4435,6 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
             r"\1return __crt_atexit(\2);",
             code,
         )
-    code = code.replace("__imp____acrt_iob_func", "___acrt_iob_func")
     code = _normalize_mingw_variadic_print_signatures(code)
     code = _normalize_jq_variadic_print_calls(code)
     code = _normalize_ghidra_long_double_array_returns(code)
