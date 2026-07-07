@@ -1809,6 +1809,68 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(function["stack_delta"]["blocks"], 2)
             self.assertEqual(function["blocks"][0]["abi"]["stack_delta"]["status"], "derived")
 
+    def test_reference_contract_abi_carries_predecessor_stack_arguments_to_split_call_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            setup = bytes.fromhex(
+                "c744240800000000"  # mov dword ptr [esp + 8], 0
+                "c74424040a000000"  # mov dword ptr [esp + 4], 0xa
+                "890424"  # mov dword ptr [esp], eax
+                "7405"  # je branch-call
+            )
+            fallthrough_call = bytes.fromhex("e800000000")
+            branch_call = bytes.fromhex("e800000000")
+            code = setup + fallthrough_call + branch_call + b"\xc3"
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                **self._mapping_entry(rva=0x1000, size=len(setup), block_id="split-call-setup"),
+                                "source": {"function": "split_call"},
+                            },
+                            {
+                                **self._mapping_entry(rva=0x1000 + len(setup), size=len(fallthrough_call), block_id="split-call-fallthrough"),
+                                "source": {"function": "split_call"},
+                            },
+                            {
+                                **self._mapping_entry(
+                                    rva=0x1000 + len(setup) + len(fallthrough_call),
+                                    size=len(branch_call),
+                                    block_id="split-call-branch",
+                                ),
+                                "source": {"function": "split_call"},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            function = result["constraints"]["abi_callsites"]["original"]["functions"][0]
+            self.assertEqual(function["name"], "split_call")
+            self.assertEqual(len(function["callsites"]), 2)
+            for callsite in function["callsites"]:
+                self.assertEqual([source["stack_offset"] for source in callsite["argument_sources"]], [8, 4, 0])
+                self.assertEqual(
+                    [arg["source"]["stack_offset"] for arg in callsite["argument_inventory"]["stack_args"]],
+                    [0, 4, 8],
+                )
+                self.assertEqual(callsite["argument_inventory"]["argument_count"], 3)
+                self.assertEqual(callsite["predecessor_argument_sources"]["source"], "direct_cfg_predecessor_exit")
+                self.assertEqual(callsite["predecessor_argument_sources"]["predecessor_block_ids"], ["split-call-setup"])
+
     def test_reference_contract_abi_callsites_mark_explicit_stack_address_first_argument(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2075,6 +2137,76 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(len(inventory["stack_args"]), 1)
         self.assertEqual(inventory["stack_args"][0]["source"]["stack_offset"], 0)
         self.assertEqual(inventory["stack_args"][0]["role"], "immediate")
+
+    def test_abi_callsites_recover_x86_internal_register_arguments_from_direct_target_entry(self):
+        class FakePE:
+            def __init__(self, data: bytes):
+                self.data = data
+
+            def get_data(self, rva: int, size: int) -> bytes:
+                if rva < 0x1000:
+                    return b""
+                offset = rva - 0x1000
+                return self.data[offset : offset + size]
+
+        target_rva = 0x1020
+        caller = bytes.fromhex(
+            "8d4c2408"  # lea ecx, [esp + 8]
+            "89c2"  # mov edx, eax
+            "89f8"  # mov eax, edi
+        )
+        call_rva = 0x1000 + len(caller)
+        code = caller + b"\xe8" + struct.pack("<i", target_rva - (call_rva + 5))
+        code += b"\x90" * (target_rva - (0x1000 + len(code)))
+        code += bytes.fromhex(
+            "55"  # push ebp
+            "89d5"  # mov ebp, edx
+            "89cb"  # mov ebx, ecx
+            "89442404"  # mov dword ptr [esp + 4], eax
+            "c3"  # ret
+        )
+        binary = stage_a.StageABinary(
+            path=Path("candidate.exe"),
+            sha256="",
+            size=len(code),
+            machine="i386",
+            bitness=32,
+            image_base=0x400000,
+            entrypoint_rva=0x1000,
+            size_of_image=0x20000,
+            subsystem="console",
+            sections=(
+                stage_a.StageASection(
+                    name=".text",
+                    rva_start=0x1000,
+                    rva_end=0x1000 + len(code),
+                    raw_pointer=0,
+                    raw_size=len(code),
+                    characteristics=0,
+                    executable=True,
+                    readable=True,
+                    writable=False,
+                    contains_code=True,
+                ),
+            ),
+            imports=(),
+            pe=FakePE(code),
+        )
+
+        evidence = stage_a._abi_block_evidence(
+            binary,
+            stage_a.BlockSide(rva_start=0x1000, rva_end=call_rva + 5),
+            "x86-register-call",
+        )
+
+        callsite = evidence["callsites"][0]
+        inventory = callsite["argument_inventory"]
+        self.assertEqual(inventory["calling_convention"], "x86_register_carried_internal")
+        self.assertEqual(inventory["argument_count"], 3)
+        self.assertEqual([arg["register"] for arg in inventory["register_args"]], ["eax", "edx", "ecx"])
+        self.assertEqual([arg["role"] for arg in inventory["register_args"]], ["register", "register", "stack_out_param_or_scratch_buffer"])
+        self.assertEqual(inventory["register_argument_evidence"]["source"], "direct_target_entry_read_before_write")
+        self.assertEqual(inventory["register_argument_evidence"]["target_rva"], target_rva)
 
     def test_abi_callsites_ignore_noncontiguous_stack_spills_before_call(self):
         class FakePE:
@@ -2412,6 +2544,97 @@ class StageAValidateTests(unittest.TestCase):
 
         self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
 
+    def test_contract_candidate_abi_coverage_gaps_match_direct_import_thunks_before_index(self):
+        def import_thunk_function(name, rva):
+            return {
+                "name": name,
+                "blocks": [
+                    {
+                        "block_id": f"{name}:0",
+                        "rva_start": rva,
+                        "rva_end": rva + 8,
+                        "abi": {
+                            "callsites": [],
+                            "memory_reads": [
+                                {
+                                    "memory_role": "global_readonly_pointer_slot",
+                                    "memory_section": {"name": ".idata"},
+                                    "instruction": {"mnemonic": "jmp"},
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "callsites": [],
+            }
+
+        reference_abi = {
+            "original": {
+                "import_prototypes": [
+                    {"dll": "msvcrt.dll", "symbol": "_fileno"},
+                    {"dll": "msvcrt.dll", "symbol": "_get_osfhandle"},
+                    {"dll": "kernel32.dll", "symbol": "WriteFile"},
+                ],
+                "functions": [
+                    {
+                        "name": "section-gap--text-0068",
+                        "callsites": [
+                            {
+                                "id": "callsite:section-gap--text-0068:15ee",
+                                "block_id": "section-gap--text-0068",
+                                "target": {"kind": "direct", "target_rva": 0x2000},
+                            },
+                            {
+                                "id": "callsite:section-gap--text-0068:15fa",
+                                "block_id": "section-gap--text-0068",
+                                "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "_get_osfhandle"},
+                            },
+                            {
+                                "id": "callsite:section-gap--text-0068:1624",
+                                "block_id": "section-gap--text-0068",
+                                "target": {"kind": "import", "dll": "kernel32.dll", "symbol": "WriteFile"},
+                            },
+                        ],
+                    },
+                    import_thunk_function("_fileno", 0x2000),
+                ],
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "import_prototypes": [
+                    {"dll": "msvcrt.dll", "symbol": "_get_osfhandle"},
+                    {"dll": "kernel32.dll", "symbol": "WriteFile"},
+                ],
+                "functions": [
+                    {
+                        "name": "section-gap--text-0068",
+                        "callsites": [
+                            {
+                                "id": "callsite:section-gap--text-0068:15fa",
+                                "block_id": "section-gap--text-0068",
+                                "target": {"kind": "direct", "target_rva": 0x5000},
+                            },
+                            {
+                                "id": "callsite:section-gap--text-0068:1624",
+                                "block_id": "section-gap--text-0068",
+                                "target": {"kind": "direct", "target_rva": 0x6000},
+                            },
+                        ],
+                    },
+                    import_thunk_function("_get_osfhandle", 0x5000),
+                    import_thunk_function("_WriteFile@20", 0x6000),
+                ],
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        self.assertEqual(gaps["counts"]["incomplete_callsite_functions"], 1)
+        self.assertEqual(gaps["counts"]["missing_callsites"], 1)
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
+        self.assertEqual(gaps["incomplete_callsites"][0]["name"], "section-gap--text-0068")
+
     def test_contract_candidate_abi_coverage_gaps_normalize_direct_targets_by_resolved_alias(self):
         reference_abi = {
             "original": {
@@ -2731,7 +2954,7 @@ class StageAValidateTests(unittest.TestCase):
                                     "stack_args": [
                                         {"index": 0, "role": "register"},
                                         {"index": 1, "role": "stack_pointer_slot"},
-                                        {"index": 2, "role": "immediate"},
+                                        {"index": 2, "role": "computed_memory"},
                                     ],
                                     "register_args": [],
                                 },
@@ -2761,7 +2984,7 @@ class StageAValidateTests(unittest.TestCase):
                                     "stack_args": [
                                         {"index": 0, "role": "stack_local_slot"},
                                         {"index": 1, "role": "stack_argument_slot"},
-                                        {"index": 2, "role": "register"},
+                                        {"index": 2, "role": "computed_pointer_deref"},
                                     ],
                                     "register_args": [],
                                 },
@@ -2779,6 +3002,73 @@ class StageAValidateTests(unittest.TestCase):
         gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
 
         self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
+
+    def test_contract_candidate_abi_coverage_gaps_reports_underconstrained_reference_arguments(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "__gdtoa",
+                        "callsites": [
+                            {
+                                "id": "callsite:reference",
+                                "block_id": "__gdtoa-0155",
+                                "target": {"kind": "direct", "target_rva": 0x3000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 0,
+                                    "stack_args": [],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "__multadd_D2A",
+                        "blocks": [{"block_id": "target", "rva_start": 0x3000, "rva_end": 0x3010}],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "___gdtoa",
+                        "callsites": [
+                            {
+                                "id": "callsite:candidate",
+                                "block_id": "___gdtoa",
+                                "target": {"kind": "direct", "target_rva": 0x5000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 3,
+                                    "stack_args": [
+                                        {"index": 0, "role": "stack_pointer_slot"},
+                                        {"index": 1, "role": "immediate"},
+                                        {"index": 2, "role": "immediate"},
+                                    ],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "___multadd_D2A",
+                        "aliases": ["__multadd_D2A", "___multadd_D2A"],
+                        "blocks": [{"block_id": "target", "rva_start": 0x5000, "rva_end": 0x5010}],
+                    },
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+        mismatch = gaps["callsite_mismatches"][0]
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 1)
+        self.assertEqual(mismatch["issues"][0]["category"], "reference_argument_inventory_underconstrained")
+        self.assertEqual(mismatch["repair_class"], "stage_a_argument_inventory_underconstrained")
+        self.assertIn("improve Stage A argument recovery", mismatch["next_action"])
 
     def test_contract_candidate_abi_coverage_gaps_reject_literal_and_address_role_loss(self):
         reference_abi = {
@@ -3051,6 +3341,38 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(match["candidate"]["name"], "__crt_atexit")
         self.assertEqual(match["resolution"], "unique_exact_source_function")
         self.assertEqual(alias_evidence["matches_by_reference"]["_crt_atexit"]["candidate"]["name"], "__crt_atexit")
+
+    def test_contract_candidate_alias_evidence_ignores_section_symbol_aliases(self):
+        alias_evidence = stage_a._contract_candidate_skeleton_alias_evidence(
+            {
+                "format": "stage-b-skeleton-v1",
+                "source_map": {
+                    "functions": [
+                        {
+                            "function": "___mbrtowc_cp",
+                            "aliases": ["section-gap--text-0747", "mbrtowc_cp", ".text"],
+                            "source_kind": "generated_contract_placeholder_from_section_gap_alias",
+                        },
+                        {
+                            "function": "___wcrtomb_cp",
+                            "aliases": ["section-gap--text-0740", "wcrtomb_cp", ".text"],
+                            "source_kind": "generated_contract_placeholder_from_section_gap_alias",
+                        },
+                    ]
+                },
+            },
+            [
+                {"name": "___mbrtowc_cp", "rva_start": 0x464C, "rva_end": 0x4650, "section": ".text"},
+                {"name": "___wcrtomb_cp", "rva_start": 0x5650, "rva_end": 0x5654, "section": ".text"},
+            ],
+        )
+
+        self.assertEqual(alias_evidence["status"], "satisfied")
+        self.assertEqual(alias_evidence["counts"]["ambiguities"], 0)
+        self.assertNotIn(".text", alias_evidence["matches_by_reference"])
+        self.assertNotIn(".text", alias_evidence["ambiguities_by_reference"])
+        self.assertEqual(alias_evidence["matches_by_reference"]["section-gap--text-0747"]["candidate"]["name"], "___mbrtowc_cp")
+        self.assertEqual(alias_evidence["matches_by_reference"]["section-gap--text-0740"]["candidate"]["name"], "___wcrtomb_cp")
 
     def test_contract_candidate_alias_evidence_keeps_duplicate_exact_source_function_incomplete(self):
         alias_evidence = stage_a._contract_candidate_skeleton_alias_evidence(

@@ -3950,8 +3950,18 @@ def _contract_candidate_skeleton_alias_evidence(skeleton: dict[str, Any], candid
         if not isinstance(entry, dict) or not isinstance(entry.get("function"), str):
             continue
         source_function = str(entry["function"])
-        source_aliases = [alias for alias in entry.get("aliases", []) if isinstance(alias, str) and alias]
-        reference_names = _dedupe_strings([source_function, *source_aliases])
+        source_aliases = [
+            alias
+            for alias in entry.get("aliases", [])
+            if isinstance(alias, str) and _contract_candidate_source_alias_is_function_name(alias)
+        ]
+        reference_names = _dedupe_strings(
+            [
+                name
+                for name in [source_function, *source_aliases]
+                if _contract_candidate_source_alias_is_function_name(name)
+            ]
+        )
         if not reference_names:
             continue
         candidate_matches = _contract_candidate_lookup_matches(candidate_lookup, *reference_names)
@@ -4072,6 +4082,16 @@ def _contract_candidate_function_names(candidate_functions: list[dict[str, Any]]
         for name in _contract_candidate_function_symbol_names(function):
             names.add(name)
     return names
+
+
+def _contract_candidate_source_alias_is_function_name(name: str) -> bool:
+    if not name:
+        return False
+    # COFF section symbols such as ".text" can appear in linker/source-map
+    # alias lists for section-gap ranges. They are layout evidence, not
+    # callable function names, and treating them as aliases creates false
+    # ambiguities across every range in the section.
+    return not name.startswith(".")
 
 
 def _contract_candidate_function_symbol_names(function: dict[str, Any]) -> list[str]:
@@ -4514,8 +4534,10 @@ def _contract_candidate_abi_coverage_gaps(
         if isinstance(name, str):
             for key in _contract_candidate_symbol_keys(name):
                 candidate_by_key.setdefault(key, []).append(function)
-    reference_function_index = _abi_function_range_index(reference_functions)
-    candidate_function_index = _abi_function_range_index(candidate_functions)
+    reference_import_prototypes = reference.get("import_prototypes") if isinstance(reference.get("import_prototypes"), list) else []
+    candidate_import_prototypes = candidate.get("import_prototypes") if isinstance(candidate.get("import_prototypes"), list) else []
+    reference_function_index = _abi_function_range_index(reference_functions, import_prototypes=reference_import_prototypes)
+    candidate_function_index = _abi_function_range_index(candidate_functions, import_prototypes=candidate_import_prototypes)
 
     missing_functions: list[dict[str, Any]] = []
     ambiguous_functions: list[dict[str, Any]] = []
@@ -4605,12 +4627,15 @@ def _contract_candidate_abi_coverage_gaps(
     }
 
 
-def _abi_function_range_index(functions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _abi_function_range_index(functions: list[dict[str, Any]], *, import_prototypes: list[Any] | None = None) -> list[dict[str, Any]]:
+    imports_by_key = _abi_import_prototypes_by_match_key(import_prototypes or [])
     ranges: list[dict[str, Any]] = []
     for function in functions:
         name = function.get("name")
         if not isinstance(name, str) or not name:
             continue
+        match_key = _linker_function_match_key(name)
+        import_signature = imports_by_key.get(match_key)
         blocks = function.get("blocks") if isinstance(function.get("blocks"), list) else []
         for block in blocks:
             if not isinstance(block, dict):
@@ -4619,16 +4644,50 @@ def _abi_function_range_index(functions: list[dict[str, Any]]) -> list[dict[str,
             end = _optional_contract_int(block.get("rva_end"))
             if start is None or end is None or end <= start:
                 continue
-            ranges.append(
-                {
-                    "name": name,
-                    "match_key": _linker_function_match_key(name),
-                    "rva_start": start,
-                    "rva_end": end,
-                    "block_id": block.get("block_id"),
-                }
-            )
+            item = {
+                "name": name,
+                "match_key": match_key,
+                "rva_start": start,
+                "rva_end": end,
+                "block_id": block.get("block_id"),
+            }
+            if import_signature is not None and _abi_block_is_import_thunk(block):
+                item["import_signature"] = import_signature
+                item["resolution_kind"] = "import_thunk"
+            ranges.append(item)
     return ranges
+
+
+def _abi_import_prototypes_by_match_key(import_prototypes: list[Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for imported in import_prototypes:
+        if not isinstance(imported, dict):
+            continue
+        symbol = imported.get("symbol")
+        ordinal = imported.get("ordinal")
+        if isinstance(symbol, str) and symbol:
+            signature = {"dll": imported.get("dll"), "symbol": symbol, "ordinal": ordinal}
+            result.setdefault(_linker_function_match_key(symbol), signature)
+            if "@" in symbol:
+                result.setdefault(_linker_function_match_key(symbol.split("@", 1)[0]), signature)
+        elif ordinal not in {None, ""}:
+            result.setdefault(str(ordinal), {"dll": imported.get("dll"), "symbol": None, "ordinal": ordinal})
+    return result
+
+
+def _abi_block_is_import_thunk(block: dict[str, Any]) -> bool:
+    abi = block.get("abi") if isinstance(block.get("abi"), dict) else {}
+    if abi.get("callsites"):
+        return False
+    reads = abi.get("memory_reads") if isinstance(abi.get("memory_reads"), list) else []
+    if len([item for item in reads if isinstance(item, dict)]) != 1:
+        return False
+    read = next(item for item in reads if isinstance(item, dict))
+    section = read.get("memory_section") if isinstance(read.get("memory_section"), dict) else {}
+    if read.get("memory_role") != "global_readonly_pointer_slot" or section.get("name") != ".idata":
+        return False
+    instruction = read.get("instruction") if isinstance(read.get("instruction"), dict) else {}
+    return instruction.get("mnemonic") == "jmp"
 
 
 def _contract_candidate_abi_callsite_pairs(
@@ -4645,14 +4704,17 @@ def _contract_candidate_abi_callsite_pairs(
         if isinstance(callsite, dict)
     ]
     unused_candidate_indexes = {index for index, _ in valid_candidates}
+    unused_reference_indexes = {
+        index
+        for index, callsite in enumerate(reference_callsites)
+        if isinstance(callsite, dict)
+    }
     pairs: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
+    scored_pairs: list[tuple[int, int, int, dict[str, Any], dict[str, Any]]] = []
     for reference_index, reference_callsite in enumerate(reference_callsites):
         if not isinstance(reference_callsite, dict):
             continue
-        best: tuple[int, int, dict[str, Any]] | None = None
         for candidate_index, candidate_callsite in valid_candidates:
-            if candidate_index not in unused_candidate_indexes:
-                continue
             score = _contract_candidate_abi_callsite_pair_score(
                 reference_callsite,
                 candidate_callsite,
@@ -4660,16 +4722,26 @@ def _contract_candidate_abi_callsite_pairs(
                 candidate_function_index=candidate_function_index,
                 alias_matches=alias_matches,
             )
-            if best is None or score > best[0] or (score == best[0] and candidate_index < best[1]):
-                best = (score, candidate_index, candidate_callsite)
-        if best is not None and best[0] > 0:
-            unused_candidate_indexes.remove(best[1])
-            pairs.append((reference_index, best[1], reference_callsite, best[2]))
+            if score > 0:
+                scored_pairs.append((score, reference_index, candidate_index, reference_callsite, candidate_callsite))
+    for _score, reference_index, candidate_index, reference_callsite, candidate_callsite in sorted(
+        scored_pairs,
+        key=lambda item: (-item[0], item[1], item[2]),
+    ):
+        if reference_index not in unused_reference_indexes or candidate_index not in unused_candidate_indexes:
+            continue
+        unused_reference_indexes.remove(reference_index)
+        unused_candidate_indexes.remove(candidate_index)
+        pairs.append((reference_index, candidate_index, reference_callsite, candidate_callsite))
+
+    for reference_index, reference_callsite in enumerate(reference_callsites):
+        if reference_index not in unused_reference_indexes or not isinstance(reference_callsite, dict):
             continue
         if reference_index in unused_candidate_indexes and isinstance(candidate_callsites[reference_index], dict):
             unused_candidate_indexes.remove(reference_index)
+            unused_reference_indexes.remove(reference_index)
             pairs.append((reference_index, reference_index, reference_callsite, candidate_callsites[reference_index]))
-    return pairs
+    return sorted(pairs, key=lambda item: item[0])
 
 
 def _contract_candidate_abi_callsite_pair_score(
@@ -4864,19 +4936,13 @@ def _contract_candidate_abi_callsite_mismatch(
         issues.append(varargs_issue)
     reference_inventory = _abi_argument_inventory_signature(reference_callsite.get("argument_inventory"))
     candidate_inventory = _abi_argument_inventory_signature(candidate_callsite.get("argument_inventory"))
-    if (
-        reference_inventory
-        and candidate_inventory
-        and not _contract_candidate_abi_argument_inventory_match(reference_inventory, candidate_inventory)
-    ):
-        issues.append(
-            {
-                "category": "callsite_argument_inventory_mismatch",
-                "expected": reference_inventory,
-                "observed": candidate_inventory,
-                "cause_hint": "candidate argument count, argument roles, or calling convention differs from the reference callsite",
-            }
-        )
+    inventory_issue = _contract_candidate_abi_argument_inventory_issue(
+        reference_inventory,
+        candidate_inventory,
+        target_match=target_match,
+    )
+    if inventory_issue is not None:
+        issues.append(inventory_issue)
     reference_targets = _abi_list_count(reference_callsite.get("function_pointer_targets"))
     candidate_targets = _abi_list_count(candidate_callsite.get("function_pointer_targets"))
     if reference_targets > candidate_targets:
@@ -4918,6 +4984,13 @@ def _contract_candidate_abi_target_match(
     candidate_signature = _abi_target_signature_with_resolution(candidate_target, candidate_function_index)
     if reference_signature == candidate_signature:
         return {"matched": True, "reference": reference_signature, "candidate": candidate_signature}
+    if _contract_candidate_abi_import_targets_match(reference_signature, candidate_signature):
+        return {
+            "matched": True,
+            "reference": reference_signature,
+            "candidate": candidate_signature,
+            "resolution": "import_thunk_equivalent_target",
+        }
     if _contract_candidate_abi_resolved_targets_match(
         reference_signature.get("resolved_functions"),
         candidate_signature.get("resolved_functions"),
@@ -4939,20 +5012,63 @@ def _abi_target_signature_with_resolution(target: Any, function_index: list[dict
     rva = _optional_contract_int(signature.get("target_rva"))
     if rva is None:
         return signature
-    resolved = [
-        {
+    resolved: list[dict[str, Any]] = []
+    for item in function_index:
+        if not int(item.get("rva_start") or 0) <= rva < int(item.get("rva_end") or 0):
+            continue
+        resolved_item = {
             "name": item.get("name"),
             "match_key": item.get("match_key"),
             "rva_start": item.get("rva_start"),
             "rva_end": item.get("rva_end"),
             "block_id": item.get("block_id"),
         }
-        for item in function_index
-        if int(item.get("rva_start") or 0) <= rva < int(item.get("rva_end") or 0)
-    ]
+        if isinstance(item.get("import_signature"), dict):
+            resolved_item["import_signature"] = item.get("import_signature")
+        if item.get("resolution_kind") is not None:
+            resolved_item["resolution_kind"] = item.get("resolution_kind")
+        resolved.append(resolved_item)
     if resolved:
         signature["resolved_functions"] = resolved[:8]
+        import_equivalent = _abi_import_equivalent_signature(resolved)
+        if import_equivalent is not None:
+            signature["import_equivalent"] = import_equivalent
     return signature
+
+
+def _contract_candidate_abi_import_targets_match(reference_signature: dict[str, Any], candidate_signature: dict[str, Any]) -> bool:
+    reference_import = _abi_target_import_signature(reference_signature)
+    candidate_import = _abi_target_import_signature(candidate_signature)
+    return reference_import is not None and candidate_import is not None and reference_import == candidate_import
+
+
+def _abi_target_import_signature(signature: dict[str, Any]) -> tuple[str, str, str] | None:
+    if signature.get("kind") == "import":
+        return (
+            str(signature.get("dll") or "").lower(),
+            str(signature.get("symbol") or ""),
+            str(signature.get("ordinal") or ""),
+        )
+    equivalent = signature.get("import_equivalent") if isinstance(signature.get("import_equivalent"), dict) else {}
+    if equivalent:
+        return (
+            str(equivalent.get("dll") or "").lower(),
+            str(equivalent.get("symbol") or ""),
+            str(equivalent.get("ordinal") or ""),
+        )
+    return None
+
+
+def _abi_import_equivalent_signature(resolved_functions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    signatures = [
+        item.get("import_signature")
+        for item in resolved_functions
+        if isinstance(item.get("import_signature"), dict) and item.get("resolution_kind") == "import_thunk"
+    ]
+    if len(signatures) != 1:
+        return None
+    signature = signatures[0]
+    return {"dll": signature.get("dll"), "symbol": signature.get("symbol"), "ordinal": signature.get("ordinal")}
 
 
 def _contract_candidate_abi_resolved_targets_match(
@@ -5050,6 +5166,8 @@ _ABI_ADDRESS_LIKE_ARGUMENT_ROLES = {
 # These are ABI-guidance provenance classes for by-value arguments. They are
 # not used to forgive address-like, literal, target, or proof-obligation loss.
 _ABI_BY_VALUE_ARGUMENT_ROLES = {
+    "computed_memory",
+    "computed_pointer_deref",
     "immediate",
     "register",
     "stack_argument_slot",
@@ -5068,6 +5186,48 @@ def _contract_candidate_abi_argument_inventory_match(reference: dict[str, Any], 
     if not _contract_candidate_abi_stack_roles_match(reference.get("stack_roles"), candidate.get("stack_roles")):
         return False
     return _contract_candidate_abi_register_roles_match(reference.get("register_roles"), candidate.get("register_roles"))
+
+
+def _contract_candidate_abi_argument_inventory_issue(
+    reference: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    target_match: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not reference or not candidate:
+        return None
+    if _contract_candidate_abi_argument_inventory_match(reference, candidate):
+        return None
+    if _contract_candidate_abi_reference_inventory_underconstrained(reference, candidate, target_match=target_match):
+        return {
+            "category": "reference_argument_inventory_underconstrained",
+            "expected": reference,
+            "observed": candidate,
+            "cause_hint": "reference callsite argument recovery is underconstrained; improve Stage A before using this callsite to steer source repair",
+        }
+    return {
+        "category": "callsite_argument_inventory_mismatch",
+        "expected": reference,
+        "observed": candidate,
+        "cause_hint": "candidate argument count, argument roles, or calling convention differs from the reference callsite",
+    }
+
+
+def _contract_candidate_abi_reference_inventory_underconstrained(
+    reference: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    target_match: dict[str, Any],
+) -> bool:
+    if target_match.get("matched") is not True:
+        return False
+    if reference.get("calling_convention") != candidate.get("calling_convention"):
+        return False
+    if reference.get("argument_count") != 0 or not candidate.get("argument_count"):
+        return False
+    if reference.get("stack_roles") or reference.get("register_roles"):
+        return False
+    return True
 
 
 def _contract_candidate_abi_stack_roles_match(reference: Any, candidate: Any) -> bool:
@@ -5138,6 +5298,8 @@ def _contract_candidate_abi_mismatch_repair_class(issues: list[dict[str, Any]]) 
         if isinstance(issue, dict) and issue.get("category")
     ]
     category_text = " ".join(categories)
+    if "reference_argument_inventory_underconstrained" in categories:
+        return "stage_a_argument_inventory_underconstrained"
     if "varargs" in category_text or "stdio" in category_text or "printf" in category_text:
         return "varargs_or_stdio_bridge"
     if "sret" in category_text or "out_param" in category_text:
@@ -5186,6 +5348,8 @@ def _contract_candidate_abi_mismatch_repair_class(issues: list[dict[str, Any]]) 
 
 def _contract_candidate_abi_mismatch_next_action(name: str, issues: list[dict[str, Any]]) -> str:
     repair_class = _contract_candidate_abi_mismatch_repair_class(issues)
+    if repair_class == "stage_a_argument_inventory_underconstrained":
+        return f"improve Stage A argument recovery for {name}; reference callsite inventory is underconstrained before source repair can be trusted"
     if repair_class == "varargs_or_stdio_bridge":
         return f"repair {name} varargs/stdio bridge, format-string argument inventory, and imported prototype surface"
     if repair_class == "hidden_sret_or_out_param":
@@ -5856,6 +6020,14 @@ def _abi_function_evidence(binary: StageABinary | None, mappings: list[BlockMapp
             },
         )
         block_evidence = _abi_block_evidence(binary, block, mapped.id)
+        entry.setdefault("_abi_block_records", []).append(
+            {
+                "block_id": mapped.id,
+                "block": block,
+                "evidence": block_evidence,
+                "edges": _direct_cfg_edges(binary, block),
+            }
+        )
         entry["blocks"].append({"block_id": mapped.id, **_range_report(block), "abi": _abi_block_contract_evidence(block_evidence)})
         entry["callsites"].extend(block_evidence["callsites"])
         entry["registers"]["reads"] = sorted(set(entry["registers"]["reads"]) | set(block_evidence["register_reads"]))
@@ -5871,8 +6043,117 @@ def _abi_function_evidence(binary: StageABinary | None, mappings: list[BlockMapp
         entry.setdefault("loop_hints", []).extend(block_evidence.get("loop_hints", []))
         entry["memory_effect_summary"] = _abi_memory_effect_summary(entry.get("memory_reads", []), entry.get("memory_writes", []))
     for entry in by_name.values():
+        records = entry.pop("_abi_block_records", [])
+        if isinstance(records, list):
+            _abi_apply_predecessor_argument_sources(binary, records)
+            entry["callsites"] = [
+                callsite
+                for record in records
+                for callsite in (
+                    record.get("evidence", {}).get("callsites", [])
+                    if isinstance(record.get("evidence"), dict)
+                    else []
+                )
+                if isinstance(callsite, dict)
+            ]
         entry["stack_delta"] = _abi_function_stack_delta_summary(entry.get("blocks"), str(entry.get("name") or ""))
     return sorted(by_name.values(), key=lambda item: str(item.get("name") or ""))
+
+
+def _abi_apply_predecessor_argument_sources(binary: StageABinary, records: list[dict[str, Any]]) -> None:
+    records_by_start: dict[int, dict[str, Any]] = {}
+    for record in records:
+        block = record.get("block")
+        if isinstance(block, BlockSide):
+            records_by_start[block.rva_start] = record
+    predecessor_sources: dict[int, list[dict[str, Any]]] = {}
+    for record in records:
+        evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+        exit_sources = evidence.get("exit_argument_sources") if isinstance(evidence.get("exit_argument_sources"), list) else []
+        edges = record.get("edges") if isinstance(record.get("edges"), list) else []
+        for edge in edges:
+            if not isinstance(edge, dict) or edge.get("kind") not in {"fallthrough", "taken", "jump"}:
+                continue
+            target_rva = _safe_int(edge.get("target_rva"))
+            if target_rva is None or target_rva not in records_by_start:
+                continue
+            predecessor_sources.setdefault(target_rva, []).append(
+                {
+                    "block_id": record.get("block_id"),
+                    "edge": edge,
+                    "argument_sources": exit_sources,
+                }
+            )
+    for target_rva, predecessor_items in predecessor_sources.items():
+        record = records_by_start.get(target_rva)
+        if record is None:
+            continue
+        block = record.get("block")
+        evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+        if not isinstance(block, BlockSide):
+            continue
+        callsites = evidence.get("callsites") if isinstance(evidence.get("callsites"), list) else []
+        first_callsite = callsites[0] if callsites and isinstance(callsites[0], dict) else None
+        if first_callsite is None:
+            continue
+        instruction = first_callsite.get("instruction") if isinstance(first_callsite.get("instruction"), dict) else {}
+        if _safe_int(instruction.get("rva")) != block.rva_start:
+            continue
+        inventory = first_callsite.get("argument_inventory") if isinstance(first_callsite.get("argument_inventory"), dict) else {}
+        if _safe_int(inventory.get("argument_count")) not in {None, 0}:
+            continue
+        unique_sources: dict[str, list[dict[str, Any]]] = {}
+        for item in predecessor_items:
+            sources = item.get("argument_sources") if isinstance(item.get("argument_sources"), list) else []
+            key = json.dumps(sources, sort_keys=True, separators=(",", ":"))
+            unique_sources.setdefault(key, []).append(item)
+        if len(unique_sources) != 1:
+            continue
+        sources = list(next(iter(unique_sources.values()))[0]["argument_sources"])
+        if not sources:
+            continue
+        metadata = {
+            "status": "derived",
+            "source": "direct_cfg_predecessor_exit",
+            "predecessor_block_ids": sorted(
+                str(item.get("block_id"))
+                for item in predecessor_items
+                if item.get("block_id") is not None
+            ),
+            "predecessor_edges": [
+                {
+                    "kind": item.get("edge", {}).get("kind"),
+                    "instruction_rva": item.get("edge", {}).get("instruction_rva"),
+                    "target_rva": item.get("edge", {}).get("target_rva"),
+                }
+                for item in predecessor_items
+                if isinstance(item.get("edge"), dict)
+            ],
+            "argument_source_count": len(sources),
+        }
+        callsites[0] = _abi_callsite_with_argument_sources(binary, first_callsite, sources, metadata)
+
+
+def _abi_callsite_with_argument_sources(
+    binary: StageABinary,
+    callsite: dict[str, Any],
+    argument_sources: list[dict[str, Any]],
+    predecessor_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
+    inventory = _abi_call_argument_inventory(binary, argument_sources, {}, target=target)
+    symbol = str(target.get("symbol") or "")
+    updated = {
+        **callsite,
+        "argument_sources": argument_sources,
+        "argument_inventory": inventory,
+        "hidden_sret_or_out_param_evidence": _abi_hidden_sret_evidence(argument_sources),
+        "varargs_evidence": _abi_varargs_evidence(symbol, inventory),
+        "function_pointer_targets": _abi_function_pointer_targets(target),
+    }
+    if predecessor_metadata is not None:
+        updated["predecessor_argument_sources"] = predecessor_metadata
+    return updated
 
 
 def _abi_function_stack_delta_summary(blocks: Any, function_name: str = "") -> dict[str, Any]:
@@ -5911,6 +6192,7 @@ def _abi_block_contract_evidence(block_evidence: dict[str, Any]) -> dict[str, An
         "clobbered_candidates": block_evidence.get("clobbered_candidates", []),
         "register_value_provenance": block_evidence.get("register_value_provenance", []),
         "register_out_param_candidates": block_evidence.get("register_out_param_candidates", []),
+        "exit_argument_sources": block_evidence.get("exit_argument_sources", []),
         "memory_reads": block_evidence.get("memory_reads", []),
         "memory_writes": block_evidence.get("memory_writes", []),
         "field_accesses": block_evidence.get("field_accesses", []),
@@ -5935,6 +6217,7 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
             "clobbered_candidates": [],
             "register_value_provenance": [],
             "register_out_param_candidates": [],
+            "exit_argument_sources": [],
             "memory_reads": [],
             "memory_writes": [],
             "field_accesses": [],
@@ -6025,6 +6308,7 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
         "clobbered_candidates": clobbered,
         "register_value_provenance": register_definition_history,
         "register_out_param_candidates": register_out_params,
+        "exit_argument_sources": _abi_pending_argument_sources(pushes, stack_argument_writes, word_size=4 if binary.bitness == 32 else 8),
         "memory_reads": memory_reads,
         "memory_writes": memory_writes,
         "field_accesses": field_accesses,
@@ -6712,16 +6996,21 @@ def _abi_call_argument_inventory(
         if isinstance(source, dict)
     ]
     register_args = []
-    for register in _abi_call_register_argument_order(binary):
+    for register in _abi_call_register_argument_order(binary, target):
         definition = register_definitions.get(register) if isinstance(register_definitions, dict) else None
         if isinstance(definition, dict):
             register_args.append({"register": register, "source": definition, "role": _abi_argument_role(definition)})
+    calling_convention = "cdecl_or_stdcall_stack" if binary.bitness == 32 else "x86_64_mixed"
+    register_argument_evidence = _abi_register_argument_evidence(binary, target, register_args)
+    if binary.bitness == 32 and register_args:
+        calling_convention = "x86_register_carried_internal"
     return {
         "evidence_status": "derived",
         "stack_args": stack_args,
         "register_args": register_args,
         "argument_count": len(stack_args) + len(register_args),
-        "calling_convention": "cdecl_or_stdcall_stack" if binary.bitness == 32 else "x86_64_mixed",
+        "calling_convention": calling_convention,
+        "register_argument_evidence": register_argument_evidence,
     }
 
 
@@ -6738,8 +7027,83 @@ def _abi_fixed_stack_arg_count_for_target(target: dict[str, Any] | None, binary:
     return ABI_FIXED_STDCALL_IMPORT_STACK_ARG_COUNTS.get(symbol.lower().lstrip("_"))
 
 
-def _abi_call_register_argument_order(binary: StageABinary) -> tuple[str, ...]:
-    return ("rcx", "rdx", "r8", "r9") if binary.bitness == 64 else ()
+def _abi_call_register_argument_order(binary: StageABinary, target: dict[str, Any] | None = None) -> tuple[str, ...]:
+    if binary.bitness == 64:
+        return ("rcx", "rdx", "r8", "r9")
+    if binary.bitness == 32:
+        return _abi_x86_direct_target_register_argument_order(binary, target)
+    return ()
+
+
+def _abi_x86_direct_target_register_argument_order(
+    binary: StageABinary,
+    target: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    if not isinstance(target, dict) or target.get("kind") != "direct":
+        return ()
+    target_rva = _safe_int(target.get("target_rva"))
+    if target_rva is None:
+        return ()
+    read_registers = _abi_x86_entry_read_before_write_registers(binary, target_rva)
+    order = ("eax", "edx", "ecx")
+    return tuple(register for register in order if register in read_registers)
+
+
+def _abi_x86_entry_read_before_write_registers(binary: StageABinary, target_rva: int) -> set[str]:
+    section = _section_for_rva(binary, target_rva)
+    if section is None or not section.executable:
+        return set()
+    size = min(128, max(0, section.rva_end - target_rva))
+    if size <= 0:
+        return set()
+    data = binary.pe.get_data(target_rva, size)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    read_before_write: set[str] = set()
+    written: set[str] = set()
+    candidates = {"eax", "edx", "ecx"}
+    for insn in dis.disasm(data, binary.image_base + target_rva):
+        mnemonic = str(insn.mnemonic)
+        if mnemonic == "call" or mnemonic in {"jmp", "ljmp", "ret"} or _is_conditional_jump(mnemonic):
+            break
+        reads, writes = _instruction_register_access(insn)
+        zeroed = _abi_x86_zero_idiom_register(insn)
+        if zeroed is not None:
+            reads.discard(zeroed)
+        for register in sorted(candidates & reads):
+            if register not in written:
+                read_before_write.add(register)
+        written.update(candidates & writes)
+    return read_before_write
+
+
+def _abi_x86_zero_idiom_register(insn: Any) -> str | None:
+    if str(insn.mnemonic) != "xor" or len(getattr(insn, "operands", []) or []) != 2:
+        return None
+    left, right = insn.operands[:2]
+    if left.type != X86_OP_REG or right.type != X86_OP_REG or left.reg != right.reg:
+        return None
+    register = insn.reg_name(left.reg)
+    return str(register) if register in {"eax", "edx", "ecx"} else None
+
+
+def _abi_register_argument_evidence(
+    binary: StageABinary,
+    target: dict[str, Any] | None,
+    register_args: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not register_args:
+        return {"status": "not_observed"}
+    evidence: dict[str, Any] = {
+        "status": "derived",
+        "registers": [arg.get("register") for arg in register_args if isinstance(arg, dict)],
+    }
+    if binary.bitness == 32 and isinstance(target, dict) and target.get("kind") == "direct":
+        evidence["source"] = "direct_target_entry_read_before_write"
+        evidence["target_rva"] = target.get("target_rva")
+    elif binary.bitness == 64:
+        evidence["source"] = "platform_abi_register_order"
+    return evidence
 
 
 def _abi_argument_role(source: dict[str, Any]) -> str:

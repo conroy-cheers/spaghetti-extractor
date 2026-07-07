@@ -821,6 +821,12 @@ def stage_b_validate_candidate(
         functional_report_payload=functional_report_payload,
     )
     status = "pass" if not issues and stage_a_result and stage_a_result.get("verdict") == "pass" else "incomplete"
+    stage_a_gate = _stage_b_stage_a_gate(
+        pre_stage_a_issues=pre_stage_a_issues,
+        all_issues=issues,
+        stage_a_result=stage_a_result,
+        map_result=map_result,
+    )
     result = {
         "format": "stage-b-validation-v1",
         "status": status,
@@ -835,16 +841,14 @@ def stage_b_validate_candidate(
         "reference_contract_coverage": reference_contract_coverage,
         "binaries": binary_evidence,
         "provenance_status": "pass" if provenance_issue_count == 0 else "incomplete",
+        "stage_a_gate": stage_a_gate,
+        "iteration_policy": stage_a_gate.get("iteration_policy"),
+        "runtime_validation_policy": stage_a_gate.get("runtime_validation_policy"),
         "stage_a": {
             "map_status": None if map_result is None else map_result.get("status"),
             "verdict": None if stage_a_result is None else stage_a_result.get("verdict"),
             "report": str(out / "stage-a") if stage_a_result is not None else None,
-            "gate": _stage_b_stage_a_gate(
-                pre_stage_a_issues=pre_stage_a_issues,
-                all_issues=issues,
-                stage_a_result=stage_a_result,
-                map_result=map_result,
-            ),
+            "gate": stage_a_gate,
             "diagnostics": stage_a_diagnostics,
         },
         "issues": issues,
@@ -3347,6 +3351,7 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, int, int, str]:
         "pe_section_table_layout": 3,
         "pe_section_span_layout": 3,
         "abi_callsite_coverage": 3,
+        "stage_a_argument_inventory_underconstrained": 3,
         "stack_delta_mismatch": 3,
         "preserved_register_mismatch": 4,
         "varargs_or_stdio_bridge": 5,

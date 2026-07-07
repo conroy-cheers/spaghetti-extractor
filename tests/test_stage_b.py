@@ -30,6 +30,7 @@ from haloce_catalog.stage_b import (
     _render_decompiled_c_source,
 )
 from haloce_catalog.stage_b_skeleton import (
+    _decompiled_c_contract_direct_call_target_is_asm_linkable,
     _render_decompiled_c_source as _render_skeleton_decompiled_c_source,
     _skeleton_source_map,
 )
@@ -2121,7 +2122,8 @@ class StageBTests(unittest.TestCase):
             self.assertIn("(void *)&stage_b_jq_imp_SetUnhandledExceptionFilter,", source)
             self.assertNotIn("(void *)(uintptr_t)&SetUnhandledExceptionFilter,", source)
             self.assertIn("extern uintptr_t initterm();", source)
-            self.assertIn("__attribute__((weak)) uintptr_t initterm() { return 0; }", source)
+            self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
+            self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
             self.assertIn("__crt_atexit((void *)0);", source)
             self.assertNotIn("  atexit((void *)0);", source)
             self.assertIn("local_28.BaseAddress = ___acrt_iob_func;", source)
@@ -2143,7 +2145,7 @@ class StageBTests(unittest.TestCase):
             self.assertNotIn("extern byte __time32_t;", source)
             self.assertNotIn("__attribute__((weak)) byte __time32_t;", source)
             self.assertIn("extern uintptr_t _assign();", source)
-            self.assertIn("__attribute__((weak)) uintptr_t _assign() { return 0; }", source)
+            self.assertIn("__attribute__((weak, noinline, used)) uintptr_t _assign() {", source)
             self.assertNotIn("extern uintptr_t tiny_from_decompiler();", source)
             self.assertNotIn("extern byte _MEMORY_BASIC_INFORMATION;", source)
             self.assertIn("_MEMORY_BASIC_INFORMATION local_28;", source)
@@ -2356,6 +2358,164 @@ class StageBTests(unittest.TestCase):
         self.assertIn("do_get_path_info();", source)
         self.assertNotIn("stage_b_contract_anchor ^= (uintptr_t)0x5f98;", source)
 
+    def test_decompiled_c_renderer_preserves_dirname_path_info_out_params(self):
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "dirname",
+                    "aliases": ["dirname"],
+                    "rva_start": 0x5E50,
+                    "rva_end": 0x5F61,
+                    "size": 0x111,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "char * __cdecl dirname(char *param_1)",
+                                "{",
+                                "  char *pcVar2;",
+                                "  char *local_20;",
+                                "  undefined1 *local_1c;",
+                                "  char *local_10;",
+                                "  if (param_1 != (char *)0x0) {",
+                                "    do_get_path_info();",
+                                "    if (local_20 != (char *)0x0) {",
+                                "      pcVar2 = (char *)realloc(_static_path_copy_0,2);",
+                                "      if (pcVar2 != (char *)0x0) {",
+                                "        memcpy(pcVar2,param_1,1);",
+                                "      }",
+                                "    }",
+                                "    if (local_1c != (undefined1 *)0x0) {",
+                                "      *local_1c = 0;",
+                                "    }",
+                                "  }",
+                                "  return \".\";",
+                                "}",
+                            ]
+                        ),
+                    },
+                }
+            ],
+        )
+
+        self.assertIn("do_get_path_info(param_1,&local_20,&local_1c,&local_10);", source)
+        self.assertNotIn("    do_get_path_info();", source)
+
+    def test_decompiled_c_renderer_preserves_dtoa_helper_call_boundaries(self):
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "___Balloc_D2A",
+                    "aliases": ["__Balloc_D2A", "___Balloc_D2A"],
+                    "rva_start": 0xACA0,
+                    "rva_end": 0xAD7F,
+                    "size": 0xDF,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "uintptr_t __cdecl ___Balloc_D2A(int param_1)",
+                                "{",
+                                "  return (uintptr_t)malloc(param_1);",
+                                "}",
+                            ]
+                        ),
+                    },
+                },
+                {
+                    "name": "___b2d_D2A",
+                    "aliases": ["__b2d_D2A", "___b2d_D2A"],
+                    "rva_start": 0xB6E0,
+                    "rva_end": 0xB824,
+                    "size": 0x144,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "undefined8 __cdecl ___b2d_D2A(int param_1,int *param_2)",
+                                "{",
+                                "  return ___trailz_D2A(param_1);",
+                                "}",
+                            ]
+                        ),
+                    },
+                },
+                {
+                    "name": "___rv_alloc_D2A",
+                    "aliases": ["__rv_alloc_D2A", "___rv_alloc_D2A"],
+                    "rva_start": 0x8C80,
+                    "rva_end": 0x8CC2,
+                    "size": 0x42,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "int * __cdecl ___rv_alloc_D2A(int param_1)",
+                                "{",
+                                "  return ___Balloc_D2A(param_1);",
+                                "}",
+                            ]
+                        ),
+                    },
+                },
+                {
+                    "name": "___Bfree_D2A",
+                    "aliases": ["__Bfree_D2A", "___Bfree_D2A"],
+                    "rva_start": 0xAD80,
+                    "rva_end": 0xADEA,
+                    "size": 0x6A,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "undefined4 __cdecl ___Bfree_D2A(undefined4 *param_1)",
+                                "{",
+                                "  if (param_1 != (undefined4 *)0x0) {",
+                                "    *param_1 = 0;",
+                                "  }",
+                                "  return 0;",
+                                "}",
+                            ]
+                        ),
+                    },
+                },
+                {
+                    "name": "umain",
+                    "aliases": ["umain"],
+                    "rva_start": 0x245E,
+                    "rva_end": 0x496C,
+                    "size": 0x250E,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "int __cdecl umain(int param_1,char **param_2)\n{\n  return 0;\n}",
+                    },
+                },
+            ],
+        )
+
+        self.assertRegex(
+            source,
+            r"__attribute__\(\(noinline, noipa, used\)\)\nint \* __cdecl ___rv_alloc_D2A\(int param_1\)",
+        )
+        self.assertRegex(
+            source,
+            r"__attribute__\(\(noinline, noipa, used\)\)\nuintptr_t __cdecl ___Balloc_D2A\(int param_1\)",
+        )
+        self.assertRegex(
+            source,
+            r"__attribute__\(\(noinline, noipa, used\)\)\nundefined8 __cdecl ___b2d_D2A\(int param_1,int \*param_2\)",
+        )
+        self.assertRegex(
+            source,
+            r"__attribute__\(\(noinline, noipa, used\)\)\nundefined4 __cdecl ___Bfree_D2A\(undefined4 \*param_1\)",
+        )
+        self.assertNotRegex(
+            source,
+            r"__attribute__\(\(noinline, noipa, used\)\)\nint __cdecl umain",
+        )
+
     def test_decompiled_c_placeholder_anchors_section_gap_function_pointer_callsites(self):
         reference_contract = {
             "constraints": {
@@ -2540,6 +2700,7 @@ class StageBTests(unittest.TestCase):
         self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0057:14c1 at RVA 0x14c1", source)
         self.assertIn("jv_get_kind((uintptr_t)0, (uintptr_t)0);", source)
         self.assertNotIn("__attribute__((weak)) uintptr_t jv_is_valid() { return 0; }", source)
+        self.assertIn("(void *)(uintptr_t)&jv_is_valid,", source)
         by_function = {item["function"]: item for item in source_map["functions"]}
         self.assertEqual(by_function["jv_is_valid"]["source_kind"], "generated_contract_placeholder_from_section_gap_alias")
         self.assertIn("section-gap--text-0057", by_function["jv_is_valid"]["aliases"])
@@ -2624,12 +2785,1044 @@ class StageBTests(unittest.TestCase):
         self.assertIn(f"uintptr_t __cdecl {generated_name}();", source)
         self.assertIn(f"(void *)(uintptr_t)&{generated_name},", source)
         self.assertIn('section(".CRT$XCU")', source)
-        self.assertIn(f"uintptr_t __cdecl {generated_name}()", source)
+        self.assertIn(f".section .text${generated_name}", source)
+        self.assertIn(f"_{generated_name}:\\n", source)
         self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0052:146c at RVA 0x146c", source)
-        self.assertIn("strcmp((uintptr_t)0, 7);", source)
+        self.assertIn('"  pushl $0x7\\n"', source)
+        self.assertIn('"  pushl $0x0\\n"', source)
+        self.assertIn('"  call _strcmp\\n"', source)
+        self.assertIn('"  addl $8, %esp\\n"', source)
         by_function = {item["function"]: item for item in source_map["functions"]}
         self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_placeholder_from_section_gap")
         self.assertIn("section-gap--text-0052", by_function[generated_name]["aliases"])
+        source_lines = source.splitlines()
+        self.assertIn(f'"_{generated_name}:\\n"', source_lines[by_function[generated_name]["line_start"] - 1])
+
+    def test_decompiled_c_synthesizes_all_linkable_section_gap_placeholders(self):
+        section_gap_functions = []
+        for index in range(22):
+            name = f"section-gap--text-{index:04d}"
+            rva = 0x2000 + index * 0x20
+            section_gap_functions.append(
+                {
+                    "name": name,
+                    "blocks": [{"block_id": name, "rva_start": rva, "rva_end": rva + 0x10}],
+                    "callsites": [
+                        {
+                            "id": f"callsite:{name}:{rva + 4:x}",
+                            "block_id": name,
+                            "instruction": {"rva": rva + 4},
+                            "target": {"kind": "direct", "target_rva": 0xC4B0},
+                        }
+                    ],
+                }
+            )
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": item["name"]} for item in section_gap_functions]},
+                "abi_callsites": {"original": {"functions": section_gap_functions}},
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "strcmp",
+                    "rva_start": 0xC4B0,
+                    "rva_end": 0xC4B6,
+                    "size": 6,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __cdecl strcmp(void)\n{\n  return 0;\n}",
+                    },
+                }
+            ],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn(".section .text$stage_b_contract_section_gap__text_0000", source)
+        self.assertIn(".section .text$stage_b_contract_section_gap__text_0021", source)
+        self.assertEqual(source.count("Stage B compact contract placeholder for missing decompiler body"), 22)
+
+    def test_decompiled_c_synthesizes_no_callsite_section_gap_contract_placeholder(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0513"}]},
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0513",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0513",
+                                        "rva_start": 0x73CF,
+                                        "rva_end": 0x73DD,
+                                    }
+                                ],
+                                "callsites": [],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[],
+            reference_contract_payload=reference_contract,
+        )
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=[],
+            source_language="c",
+            implementation_mode="decompiled-c",
+            reference_contract_payload=reference_contract,
+        )
+
+        generated_name = "stage_b_contract_section_gap__text_0513"
+        self.assertIn(f"uintptr_t __cdecl {generated_name}();", source)
+        self.assertIn(f".section .text${generated_name}", source)
+        self.assertIn(f"_{generated_name}:\\n", source)
+        self.assertIn('"  ret\\n"', source)
+        self.assertIn(
+            '__asm__ __volatile__("" : : "r"((void *)stage_b_contract_section_gap_anchor) : "memory");',
+            source,
+        )
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_placeholder_from_section_gap")
+        self.assertIn("section-gap--text-0513", by_function[generated_name]["aliases"])
+
+    def test_decompiled_c_section_gap_placeholder_calls_generated_section_gap_target(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {"id": "section-gap--text-0067"},
+                        {"id": "section-gap--text-0073"},
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0067",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0067",
+                                        "rva_start": 0x15D9,
+                                        "rva_end": 0x15E7,
+                                    }
+                                ],
+                                "callsites": [],
+                            },
+                            {
+                                "name": "section-gap--text-0073",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0073",
+                                        "rva_start": 0x173B,
+                                        "rva_end": 0x17D9,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0073:17cf",
+                                        "block_id": "section-gap--text-0073",
+                                        "instruction": {"rva": 0x17CF},
+                                        "target": {"kind": "direct", "target_rva": 0x15D9},
+                                        "argument_inventory": {"argument_count": 0, "stack_args": []},
+                                    }
+                                ],
+                            },
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn(".section .text$stage_b_contract_section_gap__text_0067", source)
+        self.assertIn(".section .text$stage_b_contract_section_gap__text_0073", source)
+        self.assertIn(
+            "Stage A direct-call anchor: callsite:section-gap--text-0073:17cf at RVA 0x17cf",
+            source,
+        )
+        self.assertIn('"  call _stage_b_contract_section_gap__text_0067\\n"', source)
+
+    def test_decompiled_c_section_gap_placeholder_calls_aliased_section_gap_target(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {
+                            "id": "section-gap--text-0057",
+                            "symbol_aliases": {"original": ["jv_is_valid"], "candidate": ["jv_is_valid"]},
+                        },
+                        {"id": "section-gap--text-0081"},
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0057",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0057",
+                                        "rva_start": 0x149F,
+                                        "rva_end": 0x14D2,
+                                    }
+                                ],
+                                "callsites": [],
+                            },
+                            {
+                                "name": "section-gap--text-0081",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0081",
+                                        "rva_start": 0x19D5,
+                                        "rva_end": 0x1A11,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0081:1a04",
+                                        "block_id": "section-gap--text-0081",
+                                        "instruction": {"rva": 0x1A04},
+                                        "target": {"kind": "direct", "target_rva": 0x149F},
+                                        "argument_inventory": {
+                                            "argument_count": 4,
+                                            "stack_args": [
+                                                {"index": 0, "role": "stack_pointer_slot", "source": {"kind": "register", "register": "eax"}},
+                                                {"index": 1, "role": "stack_pointer_slot", "source": {"kind": "register", "register": "eax"}},
+                                                {"index": 2, "role": "stack_pointer_slot", "source": {"kind": "register", "register": "eax"}},
+                                                {"index": 3, "role": "stack_pointer_slot", "source": {"kind": "register", "register": "eax"}},
+                                            ],
+                                        },
+                                    }
+                                ],
+                            },
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "caller",
+                    "rva_start": 0x4000,
+                    "rva_end": 0x4010,
+                    "size": 0x10,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __cdecl caller(void)\n{\n  jv_is_valid();\n  return 0;\n}",
+                    },
+                }
+            ],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn("uintptr_t __cdecl jv_is_valid()", source)
+        self.assertIn(".section .text$stage_b_contract_section_gap__text_0081", source)
+        self.assertIn(
+            "Stage A direct-call anchor: callsite:section-gap--text-0081:1a04 at RVA 0x1a04",
+            source,
+        )
+        self.assertIn('"  call _jv_is_valid\\n"', source)
+
+    def test_decompiled_c_asm_call_target_rejects_stack_probe_helper(self):
+        self.assertFalse(
+            _decompiled_c_contract_direct_call_target_is_asm_linkable(
+                "___chkstk_ms",
+                target_profile={},
+            )
+        )
+        self.assertFalse(
+            _decompiled_c_contract_direct_call_target_is_asm_linkable(
+                "___chkstk",
+                target_profile=None,
+            )
+        )
+        self.assertFalse(
+            _decompiled_c_contract_direct_call_target_is_asm_linkable(
+                "__chkstk_ms",
+                target_profile=None,
+            )
+        )
+        self.assertTrue(
+            _decompiled_c_contract_direct_call_target_is_asm_linkable(
+                "__chkstk_ms",
+                target_profile={"runtime_crt_linked": True},
+            )
+        )
+        self.assertTrue(
+            _decompiled_c_contract_direct_call_target_is_asm_linkable(
+                "_GetPEImageBase",
+                target_profile={"runtime_crt_linked": True},
+            )
+        )
+
+    def test_decompiled_c_section_gap_placeholder_calls_runtime_crt_helper_from_contract(self):
+        reference_contract = {
+            "constraints": {
+                "function_ranges": {
+                    "functions": [
+                        {
+                            "name": "__mingw_GetSectionForAddress",
+                            "original": {"rva_start": 0x58F0, "rva_end": 0x5971},
+                        }
+                    ]
+                },
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0124"}]},
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0124",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0124",
+                                        "rva_start": 0x4E6E,
+                                        "rva_end": 0x4E80,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0124:4e71",
+                                        "block_id": "section-gap--text-0124",
+                                        "instruction": {"rva": 0x4E71},
+                                        "target": {"kind": "direct", "target_rva": 0x58F0},
+                                        "argument_inventory": {
+                                            "argument_count": 1,
+                                            "stack_args": [
+                                                {"index": 0, "role": "register", "source": {"kind": "register", "register": "ebx"}}
+                                            ],
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "___mingw_GetSectionForAddress",
+                    "rva_start": 0x58F0,
+                    "rva_end": 0x5971,
+                    "size": 0x81,
+                    "decompiler": {"status": "missing"},
+                }
+            ],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn(".section .text$stage_b_contract_section_gap__text_0124", source)
+        self.assertIn(
+            "Stage A direct-call anchor: callsite:section-gap--text-0124:4e71 at RVA 0x4e71",
+            source,
+        )
+        self.assertIn('"  call ___mingw_GetSectionForAddress\\n"', source)
+        self.assertNotIn('"  call ____mingw_GetSectionForAddress\\n"', source)
+
+    def test_decompiled_c_section_gap_runtime_crt_profile_upgrades_existing_function(self):
+        reference_contract = {
+            "constraints": {
+                "function_ranges": {
+                    "functions": [
+                        {
+                            "name": "atexit",
+                            "original": {"rva_start": 0x1430, "rva_end": 0x1435},
+                        }
+                    ]
+                },
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0732"}]},
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0732",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0732",
+                                        "rva_start": 0xABDF,
+                                        "rva_end": 0xAC0B,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0732:ac06",
+                                        "block_id": "section-gap--text-0732",
+                                        "instruction": {"rva": 0xAC06},
+                                        "target": {"kind": "direct", "target_rva": 0x1430},
+                                        "argument_inventory": {
+                                            "argument_count": 1,
+                                            "stack_args": [
+                                                {
+                                                    "index": 0,
+                                                    "role": "immediate",
+                                                    "source": {"kind": "immediate", "value": 0x40AC50},
+                                                }
+                                            ],
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "atexit",
+                    "rva_start": 0x1430,
+                    "rva_end": 0x1435,
+                    "size": 5,
+                    "decompiler": {"status": "missing"},
+                }
+            ],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn(
+            "Stage A direct-call anchor: callsite:section-gap--text-0732:ac06 at RVA 0xac06",
+            source,
+        )
+        self.assertIn('"  pushl $0x40ac50\\n"', source)
+        self.assertIn('"  call _atexit\\n"', source)
+
+    def test_decompiled_c_section_gap_placeholder_calls_canonical_stack_probe_helper(self):
+        reference_contract = {
+            "constraints": {
+                "function_ranges": {
+                    "functions": [
+                        {"name": "__chkstk_ms", "original": {"rva_start": 0x5BF0, "rva_end": 0x5C1A}}
+                    ]
+                },
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0466"}]},
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0466",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0466",
+                                        "rva_start": 0x4A40,
+                                        "rva_end": 0x4A50,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0466:4a41",
+                                        "block_id": "section-gap--text-0466",
+                                        "instruction": {"rva": 0x4A41},
+                                        "target": {"kind": "direct", "target_rva": 0x5BF0},
+                                        "argument_inventory": {"argument_count": 0, "stack_args": []},
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "___chkstk_ms",
+                    "rva_start": 0x5BF0,
+                    "rva_end": 0x5C1A,
+                    "size": 0x30,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uint ___chkstk_ms(void)\n{\n  return 0;\n}",
+                    },
+                }
+            ],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0466:4a41", source)
+        self.assertIn('"  call ___chkstk_ms\\n"', source)
+        self.assertNotIn("call ____chkstk_ms", source)
+        self.assertNotIn("undefined reference", source)
+
+    def test_decompiled_c_contract_placeholder_preserves_import_call_anchor(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {
+                            "id": "section-gap--text-0142",
+                            "symbol_aliases": {"original": ["do_get_path_info"], "candidate": ["do_get_path_info"]},
+                        }
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0142",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0142",
+                                        "rva_start": 0x5C20,
+                                        "rva_end": 0x5C61,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0142:5c2b",
+                                        "block_id": "section-gap--text-0142",
+                                        "instruction": {"rva": 0x5C2B},
+                                        "target": {"kind": "import", "symbol": "AreFileApisANSI", "dll": "kernel32.dll"},
+                                        "argument_inventory": {"argument_count": 0, "stack_args": []},
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "caller",
+                    "rva_start": 0x4000,
+                    "rva_end": 0x4010,
+                    "size": 0x10,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __cdecl caller(void)\n{\n  do_get_path_info();\n  return 0;\n}",
+                    },
+                }
+            ],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn("uintptr_t __cdecl do_get_path_info()", source)
+        self.assertIn(
+            "Stage A import-call anchor: callsite:section-gap--text-0142:5c2b at RVA 0x5c2b",
+            source,
+        )
+        self.assertIn("  AreFileApisANSI();", source)
+
+    def test_decompiled_c_retains_no_callsite_section_gap_alias_symbol(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {
+                            "id": "section-gap--text-0740",
+                            "symbol_aliases": {
+                                "original": ["___wcrtomb_cp", "wcrtomb_cp"],
+                                "candidate": ["___wcrtomb_cp", "wcrtomb_cp"],
+                            },
+                        }
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0740",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0740",
+                                        "rva_start": 0xBA70,
+                                        "rva_end": 0xBA84,
+                                    }
+                                ],
+                                "callsites": [],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        functions = [
+            {
+                "name": "___wcrtomb_cp",
+                "rva_start": 0xBA70,
+                "rva_end": 0xBA84,
+                "size": 0x14,
+                "decompiler": {
+                    "status": "success",
+                    "code": "uintptr_t __cdecl ___wcrtomb_cp(void)\n{\n  return 0;\n}",
+                },
+            }
+        ]
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+        )
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=functions,
+            source_language="c",
+            implementation_mode="decompiled-c",
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn("(void *)(uintptr_t)&___wcrtomb_cp,", source)
+        self.assertIn(
+            '__asm__ __volatile__("" : : "r"((void *)stage_b_contract_section_gap_anchor) : "memory");',
+            source,
+        )
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function["___wcrtomb_cp"]["source_kind"], "decompiled_function")
+        self.assertNotIn("stage_b_contract_section_gap__text_0740", by_function)
+
+    def test_decompiled_c_synthesizes_unaliased_section_gap_function_pointer_placeholder(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {
+                            "id": "section-gap--text-0066",
+                        }
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0066",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0066",
+                                        "rva_start": 0x15CB,
+                                        "rva_end": 0x15DC,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0066:15d3",
+                                        "block_id": "section-gap--text-0066",
+                                        "instruction": {"rva": 0x15D3},
+                                        "target": {
+                                            "kind": "function_pointer",
+                                            "operand": "ebp",
+                                            "status": "unresolved",
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        functions = [
+            {
+                "name": "___p__fmode",
+                "aliases": ["__p__fmode", "___p__fmode"],
+                "rva_start": 0xC4F8,
+                "rva_end": 0xC500,
+                "size": 8,
+                "linkage": {
+                    "kind": "import_thunk",
+                    "dll": "msvcrt.dll",
+                    "symbol": "__p__fmode",
+                    "original_symbol": "___p__fmode",
+                },
+                "decompiler": {
+                    "status": "success",
+                    "code": "void ___p__fmode(void)\n{\n  __p__fmode();\n}",
+                },
+            }
+        ]
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+        )
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=functions,
+            source_language="c",
+            implementation_mode="decompiled-c",
+            reference_contract_payload=reference_contract,
+        )
+
+        generated_name = "stage_b_contract_section_gap__text_0066"
+        self.assertIn(f".section .text${generated_name}", source)
+        self.assertIn("Stage A function-pointer-call anchor: callsite:section-gap--text-0066:15d3 at RVA 0x15d3", source)
+        self.assertIn('"  xorl %eax, %eax\\n"', source)
+        self.assertIn('"  call *%eax\\n"', source)
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_placeholder_from_section_gap")
+        self.assertIn("section-gap--text-0066", by_function[generated_name]["aliases"])
+        source_lines = source.splitlines()
+        self.assertIn(f'"_{generated_name}:\\n"', source_lines[by_function[generated_name]["line_start"] - 1])
+
+    def test_decompiled_c_synthesizes_unaliased_section_gap_import_placeholder(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {
+                            "id": "section-gap--text-0068",
+                        }
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0068",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0068",
+                                        "rva_start": 0x15E0,
+                                        "rva_end": 0x1631,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0068:15ee",
+                                        "block_id": "section-gap--text-0068",
+                                        "instruction": {"rva": 0x15EE},
+                                        "target": {"kind": "direct", "target_rva": 0xC4F8},
+                                    },
+                                    {
+                                        "id": "callsite:section-gap--text-0068:15fc",
+                                        "block_id": "section-gap--text-0068",
+                                        "instruction": {"rva": 0x15FC},
+                                        "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "_get_osfhandle"},
+                                        "argument_inventory": {
+                                            "argument_count": 1,
+                                            "stack_args": [
+                                                {
+                                                    "index": 0,
+                                                    "role": "immediate",
+                                                    "source": {"kind": "immediate", "value": 1},
+                                                }
+                                            ],
+                                        },
+                                    },
+                                    {
+                                        "id": "callsite:section-gap--text-0068:161b",
+                                        "block_id": "section-gap--text-0068",
+                                        "instruction": {"rva": 0x161B},
+                                        "target": {"kind": "import", "dll": "kernel32.dll", "symbol": "WriteFile"},
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[],
+            reference_contract_payload=reference_contract,
+        )
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=[],
+            source_language="c",
+            implementation_mode="decompiled-c",
+            reference_contract_payload=reference_contract,
+        )
+
+        generated_name = "stage_b_contract_section_gap__text_0068"
+        self.assertIn(f".section .text${generated_name}", source)
+        self.assertNotIn("Stage A direct-call anchor: callsite:section-gap--text-0068:15ee", source)
+        self.assertIn("Stage A import-call anchor: callsite:section-gap--text-0068:15fc at RVA 0x15fc", source)
+        self.assertIn("Stage A import-call anchor: callsite:section-gap--text-0068:161b at RVA 0x161b", source)
+        self.assertIn('"  pushl $0x1\\n"', source)
+        self.assertIn('"  call __get_osfhandle\\n"', source)
+        self.assertIn('"  addl $4, %esp\\n"', source)
+        self.assertIn('"  call _WriteFile@20\\n"', source)
+        self.assertNotIn('"  addl $20, %esp\\n"', source)
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_placeholder_from_section_gap")
+        self.assertIn("section-gap--text-0068", by_function[generated_name]["aliases"])
+
+    def test_decompiled_c_synthesizes_section_gap_direct_import_thunk_placeholder(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {
+                            "id": "section-gap--text-0068",
+                        }
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0068",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0068",
+                                        "rva_start": 0x15E0,
+                                        "rva_end": 0x1631,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0068:15ee",
+                                        "block_id": "section-gap--text-0068",
+                                        "instruction": {"rva": 0x15EE},
+                                        "target": {"kind": "direct", "target_rva": 0xC4F8},
+                                        "argument_inventory": {
+                                            "argument_count": 1,
+                                            "stack_args": [
+                                                {
+                                                    "index": 0,
+                                                    "role": "register",
+                                                    "source": {"kind": "register", "register": "ecx"},
+                                                }
+                                            ],
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        functions = [
+            {
+                "name": "fileno",
+                "aliases": ["fileno"],
+                "rva_start": 0xC4F8,
+                "rva_end": 0xC4FE,
+                "size": 6,
+                "linkage": {
+                    "kind": "import_thunk",
+                    "dll": "msvcrt.dll",
+                    "symbol": "_fileno",
+                    "original_symbol": "fileno",
+                },
+            }
+        ]
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+        )
+
+        generated_name = "stage_b_contract_section_gap__text_0068"
+        self.assertIn(f".section .text${generated_name}", source)
+        self.assertIn("extern uintptr_t _fileno();", source)
+        self.assertIn("#define fileno _fileno", source)
+        self.assertIn("import thunk for _fileno; body omitted", source)
+        self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0068:15ee at RVA 0x15ee", source)
+        self.assertIn('"  pushl $0x0\\n"', source)
+        self.assertIn('"  call __fileno\\n"', source)
+        self.assertIn('"  addl $4, %esp\\n"', source)
+
+    def test_decompiled_c_direct_import_thunk_placeholder_uses_header_declared_imports(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0099"}]},
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0099",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0099",
+                                        "rva_start": 0x2000,
+                                        "rva_end": 0x2010,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0099:2004",
+                                        "block_id": "section-gap--text-0099",
+                                        "instruction": {"rva": 0x2004},
+                                        "target": {"kind": "direct", "target_rva": 0xC600},
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        functions = [
+            {
+                "name": "errno",
+                "aliases": ["errno"],
+                "rva_start": 0xC600,
+                "rva_end": 0xC606,
+                "size": 6,
+                "linkage": {
+                    "kind": "import_thunk",
+                    "dll": "msvcrt.dll",
+                    "symbol": "_errno",
+                    "original_symbol": "errno",
+                },
+            }
+        ]
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertNotIn("extern uintptr_t _errno();", source)
+        self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0099:2004 at RVA 0x2004", source)
+        self.assertIn('"  call __errno\\n"', source)
+
+    def test_decompiled_c_direct_import_thunk_profile_prefers_real_implementation(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0100"}]},
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0100",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0100",
+                                        "rva_start": 0x2100,
+                                        "rva_end": 0x2110,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0100:2104",
+                                        "block_id": "section-gap--text-0100",
+                                        "instruction": {"rva": 0x2104},
+                                        "target": {"kind": "direct", "target_rva": 0xC700},
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        functions = [
+            {
+                "name": "hypot",
+                "aliases": ["hypot"],
+                "rva_start": 0xC700,
+                "rva_end": 0xC706,
+                "size": 6,
+                "linkage": {
+                    "kind": "import_thunk",
+                    "dll": "msvcrt.dll",
+                    "symbol": "_hypot",
+                    "original_symbol": "hypot",
+                },
+            },
+            {
+                "name": "_hypot",
+                "rva_start": 0xD000,
+                "rva_end": 0xD020,
+                "size": 0x20,
+                "decompiler": {
+                    "status": "success",
+                    "code": "double __cdecl _hypot(double _X,double _Y)\n{\n  return _X + _Y;\n}",
+                },
+            },
+        ]
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertNotIn("extern uintptr_t _hypot();", source)
+        self.assertIn("double __cdecl _hypot(double _X,double _Y);", source)
+        self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0100:2104 at RVA 0x2104", source)
+        self.assertIn('"  call __hypot\\n"', source)
+
+    def test_decompiled_c_direct_import_thunk_profile_uses_external_abi_for_imports(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0101"}]},
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0101",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0101",
+                                        "rva_start": 0x2200,
+                                        "rva_end": 0x2210,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0101:2204",
+                                        "block_id": "section-gap--text-0101",
+                                        "instruction": {"rva": 0x2204},
+                                        "target": {"kind": "direct", "target_rva": 0xC800},
+                                        "argument_inventory": {"argument_count": 1, "stack_args": [{"index": 0, "role": "register"}]},
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        functions = [
+            {
+                "name": "jv_array",
+                "aliases": ["jv_array"],
+                "rva_start": 0xC800,
+                "rva_end": 0xC806,
+                "size": 6,
+                "linkage": {
+                    "kind": "import_thunk",
+                    "dll": "libjq-1.dll",
+                    "symbol": "jv_array",
+                    "original_symbol": "jv_array",
+                },
+                "decompiler": {
+                    "status": "success",
+                    "code": "undefined4 __cdecl jv_array(undefined4 param_1)\n{\n  return param_1;\n}",
+                },
+            }
+        ]
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn("extern stage_b_jv jv_array(void);", source)
+        self.assertNotIn("undefined4 __cdecl jv_array(undefined4 param_1);", source)
+        self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0101:2204 at RVA 0x2204", source)
+        self.assertNotIn('"  pushl $0x0\\n"', source)
+        self.assertIn('"  call _jv_array\\n"', source)
 
     def test_decompiled_c_renderer_materializes_jq_dtoa_lock_helper(self):
         source = _render_decompiled_c_source(
@@ -4641,6 +5834,13 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["stage_a"]["verdict"], "pass")
             self.assertTrue(result["stage_a"]["gate"]["ran"])
             self.assertEqual(result["stage_a"]["gate"]["status"], "pass")
+            self.assertEqual(result["stage_a_gate"], result["stage_a"]["gate"])
+            self.assertEqual(result["iteration_policy"], "stage_a_contract_first")
+            self.assertEqual(result["runtime_validation_policy"], "candidate_only_after_stage_a_pass")
+            written = json.loads((root / "report" / "stage-b.json").read_text(encoding="utf-8"))
+            self.assertEqual(written["stage_a_gate"], written["stage_a"]["gate"])
+            self.assertEqual(written["iteration_policy"], "stage_a_contract_first")
+            self.assertEqual(written["runtime_validation_policy"], "candidate_only_after_stage_a_pass")
             categories = {issue["category"] for issue in result["issues"]}
             self.assertIn("missing_functional_tests", categories)
             self.assertIn("missing_functional_test_suites", categories)

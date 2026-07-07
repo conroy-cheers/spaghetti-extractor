@@ -1530,6 +1530,7 @@
 
               set +e
               i686-w64-mingw32-cc -std=gnu99 \
+                -Os \
                 -Wno-int-conversion \
                 -Wno-incompatible-pointer-types \
                 -Wno-builtin-declaration-mismatch \
@@ -1571,7 +1572,7 @@
                   target_name: "jq-libjq-1",
                   status: $status,
                   returncode: ($returncode | tonumber),
-                  compiler_flags: ["-std=gnu99", "-Wno-int-conversion", "-Wno-incompatible-pointer-types", "-Wno-builtin-declaration-mismatch", "-fno-builtin", "-ffunction-sections", "-fdata-sections", "-c"],
+                  compiler_flags: ["-std=gnu99", "-Os", "-Wno-int-conversion", "-Wno-incompatible-pointer-types", "-Wno-builtin-declaration-mismatch", "-fno-builtin", "-ffunction-sections", "-fdata-sections", "-c"],
                   source: $source,
                   object: $object,
                   stdout: $stdout,
@@ -1617,6 +1618,9 @@
                 --out-dir "$skeleton_dir"
               set +e
               i686-w64-mingw32-cc -std=gnu99 \
+                -O2 \
+                -fno-crossjumping \
+                -fno-tree-tail-merge \
                 -Wno-int-conversion \
                 -Wno-incompatible-pointer-types \
                 -Wno-builtin-declaration-mismatch \
@@ -1680,7 +1684,7 @@
                   format: "stage-b-decompiled-c-compile-diagnostic-v1",
                   status: $status,
                   returncode: ($returncode | tonumber),
-                  compiler_flags: ["-std=gnu99", "-Wno-int-conversion", "-Wno-incompatible-pointer-types", "-Wno-builtin-declaration-mismatch", "-fno-builtin", "-ffunction-sections", "-fdata-sections", "-c"],
+                  compiler_flags: ["-std=gnu99", "-O2", "-fno-crossjumping", "-fno-tree-tail-merge", "-Wno-int-conversion", "-Wno-incompatible-pointer-types", "-Wno-builtin-declaration-mismatch", "-fno-builtin", "-ffunction-sections", "-fdata-sections", "-c"],
                   blocker: $blocker,
                   object: $object,
                   stdout: $stdout,
@@ -1912,6 +1916,7 @@
                 --function-name _wmain \
                 --out-dir "$skeleton_dir"
               i686-w64-mingw32-cc -std=gnu99 \
+                -Os \
                 -w \
                 -Wno-int-conversion \
                 -Wno-incompatible-pointer-types \
@@ -1950,7 +1955,7 @@
                   status: "pass",
                   returncode: 0,
                   manifest: $manifest,
-                  compiler_flags: ["-std=gnu99", "-Wno-int-conversion", "-Wno-incompatible-pointer-types", "-fsyntax-only"],
+                  compiler_flags: ["-std=gnu99", "-Os", "-Wno-int-conversion", "-Wno-incompatible-pointer-types", "-fsyntax-only"],
                   blocker: "",
                   stderr: $stderr
                 }' > "$compile_dir/report.json"
@@ -2240,6 +2245,8 @@
                   and .stage_a.gate.behavioral_blocking_issue_categories == []
                   and .stage_a.gate.iteration_policy == "stage_a_contract_first"
                   and .stage_a.gate.runtime_validation_policy == "candidate_only_after_stage_a_pass"
+                  and .iteration_policy == "stage_a_contract_first"
+                  and .runtime_validation_policy == "candidate_only_after_stage_a_pass"
                   and ([.stage_a.gate.non_blocking_issue_categories[]] | index("missing_functional_tests"))
                 ' "$work/validate/stage-b.json" >/dev/null
               fi
@@ -2885,6 +2892,8 @@
                 and .stage_a.gate.ran == true
                 and .stage_a.gate.iteration_policy == "stage_a_contract_first"
                 and .stage_a.gate.runtime_validation_policy == "candidate_only_after_stage_a_pass"
+                and .iteration_policy == "stage_a_contract_first"
+                and .runtime_validation_policy == "candidate_only_after_stage_a_pass"
                 and .functional == null
                 and .functional_report == null
                 and .functional_diagnostics.status == "not_provided"
@@ -3653,6 +3662,8 @@
                 and .stage_a.gate.behavioral_blocking_issue_categories == []
                 and .stage_a.gate.iteration_policy == "stage_a_contract_first"
                 and .stage_a.gate.runtime_validation_policy == "candidate_only_after_stage_a_pass"
+                and .iteration_policy == "stage_a_contract_first"
+                and .runtime_validation_policy == "candidate_only_after_stage_a_pass"
                 and ([.stage_a.gate.non_blocking_issue_categories[]] | index("missing_functional_tests"))
                 and .reference_contract_coverage.provided == true
                 and .reference_contract_coverage.status == "incomplete"

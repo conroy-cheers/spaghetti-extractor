@@ -105,8 +105,6 @@ _DECOMPILED_C_DTOA_LOCK_HELPER_IMPORTS = (
 _DECOMPILED_C_GENERATED_HELPER_SYMBOLS = (_DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL,)
 
 _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
-_DECOMPILED_C_SYNTHETIC_SECTION_GAP_PLACEHOLDER_LIMIT = 8
-
 _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS = frozenset({"_crt_atexit", "__crt_atexit"})
 _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES = frozenset({"___iob_func"})
 _DECOMPILED_C_PRESERVED_IMPORT_THUNK_CONTRACT_SYMBOLS = frozenset({"__iob_func"})
@@ -635,8 +633,10 @@ def stage_b_generate_skeleton(
             functions=functions,
             source_language=source_language,
             implementation_mode=implementation_mode,
+            runtime_entry_policy=runtime_entry_policy,
             reference_contract_payload=reference_contract_payload,
             decompiler_functions=source_map_decompiler_functions,
+            external_function_names=external_function_names,
         ),
         "counts": {
             "functions": len(functions),
@@ -866,6 +866,24 @@ def _reference_contract_abi_callsite_target_summary(target: dict[str, Any]) -> d
         memory_rva = _optional_int(target.get("memory_rva"))
         if memory_rva is not None:
             summary["memory_rva"] = memory_rva
+        return summary
+    if target.get("kind") == "import":
+        symbol = target.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            return None
+        summary = {
+            "kind": "import",
+            "symbol": symbol,
+        }
+        dll = target.get("dll")
+        if isinstance(dll, str) and dll:
+            summary["dll"] = dll
+        thunk_rva = _optional_int(target.get("thunk_rva"))
+        if thunk_rva is not None:
+            summary["thunk_rva"] = thunk_rva
+        via_register = target.get("via_register")
+        if isinstance(via_register, str) and via_register:
+            summary["via_register"] = via_register
         return summary
     return None
 
@@ -1770,8 +1788,10 @@ def _skeleton_source_map(
     functions: list[dict[str, Any]],
     source_language: str,
     implementation_mode: str,
+    runtime_entry_policy: str = "bridge",
     reference_contract_payload: dict[str, Any] | None = None,
     decompiler_functions: list[dict[str, Any]] | None = None,
+    external_function_names: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
     lines = source_text.splitlines()
     anchors: list[dict[str, Any]] = []
@@ -1829,6 +1849,8 @@ def _skeleton_source_map(
             existing_functions={str(anchor.get("function") or "") for anchor in anchors},
             reference_contract_payload=reference_contract_payload,
             functions=functions,
+            runtime_entry_policy=runtime_entry_policy,
+            external_function_names=external_function_names,
         )
     )
     anchors.sort(key=lambda item: (str(item["file"]), int(item["line_start"]), str(item["function"])))
@@ -1840,6 +1862,7 @@ def _skeleton_source_map(
         "source": source_rel.as_posix(),
         "source_language": source_language,
         "implementation_mode": implementation_mode,
+        "runtime_entry_policy": runtime_entry_policy,
         "functions": anchors,
         "counts": {"functions": len(anchors)},
     }
@@ -1935,6 +1958,8 @@ def _skeleton_section_gap_placeholder_source_anchors(
     existing_functions: set[str],
     reference_contract_payload: dict[str, Any] | None,
     functions: list[dict[str, Any]],
+    runtime_entry_policy: str = "bridge",
+    external_function_names: list[str] | tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     if source_language != "c" or reference_contract_payload is None:
         return []
@@ -1942,18 +1967,12 @@ def _skeleton_section_gap_placeholder_source_anchors(
         function
         for function in functions
         if not _decompiled_c_is_import_thunk(function)
-        and not _decompiled_c_is_runtime_entry(function, runtime_entry_policy="bridge")
+        and not _decompiled_c_is_runtime_entry(function, runtime_entry_policy=runtime_entry_policy)
         and not _decompiled_c_is_stack_probe_helper(function)
     ]
     external_call_symbols = _decompiled_c_external_call_symbols(implemented_functions)
     defined_symbols = _decompiled_c_defined_symbol_names(implemented_functions)
-    known_symbols = set(external_call_symbols) | defined_symbols
-    linkable_symbols = set(defined_symbols)
-    call_targets = _decompiled_c_contract_call_targets(
-        functions,
-        runtime_entry_policy="bridge",
-        reference_contract_payload=reference_contract_payload,
-    )
+    known_symbols = set(external_call_symbols) | {str(name) for name in external_function_names} | defined_symbols
     anchors: list[dict[str, Any]] = []
     for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
         rva_start = _optional_int(entry.get("rva_start"))
@@ -1961,29 +1980,33 @@ def _skeleton_section_gap_placeholder_source_anchors(
         if rva_start is None or rva_end is None or rva_end <= rva_start:
             continue
         aliases = [alias for alias in entry.get("aliases", []) if isinstance(alias, str) and alias]
-        symbol = _decompiled_c_section_gap_known_symbol_alias(entry, known_symbols=known_symbols)
-        source_kind = "generated_contract_placeholder_from_section_gap_alias"
-        if symbol is None:
-            synthetic = _decompiled_c_synthetic_section_gap_placeholder(
-                entry,
-                known_symbols=known_symbols,
-                call_targets=call_targets,
-                linkable_symbols=linkable_symbols,
-            )
-            if synthetic is None:
-                continue
-            symbol = str(synthetic["name"])
+        synthetic_symbol = _decompiled_c_synthetic_section_gap_name(entry)
+        synthetic_line = (
+            _source_inline_asm_label_line(lines, synthetic_symbol)
+            if _is_c_identifier(synthetic_symbol)
+            else None
+        )
+        if synthetic_line is None and _is_c_identifier(synthetic_symbol):
+            synthetic_line = _source_exact_function_definition_line(lines, synthetic_symbol)
+        if synthetic_line is not None:
+            symbol = synthetic_symbol
             source_kind = "generated_contract_placeholder_from_section_gap"
+            line = synthetic_line
+        else:
+            symbol = _decompiled_c_section_gap_known_symbol_alias(entry, known_symbols=known_symbols)
+            source_kind = "generated_contract_placeholder_from_section_gap_alias"
+            line = None
         if symbol is None or symbol in existing_functions:
             continue
-        line = _source_exact_function_definition_line(lines, symbol)
+        if line is None:
+            line = _source_exact_function_definition_line(lines, symbol)
         if line is None:
             line = _source_anchor_line(
                 lines,
                 symbol,
                 source_language=source_language,
                 implementation_mode=implementation_mode,
-                aliases=aliases,
+                aliases=[] if source_kind == "generated_contract_placeholder_from_section_gap" else aliases,
                 prefer_definition=True,
             )
         if line is None:
@@ -2119,6 +2142,17 @@ def _source_exact_function_definition_line(lines: list[str], name: str) -> int |
             if lookahead_stripped.endswith(";"):
                 break
             if "{" in lookahead_stripped:
+                return index
+    return None
+
+
+def _source_inline_asm_label_line(lines: list[str], name: str) -> int | None:
+    if not name:
+        return None
+    labels = _dedupe_strings([name, _decompiled_c_i686_c_asm_symbol(name)])
+    for index, line in enumerate(lines, start=1):
+        for label in labels:
+            if f'"{label}:\\n"' in line:
                 return index
     return None
 
@@ -2568,6 +2602,10 @@ def _render_decompiled_c_source(
         and not _decompiled_c_is_runtime_entry(function, runtime_entry_policy=runtime_entry_policy)
         and not _decompiled_c_is_stack_probe_helper(function)
     ]
+    contract_call_profile_functions = [
+        *implemented_functions,
+        *[function for function in functions if _decompiled_c_is_import_thunk(function)],
+    ]
     import_thunk_symbols = [
         str(function.get("linkage", {}).get("symbol") or function.get("name") or "")
         for function in functions
@@ -2585,12 +2623,32 @@ def _render_decompiled_c_source(
         reference_contract_payload=reference_contract_payload,
         external_function_names=external_function_names or (),
     )
+    runtime_linked_call_targets = (
+        set(_decompiled_c_contract_runtime_call_targets(reference_contract_payload).values())
+        if reference_contract_payload is not None
+        else set()
+    )
     synthetic_section_gap_placeholders = _decompiled_c_contract_synthetic_section_gap_placeholders(
         implemented_functions,
         reference_contract_payload=reference_contract_payload,
         call_targets=contract_call_targets,
         external_function_names=external_function_names or (),
+        additional_linkable_symbols=import_thunk_symbols,
+        runtime_linked_call_targets=runtime_linked_call_targets,
     )
+    section_gap_alias_anchor_symbols = _decompiled_c_contract_section_gap_alias_anchor_symbols(
+        implemented_functions,
+        reference_contract_payload=reference_contract_payload,
+        external_function_names=external_function_names or (),
+    )
+    emitted_section_gap_targets = [
+        *section_gap_alias_anchor_symbols,
+        *[
+            str(function.get("name") or "")
+            for function in synthetic_section_gap_placeholders
+            if isinstance(function.get("name"), str)
+        ],
+    ]
     prototypes = [
         _decompiled_c_prototype(
             function,
@@ -2612,8 +2670,10 @@ def _render_decompiled_c_source(
     data_symbols = _decompiled_c_external_data_symbols(implemented_functions)
     contract_call_target_profiles = _decompiled_c_contract_call_target_profiles(
         contract_call_targets,
-        implemented_functions,
+        contract_call_profile_functions,
         runtime_entry_policy=runtime_entry_policy,
+        emitted_section_gap_targets=emitted_section_gap_targets,
+        runtime_linked_call_targets=runtime_linked_call_targets,
     )
     contract_call_target_forward_declarations = _decompiled_c_contract_call_target_forward_declarations(
         contract_call_targets,
@@ -2645,7 +2705,11 @@ def _render_decompiled_c_source(
         lines.extend(data_symbols)
         lines.append("")
     if contract_call_target_profiles:
-        lines.extend(profile["prototype"] for _, profile in sorted(contract_call_target_profiles.items()))
+        lines.extend(
+            str(profile["prototype"])
+            for _, profile in sorted(contract_call_target_profiles.items())
+            if isinstance(profile.get("prototype"), str)
+        )
         lines.append("")
     if contract_call_target_forward_declarations:
         lines.extend(contract_call_target_forward_declarations)
@@ -2672,7 +2736,8 @@ def _render_decompiled_c_source(
             str(function["name"])
             for function in synthetic_section_gap_placeholders
             if isinstance(function.get("name"), str) and _is_c_identifier(str(function["name"]))
-        ],
+        ]
+        + section_gap_alias_anchor_symbols,
     )
     if layout_support:
         lines.extend(layout_support)
@@ -2766,14 +2831,17 @@ def _decompiled_c_contract_placeholder(
     )
     parameters = "" if unspecified_parameters else "void"
     lines = [
+        "__attribute__((noinline, used))",
         f"uintptr_t __cdecl {name}({parameters})",
         "{",
         f"  /* Stage B contract placeholder for missing decompiler body at RVA 0x{rva_start:x}, size {size}. */",
     ]
     if anchors:
         lines.extend(anchors)
+        lines.append('  __asm__ __volatile__("" : : : "memory");')
         lines.append("  return 0;")
     else:
+        lines.append('  __asm__ __volatile__("" : : : "memory");')
         lines.append("  return 0;")
     lines.append("}")
     return "\n".join(lines)
@@ -2791,6 +2859,10 @@ def _decompiled_c_contract_call_targets(
         rva_start = _optional_int(function.get("rva_start"))
         if rva_start is None:
             continue
+        import_symbol = _decompiled_c_import_thunk_target_symbol(function)
+        if import_symbol is not None:
+            targets[rva_start] = import_symbol
+            continue
         name = _decompiled_c_emitted_function_name(function, runtime_entry_policy=runtime_entry_policy)
         if _is_c_identifier(name):
             targets[rva_start] = name
@@ -2798,8 +2870,45 @@ def _decompiled_c_contract_call_targets(
         known_symbols = set(_decompiled_c_external_call_symbols(functions))
         known_symbols.update(str(name) for name in external_function_names)
         known_symbols.update(_decompiled_c_defined_symbol_names(functions))
+        targets.update(_decompiled_c_contract_runtime_call_targets(reference_contract_payload))
         targets.update(_decompiled_c_contract_section_gap_call_targets(reference_contract_payload, known_symbols=known_symbols))
     return targets
+
+
+def _decompiled_c_contract_runtime_call_targets(reference_contract_payload: dict[str, Any]) -> dict[int, str]:
+    constraints = reference_contract_payload.get("constraints") if isinstance(reference_contract_payload.get("constraints"), dict) else {}
+    function_ranges = constraints.get("function_ranges") if isinstance(constraints.get("function_ranges"), dict) else {}
+    functions = function_ranges.get("functions") if isinstance(function_ranges.get("functions"), list) else []
+    result: dict[int, str] = {}
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        original = function.get("original") if isinstance(function.get("original"), dict) else {}
+        rva_start = _optional_int(function.get("rva_start"))
+        if rva_start is None:
+            rva_start = _optional_int(original.get("rva_start"))
+        if rva_start is None or not isinstance(name, str) or not _is_c_identifier(name):
+            continue
+        if not _decompiled_c_contract_runtime_call_target_is_linkable(name):
+            continue
+        result[rva_start] = name
+    return result
+
+
+def _decompiled_c_contract_runtime_call_target_is_linkable(name: str) -> bool:
+    return (
+        _decompiled_c_contract_symbol_is_stack_probe(name)
+        or name in _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES
+        or name in _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES
+    )
+
+
+def _decompiled_c_contract_symbol_is_stack_probe(name: str) -> bool:
+    if name in _DECOMPILED_C_STACK_PROBE_HELPER_MACROS:
+        return True
+    key = _linker_function_match_key(name)
+    return key in {"chkstk", "chkstk_ms", "alloca_probe", "alloca_probe_8", "alloca_probe_16"} or key.startswith("chkstk_")
 
 
 def _decompiled_c_contract_section_gap_call_targets(
@@ -2815,6 +2924,8 @@ def _decompiled_c_contract_section_gap_call_targets(
         alias = _decompiled_c_section_gap_known_symbol_alias(entry, known_symbols=known_symbols)
         if alias is not None:
             result.setdefault(rva_start, alias)
+        else:
+            result.setdefault(rva_start, _decompiled_c_synthetic_section_gap_name(entry))
     return result
 
 
@@ -2823,11 +2934,15 @@ def _decompiled_c_contract_call_target_profiles(
     functions: list[dict[str, Any]],
     *,
     runtime_entry_policy: str,
+    emitted_section_gap_targets: Iterable[str] = (),
+    runtime_linked_call_targets: Iterable[str] = (),
 ) -> dict[str, dict[str, Any]]:
     needed = set(call_targets.values())
     profiles: dict[str, dict[str, Any]] = {}
     seen: set[str] = set()
     for function in functions:
+        if _decompiled_c_is_import_thunk(function):
+            continue
         emitted_name = _decompiled_c_emitted_function_name(function, runtime_entry_policy=runtime_entry_policy)
         if emitted_name not in needed or emitted_name in seen or not _is_c_identifier(emitted_name):
             continue
@@ -2838,6 +2953,19 @@ def _decompiled_c_contract_call_target_profiles(
         seen.add(emitted_name)
         profile["prototype"] = prototype
         profiles[emitted_name] = profile
+    for function in functions:
+        import_symbol = _decompiled_c_import_thunk_target_symbol(function)
+        if import_symbol is None or import_symbol not in needed or import_symbol in seen:
+            continue
+        profile = _decompiled_c_contract_external_target_profile(import_symbol)
+        if (
+            "prototype" not in profile
+            and _is_c_identifier(import_symbol)
+            and not _decompiled_c_external_symbol_is_declared_by_headers(import_symbol)
+        ):
+            profile["prototype"] = f"extern uintptr_t {import_symbol}();"
+        profiles[import_symbol] = profile
+        seen.add(import_symbol)
     for name in sorted(needed - set(profiles)):
         prototype = _DECOMPILED_C_STDCALL_PROTOTYPES.get(name) or _DECOMPILED_C_EXTERNAL_PROTOTYPES.get(name)
         if prototype is None:
@@ -2846,6 +2974,22 @@ def _decompiled_c_contract_call_target_profiles(
         if profile is None:
             profile = {}
         profile["prototype"] = prototype
+        profiles[name] = profile
+    for name in sorted({str(name) for name in emitted_section_gap_targets}):
+        if name not in needed or name in profiles or not _is_c_identifier(name):
+            continue
+        profile: dict[str, Any] = {}
+        if not _decompiled_c_contract_direct_call_target_is_asm_linkable(name, target_profile=profile):
+            continue
+        profiles[name] = profile
+    for name in sorted({str(name) for name in runtime_linked_call_targets}):
+        if name not in needed or not _is_c_identifier(name):
+            continue
+        profile = dict(profiles.get(name) or {})
+        profile["runtime_crt_linked"] = True
+        profile.setdefault("prototype", f"uintptr_t __cdecl {name}();")
+        if not _decompiled_c_contract_direct_call_target_is_asm_linkable(name, target_profile=profile):
+            continue
         profiles[name] = profile
     return profiles
 
@@ -2869,9 +3013,9 @@ def _decompiled_c_prototype_parameter_profile(prototype: str) -> dict[str, Any] 
     if not text.endswith(";"):
         return None
     text = text[:-1].strip()
-    start = text.find("(")
     end = text.rfind(")")
-    if start < 0 or end < start:
+    start = _matching_open_paren(text, end)
+    if start is None or end < start:
         return None
     raw_parameters = text[start + 1 : end].strip()
     if not raw_parameters:
@@ -2882,6 +3026,21 @@ def _decompiled_c_prototype_parameter_profile(prototype: str) -> dict[str, Any] 
     variadic = bool(parameters and parameters[-1] == "...")
     fixed_arg_count = len(parameters) - (1 if variadic else 0)
     return {"fixed_arg_count": fixed_arg_count, "variadic": variadic}
+
+
+def _matching_open_paren(text: str, close_index: int) -> int | None:
+    if close_index < 0 or close_index >= len(text) or text[close_index] != ")":
+        return None
+    depth = 0
+    for index in range(close_index, -1, -1):
+        char = text[index]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
 
 
 def _decompiled_c_contract_callsite_anchor_lines(
@@ -2916,6 +3075,19 @@ def _decompiled_c_contract_callsite_anchor_lines(
             lines.append(f"  {target_name}({', '.join(rendered_args)});")
             if emit_accumulator:
                 lines.append(f"  stage_b_contract_anchor ^= (uintptr_t)0x{(instruction_rva if instruction_rva is not None else target_rva):x};")
+            continue
+        if target.get("kind") == "import":
+            target_name = _decompiled_c_contract_import_target_name(target)
+            if target_name is None:
+                continue
+            target_profile = _decompiled_c_contract_external_target_profile(target_name)
+            rendered_args = _decompiled_c_contract_callsite_arguments(callsite, target_profile=target_profile)
+            if rendered_args is None:
+                continue
+            lines.append(f"  /* Stage A import-call anchor: {callsite_id}{suffix}. */")
+            lines.append(f"  {target_name}({', '.join(rendered_args)});")
+            if emit_accumulator:
+                lines.append(f"  stage_b_contract_anchor ^= (uintptr_t)0x{(instruction_rva if instruction_rva is not None else 0):x};")
             continue
         if target.get("kind") == "function_pointer":
             rendered_args = _decompiled_c_contract_callsite_arguments(callsite)
@@ -2969,6 +3141,15 @@ def _decompiled_c_contract_callsite_arguments(
 def _decompiled_c_is_import_thunk(function: dict[str, Any]) -> bool:
     linkage = function.get("linkage")
     return isinstance(linkage, dict) and linkage.get("kind") == "import_thunk"
+
+def _decompiled_c_import_thunk_target_symbol(function: dict[str, Any]) -> str | None:
+    if not _decompiled_c_is_import_thunk(function):
+        return None
+    linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
+    symbol = str(linkage.get("symbol") or "")
+    if not symbol or not _is_c_identifier(symbol):
+        return None
+    return symbol
 
 def _decompiled_c_import_thunk_alias_symbol_names(functions: list[dict[str, Any]]) -> list[str]:
     return [left for left, _ in _decompiled_c_import_thunk_alias_pairs(functions)]
@@ -3069,10 +3250,7 @@ def _decompiled_c_is_mingw_crt_support_helper(function: dict[str, Any]) -> bool:
 
 def _decompiled_c_is_stack_probe_helper(function: dict[str, Any]) -> bool:
     name = str(function.get("name") or "")
-    if name in _DECOMPILED_C_STACK_PROBE_HELPER_MACROS:
-        return True
-    key = _linker_function_match_key(name)
-    return key in {"chkstk", "chkstk_ms", "alloca_probe", "alloca_probe_8", "alloca_probe_16"} or key.startswith("chkstk_")
+    return _decompiled_c_contract_symbol_is_stack_probe(name)
 
 def _decompiled_c_runtime_helper_alias_lines(functions: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
@@ -3203,8 +3381,7 @@ def _decompiled_c_layout_support_lines(
             "static void stage_b_layout_keepalive(void);",
             "__attribute__((used, section(\".CRT$XCU\"))) static void (* const stage_b_layout_keepalive_ctor)(void) = stage_b_layout_keepalive;",
             "static void stage_b_layout_keepalive(void) {",
-            "    volatile void *stage_b_contract_keep = (void *)stage_b_contract_section_gap_anchor;",
-            "    (void)stage_b_contract_keep;",
+            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_contract_section_gap_anchor) : \"memory\");",
             "}",
         ]
     atexit_import_anchor = _decompiled_c_jq_atexit_import_anchor_symbol(functions)
@@ -3258,19 +3435,18 @@ def _decompiled_c_layout_support_lines(
     lines.extend(
         [
             "static void stage_b_layout_keepalive(void) {",
-            "    volatile void *stage_b_jq_keep = (void *)stage_b_jq_import_anchor;",
+            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_import_anchor) : \"memory\");",
         ]
     )
     if contract_anchor_lines:
         lines.extend(
             [
-                "    volatile void *stage_b_contract_keep = (void *)stage_b_contract_section_gap_anchor;",
-                "    (void)stage_b_contract_keep;",
+                "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_contract_section_gap_anchor) : \"memory\");",
             ]
         )
     lines.extend(
         [
-        "    if (stage_b_jq_keep == (void *)0) {",
+        "    if ((void *)stage_b_jq_import_anchor == (void *)0) {",
         "        stage_b_jq_layout_bss_anchor[0] = stage_b_jq_layout_tls_anchor[0];",
         "    }",
         "}",
@@ -3285,19 +3461,46 @@ def _decompiled_c_contract_synthetic_section_gap_placeholders(
     reference_contract_payload: dict[str, Any] | None,
     call_targets: dict[int, str],
     external_function_names: list[str] | tuple[str, ...],
+    additional_linkable_symbols: list[str] | tuple[str, ...] = (),
+    runtime_linked_call_targets: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     if reference_contract_payload is None:
         return []
     external_call_symbols = _decompiled_c_external_call_symbols(functions)
     defined_symbols = _decompiled_c_defined_symbol_names(functions)
     known_symbols = set(external_call_symbols) | {str(name) for name in external_function_names} | defined_symbols
-    linkable_symbols = set(defined_symbols) | {str(name) for name in external_function_names}
+    linkable_symbols = (
+        set(defined_symbols)
+        | {str(name) for name in external_function_names}
+        | {str(name) for name in additional_linkable_symbols}
+        | set(runtime_linked_call_targets or set())
+    )
+    linkable_symbols.update(_decompiled_c_contract_section_gap_call_targets(reference_contract_payload, known_symbols=known_symbols).values())
     return _decompiled_c_synthetic_section_gap_placeholders(
         reference_contract_payload,
         known_symbols=known_symbols,
         call_targets=call_targets,
         linkable_symbols=linkable_symbols,
     )
+
+
+def _decompiled_c_contract_section_gap_alias_anchor_symbols(
+    functions: list[dict[str, Any]],
+    *,
+    reference_contract_payload: dict[str, Any] | None,
+    external_function_names: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    if reference_contract_payload is None:
+        return []
+    external_call_symbols = _decompiled_c_external_call_symbols(functions)
+    defined_symbols = _decompiled_c_defined_symbol_names(functions)
+    known_symbols = set(external_call_symbols) | {str(name) for name in external_function_names} | defined_symbols
+    names: list[str] = []
+    for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
+        alias = _decompiled_c_section_gap_known_symbol_alias(entry, known_symbols=known_symbols)
+        if alias is not None:
+            names.append(alias)
+    return _dedupe_strings(names)
 
 
 def _decompiled_c_contract_retention_anchor_lines(symbols: list[str]) -> list[str]:
@@ -3488,7 +3691,14 @@ def _decompiled_c_link_placeholder_definitions(
                 )
             )
             continue
-        lines.append(f"__attribute__((weak)) uintptr_t {symbol}() {{ return 0; }}")
+        lines.extend(
+            [
+                f"__attribute__((weak, noinline, used)) uintptr_t {symbol}() {{",
+                '  __asm__ __volatile__("" : : : "memory");',
+                "  return 0;",
+                "}",
+            ]
+        )
     if synthetic_section_gap_placeholders:
         lines.extend(
             f"uintptr_t __cdecl {str(function['name'])}();"
@@ -3497,14 +3707,209 @@ def _decompiled_c_link_placeholder_definitions(
         )
         for function in synthetic_section_gap_placeholders:
             lines.append(
-                _decompiled_c_contract_placeholder(
+                _decompiled_c_contract_asm_placeholder(
                     function,
                     call_targets=call_targets or {},
                     call_target_profiles=call_target_profiles or {},
-                    unspecified_parameters=True,
                 )
             )
     return lines
+
+
+def _decompiled_c_contract_asm_placeholder(
+    function: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+) -> str:
+    name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
+    asm_name = _decompiled_c_i686_c_asm_symbol(name)
+    rva_start = int(function.get("rva_start") or 0)
+    size = int(function.get("size") or 0)
+    comment_lines = [
+        f"/* Stage B compact contract placeholder for missing decompiler body at RVA 0x{rva_start:x}, size {size}. */",
+    ]
+    asm_lines = [
+        f".section .text${name},\"x\"",
+        ".p2align 0",
+        f".globl {asm_name}",
+        f".def {asm_name}; .scl 2; .type 32; .endef",
+        f"{asm_name}:",
+    ]
+    comment_lines.extend(
+        _decompiled_c_contract_asm_callsite_lines(
+            function,
+            asm_lines=asm_lines,
+            call_targets=call_targets,
+            call_target_profiles=call_target_profiles,
+        )
+    )
+    asm_lines.append("  ret")
+    return "\n".join(
+        [
+            *comment_lines,
+            "__asm__(",
+            *[f"\"{_c_asm_string_line(line)}\\n\"" for line in asm_lines],
+            ");",
+        ]
+    )
+
+
+def _decompiled_c_contract_asm_callsite_lines(
+    function: dict[str, Any],
+    *,
+    asm_lines: list[str],
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+) -> list[str]:
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    callsites = reference_contract.get("abi_callsites") if isinstance(reference_contract.get("abi_callsites"), list) else []
+    comments: list[str] = []
+    for callsite in callsites[:8]:
+        if not isinstance(callsite, dict):
+            continue
+        target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
+        instruction = callsite.get("instruction") if isinstance(callsite.get("instruction"), dict) else {}
+        instruction_rva = _optional_int(instruction.get("rva"))
+        callsite_id = str(callsite.get("id") or f"callsite:0x{(instruction_rva if instruction_rva is not None else 0):x}")
+        suffix = f" at RVA 0x{instruction_rva:x}" if instruction_rva is not None else ""
+        if target.get("kind") == "direct":
+            target_rva = _optional_int(target.get("target_rva"))
+            if target_rva is None:
+                continue
+            target_name = call_targets.get(target_rva)
+            if not target_name or not _is_c_identifier(target_name):
+                continue
+            target_profile = call_target_profiles.get(target_name)
+            if not _decompiled_c_contract_direct_call_target_is_asm_linkable(
+                target_name,
+                target_profile=target_profile,
+            ):
+                continue
+            rendered_args = _decompiled_c_contract_callsite_arguments(callsite, target_profile=target_profile)
+            if rendered_args is None:
+                continue
+            comments.append(f"/* Stage A direct-call anchor: {callsite_id}{suffix}. */")
+            _decompiled_c_contract_asm_stack_arguments(asm_lines, rendered_args)
+            asm_lines.append(f"  call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}")
+            if rendered_args and not _decompiled_c_contract_target_pops_stack(target_profile):
+                asm_lines.append(f"  addl ${len(rendered_args) * 4}, %esp")
+            continue
+        if target.get("kind") == "import":
+            target_name = _decompiled_c_contract_import_target_name(target)
+            if target_name is None:
+                continue
+            target_profile = _decompiled_c_contract_external_target_profile(target_name)
+            rendered_args = _decompiled_c_contract_callsite_arguments(callsite, target_profile=target_profile)
+            if rendered_args is None:
+                continue
+            comments.append(f"/* Stage A import-call anchor: {callsite_id}{suffix}. */")
+            _decompiled_c_contract_asm_stack_arguments(asm_lines, rendered_args)
+            asm_lines.append(f"  call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}")
+            if rendered_args and not _decompiled_c_contract_target_pops_stack(target_profile):
+                asm_lines.append(f"  addl ${len(rendered_args) * 4}, %esp")
+            continue
+        if target.get("kind") == "function_pointer":
+            rendered_args = _decompiled_c_contract_callsite_arguments(callsite)
+            if rendered_args is None:
+                continue
+            comments.append(f"/* Stage A function-pointer-call anchor: {callsite_id}{suffix}. */")
+            _decompiled_c_contract_asm_stack_arguments(asm_lines, rendered_args)
+            asm_lines.append("  xorl %eax, %eax")
+            asm_lines.append("  call *%eax")
+            if rendered_args:
+                asm_lines.append(f"  addl ${len(rendered_args) * 4}, %esp")
+            continue
+    return comments
+
+
+def _decompiled_c_contract_asm_stack_arguments(asm_lines: list[str], rendered_args: list[str]) -> None:
+    if not rendered_args:
+        return
+    for argument in reversed(rendered_args):
+        asm_lines.append(f"  pushl {_decompiled_c_contract_asm_immediate(argument)}")
+
+
+def _decompiled_c_contract_asm_immediate(argument: str) -> str:
+    text = argument.strip()
+    if text in {"(uintptr_t)0", "(void *)0", "NULL"}:
+        value = 0
+    else:
+        match = re.fullmatch(r"(?:\(uintptr_t\))?(0x[0-9A-Fa-f]+|[0-9]+)", text)
+        value = int(match.group(1), 0) if match is not None else 0
+    return f"$0x{value & 0xFFFFFFFF:x}"
+
+
+def _decompiled_c_contract_target_pops_stack(target_profile: dict[str, Any] | None) -> bool:
+    if not isinstance(target_profile, dict):
+        return False
+    prototype = target_profile.get("prototype")
+    return isinstance(prototype, str) and ("__stdcall" in prototype or "stdcall" in prototype)
+
+
+def _c_asm_string_line(line: str) -> str:
+    return line.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _decompiled_c_i686_c_asm_symbol(name: str) -> str:
+    return f"_{name}"
+
+
+def _decompiled_c_i686_asm_call_symbol(name: str, *, target_profile: dict[str, Any] | None = None) -> str:
+    if _has_linker_stdcall_suffix(name):
+        return f"_{name}" if not name.startswith("_") else name
+    if _decompiled_c_contract_target_pops_stack(target_profile):
+        fixed_arg_count = target_profile.get("fixed_arg_count") if isinstance(target_profile, dict) else None
+        if isinstance(fixed_arg_count, int) and fixed_arg_count >= 0:
+            return f"_{name}@{fixed_arg_count * 4}"
+    return _decompiled_c_i686_c_asm_symbol(name)
+
+
+def _decompiled_c_contract_import_target_name(target: dict[str, Any]) -> str | None:
+    symbol = target.get("symbol")
+    if not isinstance(symbol, str) or not symbol:
+        return None
+    if _is_c_identifier(symbol) or _has_linker_stdcall_suffix(symbol):
+        return symbol
+    return None
+
+
+def _decompiled_c_contract_external_target_profile(name: str) -> dict[str, Any]:
+    prototype = _DECOMPILED_C_STDCALL_PROTOTYPES.get(name) or _DECOMPILED_C_EXTERNAL_PROTOTYPES.get(name)
+    profile = _decompiled_c_prototype_parameter_profile(prototype) if prototype is not None else None
+    if profile is None:
+        profile = {}
+    if prototype is not None:
+        profile["prototype"] = prototype
+    return profile
+
+
+def _decompiled_c_contract_direct_call_target_is_asm_linkable(
+    name: str,
+    *,
+    target_profile: dict[str, Any] | None,
+) -> bool:
+    if _decompiled_c_contract_symbol_is_stack_probe(name):
+        return isinstance(target_profile, dict) and target_profile.get("runtime_crt_linked") is True
+    if isinstance(target_profile, dict) and target_profile.get("runtime_crt_linked") is True:
+        return True
+    if (
+        name in _DECOMPILED_C_RUNTIME_ENTRY_NAMES
+        or name in _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES
+        or name in _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES
+    ):
+        return False
+    if name.startswith("stage_b_contract_section_gap__"):
+        return True
+    if name.startswith(("___p__", "__p__", "_imp__")):
+        return False
+    if target_profile is not None:
+        return True
+    if name in _DECOMPILED_C_EXTERNAL_PROTOTYPES or name in _DECOMPILED_C_STDCALL_PROTOTYPES:
+        return True
+    if _decompiled_c_external_symbol_is_declared_by_headers(name):
+        return True
+    return False
 
 
 def _decompiled_c_section_gap_placeholders_by_symbol(
@@ -3544,7 +3949,7 @@ def _decompiled_c_synthetic_section_gap_placeholders(
         )
         if function is not None:
             functions.append(function)
-    return functions[:_DECOMPILED_C_SYNTHETIC_SECTION_GAP_PLACEHOLDER_LIMIT]
+    return functions
 
 
 def _decompiled_c_synthetic_section_gap_placeholder(
@@ -3557,9 +3962,7 @@ def _decompiled_c_synthetic_section_gap_placeholder(
     if _decompiled_c_section_gap_known_symbol_alias(entry, known_symbols=known_symbols) is not None:
         return None
     callsites = entry.get("abi_callsites") if isinstance(entry.get("abi_callsites"), list) else []
-    if not callsites:
-        return None
-    if not _decompiled_c_section_gap_callsites_have_linkable_targets(
+    if callsites and not _decompiled_c_section_gap_callsites_have_linkable_targets(
         callsites,
         call_targets=call_targets,
         linkable_symbols=linkable_symbols,
@@ -3577,30 +3980,64 @@ def _decompiled_c_section_gap_callsites_have_linkable_targets(
     call_targets: dict[int, str],
     linkable_symbols: set[str],
 ) -> bool:
-    direct_callsite_count = 0
     for callsite in callsites:
         if not isinstance(callsite, dict):
             continue
-        target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
-        if target.get("kind") != "direct":
-            continue
-        direct_callsite_count += 1
+        if _decompiled_c_section_gap_callsite_is_asm_anchorable(
+            callsite,
+            call_targets=call_targets,
+            linkable_symbols=linkable_symbols,
+        ):
+            return True
+    return False
+
+
+def _decompiled_c_section_gap_callsite_is_asm_anchorable(
+    callsite: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+    linkable_symbols: set[str],
+) -> bool:
+    target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
+    if target.get("kind") == "function_pointer":
+        return _decompiled_c_contract_callsite_arguments(callsite) is not None
+    if target.get("kind") == "import":
+        target_name = _decompiled_c_contract_import_target_name(target)
+        if target_name is None:
+            return False
+        target_profile = _decompiled_c_contract_external_target_profile(target_name)
+        return _decompiled_c_contract_callsite_arguments(callsite, target_profile=target_profile) is not None
+    if target.get("kind") == "direct":
         target_rva = _optional_int(target.get("target_rva"))
         if target_rva is None:
             return False
         target_name = call_targets.get(target_rva)
         if not target_name or not _is_c_identifier(target_name):
             return False
-        if target_name in linkable_symbols:
-            continue
-        if target_name.startswith(("__", "_imp__")):
+        target_profile = None
+        if target_name.startswith("stage_b_contract_section_gap__"):
+            target_profile = {}
+        elif target_name in linkable_symbols:
+            target_profile = (
+                {"runtime_crt_linked": True}
+                if _decompiled_c_contract_runtime_call_target_is_linkable(target_name)
+                else {}
+            )
+        elif target_name.startswith(("__", "_imp__")):
             return False
-        if target_name in _DECOMPILED_C_EXTERNAL_PROTOTYPES or target_name in _DECOMPILED_C_STDCALL_PROTOTYPES:
-            continue
-        if _decompiled_c_external_symbol_is_declared_by_headers(target_name):
-            continue
-        return False
-    return direct_callsite_count > 0
+        elif target_name in _DECOMPILED_C_EXTERNAL_PROTOTYPES or target_name in _DECOMPILED_C_STDCALL_PROTOTYPES:
+            target_profile = _decompiled_c_contract_external_target_profile(target_name)
+        elif _decompiled_c_external_symbol_is_declared_by_headers(target_name):
+            target_profile = {}
+        else:
+            return False
+        if not _decompiled_c_contract_direct_call_target_is_asm_linkable(
+            target_name,
+            target_profile=target_profile,
+        ):
+            return False
+        return _decompiled_c_contract_callsite_arguments(callsite, target_profile=target_profile) is not None
+    return False
 
 
 def _decompiled_c_section_gap_known_symbol_alias(entry: dict[str, Any], *, known_symbols: set[str]) -> str | None:
@@ -3880,14 +4317,6 @@ _DECOMPILED_C_RESERVED_IDENTIFIERS = {
 def _decompiled_c_external_symbol_is_declared_by_headers(symbol: str) -> bool:
     return symbol in _DECOMPILED_C_RESERVED_IDENTIFIERS or symbol in {
         "_errno",
-        "atexit",
-        "atoi",
-        "exit",
-        "fwrite",
-        "setlocale",
-        "strchr",
-        "strcmp",
-        "strerror",
         "va_arg",
         "va_copy",
         "va_end",
@@ -3953,6 +4382,8 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
         code = _normalize_decompiled_dtoa_allocator_return_values(code)
     if function_name in {"_wmain", "wmain"}:
         code = _normalize_mingw_wmain_wide_argv_bridge(code, function_name=function_name)
+    if function_name == "dirname":
+        code = _normalize_jq_dirname_path_info_out_params(code)
     if "Treating indirect jump as call" in code:
         code = re.sub(
             r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)\(([^;{}]*)\);\s*\n\1return(?:\s+0)?;",
@@ -3976,6 +4407,7 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
     code = re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*)\._(\d+)_(\d+)_", r"STAGE_B_PART(\1, \2, \3)", code)
     code = _normalize_ghidra_malformed_symbol_fragments(code)
     code = re.sub(r"(?m)^(\s*)return\s*;\s*$", r"\1return 0;", code)
+    code = _preserve_decompiled_c_call_boundary(code, function_name=function_name)
     return code
 
 def _decompiled_c_jq_value_abi_replacement(function_name: str) -> str:
@@ -4165,6 +4597,22 @@ def _normalize_jq_init_stack_init_call(code: str) -> str:
         code,
     )
 
+def _normalize_jq_dirname_path_info_out_params(code: str) -> str:
+    if "do_get_path_info();" not in code:
+        return code
+    if not all(token in code for token in ("char *local_20;", "undefined1 *local_1c;", "char *local_10;")):
+        return code
+    match = re.search(
+        r"\bdirname\s*\(\s*char\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+        code,
+    )
+    path_arg = match.group(1) if match is not None else "param_1"
+    return code.replace(
+        "do_get_path_info();",
+        f"do_get_path_info({path_arg},&local_20,&local_1c,&local_10);",
+        1,
+    )
+
 def _normalize_mingw_wmain_wide_argv_bridge(code: str, *, function_name: str) -> str:
     if "WideCharToMultiByte" not in code or "umain" not in code or "___chkstk_ms" not in code:
         return code
@@ -4238,6 +4686,62 @@ _DECOMPILED_C_DTOA_ALLOCATOR_RETURN_FUNCTION_NAMES = {
     "___Balloc_D2A",
     "___i2b_D2A",
 }
+
+_DECOMPILED_C_CALL_BOUNDARY_FUNCTION_NAMES = {
+    "__Balloc_D2A",
+    "__Bfree_D2A",
+    "__b2d_D2A",
+    "__cmp_D2A",
+    "__diff_D2A",
+    "__freedtoa",
+    "__gdtoa",
+    "__i2b_D2A",
+    "__lshift_D2A",
+    "__mult_D2A",
+    "__multadd_D2A",
+    "__nrv_alloc_D2A",
+    "__pow5mult_D2A",
+    "__quorem_D2A",
+    "__rshift_D2A",
+    "__rv_alloc_D2A",
+    "__trailz_D2A",
+    "___Balloc_D2A",
+    "___Bfree_D2A",
+    "___b2d_D2A",
+    "___cmp_D2A",
+    "___diff_D2A",
+    "___freedtoa",
+    "___gdtoa",
+    "___i2b_D2A",
+    "___lshift_D2A",
+    "___mult_D2A",
+    "___multadd_D2A",
+    "___nrv_alloc_D2A",
+    "___pow5mult_D2A",
+    "___quorem_D2A",
+    "___rshift_D2A",
+    "___rv_alloc_D2A",
+    "___trailz_D2A",
+}
+
+
+def _preserve_decompiled_c_call_boundary(code: str, *, function_name: str) -> str:
+    if function_name not in _DECOMPILED_C_CALL_BOUNDARY_FUNCTION_NAMES:
+        return code
+    if "__attribute__((noinline, noipa, used))" in code:
+        return code
+    lines = code.splitlines()
+    signature = re.compile(r"\b" + re.escape(function_name) + r"\s*\(")
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if (
+            signature.search(line)
+            and not stripped.startswith(("extern ", "typedef ", "/*", "//"))
+            and not stripped.endswith(";")
+        ):
+            lines.insert(index, "__attribute__((noinline, noipa, used))")
+            return "\n".join(lines)
+    return code
 
 
 def _normalize_decompiled_dtoa_allocator_return_values(code: str) -> str:
