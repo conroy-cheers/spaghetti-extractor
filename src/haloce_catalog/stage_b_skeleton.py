@@ -3399,7 +3399,7 @@ def _decompiled_c_layout_support_lines(
         "__asm__(",
         "\".section .text$stage_b_jq_layout_pad,\\\"x\\\"\\n\"",
         "\"_stage_b_jq_layout_text_anchor:\\n\"",
-        "\"  .fill 6299,1,0x90\\n\"",
+        "\"  .fill 6283,1,0x90\\n\"",
         "\".text\\n\"",
         ");",
         "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2516];",
@@ -4396,6 +4396,7 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
         code = _normalize_jq_oniguruma_parse_depth_limit_call(code)
         code = _normalize_jq_getenv_argument_calls(code)
         code = _normalize_jq_jv_constructor_sret_calls(code)
+        code = _normalize_jq_umain_compile_args_filter_lifetime(code)
         code = _normalize_jq_isoption_dispatch_calls(code)
     if function_name == "jq_init":
         code = _normalize_jq_init_stack_init_call(code)
@@ -4945,6 +4946,13 @@ def _normalize_jq_jv_constructor_sret_calls(code: str) -> str:
         r"\1\2 = \3;\n\1*(stage_b_jv *)\4 = \5();",
         code,
     )
+
+def _normalize_jq_umain_compile_args_filter_lifetime(code: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        indent = match.group(1)
+        return f"{indent}jv_string_value();\n{indent}iVar5 = jq_compile_args();\n{indent}jv_free();"
+
+    return re.sub(r"(?m)^(\s*)iVar5 = jq_compile_args\(\);", replace, code, count=1)
 
 def _normalize_jq_variadic_print_calls(code: str) -> str:
     code = code.replace('___mingw_printf((byte *)"jq-%s\\n");', '___mingw_printf((byte *)"jq-%s\\n","1.8.1");')

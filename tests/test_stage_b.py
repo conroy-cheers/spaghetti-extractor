@@ -2113,7 +2113,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
             self.assertIn(".text$stage_b_jq_layout_pad", source)
-            self.assertIn(".fill 6299,1,0x90", source)
+            self.assertIn(".fill 6283,1,0x90", source)
             self.assertIn('((void *)stage_b_jq_layout_text_anchor)', source)
             self.assertIn("stage_b_jq_layout_bss_anchor[2516]", source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
@@ -5081,6 +5081,41 @@ class StageBTests(unittest.TestCase):
 
         self.assertIn("onig_set_parse_depth_limit(1024);", source)
         self.assertNotIn("\n  onig_set_parse_depth_limit();\n", source)
+
+    def test_decompiled_c_renderer_recovers_jq_compile_args_filter_lifetime(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "umain",
+                    "rva_start": 0x245E,
+                    "rva_end": 0x2490,
+                    "size": 0x32,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "uintptr_t umain(int argc,undefined4 *argv)",
+                                "{",
+                                "  jv_copy();",
+                                "  iVar5 = jq_compile_args();",
+                                "  if (iVar5 == 0) {",
+                                "    return 1;",
+                                "  }",
+                                "  iVar5 = jq_compile_args();",
+                                "  return 0;",
+                                "}",
+                            ]
+                        ),
+                    },
+                }
+            ],
+        )
+
+        self.assertIn("jv_copy();\n  jv_string_value();\n  iVar5 = jq_compile_args();\n  jv_free();", source)
+        self.assertEqual(source.count("\n  jv_string_value();"), 1)
+        self.assertEqual(source.count("\n  jv_free();"), 1)
+        self.assertEqual(source.count("iVar5 = jq_compile_args();"), 2)
 
     def test_decompiled_c_renderer_recovers_jq_umain_indirect_stream_arguments(self):
         source = _render_decompiled_c_source(
