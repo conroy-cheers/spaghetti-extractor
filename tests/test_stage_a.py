@@ -1,3 +1,4 @@
+import copy
 import json
 import struct
 import tempfile
@@ -2327,6 +2328,49 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(callsite["target"]["source"]["memory_section"]["name"], ".data")
         self.assertEqual(callsite["function_pointer_targets"][0]["memory_role"], "global_writable_pointer_slot")
 
+    def test_abi_callsites_classify_direct_stack_slot_function_pointer_call(self):
+        class FakePE:
+            def __init__(self, data: bytes):
+                self.data = data
+
+            def get_data(self, rva: int, size: int) -> bytes:
+                if rva < 0x1000:
+                    return b""
+                offset = rva - 0x1000
+                return self.data[offset : offset + size]
+
+        code = bytes.fromhex(
+            "ff542464"  # call dword ptr [esp + 0x64]
+            "c3"  # ret
+        )
+        binary = stage_a.StageABinary(
+            path=Path("candidate.exe"),
+            sha256="",
+            size=len(code),
+            machine="i386",
+            bitness=32,
+            image_base=0x400000,
+            entrypoint_rva=0x1000,
+            size_of_image=0x20000,
+            subsystem="console",
+            sections=(),
+            imports=(),
+            pe=FakePE(code),
+        )
+
+        evidence = stage_a._abi_block_evidence(
+            binary,
+            stage_a.BlockSide(rva_start=0x1000, rva_end=0x1000 + len(code)),
+            "stack-slot-call",
+        )
+
+        callsite = evidence["callsites"][0]
+        self.assertEqual(callsite["target"]["kind"], "function_pointer")
+        self.assertEqual(callsite["target"]["operand"], "dword ptr [esp + 0x64]")
+        self.assertEqual(callsite["target"]["memory_role"], "stack_pointer_slot")
+        self.assertEqual(callsite["target"]["source"]["addressing"]["disp"], 0x64)
+        self.assertEqual(callsite["function_pointer_targets"][0]["memory_role"], "stack_pointer_slot")
+
     def test_abi_callsites_classify_argument_callback_table_deref(self):
         class FakePE:
             def __init__(self, data: bytes):
@@ -2506,6 +2550,151 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(missing["signature"]["argument_inventory"]["stack_args"][0]["source"]["value"], 2)
         self.assertEqual(missing["reference_examples"][0]["callsite"]["id"], "callsite:partial:1110")
         self.assertEqual(gap["callsite_signature_delta"]["counts"]["reference_only_signatures"], 1)
+
+    def test_contract_candidate_abi_signature_delta_matches_stack_slot_function_pointer_roles(self):
+        reference_callsite = {
+            "id": "callsite:umain:bcb3",
+            "target": {
+                "kind": "function_pointer",
+                "operand": "dword ptr [esp + 0x64]",
+                "memory_role": "stack_pointer_slot",
+                "status": "unresolved",
+                "source": {
+                    "kind": "memory",
+                    "addressing": {"base": "esp", "index": None, "scale": 1, "disp": 0x64},
+                    "memory_role": "stack_pointer_slot",
+                },
+            },
+            "argument_inventory": {
+                "calling_convention": "cdecl_or_stdcall_stack",
+                "argument_count": 1,
+                "stack_args": [
+                    {
+                        "index": 0,
+                        "role": "immediate",
+                        "source": {"kind": "immediate", "stack_offset": 0, "value": 2},
+                    }
+                ],
+                "register_args": [],
+            },
+        }
+        candidate_callsite = copy.deepcopy(reference_callsite)
+        candidate_callsite["id"] = "callsite:umain:bcb3-candidate"
+        candidate_callsite["target"]["operand"] = "dword ptr [esp + 0x88]"
+        candidate_callsite["target"]["source"]["addressing"]["disp"] = 0x88
+
+        delta = stage_a._contract_candidate_abi_callsite_signature_delta(
+            [reference_callsite],
+            [candidate_callsite],
+            [],
+            reference_function_index=[],
+            candidate_function_index=[],
+        )
+
+        self.assertEqual(delta["counts"]["reference_only_signatures"], 0)
+        self.assertEqual(delta["counts"]["candidate_only_signatures"], 0)
+        signature = stage_a._abi_callsite_contract_signature(reference_callsite, [])
+        self.assertEqual(
+            signature["target"],
+            {
+                "kind": "function_pointer",
+                "memory_role": "stack_pointer_slot",
+                "status": "unresolved",
+                "source": {"kind": "memory", "memory_role": "stack_pointer_slot"},
+            },
+        )
+
+    def test_contract_candidate_abi_coverage_gaps_report_global_signature_shortages_first(self):
+        def stack_slot_callsite(callsite_id: str, value: int) -> dict[str, object]:
+            return {
+                "id": callsite_id,
+                "target": {
+                    "kind": "function_pointer",
+                    "operand": "dword ptr [esp + 0x64]",
+                    "memory_role": "stack_pointer_slot",
+                    "status": "unresolved",
+                    "source": {"kind": "memory", "memory_role": "stack_pointer_slot"},
+                },
+                "argument_inventory": {
+                    "calling_convention": "cdecl_or_stdcall_stack",
+                    "argument_count": 1,
+                    "stack_args": [
+                        {
+                            "index": 0,
+                            "role": "immediate",
+                            "source": {"kind": "immediate", "stack_offset": 0, "value": value},
+                        }
+                    ],
+                    "register_args": [],
+                },
+            }
+
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "umain",
+                        "callsites": [
+                            stack_slot_callsite("callsite:umain:arg1", 1),
+                            stack_slot_callsite("callsite:umain:arg2", 2),
+                        ],
+                    }
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "umain",
+                        "callsites": [stack_slot_callsite("callsite:umain:candidate-arg2", 2)],
+                    }
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        gap = gaps["incomplete_callsites"][0]
+        missing = gap["missing_callsite_signatures"][0]
+        self.assertEqual(missing["signature"]["argument_inventory"]["stack_args"][0]["source"]["value"], 1)
+        unmatched = gap["unmatched_reference_callsite_signatures"][0]
+        self.assertEqual(unmatched["signature"]["argument_inventory"]["stack_args"][0]["source"]["value"], 2)
+        self.assertEqual(gap["callsite_signature_delta"]["counts"]["reference_only_signatures"], 1)
+
+    def test_contract_candidate_abi_signature_delta_keeps_global_function_pointer_identity(self):
+        reference_callsite = {
+            "id": "callsite:global:d000",
+            "target": {
+                "kind": "function_pointer",
+                "operand": "eax",
+                "memory_role": "global_writable_pointer_slot",
+                "memory_rva": 0xD000,
+                "status": "unresolved",
+                "source": {
+                    "kind": "memory",
+                    "memory_role": "global_writable_pointer_slot",
+                    "memory_rva": 0xD000,
+                },
+            },
+        }
+        candidate_callsite = copy.deepcopy(reference_callsite)
+        candidate_callsite["id"] = "callsite:global:e000"
+        candidate_callsite["target"]["memory_rva"] = 0xE000
+        candidate_callsite["target"]["source"]["memory_rva"] = 0xE000
+
+        delta = stage_a._contract_candidate_abi_callsite_signature_delta(
+            [reference_callsite],
+            [candidate_callsite],
+            [],
+            reference_function_index=[],
+            candidate_function_index=[],
+        )
+
+        self.assertEqual(delta["counts"]["reference_only_signatures"], 1)
+        self.assertEqual(delta["counts"]["candidate_only_signatures"], 1)
+        self.assertEqual(delta["reference_only"][0]["signature"]["target"]["memory_rva"], 0xD000)
+        self.assertEqual(delta["candidate_only"][0]["signature"]["target"]["memory_rva"], 0xE000)
 
     def test_contract_candidate_abi_coverage_gaps_report_function_and_callsite_mismatches(self):
         reference_abi = {

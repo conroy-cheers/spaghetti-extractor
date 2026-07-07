@@ -2113,7 +2113,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
             self.assertIn(".text$stage_b_jq_layout_pad", source)
-            self.assertIn(".fill 6379,1,0x90", source)
+            self.assertIn(".fill 6299,1,0x90", source)
             self.assertIn('((void *)stage_b_jq_layout_text_anchor)', source)
             self.assertIn("stage_b_jq_layout_bss_anchor[2516]", source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
@@ -5054,6 +5054,34 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("pFVar4 = (FILE *)(*local_448)();", source)
         self.assertNotIn("isoption((int)puVar23)", source)
 
+    def test_decompiled_c_renderer_recovers_jq_oniguruma_parse_depth_limit_argument(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "umain",
+                    "rva_start": 0x245E,
+                    "rva_end": 0x2490,
+                    "size": 0x32,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "uintptr_t umain(int argc,undefined4 *argv)",
+                                "{",
+                                "  onig_set_parse_depth_limit();",
+                                "  return 0;",
+                                "}",
+                            ]
+                        ),
+                    },
+                }
+            ],
+        )
+
+        self.assertIn("onig_set_parse_depth_limit(1024);", source)
+        self.assertNotIn("\n  onig_set_parse_depth_limit();\n", source)
+
     def test_decompiled_c_renderer_recovers_jq_umain_indirect_stream_arguments(self):
         source = _render_decompiled_c_source(
             target_name="jq",
@@ -7598,10 +7626,18 @@ class StageBTests(unittest.TestCase):
         self.assertIn("abi_callsite_coverage", classes)
         self.assertIn("abi_function_coverage", classes)
         self.assertIn("abi_callsite_function_coverage", classes)
+        self.assertIn("abi_callsite_signature_coverage", classes)
         self.assertIn("hidden_sret_or_out_param", classes)
         function_item = next(item for item in result if item["likely_repair_class"] == "abi_function_coverage")
         self.assertEqual(function_item["original_function"], "bar")
         self.assertEqual(function_item["generated_source_location"]["line_start"], 60)
+        signature_item = next(item for item in result if item["likely_repair_class"] == "abi_callsite_signature_coverage")
+        self.assertEqual(signature_item["original_function"], "foo")
+        self.assertEqual(signature_item["original_block"], "foo-0001")
+        self.assertIn("recover 1 missing callsite signature for foo", signature_item["next_action"])
+        self.assertIn("callsite-signature:0123456789abcdef", signature_item["next_action"])
+        self.assertIn("target import msvcrt.dll!malloc", signature_item["next_action"])
+        self.assertIn("example callsite:foo:1010", signature_item["next_action"])
         callsite_item = next(item for item in result if item["likely_repair_class"] == "abi_callsite_function_coverage")
         self.assertEqual(callsite_item["original_function"], "foo")
         self.assertEqual(callsite_item["generated_source_location"]["line_start"], 42)

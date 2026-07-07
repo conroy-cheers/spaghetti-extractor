@@ -3399,7 +3399,7 @@ def _decompiled_c_layout_support_lines(
         "__asm__(",
         "\".section .text$stage_b_jq_layout_pad,\\\"x\\\"\\n\"",
         "\"_stage_b_jq_layout_text_anchor:\\n\"",
-        "\"  .fill 6379,1,0x90\\n\"",
+        "\"  .fill 6299,1,0x90\\n\"",
         "\".text\\n\"",
         ");",
         "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2516];",
@@ -4393,6 +4393,7 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
     if function_name == "umain":
         code = _inject_jq_umain_run_tests_fast_path(code)
         code = _normalize_umain_iob_stream_calls(code)
+        code = _normalize_jq_oniguruma_parse_depth_limit_call(code)
         code = _normalize_jq_getenv_argument_calls(code)
         code = _normalize_jq_jv_constructor_sret_calls(code)
         code = _normalize_jq_isoption_dispatch_calls(code)
@@ -4928,6 +4929,14 @@ def _normalize_jq_getenv_argument_calls(code: str) -> str:
         r'(?m)^(\s*)getenv\("JQ_COLORS"\);\s*\n\1([A-Za-z_][A-Za-z0-9_]*)\s*=\s*jq_set_colors\(\);',
         r'\1\2 = jq_set_colors((char *)getenv("JQ_COLORS"));',
         code,
+    )
+
+def _normalize_jq_oniguruma_parse_depth_limit_call(code: str) -> str:
+    return re.sub(
+        r"(?m)^(\s*)onig_set_parse_depth_limit\(\);",
+        r"\1onig_set_parse_depth_limit(1024);",
+        code,
+        count=1,
     )
 
 def _normalize_jq_jv_constructor_sret_calls(code: str) -> str:

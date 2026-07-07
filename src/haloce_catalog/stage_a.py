@@ -4599,8 +4599,10 @@ def _contract_candidate_abi_coverage_gaps(
                     "matched_callsite_pairs": signature_delta["counts"]["matched_callsite_pairs"],
                     "alias_match": _contract_candidate_abi_alias_sample(alias_matches.get(name)),
                     "reference_callsite_samples": [_abi_callsite_gap_sample(item) for item in reference_callsites[:5]],
-                    "missing_callsite_signatures": signature_delta["unmatched_reference_signatures"][:8],
-                    "extra_candidate_callsite_signatures": signature_delta["unmatched_candidate_signatures"][:8],
+                    "missing_callsite_signatures": signature_delta["reference_only"][:8],
+                    "extra_candidate_callsite_signatures": signature_delta["candidate_only"][:8],
+                    "unmatched_reference_callsite_signatures": signature_delta["unmatched_reference_signatures"][:8],
+                    "unmatched_candidate_callsite_signatures": signature_delta["unmatched_candidate_signatures"][:8],
                     "callsite_signature_delta": signature_delta,
                 }
             )
@@ -4984,16 +4986,25 @@ def _abi_callsite_target_contract_signature(target: Any, function_index: list[di
     elif kind == "direct" and resolved_signature.get("target_rva") not in {None, ""}:
         signature["target_rva"] = resolved_signature.get("target_rva")
     if kind == "function_pointer":
-        for key in ("memory_role", "register", "operand", "status"):
+        memory_role = str(target.get("memory_role") or "")
+        for key in ("memory_role", "register", "status"):
             if target.get(key) not in {None, ""}:
                 signature[key] = target.get(key)
+        if memory_role != "stack_pointer_slot" and target.get("operand") not in {None, ""}:
+            signature["operand"] = target.get("operand")
+        if memory_role != "stack_pointer_slot" and target.get("memory_rva") not in {None, ""}:
+            signature["memory_rva"] = target.get("memory_rva")
         source = target.get("source") if isinstance(target.get("source"), dict) else {}
         if source:
             source_signature = {
                 key: source.get(key)
-                for key in ("kind", "address_class", "memory_role", "register", "stack_offset")
+                for key in ("kind", "address_class", "memory_role", "register")
                 if source.get(key) not in {None, ""}
             }
+            if memory_role != "stack_pointer_slot":
+                for key in ("stack_offset", "memory_rva"):
+                    if source.get(key) not in {None, ""}:
+                        source_signature[key] = source.get(key)
             if source_signature:
                 signature["source"] = source_signature
     return signature
@@ -7145,17 +7156,26 @@ def _abi_call_target(
     if target_rva is not None:
         return {"kind": "direct", "target_rva": target_rva}
     if len(insn.operands) == 1 and insn.operands[0].type in {X86_OP_REG, X86_OP_MEM}:
-        if insn.operands[0].type == X86_OP_REG:
+        operand = insn.operands[0]
+        if operand.type == X86_OP_REG:
             register_name = insn.reg_name(insn.operands[0].reg)
             resolved = _abi_register_call_target(binary, register_name, register_definitions)
             if resolved is not None:
                 return resolved
-        return {
+        target = {
             "kind": "function_pointer",
             "operand": insn.op_str,
             "recoverable_targets": [],
             "status": "unresolved",
         }
+        if operand.type == X86_OP_MEM:
+            source = _abi_operand_argument_source(binary, insn, operand, register_definitions)
+            target["source"] = source
+            if source.get("memory_role") not in {None, ""}:
+                target["memory_role"] = source.get("memory_role")
+            if source.get("memory_rva") not in {None, ""}:
+                target["memory_rva"] = source.get("memory_rva")
+        return target
     return {"kind": "unknown", "status": "unresolved"}
 
 

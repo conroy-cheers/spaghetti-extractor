@@ -2688,6 +2688,20 @@ def _stage_b_abi_coverage_gap_items(
         name = sample.get("name")
         if not isinstance(name, str) or not name:
             continue
+        for signature_item in _stage_b_missing_callsite_signature_items(sample):
+            items.append(
+                _stage_b_repair_item(
+                    family="abi_callsites",
+                    function=name,
+                    block_id=_stage_b_missing_callsite_signature_block_id(signature_item),
+                    source_map=source_map,
+                    repair_class=_stage_b_missing_callsite_signature_repair_class(signature_item),
+                    next_action=_stage_b_missing_callsite_signature_next_action(name, signature_item),
+                    evidence={"coverage_gap": sample, "missing_callsite_signature": signature_item},
+                )
+            )
+            if len(items) >= limit:
+                return items
         items.append(
             _stage_b_repair_item(
                 family="abi_callsites",
@@ -2727,6 +2741,52 @@ def _stage_b_abi_coverage_gap_items(
             if len(items) >= limit:
                 return items
     return items
+
+
+def _stage_b_missing_callsite_signature_items(sample: dict[str, Any]) -> list[dict[str, Any]]:
+    signatures = sample.get("missing_callsite_signatures")
+    if not isinstance(signatures, list) or not signatures:
+        signature_delta = sample.get("callsite_signature_delta") if isinstance(sample.get("callsite_signature_delta"), dict) else {}
+        signatures = signature_delta.get("reference_only")
+        if not isinstance(signatures, list) or not signatures:
+            signatures = signature_delta.get("unmatched_reference_signatures")
+    if not isinstance(signatures, list):
+        return []
+    return [item for item in signatures if isinstance(item, dict)]
+
+
+def _stage_b_missing_callsite_signature_block_id(signature_item: dict[str, Any]) -> str | None:
+    callsite = _stage_b_missing_callsite_signature_example_callsite(signature_item)
+    block_id = callsite.get("block_id") if isinstance(callsite, dict) else None
+    return str(block_id) if isinstance(block_id, str) and block_id else None
+
+
+def _stage_b_missing_callsite_signature_repair_class(signature_item: dict[str, Any]) -> str:
+    signature = signature_item.get("signature") if isinstance(signature_item.get("signature"), dict) else {}
+    target = signature.get("target") if isinstance(signature.get("target"), dict) else {}
+    if target.get("kind") == "function_pointer":
+        return "function_pointer_callsite_coverage"
+    if target.get("kind") == "direct":
+        return "call_target_mismatch"
+    return "abi_callsite_signature_coverage"
+
+
+def _stage_b_missing_callsite_signature_next_action(name: str, signature_item: dict[str, Any]) -> str:
+    missing = signature_item.get("missing")
+    if missing not in {None, ""}:
+        signature_text = f"{missing} missing callsite signature{'s' if missing != 1 else ''}"
+    else:
+        signature_text = "missing callsite signature"
+    action = f"recover {signature_text} for {name}; preserve the target and argument shape, then rerun Stage A contract validation"
+    hint = _stage_b_missing_callsite_signature_hint({"missing_callsite_signatures": [signature_item]})
+    return f"{action}; {hint}" if hint else action
+
+
+def _stage_b_missing_callsite_signature_example_callsite(signature_item: dict[str, Any]) -> dict[str, Any]:
+    examples = signature_item.get("reference_examples") if isinstance(signature_item.get("reference_examples"), list) else []
+    example = examples[0] if examples and isinstance(examples[0], dict) else {}
+    callsite = example.get("callsite") if isinstance(example.get("callsite"), dict) else {}
+    return callsite if isinstance(callsite, dict) else {}
 
 
 def _stage_b_missing_callsite_next_action(name: str, sample: dict[str, Any]) -> str:
@@ -3785,6 +3845,7 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, int, int, str]:
         "missing_decompiler_body": 2,
         "section_gap_or_padding_coverage": 2,
         "abi_callsite_function_coverage": 2,
+        "abi_callsite_signature_coverage": 2,
         "function_pointer_callsite_coverage": 2,
         "pe_entrypoint_layout": 2,
         "pe_header_layout": 2,
@@ -6789,6 +6850,7 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
     if function_name == "umain":
         code = _inject_jq_umain_run_tests_fast_path(code)
         code = _normalize_umain_iob_stream_calls(code)
+        code = _normalize_jq_oniguruma_parse_depth_limit_call(code)
         code = _normalize_jq_getenv_argument_calls(code)
         code = _normalize_jq_jv_constructor_sret_calls(code)
         code = _normalize_jq_isoption_dispatch_calls(code)
@@ -7211,6 +7273,15 @@ def _normalize_jq_getenv_argument_calls(code: str) -> str:
         r'(?m)^(\s*)getenv\("JQ_COLORS"\);\s*\n\1([A-Za-z_][A-Za-z0-9_]*)\s*=\s*jq_set_colors\(\);',
         r'\1\2 = jq_set_colors((char *)getenv("JQ_COLORS"));',
         code,
+    )
+
+
+def _normalize_jq_oniguruma_parse_depth_limit_call(code: str) -> str:
+    return re.sub(
+        r"(?m)^(\s*)onig_set_parse_depth_limit\(\);",
+        r"\1onig_set_parse_depth_limit(1024);",
+        code,
+        count=1,
     )
 
 
