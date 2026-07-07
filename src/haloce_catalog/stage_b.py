@@ -6639,36 +6639,9 @@ def _decompiled_c_prototype(function: dict[str, Any]) -> str:
 
 
 def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
-    if function_name == "___mingw_printf":
-        return "\n".join(
-            [
-                "int __cdecl ___mingw_printf(byte *param_1,...)",
-                "{",
-                "  FILE *stream;",
-                "  int result;",
-                "  va_list args;",
-                "  va_start(args,param_1);",
-                "  stream = (FILE *)___acrt_iob_func(1);",
-                "  result = vfprintf(stream,(const char *)param_1,args);",
-                "  va_end(args);",
-                "  return result;",
-                "}",
-            ]
-        )
-    if function_name == "___mingw_fprintf":
-        return "\n".join(
-            [
-                "int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2,...)",
-                "{",
-                "  int result;",
-                "  va_list args;",
-                "  va_start(args,param_2);",
-                "  result = vfprintf(param_1,(const char *)param_2,args);",
-                "  va_end(args);",
-                "  return result;",
-                "}",
-            ]
-        )
+    mingw_variadic_print_replacement = _decompiled_c_mingw_variadic_print_replacement(function_name)
+    if mingw_variadic_print_replacement:
+        return mingw_variadic_print_replacement
     jq_value_abi_replacement = _decompiled_c_jq_value_abi_replacement(function_name)
     if jq_value_abi_replacement:
         return jq_value_abi_replacement
@@ -6722,6 +6695,46 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
     code = _normalize_ghidra_malformed_symbol_fragments(code)
     code = re.sub(r"(?m)^(\s*)return\s*;\s*$", r"\1return 0;", code)
     return code
+
+
+def _decompiled_c_mingw_variadic_print_replacement(function_name: str) -> str:
+    replacements = {
+        "___mingw_printf": "\n".join(
+            [
+                "int __cdecl ___mingw_printf(byte *param_1,...)",
+                "{",
+                "  FILE *stream;",
+                "  int result;",
+                "  va_list args;",
+                "  va_start(args,param_1);",
+                "  stream = (FILE *)___acrt_iob_func(1);",
+                "  __lock_file(stream);",
+                "  stream = (FILE *)___acrt_iob_func(1);",
+                "  result = ___mingw_pformat(0x6000,stream,0,param_1,(float10 *)args);",
+                "  stream = (FILE *)___acrt_iob_func(1);",
+                "  __unlock_file(stream);",
+                "  va_end(args);",
+                "  return result;",
+                "}",
+            ]
+        ),
+        "___mingw_fprintf": "\n".join(
+            [
+                "int __cdecl ___mingw_fprintf(FILE *param_1,byte *param_2,...)",
+                "{",
+                "  int result;",
+                "  va_list args;",
+                "  va_start(args,param_2);",
+                "  __lock_file(param_1);",
+                "  result = ___mingw_pformat(0x6000,param_1,0,param_2,(float10 *)args);",
+                "  __unlock_file(param_1);",
+                "  va_end(args);",
+                "  return result;",
+                "}",
+            ]
+        ),
+    }
+    return replacements.get(function_name, "")
 
 
 def _decompiled_c_jq_value_abi_replacement(function_name: str) -> str:

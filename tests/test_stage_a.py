@@ -2138,6 +2138,38 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(inventory["stack_args"][0]["source"]["stack_offset"], 0)
         self.assertEqual(inventory["stack_args"][0]["role"], "immediate")
 
+    def test_abi_string_literals_ignore_executable_section_bytes(self):
+        class FakePE:
+            def get_data(self, rva: int, size: int) -> bytes:
+                if rva == 0x6000:
+                    return b"hello\0"
+                if rva == 0xE000:
+                    return b"hello\0"
+                return b""
+
+        binary = stage_a.StageABinary(
+            path=Path("candidate.exe"),
+            sha256="",
+            size=0,
+            machine="i386",
+            bitness=32,
+            image_base=0x400000,
+            entrypoint_rva=0x1000,
+            size_of_image=0x20000,
+            subsystem="console",
+            sections=(
+                stage_a.StageASection(".text", 0x1000, 0xC500, 0, 0xB500, 0, True, True, False, True),
+                stage_a.StageASection(".rdata", 0xE000, 0xE100, 0, 0x100, 0, False, True, False, False),
+            ),
+            imports=(),
+            pe=FakePE(),
+        )
+
+        self.assertIsNone(stage_a._abi_string_literal_at_rva(binary, 0x6000))
+        literal = stage_a._abi_string_literal_at_rva(binary, 0xE000)
+        self.assertIsNotNone(literal)
+        self.assertEqual(literal["text"], "hello")
+
     def test_abi_callsites_recover_x86_internal_register_arguments_from_direct_target_entry(self):
         class FakePE:
             def __init__(self, data: bytes):

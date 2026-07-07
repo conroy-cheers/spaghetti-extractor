@@ -6640,7 +6640,7 @@ def _abi_value_to_rva(binary: StageABinary, value: int) -> int | None:
 
 def _abi_string_literal_at_rva(binary: StageABinary, rva: int) -> dict[str, Any] | None:
     section = _section_for_rva(binary, rva)
-    if section is None or not section.readable:
+    if section is None or not section.readable or section.executable:
         return None
     data = binary.pe.get_data(rva, 256)
     if not data:
