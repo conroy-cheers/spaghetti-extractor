@@ -2454,6 +2454,13 @@ def _render_decompiled_c_source(
         "#define STAGE_B_SET_PART(value, offset, size, replacement) \\",
         "    do { (value) = (__typeof__(value))stage_b_part_set_u64((uint64_t)(value), (offset), (size), (uint64_t)(uintptr_t)(replacement)); } while (0)",
         "#define STAGE_B_PART_LVALUE(value, offset, type) (*((type *)((unsigned char *)&(value) + (offset))))",
+        "#define STAGE_B_JQ_CALL_IOB_SLOT(slot, stream) \\",
+        "    ({ FILE *stage_b_result; \\",
+        "       __asm__ __volatile__(\"movl %1, (%%esp)\\n\\tcall *%2\" \\",
+        "           : \"=a\"(stage_b_result) \\",
+        "           : \"ri\"((int)(stream)), \"m\"(slot) \\",
+        "           : \"ecx\", \"edx\", \"memory\", \"cc\"); \\",
+        "       stage_b_result; })",
         "",
         "uintptr_t __cdecl jv_mem_alloc(size_t);",
         "static unsigned stage_b_jq_isoption_index;",
@@ -3392,7 +3399,7 @@ def _decompiled_c_layout_support_lines(
         "__asm__(",
         "\".section .text$stage_b_jq_layout_pad,\\\"x\\\"\\n\"",
         "\"_stage_b_jq_layout_text_anchor:\\n\"",
-        "\"  .fill 6443,1,0x90\\n\"",
+        "\"  .fill 6379,1,0x90\\n\"",
         "\".text\\n\"",
         ");",
         "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2516];",
@@ -4278,6 +4285,7 @@ _DECOMPILED_C_RESERVED_IDENTIFIERS = {
     "ROUND",
     "STAGE_B_PART",
     "STAGE_B_PART_LVALUE",
+    "STAGE_B_JQ_CALL_IOB_SLOT",
     "STAGE_B_SET_PART",
     "SUB104",
     "SUB84",
@@ -4986,7 +4994,88 @@ def _normalize_jq_isoption_dispatch_calls(code: str) -> str:
         code,
     )
     code = code.replace("pFVar4 = (FILE *)(*local_448)();", "pFVar4 = (FILE *)(*local_448)(2);")
+    code = _normalize_jq_output_close_stream_calls(code)
+    code = _normalize_jq_late_option_error_stream_calls(code)
+    code = _normalize_jq_binary_mode_stream_calls(code)
     return code.replace("isoption((int)puVar23)", "stage_b_jq_isoption_next(&apcStack_3c[0], (int)puVar23)")
+
+def _normalize_jq_output_close_stream_calls(code: str) -> str:
+    code = re.sub(
+        r"(?m)^(\s*)pFVar4 = \(FILE \*\)\(\*local_448\)\(2\);\s*\n"
+        r"\1iVar5 = ferror\(pFVar4\);\s*\n"
+        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);",
+        r"\1pFVar4 = (FILE *)(*local_448)(2);\n"
+        r"\1iVar5 = ferror(pFVar4);\n"
+        r"\1pFVar4 = (FILE *)(*pcVar34)(2);",
+        code,
+    )
+    return re.sub(
+        r"(?m)^(\s*)piVar9 = _errno\(\);\s*\n"
+        r"\1strerror\(\*piVar9\);\s*\n"
+        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);",
+        r"\1piVar9 = _errno();\n"
+        r"\1strerror(*piVar9);\n"
+        r"\1pFVar4 = (FILE *)(*pcVar34)(2);",
+        code,
+    )
+
+def _normalize_jq_binary_mode_stream_calls(code: str) -> str:
+    pattern = re.compile(
+        r"(?m)^(\s*)pFVar4 = \(FILE \*\)\(\*local_448\)\(2\);\s*\n"
+        r"\1fflush\(pFVar4\);\s*\n"
+        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
+        r"\1fflush\(pFVar4\);\s*\n"
+        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
+        r"\1fileno\(pFVar4\);\s*\n"
+        r"\1pcVar2 = pcStack_430;\s*\n"
+        r"\1\(\*pcStack_430\)\(\);\s*\n"
+        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
+        r"\1fileno\(pFVar4\);\s*\n"
+        r"\1\(\*pcVar2\)\(\);\s*\n"
+        r"\1pFVar4 = \(FILE \*\)\(\*pcVar34\)\(\);\s*\n"
+        r"\1fileno\(pFVar4\);\s*\n"
+        r"\1\(\*pcVar2\)\(\);"
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        indent = match.group(1)
+        lines = [
+            "pFVar4 = (FILE *)(*local_448)(1);",
+            "fflush(pFVar4);",
+            "pFVar4 = (FILE *)(*pcVar34)(2);",
+            "fflush(pFVar4);",
+            "pFVar4 = (FILE *)(*pcVar34)(0);",
+            "iVar5 = fileno(pFVar4);",
+            "pcVar2 = pcStack_430;",
+            "(*pcStack_430)(iVar5,0x8000);",
+            "pFVar4 = (FILE *)(*pcVar34)(1);",
+            "iVar5 = fileno(pFVar4);",
+            "(*pcVar2)(iVar5,0x8000);",
+            "pFVar4 = (FILE *)(*pcVar34)(2);",
+            "iVar5 = fileno(pFVar4);",
+            "(*pcVar2)(iVar5,0x8000);",
+        ]
+        return "\n".join(f"{indent}{line}" for line in lines)
+
+    return pattern.sub(replace, code, count=1)
+
+def _normalize_jq_late_option_error_stream_calls(code: str) -> str:
+    literals = [
+        r'"jq: --%s takes two parameters \(e\.g\. --%s varname filename\)\\n"',
+        r'"jq: Unknown option --%s\\n"',
+        r'"jq: Unknown option -%c\\n"',
+    ]
+    for literal in literals:
+        code = re.sub(
+            r"(?m)^(\s*)pFVar4 = \(FILE \*\)\(\*local_448\)\(2\);\s*\n"
+            r"(\s*___mingw_fprintf\(pFVar4,\(byte \*\)(?:\s*\n\s*)?"
+            + literal
+            + r")",
+            r"\1pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);\n\2",
+            code,
+            count=1,
+        )
+    return code
 
 def _render_skeleton_readme(target_name: str, source_language: str, implementation_mode: str) -> str:
     if implementation_mode == "decompiled-c":

@@ -2113,7 +2113,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
             self.assertIn(".text$stage_b_jq_layout_pad", source)
-            self.assertIn(".fill 6443,1,0x90", source)
+            self.assertIn(".fill 6379,1,0x90", source)
             self.assertIn('((void *)stage_b_jq_layout_text_anchor)', source)
             self.assertIn("stage_b_jq_layout_bss_anchor[2516]", source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
@@ -5054,6 +5054,88 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("pFVar4 = (FILE *)(*local_448)();", source)
         self.assertNotIn("isoption((int)puVar23)", source)
 
+    def test_decompiled_c_renderer_recovers_jq_umain_indirect_stream_arguments(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "umain",
+                    "rva_start": 0x245E,
+                    "rva_end": 0x2490,
+                    "size": 0x32,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "uintptr_t umain(int argc,undefined4 *argv)",
+                                "{",
+                                "  code *local_448;",
+                                "  code *pcVar34;",
+                                "  code *pcStack_430;",
+                                "  code *pcVar2;",
+                                "  FILE *pFVar4;",
+                                "  int *piVar9;",
+                                "  int iVar5;",
+                                "  int iVar11;",
+                                "  ___acrt_iob_func();",
+                                "  ___acrt_iob_func();",
+                                "  ___acrt_iob_func();",
+                                "  ___acrt_iob_func();",
+                                "  pcVar34 = local_448;",
+                                "  pFVar4 = (FILE *)(*local_448)();",
+                                "  iVar5 = ferror(pFVar4);",
+                                "  pFVar4 = (FILE *)(*pcVar34)();",
+                                "  iVar11 = fclose(pFVar4);",
+                                "  piVar9 = _errno();",
+                                "  strerror(*piVar9);",
+                                "  pFVar4 = (FILE *)(*pcVar34)();",
+                                "  ___mingw_fprintf(pFVar4,(byte *)\"jq: error: writing output failed: %s\\n\");",
+                                "  pFVar4 = (FILE *)(*local_448)();",
+                                "  ___mingw_fprintf(pFVar4,(byte *)",
+                                "                  \"jq: --%s takes two parameters (e.g. --%s varname filename)\\n\"",
+                                "          );",
+                                "  pFVar4 = (FILE *)(*local_448)();",
+                                "  ___mingw_fprintf(pFVar4,(byte *)\"jq: Unknown option --%s\\n\");",
+                                "  pFVar4 = (FILE *)(*local_448)();",
+                                "  ___mingw_fprintf(pFVar4,(byte *)\"jq: Unknown option -%c\\n\");",
+                                "  pFVar4 = (FILE *)(*local_448)();",
+                                "  fflush(pFVar4);",
+                                "  pFVar4 = (FILE *)(*pcVar34)();",
+                                "  fflush(pFVar4);",
+                                "  pFVar4 = (FILE *)(*pcVar34)();",
+                                "  fileno(pFVar4);",
+                                "  pcVar2 = pcStack_430;",
+                                "  (*pcStack_430)();",
+                                "  pFVar4 = (FILE *)(*pcVar34)();",
+                                "  fileno(pFVar4);",
+                                "  (*pcVar2)();",
+                                "  pFVar4 = (FILE *)(*pcVar34)();",
+                                "  fileno(pFVar4);",
+                                "  (*pcVar2)();",
+                                "  return 0;",
+                                "}",
+                            ]
+                        ),
+                    },
+                }
+            ],
+        )
+
+        self.assertIn("#define STAGE_B_JQ_CALL_IOB_SLOT(slot, stream)", source)
+        self.assertIn("pFVar4 = (FILE *)(*pcVar34)(2);\n  iVar11 = fclose(pFVar4);", source)
+        self.assertIn("pFVar4 = (FILE *)(*pcVar34)(2);\n  ___mingw_fprintf", source)
+        self.assertEqual(source.count("pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);"), 3)
+        self.assertIn("pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);\n  ___mingw_fprintf(pFVar4,(byte *)\n                  \"jq: --%s takes two parameters", source)
+        self.assertIn("pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);\n  ___mingw_fprintf(pFVar4,(byte *)\"jq: Unknown option --%s\\n\");", source)
+        self.assertIn("pFVar4 = STAGE_B_JQ_CALL_IOB_SLOT(local_448,2);\n  ___mingw_fprintf(pFVar4,(byte *)\"jq: Unknown option -%c\\n\");", source)
+        self.assertIn("pFVar4 = (FILE *)(*local_448)(1);\n  fflush(pFVar4);", source)
+        self.assertIn("pFVar4 = (FILE *)(*pcVar34)(0);\n  iVar5 = fileno(pFVar4);", source)
+        self.assertIn("(*pcStack_430)(iVar5,0x8000);", source)
+        self.assertEqual(source.count("(*pcVar2)(iVar5,0x8000);"), 2)
+        self.assertNotIn("pFVar4 = (FILE *)(*pcVar34)();", source)
+        self.assertNotIn("(*pcStack_430)();", source)
+        self.assertNotIn("(*pcVar2)();", source)
+
     def test_decompiled_c_renderer_normalizes_ghidra_bool_return_concats(self):
         source = _render_decompiled_c_source(
             target_name="jq",
@@ -7645,6 +7727,8 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(item["likely_repair_class"], "function_pointer_callsite_coverage")
         self.assertIn("target function pointer dword ptr [esp + 0x64]", item["next_action"])
         self.assertIn("arg0=2", item["next_action"])
+        self.assertIn("preserve indirect stack-slot call dword ptr [esp + 0x64]", item["next_action"])
+        self.assertIn("prevent compiler folding to a direct call", item["next_action"])
 
     def test_explain_delta_classifies_stack_out_param_as_scratch_buffer_verification(self):
         validation = {
