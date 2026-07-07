@@ -2423,6 +2423,90 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(gaps["incomplete_callsites"][0]["candidate_callsites"], 1)
         self.assertEqual(gaps["incomplete_callsites"][0]["reference_callsites"], 2)
 
+    def test_contract_candidate_abi_coverage_gaps_report_missing_callsite_signatures(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "_partial",
+                        "callsites": [
+                            {
+                                "id": "callsite:partial:1104",
+                                "block_id": "partial:0",
+                                "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "malloc"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "register"}],
+                                    "register_args": [],
+                                },
+                            },
+                            {
+                                "id": "callsite:partial:1110",
+                                "block_id": "partial:1",
+                                "target": {"kind": "import", "dll": "kernel32.dll", "symbol": "LeaveCriticalSection"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [
+                                        {
+                                            "index": 0,
+                                            "role": "immediate",
+                                            "source": {"kind": "immediate", "stack_offset": 0, "value": 2},
+                                        }
+                                    ],
+                                    "register_args": [],
+                                },
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "partial",
+                        "callsites": [
+                            {
+                                "id": "callsite:partial:2104",
+                                "block_id": "partial:0",
+                                "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "malloc"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "register"}],
+                                    "register_args": [],
+                                },
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        gap = gaps["incomplete_callsites"][0]
+        self.assertEqual(gap["matched_callsite_pairs"], 1)
+        self.assertEqual(gap["unmatched_reference_callsites"], 1)
+        self.assertEqual(gap["unmatched_candidate_callsites"], 0)
+        missing = gap["missing_callsite_signatures"][0]
+        self.assertRegex(missing["signature_id"], r"^callsite-signature:[0-9a-f]{16}$")
+        self.assertEqual(missing["missing"], 1)
+        self.assertEqual(missing["reference_count"], 1)
+        self.assertEqual(missing["candidate_count"], 0)
+        self.assertEqual(
+            missing["signature"]["target"],
+            {"kind": "import", "dll": "kernel32.dll", "symbol": "LeaveCriticalSection", "ordinal": ""},
+        )
+        self.assertEqual(missing["signature"]["argument_inventory"]["argument_count"], 1)
+        self.assertEqual(missing["signature"]["argument_inventory"]["stack_roles"], ["immediate"])
+        self.assertEqual(missing["signature"]["argument_inventory"]["stack_args"][0]["source"]["value"], 2)
+        self.assertEqual(missing["reference_examples"][0]["callsite"]["id"], "callsite:partial:1110")
+        self.assertEqual(gap["callsite_signature_delta"]["counts"]["reference_only_signatures"], 1)
+
     def test_contract_candidate_abi_coverage_gaps_report_function_and_callsite_mismatches(self):
         reference_abi = {
             "original": {

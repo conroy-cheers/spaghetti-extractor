@@ -2694,11 +2694,8 @@ def _stage_b_abi_coverage_gap_items(
                 function=name,
                 block_id=None,
                 source_map=source_map,
-                repair_class="abi_callsite_function_coverage",
-                next_action=(
-                    f"recover {sample.get('missing_callsites')} missing generated callsites for {name}; "
-                    "preserve call instructions and rerun Stage A contract validation"
-                ),
+                repair_class=_stage_b_missing_callsite_repair_class(sample),
+                next_action=_stage_b_missing_callsite_next_action(name, sample),
                 evidence={"coverage_gap": sample},
             )
         )
@@ -2730,6 +2727,106 @@ def _stage_b_abi_coverage_gap_items(
             if len(items) >= limit:
                 return items
     return items
+
+
+def _stage_b_missing_callsite_next_action(name: str, sample: dict[str, Any]) -> str:
+    action = (
+        f"recover {sample.get('missing_callsites')} missing generated callsites for {name}; "
+        "preserve call instructions and rerun Stage A contract validation"
+    )
+    hint = _stage_b_missing_callsite_signature_hint(sample)
+    return f"{action}; {hint}" if hint else action
+
+
+def _stage_b_missing_callsite_repair_class(sample: dict[str, Any]) -> str:
+    signature = _stage_b_first_missing_callsite_signature(sample)
+    target = signature.get("target") if isinstance(signature.get("target"), dict) else {}
+    if target.get("kind") == "function_pointer":
+        return "function_pointer_callsite_coverage"
+    if target.get("kind") == "direct":
+        return "call_target_mismatch"
+    return "abi_callsite_function_coverage"
+
+
+def _stage_b_missing_callsite_signature_hint(sample: dict[str, Any]) -> str:
+    signature_item = _stage_b_first_missing_callsite_signature_item(sample)
+    first = signature_item if isinstance(signature_item, dict) else {}
+    if not first:
+        return ""
+    signature = first.get("signature") if isinstance(first.get("signature"), dict) else {}
+    parts: list[str] = []
+    signature_id = first.get("signature_id")
+    if isinstance(signature_id, str) and signature_id:
+        parts.append(signature_id)
+    target_hint = _stage_b_callsite_target_signature_hint(signature.get("target"))
+    if target_hint:
+        parts.append(f"target {target_hint}")
+    inventory = signature.get("argument_inventory") if isinstance(signature.get("argument_inventory"), dict) else {}
+    if inventory.get("argument_count") is not None:
+        parts.append(f"{inventory.get('argument_count')} args")
+    argument_hint = _stage_b_callsite_argument_signature_hint(inventory)
+    if argument_hint:
+        parts.append(argument_hint)
+    examples = first.get("reference_examples") if isinstance(first.get("reference_examples"), list) else []
+    example = examples[0] if examples and isinstance(examples[0], dict) else {}
+    callsite = example.get("callsite") if isinstance(example.get("callsite"), dict) else {}
+    if isinstance(callsite.get("id"), str) and callsite.get("id"):
+        parts.append(f"example {callsite.get('id')}")
+    if not parts:
+        return ""
+    return "first missing signature: " + ", ".join(parts)
+
+
+def _stage_b_first_missing_callsite_signature(sample: dict[str, Any]) -> dict[str, Any]:
+    item = _stage_b_first_missing_callsite_signature_item(sample)
+    return item.get("signature") if isinstance(item.get("signature"), dict) else {}
+
+
+def _stage_b_first_missing_callsite_signature_item(sample: dict[str, Any]) -> dict[str, Any]:
+    signatures = sample.get("missing_callsite_signatures")
+    if not isinstance(signatures, list) or not signatures:
+        signature_delta = sample.get("callsite_signature_delta") if isinstance(sample.get("callsite_signature_delta"), dict) else {}
+        signatures = signature_delta.get("unmatched_reference_signatures")
+        if not isinstance(signatures, list) or not signatures:
+            signatures = signature_delta.get("reference_only") if isinstance(signature_delta.get("reference_only"), list) else []
+    first = signatures[0] if signatures and isinstance(signatures[0], dict) else {}
+    return first if isinstance(first, dict) else {}
+
+
+def _stage_b_callsite_argument_signature_hint(inventory: dict[str, Any]) -> str:
+    stack_args = inventory.get("stack_args") if isinstance(inventory.get("stack_args"), list) else []
+    hints: list[str] = []
+    for argument in stack_args[:4]:
+        if not isinstance(argument, dict):
+            continue
+        index = argument.get("index")
+        source = argument.get("source") if isinstance(argument.get("source"), dict) else {}
+        if source.get("value") is not None:
+            hints.append(f"arg{index}={source.get('value')}")
+    return " ".join(hints)
+
+
+def _stage_b_callsite_target_signature_hint(target: Any) -> str:
+    if not isinstance(target, dict) or not target:
+        return ""
+    kind = target.get("kind")
+    if kind == "import":
+        symbol = str(target.get("symbol") or "")
+        ordinal = str(target.get("ordinal") or "")
+        name = symbol or (f"ordinal:{ordinal}" if ordinal else "")
+        dll = str(target.get("dll") or "")
+        return f"import {dll}!{name}" if dll or name else "import"
+    if kind == "direct":
+        keys = target.get("resolved_match_keys") if isinstance(target.get("resolved_match_keys"), list) else []
+        if keys:
+            return "direct " + "/".join(str(item) for item in keys[:3])
+        if target.get("target_rva") is not None:
+            return f"direct rva {target.get('target_rva')}"
+        return "direct"
+    if kind == "function_pointer":
+        role = target.get("operand") or target.get("memory_role") or target.get("register") or ""
+        return f"function pointer {role}".strip()
+    return str(kind or "")
 
 
 def _stage_b_function_coverage_repair_class(function_name: str, source_location: dict[str, Any] | None = None) -> str:
@@ -3671,6 +3768,7 @@ def _stage_b_repair_rank(item: dict[str, Any]) -> tuple[int, int, int, str]:
         "missing_decompiler_body": 2,
         "section_gap_or_padding_coverage": 2,
         "abi_callsite_function_coverage": 2,
+        "function_pointer_callsite_coverage": 2,
         "pe_entrypoint_layout": 2,
         "pe_header_layout": 2,
         "pe_section_table_layout": 3,
@@ -6694,6 +6792,7 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
     code = re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*)\._(\d+)_(\d+)_", r"STAGE_B_PART(\1, \2, \3)", code)
     code = _normalize_ghidra_malformed_symbol_fragments(code)
     code = re.sub(r"(?m)^(\s*)return\s*;\s*$", r"\1return 0;", code)
+    code = _preserve_decompiled_c_call_boundary(code, function_name=function_name)
     return code
 
 
@@ -6937,6 +7036,30 @@ _DECOMPILED_C_ALLOCATOR_RETURN_FUNCTION_NAMES = {
     "jq_yyalloc",
     "jq_yyrealloc",
 }
+
+
+_DECOMPILED_C_CALL_BOUNDARY_FUNCTION_NAMES = {
+    "___acrt_iob_func",
+}
+
+
+def _preserve_decompiled_c_call_boundary(code: str, *, function_name: str) -> str:
+    if function_name not in _DECOMPILED_C_CALL_BOUNDARY_FUNCTION_NAMES:
+        return code
+    if "__attribute__((noinline, noipa, used))" in code:
+        return code
+    lines = code.splitlines()
+    signature = re.compile(r"\b" + re.escape(function_name) + r"\s*\(")
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if (
+            signature.search(line)
+            and not stripped.startswith(("extern ", "typedef ", "/*", "//"))
+            and not stripped.endswith(";")
+        ):
+            lines.insert(index, "__attribute__((noinline, noipa, used))")
+            return "\n".join(lines)
+    return code
 
 
 def _normalize_decompiled_allocator_return_values(code: str) -> str:

@@ -4570,23 +4570,8 @@ def _contract_candidate_abi_coverage_gaps(
         )
         if function_mismatch is not None:
             function_mismatches.append(function_mismatch)
-        candidate_callsite_count = max(
-            len(item.get("callsites", [])) if isinstance(item.get("callsites"), list) else 0
-            for item in candidates
-        )
-        if candidate_callsite_count < len(reference_callsites):
-            incomplete_callsites.append(
-                {
-                    "name": name,
-                    "match_key": key,
-                    "reference_callsites": len(reference_callsites),
-                    "candidate_callsites": candidate_callsite_count,
-                    "missing_callsites": len(reference_callsites) - candidate_callsite_count,
-                    "alias_match": _contract_candidate_abi_alias_sample(alias_matches.get(name)),
-                    "reference_callsite_samples": [_abi_callsite_gap_sample(item) for item in reference_callsites[:5]],
-                }
-            )
         candidate_callsites = best_candidate.get("callsites") if isinstance(best_candidate.get("callsites"), list) else []
+        candidate_callsite_count = len(candidate_callsites)
         callsite_pairs = _contract_candidate_abi_callsite_pairs(
             reference_callsites,
             candidate_callsites,
@@ -4594,6 +4579,31 @@ def _contract_candidate_abi_coverage_gaps(
             candidate_function_index=candidate_function_index,
             alias_matches=alias_matches,
         )
+        if candidate_callsite_count < len(reference_callsites):
+            signature_delta = _contract_candidate_abi_callsite_signature_delta(
+                reference_callsites,
+                candidate_callsites,
+                callsite_pairs,
+                reference_function_index=reference_function_index,
+                candidate_function_index=candidate_function_index,
+            )
+            incomplete_callsites.append(
+                {
+                    "name": name,
+                    "match_key": key,
+                    "reference_callsites": len(reference_callsites),
+                    "candidate_callsites": candidate_callsite_count,
+                    "missing_callsites": len(reference_callsites) - candidate_callsite_count,
+                    "unmatched_reference_callsites": signature_delta["counts"]["unmatched_reference_callsites"],
+                    "unmatched_candidate_callsites": signature_delta["counts"]["unmatched_candidate_callsites"],
+                    "matched_callsite_pairs": signature_delta["counts"]["matched_callsite_pairs"],
+                    "alias_match": _contract_candidate_abi_alias_sample(alias_matches.get(name)),
+                    "reference_callsite_samples": [_abi_callsite_gap_sample(item) for item in reference_callsites[:5]],
+                    "missing_callsite_signatures": signature_delta["unmatched_reference_signatures"][:8],
+                    "extra_candidate_callsite_signatures": signature_delta["unmatched_candidate_signatures"][:8],
+                    "callsite_signature_delta": signature_delta,
+                }
+            )
         for index, candidate_index, reference_callsite, candidate_callsite in callsite_pairs:
             callsite_mismatch = _contract_candidate_abi_callsite_mismatch(
                 name,
@@ -4742,6 +4752,279 @@ def _contract_candidate_abi_callsite_pairs(
             unused_reference_indexes.remove(reference_index)
             pairs.append((reference_index, reference_index, reference_callsite, candidate_callsites[reference_index]))
     return sorted(pairs, key=lambda item: item[0])
+
+
+def _contract_candidate_abi_callsite_signature_delta(
+    reference_callsites: list[Any],
+    candidate_callsites: list[Any],
+    callsite_pairs: list[tuple[int, int, dict[str, Any], dict[str, Any]]],
+    *,
+    reference_function_index: list[dict[str, Any]],
+    candidate_function_index: list[dict[str, Any]],
+) -> dict[str, Any]:
+    paired_reference_indexes = {reference_index for reference_index, _, _, _ in callsite_pairs}
+    paired_candidate_indexes = {candidate_index for _, candidate_index, _, _ in callsite_pairs}
+    reference_records = [
+        _abi_callsite_signature_record(index, callsite, reference_function_index)
+        for index, callsite in enumerate(reference_callsites)
+        if isinstance(callsite, dict)
+    ]
+    candidate_records = [
+        _abi_callsite_signature_record(index, callsite, candidate_function_index)
+        for index, callsite in enumerate(candidate_callsites)
+        if isinstance(callsite, dict)
+    ]
+    reference_groups = _abi_callsite_signature_groups(reference_records)
+    candidate_groups = _abi_callsite_signature_groups(candidate_records)
+
+    reference_only: list[dict[str, Any]] = []
+    candidate_only: list[dict[str, Any]] = []
+    for key in sorted(reference_groups):
+        reference_group = reference_groups[key]
+        candidate_group = candidate_groups.get(key)
+        candidate_count = int(candidate_group.get("count") or 0) if isinstance(candidate_group, dict) else 0
+        missing = int(reference_group.get("count") or 0) - candidate_count
+        if missing <= 0:
+            continue
+        reference_only.append(
+            {
+                "signature_id": reference_group["signature_id"],
+                "missing": missing,
+                "reference_count": reference_group["count"],
+                "candidate_count": candidate_count,
+                "signature": reference_group["signature"],
+                "reference_examples": reference_group["examples"],
+                "candidate_examples": candidate_group.get("examples", []) if isinstance(candidate_group, dict) else [],
+            }
+        )
+    for key in sorted(candidate_groups):
+        candidate_group = candidate_groups[key]
+        reference_group = reference_groups.get(key)
+        reference_count = int(reference_group.get("count") or 0) if isinstance(reference_group, dict) else 0
+        extra = int(candidate_group.get("count") or 0) - reference_count
+        if extra <= 0:
+            continue
+        candidate_only.append(
+            {
+                "signature_id": candidate_group["signature_id"],
+                "extra": extra,
+                "reference_count": reference_count,
+                "candidate_count": candidate_group["count"],
+                "signature": candidate_group["signature"],
+                "candidate_examples": candidate_group["examples"],
+                "reference_examples": reference_group.get("examples", []) if isinstance(reference_group, dict) else [],
+            }
+        )
+
+    unmatched_reference_records = [
+        record for record in reference_records if _abi_callsite_record_index(record) not in paired_reference_indexes
+    ]
+    unmatched_candidate_records = [
+        record for record in candidate_records if _abi_callsite_record_index(record) not in paired_candidate_indexes
+    ]
+    unmatched_reference_signatures = _abi_unmatched_callsite_signature_items(
+        unmatched_reference_records,
+        count_key="missing",
+        examples_key="reference_examples",
+    )
+    unmatched_candidate_signatures = _abi_unmatched_callsite_signature_items(
+        unmatched_candidate_records,
+        count_key="extra",
+        examples_key="candidate_examples",
+    )
+    return {
+        "counts": {
+            "reference_signatures": len(reference_groups),
+            "candidate_signatures": len(candidate_groups),
+            "reference_only_signatures": len(reference_only),
+            "candidate_only_signatures": len(candidate_only),
+            "unmatched_reference_signatures": len(unmatched_reference_signatures),
+            "unmatched_candidate_signatures": len(unmatched_candidate_signatures),
+            "matched_callsite_pairs": len(callsite_pairs),
+            "unmatched_reference_callsites": len(unmatched_reference_records),
+            "unmatched_candidate_callsites": len(unmatched_candidate_records),
+        },
+        "unmatched_reference_signatures": unmatched_reference_signatures[:24],
+        "unmatched_candidate_signatures": unmatched_candidate_signatures[:24],
+        "reference_only": reference_only[:24],
+        "candidate_only": candidate_only[:24],
+        "unmatched_reference_examples": unmatched_reference_records[:12],
+        "unmatched_candidate_examples": unmatched_candidate_records[:12],
+    }
+
+
+def _abi_unmatched_callsite_signature_items(
+    records: list[dict[str, Any]],
+    *,
+    count_key: str,
+    examples_key: str,
+) -> list[dict[str, Any]]:
+    groups = _abi_callsite_signature_groups(records)
+    items: list[dict[str, Any]] = []
+    for key in sorted(groups):
+        group = groups[key]
+        item = {
+            "signature_id": group["signature_id"],
+            count_key: group["count"],
+            "signature": group["signature"],
+            examples_key: group["examples"],
+        }
+        if count_key == "missing":
+            item["reference_count"] = group["count"]
+            item["candidate_count"] = 0
+        elif count_key == "extra":
+            item["reference_count"] = 0
+            item["candidate_count"] = group["count"]
+        items.append(item)
+    return items
+
+
+def _abi_callsite_signature_record(
+    index: int,
+    callsite: dict[str, Any],
+    function_index: list[dict[str, Any]],
+) -> dict[str, Any]:
+    signature = _abi_callsite_contract_signature(callsite, function_index)
+    signature_json = json.dumps(signature, sort_keys=True, separators=(",", ":"), default=str)
+    return {
+        "index": index,
+        "signature_id": f"callsite-signature:{sha256_bytes(signature_json.encode('utf-8'))[:16]}",
+        "signature": signature,
+        "callsite": _abi_callsite_gap_sample(callsite),
+    }
+
+
+def _abi_callsite_signature_groups(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for record in records:
+        signature = record.get("signature") if isinstance(record.get("signature"), dict) else {}
+        key = json.dumps(signature, sort_keys=True, separators=(",", ":"), default=str)
+        group = groups.setdefault(
+            key,
+            {
+                "signature_id": record.get("signature_id"),
+                "signature": signature,
+                "count": 0,
+                "examples": [],
+            },
+        )
+        group["count"] = int(group.get("count") or 0) + 1
+        examples = group.get("examples") if isinstance(group.get("examples"), list) else []
+        if len(examples) < 5:
+            examples.append({"index": record.get("index"), "callsite": record.get("callsite")})
+        group["examples"] = examples
+    return groups
+
+
+def _abi_callsite_record_index(record: dict[str, Any]) -> int:
+    index = record.get("index")
+    return index if isinstance(index, int) else -1
+
+
+def _abi_callsite_contract_signature(callsite: dict[str, Any], function_index: list[dict[str, Any]]) -> dict[str, Any]:
+    signature: dict[str, Any] = {}
+    target_signature = _abi_callsite_target_contract_signature(callsite.get("target"), function_index)
+    if target_signature:
+        signature["target"] = target_signature
+    inventory = _abi_argument_inventory_signature(callsite.get("argument_inventory"))
+    if inventory:
+        signature["argument_inventory"] = inventory
+    hidden = _abi_hidden_sret_contract_signature(callsite.get("hidden_sret_or_out_param_evidence"))
+    if hidden:
+        signature["hidden_sret_or_out_param"] = hidden
+    varargs = _abi_varargs_contract_signature(callsite.get("varargs_evidence"))
+    if varargs:
+        signature["varargs"] = varargs
+    function_pointer_targets = callsite.get("function_pointer_targets")
+    if isinstance(function_pointer_targets, list) and function_pointer_targets:
+        roles = []
+        for target in function_pointer_targets:
+            if not isinstance(target, dict):
+                continue
+            roles.append(
+                {
+                    key: target.get(key)
+                    for key in ("kind", "memory_role", "register", "target_rva", "status")
+                    if target.get(key) not in {None, ""}
+                }
+            )
+        signature["function_pointer_targets"] = {
+            "count": len(function_pointer_targets),
+            "roles": roles[:8],
+        }
+    return signature
+
+
+def _abi_callsite_target_contract_signature(target: Any, function_index: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(target, dict):
+        return {}
+    resolved_signature = _abi_target_signature_with_resolution(target, function_index)
+    import_signature = _abi_target_import_signature(resolved_signature)
+    if import_signature is not None:
+        dll, symbol, ordinal = import_signature
+        return {
+            "kind": "import",
+            "dll": dll,
+            "symbol": symbol,
+            "ordinal": ordinal,
+        }
+    kind = resolved_signature.get("kind")
+    signature: dict[str, Any] = {"kind": kind} if kind not in {None, ""} else {}
+    resolved_functions = resolved_signature.get("resolved_functions")
+    if isinstance(resolved_functions, list) and resolved_functions:
+        resolved_keys = sorted(
+            {
+                str(item.get("match_key") or "")
+                for item in resolved_functions
+                if isinstance(item, dict) and item.get("match_key")
+            }
+        )
+        if resolved_keys:
+            signature["resolved_match_keys"] = resolved_keys
+    elif kind == "direct" and resolved_signature.get("target_rva") not in {None, ""}:
+        signature["target_rva"] = resolved_signature.get("target_rva")
+    if kind == "function_pointer":
+        for key in ("memory_role", "register", "operand", "status"):
+            if target.get(key) not in {None, ""}:
+                signature[key] = target.get(key)
+        source = target.get("source") if isinstance(target.get("source"), dict) else {}
+        if source:
+            source_signature = {
+                key: source.get(key)
+                for key in ("kind", "address_class", "memory_role", "register", "stack_offset")
+                if source.get(key) not in {None, ""}
+            }
+            if source_signature:
+                signature["source"] = source_signature
+    return signature
+
+
+def _abi_hidden_sret_contract_signature(evidence: Any) -> dict[str, Any]:
+    if not isinstance(evidence, dict) or not evidence:
+        return {}
+    return {
+        key: evidence.get(key)
+        for key in ("status", "reason", "address_role")
+        if evidence.get(key) not in {None, ""}
+    }
+
+
+def _abi_varargs_contract_signature(evidence: Any) -> dict[str, Any]:
+    if not isinstance(evidence, dict) or not evidence:
+        return {}
+    signature = {
+        key: evidence.get(key)
+        for key in ("status", "import_symbol")
+        if evidence.get(key) not in {None, ""}
+    }
+    format_string = evidence.get("format_string") if isinstance(evidence.get("format_string"), dict) else {}
+    if format_string:
+        signature["format_string"] = {
+            key: format_string.get(key)
+            for key in ("status", "required_varargs", "observed_varargs", "missing_varargs")
+            if format_string.get(key) not in {None, ""}
+        }
+    return signature
 
 
 def _contract_candidate_abi_callsite_pair_score(
@@ -5150,12 +5433,45 @@ def _abi_argument_inventory_signature(inventory: Any) -> dict[str, Any]:
         "calling_convention": inventory.get("calling_convention"),
         "argument_count": inventory.get("argument_count"),
         "stack_roles": [item.get("role") for item in stack_args if isinstance(item, dict)],
+        "stack_args": [
+            _abi_stack_argument_signature(item)
+            for item in stack_args
+            if isinstance(item, dict)
+        ],
         "register_roles": [
             {"register": item.get("register"), "role": item.get("role")}
             for item in register_args
             if isinstance(item, dict)
         ],
     }
+
+
+def _abi_stack_argument_signature(argument: dict[str, Any]) -> dict[str, Any]:
+    signature = {
+        key: argument.get(key)
+        for key in ("index", "role")
+        if argument.get(key) not in {None, ""}
+    }
+    source = argument.get("source") if isinstance(argument.get("source"), dict) else {}
+    if source:
+        source_signature = {
+            key: source.get(key)
+            for key in ("kind", "stack_offset", "memory_role")
+            if source.get(key) not in {None, ""}
+        }
+        value = source.get("value")
+        if isinstance(value, (int, str)) and not isinstance(value, bool):
+            source_signature["value"] = value
+        string_literal = source.get("string_literal") if isinstance(source.get("string_literal"), dict) else {}
+        if string_literal:
+            source_signature["string_literal"] = {
+                key: string_literal.get(key)
+                for key in ("rva", "size", "sha256", "text")
+                if string_literal.get(key) not in {None, ""}
+            }
+        if source_signature:
+            signature["source"] = source_signature
+    return signature
 
 
 _ABI_ADDRESS_LIKE_ARGUMENT_ROLES = {

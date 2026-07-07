@@ -2113,7 +2113,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
             self.assertIn(".text$stage_b_jq_layout_pad", source)
-            self.assertIn(".fill 6555,1,0x90", source)
+            self.assertIn(".fill 6443,1,0x90", source)
             self.assertIn('((void *)stage_b_jq_layout_text_anchor)', source)
             self.assertIn("stage_b_jq_layout_bss_anchor[2516]", source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
@@ -4858,6 +4858,37 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("___acrt_iob_func)();", source)
         self.assertNotIn("puVar1)();", source)
 
+    def test_decompiled_c_renderer_preserves_acrt_iob_func_call_boundary(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "___acrt_iob_func",
+                    "rva_start": 0xC360,
+                    "rva_end": 0xC377,
+                    "size": 0x17,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "\n".join(
+                            [
+                                "int __cdecl ___acrt_iob_func(int param_1)",
+                                "{",
+                                "  int iVar1;",
+                                "  iVar1 = ___iob_func();",
+                                "  return iVar1 + param_1 * 0x20;",
+                                "}",
+                            ]
+                        ),
+                    },
+                }
+            ],
+        )
+
+        self.assertIn(
+            "__attribute__((noinline, noipa, used))\nint __cdecl ___acrt_iob_func(int param_1)",
+            source,
+        )
+
     def test_decompiled_c_renderer_recovers_jq_set_colors_getenv_argument(self):
         source = _render_decompiled_c_source(
             target_name="jq",
@@ -7394,6 +7425,41 @@ class StageBTests(unittest.TestCase):
                                     "candidate_callsites": 1,
                                     "missing_callsites": 2,
                                     "reference_callsite_samples": [{"id": "callsite:foo:1000"}],
+                                    "missing_callsite_signatures": [
+                                        {
+                                            "signature_id": "callsite-signature:0123456789abcdef",
+                                            "missing": 1,
+                                            "reference_count": 1,
+                                            "candidate_count": 0,
+                                            "signature": {
+                                                "target": {
+                                                    "kind": "import",
+                                                    "dll": "msvcrt.dll",
+                                                    "symbol": "malloc",
+                                                    "ordinal": "",
+                                                },
+                                                "argument_inventory": {
+                                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                                    "argument_count": 1,
+                                                    "stack_roles": ["register"],
+                                                    "stack_args": [
+                                                        {
+                                                            "index": 0,
+                                                            "role": "immediate",
+                                                            "source": {"kind": "immediate", "stack_offset": 0, "value": 2},
+                                                        }
+                                                    ],
+                                                    "register_roles": [],
+                                                },
+                                            },
+                                            "reference_examples": [
+                                                {
+                                                    "index": 2,
+                                                    "callsite": {"id": "callsite:foo:1010", "block_id": "foo-0001"},
+                                                }
+                                            ],
+                                        }
+                                    ],
                                 }
                             ],
                             "counts": {
@@ -7457,6 +7523,10 @@ class StageBTests(unittest.TestCase):
         callsite_item = next(item for item in result if item["likely_repair_class"] == "abi_callsite_function_coverage")
         self.assertEqual(callsite_item["original_function"], "foo")
         self.assertEqual(callsite_item["generated_source_location"]["line_start"], 42)
+        self.assertIn("callsite-signature:0123456789abcdef", callsite_item["next_action"])
+        self.assertIn("target import msvcrt.dll!malloc", callsite_item["next_action"])
+        self.assertIn("arg0=2", callsite_item["next_action"])
+        self.assertIn("example callsite:foo:1010", callsite_item["next_action"])
         hidden_item = next(item for item in result if item["likely_repair_class"] == "hidden_sret_or_out_param")
         self.assertEqual(hidden_item["original_function"], "foo")
         self.assertEqual(hidden_item["generated_source_location"]["file"], "src/jq_stage_b_skeleton.c")
@@ -7506,6 +7576,75 @@ class StageBTests(unittest.TestCase):
         self.assertIn("0 functions, 8 callsites", coverage_item["next_action"])
         self.assertIn("missing callsites or mismatched call targets", coverage_item["next_action"])
         self.assertNotIn("missing linker-root/function coverage", coverage_item["next_action"])
+
+    def test_explain_delta_classifies_missing_function_pointer_callsites(self):
+        validation = {
+            "families": [
+                {
+                    "family": "abi_callsites",
+                    "status": "incomplete",
+                    "evidence": {
+                        "reference_counts": {"functions": 1, "callsites": 2},
+                        "candidate_counts": {"functions": 1, "callsites": 1},
+                        "coverage_gaps": {
+                            "incomplete_callsites": [
+                                {
+                                    "name": "umain",
+                                    "match_key": "umain",
+                                    "reference_callsites": 2,
+                                    "candidate_callsites": 1,
+                                    "missing_callsites": 1,
+                                    "missing_callsite_signatures": [
+                                        {
+                                            "signature_id": "callsite-signature:feedfacefeedface",
+                                            "missing": 1,
+                                            "signature": {
+                                                "target": {
+                                                    "kind": "function_pointer",
+                                                    "operand": "dword ptr [esp + 0x64]",
+                                                    "status": "unresolved",
+                                                },
+                                                "argument_inventory": {
+                                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                                    "argument_count": 1,
+                                                    "stack_roles": ["immediate"],
+                                                    "stack_args": [
+                                                        {
+                                                            "index": 0,
+                                                            "role": "immediate",
+                                                            "source": {"kind": "immediate", "value": 2},
+                                                        }
+                                                    ],
+                                                    "register_roles": [],
+                                                },
+                                            },
+                                            "reference_examples": [
+                                                {"index": 1, "callsite": {"id": "callsite:umain-0190:4479"}}
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                            "counts": {"incomplete_callsite_functions": 1, "missing_callsites": 1},
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+        )
+
+        item = next(item for item in result if item["original_function"] == "umain")
+        self.assertEqual(item["likely_repair_class"], "function_pointer_callsite_coverage")
+        self.assertIn("target function pointer dword ptr [esp + 0x64]", item["next_action"])
+        self.assertIn("arg0=2", item["next_action"])
 
     def test_explain_delta_classifies_stack_out_param_as_scratch_buffer_verification(self):
         validation = {
