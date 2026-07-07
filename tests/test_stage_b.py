@@ -2112,9 +2112,14 @@ class StageBTests(unittest.TestCase):
             self.assertIn("extern uintptr_t initterm();", source)
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
-            self.assertIn("stage_b_jq_layout_bss_anchor[2517]", source)
+            self.assertIn(".text$stage_b_jq_layout_pad", source)
+            self.assertIn(".fill 6331,1,0x90", source)
+            self.assertIn('((void *)stage_b_jq_layout_text_anchor)', source)
+            self.assertIn("stage_b_jq_layout_bss_anchor[2516]", source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
-            self.assertIn("stage_b_jq_layout_rdata_anchor[1696]", source)
+            self.assertIn("stage_b_jq_layout_rdata_anchor[1712]", source)
+            self.assertIn('((void *)stage_b_jq_layout_bss_anchor)', source)
+            self.assertNotIn("stage_b_jq_layout_tls_anchor", source)
             self.assertIn("__crt_atexit((void *)0);", source)
             self.assertNotIn("  atexit((void *)0);", source)
             self.assertIn("local_28.BaseAddress = ___acrt_iob_func;", source)
@@ -6887,6 +6892,55 @@ class StageBTests(unittest.TestCase):
             _count_by_evidence_source(result),
             {"stage-a-contract-candidate-validation": 2, "stage-a-unit-contract": 1},
         )
+
+    def test_explain_delta_suppresses_unit_backlog_for_satisfied_candidate_families(self):
+        validation = {
+            "families": [
+                {"family": "function_ranges", "status": "satisfied"},
+                {"family": "import_thunks", "status": "satisfied"},
+                {"family": "abi_callsites", "status": "incomplete"},
+            ]
+        }
+        unit_contracts = {
+            "repair_units": {
+                "work_items": [
+                    {
+                        "id": "work:function:runtime-entry",
+                        "family": "function_ranges",
+                        "original_function": "__dyn_tls_init@12",
+                        "repair_class": "tls_callback_abi",
+                    },
+                    {
+                        "id": "work:import-thunk:__iob_func",
+                        "family": "import_thunks",
+                        "original_function": "__iob_func",
+                        "repair_class": "import_prototype_mismatch",
+                    },
+                    {
+                        "id": "work:abi:__Balloc_D2A",
+                        "family": "abi_callsites",
+                        "original_function": "__Balloc_D2A",
+                        "repair_class": "hidden_sret_or_out_param",
+                    },
+                ]
+            }
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+            unit_contracts=unit_contracts,
+        )
+
+        unit_items = [item for item in result if item["evidence"].get("source") == "stage-a-unit-contract"]
+        self.assertEqual([item["original_function"] for item in unit_items], ["__Balloc_D2A"])
+        self.assertEqual(unit_items[0]["violated_contract_family"], "abi_callsites")
+        self.assertNotIn("function_ranges", {item["violated_contract_family"] for item in unit_items})
+        self.assertNotIn("import_thunks", {item["violated_contract_family"] for item in unit_items})
 
     def test_explain_delta_ranks_explicit_contract_gap_before_candidate_abi_sample(self):
         validation = {

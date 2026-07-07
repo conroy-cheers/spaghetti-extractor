@@ -1970,14 +1970,18 @@ def _stage_b_unit_contract_repair_items(
         return []
     repair_units = unit_contracts.get("repair_units") if isinstance(unit_contracts.get("repair_units"), dict) else {}
     work_items = repair_units.get("work_items") if isinstance(repair_units.get("work_items"), list) else []
+    satisfied_families = _stage_b_validation_satisfied_families(validation)
     items: list[dict[str, Any]] = []
     for work in work_items:
         if not isinstance(work, dict):
             continue
+        family = str(work.get("family") or "unit_contract")
+        if family in satisfied_families:
+            continue
         function = _stage_b_work_item_function(work)
         items.append(
             _stage_b_repair_item(
-                family=str(work.get("family") or "unit_contract"),
+                family=family,
                 function=function,
                 block_id=str(work.get("original_block") or "") or None,
                 source_map=source_map,
@@ -1998,6 +2002,18 @@ def _stage_b_unit_contract_repair_items(
     if not has_semantic_work_items:
         items.extend(_stage_b_semantic_contract_repair_items(unit_contracts, source_map))
     return items
+
+
+def _stage_b_validation_satisfied_families(validation: dict[str, Any]) -> set[str]:
+    families = validation.get("families") if isinstance(validation.get("families"), list) else []
+    result: set[str] = set()
+    for family in families:
+        if not isinstance(family, dict):
+            continue
+        name = family.get("family")
+        if isinstance(name, str) and family.get("status") in {"satisfied", "not_applicable"}:
+            result.add(name)
+    return result
 
 
 def _stage_b_semantic_contract_repair_items(
