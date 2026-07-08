@@ -33,6 +33,85 @@ STAGE_B_PROOF_RULE = "reproducible_stage_b_skeleton_reimplementation_v1"
 
 _DECOMPILED_C_RUNTIME_ENTRY_NAMES = frozenset({"WinMainCRTStartup", "___tmainCRTStartup", "mainCRTStartup", "___wgetmainargs"})
 _DECOMPILED_C_RUNTIME_ENTRY_POLICIES = frozenset({"bridge", "mingw-crt"})
+_DECOMPILED_C_MINGWEX_RUNTIME_FUNCTION_NAMES = frozenset(
+    {
+        "__lock_file",
+        "__matherr",
+        "__unlock_file",
+        "__d2b_D2A",
+        "__mingw_raise_matherr",
+        "__strcp_D2A",
+        "___Balloc_D2A",
+        "___Bfree_D2A",
+        "___b2d_D2A",
+        "___cmp_D2A",
+        "___d2b_D2A",
+        "___diff_D2A",
+        "___freedtoa",
+        "___gdtoa",
+        "___i2b_D2A",
+        "___lshift_D2A",
+        "___mingw_fprintf",
+        "___mingw_pformat",
+        "___mingw_printf",
+        "___mingw_setusermatherr",
+        "___mult_D2A",
+        "___multadd_D2A",
+        "___nrv_alloc_D2A",
+        "___pow5mult_D2A",
+        "___quorem_D2A",
+        "___rshift_D2A",
+        "___rv_alloc_D2A",
+        "___setusermatherr",
+        "___strcp_D2A",
+        "___trailz_D2A",
+        "_mbrlen",
+        "_mbrtowc",
+        "_mbsrtowcs",
+        "_strnlen",
+        "_wcrtomb",
+        "_wcsnlen",
+        "_wcsrtombs",
+        "dirname",
+        "wcslen",
+    }
+)
+_DECOMPILED_C_MINGWEX_C_SYMBOL_ALIASES = {
+    "__lock_file": "_lock_file",
+    "__matherr": "_matherr",
+    "__unlock_file": "_unlock_file",
+    "___Balloc_D2A": "__Balloc_D2A",
+    "___Bfree_D2A": "__Bfree_D2A",
+    "___b2d_D2A": "__b2d_D2A",
+    "___cmp_D2A": "__cmp_D2A",
+    "___d2b_D2A": "__d2b_D2A",
+    "___diff_D2A": "__diff_D2A",
+    "___freedtoa": "__freedtoa",
+    "___gdtoa": "__gdtoa",
+    "___i2b_D2A": "__i2b_D2A",
+    "___lshift_D2A": "__lshift_D2A",
+    "___mingw_fprintf": "__mingw_fprintf",
+    "___mingw_pformat": "__mingw_pformat",
+    "___mingw_printf": "__mingw_printf",
+    "___mingw_setusermatherr": "__mingw_setusermatherr",
+    "___mult_D2A": "__mult_D2A",
+    "___multadd_D2A": "__multadd_D2A",
+    "___nrv_alloc_D2A": "__nrv_alloc_D2A",
+    "___pow5mult_D2A": "__pow5mult_D2A",
+    "___quorem_D2A": "__quorem_D2A",
+    "___rshift_D2A": "__rshift_D2A",
+    "___rv_alloc_D2A": "__rv_alloc_D2A",
+    "___setusermatherr": "__setusermatherr",
+    "___strcp_D2A": "__strcp_D2A",
+    "___trailz_D2A": "__trailz_D2A",
+    "_mbrlen": "mbrlen",
+    "_mbrtowc": "mbrtowc",
+    "_mbsrtowcs": "mbsrtowcs",
+    "_strnlen": "strnlen",
+    "_wcrtomb": "wcrtomb",
+    "_wcsnlen": "wcsnlen",
+    "_wcsrtombs": "wcsrtombs",
+}
 _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
     {
         "_DllMainCRTStartup@12",
@@ -76,7 +155,7 @@ _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
         "mark_section_writable",
         "restore_modified_sections",
     }
-)
+) | _DECOMPILED_C_MINGWEX_RUNTIME_FUNCTION_NAMES
 _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES = frozenset(
     {
         "___dyn_tls_dtor_12",
@@ -2603,22 +2682,24 @@ def _render_decompiled_c_source(
         "    *cursor = value[1] == '\\0' ? (char *)0 : value + 1;",
         "    return 1;",
         "}",
-        "static int stage_b_jq_isoption_next(char **cursor, int short_mode) {",
+        "static int __attribute__((optimize(\"no-jump-tables\"))) stage_b_jq_isoption_next(char **cursor, int short_mode) {",
         "    unsigned index = stage_b_jq_isoption_index++;",
-        "    switch (index) {",
-        "    case 0:",
+        "    if (index == 0U) {",
         "        return stage_b_jq_isoption_match(cursor, short_mode, 'n', \"null-input\");",
-        "    case 30:",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"help\");",
-        "    case 31:",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, 'V', \"version\");",
-        "    case 32:",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"build-configuration\");",
-        "    case 33:",
-        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"run-tests\");",
-        "    default:",
-        "        return 0;",
         "    }",
+        "    if (index == 30U) {",
+        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"help\");",
+        "    }",
+        "    if (index == 31U) {",
+        "        return stage_b_jq_isoption_match(cursor, short_mode, 'V', \"version\");",
+        "    }",
+        "    if (index == 32U) {",
+        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"build-configuration\");",
+        "    }",
+        "    if (index == 33U) {",
+        "        return stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"run-tests\");",
+        "    }",
+        "    return 0;",
         "}",
         "",
     ]
@@ -3337,6 +3418,8 @@ def _decompiled_c_is_stack_probe_helper(function: dict[str, Any]) -> bool:
 def _decompiled_c_runtime_helper_alias_lines(functions: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     seen: set[str] = set()
+    for left, right in _decompiled_c_mingwex_c_symbol_alias_pairs(functions):
+        lines.append(f"#define {left} {right}")
     helper_symbols = _decompiled_c_runtime_helper_alias_symbol_names(functions)
     if helper_symbols:
         lines.extend(
@@ -3360,6 +3443,28 @@ def _decompiled_c_runtime_helper_alias_lines(functions: list[dict[str, Any]]) ->
         seen.add(left)
         lines.append(f"#define {left}() {right}")
     return lines
+
+def _decompiled_c_mingwex_c_symbol_alias_pairs(functions: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for function in functions:
+        names = [
+            str(function.get("name") or ""),
+            *[
+                str(alias)
+                for alias in (function.get("aliases") if isinstance(function.get("aliases"), list) else [])
+                if isinstance(alias, str)
+            ],
+        ]
+        for left in names:
+            right = _DECOMPILED_C_MINGWEX_C_SYMBOL_ALIASES.get(left)
+            if right is None or left in seen:
+                continue
+            if not _is_c_identifier(left) or not _is_c_identifier(right):
+                continue
+            seen.add(left)
+            pairs.append((left, right))
+    return pairs
 
 def _decompiled_c_runtime_helper_alias_symbol_names(functions: list[dict[str, Any]]) -> list[str]:
     symbols: list[str] = []
@@ -3472,48 +3577,17 @@ def _decompiled_c_layout_support_lines(
         "__asm__(",
         "\".section .text$stage_b_jq_layout_pad,\\\"x\\\"\\n\"",
         "\"_stage_b_jq_layout_text_anchor:\\n\"",
-        "\"  .fill 4811,1,0x90\\n\"",
+        "\"  .fill 4843,1,0x90\\n\"",
         "\".text\\n\"",
         ");",
         "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2508];",
         "__attribute__((used, aligned(1), section(\".data$stage_b_jq_layout_tail\"))) volatile unsigned char stage_b_jq_layout_data_tail[4] = {0};",
-        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1456] = {0};",
+        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1604] = {0};",
         "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
         "uintptr_t __cdecl jv_mem_alloc(size_t);",
-        "__attribute__((used, section(\".rdata$stage_b_jq_import_anchor\"))) static void * const stage_b_jq_import_anchor[] = {",
-        "    (void *)(uintptr_t)&AreFileApisANSI,",
-        "    (void *)(uintptr_t)&GetLastError,",
-        "    (void *)(uintptr_t)&GetModuleHandleA,",
-        "    (void *)(uintptr_t)&GetProcAddress,",
-        "    (void *)(uintptr_t)&IsDBCSLeadByteEx,",
-        "    (void *)(uintptr_t)&MultiByteToWideChar,",
-        "    (void *)(uintptr_t)&Sleep,",
-        "    (void *)(uintptr_t)&TlsGetValue,",
-        "    (void *)(uintptr_t)&VirtualProtect,",
-        "    (void *)(uintptr_t)&VirtualQuery,",
-        "    (void *)(uintptr_t)&WriteFile,",
-        "    (void *)&stage_b_jq_imp_SetUnhandledExceptionFilter,",
-        "    (void *)(uintptr_t)&_get_osfhandle,",
-        "    (void *)(uintptr_t)&isalpha,",
-        "    (void *)(uintptr_t)&jq_util_input_next_input_cb,",
-        "    (void *)(uintptr_t)&jv_dumpf,",
-        "    (void *)(uintptr_t)&jv_invalid_with_msg,",
-        "    (void *)(uintptr_t)&_initterm,",
-        "    (void *)(uintptr_t)&__p___winitenv,",
-        "    (void *)(uintptr_t)&__p__commode,",
-        "    (void *)(uintptr_t)&__p__fmode,",
-        "    (void *)(uintptr_t)&__set_app_type,",
-        "    (void *)(uintptr_t)&_amsg_exit,",
-        "    (void *)(uintptr_t)&_cexit,",
-        f"    (void *)(uintptr_t)&{atexit_import_anchor},",
-        "    (void *)(uintptr_t)&calloc,",
-        "    (void *)(uintptr_t)&fputs,",
-        "    (void *)(uintptr_t)&memcpy,",
-        "    (void *)(uintptr_t)&realloc,",
-        "    (void *)(uintptr_t)&signal,",
-        "    (void *)(uintptr_t)&strncmp,",
-        "};",
+        *_decompiled_c_jq_import_anchor_lines(atexit_import_anchor),
         *contract_anchor_lines,
+        *_decompiled_c_jq_layout_retention_anchor_lines(include_contract_anchor=bool(contract_anchor_lines)),
     ]
     if contract_anchor_lines:
         lines.extend(
@@ -3525,22 +3599,100 @@ def _decompiled_c_layout_support_lines(
     lines.extend(
         [
             "static void stage_b_layout_keepalive(void) {",
-            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_text_anchor) : \"memory\");",
-            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_import_anchor) : \"memory\");",
-            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_data_tail) : \"memory\");",
-            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_rdata_anchor) : \"memory\");",
-            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_bss_anchor) : \"memory\");",
+            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_anchor) : \"memory\");",
         ]
     )
-    if contract_anchor_lines:
-        lines.extend(
-            [
-                "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_contract_section_gap_anchor) : \"memory\");",
-            ]
-        )
     lines.extend(
         [
         "}",
+        ]
+    )
+    return lines
+
+
+def _decompiled_c_jq_layout_retention_anchor_lines(*, include_contract_anchor: bool) -> list[str]:
+    anchor_symbol = "stage_b_jq_layout_anchor"
+    anchor_asm_symbol = _decompiled_c_i686_c_asm_symbol(anchor_symbol)
+    targets = [
+        "_stage_b_jq_layout_text_anchor",
+        "_stage_b_jq_import_anchor",
+        "_stage_b_jq_layout_data_tail",
+        "_stage_b_jq_layout_rdata_anchor",
+        "_stage_b_jq_layout_bss_anchor",
+    ]
+    if include_contract_anchor:
+        targets.append("_stage_b_contract_section_gap_anchor")
+    lines = [
+        f"extern const int32_t {anchor_symbol}[];",
+        "__asm__(",
+        "\".section .rdata$stage_b_jq_layout_anchor,\\\"dr\\\"\\n\"",
+        f"\".globl {_c_asm_string_line(anchor_asm_symbol)}\\n\"",
+        f"\"{_c_asm_string_line(anchor_asm_symbol)}:\\n\"",
+    ]
+    lines.extend(
+        f"\"  .long {_c_asm_string_line(target)} - {_c_asm_string_line(anchor_asm_symbol)}\\n\""
+        for target in targets
+    )
+    lines.extend(
+        [
+            "\".text\\n\"",
+            ");",
+        ]
+    )
+    return lines
+
+
+def _decompiled_c_jq_import_anchor_lines(atexit_import_anchor: str) -> list[str]:
+    anchor_symbol = "stage_b_jq_import_anchor"
+    anchor_asm_symbol = _decompiled_c_i686_c_asm_symbol(anchor_symbol)
+    targets = [
+        "_AreFileApisANSI@0",
+        "_GetLastError@0",
+        "_GetModuleHandleA@4",
+        "_GetProcAddress@8",
+        "_IsDBCSLeadByteEx@8",
+        "_MultiByteToWideChar@24",
+        "_Sleep@4",
+        "_TlsGetValue@4",
+        "_VirtualProtect@16",
+        "_VirtualQuery@12",
+        "_WriteFile@20",
+        "__imp__SetUnhandledExceptionFilter@4",
+        "__get_osfhandle",
+        "_isalpha",
+        "_jq_util_input_next_input_cb",
+        "_jv_dumpf",
+        "_jv_invalid_with_msg",
+        "__initterm",
+        "___p___winitenv",
+        "___p__commode",
+        "___p__fmode",
+        "___set_app_type",
+        "__amsg_exit",
+        "__cexit",
+        _decompiled_c_i686_c_asm_symbol(atexit_import_anchor),
+        "_calloc",
+        "_fputs",
+        "_memcpy",
+        "_realloc",
+        "_signal",
+        "_strncmp",
+    ]
+    lines = [
+        f"extern const int32_t {anchor_symbol}[];",
+        "__asm__(",
+        "\".section .rdata$stage_b_jq_import_anchor,\\\"dr\\\"\\n\"",
+        f"\".globl {_c_asm_string_line(anchor_asm_symbol)}\\n\"",
+        f"\"{_c_asm_string_line(anchor_asm_symbol)}:\\n\"",
+    ]
+    lines.extend(
+        f"\"  .long {_c_asm_string_line(target)} - {_c_asm_string_line(anchor_asm_symbol)}\\n\""
+        for target in targets
+    )
+    lines.extend(
+        [
+            "\".text\\n\"",
+            ");",
         ]
     )
     return lines
@@ -3598,18 +3750,32 @@ def _decompiled_c_contract_retention_anchor_lines(symbols: list[str]) -> list[st
     names = _dedupe_strings([symbol for symbol in symbols if _is_c_identifier(symbol)])
     if not names:
         return []
+    anchor_symbol = "stage_b_contract_section_gap_anchor"
+    anchor_asm_symbol = _decompiled_c_i686_c_asm_symbol(anchor_symbol)
     lines = [
         f"uintptr_t __cdecl {name}();"
         for name in names
     ]
     lines.extend(
         [
+            f"extern const int32_t {anchor_symbol}[];",
             f"static const unsigned stage_b_contract_section_gap_anchor_count = {len(names)}U;",
-            "__attribute__((used, section(\".rdata$stage_b_contract_section_gap_anchor\"))) static void * const stage_b_contract_section_gap_anchor[] = {",
+            "__asm__(",
+            "\".section .rdata$stage_b_contract_section_gap_anchor,\\\"dr\\\"\\n\"",
+            f"\".globl {_c_asm_string_line(anchor_asm_symbol)}\\n\"",
+            f"\"{_c_asm_string_line(anchor_asm_symbol)}:\\n\"",
         ]
     )
-    lines.extend(f"    (void *)(uintptr_t)&{name}," for name in names)
-    lines.append("};")
+    lines.extend(
+        f"\"  .long {_c_asm_string_line(_decompiled_c_i686_c_asm_symbol(name))} - {_c_asm_string_line(anchor_asm_symbol)}\\n\""
+        for name in names
+    )
+    lines.extend(
+        [
+            "\".text\\n\"",
+            ");",
+        ]
+    )
     return lines
 
 def _decompiled_c_external_prototypes(

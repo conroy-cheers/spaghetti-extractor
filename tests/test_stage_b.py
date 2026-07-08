@@ -1956,12 +1956,12 @@ class StageBTests(unittest.TestCase):
             self.assertIn("typedef MEMORY_BASIC_INFORMATION _MEMORY_BASIC_INFORMATION;", source)
             self.assertIn("typedef uint64_t unkuint10;", source)
             self.assertIn("#define NAN(value) __builtin_isnan((double)(value))", source)
-            self.assertIn("&__p___winitenv", source)
-            self.assertIn("&__p__commode", source)
-            self.assertIn("&__p__fmode", source)
-            self.assertIn("&__set_app_type", source)
-            self.assertIn("&_amsg_exit", source)
-            self.assertIn("&_cexit", source)
+            self.assertIn('"  .long ___p___winitenv - _stage_b_jq_import_anchor\\n"', source)
+            self.assertIn('"  .long ___p__commode - _stage_b_jq_import_anchor\\n"', source)
+            self.assertIn('"  .long ___p__fmode - _stage_b_jq_import_anchor\\n"', source)
+            self.assertIn('"  .long ___set_app_type - _stage_b_jq_import_anchor\\n"', source)
+            self.assertIn('"  .long __amsg_exit - _stage_b_jq_import_anchor\\n"', source)
+            self.assertIn('"  .long __cexit - _stage_b_jq_import_anchor\\n"', source)
             self.assertIn("int tiny_from_decompiler(void)", source)
             self.assertNotIn("stage_b_unimplemented", source)
             functions = json.loads((root / "skeleton" / "functions.json").read_text(encoding="utf-8"))
@@ -2108,20 +2108,27 @@ class StageBTests(unittest.TestCase):
             self.assertNotIn("extern uintptr_t GetTimeZoneInformation();", source)
             self.assertNotIn("__attribute__((weak)) uintptr_t Sleep()", source)
             self.assertIn('extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__("__imp__SetUnhandledExceptionFilter@4");', source)
-            self.assertIn("(void *)&stage_b_jq_imp_SetUnhandledExceptionFilter,", source)
+            self.assertIn('"  .long __imp__SetUnhandledExceptionFilter@4 - _stage_b_jq_import_anchor\\n"', source)
             self.assertNotIn("(void *)(uintptr_t)&SetUnhandledExceptionFilter,", source)
             self.assertIn("extern uintptr_t initterm();", source)
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
             self.assertIn(".text$stage_b_jq_layout_pad", source)
-            self.assertIn(".fill 4811,1,0x90", source)
-            self.assertIn('((void *)stage_b_jq_layout_text_anchor)', source)
+            self.assertIn(".fill 4843,1,0x90", source)
+            self.assertIn(".rdata$stage_b_jq_layout_anchor", source)
+            self.assertIn('"  .long _stage_b_jq_layout_text_anchor - _stage_b_jq_layout_anchor\\n"', source)
+            self.assertIn('"  .long _stage_b_jq_import_anchor - _stage_b_jq_layout_anchor\\n"', source)
+            self.assertIn('"  .long _stage_b_jq_layout_data_tail - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn("stage_b_jq_layout_bss_anchor[2508]", source)
             self.assertIn("stage_b_jq_layout_data_tail[4]", source)
-            self.assertIn('((void *)stage_b_jq_layout_data_tail)', source)
+            self.assertNotIn('((void *)stage_b_jq_layout_data_tail)', source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
-            self.assertIn("stage_b_jq_layout_rdata_anchor[1456]", source)
-            self.assertIn('((void *)stage_b_jq_layout_bss_anchor)', source)
+            self.assertIn('"  .long _stage_b_jq_layout_rdata_anchor - _stage_b_jq_layout_anchor\\n"', source)
+            self.assertIn('"  .long _stage_b_jq_layout_bss_anchor - _stage_b_jq_layout_anchor\\n"', source)
+            self.assertIn("stage_b_jq_layout_rdata_anchor[1604]", source)
+            self.assertIn('((void *)stage_b_jq_layout_anchor)', source)
+            self.assertNotIn('((void *)stage_b_jq_layout_text_anchor)', source)
+            self.assertNotIn('((void *)stage_b_jq_layout_bss_anchor)', source)
             self.assertNotIn("stage_b_jq_layout_tls_anchor", source)
             self.assertIn("__crt_atexit((void *)0);", source)
             self.assertNotIn("  atexit((void *)0);", source)
@@ -2704,7 +2711,11 @@ class StageBTests(unittest.TestCase):
         self.assertIn('"setne %al\\n\\t"', source)
         self.assertNotIn("jv_get_kind((uintptr_t)0, (uintptr_t)0);", source)
         self.assertNotIn("__attribute__((weak)) uintptr_t jv_is_valid() { return 0; }", source)
-        self.assertIn("(void *)(uintptr_t)&jv_is_valid,", source)
+        self.assertIn(
+            '"  .long _jv_is_valid - _stage_b_contract_section_gap_anchor\\n"',
+            source,
+        )
+        self.assertNotIn("(void *)(uintptr_t)&jv_is_valid,", source)
         by_function = {item["function"]: item for item in source_map["functions"]}
         self.assertEqual(by_function["jv_is_valid"]["source_kind"], "generated_contract_placeholder_from_section_gap_alias")
         self.assertIn("section-gap--text-0057", by_function["jv_is_valid"]["aliases"])
@@ -2787,7 +2798,11 @@ class StageBTests(unittest.TestCase):
 
         generated_name = "stage_b_contract_section_gap__text_0052"
         self.assertIn(f"uintptr_t __cdecl {generated_name}();", source)
-        self.assertIn(f"(void *)(uintptr_t)&{generated_name},", source)
+        self.assertIn(
+            f'"  .long _{generated_name} - _stage_b_contract_section_gap_anchor\\n"',
+            source,
+        )
+        self.assertNotIn(f"(void *)(uintptr_t)&{generated_name},", source)
         self.assertIn('section(".CRT$XCU")', source)
         self.assertIn(f".section .text${generated_name}", source)
         self.assertIn(f"_{generated_name}:\\n", source)
@@ -2890,8 +2905,18 @@ class StageBTests(unittest.TestCase):
         self.assertIn(f".section .text${generated_name}", source)
         self.assertIn(f"_{generated_name}:\\n", source)
         self.assertIn('"  ret\\n"', source)
+        self.assertIn("extern const int32_t stage_b_contract_section_gap_anchor[];", source)
+        self.assertIn(".section .rdata$stage_b_contract_section_gap_anchor", source)
         self.assertIn(
-            '__asm__ __volatile__("" : : "r"((void *)stage_b_contract_section_gap_anchor) : "memory");',
+            f'"  .long _{generated_name} - _stage_b_contract_section_gap_anchor\\n"',
+            source,
+        )
+        self.assertIn(
+            '"  .long _stage_b_contract_section_gap_anchor - _stage_b_jq_layout_anchor\\n"',
+            source,
+        )
+        self.assertIn(
+            '__asm__ __volatile__("" : : "r"((void *)stage_b_jq_layout_anchor) : "memory");',
             source,
         )
         by_function = {item["function"]: item for item in source_map["functions"]}
@@ -3389,9 +3414,19 @@ class StageBTests(unittest.TestCase):
             reference_contract_payload=reference_contract,
         )
 
-        self.assertIn("(void *)(uintptr_t)&___wcrtomb_cp,", source)
+        self.assertIn("extern const int32_t stage_b_contract_section_gap_anchor[];", source)
         self.assertIn(
-            '__asm__ __volatile__("" : : "r"((void *)stage_b_contract_section_gap_anchor) : "memory");',
+            '"  .long ____wcrtomb_cp - _stage_b_contract_section_gap_anchor\\n"',
+            source,
+        )
+        self.assertNotIn("(void *)(uintptr_t)&___wcrtomb_cp,", source)
+        self.assertNotIn("static void * const stage_b_contract_section_gap_anchor[]", source)
+        self.assertIn(
+            '"  .long _stage_b_contract_section_gap_anchor - _stage_b_jq_layout_anchor\\n"',
+            source,
+        )
+        self.assertIn(
+            '__asm__ __volatile__("" : : "r"((void *)stage_b_jq_layout_anchor) : "memory");',
             source,
         )
         by_function = {item["function"]: item for item in source_map["functions"]}
@@ -3999,21 +4034,26 @@ class StageBTests(unittest.TestCase):
         source = _render_decompiled_c_source(target_name="jq", functions=[])
 
         for symbol in [
-            "AreFileApisANSI",
-            "GetLastError",
-            "GetModuleHandleA",
-            "GetProcAddress",
-            "IsDBCSLeadByteEx",
-            "MultiByteToWideChar",
-            "Sleep",
-            "TlsGetValue",
-            "VirtualProtect",
-            "VirtualQuery",
-            "WriteFile",
-            "_get_osfhandle",
-            "isalpha",
+            "_AreFileApisANSI@0",
+            "_GetLastError@0",
+            "_GetModuleHandleA@4",
+            "_GetProcAddress@8",
+            "_IsDBCSLeadByteEx@8",
+            "_MultiByteToWideChar@24",
+            "_Sleep@4",
+            "_TlsGetValue@4",
+            "_VirtualProtect@16",
+            "_VirtualQuery@12",
+            "_WriteFile@20",
+            "__imp__SetUnhandledExceptionFilter@4",
+            "__get_osfhandle",
+            "_isalpha",
         ]:
-            self.assertIn(f"(void *)(uintptr_t)&{symbol}", source)
+            self.assertIn(
+                f'"  .long {symbol} - _stage_b_jq_import_anchor\\n"',
+                source,
+            )
+        self.assertNotIn("static void * const stage_b_jq_import_anchor[]", source)
 
     def test_decompiled_c_renderer_anchors_jq_atexit_through_import_alias(self):
         source = _render_decompiled_c_source(
@@ -4041,8 +4081,8 @@ class StageBTests(unittest.TestCase):
         self.assertIn("extern uintptr_t __crt_atexit();", source)
         self.assertIn(".globl ___crt_atexit", source)
         self.assertIn("jmp _atexit", source)
-        self.assertIn("(void *)(uintptr_t)&__crt_atexit", source)
-        self.assertNotIn("(void *)(uintptr_t)&atexit,", source)
+        self.assertIn('"  .long ___crt_atexit - _stage_b_jq_import_anchor\\n"', source)
+        self.assertNotIn('"  .long _atexit - _stage_b_jq_import_anchor\\n"', source)
 
     def test_decompiled_c_renderer_replaces_mingw_crt_entry_with_bridge(self):
         source = _render_decompiled_c_source(
@@ -4302,9 +4342,13 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("void *__GetPEImageBase(void)", source)
         self.assertNotIn("Stage B contract placeholder for missing decompiler body at RVA 0x5370", source)
         self.assertNotIn("int __pei386_runtime_relocator(void)", source)
-        self.assertIn("int __cdecl ___mingw_pformat", source)
-        self.assertIn("int __cdecl __d2b_D2A", source)
-        self.assertIn("char * __cdecl __strcp_D2A", source)
+        self.assertIn("#define ___mingw_pformat __mingw_pformat", source)
+        self.assertNotIn("int __cdecl ___mingw_pformat", source)
+        self.assertNotIn("int __cdecl __d2b_D2A", source)
+        self.assertNotIn("char * __cdecl __strcp_D2A", source)
+        self.assertIn("original RVA 0x7ff0, size 3052, name ___mingw_pformat", source)
+        self.assertIn("original RVA 0x8be0, size 430, name __d2b_D2A", source)
+        self.assertIn("original RVA 0x8d90, size 52, name __strcp_D2A", source)
         self.assertIn("int __cdecl wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
         self.assertNotIn("int __cdecl _wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
 
@@ -4321,9 +4365,9 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(by_function["atexit"]["source_kind"], "omitted_runtime_entry")
         self.assertEqual(by_function["___dyn_tls_init_12"]["source_kind"], "omitted_runtime_helper")
         self.assertEqual(by_function["___mingw_TLScallback"]["source_kind"], "omitted_runtime_helper")
-        self.assertEqual(by_function["___mingw_pformat"]["source_kind"], "decompiled_function")
-        self.assertEqual(by_function["__d2b_D2A"]["source_kind"], "decompiled_function")
-        self.assertEqual(by_function["__strcp_D2A"]["source_kind"], "decompiled_function")
+        self.assertEqual(by_function["___mingw_pformat"]["source_kind"], "omitted_runtime_entry")
+        self.assertEqual(by_function["__d2b_D2A"]["source_kind"], "omitted_runtime_entry")
+        self.assertEqual(by_function["__strcp_D2A"]["source_kind"], "omitted_runtime_entry")
         self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
         self.assertIn("wmain", by_function["_wmain"]["aliases"])
         wmain_line = source.splitlines()[by_function["_wmain"]["line_start"] - 1]
@@ -5052,17 +5096,19 @@ class StageBTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("static int stage_b_jq_isoption_next(char **cursor, int short_mode)", source)
-        self.assertIn("case 0:", source)
+        self.assertIn('static int __attribute__((optimize("no-jump-tables"))) stage_b_jq_isoption_next(char **cursor, int short_mode)', source)
+        self.assertIn("if (index == 0U) {", source)
         self.assertIn("stage_b_jq_isoption_match(cursor, short_mode, 'n', \"null-input\")", source)
-        self.assertIn("case 30:", source)
+        self.assertIn("if (index == 30U) {", source)
         self.assertIn("stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"help\")", source)
-        self.assertIn("case 31:", source)
+        self.assertIn("if (index == 31U) {", source)
         self.assertIn("stage_b_jq_isoption_match(cursor, short_mode, 'V', \"version\")", source)
-        self.assertIn("case 32:", source)
+        self.assertIn("if (index == 32U) {", source)
         self.assertIn("stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"build-configuration\")", source)
-        self.assertIn("case 33:", source)
+        self.assertIn("if (index == 33U) {", source)
         self.assertIn("stage_b_jq_isoption_match(cursor, short_mode, '\\0', \"run-tests\")", source)
+        self.assertNotIn("switch (index)", source)
+        self.assertNotIn("case 30:", source)
         self.assertIn("LAB_00402760:\n  apcStack_3c[0] = pcVar7 + 1;\n  puVar23 = (uint *)0x1;", source)
         self.assertIn("pFVar4 = (FILE *)(*local_448)(2);", source)
         self.assertIn("joined_r0x00402777:\n  stage_b_jq_isoption_reset();", source)
