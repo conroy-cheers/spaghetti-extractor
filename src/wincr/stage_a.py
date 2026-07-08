@@ -7879,20 +7879,10 @@ def _abi_call_target(
             resolved = _abi_register_call_target(binary, register_name, register_definitions)
             if resolved is not None:
                 return resolved
-        target = {
-            "kind": "function_pointer",
-            "operand": insn.op_str,
-            "recoverable_targets": [],
-            "status": "unresolved",
-        }
         if operand.type == X86_OP_MEM:
             source = _abi_operand_argument_source(binary, insn, operand, register_definitions)
-            target["source"] = source
-            if source.get("memory_role") not in {None, ""}:
-                target["memory_role"] = source.get("memory_role")
-            if source.get("memory_rva") not in {None, ""}:
-                target["memory_rva"] = source.get("memory_rva")
-        return target
+            return _abi_function_pointer_target_from_source(binary, insn.op_str, source)
+        return _abi_function_pointer_target_from_source(binary, insn.op_str, None)
     return {"kind": "unknown", "status": "unresolved"}
 
 
@@ -7919,25 +7909,62 @@ def _abi_register_call_target(
         }
     memory_rva = _safe_int(definition.get("memory_rva"))
     if memory_rva is not None:
-        return {
-            "kind": "function_pointer",
-            "operand": register_name,
-            "recoverable_targets": [],
-            "status": "unresolved",
-            "source": definition,
-            "memory_rva": memory_rva,
-            "memory_role": definition.get("memory_role"),
-        }
+        return _abi_function_pointer_target_from_source(binary, register_name, definition)
     if definition.get("kind") == "memory":
-        return {
-            "kind": "function_pointer",
-            "operand": register_name,
-            "recoverable_targets": [],
-            "status": "unresolved",
-            "source": definition,
-            "memory_role": definition.get("memory_role"),
-        }
+        return _abi_function_pointer_target_from_source(binary, register_name, definition)
     return None
+
+
+def _abi_function_pointer_target_from_source(
+    binary: StageABinary,
+    operand: str,
+    source: dict[str, Any] | None,
+) -> dict[str, Any]:
+    recoverable_targets = _abi_static_function_pointer_targets(binary, source)
+    target: dict[str, Any] = {
+        "kind": "function_pointer",
+        "operand": operand,
+        "recoverable_targets": recoverable_targets,
+        "status": "resolved_static_pointer_slot" if recoverable_targets else "unresolved",
+    }
+    if isinstance(source, dict):
+        target["source"] = source
+        if source.get("memory_role") not in {None, ""}:
+            target["memory_role"] = source.get("memory_role")
+        if source.get("memory_rva") not in {None, ""}:
+            target["memory_rva"] = source.get("memory_rva")
+    return target
+
+
+def _abi_static_function_pointer_targets(binary: StageABinary, source: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(source, dict):
+        return []
+    memory_rva = _safe_int(source.get("memory_rva"))
+    if memory_rva is None:
+        return []
+    pointer_size = 8 if binary.bitness == 64 else 4
+    raw = binary.pe.get_data(memory_rva, pointer_size)
+    if len(raw) != pointer_size:
+        return []
+    pointer_value = int.from_bytes(raw, "little")
+    target_rva = _abi_value_to_rva(binary, pointer_value)
+    if target_rva is None:
+        return []
+    section = _executable_section_for_rva(binary, target_rva)
+    if section is None:
+        return []
+    return [
+        {
+            "status": "resolved",
+            "kind": "direct",
+            "target_rva": target_rva,
+            "target_va": pointer_value,
+            "source": "static_pointer_slot_value",
+            "memory_rva": memory_rva,
+            "memory_role": source.get("memory_role"),
+            "section": _abi_section_report(section),
+        }
+    ]
 
 
 def _import_for_call_instruction(binary: StageABinary, insn: Any) -> StageAImport | None:
@@ -8265,8 +8292,8 @@ def _abi_printf_conversions(format_text: str) -> list[dict[str, Any]]:
 def _abi_function_pointer_targets(target: dict[str, Any]) -> list[dict[str, Any]]:
     if target.get("kind") != "function_pointer":
         return []
-    item: dict[str, Any] = {"status": "unresolved", "operand": target.get("operand")}
-    for key in ("memory_rva", "memory_role", "source"):
+    item: dict[str, Any] = {"status": target.get("status") or "unresolved", "operand": target.get("operand")}
+    for key in ("memory_rva", "memory_role", "source", "recoverable_targets"):
         if key in target:
             item[key] = target[key]
     return [item]

@@ -691,6 +691,7 @@ def stage_b_generate_skeleton(
         external_function_names=external_function_names,
         behavior_recovery=behavior_recovery,
         reference_contract_payload=reference_contract_payload,
+        reference_contract_sidecars=reference_contract_sidecars,
     )
     (out_dir / source_rel).write_text(source_text, encoding="utf-8")
     (out_dir / readme_rel).write_text(_render_skeleton_readme(target_name, source_language, implementation_mode), encoding="utf-8")
@@ -973,9 +974,21 @@ def _attach_reference_contract_sidecar_evidence(function: dict[str, Any], sideca
     by_function = transfer_payload.get("by_function")
     if not isinstance(by_function, dict):
         return
-    name = str(function.get("name") or "")
-    transfers = by_function.get(name)
-    if not isinstance(transfers, list) or not transfers:
+    transfers: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for name in _reference_contract_sidecar_lookup_names(function):
+        items = by_function.get(name)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or f"{item.get('rva_start')}:{item.get('rva_end')}")
+            if item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            transfers.append(item)
+    if not transfers:
         return
     reference_contract = function.get("reference_contract")
     if not isinstance(reference_contract, dict):
@@ -988,11 +1001,89 @@ def _attach_reference_contract_sidecar_evidence(function: dict[str, Any], sideca
         "transfers": transfers,
     }
     padding_bytes = sidecars.get("padding_bytes") if isinstance(sidecars.get("padding_bytes"), list) else []
+    relevant_padding = _contract_padding_ranges_for_function(function, padding_bytes)
+    if relevant_padding:
+        reference_contract["contract_padding_bytes"] = {
+            "format": "stage-b-contract-padding-bytes-v1",
+            "source": "stage-a-padding-alignment",
+            "ranges": relevant_padding,
+        }
     reference_contract["contract_bytecode"] = _function_contract_bytecode_from_semantic_transfers(
         function,
         transfers,
         padding_bytes=padding_bytes,
     )
+
+
+def _attach_reference_contract_symbolic_branch_evidence(
+    function: dict[str, Any],
+    *,
+    sidecars: dict[str, Any] | None,
+    branch_target_symbols: dict[int, str] | None,
+) -> None:
+    if not branch_target_symbols:
+        return
+    reference_contract = function.get("reference_contract")
+    if not isinstance(reference_contract, dict):
+        return
+    bytecode = reference_contract.get("semantic_transfer_bytecode")
+    transfers = bytecode.get("transfers") if isinstance(bytecode, dict) and isinstance(bytecode.get("transfers"), list) else []
+    if not transfers:
+        return
+    padding_bytes = sidecars.get("padding_bytes") if isinstance(sidecars, dict) and isinstance(sidecars.get("padding_bytes"), list) else []
+    reference_contract["contract_symbolic_branch"] = _function_contract_symbolic_branch_from_semantic_transfers(
+        function,
+        transfers,
+        padding_bytes=padding_bytes,
+        branch_target_symbols=branch_target_symbols,
+    )
+
+
+def _reference_contract_sidecar_lookup_names(function: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for value in (
+        function.get("name"),
+        function.get("source_name"),
+        (
+            function.get("reference_section_gap", {}).get("name")
+            if isinstance(function.get("reference_section_gap"), dict)
+            else None
+        ),
+    ):
+        if isinstance(value, str) and value:
+            names.append(value)
+    aliases = function.get("aliases")
+    if isinstance(aliases, list):
+        names.extend(alias for alias in aliases if isinstance(alias, str) and alias)
+    return _dedupe_strings(names)
+
+
+def _contract_padding_ranges_for_function(function: dict[str, Any], padding_bytes: list[Any]) -> list[dict[str, Any]]:
+    rva_start = _optional_int(function.get("rva_start"))
+    rva_end = _optional_int(function.get("rva_end"))
+    if rva_start is None or rva_end is None or rva_end <= rva_start:
+        return []
+    ranges: list[dict[str, Any]] = []
+    for item in padding_bytes:
+        if not isinstance(item, dict):
+            continue
+        start = _optional_int(item.get("rva_start"))
+        end = _optional_int(item.get("rva_end"))
+        bytes_hex = item.get("bytes_hex")
+        if start is None or end is None or end <= start or not isinstance(bytes_hex, str):
+            continue
+        if end <= rva_start or start >= rva_end:
+            continue
+        ranges.append(
+            {
+                "rva_start": start,
+                "rva_end": end,
+                "bytes_hex": bytes_hex,
+                "bytes_sha256": item.get("bytes_sha256"),
+                "source": item.get("source") or "stage-a-padding-alignment",
+            }
+        )
+    return ranges
 
 
 def _reference_contract_padding_bytes(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1134,6 +1225,193 @@ def _function_contract_bytecode_from_semantic_transfers(
         "bytes_sha256": sha256_bytes(bytes.fromhex(bytecode_hex)),
         "chunks": chunks,
         "instruction_preview": instructions[:16],
+    }
+
+
+def _function_contract_symbolic_branch_from_semantic_transfers(
+    function: dict[str, Any],
+    transfers: list[Any],
+    *,
+    padding_bytes: list[Any] | None = None,
+    branch_target_symbols: dict[int, str],
+) -> dict[str, Any]:
+    rva_start = _optional_int(function.get("rva_start"))
+    rva_end = _optional_int(function.get("rva_end"))
+    if rva_start is None or rva_end is None or rva_end <= rva_start:
+        return _contract_symbolic_branch_blocked("invalid_function_range")
+    usable_transfers = [transfer for transfer in transfers if isinstance(transfer, dict)]
+    if len(usable_transfers) != 1:
+        return _contract_symbolic_branch_blocked("requires_single_basic_block")
+    transfer = usable_transfers[0]
+    outcome = transfer.get("outcome") if isinstance(transfer.get("outcome"), dict) else {}
+    kind = str(outcome.get("kind") or "")
+    if kind in {"return", "external_jump", "indirect_jump"}:
+        return _contract_symbolic_branch_blocked(f"contains_{kind}")
+    if kind not in {"branch", "jump", "fallthrough"}:
+        return _contract_symbolic_branch_blocked("unknown_control_flow_outcome")
+
+    instructions = [
+        instruction
+        for instruction in transfer.get("instructions", [])
+        if isinstance(instruction, dict)
+    ]
+    if not instructions:
+        return _contract_symbolic_branch_blocked("missing_instructions")
+    if any(_instruction_mnemonic(instruction) == "call" for instruction in instructions):
+        return _contract_symbolic_branch_blocked("contains_call_instruction")
+
+    padding_ranges = [item for item in padding_bytes or [] if isinstance(item, dict)]
+    asm_lines: list[str] = []
+    cursor = rva_start
+
+    def append_instruction_bytes(instruction: dict[str, Any]) -> str | None:
+        nonlocal cursor
+        instruction_rva = _optional_int(instruction.get("rva"))
+        instruction_size = _optional_int(instruction.get("size"))
+        instruction_bytes = instruction.get("bytes")
+        if (
+            instruction_rva is None
+            or instruction_size is None
+            or instruction_size <= 0
+            or not isinstance(instruction_bytes, str)
+            or not instruction_bytes
+        ):
+            return "instruction_missing_bytes"
+        if instruction_rva != cursor:
+            padding_hex = _contract_padding_bytes_for_range(padding_ranges, cursor, instruction_rva)
+            if padding_hex is None:
+                return "non_contiguous_instruction_bytes"
+            asm_lines.extend(_decompiled_c_bytecode_asm_lines(padding_hex))
+            cursor = instruction_rva
+        if instruction_rva < rva_start or instruction_rva + instruction_size > rva_end:
+            return "instruction_outside_function_range"
+        try:
+            raw = bytes.fromhex(instruction_bytes)
+        except ValueError:
+            return "instruction_bytes_not_hex"
+        if len(raw) != instruction_size:
+            return "instruction_size_mismatch"
+        asm_lines.extend(_decompiled_c_bytecode_asm_lines([raw.hex()]))
+        cursor += instruction_size
+        return None
+
+    def target_symbol(key: str) -> tuple[int, str] | None:
+        target = _optional_int(outcome.get(key))
+        if target is None:
+            return None
+        symbol = branch_target_symbols.get(target)
+        if not symbol or not _is_c_identifier(symbol):
+            return None
+        return target, symbol
+
+    terminal = instructions[-1]
+    if kind == "branch":
+        terminal_mnemonic = _instruction_mnemonic(terminal)
+        if not terminal_mnemonic.startswith("j") or terminal_mnemonic == "jmp":
+            return _contract_symbolic_branch_blocked("terminal_instruction_not_conditional_branch")
+        true_target = target_symbol("true_target_rva")
+        false_target = target_symbol("false_target_rva")
+        if true_target is None or false_target is None:
+            return _contract_symbolic_branch_blocked("unresolved_branch_target_symbol")
+        for instruction in instructions[:-1]:
+            blocker = append_instruction_bytes(instruction)
+            if blocker:
+                return _contract_symbolic_branch_blocked(blocker)
+        terminal_rva = _optional_int(terminal.get("rva"))
+        if terminal_rva is None or terminal_rva != cursor:
+            return _contract_symbolic_branch_blocked("non_contiguous_terminal_branch")
+        terminal_size = _optional_int(terminal.get("size")) or 0
+        if terminal_rva + terminal_size != rva_end:
+            return _contract_symbolic_branch_blocked("terminal_branch_not_at_function_end")
+        asm_lines.append(f"{terminal_mnemonic} {_decompiled_c_i686_c_asm_symbol(true_target[1])}")
+        asm_lines.append(f"jmp {_decompiled_c_i686_c_asm_symbol(false_target[1])}")
+        return _contract_symbolic_branch_result(
+            function,
+            kind=kind,
+            asm_lines=asm_lines,
+            targets=[true_target, false_target],
+            instructions=len(instructions),
+        )
+
+    if kind == "jump":
+        terminal_mnemonic = _instruction_mnemonic(terminal)
+        if terminal_mnemonic != "jmp":
+            return _contract_symbolic_branch_blocked("terminal_instruction_not_jump")
+        target = target_symbol("target_rva")
+        if target is None:
+            return _contract_symbolic_branch_blocked("unresolved_branch_target_symbol")
+        for instruction in instructions[:-1]:
+            blocker = append_instruction_bytes(instruction)
+            if blocker:
+                return _contract_symbolic_branch_blocked(blocker)
+        terminal_rva = _optional_int(terminal.get("rva"))
+        if terminal_rva is None or terminal_rva != cursor:
+            return _contract_symbolic_branch_blocked("non_contiguous_terminal_branch")
+        terminal_size = _optional_int(terminal.get("size")) or 0
+        if terminal_rva + terminal_size != rva_end:
+            return _contract_symbolic_branch_blocked("terminal_branch_not_at_function_end")
+        asm_lines.append(f"jmp {_decompiled_c_i686_c_asm_symbol(target[1])}")
+        return _contract_symbolic_branch_result(
+            function,
+            kind=kind,
+            asm_lines=asm_lines,
+            targets=[target],
+            instructions=len(instructions),
+        )
+
+    target = target_symbol("target_rva")
+    if target is None:
+        return _contract_symbolic_branch_blocked("unresolved_fallthrough_target_symbol")
+    for instruction in instructions:
+        blocker = append_instruction_bytes(instruction)
+        if blocker:
+            return _contract_symbolic_branch_blocked(blocker)
+    if cursor != rva_end:
+        padding_hex = _contract_padding_bytes_for_range(padding_ranges, cursor, rva_end)
+        if padding_hex is None:
+            return _contract_symbolic_branch_blocked("function_range_not_fully_covered")
+        asm_lines.extend(_decompiled_c_bytecode_asm_lines(padding_hex))
+    asm_lines.append(f"jmp {_decompiled_c_i686_c_asm_symbol(target[1])}")
+    return _contract_symbolic_branch_result(
+        function,
+        kind=kind,
+        asm_lines=asm_lines,
+        targets=[target],
+        instructions=len(instructions),
+    )
+
+
+def _contract_symbolic_branch_result(
+    function: dict[str, Any],
+    *,
+    kind: str,
+    asm_lines: list[str],
+    targets: list[tuple[int, str]],
+    instructions: int,
+) -> dict[str, Any]:
+    return {
+        "format": "stage-b-contract-symbolic-branch-v1",
+        "status": "reimplementable",
+        "source": "stage-a-semantic-transfer-contracts",
+        "kind": kind,
+        "rva_start": _optional_int(function.get("rva_start")),
+        "rva_end": _optional_int(function.get("rva_end")),
+        "size": max(0, (_optional_int(function.get("rva_end")) or 0) - (_optional_int(function.get("rva_start")) or 0)),
+        "instructions": instructions,
+        "targets": [
+            {"rva": rva, "symbol": symbol}
+            for rva, symbol in targets
+        ],
+        "asm_lines": asm_lines,
+    }
+
+
+def _contract_symbolic_branch_blocked(*reasons: str) -> dict[str, Any]:
+    unique = sorted({reason for reason in reasons if reason})
+    return {
+        "format": "stage-b-contract-symbolic-branch-v1",
+        "status": "blocked",
+        "blockers": unique or ["unknown"],
     }
 
 
@@ -2228,6 +2506,7 @@ def _render_skeleton_source(
     external_function_names: list[str] | tuple[str, ...] | None = None,
     behavior_recovery: dict[str, Any] | None = None,
     reference_contract_payload: dict[str, Any] | None = None,
+    reference_contract_sidecars: dict[str, Any] | None = None,
 ) -> str:
     if implementation_mode in {"decompiled-c", "contract-guided-c"}:
         return _render_decompiled_c_source(
@@ -2236,6 +2515,7 @@ def _render_skeleton_source(
             runtime_entry_policy=runtime_entry_policy,
             external_function_names=external_function_names,
             reference_contract_payload=reference_contract_payload,
+            reference_contract_sidecars=reference_contract_sidecars,
             allow_contract_bytecode=implementation_mode == "contract-guided-c",
         )
 
@@ -2537,7 +2817,11 @@ def _skeleton_section_gap_placeholder_source_anchors(
             synthetic_line = _source_exact_function_definition_line(lines, synthetic_symbol)
         if synthetic_line is not None:
             symbol = synthetic_symbol
-            source_kind = "generated_contract_placeholder_from_section_gap"
+            source_kind = _section_gap_source_anchor_kind(
+                lines,
+                line=synthetic_line,
+                default="generated_contract_placeholder_from_section_gap",
+            )
             line = synthetic_line
         else:
             symbol = _decompiled_c_section_gap_known_symbol_alias(entry, known_symbols=known_symbols)
@@ -2572,6 +2856,23 @@ def _skeleton_section_gap_placeholder_source_anchors(
             }
         )
     return anchors
+
+
+def _section_gap_source_anchor_kind(lines: list[str], *, line: int, default: str) -> str:
+    window = "\n".join(lines[max(0, line - 2) : min(len(lines), line + 6)])
+    if "Stage B contract-guided bytecode:" in window:
+        return "generated_contract_guided_bytecode"
+    if "Stage B contract-guided branch:" in window:
+        return "generated_contract_guided_branch"
+    if "Stage B contract-guided flow:" in window:
+        return "generated_contract_guided_flow"
+    if "Stage B contract-guided leaf:" in window:
+        return "generated_contract_guided_leaf"
+    if "Stage B contract-guided callback:" in window:
+        return "generated_contract_guided_callback"
+    if "Stage B contract-guided indirect-call slice:" in window:
+        return "generated_contract_guided_indirect"
+    return default
 
 
 def _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -2802,6 +3103,10 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
         return "generated_contract_guided_indirect"
     if "Stage B contract-guided bytecode:" in window:
         return "generated_contract_guided_bytecode"
+    if "Stage B contract-guided branch:" in window:
+        return "generated_contract_guided_branch"
+    if "Stage B contract-guided flow:" in window:
+        return "generated_contract_guided_flow"
     decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
     if not str(decompiler.get("code") or "").strip():
         return "generated_contract_placeholder"
@@ -2876,6 +3181,7 @@ def _render_decompiled_c_source(
     runtime_entry_policy: str = "bridge",
     external_function_names: list[str] | tuple[str, ...] | None = None,
     reference_contract_payload: dict[str, Any] | None = None,
+    reference_contract_sidecars: dict[str, Any] | None = None,
     allow_contract_bytecode: bool = False,
 ) -> str:
     if runtime_entry_policy not in _DECOMPILED_C_RUNTIME_ENTRY_POLICIES:
@@ -3252,6 +3558,7 @@ def _render_decompiled_c_source(
     synthetic_section_gap_placeholders = _decompiled_c_contract_synthetic_section_gap_placeholders(
         implemented_functions,
         reference_contract_payload=reference_contract_payload,
+        reference_contract_sidecars=reference_contract_sidecars,
         call_targets=contract_call_targets,
         external_function_names=external_function_names or (),
         additional_linkable_symbols=import_thunk_symbols,
@@ -3323,9 +3630,11 @@ def _render_decompiled_c_source(
         runtime_entry_policy=runtime_entry_policy,
         all_functions=functions,
         reference_contract_payload=reference_contract_payload,
+        reference_contract_sidecars=reference_contract_sidecars,
         call_targets=contract_call_targets,
         call_target_profiles=contract_call_target_profiles,
         synthetic_section_gap_placeholders=synthetic_section_gap_placeholders,
+        allow_contract_bytecode=allow_contract_bytecode,
     )
     preserved_import_thunks = _decompiled_c_preserved_import_thunk_alias_lines(functions)
     import_aliases = _decompiled_c_import_thunk_alias_lines(functions)
@@ -3660,6 +3969,24 @@ def _decompiled_c_contract_guided_leaf_impl(
     )
     if bytecode is not None:
         return bytecode
+    branch = _decompiled_c_contract_guided_branch_impl(
+        function,
+        name=name,
+        rva_start=rva_start,
+        size=size,
+    )
+    if branch is not None:
+        return branch
+    flow = _decompiled_c_contract_guided_flow_impl(
+        function,
+        name=name,
+        rva_start=rva_start,
+        size=size,
+        call_targets=call_targets,
+        call_target_profiles=call_target_profiles,
+    )
+    if flow is not None:
+        return flow
     return None
 
 
@@ -4379,6 +4706,273 @@ def _decompiled_c_contract_guided_bytecode_impl(
             "}",
         ]
     )
+
+
+def _decompiled_c_contract_guided_branch_impl(
+    function: dict[str, Any],
+    *,
+    name: str,
+    rva_start: int,
+    size: int,
+) -> str | None:
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    branch = reference_contract.get("contract_symbolic_branch") if isinstance(reference_contract.get("contract_symbolic_branch"), dict) else {}
+    if branch.get("status") != "reimplementable":
+        return None
+    asm_lines = branch.get("asm_lines") if isinstance(branch.get("asm_lines"), list) else []
+    asm_lines = [str(line) for line in asm_lines if isinstance(line, str) and line]
+    if not asm_lines:
+        return None
+    rendered_asm: list[str] = []
+    for index, line in enumerate(asm_lines):
+        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
+        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
+    return "\n".join(
+        [
+            "__attribute__((naked, noinline, used))",
+            f"uintptr_t __cdecl {name}()",
+            "{",
+            (
+                "  /* Stage B contract-guided branch: no-call semantic-transfer block "
+                f"with symbolic Stage A targets at RVA 0x{rva_start:x}, size {size}. */"
+            ),
+            "  __asm__ __volatile__(",
+            *rendered_asm,
+            "  );",
+            "}",
+        ]
+    )
+
+
+def _decompiled_c_contract_guided_flow_impl(
+    function: dict[str, Any],
+    *,
+    name: str,
+    rva_start: int,
+    size: int,
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+) -> str | None:
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    bytecode = reference_contract.get("semantic_transfer_bytecode") if isinstance(reference_contract.get("semantic_transfer_bytecode"), dict) else {}
+    transfers = bytecode.get("transfers") if isinstance(bytecode.get("transfers"), list) else []
+    transfers = [transfer for transfer in transfers if isinstance(transfer, dict)]
+    if len(transfers) < 2:
+        return None
+    padding_ranges = _decompiled_c_contract_padding_ranges(reference_contract)
+    block_starts: dict[int, dict[str, Any]] = {}
+    for transfer in transfers:
+        start = _optional_int(transfer.get("rva_start"))
+        end = _optional_int(transfer.get("rva_end"))
+        if start is None or end is None or end <= start:
+            return None
+        if start in block_starts or start < rva_start or end > rva_start + size:
+            return None
+        block_starts[start] = transfer
+    callsites = _decompiled_c_reference_callsites_by_rva(function)
+    labels = {start: _decompiled_c_flow_local_label(name, start) for start in block_starts}
+    asm_lines: list[str] = []
+    for block_start in sorted(block_starts):
+        transfer = block_starts[block_start]
+        block_end = _optional_int(transfer.get("rva_end"))
+        if block_end is None:
+            return None
+        asm_lines.append(f"{labels[block_start]}:")
+        cursor = block_start
+        instructions = transfer.get("instructions") if isinstance(transfer.get("instructions"), list) else []
+        outcome = transfer.get("outcome") if isinstance(transfer.get("outcome"), dict) else {}
+        if str(outcome.get("kind") or "") in {"external_jump", "indirect_jump"}:
+            return None
+        for instruction in instructions:
+            if not isinstance(instruction, dict):
+                return None
+            instruction_rva = _optional_int(instruction.get("rva"))
+            instruction_size = _optional_int(instruction.get("size"))
+            instruction_bytes = instruction.get("bytes")
+            if (
+                instruction_rva is None
+                or instruction_size is None
+                or instruction_size <= 0
+                or not isinstance(instruction_bytes, str)
+                or not instruction_bytes
+            ):
+                return None
+            if instruction_rva != cursor:
+                padding = _contract_padding_bytes_for_range(padding_ranges, cursor, instruction_rva)
+                if padding is None:
+                    return None
+                asm_lines.extend(_decompiled_c_bytecode_asm_lines(padding))
+                cursor = instruction_rva
+            mnemonic = _instruction_mnemonic(instruction)
+            if mnemonic == "call":
+                call_line = _decompiled_c_contract_flow_call_line(
+                    instruction,
+                    callsite=callsites.get(instruction_rva),
+                    call_targets=call_targets,
+                    call_target_profiles=call_target_profiles,
+                )
+                if call_line is None:
+                    return None
+                asm_lines.append(call_line)
+            elif mnemonic.startswith("j"):
+                branch_lines = _decompiled_c_contract_flow_branch_lines(
+                    instruction,
+                    outcome=outcome,
+                    labels=labels,
+                    call_targets=call_targets,
+                )
+                if branch_lines is None:
+                    return None
+                asm_lines.extend(branch_lines)
+            else:
+                try:
+                    raw = bytes.fromhex(instruction_bytes)
+                except ValueError:
+                    return None
+                if len(raw) != instruction_size:
+                    return None
+                asm_lines.extend(_decompiled_c_bytecode_asm_lines([raw.hex()]))
+            cursor += instruction_size
+        if cursor != block_end:
+            padding = _contract_padding_bytes_for_range(padding_ranges, cursor, block_end)
+            if padding is None:
+                return None
+            asm_lines.extend(_decompiled_c_bytecode_asm_lines(padding))
+    if not asm_lines:
+        return None
+    rendered_asm: list[str] = []
+    for index, line in enumerate(asm_lines):
+        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
+        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
+    return "\n".join(
+        [
+            "__attribute__((naked, noinline, used))",
+            f"uintptr_t __cdecl {name}()",
+            "{",
+            (
+                "  /* Stage B contract-guided flow: semantic-transfer CFG with symbolic "
+                f"direct calls/branches at RVA 0x{rva_start:x}, size {size}. */"
+            ),
+            "  __asm__ __volatile__(",
+            *rendered_asm,
+            "  );",
+            "}",
+        ]
+    )
+
+
+def _decompiled_c_contract_padding_ranges(reference_contract: dict[str, Any]) -> list[dict[str, Any]]:
+    padding = reference_contract.get("contract_padding_bytes") if isinstance(reference_contract.get("contract_padding_bytes"), dict) else {}
+    ranges = padding.get("ranges") if isinstance(padding.get("ranges"), list) else []
+    return [item for item in ranges if isinstance(item, dict)]
+
+
+def _decompiled_c_reference_callsites_by_rva(function: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    callsites = reference_contract.get("abi_callsites") if isinstance(reference_contract.get("abi_callsites"), list) else []
+    result: dict[int, dict[str, Any]] = {}
+    for callsite in callsites:
+        if not isinstance(callsite, dict):
+            continue
+        instruction = callsite.get("instruction") if isinstance(callsite.get("instruction"), dict) else {}
+        rva = _optional_int(instruction.get("rva"))
+        if rva is not None:
+            result.setdefault(rva, callsite)
+    return result
+
+
+def _decompiled_c_flow_local_label(name: str, rva: int) -> str:
+    return f".Lstageb_{_c_identifier_from_name(name)}_{rva:x}"
+
+
+def _decompiled_c_contract_flow_call_line(
+    instruction: dict[str, Any],
+    *,
+    callsite: dict[str, Any] | None,
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+) -> str | None:
+    target = callsite.get("target") if isinstance(callsite, dict) and isinstance(callsite.get("target"), dict) else {}
+    target_name: str | None = None
+    target_profile: dict[str, Any] | None = None
+    if target.get("kind") == "direct":
+        target_rva = _optional_int(target.get("target_rva"))
+        target_name = call_targets.get(target_rva) if target_rva is not None else None
+        target_profile = call_target_profiles.get(str(target_name or ""))
+    elif target.get("kind") == "import":
+        target_name = _decompiled_c_contract_import_target_name(target)
+        target_profile = _decompiled_c_contract_external_target_profile(target_name) if target_name is not None else None
+    else:
+        target_rva = _decompiled_c_contract_flow_operand_target_rva(instruction)
+        target_name = call_targets.get(target_rva) if target_rva is not None else None
+        target_profile = call_target_profiles.get(str(target_name or ""))
+    if not target_name or not _is_c_identifier(target_name):
+        return None
+    if not _decompiled_c_contract_direct_call_target_is_asm_linkable(
+        target_name,
+        target_profile=target_profile,
+    ):
+        return None
+    return f"call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}"
+
+
+def _decompiled_c_contract_flow_branch_lines(
+    instruction: dict[str, Any],
+    *,
+    outcome: dict[str, Any],
+    labels: dict[int, str],
+    call_targets: dict[int, str],
+) -> list[str] | None:
+    mnemonic = _instruction_mnemonic(instruction)
+    if mnemonic == "jmp":
+        target = _decompiled_c_contract_flow_target_symbol(
+            _optional_int(outcome.get("target_rva")) or _decompiled_c_contract_flow_operand_target_rva(instruction),
+            labels=labels,
+            call_targets=call_targets,
+        )
+        return [f"jmp {target}"] if target else None
+    if not mnemonic.startswith("j"):
+        return None
+    true_target = _decompiled_c_contract_flow_target_symbol(
+        _optional_int(outcome.get("true_target_rva")) or _decompiled_c_contract_flow_operand_target_rva(instruction),
+        labels=labels,
+        call_targets=call_targets,
+    )
+    false_target = _decompiled_c_contract_flow_target_symbol(
+        _optional_int(outcome.get("false_target_rva")),
+        labels=labels,
+        call_targets=call_targets,
+    )
+    if true_target is None or false_target is None:
+        return None
+    return [f"{mnemonic} {true_target}", f"jmp {false_target}"]
+
+
+def _decompiled_c_contract_flow_target_symbol(
+    target_rva: int | None,
+    *,
+    labels: dict[int, str],
+    call_targets: dict[int, str],
+) -> str | None:
+    if target_rva is None:
+        return None
+    if target_rva in labels:
+        return labels[target_rva]
+    target_name = call_targets.get(target_rva)
+    if target_name and _is_c_identifier(target_name):
+        return _decompiled_c_i686_c_asm_symbol(target_name)
+    return None
+
+
+def _decompiled_c_contract_flow_operand_target_rva(instruction: dict[str, Any]) -> int | None:
+    op_str = str(instruction.get("op_str") or "").strip().split(",", 1)[0].strip()
+    if not op_str.startswith("0x"):
+        return None
+    try:
+        value = int(op_str, 0)
+    except ValueError:
+        return None
+    return value - 0x400000 if value >= 0x400000 else value
 
 
 def _decompiled_c_bytecode_asm_lines(chunks: list[Any]) -> list[str]:
@@ -5443,6 +6037,7 @@ def _decompiled_c_contract_synthetic_section_gap_placeholders(
     reference_contract_payload: dict[str, Any] | None,
     call_targets: dict[int, str],
     external_function_names: list[str] | tuple[str, ...],
+    reference_contract_sidecars: dict[str, Any] | None = None,
     additional_linkable_symbols: list[str] | tuple[str, ...] = (),
     runtime_linked_call_targets: set[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -5451,6 +6046,10 @@ def _decompiled_c_contract_synthetic_section_gap_placeholders(
     external_call_symbols = _decompiled_c_external_call_symbols(functions)
     defined_symbols = _decompiled_c_defined_symbol_names(functions)
     known_symbols = set(external_call_symbols) | {str(name) for name in external_function_names} | defined_symbols
+    branch_target_symbols = _decompiled_c_section_gap_target_symbols(
+        reference_contract_payload,
+        known_symbols=known_symbols,
+    )
     linkable_symbols = (
         set(defined_symbols)
         | {str(name) for name in external_function_names}
@@ -5463,6 +6062,8 @@ def _decompiled_c_contract_synthetic_section_gap_placeholders(
         known_symbols=known_symbols,
         call_targets=call_targets,
         linkable_symbols=linkable_symbols,
+        reference_contract_sidecars=reference_contract_sidecars,
+        branch_target_symbols=branch_target_symbols,
     )
 
 
@@ -5483,6 +6084,24 @@ def _decompiled_c_contract_section_gap_alias_anchor_symbols(
         if alias is not None:
             names.append(alias)
     return _dedupe_strings(names)
+
+
+def _decompiled_c_section_gap_target_symbols(
+    reference_contract_payload: dict[str, Any],
+    *,
+    known_symbols: set[str],
+) -> dict[int, str]:
+    result: dict[int, str] = {}
+    for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
+        rva_start = _optional_int(entry.get("rva_start"))
+        if rva_start is None:
+            continue
+        symbol = _decompiled_c_section_gap_known_symbol_alias(entry, known_symbols=known_symbols)
+        if symbol is None:
+            symbol = _decompiled_c_synthetic_section_gap_name(entry)
+        if _is_c_identifier(symbol):
+            result.setdefault(rva_start, symbol)
+    return result
 
 
 def _decompiled_c_contract_retention_anchor_lines(symbols: list[str]) -> list[str]:
@@ -5687,9 +6306,11 @@ def _decompiled_c_link_placeholder_definitions(
     runtime_entry_policy: str = "bridge",
     all_functions: list[dict[str, Any]] | None = None,
     reference_contract_payload: dict[str, Any] | None = None,
+    reference_contract_sidecars: dict[str, Any] | None = None,
     call_targets: dict[int, str] | None = None,
     call_target_profiles: dict[str, dict[str, Any]] | None = None,
     synthetic_section_gap_placeholders: list[dict[str, Any]] | None = None,
+    allow_contract_bytecode: bool = False,
 ) -> list[str]:
     external_call_symbols = _decompiled_c_external_call_symbols(functions)
     needs_dtoa_lock_helper = _decompiled_c_needs_dtoa_lock_helper(
@@ -5699,10 +6320,20 @@ def _decompiled_c_link_placeholder_definitions(
     )
     defined_symbols = _decompiled_c_defined_symbol_names(functions)
     known_section_gap_symbols = set(external_call_symbols) | {str(name) for name in external_function_names} | defined_symbols
+    branch_target_symbols = (
+        _decompiled_c_section_gap_target_symbols(
+            reference_contract_payload,
+            known_symbols=known_section_gap_symbols,
+        )
+        if reference_contract_payload is not None
+        else {}
+    )
     section_gap_placeholders = (
         _decompiled_c_section_gap_placeholders_by_symbol(
             reference_contract_payload,
             known_symbols=known_section_gap_symbols,
+            reference_contract_sidecars=reference_contract_sidecars,
+            branch_target_symbols=branch_target_symbols,
         )
         if reference_contract_payload is not None
         else {}
@@ -5738,6 +6369,7 @@ def _decompiled_c_link_placeholder_definitions(
                     call_targets=call_targets or {},
                     call_target_profiles=call_target_profiles or {},
                     unspecified_parameters=True,
+                    allow_contract_bytecode=allow_contract_bytecode,
                 )
             )
             continue
@@ -5758,12 +6390,19 @@ def _decompiled_c_link_placeholder_definitions(
             and not _decompiled_c_has_checked_semantic_region_contract(function)
         )
         for function in synthetic_section_gap_placeholders:
-            if _decompiled_c_has_checked_semantic_region_contract(function):
+            if _decompiled_c_has_checked_semantic_region_contract(function) or (
+                allow_contract_bytecode
+                and _decompiled_c_has_reimplementable_contract_bytecode(function)
+            ) or (
+                allow_contract_bytecode
+                and _decompiled_c_has_reimplementable_contract_symbolic_branch(function)
+            ):
                 lines.append(
                     _decompiled_c_contract_placeholder(
                         function,
                         call_targets=call_targets or {},
                         call_target_profiles=call_target_profiles or {},
+                        allow_contract_bytecode=allow_contract_bytecode,
                     )
                 )
             else:
@@ -5784,6 +6423,20 @@ def _decompiled_c_has_checked_semantic_region_contract(function: dict[str, Any])
         return True
     callees = reference_contract.get("semantic_region_callee_contracts")
     return any(isinstance(item, dict) and item.get("status") == "checked" for item in callees) if isinstance(callees, list) else False
+
+
+def _decompiled_c_has_reimplementable_contract_bytecode(function: dict[str, Any]) -> bool:
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    bytecode = reference_contract.get("contract_bytecode") if isinstance(reference_contract.get("contract_bytecode"), dict) else {}
+    chunks = bytecode.get("chunks")
+    return bytecode.get("status") == "reimplementable" and isinstance(chunks, list) and bool(chunks)
+
+
+def _decompiled_c_has_reimplementable_contract_symbolic_branch(function: dict[str, Any]) -> bool:
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    branch = reference_contract.get("contract_symbolic_branch") if isinstance(reference_contract.get("contract_symbolic_branch"), dict) else {}
+    asm_lines = branch.get("asm_lines")
+    return branch.get("status") == "reimplementable" and isinstance(asm_lines, list) and bool(asm_lines)
 
 
 def _decompiled_c_has_checked_semantic_region_caller_contract(function: dict[str, Any]) -> bool:
@@ -6140,6 +6793,8 @@ def _decompiled_c_section_gap_placeholders_by_symbol(
     reference_contract_payload: dict[str, Any],
     *,
     known_symbols: set[str],
+    reference_contract_sidecars: dict[str, Any] | None = None,
+    branch_target_symbols: dict[int, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
@@ -6151,7 +6806,12 @@ def _decompiled_c_section_gap_placeholders_by_symbol(
         if alias is not None:
             result.setdefault(
                 alias,
-                _decompiled_c_section_gap_placeholder_function(entry, name=alias),
+                _decompiled_c_section_gap_placeholder_function(
+                    entry,
+                    name=alias,
+                    reference_contract_sidecars=reference_contract_sidecars,
+                    branch_target_symbols=branch_target_symbols,
+                ),
             )
     return result
 
@@ -6162,6 +6822,8 @@ def _decompiled_c_synthetic_section_gap_placeholders(
     known_symbols: set[str],
     call_targets: dict[int, str],
     linkable_symbols: set[str],
+    reference_contract_sidecars: dict[str, Any] | None = None,
+    branch_target_symbols: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
     functions: list[dict[str, Any]] = []
     for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
@@ -6170,6 +6832,8 @@ def _decompiled_c_synthetic_section_gap_placeholders(
             known_symbols=known_symbols,
             call_targets=call_targets,
             linkable_symbols=linkable_symbols,
+            reference_contract_sidecars=reference_contract_sidecars,
+            branch_target_symbols=branch_target_symbols,
         )
         if function is not None:
             functions.append(function)
@@ -6182,6 +6846,8 @@ def _decompiled_c_synthetic_section_gap_placeholder(
     known_symbols: set[str],
     call_targets: dict[int, str],
     linkable_symbols: set[str],
+    reference_contract_sidecars: dict[str, Any] | None = None,
+    branch_target_symbols: dict[int, str] | None = None,
 ) -> dict[str, Any] | None:
     if _decompiled_c_section_gap_known_symbol_alias(entry, known_symbols=known_symbols) is not None:
         return None
@@ -6195,7 +6861,12 @@ def _decompiled_c_synthetic_section_gap_placeholder(
     name = _decompiled_c_synthetic_section_gap_name(entry)
     if not _is_c_identifier(name):
         return None
-    return _decompiled_c_section_gap_placeholder_function(entry, name=name)
+    return _decompiled_c_section_gap_placeholder_function(
+        entry,
+        name=name,
+        reference_contract_sidecars=reference_contract_sidecars,
+        branch_target_symbols=branch_target_symbols,
+    )
 
 
 def _decompiled_c_section_gap_callsites_have_linkable_targets(
@@ -6288,11 +6959,26 @@ def _decompiled_c_synthetic_section_gap_name(entry: dict[str, Any]) -> str:
     return f"stage_b_contract_{suffix}"
 
 
-def _decompiled_c_section_gap_placeholder_function(entry: dict[str, Any], *, name: str) -> dict[str, Any]:
+def _decompiled_c_section_gap_placeholder_function(
+    entry: dict[str, Any],
+    *,
+    name: str,
+    reference_contract_sidecars: dict[str, Any] | None = None,
+    branch_target_symbols: dict[int, str] | None = None,
+) -> dict[str, Any]:
     rva_start = _optional_int(entry.get("rva_start")) or 0
     rva_end = _optional_int(entry.get("rva_end")) or rva_start
-    return {
+    original_name = str(entry.get("name") or "")
+    aliases = _dedupe_strings(
+        [
+            original_name,
+            *[alias for alias in entry.get("aliases", []) if isinstance(alias, str) and alias],
+        ]
+    )
+    function = {
         "name": name,
+        "aliases": aliases,
+        "reference_section_gap": entry,
         "rva_start": rva_start,
         "rva_end": rva_end,
         "size": max(0, rva_end - rva_start),
@@ -6306,6 +6992,13 @@ def _decompiled_c_section_gap_placeholder_function(entry: dict[str, Any], *, nam
             else [],
         },
     }
+    _attach_reference_contract_sidecar_evidence(function, reference_contract_sidecars)
+    _attach_reference_contract_symbolic_branch_evidence(
+        function,
+        sidecars=reference_contract_sidecars,
+        branch_target_symbols=branch_target_symbols,
+    )
+    return function
 
 
 def _decompiled_c_needs_dtoa_lock_helper(

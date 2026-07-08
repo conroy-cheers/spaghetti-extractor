@@ -40,8 +40,10 @@ DEFAULT_WORK_DIR = Path("build/wincr-slices")
 CONCRETE_SOURCE_KINDS = frozenset(
     {
         "decompiled_function",
+        "generated_contract_guided_branch",
         "generated_contract_guided_callback",
         "generated_contract_guided_bytecode",
+        "generated_contract_guided_flow",
         "generated_contract_guided_indirect",
         "generated_contract_guided_leaf",
         "generated_helper_from_decompiler_section_gap",

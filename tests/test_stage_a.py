@@ -2506,15 +2506,21 @@ class StageAValidateTests(unittest.TestCase):
 
     def test_abi_callsites_classify_global_function_pointer_slot(self):
         class FakePE:
-            def __init__(self, data: bytes):
+            def __init__(self, code: bytes, data: bytes):
+                self.code = code
                 self.data = data
 
             def get_data(self, rva: int, size: int) -> bytes:
-                if rva < 0x1000:
-                    return b""
-                offset = rva - 0x1000
-                return self.data[offset : offset + size]
+                if 0x1000 <= rva < 0x2000:
+                    offset = rva - 0x1000
+                    return self.code[offset : offset + size]
+                if 0xD000 <= rva < 0xD100:
+                    offset = rva - 0xD000
+                    return self.data[offset : offset + size]
+                return b""
 
+        data = bytearray(0x100)
+        struct.pack_into("<I", data, 0, 0x401234)
         code = bytes.fromhex(
             "a100d04000"  # mov eax, dword ptr [0x40d000]
             "ffd0"  # call eax
@@ -2534,7 +2540,7 @@ class StageAValidateTests(unittest.TestCase):
                 stage_a.StageASection(".data", 0xD000, 0xD100, 0, 0x100, 0, False, True, True, False),
             ),
             imports=(),
-            pe=FakePE(code),
+            pe=FakePE(code, bytes(data)),
         )
 
         evidence = stage_a._abi_block_evidence(
@@ -2545,9 +2551,66 @@ class StageAValidateTests(unittest.TestCase):
 
         callsite = evidence["callsites"][0]
         self.assertEqual(callsite["target"]["kind"], "function_pointer")
+        self.assertEqual(callsite["target"]["status"], "resolved_static_pointer_slot")
         self.assertEqual(callsite["target"]["memory_rva"], 0xD000)
         self.assertEqual(callsite["target"]["memory_role"], "global_writable_pointer_slot")
         self.assertEqual(callsite["target"]["source"]["memory_section"]["name"], ".data")
+        self.assertEqual(callsite["target"]["recoverable_targets"][0]["target_rva"], 0x1234)
+        self.assertEqual(callsite["function_pointer_targets"][0]["status"], "resolved_static_pointer_slot")
+        self.assertEqual(callsite["function_pointer_targets"][0]["memory_role"], "global_writable_pointer_slot")
+        self.assertEqual(callsite["function_pointer_targets"][0]["recoverable_targets"][0]["target_rva"], 0x1234)
+
+    def test_abi_callsites_keeps_non_executable_global_function_pointer_slot_unresolved(self):
+        class FakePE:
+            def __init__(self, code: bytes, data: bytes):
+                self.code = code
+                self.data = data
+
+            def get_data(self, rva: int, size: int) -> bytes:
+                if 0x1000 <= rva < 0x2000:
+                    offset = rva - 0x1000
+                    return self.code[offset : offset + size]
+                if 0xD000 <= rva < 0xD100:
+                    offset = rva - 0xD000
+                    return self.data[offset : offset + size]
+                return b""
+
+        data = bytearray(0x100)
+        struct.pack_into("<I", data, 0, 0x40D080)
+        code = bytes.fromhex(
+            "a100d04000"  # mov eax, dword ptr [0x40d000]
+            "ffd0"  # call eax
+        )
+        binary = stage_a.StageABinary(
+            path=Path("candidate.exe"),
+            sha256="",
+            size=len(code),
+            machine="i386",
+            bitness=32,
+            image_base=0x400000,
+            entrypoint_rva=0x1000,
+            size_of_image=0x20000,
+            subsystem="console",
+            sections=(
+                stage_a.StageASection(".text", 0x1000, 0x2000, 0, 0x1000, 0, True, True, False, True),
+                stage_a.StageASection(".data", 0xD000, 0xD100, 0, 0x100, 0, False, True, True, False),
+            ),
+            imports=(),
+            pe=FakePE(code, bytes(data)),
+        )
+
+        evidence = stage_a._abi_block_evidence(
+            binary,
+            stage_a.BlockSide(rva_start=0x1000, rva_end=0x1000 + len(code)),
+            "global-slot-call",
+        )
+
+        callsite = evidence["callsites"][0]
+        self.assertEqual(callsite["target"]["kind"], "function_pointer")
+        self.assertEqual(callsite["target"]["status"], "unresolved")
+        self.assertEqual(callsite["target"]["memory_rva"], 0xD000)
+        self.assertEqual(callsite["target"]["memory_role"], "global_writable_pointer_slot")
+        self.assertEqual(callsite["target"]["recoverable_targets"], [])
         self.assertEqual(callsite["function_pointer_targets"][0]["memory_role"], "global_writable_pointer_slot")
 
     def test_abi_callsites_classify_direct_stack_slot_function_pointer_call(self):
