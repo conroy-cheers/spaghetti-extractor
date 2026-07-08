@@ -1424,6 +1424,8 @@ _VERIFIED_DECOMPILER_VERTICAL_SLICE_REGIONS = (
         "caller_block_id": "section-gap--text-0498",
         "callee_function": "section-gap--text-0202",
         "callee_block_id": "section-gap--text-0202",
+        "post_call_jump_function": "section-gap--text-0494",
+        "post_call_jump_block_id": "section-gap--text-0494",
         "register_arguments": (
             ("eax", ("add", ("reg", "ebx"), ("const", 0x1C))),
             ("edx", ("const", 1)),
@@ -1751,6 +1753,18 @@ def _reference_selected_semantic_region_contract(
                 "next_action": "regenerate the Stage A map with the selected callee block",
             }
         )
+    post_call_jump = None
+    post_call_jump_block_id = spec.get("post_call_jump_block_id")
+    if isinstance(post_call_jump_block_id, str):
+        post_call_jump = next((mapped for mapped in mappings if mapped.id == post_call_jump_block_id and mapped.kind == "code"), None)
+        if post_call_jump is None:
+            blockers.append(
+                {
+                    "category": "missing_post_call_jump_block",
+                    "blocker": f"selected region post-call jump target {post_call_jump_block_id!r} is not mapped as code",
+                    "next_action": "regenerate the Stage A map with the selected post-call CFG target",
+                }
+            )
     function = _semantic_region_abi_function(abi_constraint, str(spec["caller_function"]))
     if function is None:
         blockers.append(
@@ -1844,7 +1858,7 @@ def _reference_selected_semantic_region_contract(
                     "mismatches": abi_mismatches,
                 }
             )
-    ir = _semantic_region_ir(spec, caller, callee, callsite)
+    ir = _semantic_region_ir(spec, caller, callee, callsite, post_call_jump)
     c_contract = _semantic_region_c_shaped_contract(spec, ir)
     proof_obligations = _semantic_region_proof_obligations(str(spec["id"]), blockers)
     region = {
@@ -1866,6 +1880,13 @@ def _reference_selected_semantic_region_contract(
             "block_id": callee_block_id,
             "original": _range_report(callee.original) if isinstance(callee, BlockMapping) else None,
         },
+        "post_call_jump": {
+            "function": str(spec["post_call_jump_function"]),
+            "block_id": str(spec["post_call_jump_block_id"]),
+            "original": _range_report(post_call_jump.original) if isinstance(post_call_jump, BlockMapping) else None,
+        }
+        if isinstance(spec.get("post_call_jump_block_id"), str)
+        else None,
         "instructions": instructions,
         "inputs": _semantic_region_inputs(spec, event),
         "outputs": _semantic_region_outputs(spec, callee),
@@ -1873,7 +1894,7 @@ def _reference_selected_semantic_region_contract(
         "preserved_registers": ["ebx", "esi", "edi", "ebp", "esp"],
         "clobbered_registers": ["eax", "ecx", "edx"],
         "direct_callsites": [callsite] if isinstance(callsite, dict) else [],
-        "cfg_exits": _semantic_region_cfg_exits(caller, callee),
+        "cfg_exits": _semantic_region_cfg_exits(caller, callee, post_call_jump),
         "classifications": {
             "import_thunk": False,
             "padding": False,
@@ -2034,52 +2055,75 @@ def _semantic_region_ir(
     caller: BlockMapping,
     callee: BlockMapping | None,
     callsite: dict[str, Any] | None,
+    post_call_jump: BlockMapping | None,
 ) -> dict[str, Any]:
     target_rva = callee.original.rva_start if isinstance(callee, BlockMapping) else None
     callsite_id = callsite.get("id") if isinstance(callsite, dict) else None
+    operations: list[dict[str, Any]] = [
+        {"op": "add32", "dst": "tmp0", "lhs": {"op": "reg", "name": "ebx"}, "rhs": {"op": "const", "value": 0x1C}},
+        {"op": "assign", "dst": "eax_call", "src": {"op": "tmp", "name": "tmp0"}},
+        {"op": "assign", "dst": "edx_call", "src": {"op": "const", "value": 1}},
+        {"op": "assign", "dst": "ecx_call", "src": {"op": "reg", "name": "ebx"}},
+        {
+            "op": "direct_call",
+            "target": str(spec["callee_function"]),
+            "target_block_id": str(spec["callee_block_id"]),
+            "target_rva": target_rva,
+            "callsite_id": callsite_id,
+            "register_arguments": [
+                {"register": register, "value": _semantic_expr_json(expr)}
+                for register, expr in spec["register_arguments"]
+            ],
+            "stack_delta": {"status": "derived", "net_bytes": 0},
+        },
+    ]
+    if isinstance(post_call_jump, BlockMapping):
+        operations.append(
+            {
+                "op": "direct_jump",
+                "position": "post_call",
+                "target": str(spec["post_call_jump_function"]),
+                "target_block_id": str(spec["post_call_jump_block_id"]),
+                "target_rva": post_call_jump.original.rva_start,
+                "control_transfer": "tail",
+            }
+        )
     return {
         "format": "stage-a-low-level-ir-v1",
         "status": "checked",
         "region_id": str(spec["id"]),
         "model": "x86-pe32-register-call-boundary-v1",
-        "operations": [
-            {"op": "add32", "dst": "tmp0", "lhs": {"op": "reg", "name": "ebx"}, "rhs": {"op": "const", "value": 0x1C}},
-            {"op": "assign", "dst": "eax_call", "src": {"op": "tmp", "name": "tmp0"}},
-            {"op": "assign", "dst": "edx_call", "src": {"op": "const", "value": 1}},
-            {"op": "assign", "dst": "ecx_call", "src": {"op": "reg", "name": "ebx"}},
-            {
-                "op": "direct_call",
-                "target": str(spec["callee_function"]),
-                "target_block_id": str(spec["callee_block_id"]),
-                "target_rva": target_rva,
-                "callsite_id": callsite_id,
-                "register_arguments": [
-                    {"register": register, "value": _semantic_expr_json(expr)}
-                    for register, expr in spec["register_arguments"]
-                ],
-                "stack_delta": {"status": "derived", "net_bytes": 0},
-            },
-        ],
+        "operations": operations,
     }
 
 
 def _semantic_region_c_shaped_contract(spec: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]:
+    statements: list[dict[str, Any]] = [
+        {"kind": "assign_register", "register": "eax", "c": "s->eax = (uint32_t)(s->ebx + 0x1cU);"},
+        {"kind": "assign_register", "register": "edx", "c": "s->edx = 1U;"},
+        {"kind": "assign_register", "register": "ecx", "c": "s->ecx = s->ebx;"},
+        {
+            "kind": "direct_call",
+            "target": str(spec["callee_function"]),
+            "register_arguments": [{"register": register} for register, _ in spec["register_arguments"]],
+            "c": "stageb_call_result = callee((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);",
+        },
+    ]
+    if any(isinstance(operation, dict) and operation.get("op") == "direct_jump" for operation in ir.get("operations", [])):
+        statements.append(
+            {
+                "kind": "direct_jump",
+                "target": str(spec["post_call_jump_function"]),
+                "target_block_id": str(spec["post_call_jump_block_id"]),
+                "c": "return post_call_jump_target();",
+            }
+        )
     return {
         "format": "stage-a-c-shaped-region-contract-v1",
         "status": "checked" if ir.get("status") == "checked" else "incomplete",
         "state_type": "stageb_x86_state",
         "function": f"{_safe_gap_part(str(spec['caller_function'])).replace('-', '_')}_contract",
-        "statements": [
-            {"kind": "assign_register", "register": "eax", "c": "s->eax = (uint32_t)(s->ebx + 0x1cU);"},
-            {"kind": "assign_register", "register": "edx", "c": "s->edx = 1U;"},
-            {"kind": "assign_register", "register": "ecx", "c": "s->ecx = s->ebx;"},
-            {
-                "kind": "direct_call",
-                "target": str(spec["callee_function"]),
-                "register_arguments": [{"register": register} for register, _ in spec["register_arguments"]],
-                "c": "return callee((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);",
-            },
-        ],
+        "statements": statements,
         "equivalence": {
             "status": "checked" if ir.get("status") == "checked" else "incomplete",
             "proof_rule": "stage_a_ir_to_c_contract_structural_v1",
@@ -2128,10 +2172,14 @@ def _semantic_region_preconditions(spec: dict[str, Any]) -> list[dict[str, Any]]
     ]
 
 
-def _semantic_region_cfg_exits(caller: BlockMapping, callee: BlockMapping | None) -> list[dict[str, Any]]:
+def _semantic_region_cfg_exits(
+    caller: BlockMapping,
+    callee: BlockMapping | None,
+    post_call_jump: BlockMapping | None = None,
+) -> list[dict[str, Any]]:
     if not isinstance(callee, BlockMapping):
         return []
-    return [
+    exits = [
         {
             "kind": "direct_call",
             "source_block_id": caller.id,
@@ -2139,6 +2187,17 @@ def _semantic_region_cfg_exits(caller: BlockMapping, callee: BlockMapping | None
             "target_rva": callee.original.rva_start,
         }
     ]
+    if isinstance(post_call_jump, BlockMapping):
+        exits.append(
+            {
+                "kind": "direct_jump",
+                "source_block_id": caller.id,
+                "target_block_id": post_call_jump.id,
+                "target_rva": post_call_jump.original.rva_start,
+                "position": "post_call",
+            }
+        )
+    return exits
 
 
 def _semantic_region_proof_obligations(region_id: str, blockers: list[dict[str, Any]]) -> list[dict[str, Any]]:

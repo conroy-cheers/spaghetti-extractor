@@ -3174,6 +3174,13 @@ def _decompiled_c_semantic_region_contract_impl(
     target_name = call_targets.get(target_rva) if target_rva is not None else None
     if not target_name or not _is_c_identifier(target_name):
         return None
+    jump = _decompiled_c_semantic_region_direct_jump(region)
+    jump_target_name = None
+    if jump is not None:
+        jump_target_rva = _optional_int(jump.get("target_rva"))
+        jump_target_name = call_targets.get(jump_target_rva) if jump_target_rva is not None else None
+        if not jump_target_name or not _is_c_identifier(jump_target_name):
+            return None
     if _decompiled_c_semantic_region_register_order(region) != ["eax", "edx", "ecx"]:
         return None
     region_id = str(region.get("id") or "semantic-region")
@@ -3188,7 +3195,7 @@ def _decompiled_c_semantic_region_contract_impl(
         "  s->ecx = s->ebx;",
         f"  volatile uintptr_t stageb_call_result = {target_name}((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);",
         "  s->eax = (uint32_t)stageb_call_result;",
-        "  return stageb_call_result;",
+        f"  return {jump_target_name}();" if jump_target_name else "  return stageb_call_result;",
         "}",
         "",
         "__attribute__((noinline, used))",
@@ -3237,6 +3244,14 @@ def _decompiled_c_semantic_region_direct_call(region: dict[str, Any]) -> dict[st
     outputs = region.get("outputs") if isinstance(region.get("outputs"), dict) else {}
     direct_call = outputs.get("direct_call") if isinstance(outputs.get("direct_call"), dict) else None
     return direct_call
+
+
+def _decompiled_c_semantic_region_direct_jump(region: dict[str, Any]) -> dict[str, Any] | None:
+    ir = region.get("ir") if isinstance(region.get("ir"), dict) else {}
+    for operation in ir.get("operations", []) if isinstance(ir.get("operations"), list) else []:
+        if isinstance(operation, dict) and operation.get("op") == "direct_jump":
+            return operation
+    return None
 
 
 def _decompiled_c_semantic_region_register_order(region: dict[str, Any]) -> list[str]:

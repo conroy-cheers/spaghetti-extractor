@@ -2906,6 +2906,7 @@ class StageBTests(unittest.TestCase):
                 "basic_blocks_and_cfg": {
                     "basic_blocks": [
                         {"id": "section-gap--text-0202"},
+                        {"id": "section-gap--text-0494"},
                         {"id": "section-gap--text-0498"},
                     ]
                 },
@@ -3025,6 +3026,11 @@ class StageBTests(unittest.TestCase):
                                 "block_id": "section-gap--text-0202",
                                 "original": {"rva_start": 0x61A0, "rva_end": 0x61E5, "size": 0x45},
                             },
+                            "post_call_jump": {
+                                "function": "section-gap--text-0494",
+                                "block_id": "section-gap--text-0494",
+                                "original": {"rva_start": 0x72D0, "rva_end": 0x72F3, "size": 0x23},
+                            },
                             "ir": {
                                 "format": "stage-a-low-level-ir-v1",
                                 "status": "checked",
@@ -3044,6 +3050,12 @@ class StageBTests(unittest.TestCase):
                                             {"register": "ecx"},
                                         ],
                                     },
+                                    {
+                                        "op": "direct_jump",
+                                        "target": "section-gap--text-0494",
+                                        "target_block_id": "section-gap--text-0494",
+                                        "target_rva": 0x72D0,
+                                    },
                                 ],
                             },
                             "c_contract": {"status": "checked"},
@@ -3053,6 +3065,17 @@ class StageBTests(unittest.TestCase):
                 "abi_callsites": {
                     "original": {
                         "functions": [
+                            {
+                                "name": "section-gap--text-0494",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0494",
+                                        "rva_start": 0x72D0,
+                                        "rva_end": 0x72F3,
+                                    }
+                                ],
+                                "callsites": [],
+                            },
                             {
                                 "name": "section-gap--text-0202",
                                 "blocks": [
@@ -3119,7 +3142,7 @@ class StageBTests(unittest.TestCase):
             "volatile uintptr_t stageb_call_result = stage_b_contract_section_gap__text_0202((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);",
             source,
         )
-        self.assertIn("return stageb_call_result;", source)
+        self.assertIn("return stage_b_contract_section_gap__text_0494();", source)
         self.assertIn("uintptr_t __attribute__((regparm(3))) stage_b_contract_section_gap__text_0202", source)
         self.assertIn("__attribute__((noinline, used, regparm(3)))", source)
         self.assertIn(
@@ -7586,6 +7609,60 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(unit_items[0]["violated_contract_family"], "abi_callsites")
         self.assertNotIn("function_ranges", {item["violated_contract_family"] for item in unit_items})
         self.assertNotIn("import_thunks", {item["violated_contract_family"] for item in unit_items})
+
+    def test_explain_delta_suppresses_loop_unit_covered_by_checked_semantic_region_jump(self):
+        validation = {"families": [{"family": "abi_callsites", "status": "incomplete"}]}
+        unit_contracts = {
+            "semantic_region_contracts": [
+                {
+                    "id": "semantic-region:jq-section-gap-0498-to-0202",
+                    "status": "checked",
+                    "block_id": "section-gap--text-0498",
+                    "ir": {
+                        "operations": [
+                            {"op": "direct_call", "target_rva": 0x61A0},
+                            {"op": "direct_jump", "target_rva": 0x72D0},
+                        ]
+                    },
+                }
+            ],
+            "repair_units": {
+                "work_items": [
+                    {
+                        "id": "work:cluster:loop:section-gap--text-0498:731c",
+                        "family": "abi_callsites",
+                        "original_function": "section-gap--text-0498",
+                        "original_block": "section-gap--text-0498",
+                        "repair_class": "loop_or_state_machine",
+                        "source_cluster": {
+                            "cluster_kind": "abi_loop_backedge_candidate",
+                            "block_id": "section-gap--text-0498",
+                            "evidence": {"loop_hint": {"target_rva": 0x72D0}},
+                        },
+                    },
+                    {
+                        "id": "work:cluster:hidden-sret:section-gap--text-0202",
+                        "family": "abi_callsites",
+                        "original_function": "section-gap--text-0202",
+                        "original_block": "section-gap--text-0202",
+                        "repair_class": "hidden_sret_or_out_param",
+                    },
+                ]
+            },
+        }
+
+        result = _stage_b_delta_repair_items(
+            contract={},
+            validation=validation,
+            skeleton={"source_map": {"functions": []}},
+            candidate_functions=[],
+            crash=None,
+            functional=None,
+            unit_contracts=unit_contracts,
+        )
+
+        unit_items = [item for item in result if item["evidence"].get("source") == "stage-a-unit-contract"]
+        self.assertEqual([item["original_function"] for item in unit_items], ["section-gap--text-0202"])
 
     def test_explain_delta_ranks_explicit_contract_gap_before_candidate_abi_sample(self):
         validation = {

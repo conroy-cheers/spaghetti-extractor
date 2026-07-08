@@ -1993,6 +1993,8 @@ def _stage_b_unit_contract_repair_items(
         family = str(work.get("family") or "unit_contract")
         if family in satisfied_families:
             continue
+        if _stage_b_work_item_satisfied_by_checked_semantic_region(work, unit_contracts):
+            continue
         function = _stage_b_work_item_function(work)
         items.append(
             _stage_b_repair_item(
@@ -2021,6 +2023,35 @@ def _stage_b_unit_contract_repair_items(
     if not has_semantic_work_items:
         items.extend(_stage_b_semantic_contract_repair_items(unit_contracts, source_map))
     return items
+
+
+def _stage_b_work_item_satisfied_by_checked_semantic_region(work: dict[str, Any], unit_contracts: dict[str, Any]) -> bool:
+    if str(work.get("repair_class") or "") != "loop_or_state_machine":
+        return False
+    cluster = work.get("source_cluster") if isinstance(work.get("source_cluster"), dict) else {}
+    if cluster.get("cluster_kind") != "abi_loop_backedge_candidate":
+        return False
+    evidence = cluster.get("evidence") if isinstance(cluster.get("evidence"), dict) else {}
+    loop = evidence.get("loop_hint") if isinstance(evidence.get("loop_hint"), dict) else {}
+    target_rva = _stage_b_int_value(loop.get("target_rva"))
+    if target_rva is None:
+        return False
+    block_id = str(work.get("original_block") or cluster.get("block_id") or "")
+    if not block_id:
+        return False
+    regions = unit_contracts.get("semantic_region_contracts") if isinstance(unit_contracts.get("semantic_region_contracts"), list) else []
+    for region in regions:
+        if not isinstance(region, dict) or region.get("status") != "checked":
+            continue
+        if str(region.get("block_id") or region.get("function") or "") != block_id:
+            continue
+        ir = region.get("ir") if isinstance(region.get("ir"), dict) else {}
+        for operation in ir.get("operations", []) if isinstance(ir.get("operations"), list) else []:
+            if not isinstance(operation, dict) or operation.get("op") != "direct_jump":
+                continue
+            if _stage_b_int_value(operation.get("target_rva")) == target_rva:
+                return True
+    return False
 
 
 def _stage_b_validation_satisfied_families(validation: dict[str, Any]) -> set[str]:

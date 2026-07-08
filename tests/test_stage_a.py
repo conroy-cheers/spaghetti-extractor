@@ -1608,22 +1608,27 @@ class StageAValidateTests(unittest.TestCase):
     def test_reference_contract_emits_checked_verified_decompiler_region_for_selected_jq_cluster(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            caller = bytes.fromhex("8d431cba0100000089d9e800000000")
+            target = b"\xc3"
+            caller = bytes.fromhex("8d431cba0100000089d9e802000000ebee")
             callee = b"\xc3"
-            original = self._write_pe(root / "original.exe", caller + callee)
-            candidate = self._write_pe(root / "candidate.exe", caller + callee)
+            original = self._write_pe(root / "original.exe", target + caller + callee)
+            candidate = self._write_pe(root / "candidate.exe", target + caller + callee)
             mapping = root / "block-map.json"
             mapping.write_text(
                 json.dumps(
                     {
                         "blocks": [
                             {
-                                **self._mapping_entry(rva=0x1000, size=len(caller), block_id="section-gap--text-0498"),
+                                **self._mapping_entry(rva=0x1000, size=len(target), block_id="section-gap--text-0494"),
+                                "source": {"kind": "linker_map_function", "function": "section-gap--text-0494"},
+                            },
+                            {
+                                **self._mapping_entry(rva=0x1000 + len(target), size=len(caller), block_id="section-gap--text-0498"),
                                 "source": {"kind": "linker_map_function", "function": "section-gap--text-0498"},
                             },
                             {
                                 **self._mapping_entry(
-                                    rva=0x1000 + len(caller),
+                                    rva=0x1000 + len(target) + len(caller),
                                     size=len(callee),
                                     block_id="section-gap--text-0202",
                                 ),
@@ -1652,9 +1657,12 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(region["status"], "checked")
             self.assertEqual(region["function"], "section-gap--text-0498")
             self.assertEqual(region["callee"]["block_id"], "section-gap--text-0202")
-            direct_call = region["ir"]["operations"][-1]
+            direct_jump = region["ir"]["operations"][-1]
+            direct_call = region["ir"]["operations"][-2]
             self.assertEqual(direct_call["op"], "direct_call")
             self.assertEqual([item["register"] for item in direct_call["register_arguments"]], ["eax", "edx", "ecx"])
+            self.assertEqual(direct_jump["op"], "direct_jump")
+            self.assertEqual(direct_jump["target_block_id"], "section-gap--text-0494")
             self.assertEqual(region["c_contract"]["status"], "checked")
             self.assertEqual(region["x86_to_ir_validation"]["status"], "proved")
             self.assertEqual(region["c_contract_equivalence"]["status"], "proved")
@@ -1670,22 +1678,27 @@ class StageAValidateTests(unittest.TestCase):
     def test_reference_contract_semantic_region_fails_closed_on_register_setup_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            caller = bytes.fromhex("8d4320ba0100000089d9e800000000")
+            target = b"\xc3"
+            caller = bytes.fromhex("8d4320ba0100000089d9e802000000ebee")
             callee = b"\xc3"
-            original = self._write_pe(root / "original.exe", caller + callee)
-            candidate = self._write_pe(root / "candidate.exe", caller + callee)
+            original = self._write_pe(root / "original.exe", target + caller + callee)
+            candidate = self._write_pe(root / "candidate.exe", target + caller + callee)
             mapping = root / "block-map.json"
             mapping.write_text(
                 json.dumps(
                     {
                         "blocks": [
                             {
-                                **self._mapping_entry(rva=0x1000, size=len(caller), block_id="section-gap--text-0498"),
+                                **self._mapping_entry(rva=0x1000, size=len(target), block_id="section-gap--text-0494"),
+                                "source": {"kind": "linker_map_function", "function": "section-gap--text-0494"},
+                            },
+                            {
+                                **self._mapping_entry(rva=0x1000 + len(target), size=len(caller), block_id="section-gap--text-0498"),
                                 "source": {"kind": "linker_map_function", "function": "section-gap--text-0498"},
                             },
                             {
                                 **self._mapping_entry(
-                                    rva=0x1000 + len(caller),
+                                    rva=0x1000 + len(target) + len(caller),
                                     size=len(callee),
                                     block_id="section-gap--text-0202",
                                 ),
