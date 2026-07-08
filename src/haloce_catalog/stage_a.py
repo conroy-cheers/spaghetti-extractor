@@ -926,17 +926,23 @@ def stage_a_validate_unit(
     out: Path,
     unit_contract_dir: Path | None = None,
     model: str = STAGE_A_MODEL_ID,
+    contract_candidate_validation: dict[str, Any] | Path | None = None,
+    embed_contract_candidate_validation: bool = True,
 ) -> dict[str, Any]:
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    validation = stage_a_validate_contract_candidate(
-        reference_contract=reference_contract,
-        candidate=candidate,
-        linker_map_candidate=linker_map_candidate,
-        skeleton_manifest=skeleton_manifest,
-        model=model,
-        out=out / "contract-candidate",
-    )
+    validation = _load_contract_candidate_validation(contract_candidate_validation)
+    validation_source = "provided"
+    if validation is None:
+        validation_source = "computed"
+        validation = stage_a_validate_contract_candidate(
+            reference_contract=reference_contract,
+            candidate=candidate,
+            linker_map_candidate=linker_map_candidate,
+            skeleton_manifest=skeleton_manifest,
+            model=model,
+            out=out / "contract-candidate",
+        )
     reference_contract = Path(reference_contract)
     contract = _load_json(reference_contract)
     unit_contracts = _load_reference_unit_contract_sidecars(
@@ -958,14 +964,23 @@ def stage_a_validate_unit(
     ]
     focused_units = _matching_unit_contracts(unit_contracts, focus_lower)
     matched = bool(focused_families or focused_issues or focused_units)
+    focused_status = "incomplete" if not matched or focused_families or focused_issues else "pass"
     status = "pass" if validation.get("verdict") == "pass" and matched else "incomplete"
     result = {
         "format": "stage-a-unit-validation-v1",
         "status": status,
+        "focused_status": focused_status,
+        "scope": "focused_unit_filter",
         "focus": focus,
         "reference_contract": _reference_input_artifact(reference_contract),
         "candidate": _reference_input_artifact(Path(candidate)),
-        "contract_candidate_validation": validation,
+        "candidate_contract_status": validation.get("status") or validation.get("verdict"),
+        "contract_candidate_validation_source": validation_source,
+        "contract_candidate_validation_embedded": embed_contract_candidate_validation,
+        "contract_candidate_validation_artifact": _contract_candidate_validation_artifact(contract_candidate_validation),
+        "contract_candidate_validation": validation
+        if embed_contract_candidate_validation
+        else _contract_candidate_validation_summary(validation),
         "families": focused_families,
         "issues": focused_issues,
         "unit_contracts": focused_units,
@@ -980,6 +995,37 @@ def stage_a_validate_unit(
         result["next_action"] = "pick a function name, block id, family, obligation id, or work-item id from the reference contract sidecars"
     write_json(out / "unit-validation.json", result)
     return result
+
+
+def _contract_candidate_validation_summary(validation: dict[str, Any]) -> dict[str, Any]:
+    families = [item for item in validation.get("families", []) if isinstance(item, dict)]
+    return {
+        "format": validation.get("format"),
+        "status": validation.get("status") or validation.get("verdict"),
+        "verdict": validation.get("verdict") or validation.get("status"),
+        "model": validation.get("model"),
+        "counts": validation.get("counts", {}),
+        "family_statuses": _count_by(families, "status"),
+    }
+
+
+def _contract_candidate_validation_artifact(value: dict[str, Any] | Path | None) -> dict[str, Any] | None:
+    if value is None or isinstance(value, dict):
+        return None
+    path = Path(value)
+    return _reference_input_artifact(path) if path.is_file() else {"path": str(path), "exists": False}
+
+
+def _load_contract_candidate_validation(value: dict[str, Any] | Path | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        payload = value
+    else:
+        payload = _load_json(Path(value))
+    if not isinstance(payload, dict) or payload.get("format") != "stage-a-contract-candidate-validation-v1":
+        raise StageAInputError("contract candidate validation must have format stage-a-contract-candidate-validation-v1")
+    return payload
 
 
 def stage_a_explain_obligations(*, reference_contract: Path, focus: str, out: Path | None = None) -> dict[str, Any]:

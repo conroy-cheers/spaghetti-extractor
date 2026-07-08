@@ -1227,9 +1227,15 @@ def stage_b_explain_delta(
     functional_report: Path | None = None,
     candidate_modules: list[dict[str, Any]] | None = None,
     model: str = STAGE_A_MODEL_ID,
+    contract_candidate_validation: dict[str, Any] | Path | None = None,
+    focus: str | None = None,
+    focused_only: bool = False,
+    embed_contract_candidate_validation: bool = True,
 ) -> dict[str, Any]:
     from .stage_a import stage_a_validate_contract_candidate
 
+    if focused_only and focus is None:
+        raise StageAInputError("focused_only delta explanation requires --focus")
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     reference_contract = Path(reference_contract)
@@ -1250,14 +1256,18 @@ def stage_b_explain_delta(
         functional_report_path=Path(functional_report) if functional_report is not None else None,
         functional_report_payload=functional,
     )
-    contract_validation = stage_a_validate_contract_candidate(
-        reference_contract=reference_contract,
-        candidate=candidate,
-        linker_map_candidate=linker_map_candidate,
-        skeleton_manifest=skeleton_manifest,
-        model=model,
-        out=out / "stage-a-contract-candidate",
-    )
+    contract_validation = _stage_b_load_contract_candidate_validation(contract_candidate_validation)
+    contract_validation_source = "provided"
+    if contract_validation is None:
+        contract_validation_source = "computed"
+        contract_validation = stage_a_validate_contract_candidate(
+            reference_contract=reference_contract,
+            candidate=candidate,
+            linker_map_candidate=linker_map_candidate,
+            skeleton_manifest=skeleton_manifest,
+            model=model,
+            out=out / "stage-a-contract-candidate",
+        )
     candidate_bin = _parse_stage_a_pe(candidate)
     candidate_functions = _parse_linker_map_functions(linker_map_candidate, candidate_bin)
     candidate_symbols = _stage_b_parse_linker_map_symbols(linker_map_candidate, candidate_bin)
@@ -1275,9 +1285,20 @@ def stage_b_explain_delta(
         candidate_probe=candidate_probe,
         functional=functional,
     )
+    source_items = items
+    emitted_items = source_items
+    if focused_only:
+        focus_lower = focus.lower()
+        emitted_items = [item for item in source_items if _stage_b_matches_focus(item, focus_lower)]
+    source_counts = _stage_b_delta_counts(source_items)
+    counts = _stage_b_delta_counts(emitted_items)
+    if focused_only:
+        counts["source_repair_items"] = source_counts["repair_items"]
     result = {
         "format": "stage-b-delta-explanation-v1",
-        "status": "incomplete" if items else "pass",
+        "status": "incomplete" if emitted_items else "pass",
+        "scope": "focused" if focused_only else "full",
+        "focus": focus,
         "generated_at": utc_now(),
         "reference_contract": _stage_b_reference_contract_artifact(reference_contract),
         "candidate": {"path": str(candidate), "sha256": sha256_file(candidate)},
@@ -1292,19 +1313,76 @@ def stage_b_explain_delta(
         else _stage_b_candidate_probe_report_artifact(Path(candidate_probe_report), candidate_probe),
         "unit_contracts": unit_contracts.get("artifact") if isinstance(unit_contracts, dict) else None,
         "functional_report": None if functional_report is None else {"path": str(functional_report), "sha256": sha256_file(Path(functional_report))},
-        "contract_candidate_validation": contract_validation,
+        "candidate_contract_status": contract_validation.get("status") or contract_validation.get("verdict"),
+        "contract_candidate_validation_source": contract_validation_source,
+        "contract_candidate_validation_embedded": embed_contract_candidate_validation,
+        "contract_candidate_validation_artifact": _stage_b_contract_candidate_validation_artifact(contract_candidate_validation),
+        "contract_candidate_validation": contract_validation
+        if embed_contract_candidate_validation
+        else _stage_b_contract_candidate_validation_summary(contract_validation),
         "functional_diagnostics": functional_diagnostics,
-        "layout_synthesis": _stage_b_layout_synthesis(_stage_b_layout_section_deltas_from_items(items)),
-        "repair_items": items,
-        "counts": {
-            "repair_items": len(items),
-            "by_repair_class": _count_by(items, "likely_repair_class"),
-            "by_family": _count_by(items, "violated_contract_family"),
-            "by_evidence_source": _count_by_evidence_source(items),
-        },
+        "layout_synthesis": _stage_b_layout_synthesis(_stage_b_layout_section_deltas_from_items(emitted_items)),
+        "repair_items": emitted_items,
+        "counts": counts,
     }
+    if focused_only:
+        result["source_counts"] = source_counts
     write_json(out / "stage-b-delta.json", result)
     return result
+
+
+def _stage_b_contract_candidate_validation_summary(validation: dict[str, Any]) -> dict[str, Any]:
+    families = [item for item in validation.get("families", []) if isinstance(item, dict)]
+    return {
+        "format": validation.get("format"),
+        "status": validation.get("status") or validation.get("verdict"),
+        "verdict": validation.get("verdict") or validation.get("status"),
+        "model": validation.get("model"),
+        "counts": validation.get("counts", {}),
+        "family_statuses": _count_by(families, "status"),
+    }
+
+
+def _stage_b_contract_candidate_validation_artifact(value: dict[str, Any] | Path | None) -> dict[str, Any] | None:
+    if value is None or isinstance(value, dict):
+        return None
+    path = Path(value)
+    if not path.is_file():
+        return {"path": str(path), "exists": False}
+    return {"path": str(path), "sha256": sha256_file(path)}
+
+
+def _stage_b_load_contract_candidate_validation(value: dict[str, Any] | Path | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        payload = value
+    else:
+        payload = _load_json(Path(value))
+    if not isinstance(payload, dict) or payload.get("format") != "stage-a-contract-candidate-validation-v1":
+        raise StageAInputError("contract candidate validation must have format stage-a-contract-candidate-validation-v1")
+    return payload
+
+
+def _stage_b_matches_focus(value: Any, focus_lower: str) -> bool:
+    if isinstance(value, str):
+        return focus_lower in value.lower()
+    if isinstance(value, int):
+        return focus_lower in {str(value), hex(value).lower()}
+    if isinstance(value, dict):
+        return any(_stage_b_matches_focus(item, focus_lower) for item in value.values())
+    if isinstance(value, list):
+        return any(_stage_b_matches_focus(item, focus_lower) for item in value)
+    return False
+
+
+def _stage_b_delta_counts(items: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "repair_items": len(items),
+        "by_repair_class": _count_by(items, "likely_repair_class"),
+        "by_family": _count_by(items, "violated_contract_family"),
+        "by_evidence_source": _count_by_evidence_source(items),
+    }
 
 
 def stage_b_diff_delta(*, before: Path, after: Path, out: Path) -> dict[str, Any]:

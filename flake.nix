@@ -316,6 +316,18 @@
             '';
           };
 
+          wincr-slice-dev = pkgs.writeShellApplication {
+            name = "wincr-slice";
+            runtimeInputs = [
+              python
+              pkgs.nix
+            ];
+            text = ''
+              export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec ${python}/bin/python3 -m haloce_catalog.slice_loop "$@"
+            '';
+          };
+
           stageBSkeletonSource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
@@ -673,6 +685,9 @@
               parser.add_argument("--candidate-probe-report", type=Path)
               parser.add_argument("--functional-report", type=Path)
               parser.add_argument("--unit-contract-dir", type=Path)
+              parser.add_argument("--contract-candidate-validation", type=Path)
+              parser.add_argument("--focus")
+              parser.add_argument("--focused-only", action="store_true")
               parser.add_argument("--model", default=STAGE_A_MODEL_ID)
               parser.add_argument("--out", type=Path, required=True)
               args = parser.parse_args(sys.argv[1:])
@@ -686,6 +701,9 @@
                   candidate_probe_report=args.candidate_probe_report,
                   functional_report=args.functional_report,
                   unit_contract_dir=args.unit_contract_dir,
+                  contract_candidate_validation=args.contract_candidate_validation,
+                  focus=args.focus,
+                  focused_only=args.focused_only,
                   model=args.model,
                   out=args.out,
               )
@@ -5287,6 +5305,7 @@ setup.write_text(text)
               stage-b-contract-tools
               stage-b-functional-tools
               stage-b-functional-runner-check
+              wincr-slice-dev
               wincr-3d-reference-game
               wincr-3d-reference-observe
               wincr-3d-reference-root
@@ -5313,6 +5332,11 @@ setup.write_text(text)
             wincr = {
               type = "app";
               program = "${haloce-tools}/bin/wincr";
+            };
+
+            wincr-slice = {
+              type = "app";
+              program = "${haloce-tools}/bin/wincr-slice";
             };
 
             haloce-catalog = {
@@ -5476,6 +5500,7 @@ setup.write_text(text)
               pkgs.cargo
               pkgs.lean4
               python
+              wincr-slice-dev
               pkgs.rustc
               pkgs.rustfmt
               dynamorio-combined
@@ -5547,6 +5572,7 @@ setup.write_text(text)
           devShells.test = pkgs.mkShell {
             packages = [
               python
+              wincr-slice-dev
               pkgs.cargo
               pkgs.jq
               pkgs.lean4

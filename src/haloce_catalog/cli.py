@@ -311,6 +311,11 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_a_unit.add_argument("--skeleton-manifest", type=Path)
     stage_a_unit.add_argument("--unit-contract-dir", type=Path)
     stage_a_unit.add_argument("--focus", required=True)
+    stage_a_unit.add_argument(
+        "--contract-candidate-validation",
+        type=Path,
+        help="reuse an existing stage-a-contract-candidate-validation-v1 artifact instead of recomputing it",
+    )
     stage_a_unit.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
     stage_a_unit.add_argument("--out", type=Path, required=True)
     stage_a_unit.set_defaults(func=_cmd_stage_a_validate_unit)
@@ -503,6 +508,17 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
     stage_b_delta.add_argument("--candidate-probe-report", type=Path)
     stage_b_delta.add_argument("--functional-report", type=Path)
     stage_b_delta.add_argument("--unit-contract-dir", type=Path)
+    stage_b_delta.add_argument(
+        "--contract-candidate-validation",
+        type=Path,
+        help="reuse an existing stage-a-contract-candidate-validation-v1 artifact instead of recomputing it",
+    )
+    stage_b_delta.add_argument("--focus", help="function, block, family, obligation id, or work-item id to focus")
+    stage_b_delta.add_argument(
+        "--focused-only",
+        action="store_true",
+        help="emit only repair items matching --focus; does not change Stage A validation strictness",
+    )
     stage_b_delta.add_argument("--model", default=STAGE_A_MODEL_ID, help="execution model identifier")
     stage_b_delta.add_argument("--out", type=Path, required=True)
     stage_b_delta.set_defaults(func=_cmd_stage_b_explain_delta)
@@ -1557,6 +1573,7 @@ def _cmd_stage_a_validate_unit(args: Any) -> int:
         unit_contract_dir=args.unit_contract_dir,
         focus=args.focus,
         model=args.model,
+        contract_candidate_validation=args.contract_candidate_validation,
         out=args.out,
     )
     _print_json(result)
@@ -1710,6 +1727,9 @@ def _cmd_stage_b_explain_delta(args: Any) -> int:
         candidate_probe_report=args.candidate_probe_report,
         functional_report=args.functional_report,
         unit_contract_dir=args.unit_contract_dir,
+        contract_candidate_validation=args.contract_candidate_validation,
+        focus=args.focus,
+        focused_only=args.focused_only,
         model=args.model,
         out=args.out,
     )

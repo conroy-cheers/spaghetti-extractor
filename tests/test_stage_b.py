@@ -7271,6 +7271,65 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(item["generated_source_location"]["file"], "src/jq_stage_b_skeleton.c")
             self.assertTrue((root / "delta" / "stage-b-delta.json").exists())
 
+    def test_explain_delta_reuses_validation_and_can_emit_focused_only_items(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            candidate_map = self._write_map(root / "candidate.map", "selected_fn")
+            reference_contract = root / "reference-contract.json"
+            skeleton_manifest = root / "manifest.json"
+            reference_contract.write_text(
+                json.dumps({"format": "stage-a-reference-contract-v1", "model": STAGE_A_MODEL_ID, "families": []}),
+                encoding="utf-8",
+            )
+            skeleton_manifest.write_text(json.dumps({"format": "stage-b-skeleton-v1", "source_map": {"functions": []}}), encoding="utf-8")
+            validation = {
+                "format": "stage-a-contract-candidate-validation-v1",
+                "status": "incomplete",
+                "verdict": "incomplete",
+                "families": [],
+                "issues": [],
+                "counts": {"families": 0, "issues": 0},
+            }
+            repair_items = [
+                {
+                    "id": "repair:selected",
+                    "violated_contract_family": "cfg",
+                    "original_function": "selected_fn",
+                    "likely_repair_class": "cfg_repair",
+                    "next_action": "repair selected_fn",
+                },
+                {
+                    "id": "repair:other",
+                    "violated_contract_family": "cfg",
+                    "original_function": "other_fn",
+                    "likely_repair_class": "cfg_repair",
+                    "next_action": "repair other_fn",
+                },
+            ]
+
+            with patch("haloce_catalog.stage_a.stage_a_validate_contract_candidate") as validate_candidate, patch(
+                "haloce_catalog.stage_b._stage_b_delta_repair_items", return_value=repair_items
+            ):
+                result = stage_b_explain_delta(
+                    reference_contract=reference_contract,
+                    candidate=candidate,
+                    linker_map_candidate=candidate_map,
+                    skeleton_manifest=skeleton_manifest,
+                    contract_candidate_validation=validation,
+                    focus="selected",
+                    focused_only=True,
+                    out=root / "delta",
+                )
+
+            validate_candidate.assert_not_called()
+            self.assertEqual(result["scope"], "focused")
+            self.assertEqual(result["contract_candidate_validation_source"], "provided")
+            self.assertEqual(result["candidate_contract_status"], "incomplete")
+            self.assertEqual(result["counts"]["repair_items"], 1)
+            self.assertEqual(result["source_counts"]["repair_items"], 2)
+            self.assertEqual(result["repair_items"][0]["original_function"], "selected_fn")
+
     def test_diff_delta_reports_resolved_items_and_layout_synthesis(self):
         def section_item(name: str, expected_end: int, candidate_end: int) -> dict:
             expected_start = 0xE000 if name == ".rdata" else 0x1000

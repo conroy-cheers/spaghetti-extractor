@@ -1875,6 +1875,48 @@ class StageAValidateTests(unittest.TestCase):
             self.assertGreater(result["counts"]["unit_contracts"], 0)
             self.assertTrue((root / "unit" / "unit-validation.json").exists())
 
+    def test_stage_a_validate_unit_reuses_supplied_contract_candidate_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference_contract = root / "reference-contract.json"
+            candidate = root / "candidate.exe"
+            candidate_map = root / "candidate.map"
+            skeleton_manifest = root / "manifest.json"
+            reference_contract.write_text(
+                json.dumps({"format": "stage-a-reference-contract-v1", "model": STAGE_A_MODEL_ID, "families": []}),
+                encoding="utf-8",
+            )
+            candidate.write_bytes(b"not parsed when validation is supplied")
+            candidate_map.write_text("not parsed\n", encoding="utf-8")
+            skeleton_manifest.write_text(json.dumps({"format": "stage-b-skeleton-v1"}), encoding="utf-8")
+            validation = {
+                "format": "stage-a-contract-candidate-validation-v1",
+                "status": "incomplete",
+                "verdict": "incomplete",
+                "families": [{"family": "cfg", "status": "incomplete", "function": "selected"}],
+                "issues": [],
+                "counts": {"families": 1, "issues": 0},
+            }
+
+            with mock.patch("haloce_catalog.stage_a.stage_a_validate_contract_candidate") as validate_candidate:
+                result = stage_a_validate_unit(
+                    reference_contract=reference_contract,
+                    candidate=candidate,
+                    linker_map_candidate=candidate_map,
+                    skeleton_manifest=skeleton_manifest,
+                    focus="selected",
+                    model=STAGE_A_MODEL_ID,
+                    contract_candidate_validation=validation,
+                    out=root / "unit",
+                )
+
+            validate_candidate.assert_not_called()
+            self.assertEqual(result["contract_candidate_validation_source"], "provided")
+            self.assertEqual(result["candidate_contract_status"], "incomplete")
+            self.assertEqual(result["focused_status"], "incomplete")
+            self.assertEqual(result["counts"]["families"], 1)
+            self.assertTrue((root / "unit" / "unit-validation.json").exists())
+
     def test_reference_contract_abi_callsites_ignore_prologue_pushes_and_capture_stack_slots(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
