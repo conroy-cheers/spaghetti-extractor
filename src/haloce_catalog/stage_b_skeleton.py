@@ -95,6 +95,25 @@ _DECOMPILED_C_STACK_PROBE_HELPER_MACROS = {
 }
 _DECOMPILED_C_DTOA_LOCK_HELPER_SYMBOL = "dtoa_lock"
 _DECOMPILED_C_DTOA_LOCK_HELPER_DATA_SYMBOLS = ("_dtoa_CS_init", "_dtoa_CritSec")
+_DECOMPILED_C_EXACT_RUNTIME_DATA_SYMBOLS = frozenset()
+_DECOMPILED_C_JQ_RDATA_TABLE_SYMBOLS = frozenset({"___tens_D2A"})
+_DECOMPILED_C_JQ_BSS_ALIAS_DATA_SYMBOL_OFFSETS = {
+    "_dtoa_CritSec": 0x840,
+    "_dtoa_CS_init": 0x878,
+    "_errno_exref": 0x8A4,
+    "_freelist": 0x800,
+    "_handler": 0x8A0,
+    "_internal_mbstate_1": 0x890,
+    "_internal_mbstate_2": 0x898,
+    "_p5s": 0x880,
+    "_pmem_next": 0x884,
+    "_s_mbstate_0": 0x89C,
+    "_setmode_exref": 0x8A8,
+    "_static_path_copy_0": 0x8AC,
+    "stack0xfffffb54": 0x8B0,
+    "stack0xfffffb58": 0x8B4,
+    "stack0xfffffb5c": 0x8B8,
+}
 _DECOMPILED_C_DTOA_LOCK_HELPER_IMPORTS = (
     "DeleteCriticalSection",
     "EnterCriticalSection",
@@ -2400,6 +2419,7 @@ def _render_decompiled_c_source(
         "    uint32_t zero2;",
         "    uint32_t version;",
         "} pseudoRelocItemV2;",
+        *(["#define STAGE_B_JQ_HAS_LAYOUT_BSS_ANCHOR 1"] if target_name == "jq" else []),
         "#ifndef LOCK",
         "#define LOCK() ((void)0)",
         "#endif",
@@ -2463,7 +2483,7 @@ def _render_decompiled_c_source(
         "       stage_b_result; })",
         "",
         "uintptr_t __cdecl jv_mem_alloc(size_t);",
-        "static unsigned stage_b_jq_isoption_index;",
+        "__attribute__((section(\".bss\"))) static unsigned stage_b_jq_isoption_index;",
         "static void stage_b_jq_isoption_reset(void) { stage_b_jq_isoption_index = 0; }",
         "static uintptr_t stage_b_jq_jvp_array_alloc(uint32_t capacity) {",
         "    size_t bytes = ((size_t)capacity + 1U) * 16U;",
@@ -3452,11 +3472,12 @@ def _decompiled_c_layout_support_lines(
         "__asm__(",
         "\".section .text$stage_b_jq_layout_pad,\\\"x\\\"\\n\"",
         "\"_stage_b_jq_layout_text_anchor:\\n\"",
-        "\"  .fill 5067,1,0x90\\n\"",
+        "\"  .fill 4811,1,0x90\\n\"",
         "\".text\\n\"",
         ");",
-        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2516];",
-        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1712] = {0};",
+        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2508];",
+        "__attribute__((used, aligned(1), section(\".data$stage_b_jq_layout_tail\"))) volatile unsigned char stage_b_jq_layout_data_tail[4] = {0};",
+        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1456] = {0};",
         "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
         "uintptr_t __cdecl jv_mem_alloc(size_t);",
         "__attribute__((used, section(\".rdata$stage_b_jq_import_anchor\"))) static void * const stage_b_jq_import_anchor[] = {",
@@ -3506,6 +3527,7 @@ def _decompiled_c_layout_support_lines(
             "static void stage_b_layout_keepalive(void) {",
             "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_text_anchor) : \"memory\");",
             "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_import_anchor) : \"memory\");",
+            "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_data_tail) : \"memory\");",
             "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_rdata_anchor) : \"memory\");",
             "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_bss_anchor) : \"memory\");",
         ]
@@ -3657,18 +3679,62 @@ def _decompiled_c_external_data_symbol_names(functions: list[dict[str, Any]]) ->
 def _decompiled_c_external_data_declaration(symbol: str) -> str:
     if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
         return f"extern pseudoRelocItemV2 {symbol}[2];"
-    if symbol == "_dtoa_CritSec":
-        return "extern byte _dtoa_CritSec[0x30];"
-    return f"extern {_decompiled_c_external_data_type(symbol)} {symbol};"
+    if symbol in _DECOMPILED_C_JQ_RDATA_TABLE_SYMBOLS:
+        return _decompiled_c_jq_rdata_table_macro(symbol)
+    if symbol in _DECOMPILED_C_JQ_BSS_ALIAS_DATA_SYMBOL_OFFSETS:
+        return _decompiled_c_jq_bss_alias_data_macro(symbol)
+    return f"extern {_decompiled_c_external_data_type(symbol)} {symbol}{_decompiled_c_external_data_asm_label(symbol)};"
 
 def _decompiled_c_external_data_definition(symbol: str) -> str:
     if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
         return f"__attribute__((weak)) pseudoRelocItemV2 {symbol}[2];"
-    if symbol == "__imp____acrt_iob_func":
-        return f"extern {_decompiled_c_external_data_type(symbol)} {symbol};"
-    if symbol == "_dtoa_CritSec":
-        return "__attribute__((weak)) byte _dtoa_CritSec[0x30];"
+    if symbol in _DECOMPILED_C_JQ_RDATA_TABLE_SYMBOLS:
+        return ""
+    if symbol in _DECOMPILED_C_JQ_BSS_ALIAS_DATA_SYMBOL_OFFSETS:
+        return ""
+    if symbol.startswith("__imp"):
+        return f"extern {_decompiled_c_external_data_type(symbol)} {symbol}{_decompiled_c_external_data_asm_label(symbol)};"
+    if symbol in _DECOMPILED_C_EXACT_RUNTIME_DATA_SYMBOLS:
+        return f"extern {_decompiled_c_external_data_type(symbol)} {symbol}{_decompiled_c_external_data_asm_label(symbol)};"
     return f"__attribute__((weak)) {_decompiled_c_external_data_type(symbol)} {symbol};"
+
+def _decompiled_c_external_data_asm_label(symbol: str) -> str:
+    if symbol.startswith("__imp") or symbol in _DECOMPILED_C_EXACT_RUNTIME_DATA_SYMBOLS:
+        return f' __asm__("{symbol}")'
+    return ""
+
+def _decompiled_c_jq_bss_alias_data_macro(symbol: str) -> str:
+    offset = _DECOMPILED_C_JQ_BSS_ALIAS_DATA_SYMBOL_OFFSETS[symbol]
+    if symbol == "_dtoa_CritSec":
+        expression = f"(*(byte (*)[0x30])(STAGE_B_JQ_RECOVERED_STATE_BASE + 0x{offset:x}U))"
+    else:
+        expression = f"(*({_decompiled_c_external_data_type(symbol)} *)(STAGE_B_JQ_RECOVERED_STATE_BASE + 0x{offset:x}U))"
+    return "\n".join(
+        [
+            "#ifndef STAGE_B_JQ_RECOVERED_STATE_BASE",
+            "#if defined(STAGE_B_JQ_HAS_LAYOUT_BSS_ANCHOR)",
+            "extern volatile unsigned char stage_b_jq_layout_bss_anchor[];",
+            "#define STAGE_B_JQ_RECOVERED_STATE_BASE stage_b_jq_layout_bss_anchor",
+            "#else",
+            "__attribute__((weak, section(\".bss\"))) volatile unsigned char stage_b_jq_recovered_state_anchor[0x900];",
+            "#define STAGE_B_JQ_RECOVERED_STATE_BASE stage_b_jq_recovered_state_anchor",
+            "#endif",
+            "#endif",
+            f"#define {symbol} {expression}",
+        ]
+    )
+
+def _decompiled_c_jq_rdata_table_macro(symbol: str) -> str:
+    if symbol != "___tens_D2A":
+        raise StageAInputError(f"unsupported jq rdata table alias: {symbol}")
+    values = ", ".join(f"1e{index}" for index in range(24))
+    return "\n".join(
+        [
+            "__attribute__((used, aligned(8), section(\".rdata$stage_b_jq_dtoa_tables\")))",
+            f"static const double stage_b_jq_tens_D2A[24] = {{{values}}};",
+            "#define ___tens_D2A (*(const byte *)(const void *)stage_b_jq_tens_D2A)",
+        ]
+    )
 
 def _decompiled_c_external_data_type(symbol: str) -> str:
     if symbol.startswith("__imp"):
@@ -3699,6 +3765,8 @@ def _decompiled_c_external_data_type(symbol: str) -> str:
         return "undefined4 *"
     elif symbol == "_handler":
         return "_invalid_parameter_handler"
+    elif symbol == "_pmem_next":
+        return "byte *"
     elif symbol == "_msvcrt__lc_codepage":
         return "uint *"
     elif symbol == "_p5s":

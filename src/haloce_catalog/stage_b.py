@@ -6865,15 +6865,21 @@ def _decompiled_c_external_data_symbol_names(functions: list[dict[str, Any]]) ->
 def _decompiled_c_external_data_declaration(symbol: str) -> str:
     if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
         return f"extern pseudoRelocItemV2 {symbol}[2];"
-    return f"extern {_decompiled_c_external_data_type(symbol)} {symbol};"
+    return f"extern {_decompiled_c_external_data_type(symbol)} {symbol}{_decompiled_c_external_data_asm_label(symbol)};"
 
 
 def _decompiled_c_external_data_definition(symbol: str) -> str:
     if symbol.startswith("pseudoRelocItemV2_ARRAY_"):
         return f"__attribute__((weak)) pseudoRelocItemV2 {symbol}[2];"
-    if symbol == "__imp____acrt_iob_func":
-        return f"extern {_decompiled_c_external_data_type(symbol)} {symbol};"
+    if symbol.startswith("__imp"):
+        return f"extern {_decompiled_c_external_data_type(symbol)} {symbol}{_decompiled_c_external_data_asm_label(symbol)};"
     return f"__attribute__((weak)) {_decompiled_c_external_data_type(symbol)} {symbol};"
+
+
+def _decompiled_c_external_data_asm_label(symbol: str) -> str:
+    if symbol.startswith("__imp"):
+        return f' __asm__("{symbol}")'
+    return ""
 
 
 def _decompiled_c_external_data_type(symbol: str) -> str:

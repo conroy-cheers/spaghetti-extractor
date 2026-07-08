@@ -2694,7 +2694,7 @@
                 -Wl,--gc-sections \
                 "''${strict_layout_flags[@]}" \
                 -Wl,-Map,"$work/jq_stage_b_skeleton.generated-closure.strict.link.map" \
-                -o "$work/jq_stage_b_skeleton.generated-closure.strict.exe" \
+                -o "$work/jq.exe" \
                 > "$work/generated-closure-strict-link.stdout.txt" \
                 2> "$work/generated-closure-strict-link.stderr.txt"
               strict_generated_link_code=$?
@@ -2706,7 +2706,8 @@
               strict_generated_unresolved_count="$(wc -l < "$work/generated-closure-strict-link-undefined-references.txt" | tr -d ' ')"
 
               if test "$strict_generated_link_code" -eq 0; then
-                cp "$work/jq_stage_b_skeleton.generated-closure.strict.exe" "$work/jq_stage_b_skeleton.generated-closure.exe"
+                cp "$work/jq.exe" "$work/jq_stage_b_skeleton.generated-closure.strict.exe"
+                cp "$work/jq.exe" "$work/jq_stage_b_skeleton.generated-closure.exe"
                 cp "$work/jq_stage_b_skeleton.generated-closure.strict.link.map" "$work/jq_stage_b_skeleton.generated-closure.link.map"
                 cp "$work/generated-closure-strict-link.stdout.txt" "$work/generated-closure-link.stdout.txt"
                 cp "$work/generated-closure-strict-link.stderr.txt" "$work/generated-closure-link.stderr.txt"
@@ -2734,7 +2735,7 @@
                   -Wl,--gc-sections \
                   "''${diagnostic_layout_flags[@]}" \
                   -Wl,-Map,"$work/jq_stage_b_skeleton.generated-closure.link.map" \
-                  -o "$work/jq_stage_b_skeleton.generated-closure.exe" \
+                  -o "$work/jq.exe" \
                   > "$work/generated-closure-link.stdout.txt" \
                   2> "$work/generated-closure-link.stderr.txt"
                 generated_link_code=$?
@@ -2748,6 +2749,7 @@
                   sed -n '1,200p' "$work/generated-closure-link.stderr.txt" >&2
                   exit 1
                 fi
+                cp "$work/jq.exe" "$work/jq_stage_b_skeleton.generated-closure.exe"
                 generated_link_status="incomplete"
                 layout_policy="diagnostic_fallback"
                 layout_fallback_used="true"

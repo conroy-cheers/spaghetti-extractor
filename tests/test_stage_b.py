@@ -2068,6 +2068,7 @@ class StageBTests(unittest.TestCase):
                                             "  PathIsRelativeA(\"x\");",
                                             "  GetTimeZoneInformation(0);",
                                             "  atexit((void *)0);",
+                                            "  (*(code *)__imp_____lc_codepage_func)();",
                                             "  local_28.BaseAddress = __imp____acrt_iob_func;",
                                             "  (*(code *)__imp____acrt_iob_func)(2);",
                                             "  initterm();",
@@ -2113,16 +2114,20 @@ class StageBTests(unittest.TestCase):
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
             self.assertIn(".text$stage_b_jq_layout_pad", source)
-            self.assertIn(".fill 5067,1,0x90", source)
+            self.assertIn(".fill 4811,1,0x90", source)
             self.assertIn('((void *)stage_b_jq_layout_text_anchor)', source)
-            self.assertIn("stage_b_jq_layout_bss_anchor[2516]", source)
+            self.assertIn("stage_b_jq_layout_bss_anchor[2508]", source)
+            self.assertIn("stage_b_jq_layout_data_tail[4]", source)
+            self.assertIn('((void *)stage_b_jq_layout_data_tail)', source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
-            self.assertIn("stage_b_jq_layout_rdata_anchor[1712]", source)
+            self.assertIn("stage_b_jq_layout_rdata_anchor[1456]", source)
             self.assertIn('((void *)stage_b_jq_layout_bss_anchor)', source)
             self.assertNotIn("stage_b_jq_layout_tls_anchor", source)
             self.assertIn("__crt_atexit((void *)0);", source)
             self.assertNotIn("  atexit((void *)0);", source)
-            self.assertIn("extern void * __imp____acrt_iob_func;", source)
+            self.assertIn('extern void * __imp_____lc_codepage_func __asm__("__imp_____lc_codepage_func");', source)
+            self.assertNotIn("__attribute__((weak)) void * __imp_____lc_codepage_func;", source)
+            self.assertIn('extern void * __imp____acrt_iob_func __asm__("__imp____acrt_iob_func");', source)
             self.assertIn("local_28.BaseAddress = __imp____acrt_iob_func;", source)
             self.assertIn("(*(code *)__imp____acrt_iob_func)(2);", source)
             self.assertNotIn("__attribute__((weak)) void * __imp____acrt_iob_func;", source)
@@ -3842,6 +3847,7 @@ class StageBTests(unittest.TestCase):
                                 "  if (_dtoa_CS_init == 2) {",
                                 "    LeaveCriticalSection((LPCRITICAL_SECTION)&_dtoa_CritSec);",
                                 "  }",
+                                "  *(double *)(&___tens_D2A + 8);",
                                 "  return;",
                                 "}",
                             ]
@@ -3851,10 +3857,17 @@ class StageBTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("extern byte _dtoa_CS_init;", source)
-        self.assertIn("extern byte _dtoa_CritSec[0x30];", source)
-        self.assertIn("__attribute__((weak)) byte _dtoa_CS_init;", source)
-        self.assertIn("__attribute__((weak)) byte _dtoa_CritSec[0x30];", source)
+        self.assertIn("#define STAGE_B_JQ_HAS_LAYOUT_BSS_ANCHOR 1", source)
+        self.assertIn("extern volatile unsigned char stage_b_jq_layout_bss_anchor[];", source)
+        self.assertIn("#define STAGE_B_JQ_RECOVERED_STATE_BASE stage_b_jq_layout_bss_anchor", source)
+        self.assertIn("#define _dtoa_CS_init (*(byte *)(STAGE_B_JQ_RECOVERED_STATE_BASE + 0x878U))", source)
+        self.assertIn("#define _dtoa_CritSec (*(byte (*)[0x30])(STAGE_B_JQ_RECOVERED_STATE_BASE + 0x840U))", source)
+        self.assertNotIn("__attribute__((weak)) byte _dtoa_CS_init;", source)
+        self.assertNotIn("__attribute__((weak)) byte _dtoa_CritSec", source)
+        self.assertIn('section(".rdata$stage_b_jq_dtoa_tables")', source)
+        self.assertIn("static const double stage_b_jq_tens_D2A[24]", source)
+        self.assertIn("#define ___tens_D2A (*(const byte *)(const void *)stage_b_jq_tens_D2A)", source)
+        self.assertNotIn("__attribute__((weak)) byte ___tens_D2A;", source)
         self.assertIn("extern void __attribute__((stdcall, dllimport)) InitializeCriticalSection(LPCRITICAL_SECTION);", source)
         self.assertIn("extern void __attribute__((stdcall, dllimport)) EnterCriticalSection(LPCRITICAL_SECTION);", source)
         self.assertIn("extern void __attribute__((stdcall, dllimport)) DeleteCriticalSection(LPCRITICAL_SECTION);", source)
