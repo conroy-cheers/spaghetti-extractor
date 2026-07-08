@@ -3624,17 +3624,21 @@ class StageBTests(unittest.TestCase):
             self.assertIn('"  .long _stage_b_jq_layout_text_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_import_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_layout_data_tail - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn("stage_b_jq_layout_bss_anchor[8]", source)
-            self.assertIn("stage_b_jq_layout_data_tail[40]", source)
+            self.assertIn("stage_b_jq_layout_bss_anchor[2644]", source)
+            self.assertIn("stage_b_jq_layout_data_tail[92]", source)
+            self.assertIn("stage_b_jq_layout_tls_anchor[8]", source)
+            self.assertIn(".idata$stage_b_jq_layout_pad", source)
+            self.assertIn("_stage_b_jq_layout_idata_pad", source)
             self.assertNotIn('((void *)stage_b_jq_layout_data_tail)', source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
             self.assertIn('"  .long _stage_b_jq_layout_rdata_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_layout_bss_anchor - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn("stage_b_jq_layout_rdata_anchor[1408]", source)
+            self.assertIn('"  .long _stage_b_jq_layout_tls_anchor - _stage_b_jq_layout_anchor\\n"', source)
+            self.assertIn('"  .long _stage_b_jq_layout_idata_pad - _stage_b_jq_layout_anchor\\n"', source)
+            self.assertIn("stage_b_jq_layout_rdata_anchor[4672]", source)
             self.assertIn('((void *)stage_b_jq_layout_anchor)', source)
             self.assertNotIn('((void *)stage_b_jq_layout_text_anchor)', source)
             self.assertNotIn('((void *)stage_b_jq_layout_bss_anchor)', source)
-            self.assertNotIn("stage_b_jq_layout_tls_anchor", source)
             self.assertIn("__crt_atexit((void *)0);", source)
             self.assertNotIn("  atexit((void *)0);", source)
             self.assertIn('extern void * __imp_____lc_codepage_func __asm__("__imp_____lc_codepage_func");', source)
@@ -6144,6 +6148,7 @@ class StageBTests(unittest.TestCase):
             "_GetProcAddress@8",
             "_IsDBCSLeadByteEx@8",
             "_MultiByteToWideChar@24",
+            "_WideCharToMultiByte@32",
             "_Sleep@4",
             "_TlsGetValue@4",
             "_VirtualProtect@16",
@@ -6618,6 +6623,60 @@ class StageBTests(unittest.TestCase):
         by_function = {item["function"]: item for item in source_map["functions"]}
         self.assertEqual(by_function["___chkstk_ms"]["source_kind"], "omitted_runtime_helper")
         self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
+
+    def test_decompiled_c_skeleton_emits_verified_stack_probe_bytecode(self):
+        functions = [
+            {
+                "name": "__chkstk_ms",
+                "rva_start": 0x5BF0,
+                "rva_end": 0x5C1A,
+                "size": 0x2A,
+                "reference_contract": {
+                    "contract_bytecode": {
+                        "status": "reimplementable",
+                        "chunks": [
+                            "51",
+                            "50",
+                            "3d00100000",
+                            "8d4c240c",
+                            "7215",
+                            "81e900100000",
+                            "830900",
+                            "2d00100000",
+                            "3d00100000",
+                            "77eb",
+                            "29c1",
+                            "830900",
+                            "58",
+                            "59",
+                            "c3",
+                        ],
+                    }
+                },
+                "decompiler": {"status": "missing"},
+            }
+        ]
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            allow_contract_bytecode=True,
+        )
+
+        self.assertIn("Stage B contract-guided bytecode: contiguous no-call semantic-transfer body", source)
+        self.assertIn('".globl ___chkstk_ms\\n"', source)
+        self.assertIn('".byte 0x51, 0x50, 0x3d, 0x00, 0x10, 0x00, 0x00, 0x8d, 0x4c, 0x24, 0x0c, 0x72\\n\\t"', source)
+        self.assertNotIn("stack-probe helper body omitted", source)
+
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=functions,
+            source_language="c",
+            implementation_mode="contract-guided-c",
+        )
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function["__chkstk_ms"]["source_kind"], "generated_contract_guided_bytecode")
 
     def test_decompiled_c_renderer_recovers_mingw_wmain_wide_argv_bridge(self):
         source = _render_skeleton_decompiled_c_source(
@@ -7572,6 +7631,37 @@ class StageBTests(unittest.TestCase):
         self.assertIn("return (uintptr_t)stage_b_jq_call_jq_testsuite(stage_b_jq_libs, 0, param_1 - 4, stage_b_jq_argv + 4);", source)
         self.assertIn("return (uintptr_t)stage_b_jq_call_jq_testsuite(jv_array(), 0, param_1 - 2, stage_b_jq_argv + 2);", source)
         self.assertNotIn("__attribute__((weak)) uintptr_t stage_b_jq_call_jq_testsuite()", source)
+
+    def test_decompiled_c_source_map_classifies_import_thunk_wrapper_label(self):
+        functions = [
+            {
+                "name": "jq_realpath",
+                "rva_start": 0x4B40,
+                "rva_end": 0x4B46,
+                "size": 6,
+                "linkage": {
+                    "kind": "import_thunk",
+                    "symbol": "jq_realpath",
+                    "dll": "libjq-1.dll",
+                    "ordinal": None,
+                    "original_symbol": "jq_realpath",
+                    "thunk_rva": 0x12270,
+                },
+                "decompiler": {"status": "missing"},
+            }
+        ]
+        source = _render_decompiled_c_source(target_name="jq", functions=functions)
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=functions,
+            source_language="c",
+            implementation_mode="contract-guided-c",
+        )
+
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function["jq_realpath"]["source_kind"], "omitted_import_thunk")
+        self.assertEqual(source.splitlines()[by_function["jq_realpath"]["line_start"] - 1], '"_jq_realpath:\\n"')
 
     def test_decompiled_c_renderer_keeps_mingw_printf_wrappers_variadic(self):
         source = _render_decompiled_c_source(

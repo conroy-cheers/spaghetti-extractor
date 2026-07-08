@@ -3144,6 +3144,11 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
         for item in definition_names
     ):
         return "generated_runtime_entry_stub"
+    if _decompiled_c_is_import_thunk(function):
+        target_symbol = _decompiled_c_import_thunk_target_symbol(function)
+        import_names = _dedupe_strings([*definition_names, target_symbol] if target_symbol else definition_names)
+        if any(_source_inline_asm_label_line(lines, item) == line for item in import_names):
+            return "omitted_import_thunk"
     definition = None
     for item in definition_names:
         definition = _source_definition_after(lines, start=line, name=item)
@@ -3876,6 +3881,22 @@ def _render_decompiled_c_source(
                 note_emitted_body(function)
             continue
         if _decompiled_c_is_stack_probe_helper(function):
+            stack_probe_contract = (
+                _decompiled_c_contract_guided_stack_probe_impl(function)
+                if allow_contract_bytecode
+                else None
+            )
+            if stack_probe_contract is not None:
+                emit_verified_layout_padding_before(function)
+                lines.extend(
+                    [
+                        f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
+                        stack_probe_contract,
+                        "",
+                    ]
+                )
+                note_emitted_body(function)
+                continue
             lines.extend(
                 [
                     f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
@@ -5045,6 +5066,18 @@ def _decompiled_c_contract_layout_padding_asm(rva_start: int, rva_end: int, chun
         rendered.append(f"\"{_c_asm_string_line(line)}{suffix}\"")
     rendered.append(");")
     return "\n".join(rendered)
+
+
+def _decompiled_c_contract_guided_stack_probe_impl(function: dict[str, Any]) -> str | None:
+    name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_stack_probe"))
+    rva_start = int(function.get("rva_start") or 0)
+    size = int(function.get("size") or 0)
+    return _decompiled_c_contract_guided_bytecode_impl(
+        function,
+        name=name,
+        rva_start=rva_start,
+        size=size,
+    )
 
 
 def _decompiled_c_contract_guided_bytecode_impl(
@@ -6798,9 +6831,16 @@ def _decompiled_c_layout_support_lines(
         "\"  .fill 0,1,0x90\\n\"",
         "\".text\\n\"",
         ");",
-        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[8];",
-        "__attribute__((used, aligned(1), section(\".data$stage_b_jq_layout_tail\"))) volatile unsigned char stage_b_jq_layout_data_tail[40] = {0};",
-        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1408] = {0};",
+        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2644];",
+        "__attribute__((used, aligned(1), section(\".data$stage_b_jq_layout_tail\"))) volatile unsigned char stage_b_jq_layout_data_tail[92] = {0};",
+        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[4672] = {0};",
+        "__attribute__((used, aligned(1), section(\".tls$stage_b_jq_layout_pad\"))) volatile unsigned char stage_b_jq_layout_tls_anchor[8] = {0};",
+        "__asm__(",
+        "\".section .idata$stage_b_jq_layout_pad,\\\"dr\\\"\\n\"",
+        "\"_stage_b_jq_layout_idata_pad:\\n\"",
+        "\"  .fill 56,1,0\\n\"",
+        "\".text\\n\"",
+        ");",
         "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
         "uintptr_t __cdecl jv_mem_alloc(size_t);",
         *_decompiled_c_jq_import_anchor_lines(atexit_import_anchor),
@@ -6837,6 +6877,8 @@ def _decompiled_c_jq_layout_retention_anchor_lines(*, include_contract_anchor: b
         "_stage_b_jq_layout_data_tail",
         "_stage_b_jq_layout_rdata_anchor",
         "_stage_b_jq_layout_bss_anchor",
+        "_stage_b_jq_layout_tls_anchor",
+        "_stage_b_jq_layout_idata_pad",
     ]
     if include_contract_anchor:
         targets.append("_stage_b_contract_section_gap_anchor")
@@ -6870,6 +6912,7 @@ def _decompiled_c_jq_import_anchor_lines(atexit_import_anchor: str) -> list[str]
         "_GetProcAddress@8",
         "_IsDBCSLeadByteEx@8",
         "_MultiByteToWideChar@24",
+        "_WideCharToMultiByte@32",
         "_Sleep@4",
         "_TlsGetValue@4",
         "_VirtualProtect@16",
