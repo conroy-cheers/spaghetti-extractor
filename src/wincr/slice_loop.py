@@ -46,6 +46,7 @@ CONCRETE_SOURCE_KINDS = frozenset(
         "generated_contract_guided_flow",
         "generated_contract_guided_indirect",
         "generated_contract_guided_leaf",
+        "generated_checked_semantic_region",
         "generated_helper_from_decompiler_section_gap",
         "generated_runtime_bridge",
     }
@@ -505,6 +506,7 @@ def slice_next(
     else:
         raise SliceLoopInputError("workspace has no cached work-items.json or semantic-coverage.json; run prepare first")
 
+    items = _slice_work_items_with_source_gaps(items, source_anchors)
     if family:
         family_lower = family.lower()
         items = [item for item in items if str(item.get("family") or item.get("category") or "").lower() == family_lower]
@@ -521,9 +523,10 @@ def slice_next(
             item for item in annotated_items if _work_item_source_progress_class(item) in source_class_filter
         ]
     limited = annotated_items[: max(0, top_k)]
+    status = "pass" if limited or (todo_only and not annotated_items) else "incomplete"
     result = {
         "format": NEXT_FORMAT,
-        "status": "pass" if limited else "incomplete",
+        "status": status,
         "target": target,
         "workspace": str(workspace),
         "source": source,
@@ -1221,6 +1224,73 @@ def _empty_slice_source_progress(status: str, reason: str) -> dict[str, Any]:
     }
 
 
+def _slice_work_items_with_source_gaps(
+    items: list[dict[str, Any]],
+    source_anchors: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not source_anchors:
+        return items
+    covered = {
+        _source_anchor_key(anchor)
+        for item in items
+        for anchor in [_source_anchor_for_work_item(item, source_anchors)]
+        if anchor is not None
+    }
+    synthetic = [
+        _source_progress_gap_work_item(anchor)
+        for anchor in source_anchors
+        if _source_anchor_key(anchor) not in covered
+        and _source_kind_progress_class(str(anchor.get("source_kind") or "")) in {"placeholder", "other"}
+    ]
+    return [*items, *synthetic]
+
+
+def _source_anchor_key(anchor: dict[str, Any]) -> tuple[str, int | None, int | None, str]:
+    return (
+        str(anchor.get("function") or ""),
+        _optional_int(anchor.get("rva_start")),
+        _optional_int(anchor.get("rva_end")),
+        str(anchor.get("source_kind") or ""),
+    )
+
+
+def _source_progress_gap_work_item(anchor: dict[str, Any]) -> dict[str, Any]:
+    function = str(anchor.get("function") or "unknown")
+    source_kind = str(anchor.get("source_kind") or "unknown")
+    rva_start = _optional_int(anchor.get("rva_start"))
+    rva_end = _optional_int(anchor.get("rva_end"))
+    rva_suffix = (
+        f"{rva_start:x}-{rva_end:x}"
+        if rva_start is not None and rva_end is not None
+        else hashlib.sha256(json.dumps(anchor, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:8]
+    )
+    aliases = [alias for alias in anchor.get("aliases", []) if isinstance(alias, str) and alias]
+    original_name = next((alias for alias in aliases if alias.startswith("section-gap--")), function)
+    return {
+        "id": f"work:source-progress-gap:{_safe_name(function)}:{rva_suffix}",
+        "family": "stage_b_source_progress",
+        "category": source_kind,
+        "severity": "incomplete",
+        "original_function": original_name,
+        "function": function,
+        "expected": "Stage B source is backed by a concrete generated or hand-written representation",
+        "observed": f"source map still classifies {function} as {source_kind}",
+        "cause_hint": source_kind,
+        "repair_class": "source_progress_gap",
+        "next_action": "replace the placeholder with a contract-guided implementation or classify the region as a checked boundary",
+        "stage_b_source_gap": {
+            "function": function,
+            "aliases": aliases,
+            "source_kind": source_kind,
+            "rva_start": rva_start,
+            "rva_end": rva_end,
+            "line_start": anchor.get("line_start"),
+            "line_end": anchor.get("line_end"),
+            "file": anchor.get("file"),
+        },
+    }
+
+
 def _write_slice_packets(
     *,
     workspace: Path,
@@ -1231,6 +1301,7 @@ def _write_slice_packets(
 ) -> dict[str, Any] | None:
     raw_items = work_items.get("work_items") if isinstance(work_items, dict) else []
     items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+    items = _slice_work_items_with_source_gaps(items, source_anchors)
     if not items:
         return None
     packet_dir = workspace / "packets"
@@ -1447,6 +1518,10 @@ def _slice_packet_pattern_family(
         return "runtime_boundary"
     if source_kind == "generated_contract_placeholder_from_section_gap":
         return "section_gap_helper"
+    if source_kind == "generated_checked_semantic_region":
+        return "checked_semantic_region"
+    if item.get("family") == "stage_b_source_progress":
+        return "source_progress_gap"
     if source_kind.startswith("generated_contract_guided"):
         return source_kind.removeprefix("generated_contract_guided_")
     function_name = str((source_anchor or {}).get("function") or item.get("original_function") or item.get("function") or item.get("name") or "")
@@ -1497,6 +1572,7 @@ def _slice_packet_implementation_hint(
         "import_boundary": "preserve as an import boundary; do not implement target-owned logic here",
         "relocation_runtime_helper": "model the relocation/protection loop as a reusable runtime-helper pattern",
         "section_gap_helper": "classify the executable section-gap helper and promote reusable helper code instead of a placeholder",
+        "source_progress_gap": "replace the source-map placeholder with a contract-guided implementation or classify it as a checked boundary",
         "varargs_bridge": "recover the format/varargs bridge ABI before attempting source cleanup",
     }
     return {

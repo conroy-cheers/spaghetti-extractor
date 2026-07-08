@@ -47,7 +47,9 @@ class SliceLoopTests(unittest.TestCase):
             self.assertEqual(Path(current["candidate"]).name, "jq-stage-b-generated-closure-candidate.exe")
             packets = json.loads((workspace / "packets" / "index.json").read_text(encoding="utf-8"))
             self.assertEqual(packets["format"], slice_loop.SLICE_PACKET_INDEX_FORMAT)
-            self.assertEqual(packets["counts"]["packets"], 1)
+            self.assertEqual(packets["counts"]["packets"], 4)
+            self.assertEqual(packets["counts"]["by_pattern_family"]["source_progress_gap"], 2)
+            self.assertEqual(packets["counts"]["by_pattern_family"]["section_gap_helper"], 1)
             packet = json.loads(Path(packets["packets"][0]["path"]).read_text(encoding="utf-8"))
             self.assertEqual(packet["format"], slice_loop.SLICE_PACKET_FORMAT)
             self.assertEqual(packet["function"]["instruction_evidence"]["status"], "full")
@@ -130,9 +132,16 @@ class SliceLoopTests(unittest.TestCase):
 
             result = slice_loop.slice_next(target="jq", work_dir=root / "work", top_k=10, todo_only=True)
 
-            self.assertEqual(result["counts"]["matched"], 1)
-            self.assertEqual([item["id"] for item in result["items"]], ["needs-work"])
-            self.assertEqual(result["items"][0]["stage_b_source"]["progress_class"], "placeholder")
+            self.assertEqual(result["counts"]["matched"], 3)
+            self.assertEqual(
+                [item["id"] for item in result["items"]],
+                [
+                    "needs-work",
+                    "work:source-progress-gap:stage_b_contract_section_gap__text_0058:4000-4010",
+                    "work:source-progress-gap:umain:5000-5100",
+                ],
+            )
+            self.assertTrue(all(item["stage_b_source"]["progress_class"] == "placeholder" for item in result["items"]))
 
     def test_next_groups_todo_work_by_pattern_and_function(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -208,8 +217,14 @@ class SliceLoopTests(unittest.TestCase):
                 group_by="function",
             )
 
-            self.assertEqual({item["key"] for item in by_pattern["groups"]}, {"application_dispatch", "section_gap_helper"})
-            self.assertEqual({item["key"] for item in by_function["groups"]}, {"umain", "stage_b_contract_section_gap__text_0058"})
+            self.assertEqual(
+                {item["key"] for item in by_pattern["groups"]},
+                {"application_dispatch", "section_gap_helper", "source_progress_gap"},
+            )
+            self.assertEqual(
+                {item["key"] for item in by_function["groups"]},
+                {"needs_work", "umain", "stage_b_contract_section_gap__text_0058"},
+            )
 
     def test_prepare_can_cache_source_only_skeleton_for_next_progress(self):
         with tempfile.TemporaryDirectory() as tmp:

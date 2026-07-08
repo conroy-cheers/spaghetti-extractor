@@ -2886,6 +2886,12 @@ def _skeleton_section_gap_placeholder_source_anchors(
 
 def _section_gap_source_anchor_kind(lines: list[str], *, line: int, default: str) -> str:
     window = "\n".join(lines[max(0, line - 2) : min(len(lines), line + 6)])
+    if (
+        "Stage A checked semantic region:" in window
+        or "Stage B generated C for semantic-region:" in window
+        or "checked selected-region target" in window
+    ):
+        return "generated_checked_semantic_region"
     if "Stage B contract-guided bytecode:" in window:
         return "generated_contract_guided_bytecode"
     if "Stage B contract-guided branch:" in window:
@@ -5221,6 +5227,18 @@ def _decompiled_c_contract_flow_branch_lines(
             branch_target_symbols=branch_target_symbols,
             switch_contract=switch_contract,
         )
+    if str(outcome.get("kind") or "") == "indirect_jump" and mnemonic == "jmp":
+        instruction_bytes = instruction.get("bytes")
+        instruction_size = _optional_int(instruction.get("size"))
+        if not isinstance(instruction_bytes, str) or instruction_size is None or instruction_size <= 0:
+            return None
+        try:
+            raw = bytes.fromhex(instruction_bytes)
+        except ValueError:
+            return None
+        if len(raw) != instruction_size:
+            return None
+        return _decompiled_c_bytecode_asm_lines([raw.hex()])
     if mnemonic == "jmp":
         target = _decompiled_c_contract_flow_target_symbol(
             _optional_int(outcome.get("target_rva")) or _decompiled_c_contract_flow_operand_target_rva(instruction),
@@ -5345,9 +5363,9 @@ def _decompiled_c_contract_flow_fallthrough_lines(
     target_rva = _optional_int(outcome.get("target_rva"))
     if target_rva is None:
         return []
-    if target_rva == next_block_start:
+    if target_rva == block_end:
         return []
-    if target_rva == block_end and next_block_start is not None:
+    if target_rva == next_block_start:
         return []
     target = _decompiled_c_contract_flow_target_symbol(
         target_rva,

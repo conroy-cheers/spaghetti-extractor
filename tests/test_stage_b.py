@@ -926,6 +926,185 @@ class StageBTests(unittest.TestCase):
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
             self.assertEqual(by_function["flow_indirect"]["source_kind"], "generated_contract_guided_flow")
 
+    def test_contract_guided_c_lowers_single_block_call_fallthrough_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            body = bytes.fromhex(
+                "c7042401000000"  # mov dword ptr [esp], 1
+                "ffd0"  # call eax
+                "c3"  # dummy function body
+            )
+            original = self._write_pe(root / "jq.exe", body)
+            transfer = {
+                "format": "stage-a-semantic-transfer-contract-v1",
+                "id": "semantic-transfer:section-gap--text-0000",
+                "function": "section-gap--text-0000",
+                "block_id": "section-gap--text-0000",
+                "original": {"rva_start": 0x1000, "rva_end": 0x1009, "size": 9},
+                "outcome": {"kind": "fallthrough", "target_rva": 0x1009},
+                "instructions": [
+                    {
+                        "bytes": "c7042401000000",
+                        "mnemonic": "mov",
+                        "op_str": "dword ptr [esp], 1",
+                        "rva": 0x1000,
+                        "size": 7,
+                    },
+                    {"bytes": "ffd0", "mnemonic": "call", "op_str": "eax", "rva": 0x1007, "size": 2},
+                ],
+            }
+            (root / "semantic-transfer-contracts.jsonl").write_text(json.dumps(transfer) + "\n", encoding="utf-8")
+            reference_contract = {
+                "format": "stage-a-reference-contract-v1",
+                "status": "pass",
+                "model": "x86-pe32-env-v1",
+                "original": {"sha256": sha256_file(original)},
+                "constraints": {
+                    "function_ranges": {
+                        "status": "satisfied",
+                        "functions": [
+                            {
+                                "name": "dummy",
+                                "original": {"rva_start": 0x1009, "rva_end": 0x100A, "size": 1},
+                                "candidate": {"rva_start": 0x1009, "rva_end": 0x100A, "size": 1},
+                                "block_ids": ["dummy-0000"],
+                            }
+                        ],
+                    },
+                    "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0000"}]},
+                    "abi_callsites": {
+                        "original": {
+                            "functions": [
+                                {
+                                    "name": "section-gap--text-0000",
+                                    "blocks": [{"block_id": "section-gap--text-0000", "rva_start": 0x1000, "rva_end": 0x1009}],
+                                    "callsites": [
+                                        {
+                                            "id": "callsite:section-gap--text-0000:1007",
+                                            "block_id": "section-gap--text-0000",
+                                            "instruction": {"rva": 0x1007},
+                                            "target": {"kind": "function_pointer", "operand": "eax", "status": "unresolved"},
+                                            "argument_inventory": {"argument_count": 0, "stack_args": []},
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                },
+                "sidecars": {
+                    "unit_contracts": {
+                        "directory": ".",
+                        "semantic_transfer_contracts": {"path": "semantic-transfer-contracts.jsonl"},
+                    }
+                },
+            }
+            reference_path = root / "reference_contract.json"
+            reference_path.write_text(json.dumps(reference_contract), encoding="utf-8")
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                reference_contract=reference_path,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            generated_name = "stage_b_contract_section_gap__text_0000"
+            self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
+            self.assertIn('".byte 0xc7, 0x04, 0x24, 0x01, 0x00, 0x00, 0x00\\n\\t"', source)
+            self.assertIn('".byte 0xff, 0xd0"', source)
+            by_function = {item["function"]: item for item in result["source_map"]["functions"]}
+            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_flow")
+
+    def test_contract_guided_c_lowers_flow_indirect_jump_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            body = bytes.fromhex(
+                "a334d04000"  # mov dword ptr [0x40d034], eax
+                "83c42c"  # add esp, 0x2c
+                "ffe0"  # jmp eax
+                "c3"  # dummy function body
+            )
+            original = self._write_pe(root / "jq.exe", body)
+            transfer = {
+                "format": "stage-a-semantic-transfer-contract-v1",
+                "id": "semantic-transfer:section-gap--text-0000",
+                "function": "section-gap--text-0000",
+                "block_id": "section-gap--text-0000",
+                "original": {"rva_start": 0x1000, "rva_end": 0x100A, "size": 10},
+                "outcome": {"kind": "indirect_jump", "target": {"op": "reg", "name": "eax", "width": 32}},
+                "instructions": [
+                    {
+                        "bytes": "a334d04000",
+                        "mnemonic": "mov",
+                        "op_str": "dword ptr [0x40d034], eax",
+                        "rva": 0x1000,
+                        "size": 5,
+                    },
+                    {"bytes": "83c42c", "mnemonic": "add", "op_str": "esp, 0x2c", "rva": 0x1005, "size": 3},
+                    {"bytes": "ffe0", "mnemonic": "jmp", "op_str": "eax", "rva": 0x1008, "size": 2},
+                ],
+            }
+            (root / "semantic-transfer-contracts.jsonl").write_text(json.dumps(transfer) + "\n", encoding="utf-8")
+            reference_contract = {
+                "format": "stage-a-reference-contract-v1",
+                "status": "pass",
+                "model": "x86-pe32-env-v1",
+                "original": {"sha256": sha256_file(original)},
+                "constraints": {
+                    "function_ranges": {
+                        "status": "satisfied",
+                        "functions": [
+                            {
+                                "name": "dummy",
+                                "original": {"rva_start": 0x100A, "rva_end": 0x100B, "size": 1},
+                                "candidate": {"rva_start": 0x100A, "rva_end": 0x100B, "size": 1},
+                                "block_ids": ["dummy-0000"],
+                            }
+                        ],
+                    },
+                    "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0000"}]},
+                    "abi_callsites": {
+                        "original": {
+                            "functions": [
+                                {
+                                    "name": "section-gap--text-0000",
+                                    "blocks": [{"block_id": "section-gap--text-0000", "rva_start": 0x1000, "rva_end": 0x100A}],
+                                    "callsites": [],
+                                }
+                            ]
+                        }
+                    },
+                },
+                "sidecars": {
+                    "unit_contracts": {
+                        "directory": ".",
+                        "semantic_transfer_contracts": {"path": "semantic-transfer-contracts.jsonl"},
+                    }
+                },
+            }
+            reference_path = root / "reference_contract.json"
+            reference_path.write_text(json.dumps(reference_contract), encoding="utf-8")
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                reference_contract=reference_path,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            generated_name = "stage_b_contract_section_gap__text_0000"
+            self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
+            self.assertIn('".byte 0xff, 0xe0"', source)
+            by_function = {item["function"]: item for item in result["source_map"]["functions"]}
+            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_flow")
+
     def test_contract_guided_c_lowers_resolved_jump_table_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4392,6 +4571,23 @@ class StageBTests(unittest.TestCase):
         )
         self.assertNotIn("uintptr_t __cdecl stage_b_contract_section_gap__text_0202();", source)
         self.assertNotIn("Stage A direct-call anchor: callsite:section-gap--text-0498:7317", source)
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=[],
+            source_language="c",
+            implementation_mode="decompiled-c",
+            reference_contract_payload=reference_contract,
+        )
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(
+            by_function["stage_b_contract_section_gap__text_0498"]["source_kind"],
+            "generated_checked_semantic_region",
+        )
+        self.assertEqual(
+            by_function["stage_b_contract_section_gap__text_0202"]["source_kind"],
+            "generated_checked_semantic_region",
+        )
 
     def test_decompiled_c_synthesizes_all_linkable_section_gap_placeholders(self):
         section_gap_functions = []
