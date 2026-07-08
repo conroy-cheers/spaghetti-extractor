@@ -3614,7 +3614,7 @@ def _render_decompiled_c_source(
     runtime_helper_alias_symbols = _decompiled_c_runtime_helper_alias_symbol_names(functions)
     runtime_helper_aliases = _decompiled_c_runtime_helper_alias_lines(functions)
     runtime_bridge = _decompiled_c_runtime_entry_bridge(functions) if runtime_entry_policy == "bridge" else []
-    runtime_entry_stubs = _decompiled_c_runtime_entry_stubs(functions) if runtime_bridge else []
+    runtime_entry_stubs = _decompiled_c_runtime_entry_stubs_by_name(functions) if runtime_bridge else {}
     runtime_bridge_externs = _decompiled_c_runtime_entry_bridge_externs(functions) if runtime_bridge else []
     known_branch_target_symbols = (
         set(_decompiled_c_external_call_symbols(functions))
@@ -3791,14 +3791,40 @@ def _render_decompiled_c_source(
         lines.extend(layout_support)
         lines.append("")
     runtime_bridge_emitted = False
-    runtime_entry_stubs_emitted = False
     runtime_entry_anchor = "WinMainCRTStartup" if any(str(function.get("name") or "") == "WinMainCRTStartup" for function in functions) else "mainCRTStartup"
+    emitted_body_rva_end: int | None = None
+    layout_padding_ranges = _decompiled_c_layout_padding_ranges(
+        reference_contract_payload=reference_contract_payload,
+        reference_contract_sidecars=reference_contract_sidecars,
+    )
+
+    def emit_verified_layout_padding_before(function: dict[str, Any]) -> None:
+        nonlocal emitted_body_rva_end
+        item_start = _decompiled_c_function_sort_rva(function)
+        if emitted_body_rva_end is None or item_start <= emitted_body_rva_end:
+            return
+        padding_chunks = _contract_padding_bytes_for_range(layout_padding_ranges, emitted_body_rva_end, item_start)
+        if padding_chunks is None:
+            return
+        rendered = _decompiled_c_contract_layout_padding_asm(emitted_body_rva_end, item_start, padding_chunks)
+        if rendered is None:
+            return
+        lines.extend([rendered, ""])
+        emitted_body_rva_end = item_start
+
+    def note_emitted_body(function: dict[str, Any]) -> None:
+        nonlocal emitted_body_rva_end
+        item_end = _decompiled_c_function_rva_end(function)
+        if item_end is not None:
+            emitted_body_rva_end = max(emitted_body_rva_end or item_end, item_end)
+
     body_items = _decompiled_c_ordered_body_items(
         functions,
         synthetic_section_gap_placeholders=synthetic_section_gap_placeholders,
     )
     for kind, function in body_items:
         if kind == "synthetic_section_gap":
+            emit_verified_layout_padding_before(function)
             lines.extend(
                 [
                     f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
@@ -3813,6 +3839,7 @@ def _render_decompiled_c_source(
                     "",
                 ]
             )
+            note_emitted_body(function)
             continue
         if _decompiled_c_is_import_thunk(function):
             linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
@@ -3842,10 +3869,11 @@ def _render_decompiled_c_source(
                 lines.extend(runtime_bridge)
                 lines.append("")
                 runtime_bridge_emitted = True
-                if runtime_entry_stubs and not runtime_entry_stubs_emitted:
-                    lines.extend(runtime_entry_stubs)
-                    lines.append("")
-                    runtime_entry_stubs_emitted = True
+            runtime_entry_stub = runtime_entry_stubs.get(str(function.get("name") or ""))
+            if runtime_entry_stub:
+                emit_verified_layout_padding_before(function)
+                lines.extend([runtime_entry_stub, ""])
+                note_emitted_body(function)
             continue
         if _decompiled_c_is_stack_probe_helper(function):
             lines.extend(
@@ -3865,6 +3893,7 @@ def _render_decompiled_c_source(
             new_name=emitted_name,
         )
         if not code:
+            emit_verified_layout_padding_before(function)
             lines.extend(
                 [
                     f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
@@ -3879,7 +3908,9 @@ def _render_decompiled_c_source(
                     "",
                 ]
             )
+            note_emitted_body(function)
             continue
+        emit_verified_layout_padding_before(function)
         lines.extend(
             [
                 f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
@@ -3887,6 +3918,7 @@ def _render_decompiled_c_source(
                 "",
             ]
         )
+        note_emitted_body(function)
     return "\n".join(lines)
 
 
@@ -3947,6 +3979,35 @@ def _decompiled_c_render_synthetic_section_gap_placeholder(
 def _decompiled_c_function_sort_rva(function: dict[str, Any]) -> int:
     rva_start = _optional_int(function.get("rva_start"))
     return rva_start if rva_start is not None else 0x7FFFFFFF
+
+
+def _decompiled_c_function_rva_end(function: dict[str, Any]) -> int | None:
+    rva_end = _optional_int(function.get("rva_end"))
+    if rva_end is not None:
+        return rva_end
+    rva_start = _optional_int(function.get("rva_start"))
+    size = _optional_int(function.get("size"))
+    if rva_start is None or size is None or size < 0:
+        return None
+    return rva_start + size
+
+
+def _decompiled_c_layout_padding_ranges(
+    *,
+    reference_contract_payload: dict[str, Any] | None,
+    reference_contract_sidecars: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    sidecar_ranges = (
+        reference_contract_sidecars.get("padding_bytes")
+        if isinstance(reference_contract_sidecars, dict)
+        and isinstance(reference_contract_sidecars.get("padding_bytes"), list)
+        else None
+    )
+    if sidecar_ranges is not None:
+        return [item for item in sidecar_ranges if isinstance(item, dict)]
+    if reference_contract_payload is None:
+        return []
+    return _reference_contract_padding_bytes(reference_contract_payload)
 
 
 def _decompiled_c_contract_placeholder(
@@ -4208,19 +4269,8 @@ def _decompiled_c_contract_guided_raw_section_gap_flow_impl(
     transfers = [transfer for transfer in transfers if isinstance(transfer, dict)]
     if not transfers:
         return None
-    external_targets = _decompiled_c_contract_flow_external_target_rvas(
-        transfers,
-        rva_start=rva_start,
-        rva_end=function_end,
-    )
-    if not external_targets:
-        return None
-    if not all(
-        _decompiled_c_contract_raw_flow_external_target_is_section_gap(target, branch_target_symbols=branch_target_symbols)
-        for target in external_targets
-    ):
-        return None
-    chunks = _decompiled_c_contract_raw_no_call_flow_chunks(
+    del branch_target_symbols
+    chunks = _decompiled_c_contract_raw_flow_chunks(
         transfers,
         rva_start=rva_start,
         rva_end=function_end,
@@ -4234,8 +4284,8 @@ def _decompiled_c_contract_guided_raw_section_gap_flow_impl(
     return _decompiled_c_contract_guided_top_level_asm(
         name,
         comment=(
-            "Stage B contract-guided raw flow: no-call section-gap bytes "
-            f"with layout-preserved direct targets at RVA 0x{rva_start:x}, size {size}."
+            "Stage B contract-guided raw flow: exact section-gap bytes "
+            f"from Stage A semantic transfers at RVA 0x{rva_start:x}, size {size}."
         ),
         asm_lines=asm_lines,
     )
@@ -4246,35 +4296,7 @@ def _decompiled_c_is_synthetic_section_gap_function(function: dict[str, Any]) ->
     return name.startswith("stage_b_contract_section_gap__") and isinstance(function.get("reference_section_gap"), dict)
 
 
-def _decompiled_c_contract_flow_external_target_rvas(
-    transfers: list[dict[str, Any]],
-    *,
-    rva_start: int,
-    rva_end: int,
-) -> set[int]:
-    result: set[int] = set()
-    for transfer in transfers:
-        outcome = transfer.get("outcome") if isinstance(transfer.get("outcome"), dict) else {}
-        kind = str(outcome.get("kind") or "")
-        if kind in {"external_jump", "indirect_jump", "indirect_jump_table"}:
-            return set()
-        for key in ("target_rva", "true_target_rva", "false_target_rva"):
-            target = _optional_int(outcome.get(key))
-            if target is not None and not (rva_start <= target <= rva_end):
-                result.add(target)
-    return result
-
-
-def _decompiled_c_contract_raw_flow_external_target_is_section_gap(
-    target_rva: int,
-    *,
-    branch_target_symbols: dict[int, str],
-) -> bool:
-    symbol = branch_target_symbols.get(target_rva)
-    return isinstance(symbol, str) and symbol.startswith("stage_b_contract_section_gap__")
-
-
-def _decompiled_c_contract_raw_no_call_flow_chunks(
+def _decompiled_c_contract_raw_flow_chunks(
     transfers: list[dict[str, Any]],
     *,
     rva_start: int,
@@ -4283,14 +4305,9 @@ def _decompiled_c_contract_raw_no_call_flow_chunks(
 ) -> list[str] | None:
     instructions_by_rva: dict[int, dict[str, Any]] = {}
     for transfer in transfers:
-        outcome = transfer.get("outcome") if isinstance(transfer.get("outcome"), dict) else {}
-        if str(outcome.get("kind") or "") in {"external_jump", "indirect_jump", "indirect_jump_table"}:
-            return None
         instructions = transfer.get("instructions") if isinstance(transfer.get("instructions"), list) else []
         for instruction in instructions:
             if not isinstance(instruction, dict):
-                return None
-            if _instruction_mnemonic(instruction) == "call":
                 return None
             instruction_rva = _optional_int(instruction.get("rva"))
             instruction_size = _optional_int(instruction.get("size"))
@@ -5011,6 +5028,25 @@ def _decompiled_c_contract_guided_top_level_asm(name: str, *, comment: str, asm_
     return "\n".join(rendered)
 
 
+def _decompiled_c_contract_layout_padding_asm(rva_start: int, rva_end: int, chunks: list[str]) -> str | None:
+    asm_lines = _decompiled_c_bytecode_asm_lines(chunks)
+    if not asm_lines:
+        return None
+    rendered = [
+        "__asm__(",
+        "\".text\\n\"",
+        (
+            "\"# Stage B contract layout padding: verified bytes at "
+            f"RVA 0x{rva_start:x}-0x{rva_end:x}.\\n\""
+        ),
+    ]
+    for index, line in enumerate(asm_lines):
+        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
+        rendered.append(f"\"{_c_asm_string_line(line)}{suffix}\"")
+    rendered.append(");")
+    return "\n".join(rendered)
+
+
 def _decompiled_c_contract_guided_bytecode_impl(
     function: dict[str, Any],
     *,
@@ -5430,7 +5466,73 @@ def _decompiled_c_contract_flow_call_lines(
         target_profile=target_profile,
     ):
         return None
+    if _decompiled_c_contract_flow_direct_call_should_use_raw_bytes(
+        instruction,
+        target_kind=str(target.get("kind") or ""),
+        target_name=target_name,
+        target_profile=target_profile,
+    ):
+        raw_lines = _decompiled_c_contract_flow_instruction_byte_lines(instruction)
+        if raw_lines:
+            return raw_lines
     return [f"call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}"]
+
+
+def _decompiled_c_contract_flow_direct_call_should_use_raw_bytes(
+    instruction: dict[str, Any],
+    *,
+    target_kind: str,
+    target_name: str,
+    target_profile: dict[str, Any] | None,
+) -> bool:
+    if target_kind != "direct":
+        return False
+    try:
+        raw = bytes.fromhex(str(instruction.get("bytes") or ""))
+    except ValueError:
+        return False
+    instruction_size = _optional_int(instruction.get("size"))
+    if instruction_size != len(raw) or len(raw) != 5 or raw[0] != 0xE8:
+        return False
+    if _decompiled_c_contract_flow_symbolic_call_preserves_rel32(target_name, target_profile=target_profile):
+        return False
+    return True
+
+
+def _decompiled_c_contract_flow_symbolic_call_preserves_rel32(
+    target_name: str,
+    *,
+    target_profile: dict[str, Any] | None,
+) -> bool:
+    if target_name.startswith("stage_b_contract_section_gap__"):
+        return True
+    if isinstance(target_profile, dict) and target_profile.get("stage_b_internal_function") is True:
+        return True
+    if isinstance(target_profile, dict) and target_profile.get("stage_b_synthetic_section_gap") is True:
+        return True
+    if isinstance(target_profile, dict) and target_profile.get("runtime_crt_linked") is True:
+        return False
+    if (
+        target_name in _DECOMPILED_C_RUNTIME_ENTRY_NAMES
+        or target_name in _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES
+        or target_name in _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES
+    ):
+        return False
+    return False
+
+
+def _decompiled_c_contract_flow_instruction_byte_lines(instruction: dict[str, Any]) -> list[str]:
+    instruction_bytes = instruction.get("bytes")
+    instruction_size = _optional_int(instruction.get("size"))
+    if not isinstance(instruction_bytes, str) or instruction_size is None or instruction_size <= 0:
+        return []
+    try:
+        raw = bytes.fromhex(instruction_bytes)
+    except ValueError:
+        return []
+    if len(raw) != instruction_size:
+        return []
+    return _decompiled_c_bytecode_asm_lines([raw.hex()])
 
 
 def _decompiled_c_contract_flow_call_is_indirect(instruction: dict[str, Any]) -> bool:
@@ -6059,6 +6161,7 @@ def _decompiled_c_contract_call_target_profiles(
         profile = _decompiled_c_prototype_parameter_profile(prototype)
         if profile is None:
             profile = {}
+        profile["stage_b_internal_function"] = True
         seen.add(emitted_name)
         if prototype:
             profile["prototype"] = prototype
@@ -6088,7 +6191,7 @@ def _decompiled_c_contract_call_target_profiles(
     for name in sorted({str(name) for name in emitted_section_gap_targets}):
         if name not in needed or name in profiles or not _is_c_identifier(name):
             continue
-        profile: dict[str, Any] = {}
+        profile: dict[str, Any] = {"stage_b_synthetic_section_gap": True}
         if not _decompiled_c_contract_direct_call_target_is_asm_linkable(name, target_profile=profile):
             continue
         profiles[name] = profile
@@ -6611,34 +6714,42 @@ def _decompiled_c_runtime_entry_bridge(functions: list[dict[str, Any]]) -> list[
     return lines
 
 def _decompiled_c_runtime_entry_stubs(functions: list[dict[str, Any]]) -> list[str]:
+    stubs = _decompiled_c_runtime_entry_stubs_by_name(functions)
+    lines: list[str] = []
+    for name in ("WinMainCRTStartup", "mainCRTStartup"):
+        stub = stubs.get(name)
+        if not stub:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(stub)
+    return lines
+
+
+def _decompiled_c_runtime_entry_stubs_by_name(functions: list[dict[str, Any]]) -> dict[str, str]:
     names = {str(function.get("name") or "") for function in functions}
     if "mainCRTStartup" not in names:
-        return []
+        return {}
     target = _decompiled_c_i686_c_asm_symbol("___tmainCRTStartup")
-    lines: list[str] = []
+    stubs: dict[str, str] = {}
     if "WinMainCRTStartup" in names:
-        lines.append(
-            _decompiled_c_contract_guided_top_level_asm(
-                "WinMainCRTStartup",
-                comment="Stage B generated runtime entry stub: WinMain CRT mode.",
-                asm_lines=[
-                    "movl $1, 0x410040",
-                    f"jmp {target}",
-                ],
-            )
-        )
-        lines.append("")
-    lines.append(
-        _decompiled_c_contract_guided_top_level_asm(
-            "mainCRTStartup",
-            comment="Stage B generated runtime entry stub: console CRT mode.",
+        stubs["WinMainCRTStartup"] = _decompiled_c_contract_guided_top_level_asm(
+            "WinMainCRTStartup",
+            comment="Stage B generated runtime entry stub: WinMain CRT mode.",
             asm_lines=[
-                "movl $0, 0x410040",
+                "movl $1, 0x410040",
                 f"jmp {target}",
             ],
         )
+    stubs["mainCRTStartup"] = _decompiled_c_contract_guided_top_level_asm(
+        "mainCRTStartup",
+        comment="Stage B generated runtime entry stub: console CRT mode.",
+        asm_lines=[
+            "movl $0, 0x410040",
+            f"jmp {target}",
+        ],
     )
-    return lines
+    return stubs
 
 def _decompiled_c_runtime_entry_bridge_externs(functions: list[dict[str, Any]]) -> list[str]:
     if not _decompiled_c_runtime_entry_bridge(functions):

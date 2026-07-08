@@ -365,10 +365,10 @@ class StageBTests(unittest.TestCase):
             source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             generated_name = "stage_b_contract_section_gap__text_0000"
             self.assertIn(f"uintptr_t __cdecl {generated_name}()", source)
-            self.assertIn("Stage B contract-guided bytecode: contiguous no-call semantic-transfer body", source)
+            self.assertIn("Stage B contract-guided raw flow: exact section-gap bytes", source)
             self.assertIn('".byte 0x8b, 0x44, 0x24, 0x04, 0xc3"', source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
-            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_bytecode")
+            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_raw_flow")
             self.assertIn("section-gap--text-0000", by_function[generated_name]["aliases"])
 
     def test_contract_guided_c_preserves_no_call_section_gap_branch_bytes(self):
@@ -453,7 +453,7 @@ class StageBTests(unittest.TestCase):
 
             source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             generated_name = "stage_b_contract_section_gap__text_0000"
-            self.assertIn("Stage B contract-guided raw flow: no-call section-gap bytes", source)
+            self.assertIn("Stage B contract-guided raw flow: exact section-gap bytes", source)
             self.assertIn('".byte 0x39, 0xc3, 0x74, 0x03"', source)
             self.assertNotIn('"je _stage_b_contract_section_gap__text_0002\\n\\t"', source)
             self.assertNotIn('"jmp _stage_b_contract_section_gap__text_0001"', source)
@@ -555,11 +555,14 @@ class StageBTests(unittest.TestCase):
 
             source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             generated_name = "stage_b_contract_section_gap__text_0000"
-            self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
-            self.assertIn('".byte 0xff, 0xd0\\n\\t"', source)
-            self.assertIn('"jmp _stage_b_contract_section_gap__text_0001"', source)
+            self.assertIn("Stage B contract-guided raw flow: exact section-gap bytes", source)
+            self.assertIn(
+                '".byte 0xc7, 0x04, 0x24, 0x01, 0x00, 0x00, 0x00, 0xff, 0xd0, 0xeb, 0x00"',
+                source,
+            )
+            self.assertNotIn('"jmp _stage_b_contract_section_gap__text_0001"', source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
-            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_flow")
+            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_raw_flow")
             self.assertIn("section-gap--text-0000", by_function[generated_name]["aliases"])
 
     def test_contract_guided_c_lowers_multiblock_direct_call_flow(self):
@@ -1016,11 +1019,10 @@ class StageBTests(unittest.TestCase):
 
             source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             generated_name = "stage_b_contract_section_gap__text_0000"
-            self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
-            self.assertIn('".byte 0xc7, 0x04, 0x24, 0x01, 0x00, 0x00, 0x00\\n\\t"', source)
-            self.assertIn('".byte 0xff, 0xd0"', source)
+            self.assertIn("Stage B contract-guided raw flow: exact section-gap bytes", source)
+            self.assertIn('".byte 0xc7, 0x04, 0x24, 0x01, 0x00, 0x00, 0x00, 0xff, 0xd0"', source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
-            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_flow")
+            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_raw_flow")
 
     def test_contract_branch_target_prefers_import_symbol_over_generic_block_label(self):
         reference_contract = {
@@ -1076,6 +1078,29 @@ class StageBTests(unittest.TestCase):
                 call_target_profiles={},
             ),
             [".byte 0xff, 0x15, 0x90, 0xf5, 0x40, 0x00"],
+        )
+
+    def test_contract_guided_flow_preserves_external_direct_call_bytes(self):
+        callsite = {
+            "instruction": {
+                "bytes": "e8c2af0000",
+                "mnemonic": "call",
+                "op_str": "0x40c3c0",
+                "rva": 0x13F9,
+                "size": 5,
+            },
+            "target": {"kind": "direct", "target_rva": 0xC3C0},
+            "arguments": [{"kind": "immediate", "stack_offset": 0, "value": 31}],
+        }
+
+        self.assertEqual(
+            _decompiled_c_contract_flow_call_lines(
+                callsite["instruction"],
+                callsite=callsite,
+                call_targets={0xC3C0: "__amsg_exit"},
+                call_target_profiles={"__amsg_exit": {}},
+            ),
+            [".byte 0xe8, 0xc2, 0xaf, 0x00, 0x00"],
         )
 
     def test_contract_guided_c_lowers_flow_indirect_jump_bytes(self):
@@ -1159,10 +1184,10 @@ class StageBTests(unittest.TestCase):
 
             source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             generated_name = "stage_b_contract_section_gap__text_0000"
-            self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
-            self.assertIn('".byte 0xff, 0xe0"', source)
+            self.assertIn("Stage B contract-guided raw flow: exact section-gap bytes", source)
+            self.assertIn("0xff, 0xe0", source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
-            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_flow")
+            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_raw_flow")
 
     def test_contract_guided_c_lowers_resolved_jump_table_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4735,6 +4760,74 @@ class StageBTests(unittest.TestCase):
         late = source.index("name stage_b_contract_section_gap__text_0001")
         self.assertLess(early, middle)
         self.assertLess(middle, late)
+
+    def test_decompiled_c_emits_verified_padding_between_ordered_bodies(self):
+        section_gap_functions = [
+            {
+                "name": "section-gap--text-0000",
+                "blocks": [{"block_id": "section-gap--text-0000", "rva_start": 0x1000, "rva_end": 0x1001}],
+                "callsites": [],
+            },
+        ]
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0000"}]},
+                "abi_callsites": {"original": {"functions": section_gap_functions}},
+                "padding_alignment": {
+                    "status": "satisfied",
+                    "obligations": [
+                        {
+                            "status": "waived_noncode",
+                            "checks": [
+                                {
+                                    "binary": "original",
+                                    "status": "verified",
+                                    "rva_start": 0x1001,
+                                    "rva_end": 0x1010,
+                                    "bytes_hex": "90" * 15,
+                                    "bytes_sha256": sha256_bytes(bytes.fromhex("90" * 15)),
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        }
+        functions = [
+            {
+                "name": "middle",
+                "rva_start": 0x1010,
+                "rva_end": 0x1015,
+                "size": 5,
+                "decompiler": {
+                    "status": "success",
+                    "code": "uintptr_t __cdecl middle(void)\n{\n  return 0;\n}",
+                },
+            }
+        ]
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+        )
+
+        early = source.index("name stage_b_contract_section_gap__text_0000")
+        padding = source.index("Stage B contract layout padding: verified bytes at RVA 0x1001-0x1010")
+        middle = source.index("name middle")
+        self.assertLess(early, padding)
+        self.assertLess(padding, middle)
+        self.assertIn('".byte 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90\\n\\t"', source)
+        self.assertIn('".byte 0x90, 0x90, 0x90"', source)
+
+        uncovered_contract = json.loads(json.dumps(reference_contract))
+        uncovered_contract["constraints"].pop("padding_alignment")
+        uncovered_source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=uncovered_contract,
+        )
+        self.assertNotIn("Stage B contract layout padding", uncovered_source)
 
     def test_decompiled_c_synthesizes_no_callsite_section_gap_contract_placeholder(self):
         reference_contract = {
