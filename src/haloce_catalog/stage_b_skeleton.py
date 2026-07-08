@@ -72,14 +72,25 @@ _DECOMPILED_C_MINGWEX_RUNTIME_FUNCTION_NAMES = frozenset(
         "_wcrtomb",
         "_wcsnlen",
         "_wcsrtombs",
+        "basename",
         "dirname",
         "wcslen",
     }
 )
 _DECOMPILED_C_MINGWEX_C_SYMBOL_ALIASES = {
+    "___do_global_ctors": "__do_global_ctors",
+    "___do_global_dtors": "__do_global_dtors",
+    "___main": "__main",
+    "___mingw_GetSectionCount": "__mingw_GetSectionCount",
+    "___mingw_GetSectionForAddress": "__mingw_GetSectionForAddress",
     "__lock_file": "_lock_file",
     "__matherr": "_matherr",
+    "__FindPESection": "_FindPESection",
+    "__GetPEImageBase": "_GetPEImageBase",
+    "__IsNonwritableInCurrentImage": "_IsNonwritableInCurrentImage",
+    "__pei386_runtime_relocator": "_pei386_runtime_relocator",
     "__unlock_file": "_unlock_file",
+    "__ValidateImageBase": "_ValidateImageBase",
     "___Balloc_D2A": "__Balloc_D2A",
     "___Bfree_D2A": "__Bfree_D2A",
     "___b2d_D2A": "__b2d_D2A",
@@ -630,7 +641,12 @@ def stage_b_generate_skeleton(
         item.symbol for item in binary.imports if isinstance(item.symbol, str) and item.symbol
     ]
     functions = function_filter["functions"]
-    implementation_recovery = _skeleton_implementation_recovery(functions, source_language, implementation_mode=implementation_mode)
+    implementation_recovery = _skeleton_implementation_recovery(
+        functions,
+        source_language,
+        implementation_mode=implementation_mode,
+        runtime_entry_policy=runtime_entry_policy,
+    )
     reference_contract_function_coverage = _skeleton_reference_contract_function_coverage(
         coverage_reference_contract_payload,
         binary,
@@ -646,6 +662,10 @@ def stage_b_generate_skeleton(
     implementation_recovery = _skeleton_implementation_recovery_with_contract_coverage(
         implementation_recovery,
         reference_contract_function_coverage,
+    )
+    implementation_recovery = _skeleton_implementation_recovery_with_contract_placeholders(
+        implementation_recovery,
+        reference_contract_payload,
     )
     target_id = _artifact_name(target_name)
     source_rel = Path("src") / f"{target_id}_stage_b_skeleton.{_source_extension(source_language)}"
@@ -993,10 +1013,23 @@ def _reference_contract_abi_callsite_arguments(callsite: dict[str, Any]) -> list
     for arg in sorted([arg for arg in stack_args if isinstance(arg, dict)], key=lambda item: int(item.get("index") or 0)):
         source = arg.get("source") if isinstance(arg.get("source"), dict) else {}
         value = source.get("value")
+        role = arg.get("role")
+        stack_offset = _optional_int(source.get("stack_offset"))
+        base: dict[str, Any] = {}
+        if isinstance(role, str) and role:
+            base["role"] = role
+        if stack_offset is not None:
+            base["stack_offset"] = stack_offset
         if source.get("kind") == "immediate" and isinstance(value, int) and not isinstance(value, bool):
-            arguments.append({"kind": "immediate", "value": value})
+            arguments.append({**base, "kind": "immediate", "value": value})
+        elif source.get("kind") == "register" and isinstance(source.get("register"), str) and source.get("register"):
+            register_argument = {**base, "kind": "register", "register": str(source["register"])}
+            register_definition = source.get("register_definition")
+            if isinstance(register_definition, dict):
+                register_argument["register_definition"] = register_definition
+            arguments.append(register_argument)
         else:
-            arguments.append({"kind": "unrenderable", "role": arg.get("role")})
+            arguments.append({**base, "kind": "unrenderable"})
     return arguments
 
 def _skeleton_reference_contract_function_coverage(
@@ -1098,6 +1131,44 @@ def _skeleton_implementation_recovery_with_contract_coverage(
         "counts": counts,
     }
     return updated
+
+
+def _skeleton_implementation_recovery_with_contract_placeholders(
+    recovery: dict[str, Any],
+    reference_contract_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if reference_contract_payload is None:
+        return recovery
+    section_gaps = list(_reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values())
+    if not section_gaps:
+        return recovery
+
+    updated = dict(recovery)
+    blockers = list(updated.get("blockers") or [])
+    if "contract_section_gap_placeholders" not in blockers:
+        blockers.append("contract_section_gap_placeholders")
+    updated["status"] = "incomplete"
+    updated["source_implements_behavior"] = False
+    if updated.get("generated_source_kind") == "decompiler_recovered_behavior":
+        updated["generated_source_kind"] = "decompiler_recovered_partial"
+    updated["blockers"] = blockers
+    updated["contract_placeholder_coverage"] = {
+        "status": "incomplete",
+        "counts": {
+            "section_gap_placeholders": len(section_gaps),
+        },
+        "examples": [
+            {
+                "name": str(entry.get("name") or ""),
+                "rva_start": entry.get("rva_start"),
+                "rva_end": entry.get("rva_end"),
+                "block_ids": entry.get("block_ids") if isinstance(entry.get("block_ids"), list) else [],
+            }
+            for entry in section_gaps[:10]
+        ],
+    }
+    return updated
+
 
 def _match_skeleton_contract_function(
     contract: dict[str, Any],
@@ -1567,8 +1638,24 @@ def _skeleton_implementation_recovery(
     source_language: str,
     *,
     implementation_mode: str,
+    runtime_entry_policy: str = "bridge",
 ) -> dict[str, Any]:
-    decompiler_functions = [function for function in functions if isinstance(function.get("decompiler"), dict)]
+    policy_omitted_functions = [
+        function
+        for function in functions
+        if _decompiled_c_policy_omission_reason(function, runtime_entry_policy=runtime_entry_policy) is not None
+    ]
+    policy_omitted_ids = {id(function) for function in policy_omitted_functions}
+    decompiler_required_functions = (
+        [function for function in functions if id(function) not in policy_omitted_ids]
+        if implementation_mode == "decompiled-c"
+        else list(functions)
+    )
+    decompiler_functions = [
+        function
+        for function in decompiler_required_functions
+        if isinstance(function.get("decompiler"), dict)
+    ]
     decompiler_successes = [
         function
         for function in decompiler_functions
@@ -1582,7 +1669,7 @@ def _skeleton_implementation_recovery(
     ]
     missing_decompiler_functions = [
         _decompiler_coverage_function(function, reason="missing_decompiler_export")
-        for function in functions
+        for function in decompiler_required_functions
         if not isinstance(function.get("decompiler"), dict)
     ]
     incomplete_decompiler_functions = [
@@ -1592,6 +1679,14 @@ def _skeleton_implementation_recovery(
         )
         for function in decompiler_functions
         if function.get("decompiler", {}).get("status") != "success"
+    ]
+    policy_omitted_coverage_functions = [
+        _decompiler_coverage_function(
+            function,
+            reason=_decompiled_c_policy_omission_reason(function, runtime_entry_policy=runtime_entry_policy)
+            or "policy_omitted",
+        )
+        for function in policy_omitted_functions
     ]
     requires_decompiler_code = implementation_mode == "decompiled-c"
     missing_decompiler_code_functions = (
@@ -1619,11 +1714,11 @@ def _skeleton_implementation_recovery(
         blockers = []
         if not functions:
             blockers.append("missing_functions")
-        if len(decompiler_functions) != len(functions):
+        if missing_decompiler_functions:
             blockers.append("missing_decompiler_exports")
-        if len(decompiler_successes) != len(functions):
+        if incomplete_decompiler_functions:
             blockers.append("incomplete_decompiler_successes")
-        if len(decompiler_code_functions) != len(functions):
+        if missing_decompiler_code_functions:
             blockers.append("missing_decompiler_code")
         if duplicate_names:
             blockers.append("duplicate_decompiler_function_names")
@@ -1658,20 +1753,24 @@ def _skeleton_implementation_recovery(
         "source_language": source_language,
         "source_implements_behavior": status == "complete",
         "functions": len(functions),
+        "decompiler_required_functions": len(decompiler_required_functions),
         "decompiler_functions": len(decompiler_functions),
         "decompiler_successes": len(decompiler_successes),
         "decompiler_code_functions": len(decompiler_code_functions),
         "decompiler_coverage": {
             "status": "complete"
-            if len(decompiler_functions) == len(functions)
-            and len(decompiler_successes) == len(functions)
-            and (not requires_decompiler_code or len(decompiler_code_functions) == len(functions))
+            if len(decompiler_functions) == len(decompiler_required_functions)
+            and len(decompiler_successes) == len(decompiler_required_functions)
+            and (not requires_decompiler_code or len(decompiler_code_functions) == len(decompiler_required_functions))
             else "incomplete",
             "requires_decompiler_code": requires_decompiler_code,
             "missing_decompiler_functions": missing_decompiler_functions,
             "incomplete_decompiler_functions": incomplete_decompiler_functions,
             "missing_decompiler_code_functions": missing_decompiler_code_functions,
+            "policy_omitted_functions": policy_omitted_coverage_functions,
             "counts": {
+                "decompiler_required_functions": len(decompiler_required_functions),
+                "policy_omitted_functions": len(policy_omitted_coverage_functions),
                 "missing_decompiler_functions": len(missing_decompiler_functions),
                 "incomplete_decompiler_functions": len(incomplete_decompiler_functions),
                 "missing_decompiler_code_functions": len(missing_decompiler_code_functions),
@@ -2796,6 +2895,8 @@ def _render_decompiled_c_source(
             *runtime_helper_alias_symbols,
         ],
         implemented_functions,
+        runtime_entry_policy=runtime_entry_policy,
+        all_functions=functions,
         reference_contract_payload=reference_contract_payload,
         call_targets=contract_call_targets,
         call_target_profiles=contract_call_target_profiles,
@@ -3303,6 +3404,19 @@ def _decompiled_c_is_import_thunk(function: dict[str, Any]) -> bool:
     linkage = function.get("linkage")
     return isinstance(linkage, dict) and linkage.get("kind") == "import_thunk"
 
+def _decompiled_c_policy_omission_reason(function: dict[str, Any], *, runtime_entry_policy: str = "bridge") -> str | None:
+    if _decompiled_c_is_import_thunk(function):
+        return "import_thunk_omitted_to_link_import"
+    if _decompiled_c_is_stack_probe_helper(function):
+        return "stack_probe_helper_omitted_to_link_runtime"
+    if not _decompiled_c_is_runtime_entry(function, runtime_entry_policy=runtime_entry_policy):
+        return None
+    if runtime_entry_policy == "bridge" and str(function.get("name") or "") in _DECOMPILED_C_RUNTIME_ENTRY_NAMES:
+        return "runtime_entry_replaced_by_generated_bridge"
+    if _decompiled_c_is_mingw_crt_support_helper(function):
+        return "mingw_crt_support_helper_omitted_to_link_runtime"
+    return "mingw_crt_owned_function_omitted_to_link_runtime"
+
 def _decompiled_c_import_thunk_target_symbol(function: dict[str, Any]) -> str | None:
     if not _decompiled_c_is_import_thunk(function):
         return None
@@ -3410,6 +3524,34 @@ def _decompiled_c_is_mingw_crt_support_helper(function: dict[str, Any]) -> bool:
         return True
     aliases = function.get("aliases") if isinstance(function.get("aliases"), list) else []
     return any(isinstance(alias, str) and alias in _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES for alias in aliases)
+
+def _decompiled_c_runtime_linked_symbol_names(
+    functions: list[dict[str, Any]],
+    *,
+    runtime_entry_policy: str,
+) -> set[str]:
+    if runtime_entry_policy != "mingw-crt":
+        return set()
+    symbols: set[str] = set()
+    for function in functions:
+        if not _decompiled_c_is_mingw_crt_owned_function(function):
+            continue
+        names = [
+            str(function.get("name") or ""),
+            *[
+                str(alias)
+                for alias in (function.get("aliases") if isinstance(function.get("aliases"), list) else [])
+                if isinstance(alias, str)
+            ],
+        ]
+        for name in names:
+            if not name:
+                continue
+            symbols.add(name)
+            alias = _DECOMPILED_C_MINGWEX_C_SYMBOL_ALIASES.get(name)
+            if alias:
+                symbols.add(alias)
+    return symbols
 
 def _decompiled_c_is_stack_probe_helper(function: dict[str, Any]) -> bool:
     name = str(function.get("name") or "")
@@ -3577,12 +3719,12 @@ def _decompiled_c_layout_support_lines(
         "__asm__(",
         "\".section .text$stage_b_jq_layout_pad,\\\"x\\\"\\n\"",
         "\"_stage_b_jq_layout_text_anchor:\\n\"",
-        "\"  .fill 4843,1,0x90\\n\"",
+        "\"  .fill 0,1,0x90\\n\"",
         "\".text\\n\"",
         ");",
-        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2508];",
-        "__attribute__((used, aligned(1), section(\".data$stage_b_jq_layout_tail\"))) volatile unsigned char stage_b_jq_layout_data_tail[4] = {0};",
-        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1604] = {0};",
+        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[16];",
+        "__attribute__((used, aligned(1), section(\".data$stage_b_jq_layout_tail\"))) volatile unsigned char stage_b_jq_layout_data_tail[40] = {0};",
+        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1444] = {0};",
         "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
         "uintptr_t __cdecl jv_mem_alloc(size_t);",
         *_decompiled_c_jq_import_anchor_lines(atexit_import_anchor),
@@ -3945,6 +4087,8 @@ def _decompiled_c_link_placeholder_definitions(
     external_function_names: list[str] | tuple[str, ...],
     functions: list[dict[str, Any]],
     *,
+    runtime_entry_policy: str = "bridge",
+    all_functions: list[dict[str, Any]] | None = None,
     reference_contract_payload: dict[str, Any] | None = None,
     call_targets: dict[int, str] | None = None,
     call_target_profiles: dict[str, dict[str, Any]] | None = None,
@@ -3974,9 +4118,13 @@ def _decompiled_c_link_placeholder_definitions(
                 data_symbols.append(symbol)
     lines = [_decompiled_c_external_data_definition(symbol) for symbol in data_symbols]
     imported_or_recovered = {str(name) for name in external_function_names}
+    runtime_linked_symbols = _decompiled_c_runtime_linked_symbol_names(
+        all_functions if all_functions is not None else functions,
+        runtime_entry_policy=runtime_entry_policy,
+    )
     defined = _decompiled_c_defined_symbol_names(functions)
     for symbol in external_call_symbols:
-        if symbol in imported_or_recovered or symbol in defined:
+        if symbol in imported_or_recovered or symbol in defined or symbol in runtime_linked_symbols:
             continue
         if not _is_c_identifier(symbol) or _decompiled_c_external_symbol_is_declared_by_headers(symbol):
             continue
@@ -4091,48 +4239,166 @@ def _decompiled_c_contract_asm_callsite_lines(
                 target_profile=target_profile,
             ):
                 continue
-            rendered_args = _decompiled_c_contract_callsite_arguments(callsite, target_profile=target_profile)
-            if rendered_args is None:
+            asm_args = _decompiled_c_contract_callsite_asm_arguments(callsite, target_profile=target_profile)
+            if asm_args is None:
                 continue
             comments.append(f"/* Stage A direct-call anchor: {callsite_id}{suffix}. */")
-            _decompiled_c_contract_asm_stack_arguments(asm_lines, rendered_args)
+            stack_bytes = _decompiled_c_contract_asm_stack_arguments(asm_lines, asm_args)
             asm_lines.append(f"  call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}")
-            if rendered_args and not _decompiled_c_contract_target_pops_stack(target_profile):
-                asm_lines.append(f"  addl ${len(rendered_args) * 4}, %esp")
+            if stack_bytes and not _decompiled_c_contract_target_pops_stack(target_profile):
+                asm_lines.append(f"  addl ${stack_bytes}, %esp")
             continue
         if target.get("kind") == "import":
             target_name = _decompiled_c_contract_import_target_name(target)
             if target_name is None:
                 continue
             target_profile = _decompiled_c_contract_external_target_profile(target_name)
-            rendered_args = _decompiled_c_contract_callsite_arguments(callsite, target_profile=target_profile)
-            if rendered_args is None:
+            asm_args = _decompiled_c_contract_callsite_asm_arguments(callsite, target_profile=target_profile)
+            if asm_args is None:
                 continue
             comments.append(f"/* Stage A import-call anchor: {callsite_id}{suffix}. */")
-            _decompiled_c_contract_asm_stack_arguments(asm_lines, rendered_args)
+            stack_bytes = _decompiled_c_contract_asm_stack_arguments(asm_lines, asm_args)
             asm_lines.append(f"  call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}")
-            if rendered_args and not _decompiled_c_contract_target_pops_stack(target_profile):
-                asm_lines.append(f"  addl ${len(rendered_args) * 4}, %esp")
+            if stack_bytes and not _decompiled_c_contract_target_pops_stack(target_profile):
+                asm_lines.append(f"  addl ${stack_bytes}, %esp")
             continue
         if target.get("kind") == "function_pointer":
-            rendered_args = _decompiled_c_contract_callsite_arguments(callsite)
-            if rendered_args is None:
+            asm_args = _decompiled_c_contract_callsite_asm_arguments(callsite)
+            if asm_args is None:
                 continue
             comments.append(f"/* Stage A function-pointer-call anchor: {callsite_id}{suffix}. */")
-            _decompiled_c_contract_asm_stack_arguments(asm_lines, rendered_args)
+            stack_bytes = _decompiled_c_contract_asm_stack_arguments(asm_lines, asm_args)
             asm_lines.append("  xorl %eax, %eax")
             asm_lines.append("  call *%eax")
-            if rendered_args:
-                asm_lines.append(f"  addl ${len(rendered_args) * 4}, %esp")
+            if stack_bytes:
+                asm_lines.append(f"  addl ${stack_bytes}, %esp")
             continue
     return comments
 
 
-def _decompiled_c_contract_asm_stack_arguments(asm_lines: list[str], rendered_args: list[str]) -> None:
-    if not rendered_args:
-        return
-    for argument in reversed(rendered_args):
-        asm_lines.append(f"  pushl {_decompiled_c_contract_asm_immediate(argument)}")
+def _decompiled_c_contract_asm_stack_arguments(asm_lines: list[str], arguments: list[dict[str, Any]]) -> int:
+    if not arguments:
+        return 0
+    stack_bytes = max(_decompiled_c_contract_asm_argument_offset(argument) for argument in arguments) + 4
+    if _decompiled_c_contract_asm_arguments_can_use_push(arguments, stack_bytes):
+        for argument in sorted(arguments, key=_decompiled_c_contract_asm_argument_offset, reverse=True):
+            for setup_line in _decompiled_c_contract_asm_argument_setup_lines(argument):
+                asm_lines.append(setup_line)
+            asm_lines.append(f"  pushl {_decompiled_c_contract_asm_argument_operand(argument)}")
+        return stack_bytes
+    asm_lines.append(f"  subl ${stack_bytes}, %esp")
+    for argument in arguments:
+        offset = _decompiled_c_contract_asm_argument_offset(argument)
+        for setup_line in _decompiled_c_contract_asm_argument_setup_lines(argument):
+            asm_lines.append(setup_line)
+        asm_lines.append(f"  movl {_decompiled_c_contract_asm_argument_operand(argument)}, {offset}(%esp)")
+    return stack_bytes
+
+
+def _decompiled_c_contract_callsite_asm_arguments(
+    callsite: dict[str, Any],
+    *,
+    target_profile: dict[str, Any] | None = None,
+) -> list[dict[str, Any]] | None:
+    arguments = callsite.get("arguments") if isinstance(callsite.get("arguments"), list) else []
+    normalized: list[dict[str, Any]] = []
+    for index, argument in enumerate(arguments):
+        if not isinstance(argument, dict):
+            return None
+        item = dict(argument)
+        item.setdefault("index", index)
+        item.setdefault("stack_offset", index * 4)
+        normalized.append(item)
+    if target_profile is not None:
+        fixed_arg_count = target_profile.get("fixed_arg_count")
+        if isinstance(fixed_arg_count, int) and fixed_arg_count >= 0:
+            if target_profile.get("variadic"):
+                while len(normalized) < fixed_arg_count:
+                    normalized.append(
+                        {"kind": "immediate", "value": 0, "index": len(normalized), "stack_offset": len(normalized) * 4}
+                    )
+            else:
+                normalized = normalized[:fixed_arg_count]
+                while len(normalized) < fixed_arg_count:
+                    normalized.append(
+                        {"kind": "immediate", "value": 0, "index": len(normalized), "stack_offset": len(normalized) * 4}
+                    )
+    return normalized
+
+
+def _decompiled_c_contract_asm_arguments_can_use_push(arguments: list[dict[str, Any]], stack_bytes: int) -> bool:
+    if stack_bytes != len(arguments) * 4:
+        return False
+    expected_offsets = list(range(0, stack_bytes, 4))
+    observed_offsets = sorted(_decompiled_c_contract_asm_argument_offset(argument) for argument in arguments)
+    if observed_offsets != expected_offsets:
+        return False
+    return True
+
+
+def _decompiled_c_contract_asm_argument_offset(argument: dict[str, Any]) -> int:
+    offset = _optional_int(argument.get("stack_offset"))
+    if offset is not None and offset >= 0:
+        return offset
+    index = _optional_int(argument.get("index"))
+    return max(index or 0, 0) * 4
+
+
+def _decompiled_c_contract_asm_argument_setup_lines(argument: dict[str, Any]) -> list[str]:
+    if argument.get("kind") != "register":
+        return []
+    register = _decompiled_c_i686_register(str(argument.get("register") or ""))
+    if register is None:
+        return []
+    definition = argument.get("register_definition") if isinstance(argument.get("register_definition"), dict) else {}
+    kind = definition.get("kind")
+    if kind == "address":
+        address = _decompiled_c_contract_asm_address_operand(definition.get("addressing"))
+        if address is not None:
+            return [f"  leal {address}, %{register}"]
+    if kind == "memory":
+        address = _decompiled_c_contract_asm_address_operand(definition.get("addressing"))
+        if address is not None:
+            return [f"  movl {address}, %{register}"]
+    if kind == "register":
+        source_register = _decompiled_c_i686_register(str(definition.get("register") or ""))
+        if source_register is not None and source_register != register:
+            return [f"  movl %{source_register}, %{register}"]
+    return []
+
+
+def _decompiled_c_contract_asm_argument_operand(argument: dict[str, Any]) -> str:
+    if argument.get("kind") == "immediate":
+        value = argument.get("value")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return f"$0x{value & 0xFFFFFFFF:x}"
+    if argument.get("kind") == "register":
+        register = _decompiled_c_i686_register(str(argument.get("register") or ""))
+        if register is not None:
+            return f"%{register}"
+    return "$0x0"
+
+
+def _decompiled_c_contract_asm_address_operand(addressing: Any) -> str | None:
+    if not isinstance(addressing, dict):
+        return None
+    base = _decompiled_c_i686_register(str(addressing.get("base") or ""))
+    if base is None:
+        return None
+    disp = _optional_int(addressing.get("disp")) or 0
+    index = _decompiled_c_i686_register(str(addressing.get("index") or ""))
+    scale = _optional_int(addressing.get("scale")) or 1
+    disp_text = f"0x{disp:x}" if disp >= 0 else f"-0x{abs(disp):x}"
+    if index is not None:
+        return f"{disp_text}(%{base},%{index},{scale})"
+    return f"{disp_text}(%{base})"
+
+
+def _decompiled_c_i686_register(register: str) -> str | None:
+    normalized = register.lower().strip().removeprefix("%")
+    if normalized in {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}:
+        return normalized
+    return None
 
 
 def _decompiled_c_contract_asm_immediate(argument: str) -> str:

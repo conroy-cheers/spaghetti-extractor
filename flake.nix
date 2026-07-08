@@ -1970,10 +1970,14 @@
                 and .implementation_recovery.generated_source_kind == "decompiler_recovered_partial"
                 and .reverse_engineering.function_source == "stage_a_reference_contract"
                 and .implementation_recovery.functions == .reference_contract_function_coverage.counts.contract_functions
-                and .implementation_recovery.decompiler_code_functions < .implementation_recovery.functions
-                and .implementation_recovery.decompiler_coverage.status == "incomplete"
-                and (.implementation_recovery.blockers | index("missing_decompiler_exports"))
-                and (.implementation_recovery.blockers | index("missing_decompiler_code"))
+                and .implementation_recovery.decompiler_required_functions == .implementation_recovery.decompiler_code_functions
+                and .implementation_recovery.decompiler_required_functions == 11
+                and .implementation_recovery.decompiler_coverage.status == "complete"
+                and .implementation_recovery.decompiler_coverage.counts.policy_omitted_functions == 157
+                and .implementation_recovery.decompiler_coverage.counts.missing_decompiler_functions == 0
+                and .implementation_recovery.decompiler_coverage.counts.missing_decompiler_code_functions == 0
+                and (.implementation_recovery.blockers == ["contract_section_gap_placeholders"])
+                and .implementation_recovery.contract_placeholder_coverage.counts.section_gap_placeholders == 778
                 and .reference_contract_function_coverage.status == "complete"
                 and .reference_contract_function_coverage.counts.contract_functions == 168
                 and .reference_contract_function_coverage.counts.missing == 0

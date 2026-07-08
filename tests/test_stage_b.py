@@ -441,8 +441,9 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(recovery["status"], "incomplete")
             self.assertFalse(recovery["source_implements_behavior"])
             self.assertIn("missing_decompiler_exports", recovery["blockers"])
-            self.assertIn("missing_decompiler_code", recovery["blockers"])
+            self.assertNotIn("missing_decompiler_code", recovery["blockers"])
             self.assertEqual(recovery["decompiler_coverage"]["counts"]["missing_decompiler_functions"], 1)
+            self.assertEqual(recovery["decompiler_coverage"]["counts"]["missing_decompiler_code_functions"], 0)
             source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             self.assertIn("int first(void)", source)
             self.assertIn("uintptr_t __cdecl second(void)", source)
@@ -2114,18 +2115,18 @@ class StageBTests(unittest.TestCase):
             self.assertIn("__attribute__((weak, noinline, used)) uintptr_t initterm() {", source)
             self.assertIn('__asm__ __volatile__("" : : : "memory");', source)
             self.assertIn(".text$stage_b_jq_layout_pad", source)
-            self.assertIn(".fill 4843,1,0x90", source)
+            self.assertIn(".fill 0,1,0x90", source)
             self.assertIn(".rdata$stage_b_jq_layout_anchor", source)
             self.assertIn('"  .long _stage_b_jq_layout_text_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_import_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_layout_data_tail - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn("stage_b_jq_layout_bss_anchor[2508]", source)
-            self.assertIn("stage_b_jq_layout_data_tail[4]", source)
+            self.assertIn("stage_b_jq_layout_bss_anchor[16]", source)
+            self.assertIn("stage_b_jq_layout_data_tail[40]", source)
             self.assertNotIn('((void *)stage_b_jq_layout_data_tail)', source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
             self.assertIn('"  .long _stage_b_jq_layout_rdata_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_layout_bss_anchor - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn("stage_b_jq_layout_rdata_anchor[1604]", source)
+            self.assertIn("stage_b_jq_layout_rdata_anchor[1444]", source)
             self.assertIn('((void *)stage_b_jq_layout_anchor)', source)
             self.assertNotIn('((void *)stage_b_jq_layout_text_anchor)', source)
             self.assertNotIn('((void *)stage_b_jq_layout_bss_anchor)', source)
@@ -2808,7 +2809,7 @@ class StageBTests(unittest.TestCase):
         self.assertIn(f"_{generated_name}:\\n", source)
         self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0052:146c at RVA 0x146c", source)
         self.assertIn('"  pushl $0x7\\n"', source)
-        self.assertIn('"  pushl $0x0\\n"', source)
+        self.assertIn('"  pushl %eax\\n"', source)
         self.assertIn('"  call _strcmp\\n"', source)
         self.assertIn('"  addl $8, %esp\\n"', source)
         by_function = {item["function"]: item for item in source_map["functions"]}
@@ -2816,6 +2817,83 @@ class StageBTests(unittest.TestCase):
         self.assertIn("section-gap--text-0052", by_function[generated_name]["aliases"])
         source_lines = source.splitlines()
         self.assertIn(f'"_{generated_name}:\\n"', source_lines[by_function[generated_name]["line_start"] - 1])
+
+    def test_decompiled_c_section_gap_contract_placeholder_preserves_register_definition(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0110"}]},
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0110",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0110",
+                                        "rva_start": 0x3000,
+                                        "rva_end": 0x3020,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0110:3004",
+                                        "instruction": {"rva": 0x3004},
+                                        "target": {"kind": "direct", "target_rva": 0xC4B0},
+                                        "argument_inventory": {
+                                            "argument_count": 2,
+                                            "stack_args": [
+                                                {
+                                                    "index": 0,
+                                                    "role": "computed_address",
+                                                    "source": {
+                                                        "kind": "register",
+                                                        "register": "eax",
+                                                        "register_definition": {
+                                                            "kind": "address",
+                                                            "addressing": {"base": "esp", "disp": 48, "scale": 1},
+                                                        },
+                                                    },
+                                                },
+                                                {
+                                                    "index": 1,
+                                                    "role": "immediate",
+                                                    "source": {"kind": "immediate", "value": 3},
+                                                },
+                                            ],
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        functions = [
+            {
+                "name": "strcmp",
+                "rva_start": 0xC4B0,
+                "rva_end": 0xC4B6,
+                "size": 6,
+                "decompiler": {
+                    "status": "success",
+                    "code": "uintptr_t __cdecl strcmp(uintptr_t param_1, uintptr_t param_2)\n{\n  return param_1 ^ param_2;\n}",
+                },
+            }
+        ]
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0110:3004 at RVA 0x3004", source)
+        self.assertIn('"  leal 0x30(%esp), %eax\\n"', source)
+        self.assertIn('"  pushl $0x3\\n"', source)
+        self.assertIn('"  pushl %eax\\n"', source)
+        self.assertIn('"  call _strcmp\\n"', source)
+        self.assertIn('"  addl $8, %esp\\n"', source)
 
     def test_decompiled_c_synthesizes_all_linkable_section_gap_placeholders(self):
         section_gap_functions = []
@@ -3676,7 +3754,7 @@ class StageBTests(unittest.TestCase):
         self.assertIn("#define fileno _fileno", source)
         self.assertIn("import thunk for _fileno; body omitted", source)
         self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0068:15ee at RVA 0x15ee", source)
-        self.assertIn('"  pushl $0x0\\n"', source)
+        self.assertIn('"  pushl %ecx\\n"', source)
         self.assertIn('"  call __fileno\\n"', source)
         self.assertIn('"  addl $4, %esp\\n"', source)
 
@@ -4318,7 +4396,7 @@ class StageBTests(unittest.TestCase):
                 "size": 0xFB,
                 "decompiler": {
                     "status": "success",
-                    "code": "int __cdecl _wmain(int argc,wchar_t **argv,wchar_t **envp) {\n  return argc;\n}",
+                    "code": "int __cdecl _wmain(int argc,wchar_t **argv,wchar_t **envp) {\n  ___mingw_pformat(0,0,0,0,0);\n  return argc;\n}",
                 },
             },
         ]
@@ -4342,8 +4420,12 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("void *__GetPEImageBase(void)", source)
         self.assertNotIn("Stage B contract placeholder for missing decompiler body at RVA 0x5370", source)
         self.assertNotIn("int __pei386_runtime_relocator(void)", source)
+        self.assertIn("#define ___main __main", source)
+        self.assertIn("#define __pei386_runtime_relocator _pei386_runtime_relocator", source)
         self.assertIn("#define ___mingw_pformat __mingw_pformat", source)
         self.assertNotIn("int __cdecl ___mingw_pformat", source)
+        self.assertNotIn("__attribute__((weak, noinline, used)) uintptr_t ___mingw_pformat()", source)
+        self.assertNotIn("__attribute__((weak, noinline, used)) uintptr_t __mingw_pformat()", source)
         self.assertNotIn("int __cdecl __d2b_D2A", source)
         self.assertNotIn("char * __cdecl __strcp_D2A", source)
         self.assertIn("original RVA 0x7ff0, size 3052, name ___mingw_pformat", source)
@@ -5593,7 +5675,7 @@ class StageBTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(Exception, "missing_decompiler_code"):
+            with self.assertRaisesRegex(Exception, "incomplete_decompiler_successes"):
                 stage_b_generate_skeleton(
                     original=original,
                     decompiler_export=decompiler,
