@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from haloce_catalog import slice_loop
-from haloce_catalog.util import write_json
+from wincr import slice_loop
+from wincr.util import write_json
 
 
 class SliceLoopTests(unittest.TestCase):
@@ -118,8 +118,8 @@ class SliceLoopTests(unittest.TestCase):
                 write_json(out, payload)
                 return payload
 
-            with patch("haloce_catalog.slice_loop.stage_a_smoke_contract", side_effect=smoke_failure), patch(
-                "haloce_catalog.slice_loop.stage_b_explain_delta"
+            with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=smoke_failure), patch(
+                "wincr.slice_loop.stage_b_explain_delta"
             ) as explain:
                 code = self._run_main(
                     [
@@ -148,11 +148,11 @@ class SliceLoopTests(unittest.TestCase):
             root = Path(tmp)
             self._prepared_workspace(root)
 
-            with patch("haloce_catalog.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
-                "haloce_catalog.slice_loop.stage_a_validate_contract_candidate", side_effect=self._contract_candidate_validation
+            with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
+                "wincr.slice_loop.stage_a_validate_contract_candidate", side_effect=self._contract_candidate_validation
             ) as validate_candidate, patch(
-                "haloce_catalog.slice_loop.stage_a_validate_unit", side_effect=self._unit_incomplete
-            ) as validate_unit, patch("haloce_catalog.slice_loop.stage_b_explain_delta", side_effect=self._unrelated_delta) as explain:
+                "wincr.slice_loop.stage_a_validate_unit", side_effect=self._unit_incomplete
+            ) as validate_unit, patch("wincr.slice_loop.stage_b_explain_delta", side_effect=self._unrelated_delta) as explain:
                 code = self._run_main(
                     [
                         "--work-dir",
@@ -189,11 +189,11 @@ class SliceLoopTests(unittest.TestCase):
             self._prepared_workspace(root)
             candidate = root / "candidate" / "jq-stage-b-generated-closure-candidate.exe"
 
-            with patch("haloce_catalog.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
-                "haloce_catalog.slice_loop.stage_a_validate_contract_candidate", side_effect=self._contract_candidate_validation
+            with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
+                "wincr.slice_loop.stage_a_validate_contract_candidate", side_effect=self._contract_candidate_validation
             ) as validate_candidate, patch(
-                "haloce_catalog.slice_loop.stage_a_validate_unit", side_effect=self._unit_incomplete
-            ), patch("haloce_catalog.slice_loop.stage_b_explain_delta", side_effect=self._unrelated_delta):
+                "wincr.slice_loop.stage_a_validate_unit", side_effect=self._unit_incomplete
+            ), patch("wincr.slice_loop.stage_b_explain_delta", side_effect=self._unrelated_delta):
                 self.assertEqual(
                     self._run_main(
                         [
@@ -297,9 +297,9 @@ class SliceLoopTests(unittest.TestCase):
 
     def _patched_prepare_contracts(self):
         return _PatchGroup(
-            patch("haloce_catalog.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass),
-            patch("haloce_catalog.slice_loop.stage_a_semantic_coverage", side_effect=self._semantic_incomplete),
-            patch("haloce_catalog.slice_loop.stage_a_extract_work_items", side_effect=self._work_items),
+            patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass),
+            patch("wincr.slice_loop.stage_a_semantic_coverage", side_effect=self._semantic_incomplete),
+            patch("wincr.slice_loop.stage_a_extract_work_items", side_effect=self._work_items),
         )
 
     def _smoke_pass(self, *, reference_contract, out):

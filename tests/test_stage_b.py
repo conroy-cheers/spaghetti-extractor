@@ -9,8 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from haloce_catalog.stage_a import STAGE_A_MODEL_ID, STAGE_A_X86_64_MODEL_ID, stage_a_export_reference_contract, stage_a_generate_map, stage_a_validate
-from haloce_catalog.stage_b import (
+from wincr.stage_a import STAGE_A_MODEL_ID, STAGE_A_X86_64_MODEL_ID, stage_a_export_reference_contract, stage_a_generate_map, stage_a_validate
+from wincr.stage_b import (
     STAGE_B_PROOF_RULE,
     STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
     stage_b_diff_delta,
@@ -23,9 +23,9 @@ from haloce_catalog.stage_b import (
     _stage_b_delta_repair_items,
     _stage_b_semantic_contract_repair_items,
 )
-from haloce_catalog.stage_b_functional import stage_b_materialize_upstream_suite, stage_b_run_functional_suite
-from haloce_catalog.stage_b_provenance import stage_b_generate_candidate_provenance
-from haloce_catalog.stage_b_skeleton import (
+from wincr.stage_b_functional import stage_b_materialize_upstream_suite, stage_b_run_functional_suite
+from wincr.stage_b_provenance import stage_b_generate_candidate_provenance
+from wincr.stage_b_skeleton import (
     _decompiled_c_contract_direct_call_target_is_asm_linkable,
     _render_decompiled_c_source,
     _render_decompiled_c_source as _render_skeleton_decompiled_c_source,
@@ -33,7 +33,7 @@ from haloce_catalog.stage_b_skeleton import (
     stage_b_generate_link_roots,
     stage_b_generate_skeleton,
 )
-from haloce_catalog.util import sha256_bytes, sha256_file
+from wincr.util import sha256_bytes, sha256_file
 from test_stage_a import _LeanCheckedMock, _pe32_image, _pe32_import_image
 
 
@@ -45,9 +45,9 @@ class StageBTests(unittest.TestCase):
                 "-c",
                 (
                     "import sys; "
-                    "import haloce_catalog.stage_b; "
-                    "print('stage_a_loaded=' + str('haloce_catalog.stage_a' in sys.modules)); "
-                    "print('stage_binary_loaded=' + str('haloce_catalog.stage_binary' in sys.modules))"
+                    "import wincr.stage_b; "
+                    "print('stage_a_loaded=' + str('wincr.stage_a' in sys.modules)); "
+                    "print('stage_binary_loaded=' + str('wincr.stage_binary' in sys.modules))"
                 ),
             ],
             check=True,
@@ -990,7 +990,7 @@ class StageBTests(unittest.TestCase):
             original = self._write_pe(root / "jq.exe", b"\xc3")
             script_path = root / "tools" / "ghidra"
             script_path.mkdir(parents=True)
-            (script_path / "HaloCatalogExport.java").write_text("// test exporter\n", encoding="utf-8")
+            (script_path / "WincrStageBExport.java").write_text("// test exporter\n", encoding="utf-8")
             calls = []
 
             class Proc:
@@ -1024,7 +1024,7 @@ class StageBTests(unittest.TestCase):
                 )
                 return Proc()
 
-            with patch("haloce_catalog.stage_b.subprocess.run", side_effect=fake_run):
+            with patch("wincr.stage_b.subprocess.run", side_effect=fake_run):
                 result = stage_b_export_decompiler(
                     original=original,
                     target_name="jq",
@@ -1040,7 +1040,7 @@ class StageBTests(unittest.TestCase):
             command, kwargs = calls[0]
             self.assertEqual(command[0], "/ghidra/support/analyzeHeadless")
             self.assertIn(str(original), command)
-            self.assertEqual(command[command.index("-postScript") + 1], "HaloCatalogExport.java")
+            self.assertEqual(command[command.index("-postScript") + 1], "WincrStageBExport.java")
             self.assertEqual(command[command.index("-postScript") + 3], sha256_file(original))
             self.assertEqual(kwargs["timeout"], 45)
             self.assertEqual(result["decompiler_export"]["completeness"]["status"], "complete")
@@ -1056,7 +1056,7 @@ class StageBTests(unittest.TestCase):
             original = self._write_pe(root / "libjq-1.dll", b"\xc3\xc3")
             script_path = root / "tools" / "ghidra"
             script_path.mkdir(parents=True)
-            (script_path / "HaloCatalogExport.java").write_text("// test exporter\n", encoding="utf-8")
+            (script_path / "WincrStageBExport.java").write_text("// test exporter\n", encoding="utf-8")
 
             class Proc:
                 returncode = 0
@@ -1091,7 +1091,7 @@ class StageBTests(unittest.TestCase):
                 )
                 return Proc()
 
-            with patch("haloce_catalog.stage_b.subprocess.run", side_effect=fake_run):
+            with patch("wincr.stage_b.subprocess.run", side_effect=fake_run):
                 result = stage_b_export_decompiler(
                     original=original,
                     target_name="jq-libjq-1",
@@ -7308,8 +7308,8 @@ class StageBTests(unittest.TestCase):
                 },
             ]
 
-            with patch("haloce_catalog.stage_a.stage_a_validate_contract_candidate") as validate_candidate, patch(
-                "haloce_catalog.stage_b._stage_b_delta_repair_items", return_value=repair_items
+            with patch("wincr.stage_a.stage_a_validate_contract_candidate") as validate_candidate, patch(
+                "wincr.stage_b._stage_b_delta_repair_items", return_value=repair_items
             ):
                 result = stage_b_explain_delta(
                     reference_contract=reference_contract,

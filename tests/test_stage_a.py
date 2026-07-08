@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from haloce_catalog import cli as catalog_cli
-from haloce_catalog import stage_a
-from haloce_catalog import stage_binary
-from haloce_catalog.stage_a import (
+from wincr import cli as wincr_cli
+from wincr import stage_a
+from wincr import stage_binary
+from wincr.stage_a import (
     STAGE_A_MODEL_ID,
     stage_a_diff_obligations,
     stage_a_explain_obligations,
@@ -74,7 +74,7 @@ class StageAValidateTests(unittest.TestCase):
             mapping = self._write_mapping(root / "block-map.json", size=6)
             out = root / "report"
 
-            with mock.patch("haloce_catalog.stage_a.shutil.which", return_value=None):
+            with mock.patch("wincr.stage_a.shutil.which", return_value=None):
                 result = stage_a_validate(
                     original=original,
                     candidate=candidate,
@@ -862,7 +862,7 @@ class StageAValidateTests(unittest.TestCase):
             mapping = self._write_mapping(root / "block-map.json", size=4)
             out = root / "report"
 
-            with mock.patch("haloce_catalog.stage_a._import_z3", return_value=None):
+            with mock.patch("wincr.stage_a._import_z3", return_value=None):
                 result = stage_a_validate(
                     original=original,
                     candidate=candidate,
@@ -994,7 +994,7 @@ class StageAValidateTests(unittest.TestCase):
             out = root / "report"
 
             with self._mock_lean_checked():
-                code = catalog_cli.main(
+                code = wincr_cli.main(
                     [
                         "stage-a-validate",
                         "--original",
@@ -1043,7 +1043,7 @@ class StageAValidateTests(unittest.TestCase):
             out = root / "suite-report"
 
             with self._mock_lean_checked():
-                code = catalog_cli.main(
+                code = wincr_cli.main(
                     [
                         "stage-a-validate-suite",
                         "--suite",
@@ -1898,7 +1898,7 @@ class StageAValidateTests(unittest.TestCase):
                 "counts": {"families": 1, "issues": 0},
             }
 
-            with mock.patch("haloce_catalog.stage_a.stage_a_validate_contract_candidate") as validate_candidate:
+            with mock.patch("wincr.stage_a.stage_a_validate_contract_candidate") as validate_candidate:
                 result = stage_a_validate_unit(
                     reference_contract=reference_contract,
                     candidate=candidate,
@@ -4766,9 +4766,9 @@ def _pe32_import_image(code: bytes, *, symbol: str, dll: str = "KERNEL32.dll", i
 
 class _LeanCheckedMock:
     def __enter__(self):
-        self._which = mock.patch("haloce_catalog.stage_a.shutil.which", return_value="/nix/store/lean/bin/lean")
+        self._which = mock.patch("wincr.stage_a.shutil.which", return_value="/nix/store/lean/bin/lean")
         self._check = mock.patch(
-            "haloce_catalog.stage_a._run_lean_check",
+            "wincr.stage_a._run_lean_check",
             return_value={
                 "status": "checked",
                 "command": ["/nix/store/lean/bin/lean", "StageA/Obligations.lean"],

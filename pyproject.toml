@@ -3,15 +3,13 @@ requires = [ "setuptools>=69" ]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "haloce-decomp-tools"
+name = "wincr-tools"
 version = "0.1.0"
-description = "Windows clean-room catalog, coverage, and oracle-spec tooling"
+description = "Windows jq Stage A/B reimplementation tooling"
 requires-python = ">=3.11"
 dependencies = [
   "capstone",
-  "lief",
   "pefile",
-  "unicorn",
 ]
 
 [project.optional-dependencies]
@@ -20,12 +18,8 @@ proof = [
 ]
 
 [project.scripts]
-wincr = "haloce_catalog.cli:main"
-haloce-catalog = "haloce_catalog.cli:main"
-wincr-slice = "haloce_catalog.slice_loop:main"
+wincr = "wincr.cli:main"
+wincr-slice = "wincr.slice_loop:main"
 
 [tool.setuptools.packages.find]
 where = [ "src" ]
-
-[tool.setuptools.package-data]
-haloce_catalog = [ "schema.sql", "presets/*.toml" ]

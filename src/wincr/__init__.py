@@ -1,5 +1,5 @@
-"""Generic Windows clean-room catalog and coverage tooling."""
-
-from haloce_catalog import __version__
+"""Windows PE Stage A/B reimplementation tooling."""
 
 __all__ = ["__version__"]
+
+__version__ = "0.1.0"

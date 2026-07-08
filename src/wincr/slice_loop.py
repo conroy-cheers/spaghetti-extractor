@@ -38,11 +38,9 @@ DEFAULT_WORK_DIR = Path("build/wincr-slices")
 TARGET_DEFAULTS: dict[str, dict[str, Any]] = {
     "jq": {
         "stage_a_check_attr": "stage-a-jq-fixtures-check",
-        "candidate_attr": "stage-b-jq-generated-closure-candidate",
         "final_check_attrs": [
             "stage-a-jq-fixtures-check",
-            "stage-b-jq-contract-smoke-check",
-            "stage-b-jq-contract-delta-check",
+            "stage-b-jq-skeleton",
         ],
         "stage_a_check_reference_contract": Path("generated/jq-reference-contract.json"),
         "stage_a_check_unit_contract_dir": Path("generated"),
