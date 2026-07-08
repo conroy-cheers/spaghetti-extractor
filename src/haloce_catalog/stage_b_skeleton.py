@@ -3356,10 +3356,13 @@ def _decompiled_c_contract_callsite_anchor_lines(
             if rendered_args is None:
                 continue
             pointer_name = f"stage_b_contract_fp_{callsite_index}"
+            asm_operand = _decompiled_c_contract_function_pointer_asm_operand(target)
             lines.append(f"  /* Stage A function-pointer-call anchor: {callsite_id}{suffix}. */")
             if rendered_args:
                 lines.append(f"  volatile uintptr_t {pointer_name} = 0;")
                 lines.append(f"  ((uintptr_t (__cdecl *)())(uintptr_t){pointer_name})({', '.join(rendered_args)});")
+            elif asm_operand is not None:
+                lines.append(f'  __asm__ __volatile__("call {_c_inline_asm_percent_escape(asm_operand)}" : : : "memory");')
             else:
                 lines.append('  __asm__ __volatile__("xorl %%eax, %%eax; call *%%eax" : : : "eax", "memory");')
             if emit_accumulator:
@@ -4266,14 +4269,29 @@ def _decompiled_c_contract_asm_callsite_lines(
             asm_args = _decompiled_c_contract_callsite_asm_arguments(callsite)
             if asm_args is None:
                 continue
+            asm_operand = _decompiled_c_contract_function_pointer_asm_operand(target)
             comments.append(f"/* Stage A function-pointer-call anchor: {callsite_id}{suffix}. */")
             stack_bytes = _decompiled_c_contract_asm_stack_arguments(asm_lines, asm_args)
-            asm_lines.append("  xorl %eax, %eax")
-            asm_lines.append("  call *%eax")
+            if asm_operand is None:
+                asm_lines.append("  xorl %eax, %eax")
+                asm_lines.append("  call *%eax")
+            else:
+                asm_lines.append(f"  call {asm_operand}")
             if stack_bytes:
                 asm_lines.append(f"  addl ${stack_bytes}, %esp")
             continue
     return comments
+
+
+def _decompiled_c_contract_function_pointer_asm_operand(target: dict[str, Any]) -> str | None:
+    register = _decompiled_c_i686_register(str(target.get("operand") or ""))
+    if register is None:
+        return None
+    return f"*%{register}"
+
+
+def _c_inline_asm_percent_escape(value: str) -> str:
+    return value.replace("%", "%%")
 
 
 def _decompiled_c_contract_asm_stack_arguments(asm_lines: list[str], arguments: list[dict[str, Any]]) -> int:

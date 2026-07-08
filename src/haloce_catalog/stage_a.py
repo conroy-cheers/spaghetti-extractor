@@ -5470,6 +5470,10 @@ def _abi_stack_argument_signature(argument: dict[str, Any]) -> dict[str, Any]:
             for key in ("kind", "stack_offset", "memory_role")
             if source.get(key) not in {None, ""}
         }
+        if "stack_offset" not in source_signature:
+            index = argument.get("index")
+            if isinstance(index, int) and index >= 0:
+                source_signature["stack_offset"] = index * 4
         value = source.get("value")
         if isinstance(value, (int, str)) and not isinstance(value, bool):
             source_signature["value"] = value

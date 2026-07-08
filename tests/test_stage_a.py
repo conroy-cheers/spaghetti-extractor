@@ -2604,6 +2604,80 @@ class StageAValidateTests(unittest.TestCase):
             },
         )
 
+    def test_contract_candidate_abi_signature_delta_canonicalizes_implicit_stack_offsets(self):
+        reference_callsite = {
+            "id": "callsite:foo:1000",
+            "target": {"kind": "direct", "target_rva": 0x2000},
+            "argument_inventory": {
+                "calling_convention": "cdecl_or_stdcall_stack",
+                "argument_count": 2,
+                "stack_args": [
+                    {
+                        "index": 0,
+                        "role": "register",
+                        "source": {"kind": "register", "stack_offset": 0},
+                    },
+                    {
+                        "index": 1,
+                        "role": "immediate",
+                        "source": {"kind": "immediate", "stack_offset": 4, "value": 7},
+                    },
+                ],
+                "register_args": [],
+            },
+        }
+        candidate_callsite = copy.deepcopy(reference_callsite)
+        candidate_callsite["id"] = "callsite:foo:push-candidate"
+        for argument in candidate_callsite["argument_inventory"]["stack_args"]:
+            argument["source"].pop("stack_offset", None)
+
+        delta = stage_a._contract_candidate_abi_callsite_signature_delta(
+            [reference_callsite],
+            [candidate_callsite],
+            [(0, 0, reference_callsite, candidate_callsite)],
+            reference_function_index=[],
+            candidate_function_index=[],
+        )
+
+        self.assertEqual(delta["counts"]["reference_only_signatures"], 0)
+        self.assertEqual(delta["counts"]["candidate_only_signatures"], 0)
+        signature = stage_a._abi_callsite_contract_signature(candidate_callsite, [])
+        stack_args = signature["argument_inventory"]["stack_args"]
+        self.assertEqual(stack_args[0]["source"]["stack_offset"], 0)
+        self.assertEqual(stack_args[1]["source"]["stack_offset"], 4)
+
+    def test_contract_candidate_abi_signature_delta_keeps_nonstandard_stack_offsets_distinct(self):
+        reference_callsite = {
+            "id": "callsite:foo:1000",
+            "target": {"kind": "direct", "target_rva": 0x2000},
+            "argument_inventory": {
+                "calling_convention": "cdecl_or_stdcall_stack",
+                "argument_count": 1,
+                "stack_args": [
+                    {
+                        "index": 0,
+                        "role": "immediate",
+                        "source": {"kind": "immediate", "stack_offset": 0, "value": 2},
+                    }
+                ],
+                "register_args": [],
+            },
+        }
+        candidate_callsite = copy.deepcopy(reference_callsite)
+        candidate_callsite["id"] = "callsite:foo:offset-candidate"
+        candidate_callsite["argument_inventory"]["stack_args"][0]["source"]["stack_offset"] = 4
+
+        delta = stage_a._contract_candidate_abi_callsite_signature_delta(
+            [reference_callsite],
+            [candidate_callsite],
+            [(0, 0, reference_callsite, candidate_callsite)],
+            reference_function_index=[],
+            candidate_function_index=[],
+        )
+
+        self.assertEqual(delta["counts"]["reference_only_signatures"], 1)
+        self.assertEqual(delta["counts"]["candidate_only_signatures"], 1)
+
     def test_contract_candidate_abi_coverage_gaps_report_global_signature_shortages_first(self):
         def stack_slot_callsite(callsite_id: str, value: int) -> dict[str, object]:
             return {

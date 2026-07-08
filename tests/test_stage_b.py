@@ -2610,7 +2610,8 @@ class StageBTests(unittest.TestCase):
 
         self.assertIn("uintptr_t __cdecl die()", source)
         self.assertIn("Stage A function-pointer-call anchor: callsite:section-gap--text-0058:14e3 at RVA 0x14e3", source)
-        self.assertIn('__asm__ __volatile__("xorl %%eax, %%eax; call *%%eax" : : : "eax", "memory");', source)
+        self.assertIn('__asm__ __volatile__("call *%%ebx" : : : "memory");', source)
+        self.assertNotIn('xorl %%eax, %%eax; call *%%eax', source)
         by_function = {item["function"]: item for item in source_map["functions"]}
         self.assertEqual(by_function["die"]["source_kind"], "generated_contract_placeholder_from_section_gap_alias")
         self.assertIn("section-gap--text-0058", by_function["die"]["aliases"])
@@ -3587,8 +3588,8 @@ class StageBTests(unittest.TestCase):
         generated_name = "stage_b_contract_section_gap__text_0066"
         self.assertIn(f".section .text${generated_name}", source)
         self.assertIn("Stage A function-pointer-call anchor: callsite:section-gap--text-0066:15d3 at RVA 0x15d3", source)
-        self.assertIn('"  xorl %eax, %eax\\n"', source)
-        self.assertIn('"  call *%eax\\n"', source)
+        self.assertNotIn('"  xorl %eax, %eax\\n"', source)
+        self.assertIn('"  call *%ebp\\n"', source)
         by_function = {item["function"]: item for item in source_map["functions"]}
         self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_placeholder_from_section_gap")
         self.assertIn("section-gap--text-0066", by_function[generated_name]["aliases"])
