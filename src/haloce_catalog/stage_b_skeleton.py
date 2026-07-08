@@ -1009,8 +1009,27 @@ def _reference_contract_abi_callsite_target_summary(target: dict[str, Any]) -> d
 
 def _reference_contract_abi_callsite_arguments(callsite: dict[str, Any]) -> list[dict[str, Any]]:
     inventory = callsite.get("argument_inventory") if isinstance(callsite.get("argument_inventory"), dict) else {}
+    register_args = inventory.get("register_args") if isinstance(inventory.get("register_args"), list) else []
     stack_args = inventory.get("stack_args") if isinstance(inventory.get("stack_args"), list) else []
     arguments: list[dict[str, Any]] = []
+    for arg in register_args:
+        if not isinstance(arg, dict):
+            continue
+        register = arg.get("register")
+        if not isinstance(register, str) or not register:
+            continue
+        source = arg.get("source") if isinstance(arg.get("source"), dict) else {}
+        role = arg.get("role")
+        item: dict[str, Any] = {
+            "kind": "register",
+            "placement": "register",
+            "register": register,
+        }
+        if isinstance(role, str) and role:
+            item["role"] = role
+        if source:
+            item["register_definition"] = source
+        arguments.append(item)
     for arg in sorted([arg for arg in stack_args if isinstance(arg, dict)], key=lambda item: int(item.get("index") or 0)):
         source = arg.get("source") if isinstance(arg.get("source"), dict) else {}
         value = source.get("value")
@@ -3726,9 +3745,9 @@ def _decompiled_c_layout_support_lines(
         "\"  .fill 0,1,0x90\\n\"",
         "\".text\\n\"",
         ");",
-        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[12];",
+        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[8];",
         "__attribute__((used, aligned(1), section(\".data$stage_b_jq_layout_tail\"))) volatile unsigned char stage_b_jq_layout_data_tail[40] = {0};",
-        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1424] = {0};",
+        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1408] = {0};",
         "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
         "uintptr_t __cdecl jv_mem_alloc(size_t);",
         *_decompiled_c_jq_import_anchor_lines(atexit_import_anchor),
@@ -4247,6 +4266,7 @@ def _decompiled_c_contract_asm_callsite_lines(
             if asm_args is None:
                 continue
             comments.append(f"/* Stage A direct-call anchor: {callsite_id}{suffix}. */")
+            _decompiled_c_contract_asm_register_arguments(asm_lines, asm_args)
             stack_bytes = _decompiled_c_contract_asm_stack_arguments(asm_lines, asm_args)
             asm_lines.append(f"  call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}")
             if stack_bytes and not _decompiled_c_contract_target_pops_stack(target_profile):
@@ -4261,6 +4281,7 @@ def _decompiled_c_contract_asm_callsite_lines(
             if asm_args is None:
                 continue
             comments.append(f"/* Stage A import-call anchor: {callsite_id}{suffix}. */")
+            _decompiled_c_contract_asm_register_arguments(asm_lines, asm_args)
             stack_bytes = _decompiled_c_contract_asm_stack_arguments(asm_lines, asm_args)
             asm_lines.append(f"  call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}")
             if stack_bytes and not _decompiled_c_contract_target_pops_stack(target_profile):
@@ -4272,6 +4293,7 @@ def _decompiled_c_contract_asm_callsite_lines(
                 continue
             asm_operand = _decompiled_c_contract_function_pointer_asm_operand(target)
             comments.append(f"/* Stage A function-pointer-call anchor: {callsite_id}{suffix}. */")
+            _decompiled_c_contract_asm_register_arguments(asm_lines, asm_args)
             stack_bytes = _decompiled_c_contract_asm_stack_arguments(asm_lines, asm_args)
             if asm_operand is None:
                 asm_lines.append("  xorl %eax, %eax")
@@ -4296,6 +4318,7 @@ def _c_inline_asm_percent_escape(value: str) -> str:
 
 
 def _decompiled_c_contract_asm_stack_arguments(asm_lines: list[str], arguments: list[dict[str, Any]]) -> int:
+    arguments = [argument for argument in arguments if argument.get("placement") != "register"]
     if not arguments:
         return 0
     stack_bytes = max(_decompiled_c_contract_asm_argument_offset(argument) for argument in arguments) + 4
@@ -4312,6 +4335,13 @@ def _decompiled_c_contract_asm_stack_arguments(asm_lines: list[str], arguments: 
             asm_lines.append(setup_line)
         asm_lines.append(f"  movl {_decompiled_c_contract_asm_argument_operand(argument)}, {offset}(%esp)")
     return stack_bytes
+
+
+def _decompiled_c_contract_asm_register_arguments(asm_lines: list[str], arguments: list[dict[str, Any]]) -> None:
+    for argument in arguments:
+        if argument.get("placement") != "register":
+            continue
+        asm_lines.extend(_decompiled_c_contract_asm_argument_setup_lines(argument))
 
 
 def _decompiled_c_contract_callsite_asm_arguments(
@@ -4375,6 +4405,10 @@ def _decompiled_c_contract_asm_argument_setup_lines(argument: dict[str, Any]) ->
         address = _decompiled_c_contract_asm_address_operand(definition.get("addressing"))
         if address is not None:
             return [f"  leal {address}, %{register}"]
+    if kind == "immediate":
+        value = definition.get("value")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return [f"  movl $0x{value & 0xFFFFFFFF:x}, %{register}"]
     if kind == "memory":
         address = _decompiled_c_contract_asm_address_operand(definition.get("addressing"))
         if address is not None:
@@ -4634,9 +4668,15 @@ def _decompiled_c_section_gap_known_symbol_alias(entry: dict[str, Any], *, known
     for alias in entry.get("aliases", []):
         if not isinstance(alias, str) or alias.startswith("section-gap-") or not _is_c_identifier(alias):
             continue
+        if _decompiled_c_section_gap_alias_is_contract_only(alias):
+            continue
         if alias in known_symbols:
             return alias
     return None
+
+
+def _decompiled_c_section_gap_alias_is_contract_only(alias: str) -> bool:
+    return alias.startswith(("___pformat_", "pformat_"))
 
 
 def _decompiled_c_synthetic_section_gap_name(entry: dict[str, Any]) -> str:
@@ -4978,6 +5018,9 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
         code = _normalize_decompiled_dtoa_allocator_return_values(code)
     if function_name in {"_wmain", "wmain"}:
         code = _normalize_mingw_wmain_wide_argv_bridge(code, function_name=function_name)
+        code = _optimize_decompiled_c_function_for_size(code, function_name=function_name)
+    if function_name == "usage":
+        code = _optimize_decompiled_c_function_for_size(code, function_name=function_name)
     if function_name == "dirname":
         code = _normalize_jq_dirname_path_info_out_params(code)
     if "Treating indirect jump as call" in code:

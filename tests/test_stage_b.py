@@ -2120,13 +2120,13 @@ class StageBTests(unittest.TestCase):
             self.assertIn('"  .long _stage_b_jq_layout_text_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_import_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_layout_data_tail - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn("stage_b_jq_layout_bss_anchor[12]", source)
+            self.assertIn("stage_b_jq_layout_bss_anchor[8]", source)
             self.assertIn("stage_b_jq_layout_data_tail[40]", source)
             self.assertNotIn('((void *)stage_b_jq_layout_data_tail)', source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
             self.assertIn('"  .long _stage_b_jq_layout_rdata_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_layout_bss_anchor - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn("stage_b_jq_layout_rdata_anchor[1424]", source)
+            self.assertIn("stage_b_jq_layout_rdata_anchor[1408]", source)
             self.assertIn('((void *)stage_b_jq_layout_anchor)', source)
             self.assertNotIn('((void *)stage_b_jq_layout_text_anchor)', source)
             self.assertNotIn('((void *)stage_b_jq_layout_bss_anchor)', source)
@@ -2899,6 +2899,107 @@ class StageBTests(unittest.TestCase):
         self.assertIn('"  pushl %eax\\n"', source)
         self.assertIn('"  call _strcmp\\n"', source)
         self.assertIn('"  addl $8, %esp\\n"', source)
+
+    def test_decompiled_c_section_gap_contract_placeholder_preserves_register_carried_arguments(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {"id": "section-gap--text-0202"},
+                        {"id": "section-gap--text-0498"},
+                    ]
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0202",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0202",
+                                        "rva_start": 0x61A0,
+                                        "rva_end": 0x61E5,
+                                    }
+                                ],
+                                "callsites": [],
+                            },
+                            {
+                                "name": "section-gap--text-0498",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0498",
+                                        "rva_start": 0x7300,
+                                        "rva_end": 0x7320,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0498:7317",
+                                        "instruction": {"rva": 0x7317},
+                                        "target": {"kind": "direct", "target_rva": 0x61A0},
+                                        "argument_inventory": {
+                                            "argument_count": 3,
+                                            "calling_convention": "x86_register_carried_internal",
+                                            "register_args": [
+                                                {
+                                                    "register": "eax",
+                                                    "role": "computed_out_param_or_hidden_sret",
+                                                    "source": {
+                                                        "kind": "address",
+                                                        "addressing": {"base": "ebx", "disp": 28, "index": None, "scale": 1},
+                                                    },
+                                                },
+                                                {
+                                                    "register": "edx",
+                                                    "role": "immediate",
+                                                    "source": {"kind": "immediate", "value": 1},
+                                                },
+                                                {
+                                                    "register": "ecx",
+                                                    "role": "register",
+                                                    "source": {"kind": "register", "register": "ebx"},
+                                                },
+                                            ],
+                                            "stack_args": [],
+                                        },
+                                    }
+                                ],
+                            },
+                        ]
+                    }
+                },
+            }
+        }
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "mentions_pformat_alias",
+                    "rva_start": 0x9000,
+                    "rva_end": 0x9010,
+                    "size": 0x10,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __cdecl mentions_pformat_alias(void)\n{\n  return ___pformat_wputchars();\n}",
+                    },
+                }
+            ],
+            reference_contract_payload=reference_contract,
+        )
+
+        caller_name = "stage_b_contract_section_gap__text_0498"
+        callee_name = "stage_b_contract_section_gap__text_0202"
+        self.assertIn(f".section .text${caller_name}", source)
+        self.assertIn(f".section .text${callee_name}", source)
+        self.assertIn("Stage A direct-call anchor: callsite:section-gap--text-0498:7317 at RVA 0x7317", source)
+        self.assertIn('"  leal 0x1c(%ebx), %eax\\n"', source)
+        self.assertIn('"  movl $0x1, %edx\\n"', source)
+        self.assertIn('"  movl %ebx, %ecx\\n"', source)
+        self.assertIn(f'"  call _{callee_name}\\n"', source)
+        self.assertNotIn('"  call ___pformat_wputchars\\n"', source)
+        self.assertNotIn('"  pushl %eax\\n"', source)
+        self.assertNotIn('"  addl $12, %esp\\n"', source)
 
     def test_decompiled_c_synthesizes_all_linkable_section_gap_placeholders(self):
         section_gap_functions = []
