@@ -2229,6 +2229,184 @@ class StageAValidateTests(unittest.TestCase):
             self.assertIn("indirect-jump contract", switch_cluster["next_action"])
             self.assertIn("low-level CFG backedges", loop_cluster["next_action"])
 
+    def test_reference_contract_resolves_bounded_pe32_jump_table_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            table_rva = 0x1010
+            table_va = 0x400000 + table_rva
+            dispatch = bytes.fromhex("83e101") + b"\xff\x24\x8d" + struct.pack("<I", table_va)
+            body = (
+                dispatch
+                + b"\xc3"  # case 0 target at 0x100a
+                + b"\xc3"  # case 1 target at 0x100b
+                + (b"\0" * (table_rva - 0x1000 - len(dispatch) - 2))
+                + struct.pack("<II", 0x40100A, 0x40100B)
+            )
+            original = self._write_pe(root / "original.exe", body)
+            candidate = self._write_pe(root / "candidate.exe", body)
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                **self._mapping_entry(rva=0x1000, size=len(dispatch), block_id="dispatch-0000"),
+                                "source": {"kind": "linker_map_function", "function": "dispatch"},
+                            },
+                            {
+                                **self._mapping_entry(rva=0x100A, size=1, block_id="dispatch-0001"),
+                                "source": {"kind": "linker_map_function", "function": "dispatch"},
+                            },
+                            {
+                                **self._mapping_entry(rva=0x100B, size=1, block_id="dispatch-0002"),
+                                "source": {"kind": "linker_map_function", "function": "dispatch"},
+                            },
+                        ],
+                        "status": "pass",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            units = root / "units"
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=units,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            functions = result["constraints"]["abi_callsites"]["original"]["functions"]
+            switch = next(item for item in functions if item["name"] == "dispatch")["switch_contracts"][0]
+            self.assertEqual(switch["evidence_status"], "derived")
+            self.assertEqual(switch["table_bounds"], {"lower": 0, "upper": 1, "entries": 2, "source": "and_immediate_mask"})
+            self.assertEqual([item["target_rva"] for item in switch["case_targets"]], [0x100A, 0x100B])
+            self.assertEqual(switch["unique_target_rvas"], [0x100A, 0x100B])
+            jump_targets = result["constraints"]["roots_and_jump_tables"]["jump_table_targets"]
+            self.assertEqual({item["target_rva"] for item in jump_targets}, {0x100A, 0x100B})
+            transfer_rows = [
+                json.loads(line)
+                for line in (units / "semantic-transfer-contracts.jsonl").read_text(encoding="utf-8").splitlines()
+                if line
+            ]
+            dispatch_transfer = next(item for item in transfer_rows if item["block_id"] == "dispatch-0000")
+            self.assertEqual(dispatch_transfer["outcome"]["kind"], "indirect_jump_table")
+            self.assertEqual(dispatch_transfer["outcome"]["target_rvas"], [0x100A, 0x100B])
+
+    def test_reference_contract_refines_jump_table_bounds_from_predecessor_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            table_rva = 0x1020
+            table_va = 0x400000 + table_rva
+            predecessor = bytes.fromhex("80f901770a")  # cmp cl, 1; ja 0x40100f
+            dispatch = bytes.fromhex("0fb6c9") + b"\xff\x24\x8d" + struct.pack("<I", table_va)
+            body = (
+                predecessor
+                + dispatch
+                + b"\xc3"  # default target at 0x100f
+                + b"\xc3"  # case 0 target at 0x1010
+                + b"\xc3"  # case 1 target at 0x1011
+                + (b"\0" * (table_rva - 0x1000 - len(predecessor) - len(dispatch) - 3))
+                + struct.pack("<II", 0x401010, 0x401011)
+            )
+            original = self._write_pe(root / "original.exe", body)
+            candidate = self._write_pe(root / "candidate.exe", body)
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                **self._mapping_entry(rva=0x1000, size=len(predecessor), block_id="dispatch-guard"),
+                                "source": {"kind": "linker_map_function", "function": "dispatch"},
+                            },
+                            {
+                                **self._mapping_entry(rva=0x1005, size=len(dispatch), block_id="dispatch-table"),
+                                "source": {"kind": "linker_map_function", "function": "dispatch"},
+                            },
+                            {
+                                **self._mapping_entry(rva=0x100F, size=1, block_id="dispatch-default"),
+                                "source": {"kind": "linker_map_function", "function": "dispatch"},
+                            },
+                            {
+                                **self._mapping_entry(rva=0x1010, size=1, block_id="dispatch-case-0"),
+                                "source": {"kind": "linker_map_function", "function": "dispatch"},
+                            },
+                            {
+                                **self._mapping_entry(rva=0x1011, size=1, block_id="dispatch-case-1"),
+                                "source": {"kind": "linker_map_function", "function": "dispatch"},
+                            },
+                        ],
+                        "status": "pass",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=root / "units",
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            functions = result["constraints"]["abi_callsites"]["original"]["functions"]
+            switch = next(item for item in functions if item["name"] == "dispatch")["switch_contracts"][0]
+            self.assertEqual(switch["evidence_status"], "derived")
+            self.assertEqual(switch["table_bounds"]["upper"], 1)
+            self.assertEqual(switch["table_bounds"]["source"], "intersected_static_index_bounds")
+            self.assertEqual([item["target_rva"] for item in switch["case_targets"]], [0x1010, 0x1011])
+
+    def test_reference_contract_rejects_jump_table_entry_outside_executable_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            table_rva = 0x1010
+            table_va = 0x400000 + table_rva
+            dispatch = bytes.fromhex("83e101") + b"\xff\x24\x8d" + struct.pack("<I", table_va)
+            body = (
+                dispatch
+                + b"\xc3"
+                + b"\xc3"
+                + (b"\0" * (table_rva - 0x1000 - len(dispatch) - 2))
+                + struct.pack("<II", 0x40100A, 0)
+            )
+            original = self._write_pe(root / "original.exe", body)
+            candidate = self._write_pe(root / "candidate.exe", body)
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                **self._mapping_entry(rva=0x1000, size=len(dispatch), block_id="dispatch-0000"),
+                                "source": {"kind": "linker_map_function", "function": "dispatch"},
+                            }
+                        ],
+                        "status": "pass",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=root / "units",
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            functions = result["constraints"]["abi_callsites"]["original"]["functions"]
+            switch = next(item for item in functions if item["name"] == "dispatch")["switch_contracts"][0]
+            self.assertEqual(switch["evidence_status"], "incomplete")
+            self.assertIn("does not resolve to executable code", switch["blocker"])
+            self.assertFalse(result["constraints"]["roots_and_jump_tables"]["jump_table_targets"])
+
     def test_reference_contract_call_summary_records_import_varargs_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

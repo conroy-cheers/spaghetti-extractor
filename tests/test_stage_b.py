@@ -926,6 +926,146 @@ class StageBTests(unittest.TestCase):
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
             self.assertEqual(by_function["flow_indirect"]["source_kind"], "generated_contract_guided_flow")
 
+    def test_contract_guided_c_lowers_resolved_jump_table_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            table_rva = 0x1010
+            table_va = 0x400000 + table_rva
+            dispatch = bytes.fromhex("83e101") + b"\xff\x24\x8d" + struct.pack("<I", table_va)
+            body = (
+                dispatch
+                + b"\xc3"
+                + b"\xc3"
+                + (b"\0" * (table_rva - 0x1000 - len(dispatch) - 2))
+                + struct.pack("<II", 0x40100A, 0x40100B)
+            )
+            original = self._write_pe(root / "jq.exe", body)
+            switch_contract = {
+                "evidence_status": "derived",
+                "kind": "indirect_jump_table_candidate",
+                "instruction": {
+                    "bytes": "ff248d10104000",
+                    "mnemonic": "jmp",
+                    "op_str": "dword ptr [ecx*4 + 0x401010]",
+                    "rva": 0x1003,
+                    "size": 7,
+                },
+                "index_expression": {"base": None, "index": "ecx", "scale": 4, "disp": table_va},
+                "table_bounds": {"lower": 0, "upper": 1, "entries": 2, "source": "and_immediate_mask"},
+                "case_targets": [
+                    {"index": 0, "target_rva": 0x100A, "target_va": 0x40100A},
+                    {"index": 1, "target_rva": 0x100B, "target_va": 0x40100B},
+                ],
+                "default_target_rva": None,
+            }
+            transfers = [
+                {
+                    "format": "stage-a-semantic-transfer-contract-v1",
+                    "id": "semantic-transfer:dispatch-0000",
+                    "function": "dispatch",
+                    "block_id": "dispatch-0000",
+                    "original": {"rva_start": 0x1000, "rva_end": 0x100A, "size": 10},
+                    "outcome": {
+                        "kind": "indirect_jump",
+                        "target": {"op": "read", "width": 4},
+                    },
+                    "instructions": [
+                        {"bytes": "83e101", "mnemonic": "and", "op_str": "ecx, 1", "rva": 0x1000, "size": 3},
+                        {
+                            "bytes": "ff248d10104000",
+                            "mnemonic": "jmp",
+                            "op_str": "dword ptr [ecx*4 + 0x401010]",
+                            "rva": 0x1003,
+                            "size": 7,
+                        },
+                    ],
+                },
+                {
+                    "format": "stage-a-semantic-transfer-contract-v1",
+                    "id": "semantic-transfer:dispatch-0001",
+                    "function": "dispatch",
+                    "block_id": "dispatch-0001",
+                    "original": {"rva_start": 0x100A, "rva_end": 0x100B, "size": 1},
+                    "outcome": {"kind": "return"},
+                    "instructions": [{"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x100A, "size": 1}],
+                },
+                {
+                    "format": "stage-a-semantic-transfer-contract-v1",
+                    "id": "semantic-transfer:dispatch-0002",
+                    "function": "dispatch",
+                    "block_id": "dispatch-0002",
+                    "original": {"rva_start": 0x100B, "rva_end": 0x100C, "size": 1},
+                    "outcome": {"kind": "return"},
+                    "instructions": [{"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x100B, "size": 1}],
+                },
+            ]
+            (root / "semantic-transfer-contracts.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in transfers),
+                encoding="utf-8",
+            )
+            reference_contract = {
+                "format": "stage-a-reference-contract-v1",
+                "status": "pass",
+                "model": "x86-pe32-env-v1",
+                "original": {"sha256": sha256_file(original)},
+                "constraints": {
+                    "function_ranges": {
+                        "status": "satisfied",
+                        "functions": [
+                            {
+                                "name": "dispatch",
+                                "original": {"rva_start": 0x1000, "rva_end": 0x100C, "size": 12},
+                                "candidate": {"rva_start": 0x1000, "rva_end": 0x100C, "size": 12},
+                                "block_ids": ["dispatch-0000", "dispatch-0001", "dispatch-0002"],
+                            }
+                        ],
+                    },
+                    "abi_callsites": {
+                        "original": {
+                            "functions": [
+                                {
+                                    "name": "dispatch",
+                                    "blocks": [
+                                        {"block_id": "dispatch-0000", "rva_start": 0x1000, "rva_end": 0x100A},
+                                        {"block_id": "dispatch-0001", "rva_start": 0x100A, "rva_end": 0x100B},
+                                        {"block_id": "dispatch-0002", "rva_start": 0x100B, "rva_end": 0x100C},
+                                    ],
+                                    "callsites": [],
+                                    "switch_contracts": [switch_contract],
+                                }
+                            ]
+                        }
+                    },
+                },
+                "sidecars": {
+                    "unit_contracts": {
+                        "directory": ".",
+                        "semantic_transfer_contracts": {"path": "semantic-transfer-contracts.jsonl"},
+                    }
+                },
+            }
+            reference_path = root / "reference_contract.json"
+            reference_path.write_text(json.dumps(reference_contract), encoding="utf-8")
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                reference_contract=reference_path,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
+            self.assertIn('"cmpl $0x0, %ecx\\n\\t"', source)
+            self.assertIn('"je .Lstageb_dispatch_100a\\n\\t"', source)
+            self.assertIn('"cmpl $0x1, %ecx\\n\\t"', source)
+            self.assertIn('"je .Lstageb_dispatch_100b\\n\\t"', source)
+            self.assertIn('"ud2\\n\\t"', source)
+            by_function = {item["function"]: item for item in result["source_map"]["functions"]}
+            self.assertEqual(by_function["dispatch"]["source_kind"], "generated_contract_guided_flow")
+
     def test_contract_guided_c_reimplements_small_jq_leaf_slices(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

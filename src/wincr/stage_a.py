@@ -658,6 +658,10 @@ def stage_a_export_reference_contract(
         mapping_payload=mapping_payload,
     )
     abi_callsites_constraint = _reference_abi_callsites_constraint(original_bin, candidate_bin, map_contract)
+    roots_and_jump_tables_constraint = _reference_roots_and_jump_tables_with_abi_targets(
+        map_contract["roots_and_jump_tables"],
+        abi_callsites_constraint,
+    )
     semantic_region_contracts = _reference_semantic_region_contracts_constraint(
         original_bin,
         map_contract["mappings"],
@@ -677,7 +681,7 @@ def stage_a_export_reference_contract(
         "executable_byte_coverage": map_contract["executable_byte_coverage"],
         "function_ranges": map_contract["function_ranges"],
         "basic_blocks_and_cfg": map_contract["basic_blocks_and_cfg"],
-        "roots_and_jump_tables": map_contract["roots_and_jump_tables"],
+        "roots_and_jump_tables": roots_and_jump_tables_constraint,
         "import_thunks": _reference_import_thunk_constraint(original_bin, candidate_bin, map_contract),
         "abi_callsites": abi_callsites_constraint,
         "semantic_region_contracts": semantic_region_contracts,
@@ -2643,6 +2647,19 @@ def _semantic_outcome_json(outcome: Any) -> dict[str, Any]:
         return {"kind": "direct_call", "target_rva": outcome[1], "return_rva": outcome[2]}
     if kind == "indirect_jump":
         return {"kind": "indirect_jump", "target": _semantic_expr_json(outcome[1])}
+    if kind == "indirect_jump_table":
+        switch_contract = outcome[2] if len(outcome) > 2 and isinstance(outcome[2], dict) else {}
+        return {
+            "kind": "indirect_jump_table",
+            "target": _semantic_expr_json(outcome[1]),
+            "switch_contract": switch_contract,
+            "target_rvas": [
+                target_rva
+                for item in switch_contract.get("case_targets", []) if isinstance(switch_contract.get("case_targets"), list) and isinstance(item, dict)
+                for target_rva in [_safe_int(item.get("target_rva"))]
+                if target_rva is not None
+            ],
+        }
     if kind == "external_jump":
         return {"kind": "external_jump", "dll": outcome[1], "symbol": outcome[2], "ordinal": outcome[3]}
     return {"kind": kind, "raw": _expr_json(outcome)}
@@ -2657,6 +2674,25 @@ def _semantic_edge_conditions(outcome: dict[str, Any]) -> list[dict[str, Any]]:
         ]
     if kind in {"fallthrough", "jump"}:
         return [{"target_rva": outcome.get("target_rva"), "condition": {"op": "true"}}]
+    if kind == "indirect_jump_table":
+        switch_contract = outcome.get("switch_contract") if isinstance(outcome.get("switch_contract"), dict) else {}
+        case_targets = switch_contract.get("case_targets") if isinstance(switch_contract.get("case_targets"), list) else []
+        return [
+            {
+                "target_rva": target_rva,
+                "condition": {
+                    "op": "jump_table_case",
+                    "index": item.get("index"),
+                    "instruction_rva": switch_contract.get("instruction", {}).get("rva")
+                    if isinstance(switch_contract.get("instruction"), dict)
+                    else None,
+                },
+            }
+            for item in case_targets
+            if isinstance(item, dict)
+            for target_rva in [_safe_int(item.get("target_rva"))]
+            if target_rva is not None
+        ]
     return []
 
 
@@ -6967,6 +7003,77 @@ def _reference_roots_and_jump_tables(mappings: list[BlockMapping], map_status: s
     }
 
 
+def _reference_roots_and_jump_tables_with_abi_targets(
+    roots: dict[str, Any],
+    abi_callsites: dict[str, Any],
+) -> dict[str, Any]:
+    updated = dict(roots)
+    existing = [
+        item
+        for item in roots.get("jump_table_targets", [])
+        if isinstance(item, dict)
+    ]
+    targets: dict[tuple[str, int, int], dict[str, Any]] = {}
+    for item in existing:
+        key = (
+            str(item.get("function") or ""),
+            _safe_int(item.get("instruction_rva")) or -1,
+            _safe_int(item.get("target_rva", item.get("rva"))) or -1,
+        )
+        targets.setdefault(key, dict(item))
+    original = abi_callsites.get("original") if isinstance(abi_callsites.get("original"), dict) else {}
+    functions = original.get("functions") if isinstance(original.get("functions"), list) else []
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        function_name = str(function.get("name") or "")
+        switches = function.get("switch_contracts") if isinstance(function.get("switch_contracts"), list) else []
+        for switch in switches:
+            if not isinstance(switch, dict) or switch.get("evidence_status") != "derived":
+                continue
+            instruction = switch.get("instruction") if isinstance(switch.get("instruction"), dict) else {}
+            instruction_rva = _safe_int(instruction.get("rva"))
+            case_targets = switch.get("case_targets") if isinstance(switch.get("case_targets"), list) else []
+            by_target: dict[int, list[int]] = {}
+            for case in case_targets:
+                if not isinstance(case, dict):
+                    continue
+                target_rva = _safe_int(case.get("target_rva"))
+                index = _safe_int(case.get("index"))
+                if target_rva is None:
+                    continue
+                by_target.setdefault(target_rva, [])
+                if index is not None:
+                    by_target[target_rva].append(index)
+            for target_rva, case_indices in sorted(by_target.items()):
+                key = (function_name, instruction_rva or -1, target_rva)
+                if key in targets:
+                    continue
+                targets[key] = {
+                    "evidence_status": "derived",
+                    "kind": "resolved_static_jump_table_target",
+                    "function": function_name,
+                    "block_id": _block_id_for_instruction(function, instruction),
+                    "instruction_rva": instruction_rva,
+                    "target_rva": target_rva,
+                    "rva": target_rva,
+                    "case_indices": sorted(set(case_indices)),
+                    "table": switch.get("table"),
+                    "source": "capstone-indexed-memory-jump-table",
+                }
+    updated["jump_table_targets"] = sorted(
+        targets.values(),
+        key=lambda item: (
+            str(item.get("function") or ""),
+            _safe_int(item.get("instruction_rva")) or -1,
+            _safe_int(item.get("target_rva", item.get("rva"))) or -1,
+        ),
+    )
+    if updated["jump_table_targets"] and updated.get("status") == "not_applicable":
+        updated["status"] = "derived"
+    return updated
+
+
 def _reference_import_thunk_constraint(
     original: StageABinary,
     candidate: StageABinary | None,
@@ -7090,6 +7197,7 @@ def _abi_function_evidence(binary: StageABinary | None, mappings: list[BlockMapp
         records = entry.pop("_abi_block_records", [])
         if isinstance(records, list):
             _abi_apply_predecessor_argument_sources(binary, records)
+            _abi_apply_predecessor_switch_bounds(binary, records)
             entry["callsites"] = [
                 callsite
                 for record in records
@@ -7176,6 +7284,171 @@ def _abi_apply_predecessor_argument_sources(binary: StageABinary, records: list[
             "argument_source_count": len(sources),
         }
         callsites[0] = _abi_callsite_with_argument_sources(binary, first_callsite, sources, metadata)
+
+
+def _abi_apply_predecessor_switch_bounds(binary: StageABinary, records: list[dict[str, Any]]) -> None:
+    records_by_start: dict[int, dict[str, Any]] = {}
+    for record in records:
+        block = record.get("block")
+        if isinstance(block, BlockSide):
+            records_by_start[block.rva_start] = record
+    predecessor_edges: dict[int, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for record in records:
+        edges = record.get("edges") if isinstance(record.get("edges"), list) else []
+        for edge in edges:
+            if not isinstance(edge, dict) or edge.get("kind") not in {"fallthrough", "taken", "jump"}:
+                continue
+            target_rva = _safe_int(edge.get("target_rva"))
+            if target_rva is None or target_rva not in records_by_start:
+                continue
+            predecessor_edges.setdefault(target_rva, []).append((record, edge))
+
+    for record in records:
+        block = record.get("block")
+        evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+        switches = evidence.get("switch_contracts") if isinstance(evidence.get("switch_contracts"), list) else []
+        if not isinstance(block, BlockSide) or not switches:
+            continue
+        for switch in switches:
+            if not isinstance(switch, dict) or switch.get("evidence_status") == "derived":
+                continue
+            index_expression = switch.get("index_expression") if isinstance(switch.get("index_expression"), dict) else {}
+            index_register = _abi_x86_register_family(str(index_expression.get("index") or ""))
+            if not index_register:
+                continue
+            current_bounds = _abi_switch_bounds_dict(switch.get("table_bounds"))
+            refined_bounds = current_bounds
+            for predecessor, edge in predecessor_edges.get(block.rva_start, []):
+                predecessor_block = predecessor.get("block")
+                if not isinstance(predecessor_block, BlockSide):
+                    continue
+                guard_bounds = _abi_predecessor_edge_switch_bounds(
+                    binary,
+                    predecessor_block,
+                    edge,
+                    index_register,
+                )
+                if guard_bounds is None:
+                    continue
+                refined_bounds = _abi_intersect_switch_bounds(refined_bounds, guard_bounds)
+            if refined_bounds is None or refined_bounds == current_bounds:
+                continue
+            instructions = _abi_capstone_block_instructions(binary, block)
+            jmp = next(
+                (
+                    insn
+                    for insn in instructions
+                    if str(insn.mnemonic) in {"jmp", "ljmp"}
+                    and len(getattr(insn, "operands", []) or []) == 1
+                    and insn.operands[0].type == X86_OP_MEM
+                    and _safe_int(switch.get("instruction", {}).get("rva") if isinstance(switch.get("instruction"), dict) else None)
+                    == int(insn.address - binary.image_base)
+                ),
+                None,
+            )
+            if jmp is None:
+                continue
+            addressing = _abi_mem_operand_report(jmp, jmp.operands[0])
+            refined = _abi_indexed_jump_table_contract(
+                binary,
+                block,
+                instructions,
+                jmp,
+                addressing,
+                bounds_override=refined_bounds,
+            )
+            if refined is not None and refined.get("evidence_status") == "derived":
+                switch.clear()
+                switch.update(refined)
+
+
+def _abi_predecessor_edge_switch_bounds(
+    binary: StageABinary,
+    block: BlockSide,
+    edge: dict[str, Any],
+    index_register: str,
+) -> dict[str, Any] | None:
+    instruction_rva = _safe_int(edge.get("instruction_rva"))
+    edge_kind = str(edge.get("kind") or "")
+    if instruction_rva is None or edge_kind not in {"fallthrough", "taken"}:
+        return None
+    instructions = _abi_capstone_block_instructions(binary, block)
+    for index, insn in enumerate(instructions):
+        if int(insn.address - binary.image_base) != instruction_rva:
+            continue
+        mnemonic = str(insn.mnemonic)
+        if not _is_conditional_jump(mnemonic) or index == 0:
+            return None
+        cmp_insn = instructions[index - 1]
+        upper = _abi_cmp_register_immediate_upper_bound(cmp_insn, index_register)
+        if upper is None:
+            return None
+        gives_upper_bound = (
+            (mnemonic in {"ja", "jnbe"} and edge_kind == "fallthrough")
+            or (mnemonic in {"jbe", "jna"} and edge_kind == "taken")
+        )
+        if not gives_upper_bound:
+            return None
+        return {
+            "status": "derived",
+            "lower": 0,
+            "upper": upper,
+            "register": index_register,
+            "source": "predecessor_unsigned_upper_bound",
+            "source_edge": {
+                "kind": edge_kind,
+                "instruction_rva": instruction_rva,
+                "target_rva": edge.get("target_rva"),
+            },
+            "source_instruction": _instruction_report(binary, cmp_insn),
+            "branch_instruction": _instruction_report(binary, insn),
+        }
+    return None
+
+
+def _abi_capstone_block_instructions(binary: StageABinary, block: BlockSide) -> list[Any]:
+    data = binary.pe.get_data(block.rva_start, block.size)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    return list(dis.disasm(data, binary.image_base + block.rva_start))
+
+
+def _abi_cmp_register_immediate_upper_bound(insn: Any, index_register: str) -> int | None:
+    if str(insn.mnemonic) != "cmp" or len(getattr(insn, "operands", []) or []) != 2:
+        return None
+    left, right = insn.operands[:2]
+    if left.type != X86_OP_REG or right.type != X86_OP_IMM:
+        return None
+    if _abi_x86_register_family(insn.reg_name(left.reg)) != index_register:
+        return None
+    value = int(right.imm)
+    if value < 0 or value > 4095:
+        return None
+    return value
+
+
+def _abi_switch_bounds_dict(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    lower = _safe_int(value.get("lower"))
+    upper = _safe_int(value.get("upper"))
+    if lower is None or upper is None:
+        return None
+    return dict(value)
+
+
+def _abi_intersect_switch_bounds(left: dict[str, Any] | None, right: dict[str, Any]) -> dict[str, Any]:
+    if left is None:
+        return dict(right)
+    lower = max(int(left.get("lower") or 0), int(right.get("lower") or 0))
+    upper = min(int(left.get("upper") or 0), int(right.get("upper") or 0))
+    result = dict(right if upper == int(right.get("upper") or 0) else left)
+    result["status"] = "derived"
+    result["lower"] = lower
+    result["upper"] = upper
+    result["source"] = "intersected_static_index_bounds"
+    result["sources"] = [left, right]
+    return result
 
 
 def _abi_callsite_with_argument_sources(
@@ -7528,6 +7801,10 @@ def _abi_switch_contracts(binary: StageABinary, block: BlockSide, instructions: 
             continue
         target = _resolved_branch_target(binary, insn)
         addressing = _abi_mem_operand_report(insn, insn.operands[0])
+        table_contract = _abi_indexed_jump_table_contract(binary, block, instructions, insn, addressing)
+        if table_contract is not None:
+            contracts.append(table_contract)
+            continue
         contracts.append(
             {
                 "evidence_status": "derived" if target is not None else "incomplete",
@@ -7540,6 +7817,235 @@ def _abi_switch_contracts(binary: StageABinary, block: BlockSide, instructions: 
             }
         )
     return contracts
+
+
+def _abi_indexed_jump_table_contract(
+    binary: StageABinary,
+    block: BlockSide,
+    instructions: list[Any],
+    insn: Any,
+    addressing: dict[str, Any],
+    *,
+    bounds_override: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if binary.bitness != 32:
+        return None
+    operand = insn.operands[0]
+    mem = operand.mem
+    pointer_width = 4
+    index_register = insn.reg_name(mem.index) if mem.index else None
+    if not index_register or mem.base or int(mem.scale) != pointer_width:
+        return None
+    table_rva = _abi_value_to_rva(binary, int(mem.disp))
+    if table_rva is None:
+        return _abi_incomplete_indexed_jump_table_contract(
+            binary,
+            block,
+            insn,
+            addressing,
+            "jump-table displacement is not an in-image table address",
+        )
+    table_section = _section_for_rva(binary, table_rva)
+    if table_section is None or not table_section.readable:
+        return _abi_incomplete_indexed_jump_table_contract(
+            binary,
+            block,
+            insn,
+            addressing,
+            "jump-table address does not resolve to readable PE section bytes",
+            table_rva=table_rva,
+        )
+    bounds = bounds_override if bounds_override is not None else _abi_jump_table_index_bounds(binary, instructions, insn, index_register)
+    if bounds is None:
+        return _abi_incomplete_indexed_jump_table_contract(
+            binary,
+            block,
+            insn,
+            addressing,
+            "jump-table index bounds are not statically recovered",
+            table_rva=table_rva,
+        )
+    lower = int(bounds["lower"])
+    upper = int(bounds["upper"])
+    if lower < 0 or upper < lower or upper - lower + 1 > 4096:
+        return _abi_incomplete_indexed_jump_table_contract(
+            binary,
+            block,
+            insn,
+            addressing,
+            "jump-table index bounds are invalid or exceed the conservative resolver cap",
+            table_rva=table_rva,
+        )
+
+    case_targets: list[dict[str, Any]] = []
+    table_bytes = bytearray()
+    for index in range(lower, upper + 1):
+        entry_rva = table_rva + index * pointer_width
+        raw = binary.pe.get_data(entry_rva, pointer_width)
+        if len(raw) != pointer_width:
+            return _abi_incomplete_indexed_jump_table_contract(
+                binary,
+                block,
+                insn,
+                addressing,
+                f"jump-table entry {index} could not be read",
+                table_rva=table_rva,
+                table_bounds=bounds,
+            )
+        table_bytes.extend(raw)
+        target_va = int.from_bytes(raw, "little")
+        target_rva = _abi_value_to_rva(binary, target_va)
+        target_section = _executable_section_for_rva(binary, target_rva) if target_rva is not None else None
+        if target_rva is None or target_section is None:
+            return _abi_incomplete_indexed_jump_table_contract(
+                binary,
+                block,
+                insn,
+                addressing,
+                f"jump-table entry {index} does not resolve to executable code",
+                table_rva=table_rva,
+                table_bounds=bounds,
+            )
+        case_targets.append(
+            {
+                "index": index,
+                "entry_rva": entry_rva,
+                "entry_va": binary.image_base + entry_rva,
+                "target_va": target_va,
+                "target_rva": target_rva,
+                "target_section": _abi_section_report(target_section),
+            }
+        )
+    if not case_targets:
+        return _abi_incomplete_indexed_jump_table_contract(
+            binary,
+            block,
+            insn,
+            addressing,
+            "jump-table bounds produced no case entries",
+            table_rva=table_rva,
+            table_bounds=bounds,
+        )
+    unique_targets = sorted({int(item["target_rva"]) for item in case_targets})
+    return {
+        "evidence_status": "derived",
+        "kind": "indirect_jump_table_candidate",
+        "block": _range_report(block),
+        "instruction": _instruction_report(binary, insn),
+        "index_expression": addressing,
+        "index_bounds": bounds,
+        "table": {
+            "rva_start": table_rva,
+            "rva_end": table_rva + len(table_bytes),
+            "va_start": binary.image_base + table_rva,
+            "entry_width": pointer_width,
+            "entries": len(case_targets),
+            "bytes_sha256": sha256_bytes(bytes(table_bytes)),
+            "section": _abi_section_report(table_section),
+        },
+        "table_bounds": {
+            "lower": lower,
+            "upper": upper,
+            "entries": len(case_targets),
+            "source": bounds.get("source"),
+        },
+        "case_targets": case_targets,
+        "unique_target_rvas": unique_targets,
+        "resolved_target_rva": unique_targets[0] if len(unique_targets) == 1 else None,
+        "default_target_rva": None,
+        "next_action": "represent this dispatch with the recovered selector, bounded case table, and explicit jump targets",
+    }
+
+
+def _abi_incomplete_indexed_jump_table_contract(
+    binary: StageABinary,
+    block: BlockSide,
+    insn: Any,
+    addressing: dict[str, Any],
+    blocker: str,
+    *,
+    table_rva: int | None = None,
+    table_bounds: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "evidence_status": "incomplete",
+        "kind": "indirect_jump_table_candidate",
+        "block": _range_report(block),
+        "instruction": _instruction_report(binary, insn),
+        "index_expression": addressing,
+        "resolved_target_rva": None,
+        "blocker": blocker,
+        "next_action": "recover table bounds, default edge, and case target mapping before treating this as a source-level switch",
+    }
+    if table_rva is not None:
+        result["table"] = {
+            "rva_start": table_rva,
+            "va_start": binary.image_base + table_rva,
+            "entry_width": 4 if binary.bitness == 32 else 8,
+        }
+    if table_bounds is not None:
+        result["table_bounds"] = table_bounds
+    return result
+
+
+def _abi_jump_table_index_bounds(
+    binary: StageABinary,
+    instructions: list[Any],
+    insn: Any,
+    index_register: str,
+) -> dict[str, Any] | None:
+    index_rva = int(insn.address - binary.image_base)
+    full_index = _abi_x86_register_family(index_register)
+    for previous in reversed([item for item in instructions if int(item.address - binary.image_base) < index_rva]):
+        mnemonic = str(previous.mnemonic)
+        operands = getattr(previous, "operands", []) or []
+        if mnemonic == "movzx" and len(operands) == 2 and operands[0].type == X86_OP_REG and operands[1].type == X86_OP_REG:
+            dst = _abi_x86_register_family(previous.reg_name(operands[0].reg))
+            src = previous.reg_name(operands[1].reg)
+            if dst == full_index and _abi_x86_register_family(src) == full_index:
+                width = int(getattr(operands[1], "size", 0) or 0)
+                if width > 0:
+                    return {
+                        "status": "derived",
+                        "lower": 0,
+                        "upper": (1 << (width * 8)) - 1,
+                        "register": full_index,
+                        "source": "movzx_register_width",
+                        "source_instruction": _instruction_report(binary, previous),
+                    }
+        if mnemonic == "and" and len(operands) == 2 and operands[0].type == X86_OP_REG and operands[1].type == X86_OP_IMM:
+            dst = _abi_x86_register_family(previous.reg_name(operands[0].reg))
+            mask = int(operands[1].imm)
+            if dst == full_index and 0 <= mask <= 4095:
+                return {
+                    "status": "derived",
+                    "lower": 0,
+                    "upper": mask,
+                    "register": full_index,
+                    "source": "and_immediate_mask",
+                    "source_instruction": _instruction_report(binary, previous),
+                }
+        if mnemonic in {"call", "ret", "jmp", "ljmp"} or _is_conditional_jump(mnemonic):
+            break
+    return None
+
+
+def _abi_x86_register_family(register: str | None) -> str:
+    name = str(register or "").lower()
+    families = {
+        "eax": {"eax", "ax", "al", "ah"},
+        "ebx": {"ebx", "bx", "bl", "bh"},
+        "ecx": {"ecx", "cx", "cl", "ch"},
+        "edx": {"edx", "dx", "dl", "dh"},
+        "esi": {"esi", "si", "sil"},
+        "edi": {"edi", "di", "dil"},
+        "ebp": {"ebp", "bp", "bpl"},
+        "esp": {"esp", "sp", "spl"},
+    }
+    for full, names in families.items():
+        if name in names:
+            return full
+    return name
 
 
 def _abi_loop_hints(binary: StageABinary, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
@@ -11310,6 +11816,13 @@ def _symbolic_execute(
                 target_expr = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
                 if target_expr is None:
                     return _symbolic_incomplete(binary_name, "unknown_target", rva, mnemonic, insn.op_str, "jump target expression is not modeled")
+                if operands[0].type == X86_OP_MEM:
+                    addressing = _abi_mem_operand_report(insn, operands[0])
+                    table_contract = _abi_indexed_jump_table_contract(binary, side, instructions, insn, addressing)
+                    if table_contract is not None and table_contract.get("evidence_status") == "derived":
+                        outcome = ("indirect_jump_table", target_expr, table_contract)
+                        terminated = True
+                        continue
                 outcome = ("indirect_jump", target_expr)
                 terminated = True
                 continue
