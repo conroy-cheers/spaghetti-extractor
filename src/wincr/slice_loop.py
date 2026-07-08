@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -32,18 +33,32 @@ CHECK_FORMAT = "wincr-slice-check-v1"
 FOCUSED_DELTA_FORMAT = "wincr-slice-focused-delta-v1"
 CANDIDATE_VALIDATION_FINGERPRINT_FORMAT = "wincr-slice-candidate-validation-fingerprint-v1"
 CANDIDATE_VALIDATION_CACHE_FORMAT = "wincr-slice-candidate-validation-cache-v1"
+SLICE_PACKET_FORMAT = "wincr-slice-packet-v1"
+SLICE_PACKET_INDEX_FORMAT = "wincr-slice-packet-index-v1"
 
 DEFAULT_WORK_DIR = Path("build/wincr-slices")
+CONCRETE_SOURCE_KINDS = frozenset(
+    {
+        "decompiled_function",
+        "generated_contract_guided_callback",
+        "generated_contract_guided_indirect",
+        "generated_contract_guided_leaf",
+        "generated_helper_from_decompiler_section_gap",
+        "generated_runtime_bridge",
+    }
+)
 
 TARGET_DEFAULTS: dict[str, dict[str, Any]] = {
     "jq": {
         "stage_a_check_attr": "stage-a-jq-fixtures-check",
+        "skeleton_attr": "stage-b-jq-skeleton",
         "final_check_attrs": [
             "stage-a-jq-fixtures-check",
             "stage-b-jq-skeleton",
         ],
         "stage_a_check_reference_contract": Path("generated/jq-reference-contract.json"),
         "stage_a_check_unit_contract_dir": Path("generated"),
+        "skeleton_root_dir": Path("share/wincr/stage-b/jq/skeleton"),
         "candidate_root_dir": Path("share/wincr/stage-b/jq/generated-closure-candidate"),
         "candidate_exe": "jq-stage-b-generated-closure-candidate.exe",
         "candidate_map": "jq-stage-b-generated-closure-candidate.map",
@@ -80,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("target", help="target name, e.g. jq")
     prepare.add_argument("--stage-a-check-root", type=Path, help="realized stage-a check output root")
     prepare.add_argument("--candidate-root", type=Path, help="realized candidate package output root")
+    prepare.add_argument("--skeleton-root", type=Path, help="realized source-only skeleton root")
     prepare.add_argument("--reference-contract", type=Path, help="explicit stage-a-reference-contract-v1 path")
     prepare.add_argument("--unit-contract-dir", type=Path, help="explicit Stage A unit-contract sidecar directory")
     prepare.add_argument("--candidate-dir", type=Path, help="explicit candidate artifact directory")
@@ -97,6 +113,22 @@ def main(argv: list[str] | None = None) -> int:
     next_work.add_argument("--top-k", type=int, default=20)
     next_work.add_argument("--family")
     next_work.add_argument("--focus")
+    next_work.add_argument(
+        "--source-progress-class",
+        action="append",
+        choices=["concrete", "placeholder", "boundary", "omitted", "other", "no-anchor"],
+        help="filter work items by annotated Stage B source progress class",
+    )
+    next_work.add_argument(
+        "--todo-only",
+        action="store_true",
+        help="show only source gaps that still need Stage B implementation work",
+    )
+    next_work.add_argument(
+        "--group-by",
+        choices=["function", "pattern", "source-kind"],
+        help="summarize matched work items by an implementation-relevant grouping",
+    )
     next_work.add_argument("--json", action="store_true", help="print machine-readable JSON")
     next_work.add_argument("--out", type=Path, help="optional output JSON path")
     next_work.set_defaults(func=_cmd_next)
@@ -158,6 +190,7 @@ def _cmd_prepare(args: Any) -> int:
         work_dir=args.work_dir,
         stage_a_check_root=args.stage_a_check_root,
         candidate_root=args.candidate_root,
+        skeleton_root=args.skeleton_root,
         reference_contract=args.reference_contract,
         unit_contract_dir=args.unit_contract_dir,
         candidate_dir=args.candidate_dir,
@@ -180,6 +213,9 @@ def _cmd_next(args: Any) -> int:
         top_k=args.top_k,
         family=args.family,
         focus=args.focus,
+        source_progress_classes=args.source_progress_class,
+        todo_only=args.todo_only,
+        group_by=args.group_by,
         out=args.out,
     )
     if args.json:
@@ -246,6 +282,7 @@ def prepare_workspace(
     work_dir: Path,
     stage_a_check_root: Path | None = None,
     candidate_root: Path | None = None,
+    skeleton_root: Path | None = None,
     reference_contract: Path | None = None,
     unit_contract_dir: Path | None = None,
     candidate_dir: Path | None = None,
@@ -281,6 +318,15 @@ def prepare_workspace(
                 label="candidate-root",
             )
             realized["candidate_root"] = str(candidate_root)
+        if skeleton_root is None and defaults.get("skeleton_attr"):
+            realized_skeleton = _nix_realize(
+                flake=nix_flake,
+                attr=str(defaults["skeleton_attr"]),
+                logs_dir=logs_dir,
+                label="skeleton-root",
+            )
+            realized["skeleton_package_root"] = str(realized_skeleton)
+            skeleton_root = Path(realized_skeleton) / Path(defaults.get("skeleton_root_dir") or ".")
 
     if reference_contract is None:
         if stage_a_check_root is None:
@@ -298,6 +344,8 @@ def prepare_workspace(
         unit_contract_dir = _require_dir(Path(unit_contract_dir), "unit-contract directory")
     if candidate_dir is not None:
         candidate_dir = _require_dir(Path(candidate_dir), "candidate directory")
+    if skeleton_root is not None:
+        skeleton_root = _require_dir(Path(skeleton_root), "skeleton root")
     if target_closure_manifest is not None:
         target_closure_manifest = _require_file(Path(target_closure_manifest), "target closure manifest")
 
@@ -309,6 +357,13 @@ def prepare_workspace(
     cached_unit_contract_dir: Path | None = contracts_dir
 
     candidate = _candidate_artifacts(candidate_dir, defaults) if candidate_dir is not None else {}
+    source_skeleton = _skeleton_artifacts(skeleton_root) if skeleton_root is not None else {}
+    if source_skeleton:
+        if not candidate:
+            candidate.update(source_skeleton)
+        else:
+            for key, value in source_skeleton.items():
+                candidate.setdefault(key, value)
     if candidate.get("source_dir") and copy_candidate_source:
         local_source_dir = workspace / "candidate" / "src"
         _copytree_once(Path(candidate["source_dir"]), local_source_dir, force=force)
@@ -335,6 +390,7 @@ def prepare_workspace(
             "attrs": {
                 "stage_a_check": defaults.get("stage_a_check_attr"),
                 "candidate": defaults.get("candidate_attr"),
+                "skeleton": defaults.get("skeleton_attr"),
                 "final_checks": defaults.get("final_check_attrs", []),
             },
         },
@@ -345,6 +401,7 @@ def prepare_workspace(
             "unit_contract_dir": None if cached_unit_contract_dir is None else str(cached_unit_contract_dir),
         },
         "current_candidate": candidate,
+        "source_skeleton": source_skeleton or None,
         "build": {
             "command": build_command,
             "command_json": _parse_command_json(build_command_json) if build_command_json else None,
@@ -368,6 +425,17 @@ def prepare_workspace(
         unit_contract_dir=cached_unit_contract_dir,
         out=contracts_dir / "work-items.json",
     )
+    source_progress, source_anchors = _slice_source_progress(workspace, candidate, manifest)
+    packet_index = _write_slice_packets(
+        workspace=workspace,
+        target=target,
+        work_items=work_items,
+        current_candidate=candidate,
+        source_anchors=source_anchors,
+    )
+    if packet_index:
+        manifest["cached"]["slice_packet_index"] = packet_index["path"]
+        write_json(_manifest_path(workspace), manifest)
 
     result = {
         "format": PREPARE_FORMAT,
@@ -385,6 +453,17 @@ def prepare_workspace(
             "path": str(contracts_dir / "work-items.json"),
             "count": int(work_items.get("counts", {}).get("work_items", 0)),
         },
+        "source_progress": {
+            "status": source_progress.get("status"),
+            "counts": source_progress.get("counts", {}),
+        },
+        "slice_packets": None
+        if not packet_index
+        else {
+            "path": packet_index["path"],
+            "count": packet_index.get("counts", {}).get("packets", 0),
+            "by_pattern_family": packet_index.get("counts", {}).get("by_pattern_family", {}),
+        },
         "next_action": "run wincr-slice next or wincr-slice check --region <id>",
     }
     write_json(workspace / "prepare.json", result)
@@ -398,10 +477,14 @@ def slice_next(
     top_k: int = 20,
     family: str | None = None,
     focus: str | None = None,
+    source_progress_classes: list[str] | None = None,
+    todo_only: bool = False,
+    group_by: str | None = None,
     out: Path | None = None,
 ) -> dict[str, Any]:
     workspace = _workspace_dir(work_dir, target)
-    _load_manifest(workspace)
+    manifest = _load_manifest(workspace)
+    source_progress, source_anchors = _slice_source_progress(workspace, _load_current_candidate(workspace), manifest)
     work_items_path = workspace / "contracts" / "work-items.json"
     semantic_path = workspace / "contracts" / "semantic-coverage.json"
     items: list[dict[str, Any]] = []
@@ -425,16 +508,35 @@ def slice_next(
     if focus:
         focus_lower = focus.lower()
         items = [item for item in items if _matches_focus(item, focus_lower)]
-    limited = items[: max(0, top_k)]
+    annotated_items = [_annotate_work_item_source_progress(item, source_anchors) for item in items]
+    packet_index = _load_slice_packet_index(workspace)
+    if packet_index:
+        annotated_items = [_annotate_work_item_packet(item, packet_index) for item in annotated_items]
+    source_class_filter = _source_progress_class_filter(source_progress_classes, todo_only=todo_only)
+    if source_class_filter is not None:
+        annotated_items = [
+            item for item in annotated_items if _work_item_source_progress_class(item) in source_class_filter
+        ]
+    limited = annotated_items[: max(0, top_k)]
     result = {
         "format": NEXT_FORMAT,
         "status": "pass" if limited else "incomplete",
         "target": target,
         "workspace": str(workspace),
         "source": source,
-        "filters": {"family": family, "focus": focus, "top_k": top_k},
+        "source_progress": source_progress,
+        "filters": {
+            "family": family,
+            "focus": focus,
+            "source_progress_class": source_progress_classes or [],
+            "todo_only": todo_only,
+            "group_by": group_by,
+            "top_k": top_k,
+        },
         "items": limited,
-        "counts": {"matched": len(items), "returned": len(limited)},
+        "groups": _slice_next_groups(annotated_items, group_by),
+        "packet_index": packet_index.get("path") if packet_index else None,
+        "counts": {"matched": len(annotated_items), "returned": len(limited)},
     }
     if out is not None:
         write_json(out, result)
@@ -1049,6 +1151,556 @@ def _focused_delta(delta: dict[str, Any], focus: str | None) -> dict[str, Any]:
     return result
 
 
+def _slice_source_progress(
+    workspace: Path,
+    current_candidate: dict[str, Any],
+    manifest: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    manifest_path = current_candidate.get("skeleton_manifest")
+    if not manifest_path:
+        source_skeleton = manifest.get("source_skeleton") if isinstance(manifest.get("source_skeleton"), dict) else {}
+        manifest_path = source_skeleton.get("skeleton_manifest")
+    if not manifest_path:
+        return _empty_slice_source_progress("not_available", "no current skeleton manifest"), []
+    path = Path(str(manifest_path))
+    if not path.exists():
+        return _empty_slice_source_progress("not_available", f"skeleton manifest is missing: {path}"), []
+    try:
+        payload = _load_json(path)
+    except SliceLoopInputError as exc:
+        return _empty_slice_source_progress("not_available", str(exc)), []
+    if not isinstance(payload, dict) or payload.get("format") != "stage-b-skeleton-v1":
+        return _empty_slice_source_progress("not_available", f"{path} is not a stage-b-skeleton-v1 manifest"), []
+    source_map = payload.get("source_map") if isinstance(payload.get("source_map"), dict) else {}
+    raw_anchors = source_map.get("functions") if isinstance(source_map.get("functions"), list) else []
+    anchors = [anchor for anchor in raw_anchors if isinstance(anchor, dict)]
+    by_kind = _count_by(anchors, "source_kind")
+    concrete = sum(1 for anchor in anchors if _source_kind_progress_class(str(anchor.get("source_kind") or "")) == "concrete")
+    placeholders = sum(1 for anchor in anchors if _source_kind_progress_class(str(anchor.get("source_kind") or "")) == "placeholder")
+    boundary = sum(1 for anchor in anchors if _source_kind_progress_class(str(anchor.get("source_kind") or "")) == "boundary")
+    omitted = sum(1 for anchor in anchors if _source_kind_progress_class(str(anchor.get("source_kind") or "")) == "omitted")
+    return (
+        {
+            "format": "wincr-slice-source-progress-v1",
+            "status": "available",
+            "workspace": str(workspace),
+            "skeleton_manifest": str(path),
+            "source": source_map.get("source"),
+            "implementation_mode": payload.get("implementation_mode") or source_map.get("implementation_mode"),
+            "counts": {
+                "source_anchors": len(anchors),
+                "concrete": concrete,
+                "placeholder": placeholders,
+                "boundary": boundary,
+                "omitted": omitted,
+                "other": len(anchors) - concrete - placeholders - boundary - omitted,
+                "by_source_kind": by_kind,
+            },
+        },
+        anchors,
+    )
+
+
+def _empty_slice_source_progress(status: str, reason: str) -> dict[str, Any]:
+    return {
+        "format": "wincr-slice-source-progress-v1",
+        "status": status,
+        "reason": reason,
+        "counts": {
+            "source_anchors": 0,
+            "concrete": 0,
+            "placeholder": 0,
+            "boundary": 0,
+            "omitted": 0,
+            "other": 0,
+            "by_source_kind": {},
+        },
+    }
+
+
+def _write_slice_packets(
+    *,
+    workspace: Path,
+    target: str,
+    work_items: dict[str, Any],
+    current_candidate: dict[str, Any],
+    source_anchors: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    raw_items = work_items.get("work_items") if isinstance(work_items, dict) else []
+    items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+    if not items:
+        return None
+    packet_dir = workspace / "packets"
+    if packet_dir.exists():
+        _rmtree_force_writable(packet_dir)
+    packet_dir.mkdir(parents=True, exist_ok=True)
+
+    functions = _load_stage_b_functions(current_candidate)
+    function_by_name, functions_by_range = _slice_packet_function_indexes(functions)
+    packets: list[dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        annotated = _annotate_work_item_source_progress(item, source_anchors)
+        source_anchor = _source_anchor_for_work_item(item, source_anchors)
+        source_summary = annotated.get("stage_b_source") if isinstance(annotated.get("stage_b_source"), dict) else None
+        if source_anchor is None:
+            source_anchor = source_summary
+        function = _slice_packet_function_for_item(item, source_anchor, function_by_name, functions_by_range)
+        pattern_family = _slice_packet_pattern_family(item, source_anchor, function)
+        packet_id = _work_item_id(item)
+        packet_rel = Path("packets") / f"{index:05d}-{_safe_name(packet_id)}.json"
+        packet_path = workspace / packet_rel
+        packet = {
+            "format": SLICE_PACKET_FORMAT,
+            "id": packet_id,
+            "target": target,
+            "rank": index,
+            "generated_at": utc_now(),
+            "work_item": item,
+            "source_anchor": source_anchor,
+            "source_progress_class": _work_item_source_progress_class(annotated),
+            "pattern_family": pattern_family,
+            "function": _slice_packet_function_evidence(function, source_anchor=source_anchor),
+            "stage_a_contract": {
+                "acceptance": "guidance artifact only; final acceptance requires Stage A pass",
+                "status": "evidence" if function is not None else "incomplete",
+            },
+            "implementation_hint": _slice_packet_implementation_hint(item, source_anchor, pattern_family),
+        }
+        write_json(packet_path, packet)
+        packets.append(
+            {
+                "id": packet_id,
+                "path": str(packet_path),
+                "relative_path": str(packet_rel),
+                "pattern_family": pattern_family,
+                "function": None if source_anchor is None else source_anchor.get("function"),
+                "source_progress_class": packet["source_progress_class"],
+                "source_kind": None if source_anchor is None else source_anchor.get("source_kind"),
+                "instruction_evidence": packet["function"]["instruction_evidence"],
+            }
+        )
+
+    index_payload = {
+        "format": SLICE_PACKET_INDEX_FORMAT,
+        "target": target,
+        "generated_at": utc_now(),
+        "workspace": str(workspace),
+        "path": str(packet_dir / "index.json"),
+        "packets": packets,
+        "counts": {
+            "packets": len(packets),
+            "by_pattern_family": _count_by(packets, "pattern_family"),
+            "by_source_progress_class": _count_by(packets, "source_progress_class"),
+            "by_source_kind": _count_by(packets, "source_kind"),
+        },
+    }
+    write_json(packet_dir / "index.json", index_payload)
+    return index_payload
+
+
+def _load_stage_b_functions(current_candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    path_text = current_candidate.get("functions")
+    if not path_text:
+        return []
+    path = Path(str(path_text))
+    if not path.exists():
+        return []
+    try:
+        payload = _load_json(path)
+    except SliceLoopInputError:
+        return []
+    raw_functions = payload.get("functions") if isinstance(payload, dict) else []
+    return [function for function in raw_functions if isinstance(function, dict)] if isinstance(raw_functions, list) else []
+
+
+def _slice_packet_function_indexes(
+    functions: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    by_name: dict[str, dict[str, Any]] = {}
+    by_range: list[dict[str, Any]] = []
+    for function in functions:
+        names = [
+            function.get("name"),
+            function.get("id"),
+            *(function.get("aliases") if isinstance(function.get("aliases"), list) else []),
+        ]
+        for value in names:
+            if isinstance(value, str) and value:
+                by_name.setdefault(value.lower(), function)
+        start = _optional_int(function.get("rva_start"))
+        end = _optional_int(function.get("rva_end"))
+        if start is not None and end is not None:
+            by_range.append(function)
+    return by_name, by_range
+
+
+def _slice_packet_function_for_item(
+    item: dict[str, Any],
+    source_anchor: dict[str, Any] | None,
+    function_by_name: dict[str, dict[str, Any]],
+    functions_by_range: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    names, rvas = _work_item_source_lookup_terms(item)
+    if source_anchor is not None:
+        for value in [source_anchor.get("function"), *(source_anchor.get("aliases") if isinstance(source_anchor.get("aliases"), list) else [])]:
+            if isinstance(value, str) and value:
+                names.add(value)
+        start = _optional_int(source_anchor.get("rva_start"))
+        if start is not None:
+            rvas.add(start)
+    for name in sorted(names):
+        match = function_by_name.get(name.lower())
+        if match is not None:
+            return match
+    for rva in sorted(rvas):
+        for function in functions_by_range:
+            start = _optional_int(function.get("rva_start"))
+            end = _optional_int(function.get("rva_end"))
+            if start is not None and end is not None and start <= rva < end:
+                return function
+    return None
+
+
+def _slice_packet_function_evidence(
+    function: dict[str, Any] | None,
+    *,
+    source_anchor: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if function is None:
+        section_gap = source_anchor.get("reference_section_gap") if isinstance(source_anchor, dict) else None
+        if isinstance(section_gap, dict):
+            callsites = section_gap.get("abi_callsites") if isinstance(section_gap.get("abi_callsites"), list) else []
+            callsite_instructions = [
+                callsite.get("instruction")
+                for callsite in callsites
+                if isinstance(callsite, dict) and isinstance(callsite.get("instruction"), dict)
+            ]
+            return {
+                "status": "contract_gap",
+                "id": source_anchor.get("function") if isinstance(source_anchor, dict) else None,
+                "name": section_gap.get("name"),
+                "aliases": section_gap.get("aliases") if isinstance(section_gap.get("aliases"), list) else [],
+                "rva_start": section_gap.get("rva_start"),
+                "rva_end": section_gap.get("rva_end"),
+                "instructions": callsite_instructions,
+                "instruction_preview": callsite_instructions[:12],
+                "instruction_evidence": {
+                    "status": "contract_callsite_only",
+                    "instructions": len(callsite_instructions),
+                    "preview_instructions": min(len(callsite_instructions), 12),
+                },
+                "reference_contract": section_gap,
+            }
+        return {
+            "status": "missing",
+            "instruction_evidence": {"status": "missing", "instructions": 0, "preview_instructions": 0},
+        }
+    instructions = function.get("instructions") if isinstance(function.get("instructions"), list) else []
+    preview = function.get("instruction_preview") if isinstance(function.get("instruction_preview"), list) else []
+    if not instructions:
+        instructions = preview
+    decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
+    evidence = {
+        "status": "available",
+        "id": function.get("id"),
+        "name": function.get("name"),
+        "aliases": function.get("aliases") if isinstance(function.get("aliases"), list) else [],
+        "section": function.get("section"),
+        "rva_start": function.get("rva_start"),
+        "rva_end": function.get("rva_end"),
+        "size": function.get("size"),
+        "bytes_sha256": function.get("bytes_sha256"),
+        "decode_complete": function.get("decode_complete"),
+        "decoded_bytes": function.get("decoded_bytes"),
+        "instruction_count": function.get("instruction_count"),
+        "direct_cfg_edges": function.get("direct_cfg_edges") if isinstance(function.get("direct_cfg_edges"), list) else [],
+        "instructions": instructions,
+        "instruction_preview": preview,
+        "instruction_evidence": {
+            "status": "full" if function.get("instructions") else ("preview_only" if preview else "missing"),
+            "instructions": len(instructions),
+            "preview_instructions": len(preview),
+        },
+        "reference_contract": function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {},
+    }
+    if decompiler:
+        evidence["decompiler"] = {
+            "status": decompiler.get("status"),
+            "signature": decompiler.get("signature"),
+            "code_preview": decompiler.get("code_preview") if isinstance(decompiler.get("code_preview"), list) else [],
+        }
+    return evidence
+
+
+def _slice_packet_pattern_family(
+    item: dict[str, Any],
+    source_anchor: dict[str, Any] | None,
+    function: dict[str, Any] | None,
+) -> str:
+    source_kind = str((source_anchor or {}).get("source_kind") or "")
+    if source_kind == "omitted_import_thunk":
+        return "import_boundary"
+    if source_kind.startswith("omitted_runtime"):
+        return "runtime_boundary"
+    if source_kind == "generated_contract_placeholder_from_section_gap":
+        return "section_gap_helper"
+    if source_kind.startswith("generated_contract_guided"):
+        return source_kind.removeprefix("generated_contract_guided_")
+    function_name = str((source_anchor or {}).get("function") or item.get("original_function") or item.get("function") or item.get("name") or "")
+    item_id = _work_item_id(item)
+    text = " ".join(
+        str(value)
+        for value in (
+            item_id,
+            item.get("family"),
+            item.get("category"),
+            item.get("repair_class"),
+            item.get("cause_hint"),
+            item.get("next_action"),
+            function_name,
+        )
+        if value is not None
+    ).lower()
+    if function_name.startswith("stage_b_contract_section_gap") or "section-gap" in text:
+        return "section_gap_helper"
+    if "_pei386_runtime_relocator" in text:
+        return "relocation_runtime_helper"
+    if "umain" in text or "wmain" in text:
+        return "application_dispatch"
+    if "__mingw_pformat" in text or "varargs" in text:
+        return "varargs_bridge"
+    if "hidden-sret" in text or "out-param" in text or "out_param" in text:
+        return "hidden_sret_or_out_param"
+    if "function-pointer" in text or "function_pointer" in text:
+        return "function_pointer_call"
+    if "switch" in text or "jump-table" in text or "jump_table" in text:
+        return "switch_or_jump_table"
+    if function is not None and str(function.get("section") or ""):
+        return "function_body"
+    return "unclassified"
+
+
+def _slice_packet_implementation_hint(
+    item: dict[str, Any],
+    source_anchor: dict[str, Any] | None,
+    pattern_family: str,
+) -> dict[str, Any]:
+    source_kind = str((source_anchor or {}).get("source_kind") or "")
+    progress = _source_kind_progress_class(source_kind) if source_kind else "no-anchor"
+    action_by_pattern = {
+        "application_dispatch": "recover the dispatch/dataflow cluster before adding local source for this application-level function",
+        "function_pointer_call": "recover the target set or represent the indirect call with a checked contract-guided bridge",
+        "hidden_sret_or_out_param": "make the address-like argument explicit in the generated source or bridge",
+        "import_boundary": "preserve as an import boundary; do not implement target-owned logic here",
+        "relocation_runtime_helper": "model the relocation/protection loop as a reusable runtime-helper pattern",
+        "section_gap_helper": "classify the executable section-gap helper and promote reusable helper code instead of a placeholder",
+        "varargs_bridge": "recover the format/varargs bridge ABI before attempting source cleanup",
+    }
+    return {
+        "progress_class": progress,
+        "pattern_family": pattern_family,
+        "next_action": action_by_pattern.get(pattern_family)
+        or item.get("next_action")
+        or item.get("concrete_next_action")
+        or item.get("blocker")
+        or "inspect the packet evidence and add a reusable pattern or source implementation",
+    }
+
+
+def _load_slice_packet_index(workspace: Path) -> dict[str, Any]:
+    path = workspace / "packets" / "index.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = _load_json(path)
+    except SliceLoopInputError:
+        return {}
+    if not isinstance(payload, dict) or payload.get("format") != SLICE_PACKET_INDEX_FORMAT:
+        return {}
+    by_id = {
+        str(packet.get("id")): packet
+        for packet in payload.get("packets", [])
+        if isinstance(packet, dict) and packet.get("id") is not None
+    }
+    payload["by_id"] = by_id
+    return payload
+
+
+def _annotate_work_item_packet(item: dict[str, Any], packet_index: dict[str, Any]) -> dict[str, Any]:
+    packet = packet_index.get("by_id", {}).get(_work_item_id(item)) if isinstance(packet_index.get("by_id"), dict) else None
+    if not isinstance(packet, dict):
+        return item
+    annotated = dict(item)
+    annotated["stage_b_packet"] = {
+        "path": packet.get("path"),
+        "pattern_family": packet.get("pattern_family"),
+        "function": packet.get("function"),
+        "source_progress_class": packet.get("source_progress_class"),
+        "source_kind": packet.get("source_kind"),
+        "instruction_evidence": packet.get("instruction_evidence"),
+    }
+    return annotated
+
+
+def _work_item_id(item: dict[str, Any]) -> str:
+    for key in ("id", "obligation_id", "unit_contract_id", "category"):
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return hashlib.sha256(json.dumps(item, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+
+
+def _annotate_work_item_source_progress(item: dict[str, Any], source_anchors: list[dict[str, Any]]) -> dict[str, Any]:
+    if not source_anchors:
+        return item
+    anchor = _source_anchor_for_work_item(item, source_anchors)
+    if anchor is None:
+        return item
+    annotated = dict(item)
+    source_kind = str(anchor.get("source_kind") or "unknown")
+    annotated["stage_b_source"] = {
+        "function": anchor.get("function"),
+        "source_kind": source_kind,
+        "progress_class": _source_kind_progress_class(source_kind),
+        "file": anchor.get("file"),
+        "line_start": anchor.get("line_start"),
+        "line_end": anchor.get("line_end"),
+        "rva_start": anchor.get("rva_start"),
+        "rva_end": anchor.get("rva_end"),
+    }
+    return annotated
+
+
+def _source_progress_class_filter(
+    source_progress_classes: list[str] | None,
+    *,
+    todo_only: bool,
+) -> set[str] | None:
+    selected = {str(item) for item in source_progress_classes or [] if str(item)}
+    if todo_only:
+        selected.update({"placeholder", "other", "no-anchor"})
+    return selected or None
+
+
+def _work_item_source_progress_class(item: dict[str, Any]) -> str:
+    source = item.get("stage_b_source") if isinstance(item.get("stage_b_source"), dict) else None
+    if source is None:
+        return "no-anchor"
+    progress_class = str(source.get("progress_class") or "")
+    return progress_class if progress_class else "other"
+
+
+def _slice_next_groups(items: list[dict[str, Any]], group_by: str | None) -> list[dict[str, Any]]:
+    if not group_by:
+        return []
+    counts: dict[str, int] = {}
+    examples: dict[str, str] = {}
+    for item in items:
+        key = _slice_next_group_key(item, group_by)
+        counts[key] = counts.get(key, 0) + 1
+        examples.setdefault(key, _work_item_id(item))
+    return [
+        {"key": key, "count": count, "example": examples.get(key)}
+        for key, count in sorted(counts.items(), key=lambda entry: (-entry[1], entry[0]))
+    ]
+
+
+def _slice_next_group_key(item: dict[str, Any], group_by: str) -> str:
+    source = item.get("stage_b_source") if isinstance(item.get("stage_b_source"), dict) else {}
+    packet = item.get("stage_b_packet") if isinstance(item.get("stage_b_packet"), dict) else {}
+    if group_by == "function":
+        return str(
+            source.get("function")
+            or packet.get("function")
+            or item.get("original_function")
+            or item.get("function")
+            or item.get("name")
+            or "unknown"
+        )
+    if group_by == "pattern":
+        return str(packet.get("pattern_family") or item.get("repair_class") or item.get("category") or "unknown")
+    if group_by == "source-kind":
+        return str(source.get("source_kind") or packet.get("source_kind") or "no-anchor")
+    return "unknown"
+
+
+def _source_anchor_for_work_item(item: dict[str, Any], source_anchors: list[dict[str, Any]]) -> dict[str, Any] | None:
+    names, rvas = _work_item_source_lookup_terms(item)
+    by_name: dict[str, dict[str, Any]] = {}
+    for anchor in source_anchors:
+        for value in [anchor.get("function"), *(anchor.get("aliases") if isinstance(anchor.get("aliases"), list) else [])]:
+            if isinstance(value, str) and value:
+                by_name.setdefault(value.lower(), anchor)
+    for name in sorted(names):
+        match = by_name.get(name.lower())
+        if match is not None:
+            return match
+    for rva in sorted(rvas):
+        for anchor in source_anchors:
+            start = _optional_int(anchor.get("rva_start"))
+            end = _optional_int(anchor.get("rva_end"))
+            if start is not None and end is not None and start <= rva < end:
+                return anchor
+    return None
+
+
+def _work_item_source_lookup_terms(value: Any) -> tuple[set[str], set[int]]:
+    names: set[str] = set()
+    rvas: set[int] = set()
+
+    def visit(item: Any, key: str = "") -> None:
+        key_lower = key.lower()
+        if isinstance(item, dict):
+            for child_key, child_value in item.items():
+                visit(child_value, str(child_key))
+            return
+        if isinstance(item, list):
+            for child in item:
+                visit(child, key)
+            return
+        if isinstance(item, str):
+            if key_lower in {"function", "function_name", "name", "symbol", "contract_function", "original_function"}:
+                names.add(item)
+            if "rva" in key_lower:
+                parsed = _optional_int(item)
+                if parsed is not None:
+                    rvas.add(parsed)
+            return
+        if isinstance(item, int) and not isinstance(item, bool) and "rva" in key_lower:
+            rvas.add(item)
+
+    visit(value)
+    return names, rvas
+
+
+def _source_kind_progress_class(source_kind: str) -> str:
+    if source_kind in CONCRETE_SOURCE_KINDS:
+        return "concrete"
+    if source_kind == "omitted_import_thunk":
+        return "boundary"
+    if source_kind.startswith("generated_contract_placeholder"):
+        return "placeholder"
+    if source_kind.startswith("omitted_"):
+        return "omitted"
+    return "other"
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text, 0)
+        except ValueError:
+            return None
+    return None
+
+
 def _contract_candidate_validation(
     *,
     target: str,
@@ -1179,6 +1831,27 @@ def _file_fingerprint(path: Path) -> dict[str, Any]:
     return artifact
 
 
+def _skeleton_artifacts(skeleton_root: Path | None) -> dict[str, Any]:
+    if skeleton_root is None:
+        return {}
+    skeleton_root = Path(skeleton_root)
+    result: dict[str, Any] = {"source": "prepared-skeleton-root", "directory": str(skeleton_root)}
+    manifest = skeleton_root / "manifest.json"
+    if manifest.exists():
+        result["skeleton_manifest"] = str(manifest)
+        if manifest.is_file():
+            result["skeleton_manifest_sha256"] = sha256_file(manifest)
+    source_dir = skeleton_root / "src"
+    if source_dir.is_dir():
+        result["source_dir"] = str(source_dir)
+    functions = skeleton_root / "functions.json"
+    if functions.exists():
+        result["functions"] = str(functions)
+        if functions.is_file():
+            result["functions_sha256"] = sha256_file(functions)
+    return result
+
+
 def _candidate_artifacts(candidate_dir: Path | None, defaults: dict[str, Any]) -> dict[str, Any]:
     if candidate_dir is None:
         return {}
@@ -1202,6 +1875,11 @@ def _candidate_artifacts(candidate_dir: Path | None, defaults: dict[str, Any]) -
     source_dir = candidate_dir / "src"
     if source_dir.is_dir():
         result["source_dir"] = str(source_dir)
+    functions = candidate_dir / "functions.json"
+    if functions.exists():
+        result["functions"] = str(functions)
+        if functions.is_file():
+            result["functions_sha256"] = sha256_file(functions)
     modules: list[dict[str, str]] = []
     for spec in defaults.get("candidate_modules", []):
         module: dict[str, str] = {}
@@ -1436,8 +2114,55 @@ def _copytree_once(source: Path, dest: Path, *, force: bool = False) -> None:
     if dest.exists():
         if not force:
             return
-        shutil.rmtree(dest)
+        _rmtree_force_writable(dest)
     shutil.copytree(source, dest)
+    _chmod_tree_owner_writable(dest)
+
+
+def _rmtree_force_writable(path: Path) -> None:
+    try:
+        shutil.rmtree(path, onexc=_rmtree_make_writable)
+    except TypeError:
+        shutil.rmtree(path, onerror=_rmtree_make_writable_onerror)
+
+
+def _rmtree_make_writable(function: Any, path: str | bytes | os.PathLike[str] | os.PathLike[bytes], exc: BaseException) -> None:
+    path_obj = Path(path)
+    parent = path_obj.parent
+    for item in (parent, path_obj):
+        try:
+            mode = stat.S_IMODE(item.stat().st_mode)
+            os.chmod(item, mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        except OSError:
+            pass
+    function(path)
+
+
+def _rmtree_make_writable_onerror(function: Any, path: str, exc_info: Any) -> None:
+    _rmtree_make_writable(function, path, exc_info[1] if isinstance(exc_info, tuple) and len(exc_info) > 1 else OSError())
+
+
+def _chmod_tree_owner_writable(root: Path) -> None:
+    if not root.exists():
+        return
+    for dirpath, dirnames, filenames in os.walk(root):
+        current = Path(dirpath)
+        _chmod_owner_writable(current, executable=True)
+        for dirname in dirnames:
+            _chmod_owner_writable(current / dirname, executable=True)
+        for filename in filenames:
+            _chmod_owner_writable(current / filename, executable=False)
+
+
+def _chmod_owner_writable(path: Path, *, executable: bool) -> None:
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+        requested = stat.S_IRUSR | stat.S_IWUSR
+        if executable:
+            requested |= stat.S_IXUSR
+        os.chmod(path, mode | requested)
+    except OSError:
+        pass
 
 
 def _artifact(path: Path) -> dict[str, Any]:
@@ -1548,11 +2273,31 @@ def _print_json(data: Any) -> None:
 
 def _print_next_table(result: dict[str, Any]) -> None:
     print(f"status={result['status']} target={result['target']} matched={result['counts']['matched']}")
+    source_progress = result.get("source_progress") if isinstance(result.get("source_progress"), dict) else {}
+    source_counts = source_progress.get("counts") if isinstance(source_progress.get("counts"), dict) else {}
+    if source_progress.get("status") == "available":
+        print(
+            "source_progress="
+            f"concrete:{source_counts.get('concrete', 0)} "
+            f"placeholder:{source_counts.get('placeholder', 0)} "
+            f"boundary:{source_counts.get('boundary', 0)} "
+            f"omitted:{source_counts.get('omitted', 0)}"
+        )
+    groups = result.get("groups") if isinstance(result.get("groups"), list) else []
+    if groups:
+        print("groups=" + " ".join(f"{item.get('key')}:{item.get('count')}" for item in groups[:10] if isinstance(item, dict)))
     for index, item in enumerate(result.get("items", []), start=1):
         item_id = item.get("id") or item.get("obligation_id") or item.get("category") or "work-item"
         family = item.get("family") or item.get("category") or "unknown"
         action = item.get("next_action") or item.get("concrete_next_action") or item.get("blocker") or ""
-        print(f"{index:02d} {family} {item_id} {action}")
+        source = item.get("stage_b_source") if isinstance(item.get("stage_b_source"), dict) else {}
+        packet = item.get("stage_b_packet") if isinstance(item.get("stage_b_packet"), dict) else {}
+        source_suffix = ""
+        if source:
+            source_suffix = f" [{source.get('progress_class')}:{source.get('source_kind')}:{source.get('function')}]"
+        if packet:
+            source_suffix += f" <packet:{packet.get('pattern_family')}:{packet.get('path')}>"
+        print(f"{index:02d} {family} {item_id}{source_suffix} {action}")
 
 
 def _print_check_summary(result: dict[str, Any]) -> None:

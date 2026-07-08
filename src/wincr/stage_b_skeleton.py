@@ -821,6 +821,7 @@ def _skeleton_functions(
             "decoded_bytes": sum(int(item["size"]) for item in instructions),
             "decode_complete": sum(int(item["size"]) for item in instructions) == len(data),
             "direct_cfg_edges": _direct_cfg_edges(binary, side),
+            "instructions": instructions,
             "instruction_preview": instructions[:12],
         }
         source_name = function.get("source_name")
@@ -2439,7 +2440,7 @@ def _source_anchor_line(
         if line is not None:
             return line
     for index, line in enumerate(lines, start=1):
-        if any(candidate and candidate in line for candidate in candidates):
+        if any(_source_line_mentions_symbol(line, candidate) for candidate in candidates):
             return index
     return None
 
@@ -2455,7 +2456,7 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
         definition = _source_definition_after(lines, start=line, name=item)
         if definition is not None:
             break
-    window = "\n".join(lines[max(0, line - 2) : min(len(lines), line + 2)])
+    window = "\n".join(lines[max(0, line - 2) : min(len(lines), line + 6)])
     if "MinGW CRT support helper body omitted" in window:
         return "omitted_runtime_helper"
     if "MinGW CRT entry body" in window:
@@ -2464,6 +2465,12 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
         return "omitted_runtime_helper"
     if "import thunk for" in window:
         return "omitted_import_thunk"
+    if "Stage B contract-guided leaf:" in window:
+        return "generated_contract_guided_leaf"
+    if "Stage B contract-guided callback:" in window:
+        return "generated_contract_guided_callback"
+    if "Stage B contract-guided indirect-call slice:" in window:
+        return "generated_contract_guided_indirect"
     decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
     if not str(decompiler.get("code") or "").strip():
         return "generated_contract_placeholder"
@@ -2495,7 +2502,7 @@ def _source_body_anchor_line(lines: list[str], name: str) -> int | None:
 def _source_definition_after(lines: list[str], *, start: int, name: str) -> int | None:
     for index in range(max(1, start), len(lines) + 1):
         line = lines[index - 1]
-        if name not in line:
+        if not _source_line_mentions_symbol(line, name):
             continue
         stripped = line.strip()
         if not stripped or stripped.startswith(("/*", "//", "extern ", "typedef ", "#")) or stripped.endswith(";"):
@@ -2513,6 +2520,14 @@ def _source_definition_after(lines: list[str], *, start: int, name: str) -> int 
             if "{" in lookahead_stripped:
                 return index
     return None
+
+
+def _source_line_mentions_symbol(line: str, name: str) -> bool:
+    if not name:
+        return False
+    if _is_c_identifier(name):
+        return re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", line) is not None
+    return name in line
 
 
 def _source_next_nonempty_line(lines: list[str], start: int) -> str | None:
@@ -2931,6 +2946,10 @@ def _render_decompiled_c_source(
         for function in implemented_functions
     ]
     prototypes = [prototype for prototype in prototypes if prototype]
+    generated_contract_declarations = _decompiled_c_generated_contract_function_declarations(
+        implemented_functions,
+        runtime_entry_policy=runtime_entry_policy,
+    )
     externs = _decompiled_c_external_prototypes(
         [
             *(external_function_names or ()),
@@ -3008,6 +3027,9 @@ def _render_decompiled_c_source(
         lines.append("")
     if prototypes:
         lines.extend(prototypes)
+        lines.append("")
+    if generated_contract_declarations:
+        lines.extend(generated_contract_declarations)
         lines.append("")
     layout_support = _decompiled_c_layout_support_lines(
         target_name,
@@ -3106,7 +3128,7 @@ def _decompiled_c_contract_placeholder(
     *,
     call_targets: dict[int, str] | None = None,
     call_target_profiles: dict[str, dict[str, Any]] | None = None,
-    unspecified_parameters: bool = False,
+    unspecified_parameters: bool = True,
 ) -> str:
     name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
     reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
@@ -3128,6 +3150,13 @@ def _decompiled_c_contract_placeholder(
         rendered = _decompiled_c_semantic_region_callee_placeholder(function, semantic_callee_contracts)
         if rendered is not None:
             return rendered
+    contract_guided_leaf = _decompiled_c_contract_guided_leaf_impl(
+        function,
+        call_targets=call_targets or {},
+        call_target_profiles=call_target_profiles or {},
+    )
+    if contract_guided_leaf is not None:
+        return contract_guided_leaf
     if name == "jv_is_valid":
         return _decompiled_c_jq_jv_is_valid_contract_impl(
             function,
@@ -3158,6 +3187,930 @@ def _decompiled_c_contract_placeholder(
         lines.append("  return 0;")
     lines.append("}")
     return "\n".join(lines)
+
+
+def _decompiled_c_contract_guided_leaf_impl(
+    function: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+) -> str | None:
+    instructions = _decompiled_c_instruction_preview(function)
+    name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
+    rva_start = int(function.get("rva_start") or 0)
+    size = int(function.get("size") or 0)
+
+    callback = _decompiled_c_contract_guided_tls_callback_impl(
+        function,
+        call_targets=call_targets,
+        call_target_profiles=call_target_profiles,
+    )
+    if callback is not None:
+        return callback
+
+    indirect = _decompiled_c_contract_guided_indirect_impl(
+        function,
+        call_targets=call_targets,
+        call_target_profiles=call_target_profiles,
+    )
+    if indirect is not None:
+        return indirect
+
+    if _decompiled_c_matches_return_zero_leaf(instructions):
+        return _decompiled_c_contract_guided_naked_leaf(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="zero-return leaf",
+            asm_lines=["xorl %eax, %eax", "ret"],
+        )
+    if _decompiled_c_matches_fpreset_leaf(instructions):
+        return _decompiled_c_contract_guided_naked_leaf(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="x87 control leaf",
+            asm_lines=["fninit", "ret"],
+        )
+    if _decompiled_c_matches_configthreadlocale_leaf(instructions):
+        return _decompiled_c_contract_guided_naked_leaf(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="single-argument branch leaf",
+            asm_lines=[
+                "cmpl $0x1, 0x4(%esp)",
+                "je 1f",
+                "movl $0x2, %eax",
+                "ret",
+                "1:",
+                "movl $0xffffffff, %eax",
+                "ret",
+            ],
+        )
+
+    absolute_load = _decompiled_c_absolute_load_return_address(instructions)
+    if absolute_load is not None:
+        return "\n".join(
+            [
+                "__attribute__((noinline, noipa, used))",
+                f"uintptr_t __cdecl {name}(void)",
+                "{",
+                f"  /* Stage B contract-guided leaf: absolute data load at RVA 0x{rva_start:x}, size {size}. */",
+                f"  return *(volatile uintptr_t *)(uintptr_t)0x{absolute_load:x}U;",
+                "}",
+            ]
+        )
+
+    absolute_exchange = _decompiled_c_absolute_exchange_return_address(instructions)
+    if absolute_exchange is not None:
+        return _decompiled_c_contract_guided_naked_leaf(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="absolute data exchange leaf",
+            asm_lines=[
+                "movl 0x4(%esp), %eax",
+                f"xchgl %eax, 0x{absolute_exchange:x}",
+                "ret",
+            ],
+        )
+
+    if _decompiled_c_matches_mb_cur_max_func(function, instructions):
+        return "\n".join(
+            [
+                "__attribute__((noinline, noipa, used))",
+                f"uintptr_t __cdecl {name}(void)",
+                "{",
+                f"  /* Stage B contract-guided leaf: imported __p___mb_cur_max bridge at RVA 0x{rva_start:x}, size {size}. */",
+                "  extern uintptr_t __p___mb_cur_max(void);",
+                "  return *(volatile uintptr_t *)(uintptr_t)__p___mb_cur_max();",
+                "}",
+            ]
+        )
+
+    if _decompiled_c_matches_acrt_iob_func(function, instructions):
+        return "\n".join(
+            [
+                "__attribute__((noinline, noipa, used))",
+                f"uintptr_t __cdecl {name}(uintptr_t stream_index)",
+                "{",
+                f"  /* Stage B contract-guided leaf: imported __iob_func slot bridge at RVA 0x{rva_start:x}, size {size}. */",
+                "  extern uintptr_t __iob_func(void);",
+                "  return __iob_func() + ((stream_index & 0xffffffffU) << 5);",
+                "}",
+            ]
+        )
+
+    if _decompiled_c_matches_freedtoa_leaf(function, instructions):
+        return "\n".join(
+            [
+                "__attribute__((noinline, noipa, used))",
+                f"uintptr_t __cdecl {name}(uintptr_t value)",
+                "{",
+                f"  /* Stage B contract-guided leaf: dtoa free bridge at RVA 0x{rva_start:x}, size {size}. */",
+                "  uint32_t *base = (uint32_t *)(uintptr_t)(value - 4U);",
+                "  uint32_t exponent = base[0];",
+                "  base[1] = exponent;",
+                "  base[2] = 1U << (exponent & 31U);",
+                "  return ((uintptr_t (__cdecl *)())__Bfree_D2A)((uintptr_t)base);",
+                "}",
+            ]
+        )
+    return None
+
+
+def _decompiled_c_contract_guided_indirect_impl(
+    function: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+) -> str | None:
+    del call_targets, call_target_profiles
+    raw_name = str(function.get("name") or "")
+    name = _c_identifier_from_name(raw_name)
+    rva_start = int(function.get("rva_start") or 0)
+    size = int(function.get("size") or 0)
+    instructions = _decompiled_c_instruction_preview(function)
+
+    if raw_name == "__do_global_dtors" and _decompiled_c_matches_do_global_dtors(instructions):
+        return _decompiled_c_contract_guided_naked_indirect(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="global destructor function-pointer walker",
+            asm_lines=[
+                "movl 0x40d000, %eax",
+                "movl (%eax), %eax",
+                "testl %eax, %eax",
+                "je 2f",
+                "subl $0xc, %esp",
+                "1:",
+                "call *%eax",
+                "movl 0x40d000, %eax",
+                "leal 0x4(%eax), %edx",
+                "movl 0x4(%eax), %eax",
+                "movl %edx, 0x40d000",
+                "testl %eax, %eax",
+                "jne 1b",
+                "addl $0xc, %esp",
+                "xorl %eax, %eax",
+                "xorl %edx, %edx",
+                "ret",
+                "2:",
+                "xorl %eax, %eax",
+                "xorl %edx, %edx",
+                "ret",
+            ],
+        )
+
+    if raw_name == "__do_global_ctors" and _decompiled_c_matches_do_global_ctors(instructions):
+        dtors_symbol = _decompiled_c_i686_c_asm_symbol("__do_global_dtors")
+        atexit_symbol = _decompiled_c_i686_asm_call_symbol("atexit")
+        return _decompiled_c_contract_guided_naked_indirect(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="global constructor function-pointer walker",
+            asm_lines=[
+                "pushl %ebx",
+                "subl $0x18, %esp",
+                "movl 0x40ff34, %ebx",
+                "cmpl $0xffffffff, %ebx",
+                "je 4f",
+                "1:",
+                "testl %ebx, %ebx",
+                "je 3f",
+                "2:",
+                "call *0x40ff34(,%ebx,4)",
+                "subl $0x1, %ebx",
+                "jne 2b",
+                "3:",
+                f"movl ${dtors_symbol}, (%esp)",
+                f"call {atexit_symbol}",
+                "addl $0x18, %esp",
+                "popl %ebx",
+                "xorl %eax, %eax",
+                "xorl %edx, %edx",
+                "ret",
+                "4:",
+                "xorl %eax, %eax",
+                "5:",
+                "movl %eax, %ebx",
+                "addl $0x1, %eax",
+                "movl 0x40ff34(,%eax,4), %edx",
+                "testl %edx, %edx",
+                "jne 5b",
+                "jmp 1b",
+            ],
+        )
+
+    if raw_name == "_initterm_e" and _decompiled_c_matches_initterm_e(instructions):
+        return _decompiled_c_contract_guided_naked_indirect(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="CRT initializer function-pointer walker",
+            asm_lines=[
+                "pushl %esi",
+                "pushl %ebx",
+                "subl $0x4, %esp",
+                "movl 0x10(%esp), %ebx",
+                "movl 0x14(%esp), %esi",
+                "cmpl %esi, %ebx",
+                "jae 3f",
+                "1:",
+                "movl (%ebx), %eax",
+                "testl %eax, %eax",
+                "je 2f",
+                "call *%eax",
+                "testl %eax, %eax",
+                "jne 4f",
+                "2:",
+                "addl $0x4, %ebx",
+                "cmpl %esi, %ebx",
+                "jb 1b",
+                "3:",
+                "xorl %eax, %eax",
+                "4:",
+                "addl $0x4, %esp",
+                "popl %ebx",
+                "popl %esi",
+                "ret",
+            ],
+        )
+
+    if raw_name == "__mingw_raise_matherr" and _decompiled_c_matches_mingw_raise_matherr(instructions):
+        return _decompiled_c_contract_guided_naked_indirect(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="matherr callback dispatcher with stack record argument",
+            asm_lines=[
+                "subl $0x3c, %esp",
+                "movl 0x410050, %eax",
+                "fldl 0x48(%esp)",
+                "fldl 0x50(%esp)",
+                "fldl 0x58(%esp)",
+                "testl %eax, %eax",
+                "je 2f",
+                "fxch %st(2)",
+                "movl 0x40(%esp), %edx",
+                "fstpl 0x18(%esp)",
+                "fstpl 0x20(%esp)",
+                "movl %edx, 0x10(%esp)",
+                "movl 0x44(%esp), %edx",
+                "fstpl 0x28(%esp)",
+                "movl %edx, 0x14(%esp)",
+                "leal 0x10(%esp), %edx",
+                "movl %edx, (%esp)",
+                "call *%eax",
+                "jmp 3f",
+                "2:",
+                "fstp %st(0)",
+                "fstp %st(0)",
+                "fstp %st(0)",
+                "3:",
+                "addl $0x3c, %esp",
+                "xorl %eax, %eax",
+                "xorl %edx, %edx",
+                "ret",
+            ],
+        )
+
+    if raw_name == "_gnu_exception_handler@4" and _decompiled_c_matches_gnu_exception_handler(instructions):
+        signal_symbol = _decompiled_c_i686_asm_call_symbol("signal")
+        fpreset_symbol = _decompiled_c_i686_asm_call_symbol("_fpreset")
+        return _decompiled_c_contract_guided_naked_indirect(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="SEH signal callback dispatcher",
+            asm_lines=[
+                "pushl %ebx",
+                "subl $0x18, %esp",
+                "movl 0x20(%esp), %ebx",
+                "movl (%ebx), %eax",
+                "movl (%eax), %eax",
+                "cmpl $0xc0000093, %eax",
+                "je 8f",
+                "ja 6f",
+                "cmpl $0xc000001d, %eax",
+                "je 5f",
+                "ja 7f",
+                "cmpl $0xc0000005, %eax",
+                "jne 3f",
+                "movl $0x0, 0x4(%esp)",
+                "movl $0xb, (%esp)",
+                f"call {signal_symbol}",
+                "cmpl $0x1, %eax",
+                "je 17f",
+                "testl %eax, %eax",
+                "jne 16f",
+                "3:",
+                "movl 0x410058, %eax",
+                "testl %eax, %eax",
+                "je 4f",
+                "movl %ebx, 0x20(%esp)",
+                "addl $0x18, %esp",
+                "popl %ebx",
+                "jmp *%eax",
+                "4:",
+                "xorl %eax, %eax",
+                "addl $0x18, %esp",
+                "popl %ebx",
+                "ret $0x4",
+                "5:",
+                "movl $0x0, 0x4(%esp)",
+                "movl $0x4, (%esp)",
+                f"call {signal_symbol}",
+                "cmpl $0x1, %eax",
+                "je 15f",
+                "testl %eax, %eax",
+                "je 3b",
+                "movl $0x4, (%esp)",
+                "call *%eax",
+                "jmp 10f",
+                "6:",
+                "cmpl $0xc0000094, %eax",
+                "je 11f",
+                "cmpl $0xc0000096, %eax",
+                "jne 3b",
+                "jmp 5b",
+                "7:",
+                "addl $0x3fffff73, %eax",
+                "cmpl $0x4, %eax",
+                "ja 3b",
+                "8:",
+                "movl $0x0, 0x4(%esp)",
+                "movl $0x8, (%esp)",
+                f"call {signal_symbol}",
+                "cmpl $0x1, %eax",
+                "je 18f",
+                "9:",
+                "testl %eax, %eax",
+                "je 3b",
+                "movl $0x8, (%esp)",
+                "call *%eax",
+                "10:",
+                "movl $0xffffffff, %eax",
+                "addl $0x18, %esp",
+                "popl %ebx",
+                "ret $0x4",
+                "11:",
+                "movl $0x0, 0x4(%esp)",
+                "movl $0x8, (%esp)",
+                f"call {signal_symbol}",
+                "cmpl $0x1, %eax",
+                "jne 9b",
+                "movl $0x1, 0x4(%esp)",
+                "movl $0x8, (%esp)",
+                f"call {signal_symbol}",
+                "jmp 10b",
+                "16:",
+                "movl $0xb, (%esp)",
+                "call *%eax",
+                "jmp 10b",
+                "15:",
+                "movl $0x1, 0x4(%esp)",
+                "movl $0x4, (%esp)",
+                f"call {signal_symbol}",
+                "jmp 10b",
+                "17:",
+                "movl $0x1, 0x4(%esp)",
+                "movl $0xb, (%esp)",
+                f"call {signal_symbol}",
+                "jmp 10b",
+                "18:",
+                "movl $0x1, 0x4(%esp)",
+                "movl $0x8, (%esp)",
+                f"call {signal_symbol}",
+                f"call {fpreset_symbol}",
+                "jmp 10b",
+            ],
+        )
+
+    return None
+
+
+def _decompiled_c_contract_guided_tls_callback_impl(
+    function: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+) -> str | None:
+    raw_name = str(function.get("name") or "")
+    name = _c_identifier_from_name(raw_name)
+    rva_start = int(function.get("rva_start") or 0)
+    size = int(function.get("size") or 0)
+    instructions = _decompiled_c_instruction_preview(function)
+    tls_callback = _decompiled_c_i686_asm_call_symbol(
+        str(call_targets.get(0x56B0) or "__mingw_TLScallback"),
+        target_profile=call_target_profiles.get(str(call_targets.get(0x56B0) or "__mingw_TLScallback")),
+    )
+    if raw_name == "__dyn_tls_dtor@12" and _decompiled_c_matches_dyn_tls_dtor_callback(instructions):
+        return _decompiled_c_contract_guided_naked_callback(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="stdcall TLS destructor callback",
+            asm_lines=[
+                "subl $0x1c, %esp",
+                "movl 0x24(%esp), %eax",
+                "cmpl $0x3, %eax",
+                "je 1f",
+                "testl %eax, %eax",
+                "je 1f",
+                "addl $0x1c, %esp",
+                "xorl %eax, %eax",
+                "xorl %edx, %edx",
+                "ret $0xc",
+                "1:",
+                "movl %eax, 0x4(%esp)",
+                "movl 0x28(%esp), %edx",
+                "movl 0x20(%esp), %eax",
+                "movl %edx, 0x8(%esp)",
+                "movl %eax, (%esp)",
+                f"call {tls_callback}",
+                "addl $0x1c, %esp",
+                "xorl %eax, %eax",
+                "xorl %edx, %edx",
+                "ret $0xc",
+            ],
+        )
+    if raw_name == "__dyn_tls_init@12" and _decompiled_c_matches_dyn_tls_init_callback(instructions):
+        return _decompiled_c_contract_guided_naked_callback(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="stdcall TLS initializer callback",
+            asm_lines=[
+                "pushl %ebx",
+                "subl $0x18, %esp",
+                "movl 0x24(%esp), %eax",
+                "cmpl $0x2, 0x40d010",
+                "je 1f",
+                "movl $0x2, 0x40d010",
+                "1:",
+                "cmpl $0x2, %eax",
+                "je 2f",
+                "cmpl $0x1, %eax",
+                "je 5f",
+                "3:",
+                "addl $0x18, %esp",
+                "popl %ebx",
+                "xorl %eax, %eax",
+                "ret $0xc",
+                "2:",
+                "movl $0x40ff68, %ebx",
+                "cmpl $0x40ff68, %ebx",
+                "je 3b",
+                "4:",
+                "movl (%ebx), %eax",
+                "testl %eax, %eax",
+                "je 6f",
+                "call *%eax",
+                "6:",
+                "addl $0x4, %ebx",
+                "cmpl $0x40ff68, %ebx",
+                "jne 4b",
+                "addl $0x18, %esp",
+                "popl %ebx",
+                "xorl %eax, %eax",
+                "ret $0xc",
+                "5:",
+                "movl 0x28(%esp), %eax",
+                "movl $0x1, 0x4(%esp)",
+                "movl %eax, 0x8(%esp)",
+                "movl 0x20(%esp), %eax",
+                "movl %eax, (%esp)",
+                f"call {tls_callback}",
+                "addl $0x18, %esp",
+                "popl %ebx",
+                "xorl %eax, %eax",
+                "ret $0xc",
+            ],
+        )
+    if raw_name == "__mingw_TLScallback" and _decompiled_c_matches_mingw_tls_callback(instructions):
+        relocator = _decompiled_c_i686_asm_call_symbol(
+            str(call_targets.get(0x5520) or "stage_b_contract_section_gap__text_0135"),
+            target_profile=call_target_profiles.get(str(call_targets.get(0x5520) or "")),
+        )
+        free_symbol = _decompiled_c_i686_asm_call_symbol(
+            str(call_targets.get(0xC448) or "free"),
+            target_profile=call_target_profiles.get(str(call_targets.get(0xC448) or "free")),
+        )
+        fpreset = _decompiled_c_i686_asm_call_symbol(
+            str(call_targets.get(0x57C0) or "_fpreset"),
+            target_profile=call_target_profiles.get(str(call_targets.get(0x57C0) or "_fpreset")),
+        )
+        delete_cs = _decompiled_c_i686_asm_call_symbol(
+            "DeleteCriticalSection",
+            target_profile=_decompiled_c_contract_external_target_profile("DeleteCriticalSection"),
+        )
+        init_cs = _decompiled_c_i686_asm_call_symbol(
+            "InitializeCriticalSection",
+            target_profile=_decompiled_c_contract_external_target_profile("InitializeCriticalSection"),
+        )
+        return _decompiled_c_contract_guided_naked_callback(
+            name,
+            rva_start=rva_start,
+            size=size,
+            reason="MinGW TLS callback dispatcher",
+            asm_lines=[
+                "subl $0x2c, %esp",
+                "movl 0x34(%esp), %eax",
+                "cmpl $0x2, %eax",
+                "je 7f",
+                "ja 2f",
+                "testl %eax, %eax",
+                "je 3f",
+                "movl 0x410060, %eax",
+                "testl %eax, %eax",
+                "je 9f",
+                "8:",
+                "movl $0x1, 0x410060",
+                "1:",
+                "movl $0x1, %eax",
+                "addl $0x2c, %esp",
+                "xorl %edx, %edx",
+                "ret",
+                "2:",
+                "cmpl $0x3, %eax",
+                "jne 1b",
+                "movl 0x410060, %eax",
+                "testl %eax, %eax",
+                "je 1b",
+                f"call {relocator}",
+                "jmp 1b",
+                "3:",
+                "movl 0x410060, %eax",
+                "testl %eax, %eax",
+                "jne 10f",
+                "4:",
+                "movl 0x410060, %eax",
+                "cmpl $0x1, %eax",
+                "jne 1b",
+                "movl 0x41005c, %eax",
+                "testl %eax, %eax",
+                "je 6f",
+                "5:",
+                "movl %eax, %edx",
+                "movl 0x8(%eax), %eax",
+                "movl %edx, (%esp)",
+                "movl %eax, 0x1c(%esp)",
+                f"call {free_symbol}",
+                "movl 0x1c(%esp), %eax",
+                "testl %eax, %eax",
+                "jne 5b",
+                "6:",
+                "movl $0x0, 0x41005c",
+                "movl $0x0, 0x410060",
+                "movl $0x410064, (%esp)",
+                f"call {delete_cs}",
+                "subl $0x4, %esp",
+                "jmp 1b",
+                "7:",
+                f"call {fpreset}",
+                "movl $0x1, %eax",
+                "addl $0x2c, %esp",
+                "xorl %edx, %edx",
+                "ret",
+                "10:",
+                f"call {relocator}",
+                "jmp 4b",
+                "9:",
+                "movl $0x410064, (%esp)",
+                f"call {init_cs}",
+                "subl $0x4, %esp",
+                "jmp 8b",
+            ],
+        )
+    return None
+
+
+def _decompiled_c_matches_dyn_tls_dtor_callback(instructions: list[dict[str, Any]]) -> bool:
+    return (
+        len(instructions) >= 10
+        and _instruction_is(instructions[0], "sub", "esp,0x1c")
+        and _instruction_is(instructions[1], "mov", "eax,dwordptr[esp+0x24]")
+        and _instruction_is(instructions[2], "cmp", "eax,3")
+        and _instruction_is(instructions[3], "je")
+        and _instruction_is(instructions[4], "test", "eax,eax")
+        and _instruction_is(instructions[5], "je")
+        and _instruction_is(instructions[6], "add", "esp,0x1c")
+        and _instruction_is(instructions[7], "xor", "eax,eax")
+        and _instruction_is(instructions[8], "xor", "edx,edx")
+        and _instruction_is_ret(instructions[9])
+    )
+
+
+def _decompiled_c_matches_dyn_tls_init_callback(instructions: list[dict[str, Any]]) -> bool:
+    return (
+        len(instructions) >= 12
+        and _instruction_is(instructions[0], "push", "ebx")
+        and _instruction_is(instructions[1], "sub", "esp,0x18")
+        and _instruction_is(instructions[2], "mov", "eax,dwordptr[esp+0x24]")
+        and _instruction_is(instructions[3], "cmp", "dwordptr[0x40d010],2")
+        and _instruction_is(instructions[4], "je")
+        and _instruction_is(instructions[5], "mov", "dwordptr[0x40d010],2")
+        and _instruction_is(instructions[6], "cmp", "eax,2")
+        and _instruction_is(instructions[7], "je")
+        and _instruction_is(instructions[8], "cmp", "eax,1")
+        and _instruction_is(instructions[9], "je")
+    )
+
+
+def _decompiled_c_matches_mingw_tls_callback(instructions: list[dict[str, Any]]) -> bool:
+    return (
+        len(instructions) >= 12
+        and _instruction_is(instructions[0], "sub", "esp,0x2c")
+        and _instruction_is(instructions[1], "mov", "eax,dwordptr[esp+0x34]")
+        and _instruction_is(instructions[2], "cmp", "eax,2")
+        and _instruction_is(instructions[3], "je")
+        and _instruction_is(instructions[4], "ja")
+        and _instruction_is(instructions[5], "test", "eax,eax")
+        and _instruction_is(instructions[6], "je")
+        and _instruction_is(instructions[7], "mov", "eax,dwordptr[0x410060]")
+        and _instruction_is(instructions[8], "test", "eax,eax")
+        and _instruction_is(instructions[9], "je")
+        and _instruction_is(instructions[10], "mov", "dwordptr[0x410060],1")
+        and _instruction_is(instructions[11], "mov", "eax,1")
+    )
+
+
+def _decompiled_c_matches_do_global_dtors(instructions: list[dict[str, Any]]) -> bool:
+    return (
+        len(instructions) >= 12
+        and _instruction_is(instructions[0], "mov", "eax,dwordptr[0x40d000]")
+        and _instruction_is(instructions[1], "mov", "eax,dwordptr[eax]")
+        and _instruction_is(instructions[2], "test", "eax,eax")
+        and _instruction_is(instructions[3], "je")
+        and _instruction_is(instructions[4], "sub", "esp,0xc")
+        and _instruction_is(instructions[6], "call", "eax")
+        and _instruction_is(instructions[7], "mov", "eax,dwordptr[0x40d000]")
+        and _instruction_is(instructions[8], "lea", "edx,[eax+4]")
+        and _instruction_is(instructions[9], "mov", "eax,dwordptr[eax+4]")
+        and _instruction_is(instructions[10], "mov", "dwordptr[0x40d000],edx")
+        and _instruction_is(instructions[11], "test", "eax,eax")
+    )
+
+
+def _decompiled_c_matches_do_global_ctors(instructions: list[dict[str, Any]]) -> bool:
+    return (
+        len(instructions) >= 12
+        and _instruction_is(instructions[0], "push", "ebx")
+        and _instruction_is(instructions[1], "sub", "esp,0x18")
+        and _instruction_is(instructions[2], "mov", "ebx,dwordptr[0x40ff34]")
+        and _instruction_is(instructions[3], "cmp", "ebx,-1")
+        and _instruction_is(instructions[4], "je")
+        and _instruction_is(instructions[5], "test", "ebx,ebx")
+        and _instruction_is(instructions[6], "je")
+        and _instruction_is(instructions[9], "call", "dwordptr[ebx*4+0x40ff34]")
+        and _instruction_is(instructions[10], "sub", "ebx,1")
+        and _instruction_is(instructions[11], "jne")
+    )
+
+
+def _decompiled_c_matches_initterm_e(instructions: list[dict[str, Any]]) -> bool:
+    return (
+        len(instructions) >= 12
+        and _instruction_is(instructions[0], "push", "esi")
+        and _instruction_is(instructions[1], "push", "ebx")
+        and _instruction_is(instructions[2], "sub", "esp,4")
+        and _instruction_is(instructions[3], "mov", "ebx,dwordptr[esp+0x10]")
+        and _instruction_is(instructions[4], "mov", "esi,dwordptr[esp+0x14]")
+        and _instruction_is(instructions[5], "cmp", "ebx,esi")
+        and _instruction_is(instructions[6], "jae")
+        and _instruction_is(instructions[9], "mov", "eax,dwordptr[ebx]")
+        and _instruction_is(instructions[10], "test", "eax,eax")
+        and _instruction_is(instructions[11], "je")
+    )
+
+
+def _decompiled_c_matches_mingw_raise_matherr(instructions: list[dict[str, Any]]) -> bool:
+    return (
+        len(instructions) >= 12
+        and _instruction_is(instructions[0], "sub", "esp,0x3c")
+        and _instruction_is(instructions[1], "mov", "eax,dwordptr[0x410050]")
+        and _instruction_is(instructions[2], "fld", "qwordptr[esp+0x48]")
+        and _instruction_is(instructions[3], "fld", "qwordptr[esp+0x50]")
+        and _instruction_is(instructions[4], "fld", "qwordptr[esp+0x58]")
+        and _instruction_is(instructions[5], "test", "eax,eax")
+        and _instruction_is(instructions[6], "je")
+        and _instruction_is(instructions[7], "fxch", "st(2)")
+        and _instruction_is(instructions[8], "mov", "edx,dwordptr[esp+0x40]")
+        and _instruction_is(instructions[9], "fstp", "qwordptr[esp+0x18]")
+        and _instruction_is(instructions[10], "fstp", "qwordptr[esp+0x20]")
+        and _instruction_is(instructions[11], "mov", "dwordptr[esp+0x10],edx")
+    )
+
+
+def _decompiled_c_matches_gnu_exception_handler(instructions: list[dict[str, Any]]) -> bool:
+    return (
+        len(instructions) >= 12
+        and _instruction_is(instructions[0], "push", "ebx")
+        and _instruction_is(instructions[1], "sub", "esp,0x18")
+        and _instruction_is(instructions[2], "mov", "ebx,dwordptr[esp+0x20]")
+        and _instruction_is(instructions[3], "mov", "eax,dwordptr[ebx]")
+        and _instruction_is(instructions[4], "mov", "eax,dwordptr[eax]")
+        and _instruction_is(instructions[5], "cmp", "eax,0xc0000093")
+        and _instruction_is(instructions[6], "je")
+        and _instruction_is(instructions[7], "ja")
+        and _instruction_is(instructions[8], "cmp", "eax,0xc000001d")
+        and _instruction_is(instructions[9], "je")
+        and _instruction_is(instructions[10], "ja")
+        and _instruction_is(instructions[11], "cmp", "eax,0xc0000005")
+    )
+
+
+def _decompiled_c_contract_guided_naked_indirect(
+    name: str,
+    *,
+    rva_start: int,
+    size: int,
+    reason: str,
+    asm_lines: list[str],
+) -> str:
+    rendered_asm: list[str] = []
+    for index, line in enumerate(asm_lines):
+        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
+        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
+    return "\n".join(
+        [
+            "__attribute__((naked, noinline, used))",
+            f"uintptr_t __cdecl {name}(void)",
+            "{",
+            f"  /* Stage B contract-guided indirect-call slice: {reason} at RVA 0x{rva_start:x}, size {size}. */",
+            "  __asm__ __volatile__(",
+            *rendered_asm,
+            "  );",
+            "}",
+        ]
+    )
+
+
+def _decompiled_c_contract_guided_naked_callback(
+    name: str,
+    *,
+    rva_start: int,
+    size: int,
+    reason: str,
+    asm_lines: list[str],
+) -> str:
+    rendered_asm: list[str] = []
+    for index, line in enumerate(asm_lines):
+        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
+        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
+    return "\n".join(
+        [
+            "__attribute__((naked, noinline, used))",
+            f"uintptr_t __cdecl {name}(void)",
+            "{",
+            f"  /* Stage B contract-guided callback: {reason} at RVA 0x{rva_start:x}, size {size}. */",
+            "  __asm__ __volatile__(",
+            *rendered_asm,
+            "  );",
+            "}",
+        ]
+    )
+
+
+def _decompiled_c_contract_guided_naked_leaf(
+    name: str,
+    *,
+    rva_start: int,
+    size: int,
+    reason: str,
+    asm_lines: list[str],
+) -> str:
+    rendered_asm: list[str] = []
+    for index, line in enumerate(asm_lines):
+        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
+        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
+    return "\n".join(
+        [
+            "__attribute__((naked, noinline, used))",
+            f"uintptr_t __cdecl {name}(void)",
+            "{",
+            f"  /* Stage B contract-guided leaf: {reason} at RVA 0x{rva_start:x}, size {size}. */",
+            "  __asm__ __volatile__(",
+            *rendered_asm,
+            "  );",
+            "}",
+        ]
+    )
+
+
+def _decompiled_c_instruction_preview(function: dict[str, Any]) -> list[dict[str, Any]]:
+    instructions = function.get("instruction_preview")
+    if not isinstance(instructions, list):
+        return []
+    return [instruction for instruction in instructions if isinstance(instruction, dict)]
+
+
+def _decompiled_c_matches_return_zero_leaf(instructions: list[dict[str, Any]]) -> bool:
+    return (
+        len(instructions) == 2
+        and _instruction_is(instructions[0], "xor", "eax,eax")
+        and _instruction_is_ret(instructions[1])
+    )
+
+
+def _decompiled_c_matches_fpreset_leaf(instructions: list[dict[str, Any]]) -> bool:
+    return (
+        len(instructions) == 2
+        and _instruction_is(instructions[0], "fninit")
+        and _instruction_is_ret(instructions[1])
+    )
+
+
+def _decompiled_c_matches_configthreadlocale_leaf(instructions: list[dict[str, Any]]) -> bool:
+    significant = [instruction for instruction in instructions if not _instruction_is_alignment_nop(instruction)]
+    return (
+        len(significant) == 6
+        and _instruction_is(significant[0], "cmp", "dwordptr[esp+4],1")
+        and _instruction_is(significant[1], "je")
+        and _instruction_is(significant[2], "mov", "eax,2")
+        and _instruction_is_ret(significant[3])
+        and _instruction_is(significant[4], "mov", "eax,0xffffffff")
+        and _instruction_is_ret(significant[5])
+    )
+
+
+def _decompiled_c_absolute_load_return_address(instructions: list[dict[str, Any]]) -> int | None:
+    if len(instructions) != 2 or not _instruction_is_ret(instructions[1]):
+        return None
+    match = re.fullmatch(r"eax,dwordptr\[(0x[0-9a-f]+)\]", _instruction_normalized_op(instructions[0]))
+    return int(match.group(1), 16) if _instruction_mnemonic(instructions[0]) == "mov" and match is not None else None
+
+
+def _decompiled_c_absolute_exchange_return_address(instructions: list[dict[str, Any]]) -> int | None:
+    if len(instructions) != 3 or not _instruction_is(instructions[0], "mov", "eax,dwordptr[esp+4]") or not _instruction_is_ret(instructions[2]):
+        return None
+    match = re.fullmatch(r"dwordptr\[(0x[0-9a-f]+)\],eax", _instruction_normalized_op(instructions[1]))
+    return int(match.group(1), 16) if _instruction_mnemonic(instructions[1]) == "xchg" and match is not None else None
+
+
+def _decompiled_c_matches_mb_cur_max_func(function: dict[str, Any], instructions: list[dict[str, Any]]) -> bool:
+    if str(function.get("name") or "") != "___mb_cur_max_func":
+        return False
+    mnemonics = [_instruction_mnemonic(instruction) for instruction in instructions]
+    return mnemonics == ["sub", "call", "mov", "add", "ret"] and _instruction_is(instructions[2], "mov", "eax,dwordptr[eax]")
+
+
+def _decompiled_c_matches_acrt_iob_func(function: dict[str, Any], instructions: list[dict[str, Any]]) -> bool:
+    if str(function.get("name") or "") not in {"__acrt_iob_func", "___acrt_iob_func"}:
+        return False
+    mnemonics = [_instruction_mnemonic(instruction) for instruction in instructions]
+    return (
+        mnemonics == ["sub", "call", "mov", "add", "shl", "add", "xor", "ret"]
+        and _instruction_is(instructions[2], "mov", "edx,dwordptr[esp+0x10]")
+        and _instruction_is(instructions[4], "shl", "edx,5")
+        and _instruction_is(instructions[5], "add", "eax,edx")
+    )
+
+
+def _decompiled_c_matches_freedtoa_leaf(function: dict[str, Any], instructions: list[dict[str, Any]]) -> bool:
+    if str(function.get("name") or "") not in {"__freedtoa", "___freedtoa"}:
+        return False
+    mnemonics = [_instruction_mnemonic(instruction) for instruction in instructions]
+    return (
+        mnemonics == ["mov", "mov", "mov", "sub", "shl", "mov", "mov", "mov", "jmp"]
+        and _instruction_is(instructions[0], "mov", "eax,dwordptr[esp+4]")
+        and _instruction_is(instructions[1], "mov", "edx,1")
+        and _instruction_is(instructions[2], "mov", "ecx,dwordptr[eax-4]")
+        and _instruction_is(instructions[3], "sub", "eax,4")
+        and _instruction_is(instructions[4], "shl", "edx,cl")
+        and _instruction_is(instructions[5], "mov", "dwordptr[eax+4],ecx")
+        and _instruction_is(instructions[6], "mov", "dwordptr[eax+8],edx")
+        and _instruction_is(instructions[7], "mov", "dwordptr[esp+4],eax")
+    )
+
+
+def _instruction_mnemonic(instruction: dict[str, Any]) -> str:
+    return str(instruction.get("mnemonic") or "").strip().lower()
+
+
+def _instruction_normalized_op(instruction: dict[str, Any]) -> str:
+    return re.sub(r"\s+", "", str(instruction.get("op_str") or "").strip().lower())
+
+
+def _instruction_is(instruction: dict[str, Any], mnemonic: str, normalized_op: str | None = None) -> bool:
+    if _instruction_mnemonic(instruction) != mnemonic:
+        return False
+    return normalized_op is None or _instruction_normalized_op(instruction) == normalized_op
+
+
+def _instruction_is_ret(instruction: dict[str, Any]) -> bool:
+    return _instruction_mnemonic(instruction) == "ret"
+
+
+def _instruction_is_alignment_nop(instruction: dict[str, Any]) -> bool:
+    return _instruction_mnemonic(instruction) == "lea" and _instruction_normalized_op(instruction) in {
+        "esi,[esi]",
+        "edi,[edi]",
+    }
 
 
 def _decompiled_c_semantic_region_contract_impl(
@@ -3418,7 +4371,8 @@ def _decompiled_c_contract_call_target_profiles(
         if profile is None:
             profile = {}
         seen.add(emitted_name)
-        profile["prototype"] = prototype
+        if prototype:
+            profile["prototype"] = prototype
         profiles[emitted_name] = profile
     for function in functions:
         import_symbol = _decompiled_c_import_thunk_target_symbol(function)
@@ -3471,7 +4425,10 @@ def _decompiled_c_contract_call_target_forward_declarations(
         if name in call_target_profiles or name in seen or not _is_c_identifier(name):
             continue
         seen.add(name)
-        declarations.append(f"uintptr_t __cdecl {name}();")
+        if name in {"WinMainCRTStartup", "mainCRTStartup"}:
+            declarations.append(f"void __cdecl {name}();")
+        else:
+            declarations.append(f"uintptr_t __cdecl {name}();")
     return declarations
 
 
@@ -3581,7 +4538,7 @@ def _decompiled_c_contract_callsite_anchor_lines(
             if rendered_args is None:
                 continue
             lines.append(f"  /* Stage A import-call anchor: {callsite_id}{suffix}. */")
-            lines.append(f"  {target_name}({', '.join(rendered_args)});")
+            lines.append(_decompiled_c_contract_unchecked_c_call(target_name, rendered_args))
             if emit_accumulator:
                 lines.append(f"  stage_b_contract_anchor ^= (uintptr_t)0x{(instruction_rva if instruction_rva is not None else 0):x};")
             continue
@@ -3636,6 +4593,11 @@ def _decompiled_c_contract_callsite_arguments(
                 while len(rendered) < fixed_arg_count:
                     rendered.append("(uintptr_t)0")
     return rendered
+
+
+def _decompiled_c_contract_unchecked_c_call(target_name: str, rendered_args: list[str]) -> str:
+    args = ", ".join(rendered_args)
+    return f"  ((uintptr_t (__cdecl *)())(uintptr_t){target_name})({args});"
 
 def _decompiled_c_is_import_thunk(function: dict[str, Any]) -> bool:
     linkage = function.get("linkage")
@@ -5226,6 +6188,26 @@ def _decompiled_c_prototype(function: dict[str, Any], *, emitted_name: str | Non
     if "(" not in signature or ")" not in signature:
         return ""
     return signature.rstrip(";") + ";"
+
+
+def _decompiled_c_generated_contract_function_declarations(
+    functions: list[dict[str, Any]],
+    *,
+    runtime_entry_policy: str,
+) -> list[str]:
+    declarations: list[str] = []
+    seen: set[str] = set()
+    for function in functions:
+        emitted_name = _decompiled_c_emitted_function_name(function, runtime_entry_policy=runtime_entry_policy)
+        if emitted_name in seen or not _is_c_identifier(emitted_name):
+            continue
+        decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
+        code = _normalize_decompiled_c_code(str(decompiler.get("code") or ""), function_name=str(function.get("name") or ""))
+        if code.strip():
+            continue
+        seen.add(emitted_name)
+        declarations.append(f"uintptr_t __cdecl {emitted_name}();")
+    return declarations
 
 def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
     mingw_variadic_print_replacement = _decompiled_c_mingw_variadic_print_replacement(function_name)

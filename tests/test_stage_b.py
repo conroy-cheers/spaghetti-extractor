@@ -111,6 +111,261 @@ class StageBTests(unittest.TestCase):
             self.assertIn("Stage B contract placeholder", source)
             self.assertEqual(result["source_map"]["functions"][0]["function"], "tiny")
 
+    def test_contract_guided_c_reimplements_small_jq_leaf_slices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parts = [
+                ("__tlregdtor", bytes.fromhex("31 c0 c3")),
+                ("_fpreset", bytes.fromhex("db e3 c3")),
+                (
+                    "_configthreadlocale",
+                    bytes.fromhex("83 7c 24 04 01 74 06 b8 02 00 00 00 c3 b8 ff ff ff ff c3"),
+                ),
+                ("_get_invalid_parameter_handler", bytes.fromhex("a1 50 0a 41 00 c3")),
+                ("_set_invalid_parameter_handler", bytes.fromhex("8b 44 24 04 87 05 50 0a 41 00 c3")),
+                ("___mb_cur_max_func", bytes.fromhex("83 ec 0c e8 00 00 00 00 8b 00 83 c4 0c c3")),
+                (
+                    "__acrt_iob_func",
+                    bytes.fromhex("83 ec 0c e8 00 00 00 00 8b 54 24 10 83 c4 0c c1 e2 05 01 d0 31 d2 c3"),
+                ),
+                (
+                    "__freedtoa",
+                    bytes.fromhex(
+                        "8b 44 24 04 ba 01 00 00 00 8b 48 fc 83 e8 04 d3 e2 "
+                        "89 48 04 89 50 08 89 44 24 04 e9 00 00 00 00"
+                    ),
+                ),
+            ]
+            code = bytearray()
+            map_lines = []
+            for name, body in parts:
+                map_lines.append(f"                0x{0x401000 + len(code):08x}                {name}\n")
+                code.extend(body)
+            map_lines.append(f"                0x{0x401000 + len(code):08x}                sentinel\n")
+            code.extend(b"\xc3")
+            original = self._write_pe(root / "jq.exe", bytes(code))
+            linker_map = root / "jq.map"
+            linker_map.write_text("".join(map_lines), encoding="utf-8")
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                linker_map=linker_map,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn("Stage B contract-guided leaf: zero-return leaf", source)
+            self.assertIn('"xorl %eax, %eax\\n\\t"', source)
+            self.assertIn('"fninit\\n\\t"', source)
+            self.assertIn("Stage B contract-guided leaf: single-argument branch leaf", source)
+            self.assertIn("return *(volatile uintptr_t *)(uintptr_t)0x410a50U;", source)
+            self.assertIn('"xchgl %eax, 0x410a50\\n\\t"', source)
+            self.assertIn("extern uintptr_t __p___mb_cur_max(void);", source)
+            self.assertIn("extern uintptr_t __iob_func(void);", source)
+            self.assertIn("((uintptr_t (__cdecl *)())__Bfree_D2A)((uintptr_t)base)", source)
+            by_function = {item["function"]: item for item in result["source_map"]["functions"]}
+            for name, _body in parts:
+                self.assertEqual(by_function[name]["source_kind"], "generated_contract_guided_leaf")
+            self.assertEqual(by_function["sentinel"]["source_kind"], "generated_contract_placeholder")
+
+    def test_contract_guided_c_reimplements_jq_tls_callback_slices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parts = [
+                (
+                    "__dyn_tls_dtor@12",
+                    bytes.fromhex(
+                        "83 ec 1c 8b 44 24 24 83 f8 03 74 14 85 c0 74 10 83 c4 1c 31 c0 31 d2 "
+                        "c2 0c 00 8d 36 89 44 24 04 8b 54 24 28 8b 44 24 20 89 54 24 08 89 04 24 "
+                        "e8 18 0a 00 00 83 c4 1c 31 c0 31 d2 c2 0c 00"
+                    ),
+                ),
+                (
+                    "__dyn_tls_init@12",
+                    bytes.fromhex(
+                        "53 83 ec 18 8b 44 24 24 83 3d 10 d0 40 00 02 74 0a c7 05 10 d0 40 00 "
+                        "02 00 00 00 83 f8 02 74 10 83 f8 01 74 3b 83 c4 18 5b 31 c0 c2 0c 00"
+                    ),
+                ),
+                (
+                    "__mingw_TLScallback",
+                    bytes.fromhex(
+                        "83 ec 2c 8b 44 24 34 83 f8 02 0f 84 b8 00 00 00 0f 87 2a 00 00 00 "
+                        "85 c0 74 42 a1 60 00 41 00 85 c0 0f 84 cd 00 00 00 c7 05 60 00 41 00 "
+                        "01 00 00 00 b8 01 00 00 00 c3"
+                    ),
+                ),
+            ]
+            code = bytearray()
+            map_lines = []
+            for name, body in parts:
+                map_lines.append(f"                0x{0x401000 + len(code):08x}                {name}\n")
+                code.extend(body)
+            original = self._write_pe(root / "jq.exe", bytes(code))
+            linker_map = root / "jq.map"
+            linker_map.write_text("".join(map_lines), encoding="utf-8")
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                linker_map=linker_map,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn("Stage B contract-guided callback: stdcall TLS destructor callback", source)
+            self.assertIn("Stage B contract-guided callback: stdcall TLS initializer callback", source)
+            self.assertIn("Stage B contract-guided callback: MinGW TLS callback dispatcher", source)
+            self.assertIn('"ret $0xc\\n\\t"', source)
+            self.assertIn('"call ___mingw_TLScallback\\n\\t"', source)
+            self.assertIn('"call _stage_b_contract_section_gap__text_0135\\n\\t"', source)
+            self.assertIn('"call _DeleteCriticalSection@4\\n\\t"', source)
+            self.assertIn('"call _InitializeCriticalSection@4\\n\\t"', source)
+            by_function = {item["function"]: item for item in result["source_map"]["functions"]}
+            for name, _body in parts:
+                self.assertEqual(by_function[name]["source_kind"], "generated_contract_guided_callback")
+
+    def test_contract_guided_c_reimplements_jq_indirect_crt_slices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parts = [
+                (
+                    "__do_global_dtors",
+                    bytes.fromhex(
+                        "a1 00 d0 40 00 8b 00 85 c0 74 25 83 ec 0c 66 90 ff d0 a1 00 d0 40 00 "
+                        "8d 50 04 8b 40 04 89 15 00 d0 40 00 85 c0 75 e9 83 c4 0c 31 c0 31 d2 "
+                        "c3 90 31 c0 31 d2 c3"
+                    ),
+                ),
+                (
+                    "__do_global_ctors",
+                    bytes.fromhex(
+                        "53 83 ec 18 8b 1d 34 ff 40 00 83 fb ff 74 39 85 db 74 19 "
+                        "2e 8d 74 26 00 2e 8d b4 26 00 00 00 00 ff 14 9d 34 ff 40 00 "
+                        "83 eb 01 75 f4 c7 04 24 90 4b 40 00 e8 28 c8 ff ff 83 c4 18 "
+                        "5b 31 c0 31 d2 c3 8d b4 26 00 00 00 00 31 c0 8d b6 00 00 00 00 "
+                        "89 c3 83 c0 01 8b 14 85 34 ff 40 00 85 d2 75 f0 eb ad"
+                    ),
+                ),
+                (
+                    "__mingw_raise_matherr",
+                    bytes.fromhex(
+                        "83 ec 3c a1 50 00 41 00 dd 44 24 48 dd 44 24 50 dd 44 24 58 "
+                        "85 c0 74 30 d9 ca 8b 54 24 40 dd 5c 24 18 dd 5c 24 20 "
+                        "89 54 24 10 8b 54 24 44 dd 5c 24 28 89 54 24 14 8d 54 24 10 "
+                        "89 14 24 ff d0 eb 0d 8d b4 26 00 00 00 00 dd d8 dd d8 dd d8 "
+                        "83 c4 3c 31 c0 31 d2 c3"
+                    ),
+                ),
+                (
+                    "_gnu_exception_handler@4",
+                    bytes.fromhex(
+                        "53 83 ec 18 8b 5c 24 20 8b 03 8b 00 3d 93 00 00 c0 0f 84 c3 00 00 00 "
+                        "77 5f 3d 1d 00 00 c0 74 6a 0f 87 aa 00 00 00 3d 05 00 00 c0 "
+                        "75 33 c7 44 24 04 00 00 00 00 c7 04 24 0b 00 00 00 e8 ef 70 00 00 "
+                        "83 f8 01 0f 84 16 01 00 00 85 c0 0f 85 ed 00 00 00"
+                    ),
+                ),
+                (
+                    "_initterm_e",
+                    bytes.fromhex(
+                        "56 53 83 ec 04 8b 5c 24 10 8b 74 24 14 39 f3 73 22 "
+                        "8d b4 26 00 00 00 00 2e 8d b4 26 00 00 00 00 8b 03 85 c0 74 06 "
+                        "ff d0 85 c0 75 09 83 c3 04 39 f3 72 ed 31 c0 83 c4 04 5b 5e c3"
+                    ),
+                ),
+            ]
+            code = bytearray()
+            map_lines = []
+            for name, body in parts:
+                map_lines.append(f"                0x{0x401000 + len(code):08x}                {name}\n")
+                code.extend(body)
+            original = self._write_pe(root / "jq.exe", bytes(code))
+            linker_map = root / "jq.map"
+            linker_map.write_text("".join(map_lines), encoding="utf-8")
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                linker_map=linker_map,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn("Stage B contract-guided indirect-call slice: global destructor function-pointer walker", source)
+            self.assertIn("Stage B contract-guided indirect-call slice: global constructor function-pointer walker", source)
+            self.assertIn("Stage B contract-guided indirect-call slice: matherr callback dispatcher", source)
+            self.assertIn("Stage B contract-guided indirect-call slice: SEH signal callback dispatcher", source)
+            self.assertIn("Stage B contract-guided indirect-call slice: CRT initializer function-pointer walker", source)
+            self.assertIn('"call *%eax\\n\\t"', source)
+            self.assertIn('"call *0x40ff34(,%ebx,4)\\n\\t"', source)
+            self.assertIn('"call _signal\\n\\t"', source)
+            self.assertIn('"ret $0x4\\n\\t"', source)
+            self.assertNotIn("volatile uintptr_t stage_b_contract_fp", source)
+            by_function = {item["function"]: item for item in result["source_map"]["functions"]}
+            for name, _body in parts:
+                self.assertEqual(by_function[name]["source_kind"], "generated_contract_guided_indirect")
+            functions = json.loads((root / "skeleton" / "functions.json").read_text(encoding="utf-8"))["functions"]
+            ctors = next(item for item in functions if item["name"] == "__do_global_ctors")
+            self.assertGreater(len(ctors["instructions"]), len(ctors["instruction_preview"]))
+            self.assertEqual(ctors["instruction_count"], len(ctors["instructions"]))
+
+    def test_source_map_does_not_anchor_import_thunk_to_prefixed_helper(self):
+        source = "\n".join(
+            [
+                "/* original RVA 0xc3e0, size 6, name _lock */",
+                "/* import thunk for _lock; body omitted so the candidate links to the original import. */",
+                "",
+                "/* original RVA 0xc240, size 112, name _lock_file */",
+                "__attribute__((noinline, used))",
+                "uintptr_t __cdecl _lock_file()",
+                "{",
+                "  /* Stage B contract placeholder for missing decompiler body at RVA 0xc240, size 112. */",
+                "  _lock((uintptr_t)0);",
+                "  return 0;",
+                "}",
+                "",
+            ]
+        )
+
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=[
+                {
+                    "name": "_lock",
+                    "aliases": ["_lock"],
+                    "rva_start": 0xC3E0,
+                    "rva_end": 0xC3E6,
+                    "linkage": {"kind": "import_thunk", "symbol": "_lock"},
+                    "instruction_count": 1,
+                },
+                {
+                    "name": "_lock_file",
+                    "aliases": ["_lock_file"],
+                    "rva_start": 0xC240,
+                    "rva_end": 0xC2B0,
+                    "instruction_count": 1,
+                },
+            ],
+            source_language="c",
+            implementation_mode="contract-guided-c",
+            runtime_entry_policy="bridge",
+        )
+
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function["_lock"]["line_start"], 1)
+        self.assertEqual(by_function["_lock"]["source_kind"], "omitted_import_thunk")
+        self.assertEqual(by_function["_lock_file"]["line_start"], 6)
+        self.assertEqual(by_function["_lock_file"]["source_kind"], "generated_contract_placeholder")
+
     def test_generate_skeleton_uses_pe_exports_when_no_map_is_available(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -446,10 +701,41 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(recovery["decompiler_coverage"]["counts"]["missing_decompiler_code_functions"], 0)
             source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             self.assertIn("int first(void)", source)
-            self.assertIn("uintptr_t __cdecl second(void)", source)
+            self.assertIn("uintptr_t __cdecl second()", source)
             self.assertIn("Stage B contract placeholder for missing decompiler body", source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
             self.assertEqual(by_function["second"]["source_kind"], "generated_contract_placeholder")
+
+    def test_contract_guided_placeholders_use_unspecified_abi_forward_declarations(self):
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "caller",
+                    "rva_start": 0x1000,
+                    "rva_end": 0x1008,
+                    "size": 8,
+                    "instruction_count": 1,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __cdecl caller(void)\n{\n  return callee(1, 2);\n}",
+                    },
+                },
+                {
+                    "name": "callee",
+                    "rva_start": 0x1010,
+                    "rva_end": 0x1011,
+                    "size": 1,
+                    "instruction_count": 1,
+                    "instruction_preview": [{"mnemonic": "ret", "op_str": "", "size": 1, "rva": 0x1010}],
+                },
+            ],
+            runtime_entry_policy="bridge",
+        )
+
+        self.assertIn("uintptr_t __cdecl callee();", source)
+        self.assertIn("uintptr_t __cdecl callee()\n{", source)
+        self.assertNotIn("uintptr_t __cdecl callee(void)\n{", source)
 
     def test_decompiled_skeleton_disambiguates_duplicate_decompiler_names_by_rva(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3774,7 +4060,7 @@ class StageBTests(unittest.TestCase):
             "Stage A import-call anchor: callsite:section-gap--text-0142:5c2b at RVA 0x5c2b",
             source,
         )
-        self.assertIn("  AreFileApisANSI();", source)
+        self.assertIn("  ((uintptr_t (__cdecl *)())(uintptr_t)AreFileApisANSI)();", source)
 
     def test_decompiled_c_retains_no_callsite_section_gap_alias_symbol(self):
         reference_contract = {

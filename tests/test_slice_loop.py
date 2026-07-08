@@ -41,9 +41,17 @@ class SliceLoopTests(unittest.TestCase):
             self.assertTrue((workspace / "contracts" / "contract-smoke.json").exists())
             self.assertTrue((workspace / "contracts" / "semantic-coverage.json").exists())
             self.assertTrue((workspace / "contracts" / "work-items.json").exists())
+            self.assertTrue((workspace / "packets" / "index.json").exists())
             self.assertTrue((workspace / "candidate" / "src" / "jq_stage_b_skeleton.c").exists())
             current = json.loads((workspace / "candidate" / "current-candidate.json").read_text(encoding="utf-8"))
             self.assertEqual(Path(current["candidate"]).name, "jq-stage-b-generated-closure-candidate.exe")
+            packets = json.loads((workspace / "packets" / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(packets["format"], slice_loop.SLICE_PACKET_INDEX_FORMAT)
+            self.assertEqual(packets["counts"]["packets"], 1)
+            packet = json.loads(Path(packets["packets"][0]["path"]).read_text(encoding="utf-8"))
+            self.assertEqual(packet["format"], slice_loop.SLICE_PACKET_FORMAT)
+            self.assertEqual(packet["function"]["instruction_evidence"]["status"], "full")
+            self.assertEqual(packet["function"]["instruction_evidence"]["instructions"], 2)
 
     def test_next_lists_cached_work_items(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -73,6 +81,169 @@ class SliceLoopTests(unittest.TestCase):
             self.assertEqual(result["status"], "pass")
             self.assertEqual(result["counts"]["returned"], 1)
             self.assertEqual(result["items"][0]["id"], "semantic-region:selected")
+            self.assertEqual(result["source_progress"]["status"], "available")
+            self.assertEqual(result["source_progress"]["counts"]["concrete"], 1)
+            self.assertEqual(result["source_progress"]["counts"]["placeholder"], 3)
+            self.assertEqual(result["source_progress"]["counts"]["boundary"], 1)
+            self.assertEqual(result["source_progress"]["counts"]["omitted"], 0)
+            self.assertEqual(result["items"][0]["stage_b_source"]["function"], "selected")
+            self.assertEqual(result["items"][0]["stage_b_source"]["source_kind"], "generated_contract_guided_leaf")
+            self.assertEqual(result["items"][0]["stage_b_packet"]["pattern_family"], "leaf")
+            self.assertTrue(Path(result["items"][0]["stage_b_packet"]["path"]).is_file())
+
+    def test_next_can_filter_to_todo_source_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stage_a_root = self._stage_a_check_root(root)
+            candidate_dir = self._candidate_dir(root)
+
+            with self._patched_prepare_contracts():
+                self.assertEqual(
+                    self._run_main(
+                        [
+                            "--work-dir",
+                            str(root / "work"),
+                            "prepare",
+                            "jq",
+                            "--stage-a-check-root",
+                            str(stage_a_root),
+                            "--candidate-dir",
+                            str(candidate_dir),
+                        ]
+                    ),
+                    0,
+                )
+            work_items = root / "work" / "jq" / "contracts" / "work-items.json"
+            write_json(
+                work_items,
+                {
+                    "format": "stage-a-work-items-v1",
+                    "status": "pass",
+                    "work_items": [
+                        {"id": "selected", "family": "semantic", "function": "selected"},
+                        {"id": "printf", "family": "import_thunks", "function": "printf"},
+                        {"id": "needs-work", "family": "semantic", "function": "needs_work"},
+                    ],
+                    "counts": {"work_items": 3},
+                },
+            )
+
+            result = slice_loop.slice_next(target="jq", work_dir=root / "work", top_k=10, todo_only=True)
+
+            self.assertEqual(result["counts"]["matched"], 1)
+            self.assertEqual([item["id"] for item in result["items"]], ["needs-work"])
+            self.assertEqual(result["items"][0]["stage_b_source"]["progress_class"], "placeholder")
+
+    def test_next_groups_todo_work_by_pattern_and_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stage_a_root = self._stage_a_check_root(root)
+            candidate_dir = self._candidate_dir(root)
+
+            with self._patched_prepare_contracts():
+                self.assertEqual(
+                    self._run_main(
+                        [
+                            "--work-dir",
+                            str(root / "work"),
+                            "prepare",
+                            "jq",
+                            "--stage-a-check-root",
+                            str(stage_a_root),
+                            "--candidate-dir",
+                            str(candidate_dir),
+                        ]
+                    ),
+                    0,
+                )
+            work_items = root / "work" / "jq" / "contracts" / "work-items.json"
+            write_json(
+                work_items,
+                {
+                    "format": "stage-a-work-items-v1",
+                    "status": "pass",
+                    "work_items": [
+                        {
+                            "id": "work:cluster:function-pointer:callsite:umain-0000:24b4",
+                            "family": "abi_callsites",
+                            "original_function": "umain",
+                            "repair_class": "function_pointer_target",
+                        },
+                        {
+                            "id": "work:cluster:function-pointer:callsite:section-gap--text-0058:14e3",
+                            "family": "abi_callsites",
+                            "original_function": "section-gap--text-0058",
+                            "repair_class": "function_pointer_target",
+                        },
+                    ],
+                    "counts": {"work_items": 2},
+                },
+            )
+            slice_loop._write_slice_packets(
+                workspace=root / "work" / "jq",
+                target="jq",
+                work_items=json.loads(work_items.read_text(encoding="utf-8")),
+                current_candidate=json.loads(
+                    (root / "work" / "jq" / "candidate" / "current-candidate.json").read_text(encoding="utf-8")
+                ),
+                source_anchors=slice_loop._slice_source_progress(
+                    root / "work" / "jq",
+                    json.loads((root / "work" / "jq" / "candidate" / "current-candidate.json").read_text(encoding="utf-8")),
+                    json.loads((root / "work" / "jq" / "workspace.json").read_text(encoding="utf-8")),
+                )[1],
+            )
+
+            by_pattern = slice_loop.slice_next(
+                target="jq",
+                work_dir=root / "work",
+                top_k=10,
+                todo_only=True,
+                group_by="pattern",
+            )
+            by_function = slice_loop.slice_next(
+                target="jq",
+                work_dir=root / "work",
+                top_k=10,
+                todo_only=True,
+                group_by="function",
+            )
+
+            self.assertEqual({item["key"] for item in by_pattern["groups"]}, {"application_dispatch", "section_gap_helper"})
+            self.assertEqual({item["key"] for item in by_function["groups"]}, {"umain", "stage_b_contract_section_gap__text_0058"})
+
+    def test_prepare_can_cache_source_only_skeleton_for_next_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stage_a_root = self._stage_a_check_root(root)
+            skeleton_root = self._skeleton_root(root)
+
+            with self._patched_prepare_contracts():
+                code = self._run_main(
+                    [
+                        "--work-dir",
+                        str(root / "work"),
+                        "prepare",
+                        "jq",
+                        "--stage-a-check-root",
+                        str(stage_a_root),
+                        "--skeleton-root",
+                        str(skeleton_root),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            workspace = root / "work" / "jq"
+            current = json.loads((workspace / "candidate" / "current-candidate.json").read_text(encoding="utf-8"))
+            self.assertEqual(current["source"], "prepared-skeleton-root")
+            self.assertTrue((workspace / "candidate" / "src" / "jq_stage_b_skeleton.c").exists())
+
+            result = slice_loop.slice_next(target="jq", work_dir=root / "work", top_k=1)
+
+            self.assertEqual(result["source_progress"]["status"], "available")
+            self.assertEqual(result["source_progress"]["counts"]["concrete"], 1)
+            self.assertEqual(result["source_progress"]["counts"]["placeholder"], 3)
+            self.assertEqual(result["source_progress"]["counts"]["boundary"], 1)
+            self.assertEqual(result["items"][0]["stage_b_source"]["progress_class"], "concrete")
 
     def test_build_command_updates_current_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -246,6 +417,27 @@ class SliceLoopTests(unittest.TestCase):
             )
             self.assertEqual(report["contract_candidate_validation"]["cache"]["status"], "miss")
 
+    def test_copytree_force_replaces_read_only_cached_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_a = root / "source-a"
+            source_b = root / "source-b"
+            dest = root / "dest"
+            source_a.mkdir()
+            source_b.mkdir()
+            (source_a / "slice.c").write_text("old\n", encoding="utf-8")
+            (source_b / "slice.c").write_text("new\n", encoding="utf-8")
+
+            slice_loop._copytree_once(source_a, dest)
+            (dest / "slice.c").chmod(0o400)
+            dest.chmod(0o500)
+
+            slice_loop._copytree_once(source_b, dest, force=True)
+
+            self.assertEqual((dest / "slice.c").read_text(encoding="utf-8"), "new\n")
+            self.assertTrue(dest.stat().st_mode & 0o200)
+            self.assertTrue((dest / "slice.c").stat().st_mode & 0o200)
+
     def _run_main(self, argv):
         with contextlib.redirect_stdout(io.StringIO()):
             return slice_loop.main(argv)
@@ -265,14 +457,218 @@ class SliceLoopTests(unittest.TestCase):
         (candidate_dir / "src").mkdir(parents=True)
         (candidate_dir / "jq-stage-b-generated-closure-candidate.exe").write_bytes(b"candidate")
         (candidate_dir / "jq-stage-b-generated-closure-candidate.map").write_text("map", encoding="utf-8")
-        write_json(candidate_dir / "skeleton-manifest.json", {"format": "stage-b-skeleton-v1", "target_name": "jq"})
+        write_json(
+            candidate_dir / "skeleton-manifest.json",
+            {
+                "format": "stage-b-skeleton-v1",
+                "target_name": "jq",
+                "implementation_mode": "contract-guided-c",
+                "source_map": {
+                    "format": "stage-b-source-map-v1",
+                    "source": "src/jq_stage_b_skeleton.c",
+                    "functions": [
+                        {
+                            "function": "selected",
+                            "aliases": ["semantic-region:selected"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 1,
+                            "line_end": 1,
+                            "source_kind": "generated_contract_guided_leaf",
+                            "rva_start": 0x1000,
+                            "rva_end": 0x1003,
+                        },
+                        {
+                            "function": "printf",
+                            "aliases": ["_printf"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 2,
+                            "line_end": 2,
+                            "source_kind": "omitted_import_thunk",
+                            "rva_start": 0x2000,
+                            "rva_end": 0x2006,
+                        },
+                        {
+                            "function": "needs_work",
+                            "aliases": ["semantic-region:needs-work"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 3,
+                            "line_end": 3,
+                            "source_kind": "generated_contract_placeholder",
+                            "rva_start": 0x3000,
+                            "rva_end": 0x3010,
+                        },
+                        {
+                            "function": "stage_b_contract_section_gap__text_0058",
+                            "aliases": ["section-gap--text-0058"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 4,
+                            "line_end": 4,
+                            "source_kind": "generated_contract_placeholder_from_section_gap",
+                            "rva_start": 0x4000,
+                            "rva_end": 0x4010,
+                        },
+                        {
+                            "function": "umain",
+                            "aliases": ["umain"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 5,
+                            "line_end": 5,
+                            "source_kind": "generated_contract_placeholder",
+                            "rva_start": 0x5000,
+                            "rva_end": 0x5100,
+                        }
+                    ],
+                },
+            },
+        )
         write_json(candidate_dir / "candidate-provenance.json", {"format": "stage-b-candidate-provenance-v1"})
         write_json(candidate_dir / "decompiled-c-generated-closure-link-report.json", {"format": "stage-b-link-report-v1"})
+        write_json(
+            candidate_dir / "functions.json",
+            {
+                "format": "stage-b-functions-v1",
+                "functions": self._fixture_functions(),
+            },
+        )
         (candidate_dir / "src" / "jq_stage_b_skeleton.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
         (candidate_dir / "libjq-1.dll").write_bytes(b"dll")
         (candidate_dir / "libjq-1.generated-closure.link.map").write_text("map", encoding="utf-8")
         write_json(candidate_dir / "libjq-1-skeleton-manifest.json", {"format": "stage-b-skeleton-v1"})
         return candidate_dir
+
+    def _skeleton_root(self, root: Path) -> Path:
+        skeleton_root = root / "skeleton"
+        (skeleton_root / "src").mkdir(parents=True)
+        (skeleton_root / "src" / "jq_stage_b_skeleton.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+        write_json(
+            skeleton_root / "manifest.json",
+            {
+                "format": "stage-b-skeleton-v1",
+                "target_name": "jq",
+                "implementation_mode": "contract-guided-c",
+                "source_map": {
+                    "format": "stage-b-source-map-v1",
+                    "source": "src/jq_stage_b_skeleton.c",
+                    "functions": [
+                        {
+                            "function": "selected",
+                            "aliases": ["semantic-region:selected"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 1,
+                            "line_end": 1,
+                            "source_kind": "generated_contract_guided_leaf",
+                            "rva_start": 0x1000,
+                            "rva_end": 0x1003,
+                        },
+                        {
+                            "function": "printf",
+                            "aliases": ["_printf"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 2,
+                            "line_end": 2,
+                            "source_kind": "omitted_import_thunk",
+                            "rva_start": 0x2000,
+                            "rva_end": 0x2006,
+                        },
+                        {
+                            "function": "needs_work",
+                            "aliases": ["semantic-region:needs-work"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 3,
+                            "line_end": 3,
+                            "source_kind": "generated_contract_placeholder",
+                            "rva_start": 0x3000,
+                            "rva_end": 0x3010,
+                        },
+                        {
+                            "function": "stage_b_contract_section_gap__text_0058",
+                            "aliases": ["section-gap--text-0058"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 4,
+                            "line_end": 4,
+                            "source_kind": "generated_contract_placeholder_from_section_gap",
+                            "rva_start": 0x4000,
+                            "rva_end": 0x4010,
+                        },
+                        {
+                            "function": "umain",
+                            "aliases": ["umain"],
+                            "file": "src/jq_stage_b_skeleton.c",
+                            "line_start": 5,
+                            "line_end": 5,
+                            "source_kind": "generated_contract_placeholder",
+                            "rva_start": 0x5000,
+                            "rva_end": 0x5100,
+                        }
+                    ],
+                },
+            },
+        )
+        write_json(skeleton_root / "functions.json", {"format": "stage-b-functions-v1", "functions": self._fixture_functions()})
+        return skeleton_root
+
+    def _fixture_functions(self):
+        return [
+            {
+                "id": "selected",
+                "name": "selected",
+                "aliases": ["semantic-region:selected"],
+                "section": ".text",
+                "rva_start": 0x1000,
+                "rva_end": 0x1003,
+                "size": 3,
+                "bytes_sha256": "selected-sha",
+                "decode_complete": True,
+                "decoded_bytes": 3,
+                "instruction_count": 2,
+                "direct_cfg_edges": [],
+                "instructions": [
+                    {"rva": 0x1000, "size": 1, "mnemonic": "xor", "op_str": "eax, eax"},
+                    {"rva": 0x1001, "size": 1, "mnemonic": "ret", "op_str": ""},
+                ],
+                "instruction_preview": [
+                    {"rva": 0x1000, "size": 1, "mnemonic": "xor", "op_str": "eax, eax"},
+                    {"rva": 0x1001, "size": 1, "mnemonic": "ret", "op_str": ""},
+                ],
+                "reference_contract": {"abi_callsites": []},
+            },
+            {
+                "id": "needs_work",
+                "name": "needs_work",
+                "aliases": ["semantic-region:needs-work"],
+                "section": ".text",
+                "rva_start": 0x3000,
+                "rva_end": 0x3010,
+                "size": 0x10,
+                "instruction_count": 1,
+                "instructions": [{"rva": 0x3000, "size": 1, "mnemonic": "call", "op_str": "eax"}],
+                "instruction_preview": [{"rva": 0x3000, "size": 1, "mnemonic": "call", "op_str": "eax"}],
+            },
+            {
+                "id": "stage_b_contract_section_gap__text_0058",
+                "name": "stage_b_contract_section_gap__text_0058",
+                "aliases": ["section-gap--text-0058"],
+                "section": ".text",
+                "rva_start": 0x4000,
+                "rva_end": 0x4010,
+                "size": 0x10,
+                "instruction_count": 1,
+                "instructions": [{"rva": 0x4000, "size": 1, "mnemonic": "call", "op_str": "eax"}],
+                "instruction_preview": [{"rva": 0x4000, "size": 1, "mnemonic": "call", "op_str": "eax"}],
+            },
+            {
+                "id": "umain",
+                "name": "umain",
+                "aliases": ["umain"],
+                "section": ".text",
+                "rva_start": 0x5000,
+                "rva_end": 0x5100,
+                "size": 0x100,
+                "instruction_count": 1,
+                "instructions": [{"rva": 0x5000, "size": 1, "mnemonic": "call", "op_str": "eax"}],
+                "instruction_preview": [{"rva": 0x5000, "size": 1, "mnemonic": "call", "op_str": "eax"}],
+            },
+        ]
 
     def _prepared_workspace(self, root: Path) -> Path:
         workspace = root / "work" / "jq"
@@ -325,6 +721,7 @@ class SliceLoopTests(unittest.TestCase):
                 {
                     "id": "semantic-region:selected",
                     "family": "semantic",
+                    "function": "selected",
                     "repair_class": "region_contract",
                     "next_action": "repair selected region",
                 }

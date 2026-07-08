@@ -322,7 +322,7 @@
                 --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
                 --target-name jq \
                 --source-language c \
-                --implementation-mode scaffold \
+                --implementation-mode contract-guided-c \
                 --out-dir "$work/skeleton" \
                 > "$work/skeleton.stdout"
               out_dir="$out/share/wincr/stage-b/jq/skeleton"
