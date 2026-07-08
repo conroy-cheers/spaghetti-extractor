@@ -1099,7 +1099,7 @@ class StageAValidateTests(unittest.TestCase):
     def test_linker_map_parser_uses_split_text_fragment_as_weak_function_range(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            binary_path = self._write_pe(root / "candidate.exe", b"\xc3" * 0x60)
+            binary_path = self._write_pe(root / "candidate.exe", b"\xc3" * 0x90)
             linker_map = root / "candidate.map"
             linker_map.write_text(
                 "\n".join(
@@ -1114,6 +1114,13 @@ class StageAValidateTests(unittest.TestCase):
                         "                0x0040102c                .weak._isoptish.___crt_atexit",
                         " .text$process  0x00401038        0xc object.o",
                         "                0x00401038                process",
+                        " .text$umain     0x00401044       0x30 object.o",
+                        "                0x00401044                umain",
+                        "                0x0040104c                _fu2___setmode",
+                        "                0x00401058                stage_b_contract_rva_00001058",
+                        " .text$after_umain",
+                        "                0x00401074       0x10 object.o",
+                        "                0x00401074                after_umain",
                     ]
                 ),
                 encoding="utf-8",
@@ -1131,6 +1138,13 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(by_name["isoptish"]["rva_start"], 0x102C)
             self.assertEqual(by_name["isoptish"]["rva_end"], 0x1038)
             self.assertEqual(by_name["process"]["rva_start"], 0x1038)
+            self.assertEqual(by_name["process"]["rva_end"], 0x1044)
+            self.assertEqual(by_name["umain"]["rva_start"], 0x1044)
+            self.assertEqual(by_name["umain"]["rva_end"], 0x1074)
+            self.assertEqual(by_name["after_umain"]["rva_start"], 0x1074)
+            self.assertNotIn("fu2___setmode", by_name)
+            self.assertNotIn("_fu2___setmode", by_name)
+            self.assertNotIn("stage_b_contract_rva_00001058", by_name)
 
     def test_stage_a_generate_map_splits_basic_blocks_and_uses_cfg_reachability(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2486,6 +2500,34 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(callsite["target"]["source"]["import"]["symbol"], "LeaveCriticalSection")
         self.assertEqual(callsite["target"]["source"]["memory_role"], "import_address_table")
         self.assertEqual(callsite["function_pointer_targets"], [])
+
+    def test_candidate_abi_constraint_splits_function_ranges_into_basic_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex(
+                "c744240402000000"  # stale write to stack arg 1 in predecessor block
+                "eb08"  # jump over the dead write block
+                "c744240403000000"  # skipped block; must not leak into target block
+                "c7042401000000"  # live stack arg 0
+                "e802000000"  # call 0x401020
+                "c3"  # ret
+                "90"  # padding
+                "c3"  # callee
+            )
+            binary = stage_a._parse_stage_a_pe(self._write_pe(root / "candidate.exe", code))
+
+            result = stage_a._candidate_abi_constraint_from_functions(
+                binary,
+                [{"name": "caller", "rva_start": 0x1000, "rva_end": 0x101F}],
+            )
+
+            caller = next(item for item in result["candidate"]["functions"] if item["name"] == "caller")
+            self.assertGreaterEqual(len(caller["blocks"]), 2)
+            self.assertEqual(len(caller["callsites"]), 1)
+            inventory = caller["callsites"][0]["argument_inventory"]
+            self.assertEqual(inventory["argument_count"], 1)
+            self.assertEqual([item["index"] for item in inventory["stack_args"]], [0])
+            self.assertEqual(inventory["stack_args"][0]["source"]["value"], 1)
 
     def test_abi_callsites_bound_known_stdcall_import_arguments(self):
         class FakePE:

@@ -174,6 +174,8 @@ def _parse_linker_map_functions(path: Path, binary: StageABinary) -> list[dict[s
         parsed = _parse_linker_map_symbol_line(line, binary)
         if parsed is not None:
             rva, name = parsed
+            if _linker_map_symbol_is_non_function_label(name):
+                continue
             if _executable_section_for_rva(binary, rva) is None:
                 continue
             symbol_starts.setdefault(rva, [])
@@ -327,6 +329,13 @@ def _parse_linker_map_text_boundary_continuation_line(line: str, binary: StageAB
 def _parse_linker_map_text_section_only_line(line: str) -> str | None:
     match = re.match(r"^\s*(\.text\S*)\s*$", line)
     return match.group(1) if match is not None else None
+
+
+def _linker_map_symbol_is_non_function_label(name: str) -> bool:
+    stripped = name.lstrip("_")
+    if re.match(r"^fu\d+_+", stripped):
+        return True
+    return stripped.startswith("stage_b_contract_rva_")
 
 
 def _linker_map_text_fragment_symbol(line: str) -> str | None:

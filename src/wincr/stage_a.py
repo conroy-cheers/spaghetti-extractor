@@ -5155,19 +5155,7 @@ def _candidate_abi_constraint_from_functions(
     *,
     reference_abi: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    mappings = [
-        BlockMapping(
-            id=_artifact_name(str(function.get("name") or f"function-{index:04d}")),
-            kind="code",
-                original=BlockSide(int(function["rva_start"]), int(function["rva_end"])),
-                candidate=BlockSide(int(function["rva_start"]), int(function["rva_end"])),
-                reachable=True,
-                invariant_checked=True,
-                source={"source": {"function": str(function.get("name") or f"function_{index:04d}")}},
-            )
-        for index, function in enumerate(candidate_functions)
-        if int(function.get("rva_end") or 0) > int(function.get("rva_start") or 0)
-    ]
+    mappings = _candidate_abi_block_mappings_from_functions(candidate, candidate_functions)
     reference_section_gap_mappings = _candidate_reference_section_gap_abi_mappings(candidate, reference_abi)
     mappings.extend(reference_section_gap_mappings)
     functions = _abi_function_evidence(candidate, mappings, side="candidate")
@@ -5189,6 +5177,37 @@ def _candidate_abi_constraint_from_functions(
             "reference_section_gap_probes": len(reference_section_gap_mappings),
         },
     }
+
+
+def _candidate_abi_block_mappings_from_functions(
+    candidate: StageABinary,
+    candidate_functions: list[dict[str, Any]],
+) -> list[BlockMapping]:
+    mappings: list[BlockMapping] = []
+    for function_index, function in enumerate(candidate_functions):
+        rva_start = _optional_contract_int(function.get("rva_start"))
+        rva_end = _optional_contract_int(function.get("rva_end"))
+        if rva_start is None or rva_end is None or rva_end <= rva_start:
+            continue
+        name = str(function.get("name") or f"function_{function_index:04d}")
+        blocks = _recover_basic_blocks(candidate, rva_start, rva_end)
+        for block_index, block in enumerate(blocks):
+            block_start = _optional_contract_int(block.get("rva_start"))
+            block_end = _optional_contract_int(block.get("rva_end"))
+            if block_start is None or block_end is None or block_end <= block_start:
+                continue
+            mappings.append(
+                BlockMapping(
+                    id=_artifact_name(f"{name}-{block_index:04d}"),
+                    kind="code",
+                    original=BlockSide(block_start, block_end),
+                    candidate=BlockSide(block_start, block_end),
+                    reachable=True,
+                    invariant_checked=True,
+                    source={"source": {"function": name, "kind": "candidate_capstone_basic_block"}},
+                )
+            )
+    return mappings
 
 
 def _candidate_reference_section_gap_abi_mappings(
@@ -9183,6 +9202,8 @@ def _parse_linker_map_functions(path: Path, binary: StageABinary) -> list[dict[s
         parsed = _parse_linker_map_symbol_line(line, binary)
         if parsed is not None:
             rva, name = parsed
+            if _linker_map_symbol_is_non_function_label(name):
+                continue
             if _executable_section_for_rva(binary, rva) is None:
                 continue
             symbol_starts.setdefault(rva, [])
@@ -9302,6 +9323,13 @@ def _parse_linker_map_symbol_line(line: str, binary: StageABinary) -> tuple[int,
     else:
         rva = address
     return rva, name
+
+
+def _linker_map_symbol_is_non_function_label(name: str) -> bool:
+    stripped = name.lstrip("_")
+    if re.match(r"^fu\d+_+", stripped):
+        return True
+    return stripped.startswith("stage_b_contract_rva_")
 
 
 def _primary_symbol_name(names: list[str]) -> str:

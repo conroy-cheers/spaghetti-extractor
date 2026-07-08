@@ -795,7 +795,7 @@ class StageBTests(unittest.TestCase):
         )
 
         self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
-        self.assertIn('"call _Sleep@4\\n\\t"', source)
+        self.assertIn('"call *__imp__Sleep@4\\n\\t"', source)
         self.assertNotIn("Stage B contract-guided raw flow: exact section-gap bytes", source)
         self.assertNotIn('".byte 0xff, 0x15, 0x50, 0x34, 0x41, 0x00\\n\\t"', source)
 
@@ -1490,7 +1490,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("return *(volatile uintptr_t *)(uintptr_t)0x410a50U;", source)
             self.assertIn('"xchgl %eax, 0x410a50\\n\\t"', source)
             self.assertIn("extern uintptr_t __p___mb_cur_max(void);", source)
-            self.assertIn("extern uintptr_t __iob_func(void);", source)
+            self.assertIn('extern uintptr_t stage_b_msvcrt_iob_func(void) __asm__("___iob_func");', source)
             self.assertIn("((uintptr_t (__cdecl *)())__Bfree_D2A)((uintptr_t)base)", source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
             for name, _body in parts:
@@ -5949,9 +5949,9 @@ class StageBTests(unittest.TestCase):
         self.assertIn("Stage A import-call anchor: callsite:section-gap--text-0068:15fc at RVA 0x15fc", source)
         self.assertIn("Stage A import-call anchor: callsite:section-gap--text-0068:161b at RVA 0x161b", source)
         self.assertIn('"  pushl $0x1\\n"', source)
-        self.assertIn('"  call __get_osfhandle\\n"', source)
+        self.assertIn('"  call *__imp___get_osfhandle\\n"', source)
         self.assertIn('"  addl $4, %esp\\n"', source)
-        self.assertIn('"  call _WriteFile@20\\n"', source)
+        self.assertIn('"  call *__imp__WriteFile@20\\n"', source)
         self.assertNotIn('"  addl $20, %esp\\n"', source)
         by_function = {item["function"]: item for item in source_map["functions"]}
         self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_placeholder_from_section_gap")

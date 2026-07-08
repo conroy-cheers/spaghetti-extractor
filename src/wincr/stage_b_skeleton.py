@@ -4316,8 +4316,8 @@ def _decompiled_c_contract_guided_leaf_impl(
                 f"uintptr_t __cdecl {name}(uintptr_t stream_index)",
                 "{",
                 f"  /* Stage B contract-guided leaf: imported __iob_func slot bridge at RVA 0x{rva_start:x}, size {size}. */",
-                "  extern uintptr_t __iob_func(void);",
-                "  return __iob_func() + ((stream_index & 0xffffffffU) << 5);",
+                "  extern uintptr_t stage_b_msvcrt_iob_func(void) __asm__(\"___iob_func\");",
+                "  return stage_b_msvcrt_iob_func() + ((stream_index & 0xffffffffU) << 5);",
                 "}",
             ]
         )
@@ -5598,6 +5598,8 @@ def _decompiled_c_contract_flow_call_lines(
     elif target.get("kind") == "import":
         target_name = _decompiled_c_contract_import_target_name(target)
         target_profile = _decompiled_c_contract_external_target_profile(target_name) if target_name is not None else None
+        if target_name is not None:
+            return [f"call *{_decompiled_c_i686_asm_iat_symbol(target_name, target_profile=target_profile)}"]
     else:
         target_rva = _decompiled_c_contract_flow_operand_target_rva(instruction)
         target_name = call_targets.get(target_rva) if target_rva is not None else None
@@ -8016,7 +8018,7 @@ def _decompiled_c_contract_asm_callsite_lines(
             comments.append(f"/* Stage A import-call anchor: {callsite_id}{suffix}. */")
             _decompiled_c_contract_asm_register_arguments(asm_lines, asm_args)
             stack_bytes = _decompiled_c_contract_asm_stack_arguments(asm_lines, asm_args)
-            asm_lines.append(f"  call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}")
+            asm_lines.append(f"  call *{_decompiled_c_i686_asm_iat_symbol(target_name, target_profile=target_profile)}")
             if stack_bytes and not _decompiled_c_contract_target_pops_stack(target_profile):
                 asm_lines.append(f"  addl ${stack_bytes}, %esp")
             continue
@@ -8220,6 +8222,10 @@ def _decompiled_c_i686_asm_call_symbol(name: str, *, target_profile: dict[str, A
         if isinstance(fixed_arg_count, int) and fixed_arg_count >= 0:
             return f"_{name}@{fixed_arg_count * 4}"
     return _decompiled_c_i686_c_asm_symbol(name)
+
+
+def _decompiled_c_i686_asm_iat_symbol(name: str, *, target_profile: dict[str, Any] | None = None) -> str:
+    return f"__imp_{_decompiled_c_i686_asm_call_symbol(name, target_profile=target_profile)}"
 
 
 def _decompiled_c_contract_import_target_name(target: dict[str, Any]) -> str | None:
