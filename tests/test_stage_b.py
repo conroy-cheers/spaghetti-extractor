@@ -3115,9 +3115,18 @@ class StageBTests(unittest.TestCase):
         self.assertIn("s->edx = 1U;", source)
         self.assertIn("s->ecx = s->ebx;", source)
         self.assertIn("register uintptr_t stageb_ebx __asm__(\"ebx\");", source)
-        self.assertIn("return stage_b_contract_section_gap__text_0202((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);", source)
+        self.assertIn(
+            "volatile uintptr_t stageb_call_result = stage_b_contract_section_gap__text_0202((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);",
+            source,
+        )
+        self.assertIn("return stageb_call_result;", source)
         self.assertIn("uintptr_t __attribute__((regparm(3))) stage_b_contract_section_gap__text_0202", source)
         self.assertIn("__attribute__((noinline, used, regparm(3)))", source)
+        self.assertIn(
+            '"  .long _stage_b_contract_section_gap__text_0498 - _stage_b_contract_section_gap_anchor\\n"',
+            source,
+        )
+        self.assertNotIn("uintptr_t __cdecl stage_b_contract_section_gap__text_0202();", source)
         self.assertNotIn("Stage A direct-call anchor: callsite:section-gap--text-0498:7317", source)
 
     def test_decompiled_c_synthesizes_all_linkable_section_gap_placeholders(self):

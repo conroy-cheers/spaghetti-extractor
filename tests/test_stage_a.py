@@ -1714,6 +1714,64 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(region["blocker_category"], "x86_to_ir_register_input_mismatch")
             self.assertEqual(region["proof_obligations"][0]["status"], "incomplete")
 
+    def test_semantic_region_abi_inventory_accepts_provenance_rich_matching_sources(self):
+        callsite = {
+            "argument_inventory": {
+                "register_args": [
+                    {
+                        "register": "eax",
+                        "source": {
+                            "kind": "address",
+                            "address_class": "computed_address",
+                            "addressing": {"base": "ebx", "index": None, "scale": 1, "disp": 0x1C},
+                            "instruction": {"mnemonic": "lea", "op_str": "eax, [ebx + 0x1c]"},
+                        },
+                    },
+                    {
+                        "register": "edx",
+                        "source": {
+                            "kind": "immediate",
+                            "value": 1,
+                            "instruction": {"mnemonic": "mov", "op_str": "edx, 1"},
+                        },
+                    },
+                    {
+                        "register": "ecx",
+                        "source": {
+                            "kind": "register",
+                            "register": "ebx",
+                            "instruction": {"mnemonic": "mov", "op_str": "ecx, ebx"},
+                        },
+                    },
+                ]
+            }
+        }
+
+        self.assertEqual(
+            stage_a._semantic_region_abi_inventory_mismatches(
+                callsite,
+                (
+                    ("eax", ("add", ("reg", "ebx"), ("const", 0x1C))),
+                    ("edx", ("const", 1)),
+                    ("ecx", ("reg", "ebx")),
+                ),
+            ),
+            [],
+        )
+        bad_callsite = copy.deepcopy(callsite)
+        bad_callsite["argument_inventory"]["register_args"][0]["source"]["addressing"]["disp"] = 0x20
+        self.assertEqual(
+            stage_a._semantic_region_abi_inventory_mismatches(
+                bad_callsite,
+                (
+                    ("eax", ("add", ("reg", "ebx"), ("const", 0x1C))),
+                    ("edx", ("const", 1)),
+                    ("ecx", ("reg", "ebx")),
+                ),
+            )[0]["register"],
+            "eax",
+        )
+
     def test_reference_contract_semantic_transfer_fail_closed_for_unsupported_block(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

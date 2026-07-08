@@ -3020,7 +3020,10 @@ def _render_decompiled_c_source(
             for function in synthetic_section_gap_placeholders
             if isinstance(function.get("name"), str)
             and _is_c_identifier(str(function["name"]))
-            and not _decompiled_c_has_checked_semantic_region_contract(function)
+            and (
+                not _decompiled_c_has_checked_semantic_region_contract(function)
+                or _decompiled_c_has_checked_semantic_region_caller_contract(function)
+            )
         ]
         + section_gap_alias_anchor_symbols,
     )
@@ -3183,7 +3186,9 @@ def _decompiled_c_semantic_region_contract_impl(
         "  s->eax = (uint32_t)(s->ebx + 0x1cU);",
         "  s->edx = 1U;",
         "  s->ecx = s->ebx;",
-        f"  return {target_name}((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);",
+        f"  volatile uintptr_t stageb_call_result = {target_name}((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);",
+        "  s->eax = (uint32_t)stageb_call_result;",
+        "  return stageb_call_result;",
         "}",
         "",
         "__attribute__((noinline, used))",
@@ -4404,6 +4409,12 @@ def _decompiled_c_has_checked_semantic_region_contract(function: dict[str, Any])
         return True
     callees = reference_contract.get("semantic_region_callee_contracts")
     return any(isinstance(item, dict) and item.get("status") == "checked" for item in callees) if isinstance(callees, list) else False
+
+
+def _decompiled_c_has_checked_semantic_region_caller_contract(function: dict[str, Any]) -> bool:
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    region = reference_contract.get("semantic_region_contract") if isinstance(reference_contract.get("semantic_region_contract"), dict) else None
+    return isinstance(region, dict) and region.get("status") == "checked"
 
 
 def _decompiled_c_contract_asm_placeholder(

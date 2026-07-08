@@ -1985,9 +1985,29 @@ def _semantic_region_abi_inventory_mismatches(
             continue
         source = arg.get("source") if isinstance(arg.get("source"), dict) else {}
         expected_source = _semantic_region_expected_source(expected_expr)
-        if source != expected_source:
+        if not _semantic_region_source_matches(source, expected_source):
             mismatches.append({"register": register, "expected": expected_source, "observed": source})
     return mismatches
+
+
+def _semantic_region_source_matches(source: dict[str, Any], expected_source: dict[str, Any]) -> bool:
+    kind = expected_source.get("kind")
+    if source.get("kind") != kind:
+        return False
+    if kind == "register":
+        return source.get("register") == expected_source.get("register")
+    if kind == "immediate":
+        return _safe_int(source.get("value")) == _safe_int(expected_source.get("value"))
+    if kind == "address":
+        observed = source.get("addressing") if isinstance(source.get("addressing"), dict) else {}
+        expected = expected_source.get("addressing") if isinstance(expected_source.get("addressing"), dict) else {}
+        return (
+            observed.get("base") == expected.get("base")
+            and observed.get("index") == expected.get("index")
+            and _safe_int(observed.get("scale", 1)) == _safe_int(expected.get("scale", 1))
+            and _safe_int(observed.get("disp", 0)) == _safe_int(expected.get("disp", 0))
+        )
+    return source == expected_source
 
 
 def _semantic_region_callsite_has_register_args(callsite: dict[str, Any]) -> bool:
