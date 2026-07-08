@@ -1726,6 +1726,7 @@ def _stage_b_load_unit_contracts(
         "repair_units": directory / "repair-units.json",
         "source_obligations": directory / "source-obligations.json",
         "semantic_transfer_contracts": directory / "semantic-transfer-contracts.jsonl",
+        "semantic_region_contracts": directory / "semantic-region-contracts.jsonl",
         "memory_frame_contracts": directory / "memory-frame-contracts.json",
         "call_summary_contracts": directory / "call-summary-contracts.json",
         "cluster_semantic_contracts": directory / "cluster-semantic-contracts.jsonl",
@@ -1736,6 +1737,7 @@ def _stage_b_load_unit_contracts(
     repair_units = _load_stage_b_optional_json(paths["repair_units"])
     source_obligations = _load_stage_b_optional_json(paths["source_obligations"])
     semantic_transfer_contracts = _load_stage_b_jsonl(paths["semantic_transfer_contracts"])
+    semantic_region_contracts = _load_stage_b_jsonl(paths["semantic_region_contracts"])
     memory_frame_contracts = _load_stage_b_optional_json(paths["memory_frame_contracts"])
     call_summary_contracts = _load_stage_b_optional_json(paths["call_summary_contracts"])
     cluster_semantic_contracts = _load_stage_b_jsonl(paths["cluster_semantic_contracts"])
@@ -1751,6 +1753,7 @@ def _stage_b_load_unit_contracts(
                 "work_items": len(repair_units.get("work_items", [])) if isinstance(repair_units.get("work_items"), list) else 0,
                 "source_obligations": len(source_obligations.get("obligations", [])) if isinstance(source_obligations.get("obligations"), list) else 0,
                 "semantic_transfer_contracts": len(semantic_transfer_contracts),
+                "semantic_region_contracts": len(semantic_region_contracts),
                 "memory_accesses": len(memory_frame_contracts.get("accesses", [])) if isinstance(memory_frame_contracts.get("accesses"), list) else 0,
                 "call_summaries": len(call_summary_contracts.get("calls", [])) if isinstance(call_summary_contracts.get("calls"), list) else 0,
                 "cluster_semantic_contracts": len(cluster_semantic_contracts),
@@ -1762,6 +1765,7 @@ def _stage_b_load_unit_contracts(
         "repair_units": repair_units,
         "source_obligations": source_obligations,
         "semantic_transfer_contracts": semantic_transfer_contracts,
+        "semantic_region_contracts": semantic_region_contracts,
         "memory_frame_contracts": memory_frame_contracts,
         "call_summary_contracts": call_summary_contracts,
         "cluster_semantic_contracts": cluster_semantic_contracts,
@@ -2007,7 +2011,11 @@ def _stage_b_unit_contract_repair_items(
         )
     has_semantic_work_items = any(
         isinstance(work, dict)
-        and (isinstance(work.get("source_semantic_transfer"), dict) or isinstance(work.get("source_semantic_cluster"), dict))
+        and (
+            isinstance(work.get("source_semantic_transfer"), dict)
+            or isinstance(work.get("source_semantic_region"), dict)
+            or isinstance(work.get("source_semantic_cluster"), dict)
+        )
         for work in work_items
     )
     if not has_semantic_work_items:
@@ -2055,6 +2063,27 @@ def _stage_b_semantic_contract_repair_items(
                     or "complete this semantic transfer contract before expecting guided reimplementation"
                 ),
                 evidence={"source": "stage-a-semantic-transfer-contract", "semantic_transfer": transfer},
+            )
+        )
+        if len(items) >= limit:
+            return items
+    regions = unit_contracts.get("semantic_region_contracts") if isinstance(unit_contracts.get("semantic_region_contracts"), list) else []
+    for region in regions:
+        if not isinstance(region, dict) or region.get("status") in {"checked", "complete"}:
+            continue
+        item_id = str(region.get("id") or "")
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        items.append(
+            _stage_b_repair_item(
+                family="semantic_region",
+                function=str(region.get("function") or "") or None,
+                block_id=str(region.get("block_id") or "") or None,
+                source_map=source_map,
+                repair_class="verified_decompiler_region_contract",
+                next_action=str(region.get("next_action") or "close this selected region contract before lowering it into Stage B C"),
+                evidence={"source": "stage-a-semantic-region-contract", "semantic_region": region},
             )
         )
         if len(items) >= limit:

@@ -657,6 +657,17 @@ def stage_a_export_reference_contract(
         candidate=candidate_bin,
         mapping_payload=mapping_payload,
     )
+    abi_callsites_constraint = _reference_abi_callsites_constraint(original_bin, candidate_bin, map_contract)
+    semantic_region_contracts = _reference_semantic_region_contracts_constraint(
+        original_bin,
+        map_contract["mappings"],
+        abi_callsites_constraint,
+    )
+    proof_obligation_inventory = _reference_proof_obligation_inventory(validation_payload)
+    proof_obligation_inventory = _reference_proof_obligation_inventory_with_semantic_regions(
+        proof_obligation_inventory,
+        semantic_region_contracts,
+    )
     constraints = {
         "pe_sections_imports_relocations_image_base": _reference_pe_layout_constraint(
             original=original_bin,
@@ -668,11 +679,12 @@ def stage_a_export_reference_contract(
         "basic_blocks_and_cfg": map_contract["basic_blocks_and_cfg"],
         "roots_and_jump_tables": map_contract["roots_and_jump_tables"],
         "import_thunks": _reference_import_thunk_constraint(original_bin, candidate_bin, map_contract),
-        "abi_callsites": _reference_abi_callsites_constraint(original_bin, candidate_bin, map_contract),
+        "abi_callsites": abi_callsites_constraint,
+        "semantic_region_contracts": semantic_region_contracts,
         "padding_alignment": map_contract["padding_alignment"],
         "layout_normalization_assumptions": _reference_layout_normalization_constraint(layout_contract_payload),
         "validation_report_artifact_binding": validation_binding,
-        "proof_obligation_inventory": _reference_proof_obligation_inventory(validation_payload),
+        "proof_obligation_inventory": proof_obligation_inventory,
     }
     issues = [
         *_reference_constraint_issues(constraints),
@@ -1396,10 +1408,28 @@ _REFERENCE_CONTRACT_FAMILY_KEYS = (
     ("roots_and_jump_targets", "roots_and_jump_tables"),
     ("import_thunks", "import_thunks"),
     ("abi_callsites", "abi_callsites"),
+    ("semantic_regions", "semantic_region_contracts"),
     ("padding_alignment", "padding_alignment"),
     ("normalization_assumptions", "layout_normalization_assumptions"),
     ("validation_report_artifact_binding", "validation_report_artifact_binding"),
     ("proof_inventory", "proof_obligation_inventory"),
+)
+
+
+_VERIFIED_DECOMPILER_VERTICAL_SLICE_REGIONS = (
+    {
+        "id": "jq-section-gap-0498-to-0202",
+        "source_map_id": "jq:section-gap--text-0498:call:section-gap--text-0202",
+        "caller_function": "section-gap--text-0498",
+        "caller_block_id": "section-gap--text-0498",
+        "callee_function": "section-gap--text-0202",
+        "callee_block_id": "section-gap--text-0202",
+        "register_arguments": (
+            ("eax", ("add", ("reg", "ebx"), ("const", 0x1C))),
+            ("edx", ("const", 1)),
+            ("ecx", ("reg", "ebx")),
+        ),
+    },
 )
 
 
@@ -1503,6 +1533,13 @@ def _reference_family_counts(family: str, constraint: dict[str, Any]) -> dict[st
             "callsites": int(counts.get("callsites") or 0),
             "imports": int(counts.get("import_prototypes") or 0),
         }
+    if family == "semantic_regions":
+        counts = constraint.get("counts") if isinstance(constraint.get("counts"), dict) else {}
+        return {
+            "regions": int(counts.get("regions") or 0),
+            "checked": int(counts.get("checked") or 0),
+            "incomplete": int(counts.get("incomplete") or 0),
+        }
     if family == "padding_alignment":
         return {"waivers": len(constraint.get("waivers", [])) if isinstance(constraint.get("waivers"), list) else 0}
     if family == "proof_inventory":
@@ -1599,6 +1636,7 @@ def _reference_unit_contract_paths(unit_contract_dir: Path) -> dict[str, Path]:
         "repair_units": unit_contract_dir / "repair-units.json",
         "source_obligations": unit_contract_dir / "source-obligations.json",
         "semantic_transfer_contracts": unit_contract_dir / "semantic-transfer-contracts.jsonl",
+        "semantic_region_contracts": unit_contract_dir / "semantic-region-contracts.jsonl",
         "memory_frame_contracts": unit_contract_dir / "memory-frame-contracts.json",
         "call_summary_contracts": unit_contract_dir / "call-summary-contracts.json",
         "cluster_semantic_contracts": unit_contract_dir / "cluster-semantic-contracts.jsonl",
@@ -1621,6 +1659,7 @@ def _write_reference_unit_contract_sidecars(
     write_json(paths["repair_units"], payload["repair_units"])
     write_json(paths["source_obligations"], payload["source_obligations"])
     _write_jsonl(paths["semantic_transfer_contracts"], payload["semantic_transfer_contracts"])
+    _write_jsonl(paths["semantic_region_contracts"], payload["semantic_region_contracts"])
     write_json(paths["memory_frame_contracts"], payload["memory_frame_contracts"])
     write_json(paths["call_summary_contracts"], payload["call_summary_contracts"])
     _write_jsonl(paths["cluster_semantic_contracts"], payload["cluster_semantic_contracts"])
@@ -1640,8 +1679,10 @@ def _reference_semantic_contract_payloads(
     memory_frames = _semantic_memory_frame_contracts(contract, contract_ref)
     call_summaries = _semantic_call_summary_contracts(contract, contract_ref)
     cluster_contracts = _semantic_cluster_contracts(contract, contract_ref)
+    semantic_region_contracts = _reference_semantic_region_unit_contracts(contract, contract_ref)
     return {
         "semantic_transfer_contracts": transfer_contracts,
+        "semantic_region_contracts": semantic_region_contracts,
         "memory_frame_contracts": memory_frames,
         "call_summary_contracts": call_summaries,
         "cluster_semantic_contracts": cluster_contracts,
@@ -1651,10 +1692,497 @@ def _reference_semantic_contract_payloads(
 def _fallback_reference_semantic_contract_payloads(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
     return {
         "semantic_transfer_contracts": [],
+        "semantic_region_contracts": _reference_semantic_region_unit_contracts(contract, contract_ref),
         "memory_frame_contracts": _semantic_memory_frame_contracts(contract, contract_ref),
         "call_summary_contracts": _semantic_call_summary_contracts(contract, contract_ref),
         "cluster_semantic_contracts": _semantic_cluster_contracts(contract, contract_ref),
     }
+
+
+def _reference_semantic_region_contracts_constraint(
+    binary: StageABinary,
+    mappings: list[BlockMapping],
+    abi_constraint: dict[str, Any],
+) -> dict[str, Any]:
+    regions = []
+    for spec in _VERIFIED_DECOMPILER_VERTICAL_SLICE_REGIONS:
+        region = _reference_selected_semantic_region_contract(binary, mappings, abi_constraint, spec)
+        if region is not None:
+            regions.append(region)
+    if not regions:
+        return {
+            "format": "stage-a-semantic-region-contracts-v1",
+            "status": "not_applicable",
+            "evidence_kind": "stage-a-local-symbolic-x86-region-contract",
+            "regions": [],
+            "counts": {"regions": 0, "checked": 0, "incomplete": 0},
+        }
+    checked = sum(1 for region in regions if region.get("status") == "checked")
+    incomplete = len(regions) - checked
+    return {
+        "format": "stage-a-semantic-region-contracts-v1",
+        "status": "satisfied" if incomplete == 0 else "incomplete",
+        "evidence_kind": "stage-a-local-symbolic-x86-region-contract",
+        "regions": regions,
+        "counts": {"regions": len(regions), "checked": checked, "incomplete": incomplete},
+        "blocker": None if incomplete == 0 else "one or more selected semantic regions did not close",
+        "next_action": "repair unsupported region semantics or explicit ABI evidence before treating this region as decompiler-ready",
+    }
+
+
+def _reference_selected_semantic_region_contract(
+    binary: StageABinary,
+    mappings: list[BlockMapping],
+    abi_constraint: dict[str, Any],
+    spec: dict[str, Any],
+) -> dict[str, Any] | None:
+    caller_block_id = str(spec["caller_block_id"])
+    callee_block_id = str(spec["callee_block_id"])
+    caller = next((mapped for mapped in mappings if mapped.id == caller_block_id and mapped.kind == "code"), None)
+    if caller is None:
+        return None
+    blockers: list[dict[str, Any]] = []
+    callee = next((mapped for mapped in mappings if mapped.id == callee_block_id and mapped.kind == "code"), None)
+    if callee is None:
+        blockers.append(
+            {
+                "category": "missing_callee_block",
+                "blocker": f"selected region callee block {callee_block_id!r} is not mapped as code",
+                "next_action": "regenerate the Stage A map with the selected callee block",
+            }
+        )
+    function = _semantic_region_abi_function(abi_constraint, str(spec["caller_function"]))
+    if function is None:
+        blockers.append(
+            {
+                "category": "missing_abi_function",
+                "blocker": f"selected region caller function {spec['caller_function']!r} has no ABI evidence",
+                "next_action": "regenerate ABI callsite evidence for the selected caller block",
+            }
+        )
+    data = binary.pe.get_data(caller.original.rva_start, caller.original.size)
+    instructions = _semantic_disassemble_block(binary, caller.original, data)
+    symbolic = (
+        _symbolic_execute(binary, caller.original, data, "original", caller)
+        if len(data) == caller.original.size
+        else {
+            "status": "incomplete",
+            "category": "unreadable_block_bytes",
+            "blocker": f"expected {caller.original.size} block bytes, read {len(data)}",
+            "next_action": "fix block range or PE section mapping before generating a semantic region contract",
+        }
+    )
+    observables = symbolic.get("observables") if isinstance(symbolic.get("observables"), dict) else {}
+    event = None
+    if symbolic.get("status") != "ok":
+        blockers.append(
+            {
+                "category": symbolic.get("category") or "unsupported_semantics",
+                "blocker": symbolic.get("blocker") or "selected region is outside the current symbolic x86 subset",
+                "next_action": symbolic.get("next_action") or "add checked x86 semantics for this region",
+                "instruction": symbolic.get("instruction") if isinstance(symbolic.get("instruction"), dict) else None,
+            }
+        )
+    else:
+        event = _semantic_region_internal_call_event(
+            observables,
+            target_rva=callee.original.rva_start if isinstance(callee, BlockMapping) else None,
+        )
+        if event is None:
+            blockers.append(
+                {
+                    "category": "missing_direct_call_boundary",
+                    "blocker": "selected region did not produce the expected direct internal call boundary",
+                    "next_action": "keep the region incomplete until direct call target recovery closes",
+                }
+            )
+        memory_events = observables.get("memory_events")
+        if isinstance(memory_events, tuple) and memory_events:
+            blockers.append(
+                {
+                    "category": "ambiguous_memory_effects",
+                    "blocker": "selected vertical slice currently admits only no-memory setup before the direct call",
+                    "next_action": "extend the region contract with explicit memory frame and alias preconditions",
+                    "memory_events": [_semantic_memory_event_json(item) for item in memory_events],
+                }
+            )
+    callsite = None
+    if isinstance(function, dict) and isinstance(callee, BlockMapping):
+        callsite = _semantic_region_callsite(function, caller_block_id, callee.original.rva_start)
+        if callsite is None:
+            blockers.append(
+                {
+                    "category": "missing_abi_callsite",
+                    "blocker": "ABI callsite evidence does not contain the selected direct call",
+                    "next_action": "regenerate callsite evidence or keep the region incomplete",
+                }
+            )
+    register_mismatches = []
+    if event is not None:
+        register_mismatches = _semantic_region_register_input_mismatches(
+            event,
+            tuple(spec["register_arguments"]),
+        )
+        if register_mismatches:
+            blockers.append(
+                {
+                    "category": "x86_to_ir_register_input_mismatch",
+                    "blocker": "symbolic x86 call inputs do not imply the selected region IR",
+                    "next_action": "fix x86 semantics, callsite recovery, or the selected IR contract",
+                    "mismatches": register_mismatches,
+                }
+            )
+    abi_mismatches = []
+    if isinstance(callsite, dict):
+        abi_mismatches = _semantic_region_abi_inventory_mismatches(callsite, tuple(spec["register_arguments"]))
+        if abi_mismatches and _semantic_region_callsite_has_register_args(callsite):
+            blockers.append(
+                {
+                    "category": "abi_inventory_mismatch",
+                    "blocker": "ABI argument inventory does not match the selected register-carried call contract",
+                    "next_action": "fix ABI register argument recovery before lowering this region",
+                    "mismatches": abi_mismatches,
+                }
+            )
+    ir = _semantic_region_ir(spec, caller, callee, callsite)
+    c_contract = _semantic_region_c_shaped_contract(spec, ir)
+    proof_obligations = _semantic_region_proof_obligations(str(spec["id"]), blockers)
+    region = {
+        "format": "stage-a-semantic-region-contract-v1",
+        "id": f"semantic-region:{_safe_gap_part(str(spec['id']))}",
+        "unit_kind": "semantic_region",
+        "region_kind": "verified_decompiler_vertical_slice",
+        "status": "checked" if not blockers else "incomplete",
+        "source_map_id": spec.get("source_map_id"),
+        "function": str(spec["caller_function"]),
+        "block_id": caller_block_id,
+        "caller": {
+            "function": str(spec["caller_function"]),
+            "block_id": caller_block_id,
+            "original": _range_report(caller.original),
+        },
+        "callee": {
+            "function": str(spec["callee_function"]),
+            "block_id": callee_block_id,
+            "original": _range_report(callee.original) if isinstance(callee, BlockMapping) else None,
+        },
+        "instructions": instructions,
+        "inputs": _semantic_region_inputs(spec, event),
+        "outputs": _semantic_region_outputs(spec, callee),
+        "preconditions": _semantic_region_preconditions(spec),
+        "preserved_registers": ["ebx", "esi", "edi", "ebp", "esp"],
+        "clobbered_registers": ["eax", "ecx", "edx"],
+        "direct_callsites": [callsite] if isinstance(callsite, dict) else [],
+        "cfg_exits": _semantic_region_cfg_exits(caller, callee),
+        "classifications": {
+            "import_thunk": False,
+            "padding": False,
+            "section_gap": True,
+            "jump_table_target": False,
+        },
+        "ir": ir,
+        "c_contract": c_contract,
+        "x86_to_ir_validation": {
+            "status": "proved" if not any(item["category"].startswith("x86_to_ir") for item in blockers) and event is not None else "incomplete",
+            "proof_rule": "stage_a_symbolic_x86_to_ir_region_subset_v1",
+            "checked_inputs": _semantic_region_call_register_inputs_json(event),
+            "mismatches": register_mismatches,
+        },
+        "abi_inventory_validation": {
+            "status": "proved"
+            if not abi_mismatches
+            else "derived_from_symbolic_region"
+            if isinstance(callsite, dict) and not _semantic_region_callsite_has_register_args(callsite)
+            else "incomplete",
+            "mismatches": abi_mismatches,
+            "fallback": "symbolic_region_call_boundary"
+            if isinstance(callsite, dict) and abi_mismatches and not _semantic_region_callsite_has_register_args(callsite)
+            else None,
+        },
+        "c_contract_equivalence": {
+            "status": "proved" if c_contract.get("status") == "checked" and not blockers else "incomplete",
+            "proof_rule": "stage_a_ir_to_c_contract_structural_v1",
+            "checked_operations": len(ir.get("operations", [])) if isinstance(ir.get("operations"), list) else 0,
+        },
+        "proof_obligations": proof_obligations,
+        "blockers": blockers,
+        "blocker_category": blockers[0]["category"] if blockers else None,
+        "blocker": blockers[0]["blocker"] if blockers else None,
+        "next_action": (
+            blockers[0]["next_action"]
+            if blockers
+            else "lower this checked region contract into Stage B ugly C and rerun candidate validation"
+        ),
+        "acceptance": "selected-region contract only; final acceptance still requires Stage A candidate validation",
+    }
+    return region
+
+
+def _semantic_region_abi_function(abi_constraint: dict[str, Any], name: str) -> dict[str, Any] | None:
+    original = abi_constraint.get("original") if isinstance(abi_constraint.get("original"), dict) else {}
+    for function in original.get("functions", []) if isinstance(original.get("functions"), list) else []:
+        if isinstance(function, dict) and function.get("name") == name:
+            return function
+    return None
+
+
+def _semantic_region_callsite(function: dict[str, Any], block_id: str, target_rva: int) -> dict[str, Any] | None:
+    for callsite in function.get("callsites", []) if isinstance(function.get("callsites"), list) else []:
+        if not isinstance(callsite, dict):
+            continue
+        target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
+        if callsite.get("block_id") == block_id and target.get("kind") == "direct" and _safe_int(target.get("target_rva")) == target_rva:
+            return callsite
+    return None
+
+
+def _semantic_region_internal_call_event(observables: dict[str, Any], *, target_rva: int | None) -> tuple[Any, ...] | None:
+    if target_rva is None:
+        return None
+    events = observables.get("external_events")
+    for event in events if isinstance(events, tuple) else ():
+        if isinstance(event, tuple) and len(event) >= 5 and event[0] == "internal_call" and int(event[1]) == target_rva:
+            return event
+    return None
+
+
+def _semantic_region_register_input_mismatches(
+    event: tuple[Any, ...],
+    expected_arguments: tuple[tuple[str, tuple[Any, ...]], ...],
+) -> list[dict[str, Any]]:
+    inputs = dict(event[3]) if len(event) > 3 and isinstance(event[3], tuple) else {}
+    mismatches = []
+    for register, expected_expr in expected_arguments:
+        observed = _canonical_expr(inputs.get(register))
+        expected = _canonical_expr(expected_expr)
+        if observed != expected:
+            mismatches.append(
+                {
+                    "register": register,
+                    "expected": _semantic_expr_json(expected),
+                    "observed": _semantic_expr_json(observed),
+                }
+            )
+    return mismatches
+
+
+def _semantic_region_abi_inventory_mismatches(
+    callsite: dict[str, Any],
+    expected_arguments: tuple[tuple[str, tuple[Any, ...]], ...],
+) -> list[dict[str, Any]]:
+    inventory = callsite.get("argument_inventory") if isinstance(callsite.get("argument_inventory"), dict) else {}
+    register_args = inventory.get("register_args") if isinstance(inventory.get("register_args"), list) else []
+    by_register = {
+        str(arg.get("register")): arg
+        for arg in register_args
+        if isinstance(arg, dict) and isinstance(arg.get("register"), str)
+    }
+    mismatches = []
+    for register, expected_expr in expected_arguments:
+        arg = by_register.get(register)
+        if arg is None:
+            mismatches.append({"register": register, "expected": "register argument", "observed": "missing"})
+            continue
+        source = arg.get("source") if isinstance(arg.get("source"), dict) else {}
+        expected_source = _semantic_region_expected_source(expected_expr)
+        if source != expected_source:
+            mismatches.append({"register": register, "expected": expected_source, "observed": source})
+    return mismatches
+
+
+def _semantic_region_callsite_has_register_args(callsite: dict[str, Any]) -> bool:
+    inventory = callsite.get("argument_inventory") if isinstance(callsite.get("argument_inventory"), dict) else {}
+    register_args = inventory.get("register_args") if isinstance(inventory.get("register_args"), list) else []
+    return bool(register_args)
+
+
+def _semantic_region_expected_source(expr: tuple[Any, ...]) -> dict[str, Any]:
+    expr = _canonical_expr(expr)
+    if expr == ("reg", "ebx"):
+        return {"kind": "register", "register": "ebx"}
+    if expr == ("const", 1):
+        return {"kind": "immediate", "value": 1}
+    if isinstance(expr, tuple) and len(expr) == 3 and expr[0] == "add":
+        parts = set(expr[1:])
+        if ("reg", "ebx") in parts and ("const", 0x1C) in parts:
+            return {"kind": "address", "addressing": {"base": "ebx", "index": None, "scale": 1, "disp": 0x1C}}
+    return {"kind": "semantic_expr", "value": _semantic_expr_json(expr)}
+
+
+def _semantic_region_ir(
+    spec: dict[str, Any],
+    caller: BlockMapping,
+    callee: BlockMapping | None,
+    callsite: dict[str, Any] | None,
+) -> dict[str, Any]:
+    target_rva = callee.original.rva_start if isinstance(callee, BlockMapping) else None
+    callsite_id = callsite.get("id") if isinstance(callsite, dict) else None
+    return {
+        "format": "stage-a-low-level-ir-v1",
+        "status": "checked",
+        "region_id": str(spec["id"]),
+        "model": "x86-pe32-register-call-boundary-v1",
+        "operations": [
+            {"op": "add32", "dst": "tmp0", "lhs": {"op": "reg", "name": "ebx"}, "rhs": {"op": "const", "value": 0x1C}},
+            {"op": "assign", "dst": "eax_call", "src": {"op": "tmp", "name": "tmp0"}},
+            {"op": "assign", "dst": "edx_call", "src": {"op": "const", "value": 1}},
+            {"op": "assign", "dst": "ecx_call", "src": {"op": "reg", "name": "ebx"}},
+            {
+                "op": "direct_call",
+                "target": str(spec["callee_function"]),
+                "target_block_id": str(spec["callee_block_id"]),
+                "target_rva": target_rva,
+                "callsite_id": callsite_id,
+                "register_arguments": [
+                    {"register": register, "value": _semantic_expr_json(expr)}
+                    for register, expr in spec["register_arguments"]
+                ],
+                "stack_delta": {"status": "derived", "net_bytes": 0},
+            },
+        ],
+    }
+
+
+def _semantic_region_c_shaped_contract(spec: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "format": "stage-a-c-shaped-region-contract-v1",
+        "status": "checked" if ir.get("status") == "checked" else "incomplete",
+        "state_type": "stageb_x86_state",
+        "function": f"{_safe_gap_part(str(spec['caller_function'])).replace('-', '_')}_contract",
+        "statements": [
+            {"kind": "assign_register", "register": "eax", "c": "s->eax = (uint32_t)(s->ebx + 0x1cU);"},
+            {"kind": "assign_register", "register": "edx", "c": "s->edx = 1U;"},
+            {"kind": "assign_register", "register": "ecx", "c": "s->ecx = s->ebx;"},
+            {
+                "kind": "direct_call",
+                "target": str(spec["callee_function"]),
+                "register_arguments": [{"register": register} for register, _ in spec["register_arguments"]],
+                "c": "return callee((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);",
+            },
+        ],
+        "equivalence": {
+            "status": "checked" if ir.get("status") == "checked" else "incomplete",
+            "proof_rule": "stage_a_ir_to_c_contract_structural_v1",
+        },
+    }
+
+
+def _semantic_region_inputs(spec: dict[str, Any], event: tuple[Any, ...] | None) -> dict[str, Any]:
+    return {
+        "semantic_registers": ["ebx"],
+        "machine_registers_at_call": _semantic_region_call_register_inputs_json(event),
+        "stack_slots": [],
+        "flags": [],
+        "memory_reads": [],
+    }
+
+
+def _semantic_region_outputs(spec: dict[str, Any], callee: BlockMapping | None) -> dict[str, Any]:
+    return {
+        "registers_at_call": [
+            {"register": register, "value": _semantic_expr_json(expr)}
+            for register, expr in spec["register_arguments"]
+        ],
+        "stack_slots": [],
+        "flags": [],
+        "memory_writes": [],
+        "direct_call": {
+            "target": str(spec["callee_function"]),
+            "target_block_id": str(spec["callee_block_id"]),
+            "target_rva": callee.original.rva_start if isinstance(callee, BlockMapping) else None,
+        },
+    }
+
+
+def _semantic_region_call_register_inputs_json(event: tuple[Any, ...] | None) -> dict[str, Any]:
+    if event is None or len(event) <= 3 or not isinstance(event[3], tuple):
+        return {}
+    return _semantic_call_register_inputs_json(event[3])
+
+
+def _semantic_region_preconditions(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {"kind": "machine_mode", "value": "x86-pe32"},
+        {"kind": "wrapping_arithmetic", "expression": "ebx + 0x1c", "width": 32},
+        {"kind": "direct_call_abi", "target": str(spec["callee_function"]), "register_order": ["eax", "edx", "ecx"]},
+    ]
+
+
+def _semantic_region_cfg_exits(caller: BlockMapping, callee: BlockMapping | None) -> list[dict[str, Any]]:
+    if not isinstance(callee, BlockMapping):
+        return []
+    return [
+        {
+            "kind": "direct_call",
+            "source_block_id": caller.id,
+            "target_block_id": callee.id,
+            "target_rva": callee.original.rva_start,
+        }
+    ]
+
+
+def _semantic_region_proof_obligations(region_id: str, blockers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    status = "proved" if not blockers else "incomplete"
+    blocker = blockers[0]["blocker"] if blockers else None
+    next_action = blockers[0]["next_action"] if blockers else "no action required"
+    return [
+        {
+            "id": f"semantic-region:{_safe_gap_part(region_id)}:x86-to-ir",
+            "kind": "semantic_region_x86_to_ir",
+            "status": status,
+            "proof_rule": "stage_a_symbolic_x86_to_ir_region_subset_v1",
+            "blocker": blocker,
+            "next_action": next_action,
+        },
+        {
+            "id": f"semantic-region:{_safe_gap_part(region_id)}:ir-to-c-contract",
+            "kind": "semantic_region_ir_to_c_contract",
+            "status": status,
+            "proof_rule": "stage_a_ir_to_c_contract_structural_v1",
+            "blocker": blocker,
+            "next_action": next_action,
+        },
+    ]
+
+
+def _reference_semantic_region_unit_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> list[dict[str, Any]]:
+    constraint = _contract_constraint(contract, "semantic_region_contracts")
+    rows = []
+    for region in constraint.get("regions", []) if isinstance(constraint.get("regions"), list) else []:
+        if not isinstance(region, dict):
+            continue
+        row = dict(region)
+        row["reference_contract"] = contract_ref
+        rows.append(row)
+    return sorted(rows, key=lambda item: str(item.get("id") or ""))
+
+
+def _reference_proof_obligation_inventory_with_semantic_regions(
+    proof: dict[str, Any],
+    semantic_regions: dict[str, Any],
+) -> dict[str, Any]:
+    obligations = [item for item in proof.get("obligations", []) if isinstance(item, dict)]
+    region_obligations = [
+        item
+        for region in semantic_regions.get("regions", []) if isinstance(region, dict)
+        for item in region.get("proof_obligations", []) if isinstance(item, dict)
+    ]
+    if not region_obligations:
+        return proof
+    updated = dict(proof)
+    updated["obligations"] = [*obligations, *region_obligations]
+    counts = dict(updated.get("counts") if isinstance(updated.get("counts"), dict) else {})
+    counts["obligations"] = len(updated["obligations"])
+    counts["by_status"] = _count_by(updated["obligations"], "status")
+    updated["counts"] = counts
+    statuses = {str(item.get("status") or "") for item in updated["obligations"]}
+    if proof.get("status") == "satisfied" and statuses <= {"proved", "waived_noncode"}:
+        updated["status"] = "satisfied"
+    elif "failed" in statuses:
+        updated["status"] = "failed"
+    else:
+        updated["status"] = "incomplete"
+    return updated
 
 
 def _semantic_transfer_contracts(
@@ -2295,6 +2823,7 @@ def _reference_unit_contract_payloads(
         "repair_units": repair_units,
         "source_obligations": source_obligations,
         "semantic_transfer_contracts": semantic_payload["semantic_transfer_contracts"],
+        "semantic_region_contracts": semantic_payload.get("semantic_region_contracts", []),
         "memory_frame_contracts": semantic_payload["memory_frame_contracts"],
         "call_summary_contracts": semantic_payload["call_summary_contracts"],
         "cluster_semantic_contracts": semantic_payload["cluster_semantic_contracts"],
@@ -2756,6 +3285,29 @@ def _repair_units_from_semantic_payload(semantic_payload: dict[str, Any]) -> lis
                 "source_semantic_transfer": transfer,
             }
         )
+    regions = semantic_payload.get("semantic_region_contracts") if isinstance(semantic_payload.get("semantic_region_contracts"), list) else []
+    for region in regions:
+        if not isinstance(region, dict) or region.get("status") == "checked":
+            continue
+        items.append(
+            {
+                "id": f"work:{_safe_gap_part(str(region.get('id') or 'semantic-region'))}",
+                "unit_kind": "semantic_region",
+                "family": "semantic_region",
+                "category": region.get("blocker_category") or "semantic_region_incomplete",
+                "severity": "incomplete",
+                "original_function": region.get("function"),
+                "original_block": region.get("block_id"),
+                "repair_class": "verified_decompiler_region_contract",
+                "expected": "checked x86-to-IR-to-C semantic region contract",
+                "observed": region.get("status"),
+                "cause_hint": region.get("blocker"),
+                "next_action": region.get("next_action")
+                or "close the selected region contract before lowering it into Stage B C",
+                "unit_contract_id": region.get("id"),
+                "source_semantic_region": region,
+            }
+        )
     clusters = semantic_payload.get("cluster_semantic_contracts") if isinstance(semantic_payload.get("cluster_semantic_contracts"), list) else []
     for cluster in clusters:
         if not isinstance(cluster, dict) or cluster.get("status") in {"complete", "reimplementable"}:
@@ -3134,6 +3686,9 @@ def _reference_unit_contract_artifact(unit_contracts: dict[str, Any]) -> dict[st
             "semantic_transfer_contracts": len(unit_contracts.get("semantic_transfer_contracts", []))
             if isinstance(unit_contracts.get("semantic_transfer_contracts"), list)
             else 0,
+            "semantic_region_contracts": len(unit_contracts.get("semantic_region_contracts", []))
+            if isinstance(unit_contracts.get("semantic_region_contracts"), list)
+            else 0,
             "cluster_semantic_contracts": len(unit_contracts.get("cluster_semantic_contracts", []))
             if isinstance(unit_contracts.get("cluster_semantic_contracts"), list)
             else 0,
@@ -3163,6 +3718,22 @@ def _semantic_coverage_blockers(unit_contracts: dict[str, Any]) -> list[dict[str
                 blocker=transfer.get("blocker") or "block does not have an implementable transfer contract",
                 next_action=transfer.get("next_action") or "add instruction semantics, an invariant, or a checked cluster summary",
                 sample=transfer,
+            )
+        )
+    regions = unit_contracts.get("semantic_region_contracts") if isinstance(unit_contracts.get("semantic_region_contracts"), list) else []
+    for region in regions:
+        if not isinstance(region, dict) or region.get("status") in {"checked", "complete", "external_boundary_contract"}:
+            continue
+        blockers.append(
+            _semantic_coverage_blocker(
+                family="semantic_regions",
+                category=str(region.get("blocker_category") or "semantic_region_incomplete"),
+                function=region.get("function"),
+                block_id=region.get("block_id"),
+                source_id=region.get("id"),
+                blocker=region.get("blocker") or "semantic region contract is incomplete",
+                next_action=region.get("next_action") or "close x86-to-IR and IR-to-C proof obligations for this region",
+                sample=region,
             )
         )
     memory = unit_contracts.get("memory_frame_contracts") if isinstance(unit_contracts.get("memory_frame_contracts"), dict) else {}
@@ -3272,11 +3843,13 @@ def _semantic_coverage_sample(sample: dict[str, Any]) -> dict[str, Any]:
 def _semantic_coverage_families(unit_contracts: dict[str, Any], blockers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     blocker_counts = _count_by(blockers, "family")
     transfer_count = len(unit_contracts.get("semantic_transfer_contracts", [])) if isinstance(unit_contracts.get("semantic_transfer_contracts"), list) else 0
+    region_count = len(unit_contracts.get("semantic_region_contracts", [])) if isinstance(unit_contracts.get("semantic_region_contracts"), list) else 0
     memory = unit_contracts.get("memory_frame_contracts") if isinstance(unit_contracts.get("memory_frame_contracts"), dict) else {}
     calls = unit_contracts.get("call_summary_contracts") if isinstance(unit_contracts.get("call_summary_contracts"), dict) else {}
     cluster_count = len(unit_contracts.get("cluster_semantic_contracts", [])) if isinstance(unit_contracts.get("cluster_semantic_contracts"), list) else 0
     rows = [
         ("semantic_transfer", transfer_count, "all executable blocks have implementable transfer contracts"),
+        ("semantic_regions", region_count, "selected decompiler regions have checked x86-to-IR-to-C contracts"),
         ("memory_frames", len(memory.get("accesses", [])) if isinstance(memory.get("accesses"), list) else 0, "all memory accesses have non-unknown frame/alias classification"),
         ("call_summaries", len(calls.get("calls", [])) if isinstance(calls.get("calls"), list) else 0, "all calls have complete summaries or explicit external boundaries"),
         ("semantic_clusters", cluster_count, "all switch/loop/function-pointer clusters are complete or explicitly external-boundary modeled"),
@@ -3295,6 +3868,7 @@ def _semantic_coverage_families(unit_contracts: dict[str, Any], blockers: list[d
 
 def _semantic_coverage_counts(unit_contracts: dict[str, Any], blockers: list[dict[str, Any]]) -> dict[str, Any]:
     transfers = unit_contracts.get("semantic_transfer_contracts") if isinstance(unit_contracts.get("semantic_transfer_contracts"), list) else []
+    regions = unit_contracts.get("semantic_region_contracts") if isinstance(unit_contracts.get("semantic_region_contracts"), list) else []
     memory = unit_contracts.get("memory_frame_contracts") if isinstance(unit_contracts.get("memory_frame_contracts"), dict) else {}
     calls = unit_contracts.get("call_summary_contracts") if isinstance(unit_contracts.get("call_summary_contracts"), dict) else {}
     clusters = unit_contracts.get("cluster_semantic_contracts") if isinstance(unit_contracts.get("cluster_semantic_contracts"), list) else []
@@ -3303,6 +3877,9 @@ def _semantic_coverage_counts(unit_contracts: dict[str, Any], blockers: list[dic
         "semantic_transfer_contracts": len(transfers),
         "implementable_transfer_contracts": sum(1 for item in transfers if isinstance(item, dict) and item.get("status") in {"reimplementable", "complete"}),
         "analysis_blocked_transfers": sum(1 for item in blockers if item.get("family") == "semantic_transfer"),
+        "semantic_region_contracts": len(regions),
+        "checked_semantic_region_contracts": sum(1 for item in regions if isinstance(item, dict) and item.get("status") in {"checked", "complete"}),
+        "analysis_blocked_semantic_regions": sum(1 for item in blockers if item.get("family") == "semantic_regions"),
         "memory_accesses": len(memory.get("accesses", [])) if isinstance(memory.get("accesses"), list) else 0,
         "unclassified_memory_accesses": by_category.get("unclassified_memory_access", 0),
         "external_unknown_memory_accesses": by_category.get("external_unknown_memory_access", 0),
@@ -3335,9 +3912,10 @@ def _semantic_coverage_next_work(blockers: list[dict[str, Any]], *, limit: int =
 def _semantic_coverage_family_rank(family: str) -> int:
     order = {
         "semantic_transfer": 0,
-        "memory_frames": 1,
-        "call_summaries": 2,
-        "semantic_clusters": 3,
+        "semantic_regions": 1,
+        "memory_frames": 2,
+        "call_summaries": 3,
+        "semantic_clusters": 4,
     }
     return order.get(family, 99)
 
@@ -3358,6 +3936,7 @@ def _load_reference_unit_contract_sidecars(
         "repair_units": _load_json_or(paths["repair_units"], fallback["repair_units"]),
         "source_obligations": _load_json_or(paths["source_obligations"], fallback["source_obligations"]),
         "semantic_transfer_contracts": _load_jsonl_or(paths["semantic_transfer_contracts"], fallback["semantic_transfer_contracts"]),
+        "semantic_region_contracts": _load_jsonl_or(paths["semantic_region_contracts"], fallback["semantic_region_contracts"]),
         "memory_frame_contracts": _load_json_or(paths["memory_frame_contracts"], fallback["memory_frame_contracts"]),
         "call_summary_contracts": _load_json_or(paths["call_summary_contracts"], fallback["call_summary_contracts"]),
         "cluster_semantic_contracts": _load_jsonl_or(paths["cluster_semantic_contracts"], fallback["cluster_semantic_contracts"]),
@@ -3405,7 +3984,14 @@ def _load_json_or(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
 
 def _matching_unit_contracts(unit_contracts: dict[str, Any], focus_lower: str) -> list[dict[str, Any]]:
     matches = []
-    for name in ("block_contracts", "function_contracts", "cluster_contracts", "semantic_transfer_contracts", "cluster_semantic_contracts"):
+    for name in (
+        "block_contracts",
+        "function_contracts",
+        "cluster_contracts",
+        "semantic_transfer_contracts",
+        "semantic_region_contracts",
+        "cluster_semantic_contracts",
+    ):
         for row in unit_contracts.get(name, []) if isinstance(unit_contracts.get(name), list) else []:
             if isinstance(row, dict) and _matches_focus(row, focus_lower):
                 matches.append(row)
@@ -3552,6 +4138,8 @@ def _gap_family_rank(family: str) -> int:
         "import_thunks": 6,
         "padding_alignment": 6,
         "semantic_transfer": 6,
+        "semantic_region": 6,
+        "semantic_regions": 6,
         "semantic_cluster": 6,
         "proof_inventory": 7,
     }

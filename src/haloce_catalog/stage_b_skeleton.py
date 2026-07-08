@@ -2250,6 +2250,23 @@ def _reference_contract_abi_section_gap_entries_by_start(reference_contract_payl
     original = abi.get("original") if isinstance(abi.get("original"), dict) else {}
     functions = original.get("functions") if isinstance(original.get("functions"), list) else []
     block_aliases = _reference_contract_basic_block_aliases_by_id(reference_contract_payload)
+    semantic_regions = _reference_contract_semantic_regions(reference_contract_payload)
+    semantic_regions_by_caller: dict[str, dict[str, Any]] = {}
+    for region in semantic_regions:
+        if not isinstance(region, dict):
+            continue
+        caller = region.get("caller") if isinstance(region.get("caller"), dict) else {}
+        caller_block = str(region.get("block_id") or caller.get("block_id") or "")
+        if caller_block:
+            semantic_regions_by_caller[caller_block] = region
+    semantic_regions_by_callee: dict[str, list[dict[str, Any]]] = {}
+    for region in semantic_regions:
+        if not isinstance(region, dict):
+            continue
+        callee = region.get("callee") if isinstance(region.get("callee"), dict) else {}
+        callee_block = str(callee.get("block_id") or "")
+        if callee_block:
+            semantic_regions_by_callee.setdefault(callee_block, []).append(region)
     result: dict[int, dict[str, Any]] = {}
     for function in functions:
         if not isinstance(function, dict):
@@ -2290,7 +2307,7 @@ def _reference_contract_abi_section_gap_entries_by_start(reference_contract_payl
                 ],
             ]
         )
-        result[entry_start] = {
+        entry = {
             "name": name,
             "aliases": aliases,
             "rva_start": entry_start,
@@ -2298,7 +2315,27 @@ def _reference_contract_abi_section_gap_entries_by_start(reference_contract_payl
             "block_ids": _dedupe_strings(block_ids),
             "abi_callsites": _reference_contract_abi_callsite_summaries(function),
         }
+        for block_id in block_ids:
+            region = semantic_regions_by_caller.get(block_id)
+            if region is not None:
+                entry["semantic_region_contract"] = region
+                break
+        callee_regions = [
+            region
+            for block_id in block_ids
+            for region in semantic_regions_by_callee.get(block_id, [])
+        ]
+        if callee_regions:
+            entry["semantic_region_callee_contracts"] = callee_regions
+        result[entry_start] = entry
     return result
+
+
+def _reference_contract_semantic_regions(reference_contract_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    constraints = reference_contract_payload.get("constraints") if isinstance(reference_contract_payload.get("constraints"), dict) else {}
+    semantic = constraints.get("semantic_region_contracts") if isinstance(constraints.get("semantic_region_contracts"), dict) else {}
+    regions = semantic.get("regions") if isinstance(semantic.get("regions"), list) else []
+    return [region for region in regions if isinstance(region, dict)]
 
 
 def _reference_contract_abi_callsite_summaries(function: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2591,6 +2628,16 @@ def _render_decompiled_c_source(
         "typedef struct _stage_b_startupinfo { int newmode; } _startupinfo;",
         "typedef void (__attribute__((cdecl)) *_invalid_parameter_handler)(const wchar_t *, const wchar_t *, const wchar_t *, unsigned int, uintptr_t);",
         "typedef struct _stage_b_jv { uint32_t word[4]; } stage_b_jv;",
+        "typedef struct stageb_x86_state {",
+        "    uint32_t eax;",
+        "    uint32_t ebx;",
+        "    uint32_t ecx;",
+        "    uint32_t edx;",
+        "    uint32_t esi;",
+        "    uint32_t edi;",
+        "    uint32_t ebp;",
+        "    uint32_t esp;",
+        "} stageb_x86_state;",
         "typedef uint8_t byte;",
         "typedef uint8_t undefined;",
         "typedef uint8_t undefined1;",
@@ -2902,6 +2949,13 @@ def _render_decompiled_c_source(
         emitted_section_gap_targets=emitted_section_gap_targets,
         runtime_linked_call_targets=runtime_linked_call_targets,
     )
+    if reference_contract_payload is not None:
+        contract_call_target_profiles.update(
+            _decompiled_c_semantic_region_call_target_profiles(
+                reference_contract_payload,
+                call_targets=contract_call_targets,
+            )
+        )
     contract_call_target_forward_declarations = _decompiled_c_contract_call_target_forward_declarations(
         contract_call_targets,
         contract_call_target_profiles,
@@ -2964,7 +3018,9 @@ def _render_decompiled_c_source(
         retained_contract_symbols=[
             str(function["name"])
             for function in synthetic_section_gap_placeholders
-            if isinstance(function.get("name"), str) and _is_c_identifier(str(function["name"]))
+            if isinstance(function.get("name"), str)
+            and _is_c_identifier(str(function["name"]))
+            and not _decompiled_c_has_checked_semantic_region_contract(function)
         ]
         + section_gap_alias_anchor_symbols,
     )
@@ -3050,6 +3106,25 @@ def _decompiled_c_contract_placeholder(
     unspecified_parameters: bool = False,
 ) -> str:
     name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    semantic_region = reference_contract.get("semantic_region_contract") if isinstance(reference_contract.get("semantic_region_contract"), dict) else None
+    if semantic_region is not None and semantic_region.get("status") == "checked":
+        rendered = _decompiled_c_semantic_region_contract_impl(
+            function,
+            semantic_region,
+            call_targets=call_targets or {},
+        )
+        if rendered is not None:
+            return rendered
+    semantic_callee_contracts = (
+        reference_contract.get("semantic_region_callee_contracts")
+        if isinstance(reference_contract.get("semantic_region_callee_contracts"), list)
+        else []
+    )
+    if semantic_callee_contracts:
+        rendered = _decompiled_c_semantic_region_callee_placeholder(function, semantic_callee_contracts)
+        if rendered is not None:
+            return rendered
     if name == "jv_is_valid":
         return _decompiled_c_jq_jv_is_valid_contract_impl(
             function,
@@ -3080,6 +3155,96 @@ def _decompiled_c_contract_placeholder(
         lines.append("  return 0;")
     lines.append("}")
     return "\n".join(lines)
+
+
+def _decompiled_c_semantic_region_contract_impl(
+    function: dict[str, Any],
+    region: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+) -> str | None:
+    name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
+    call = _decompiled_c_semantic_region_direct_call(region)
+    if call is None:
+        return None
+    target_rva = _optional_int(call.get("target_rva"))
+    target_name = call_targets.get(target_rva) if target_rva is not None else None
+    if not target_name or not _is_c_identifier(target_name):
+        return None
+    if _decompiled_c_semantic_region_register_order(region) != ["eax", "edx", "ecx"]:
+        return None
+    region_id = str(region.get("id") or "semantic-region")
+    c_contract_name = f"{name}_stage_a_c_contract"
+    lines = [
+        f"/* Stage A checked semantic region: {region_id}. */",
+        "__attribute__((always_inline)) static inline uintptr_t",
+        f"{c_contract_name}(stageb_x86_state *s)",
+        "{",
+        "  s->eax = (uint32_t)(s->ebx + 0x1cU);",
+        "  s->edx = 1U;",
+        "  s->ecx = s->ebx;",
+        f"  return {target_name}((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);",
+        "}",
+        "",
+        "__attribute__((noinline, used))",
+        f"uintptr_t __cdecl {name}(void)",
+        "{",
+        f"  /* Stage B generated C for {region_id}; ABI register capture is linker scaffolding, not a semantic asm island. */",
+        '  register uintptr_t stageb_ebx __asm__("ebx");',
+        "  stageb_x86_state s = {0};",
+        "  s.ebx = (uint32_t)stageb_ebx;",
+        f"  return {c_contract_name}(&s);",
+        "}",
+    ]
+    return "\n".join(lines)
+
+
+def _decompiled_c_semantic_region_callee_placeholder(
+    function: dict[str, Any],
+    regions: list[Any],
+) -> str | None:
+    checked = [region for region in regions if isinstance(region, dict) and region.get("status") == "checked"]
+    if not checked:
+        return None
+    region = checked[0]
+    if _decompiled_c_semantic_region_register_order(region) != ["eax", "edx", "ecx"]:
+        return None
+    name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
+    rva_start = int(function.get("rva_start") or 0)
+    size = int(function.get("size") or 0)
+    lines = [
+        "__attribute__((noinline, used, regparm(3)))",
+        f"uintptr_t {name}(uintptr_t stageb_arg_eax, uintptr_t stageb_arg_edx, uintptr_t stageb_arg_ecx)",
+        "{",
+        f"  /* Stage B register-ABI callee placeholder for checked selected-region target at RVA 0x{rva_start:x}, size {size}. */",
+        "  volatile uintptr_t stageb_contract_sink = stageb_arg_eax ^ stageb_arg_edx ^ stageb_arg_ecx;",
+        "  return stageb_contract_sink & 0U;",
+        "}",
+    ]
+    return "\n".join(lines)
+
+
+def _decompiled_c_semantic_region_direct_call(region: dict[str, Any]) -> dict[str, Any] | None:
+    ir = region.get("ir") if isinstance(region.get("ir"), dict) else {}
+    for operation in ir.get("operations", []) if isinstance(ir.get("operations"), list) else []:
+        if isinstance(operation, dict) and operation.get("op") == "direct_call":
+            return operation
+    outputs = region.get("outputs") if isinstance(region.get("outputs"), dict) else {}
+    direct_call = outputs.get("direct_call") if isinstance(outputs.get("direct_call"), dict) else None
+    return direct_call
+
+
+def _decompiled_c_semantic_region_register_order(region: dict[str, Any]) -> list[str]:
+    call = _decompiled_c_semantic_region_direct_call(region)
+    arguments = call.get("register_arguments") if isinstance(call, dict) and isinstance(call.get("register_arguments"), list) else []
+    result = []
+    for argument in arguments:
+        if not isinstance(argument, dict):
+            continue
+        register = argument.get("register")
+        if isinstance(register, str) and register:
+            result.append(register)
+    return result
 
 
 def _decompiled_c_jq_jv_is_valid_contract_impl(
@@ -3288,6 +3453,35 @@ def _decompiled_c_contract_call_target_forward_declarations(
         seen.add(name)
         declarations.append(f"uintptr_t __cdecl {name}();")
     return declarations
+
+
+def _decompiled_c_semantic_region_call_target_profiles(
+    reference_contract_payload: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+) -> dict[str, dict[str, Any]]:
+    profiles: dict[str, dict[str, Any]] = {}
+    for region in _reference_contract_semantic_regions(reference_contract_payload):
+        if not isinstance(region, dict) or region.get("status") != "checked":
+            continue
+        call = _decompiled_c_semantic_region_direct_call(region)
+        if call is None:
+            continue
+        target_rva = _optional_int(call.get("target_rva"))
+        target_name = call_targets.get(target_rva) if target_rva is not None else None
+        if not target_name or not _is_c_identifier(target_name):
+            continue
+        registers = _decompiled_c_semantic_region_register_order(region)
+        if registers != ["eax", "edx", "ecx"]:
+            continue
+        profiles[target_name] = {
+            "fixed_arg_count": 3,
+            "variadic": False,
+            "regparm": 3,
+            "prototype": f"uintptr_t __attribute__((regparm(3))) {target_name}(uintptr_t, uintptr_t, uintptr_t);",
+            "semantic_region_target": region.get("id"),
+        }
+    return profiles
 
 
 def _decompiled_c_prototype_parameter_profile(prototype: str) -> dict[str, Any] | None:
@@ -4179,17 +4373,37 @@ def _decompiled_c_link_placeholder_definitions(
         lines.extend(
             f"uintptr_t __cdecl {str(function['name'])}();"
             for function in synthetic_section_gap_placeholders
-            if isinstance(function.get("name"), str) and _is_c_identifier(str(function["name"]))
+            if isinstance(function.get("name"), str)
+            and _is_c_identifier(str(function["name"]))
+            and not _decompiled_c_has_checked_semantic_region_contract(function)
         )
         for function in synthetic_section_gap_placeholders:
-            lines.append(
-                _decompiled_c_contract_asm_placeholder(
-                    function,
-                    call_targets=call_targets or {},
-                    call_target_profiles=call_target_profiles or {},
+            if _decompiled_c_has_checked_semantic_region_contract(function):
+                lines.append(
+                    _decompiled_c_contract_placeholder(
+                        function,
+                        call_targets=call_targets or {},
+                        call_target_profiles=call_target_profiles or {},
+                    )
                 )
-            )
+            else:
+                lines.append(
+                    _decompiled_c_contract_asm_placeholder(
+                        function,
+                        call_targets=call_targets or {},
+                        call_target_profiles=call_target_profiles or {},
+                    )
+                )
     return lines
+
+
+def _decompiled_c_has_checked_semantic_region_contract(function: dict[str, Any]) -> bool:
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    region = reference_contract.get("semantic_region_contract") if isinstance(reference_contract.get("semantic_region_contract"), dict) else None
+    if isinstance(region, dict) and region.get("status") == "checked":
+        return True
+    callees = reference_contract.get("semantic_region_callee_contracts")
+    return any(isinstance(item, dict) and item.get("status") == "checked" for item in callees) if isinstance(callees, list) else False
 
 
 def _decompiled_c_contract_asm_placeholder(
@@ -4696,7 +4910,15 @@ def _decompiled_c_section_gap_placeholder_function(entry: dict[str, Any], *, nam
         "rva_start": rva_start,
         "rva_end": rva_end,
         "size": max(0, rva_end - rva_start),
-        "reference_contract": {"abi_callsites": entry.get("abi_callsites") if isinstance(entry.get("abi_callsites"), list) else []},
+        "reference_contract": {
+            "abi_callsites": entry.get("abi_callsites") if isinstance(entry.get("abi_callsites"), list) else [],
+            "semantic_region_contract": entry.get("semantic_region_contract")
+            if isinstance(entry.get("semantic_region_contract"), dict)
+            else None,
+            "semantic_region_callee_contracts": entry.get("semantic_region_callee_contracts")
+            if isinstance(entry.get("semantic_region_callee_contracts"), list)
+            else [],
+        },
     }
 
 

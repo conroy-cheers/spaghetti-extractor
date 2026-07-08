@@ -1605,6 +1605,115 @@ class StageAValidateTests(unittest.TestCase):
             register_writes = {item["register"]: item["value"] for item in transfer["register_writes"]}
             self.assertEqual(register_writes["ecx"], {"op": "call_response", "width": 32, "call_index": 0, "register": "eax"})
 
+    def test_reference_contract_emits_checked_verified_decompiler_region_for_selected_jq_cluster(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            caller = bytes.fromhex("8d431cba0100000089d9e800000000")
+            callee = b"\xc3"
+            original = self._write_pe(root / "original.exe", caller + callee)
+            candidate = self._write_pe(root / "candidate.exe", caller + callee)
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                **self._mapping_entry(rva=0x1000, size=len(caller), block_id="section-gap--text-0498"),
+                                "source": {"kind": "linker_map_function", "function": "section-gap--text-0498"},
+                            },
+                            {
+                                **self._mapping_entry(
+                                    rva=0x1000 + len(caller),
+                                    size=len(callee),
+                                    block_id="section-gap--text-0202",
+                                ),
+                                "source": {"kind": "linker_map_function", "function": "section-gap--text-0202"},
+                            },
+                        ],
+                        "status": "pass",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            units = root / "units"
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=units,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            semantic = result["constraints"]["semantic_region_contracts"]
+            self.assertEqual(semantic["status"], "satisfied")
+            region = semantic["regions"][0]
+            self.assertEqual(region["status"], "checked")
+            self.assertEqual(region["function"], "section-gap--text-0498")
+            self.assertEqual(region["callee"]["block_id"], "section-gap--text-0202")
+            direct_call = region["ir"]["operations"][-1]
+            self.assertEqual(direct_call["op"], "direct_call")
+            self.assertEqual([item["register"] for item in direct_call["register_arguments"]], ["eax", "edx", "ecx"])
+            self.assertEqual(region["c_contract"]["status"], "checked")
+            self.assertEqual(region["x86_to_ir_validation"]["status"], "proved")
+            self.assertEqual(region["c_contract_equivalence"]["status"], "proved")
+            proof_ids = {item["id"] for item in result["constraints"]["proof_obligation_inventory"]["obligations"]}
+            self.assertIn("semantic-region:jq-section-gap-0498-to-0202:x86-to-ir", proof_ids)
+            sidecar_rows = [
+                json.loads(line)
+                for line in (units / "semantic-region-contracts.jsonl").read_text(encoding="utf-8").splitlines()
+                if line
+            ]
+            self.assertEqual(sidecar_rows[0]["status"], "checked")
+
+    def test_reference_contract_semantic_region_fails_closed_on_register_setup_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            caller = bytes.fromhex("8d4320ba0100000089d9e800000000")
+            callee = b"\xc3"
+            original = self._write_pe(root / "original.exe", caller + callee)
+            candidate = self._write_pe(root / "candidate.exe", caller + callee)
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                **self._mapping_entry(rva=0x1000, size=len(caller), block_id="section-gap--text-0498"),
+                                "source": {"kind": "linker_map_function", "function": "section-gap--text-0498"},
+                            },
+                            {
+                                **self._mapping_entry(
+                                    rva=0x1000 + len(caller),
+                                    size=len(callee),
+                                    block_id="section-gap--text-0202",
+                                ),
+                                "source": {"kind": "linker_map_function", "function": "section-gap--text-0202"},
+                            },
+                        ],
+                        "status": "pass",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                unit_contract_dir=root / "units",
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            semantic = result["constraints"]["semantic_region_contracts"]
+            self.assertEqual(semantic["status"], "incomplete")
+            region = semantic["regions"][0]
+            self.assertEqual(region["status"], "incomplete")
+            self.assertEqual(region["blocker_category"], "x86_to_ir_register_input_mismatch")
+            self.assertEqual(region["proof_obligations"][0]["status"], "incomplete")
+
     def test_reference_contract_semantic_transfer_fail_closed_for_unsupported_block(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

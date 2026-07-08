@@ -3001,6 +3001,125 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn('"  pushl %eax\\n"', source)
         self.assertNotIn('"  addl $12, %esp\\n"', source)
 
+    def test_decompiled_c_section_gap_uses_checked_semantic_region_c_contract(self):
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {"id": "section-gap--text-0202"},
+                        {"id": "section-gap--text-0498"},
+                    ]
+                },
+                "semantic_region_contracts": {
+                    "format": "stage-a-semantic-region-contracts-v1",
+                    "status": "satisfied",
+                    "regions": [
+                        {
+                            "id": "semantic-region:jq-section-gap-0498-to-0202",
+                            "status": "checked",
+                            "function": "section-gap--text-0498",
+                            "block_id": "section-gap--text-0498",
+                            "caller": {"function": "section-gap--text-0498", "block_id": "section-gap--text-0498"},
+                            "callee": {
+                                "function": "section-gap--text-0202",
+                                "block_id": "section-gap--text-0202",
+                                "original": {"rva_start": 0x61A0, "rva_end": 0x61E5, "size": 0x45},
+                            },
+                            "ir": {
+                                "format": "stage-a-low-level-ir-v1",
+                                "status": "checked",
+                                "operations": [
+                                    {"op": "add32", "dst": "tmp0"},
+                                    {"op": "assign", "dst": "eax_call"},
+                                    {"op": "assign", "dst": "edx_call"},
+                                    {"op": "assign", "dst": "ecx_call"},
+                                    {
+                                        "op": "direct_call",
+                                        "target": "section-gap--text-0202",
+                                        "target_block_id": "section-gap--text-0202",
+                                        "target_rva": 0x61A0,
+                                        "register_arguments": [
+                                            {"register": "eax"},
+                                            {"register": "edx"},
+                                            {"register": "ecx"},
+                                        ],
+                                    },
+                                ],
+                            },
+                            "c_contract": {"status": "checked"},
+                        }
+                    ],
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0202",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0202",
+                                        "rva_start": 0x61A0,
+                                        "rva_end": 0x61E5,
+                                    }
+                                ],
+                                "callsites": [],
+                            },
+                            {
+                                "name": "section-gap--text-0498",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0498",
+                                        "rva_start": 0x7300,
+                                        "rva_end": 0x7320,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0498:7317",
+                                        "instruction": {"rva": 0x7317},
+                                        "target": {"kind": "direct", "target_rva": 0x61A0},
+                                        "argument_inventory": {
+                                            "argument_count": 3,
+                                            "calling_convention": "x86_register_carried_internal",
+                                            "register_args": [
+                                                {
+                                                    "register": "eax",
+                                                    "source": {
+                                                        "kind": "address",
+                                                        "addressing": {"base": "ebx", "disp": 28, "index": None, "scale": 1},
+                                                    },
+                                                },
+                                                {"register": "edx", "source": {"kind": "immediate", "value": 1}},
+                                                {"register": "ecx", "source": {"kind": "register", "register": "ebx"}},
+                                            ],
+                                        },
+                                    }
+                                ],
+                            },
+                        ]
+                    }
+                },
+            }
+        }
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn("typedef struct stageb_x86_state", source)
+        self.assertIn("Stage A checked semantic region: semantic-region:jq-section-gap-0498-to-0202", source)
+        self.assertIn("stage_b_contract_section_gap__text_0498_stage_a_c_contract(stageb_x86_state *s)", source)
+        self.assertIn("s->eax = (uint32_t)(s->ebx + 0x1cU);", source)
+        self.assertIn("s->edx = 1U;", source)
+        self.assertIn("s->ecx = s->ebx;", source)
+        self.assertIn("register uintptr_t stageb_ebx __asm__(\"ebx\");", source)
+        self.assertIn("return stage_b_contract_section_gap__text_0202((uintptr_t)s->eax, (uintptr_t)s->edx, (uintptr_t)s->ecx);", source)
+        self.assertIn("uintptr_t __attribute__((regparm(3))) stage_b_contract_section_gap__text_0202", source)
+        self.assertIn("__attribute__((noinline, used, regparm(3)))", source)
+        self.assertNotIn("Stage A direct-call anchor: callsite:section-gap--text-0498:7317", source)
+
     def test_decompiled_c_synthesizes_all_linkable_section_gap_placeholders(self):
         section_gap_functions = []
         for index in range(22):
