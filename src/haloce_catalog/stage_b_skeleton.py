@@ -123,6 +123,7 @@ _DECOMPILED_C_MINGWEX_C_SYMBOL_ALIASES = {
     "_wcsnlen": "wcsnlen",
     "_wcsrtombs": "wcsrtombs",
 }
+_DECOMPILED_C_MINGWEX_C_SYMBOL_ALIAS_TARGETS = frozenset(_DECOMPILED_C_MINGWEX_C_SYMBOL_ALIASES.values())
 _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
     {
         "_DllMainCRTStartup@12",
@@ -166,7 +167,7 @@ _DECOMPILED_C_MINGW_CRT_OWNED_FUNCTION_NAMES = frozenset(
         "mark_section_writable",
         "restore_modified_sections",
     }
-) | _DECOMPILED_C_MINGWEX_RUNTIME_FUNCTION_NAMES
+) | _DECOMPILED_C_MINGWEX_RUNTIME_FUNCTION_NAMES | _DECOMPILED_C_MINGWEX_C_SYMBOL_ALIAS_TARGETS
 _DECOMPILED_C_MINGW_CRT_SUPPORT_HELPER_NAMES = frozenset(
     {
         "___dyn_tls_dtor_12",
@@ -3154,7 +3155,7 @@ def _decompiled_c_contract_runtime_call_targets(reference_contract_payload: dict
             continue
         if not _decompiled_c_contract_runtime_call_target_is_linkable(name):
             continue
-        result[rva_start] = name
+        result[rva_start] = _DECOMPILED_C_MINGWEX_C_SYMBOL_ALIASES.get(name, name)
     return result
 
 
@@ -3725,9 +3726,9 @@ def _decompiled_c_layout_support_lines(
         "\"  .fill 0,1,0x90\\n\"",
         "\".text\\n\"",
         ");",
-        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[16];",
+        "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[12];",
         "__attribute__((used, aligned(1), section(\".data$stage_b_jq_layout_tail\"))) volatile unsigned char stage_b_jq_layout_data_tail[40] = {0};",
-        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1444] = {0};",
+        "__attribute__((used, aligned(1), section(\".rdata$stage_b_jq_layout_pad\"))) static const unsigned char stage_b_jq_layout_rdata_anchor[1424] = {0};",
         "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
         "uintptr_t __cdecl jv_mem_alloc(size_t);",
         *_decompiled_c_jq_import_anchor_lines(atexit_import_anchor),
@@ -4970,6 +4971,7 @@ def _normalize_decompiled_c_code(code: str, *, function_name: str = "") -> str:
         code = _normalize_jq_jv_constructor_sret_calls(code)
         code = _normalize_jq_umain_compile_args_filter_lifetime(code)
         code = _normalize_jq_isoption_dispatch_calls(code)
+        code = _optimize_decompiled_c_function_for_size(code, function_name=function_name)
     if function_name == "jq_init":
         code = _normalize_jq_init_stack_init_call(code)
     if function_name in _DECOMPILED_C_DTOA_ALLOCATOR_RETURN_FUNCTION_NAMES:
@@ -5374,6 +5376,23 @@ def _preserve_decompiled_c_call_boundary(code: str, *, function_name: str) -> st
             and not stripped.endswith(";")
         ):
             lines.insert(index, "__attribute__((noinline, noipa, used))")
+            return "\n".join(lines)
+    return code
+
+
+def _optimize_decompiled_c_function_for_size(code: str, *, function_name: str) -> str:
+    if '__attribute__((optimize("Os")))' in code:
+        return code
+    lines = code.splitlines()
+    signature = re.compile(r"\b" + re.escape(function_name) + r"\s*\(")
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if (
+            signature.search(line)
+            and not stripped.startswith(("extern ", "typedef ", "/*", "//"))
+            and not stripped.endswith(";")
+        ):
+            lines.insert(index, '__attribute__((optimize("Os")))')
             return "\n".join(lines)
     return code
 

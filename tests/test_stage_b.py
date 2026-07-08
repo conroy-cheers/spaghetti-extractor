@@ -2120,13 +2120,13 @@ class StageBTests(unittest.TestCase):
             self.assertIn('"  .long _stage_b_jq_layout_text_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_import_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_layout_data_tail - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn("stage_b_jq_layout_bss_anchor[16]", source)
+            self.assertIn("stage_b_jq_layout_bss_anchor[12]", source)
             self.assertIn("stage_b_jq_layout_data_tail[40]", source)
             self.assertNotIn('((void *)stage_b_jq_layout_data_tail)', source)
             self.assertIn("section(\".rdata$stage_b_jq_layout_pad\")", source)
             self.assertIn('"  .long _stage_b_jq_layout_rdata_anchor - _stage_b_jq_layout_anchor\\n"', source)
             self.assertIn('"  .long _stage_b_jq_layout_bss_anchor - _stage_b_jq_layout_anchor\\n"', source)
-            self.assertIn("stage_b_jq_layout_rdata_anchor[1444]", source)
+            self.assertIn("stage_b_jq_layout_rdata_anchor[1424]", source)
             self.assertIn('((void *)stage_b_jq_layout_anchor)', source)
             self.assertNotIn('((void *)stage_b_jq_layout_text_anchor)', source)
             self.assertNotIn('((void *)stage_b_jq_layout_bss_anchor)', source)
@@ -2520,6 +2520,10 @@ class StageBTests(unittest.TestCase):
         self.assertRegex(
             source,
             r"__attribute__\(\(noinline, noipa, used\)\)\nundefined4 __cdecl ___Bfree_D2A\(undefined4 \*param_1\)",
+        )
+        self.assertRegex(
+            source,
+            r"__attribute__\(\(optimize\(\"Os\"\)\)\)\nint __cdecl umain",
         )
         self.assertNotRegex(
             source,
@@ -3243,6 +3247,93 @@ class StageBTests(unittest.TestCase):
         )
         self.assertIn('"  call ___mingw_GetSectionForAddress\\n"', source)
         self.assertNotIn('"  call ____mingw_GetSectionForAddress\\n"', source)
+
+    def test_decompiled_c_section_gap_placeholder_calls_mingw_runtime_alias_target(self):
+        reference_contract = {
+            "constraints": {
+                "function_ranges": {
+                    "functions": [
+                        {
+                            "name": "__mingw_fprintf",
+                            "original": {"rva_start": 0x5FE0, "rva_end": 0x602B},
+                        }
+                    ]
+                },
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": "section-gap--text-0060"}]},
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0060",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0060",
+                                        "rva_start": 0x155A,
+                                        "rva_end": 0x157C,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0060:156d",
+                                        "block_id": "section-gap--text-0060",
+                                        "instruction": {"rva": 0x156D},
+                                        "target": {"kind": "direct", "target_rva": 0x5FE0},
+                                        "argument_inventory": {
+                                            "argument_count": 3,
+                                            "stack_args": [
+                                                {
+                                                    "index": 0,
+                                                    "role": "register",
+                                                    "source": {"kind": "register", "register": "esi"},
+                                                },
+                                                {
+                                                    "index": 1,
+                                                    "role": "immediate",
+                                                    "source": {"kind": "immediate", "value": 0x40D078},
+                                                },
+                                                {
+                                                    "index": 2,
+                                                    "role": "string_literal",
+                                                    "source": {"kind": "immediate", "value": 0x40D072},
+                                                },
+                                            ],
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[],
+            reference_contract_payload=reference_contract,
+        )
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=[],
+            source_language="c",
+            implementation_mode="decompiled-c",
+            reference_contract_payload=reference_contract,
+        )
+
+        generated_name = "stage_b_contract_section_gap__text_0060"
+        self.assertIn(f".section .text${generated_name}", source)
+        self.assertIn(
+            "Stage A direct-call anchor: callsite:section-gap--text-0060:156d at RVA 0x156d",
+            source,
+        )
+        self.assertIn('"  pushl $0x40d072\\n"', source)
+        self.assertIn('"  pushl $0x40d078\\n"', source)
+        self.assertIn('"  pushl %esi\\n"', source)
+        self.assertIn('"  call ___mingw_fprintf\\n"', source)
+        self.assertNotIn('"  call ____mingw_fprintf\\n"', source)
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_placeholder_from_section_gap")
+        self.assertIn("section-gap--text-0060", by_function[generated_name]["aliases"])
 
     def test_decompiled_c_section_gap_runtime_crt_profile_upgrades_existing_function(self):
         reference_contract = {
