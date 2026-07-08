@@ -2908,6 +2908,8 @@ def _section_gap_source_anchor_kind(lines: list[str], *, line: int, default: str
         return "generated_checked_semantic_region"
     if "Stage B contract-guided bytecode:" in window:
         return "generated_contract_guided_bytecode"
+    if "Stage B contract-guided raw flow:" in window:
+        return "generated_contract_guided_raw_flow"
     if "Stage B contract-guided branch:" in window:
         return "generated_contract_guided_branch"
     if "Stage B contract-guided flow:" in window:
@@ -3117,6 +3119,10 @@ def _source_anchor_line(
             if line is not None:
                 return line
     for candidate in candidates:
+        line = _source_inline_asm_label_line(lines, candidate)
+        if line is not None:
+            return line
+    for candidate in candidates:
         line = _source_body_anchor_line(lines, candidate)
         if line is not None:
             return line
@@ -3133,7 +3139,9 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
     if name == "___tmainCRTStartup" and any(_source_line_contains_definition(lines, line=line, name=item) for item in definition_names):
         return "generated_runtime_bridge"
     if name in {"WinMainCRTStartup", "mainCRTStartup"} and any(
-        _source_line_contains_definition(lines, line=line, name=item) for item in definition_names
+        _source_line_contains_definition(lines, line=line, name=item)
+        or _source_inline_asm_label_line(lines, item) == line
+        for item in definition_names
     ):
         return "generated_runtime_entry_stub"
     definition = None
@@ -3142,13 +3150,19 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
         if definition is not None:
             break
     window = "\n".join(lines[max(0, line - 2) : min(len(lines), line + 6)])
-    if "MinGW CRT support helper body omitted" in window:
+    anchor_line = lines[line - 1].strip() if 1 <= line <= len(lines) else ""
+    omitted_window = (
+        "\n".join(lines[line - 1 : min(len(lines), line + 2)])
+        if anchor_line.startswith("/* original RVA")
+        else "\n".join(lines[max(0, line - 3) : line])
+    )
+    if "MinGW CRT support helper body omitted" in omitted_window:
         return "omitted_runtime_helper"
-    if "MinGW CRT entry body" in window:
+    if "MinGW CRT entry body" in omitted_window:
         return "omitted_runtime_entry"
-    if "stack-probe helper body omitted" in window:
+    if "stack-probe helper body omitted" in omitted_window:
         return "omitted_runtime_helper"
-    if "import thunk for" in window:
+    if "import thunk for" in omitted_window:
         return "omitted_import_thunk"
     if "Stage B contract-guided leaf:" in window:
         return "generated_contract_guided_leaf"
@@ -3158,6 +3172,8 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
         return "generated_contract_guided_indirect"
     if "Stage B contract-guided bytecode:" in window:
         return "generated_contract_guided_bytecode"
+    if "Stage B contract-guided raw flow:" in window:
+        return "generated_contract_guided_raw_flow"
     if "Stage B contract-guided branch:" in window:
         return "generated_contract_guided_branch"
     if "Stage B contract-guided flow:" in window:
@@ -3777,7 +3793,27 @@ def _render_decompiled_c_source(
     runtime_bridge_emitted = False
     runtime_entry_stubs_emitted = False
     runtime_entry_anchor = "WinMainCRTStartup" if any(str(function.get("name") or "") == "WinMainCRTStartup" for function in functions) else "mainCRTStartup"
-    for function in functions:
+    body_items = _decompiled_c_ordered_body_items(
+        functions,
+        synthetic_section_gap_placeholders=synthetic_section_gap_placeholders,
+    )
+    for kind, function in body_items:
+        if kind == "synthetic_section_gap":
+            lines.extend(
+                [
+                    f"/* original RVA 0x{int(function['rva_start']):x}, size {int(function['size'])}, name {str(function['name'])} */",
+                    _decompiled_c_render_synthetic_section_gap_placeholder(
+                        function,
+                        call_targets=contract_call_targets,
+                        call_target_profiles=contract_call_target_profiles,
+                        call_target_spans=contract_call_target_spans,
+                        branch_target_symbols=contract_branch_target_symbols,
+                        allow_contract_bytecode=allow_contract_bytecode,
+                    ),
+                    "",
+                ]
+            )
+            continue
         if _decompiled_c_is_import_thunk(function):
             linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
             lines.extend(
@@ -3852,6 +3888,65 @@ def _render_decompiled_c_source(
             ]
         )
     return "\n".join(lines)
+
+
+def _decompiled_c_ordered_body_items(
+    functions: list[dict[str, Any]],
+    *,
+    synthetic_section_gap_placeholders: list[dict[str, Any]],
+) -> list[tuple[str, dict[str, Any]]]:
+    items: list[tuple[int, int, str, dict[str, Any]]] = []
+    for order, function in enumerate(functions):
+        items.append((_decompiled_c_function_sort_rva(function), order * 2, "function", function))
+    base_order = len(functions) * 2
+    for order, function in enumerate(synthetic_section_gap_placeholders):
+        items.append((_decompiled_c_function_sort_rva(function), base_order + order * 2 + 1, "synthetic_section_gap", function))
+    return [(kind, function) for _, _, kind, function in sorted(items, key=lambda item: (item[0], item[1]))]
+
+
+def _decompiled_c_render_synthetic_section_gap_placeholder(
+    function: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+    call_target_spans: dict[int, int],
+    branch_target_symbols: dict[int, str],
+    allow_contract_bytecode: bool,
+) -> str:
+    if _decompiled_c_has_checked_semantic_region_contract(function) or (
+        allow_contract_bytecode
+        and _decompiled_c_has_reimplementable_contract_bytecode(function)
+    ) or (
+        allow_contract_bytecode
+        and _decompiled_c_has_reimplementable_contract_symbolic_branch(function)
+    ) or (
+        allow_contract_bytecode
+        and _decompiled_c_has_reimplementable_contract_guided_impl(
+            function,
+            call_targets=call_targets,
+            call_target_profiles=call_target_profiles,
+            call_target_spans=call_target_spans,
+            branch_target_symbols=branch_target_symbols,
+        )
+    ):
+        return _decompiled_c_contract_placeholder(
+            function,
+            call_targets=call_targets,
+            call_target_profiles=call_target_profiles,
+            call_target_spans=call_target_spans,
+            branch_target_symbols=branch_target_symbols,
+            allow_contract_bytecode=allow_contract_bytecode,
+        )
+    return _decompiled_c_contract_asm_placeholder(
+        function,
+        call_targets=call_targets,
+        call_target_profiles=call_target_profiles,
+    )
+
+
+def _decompiled_c_function_sort_rva(function: dict[str, Any]) -> int:
+    rva_start = _optional_int(function.get("rva_start"))
+    return rva_start if rva_start is not None else 0x7FFFFFFF
 
 
 def _decompiled_c_contract_placeholder(
@@ -4056,6 +4151,15 @@ def _decompiled_c_contract_guided_leaf_impl(
                 "}",
             ]
         )
+    raw_flow = _decompiled_c_contract_guided_raw_section_gap_flow_impl(
+        function,
+        name=name,
+        rva_start=rva_start,
+        size=size,
+        branch_target_symbols=branch_target_symbols or {},
+    )
+    if raw_flow is not None:
+        return raw_flow
     bytecode = _decompiled_c_contract_guided_bytecode_impl(
         function,
         name=name,
@@ -4085,6 +4189,151 @@ def _decompiled_c_contract_guided_leaf_impl(
     if flow is not None:
         return flow
     return None
+
+
+def _decompiled_c_contract_guided_raw_section_gap_flow_impl(
+    function: dict[str, Any],
+    *,
+    name: str,
+    rva_start: int,
+    size: int,
+    branch_target_symbols: dict[int, str],
+) -> str | None:
+    if not _decompiled_c_is_synthetic_section_gap_function(function):
+        return None
+    function_end = rva_start + size
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    bytecode = reference_contract.get("semantic_transfer_bytecode") if isinstance(reference_contract.get("semantic_transfer_bytecode"), dict) else {}
+    transfers = bytecode.get("transfers") if isinstance(bytecode.get("transfers"), list) else []
+    transfers = [transfer for transfer in transfers if isinstance(transfer, dict)]
+    if not transfers:
+        return None
+    external_targets = _decompiled_c_contract_flow_external_target_rvas(
+        transfers,
+        rva_start=rva_start,
+        rva_end=function_end,
+    )
+    if not external_targets:
+        return None
+    if not all(
+        _decompiled_c_contract_raw_flow_external_target_is_section_gap(target, branch_target_symbols=branch_target_symbols)
+        for target in external_targets
+    ):
+        return None
+    chunks = _decompiled_c_contract_raw_no_call_flow_chunks(
+        transfers,
+        rva_start=rva_start,
+        rva_end=function_end,
+        padding_ranges=_decompiled_c_contract_padding_ranges(reference_contract),
+    )
+    if chunks is None:
+        return None
+    asm_lines = _decompiled_c_bytecode_asm_lines(chunks)
+    if not asm_lines:
+        return None
+    return _decompiled_c_contract_guided_top_level_asm(
+        name,
+        comment=(
+            "Stage B contract-guided raw flow: no-call section-gap bytes "
+            f"with layout-preserved direct targets at RVA 0x{rva_start:x}, size {size}."
+        ),
+        asm_lines=asm_lines,
+    )
+
+
+def _decompiled_c_is_synthetic_section_gap_function(function: dict[str, Any]) -> bool:
+    name = str(function.get("name") or "")
+    return name.startswith("stage_b_contract_section_gap__") and isinstance(function.get("reference_section_gap"), dict)
+
+
+def _decompiled_c_contract_flow_external_target_rvas(
+    transfers: list[dict[str, Any]],
+    *,
+    rva_start: int,
+    rva_end: int,
+) -> set[int]:
+    result: set[int] = set()
+    for transfer in transfers:
+        outcome = transfer.get("outcome") if isinstance(transfer.get("outcome"), dict) else {}
+        kind = str(outcome.get("kind") or "")
+        if kind in {"external_jump", "indirect_jump", "indirect_jump_table"}:
+            return set()
+        for key in ("target_rva", "true_target_rva", "false_target_rva"):
+            target = _optional_int(outcome.get(key))
+            if target is not None and not (rva_start <= target <= rva_end):
+                result.add(target)
+    return result
+
+
+def _decompiled_c_contract_raw_flow_external_target_is_section_gap(
+    target_rva: int,
+    *,
+    branch_target_symbols: dict[int, str],
+) -> bool:
+    symbol = branch_target_symbols.get(target_rva)
+    return isinstance(symbol, str) and symbol.startswith("stage_b_contract_section_gap__")
+
+
+def _decompiled_c_contract_raw_no_call_flow_chunks(
+    transfers: list[dict[str, Any]],
+    *,
+    rva_start: int,
+    rva_end: int,
+    padding_ranges: list[dict[str, Any]],
+) -> list[str] | None:
+    instructions_by_rva: dict[int, dict[str, Any]] = {}
+    for transfer in transfers:
+        outcome = transfer.get("outcome") if isinstance(transfer.get("outcome"), dict) else {}
+        if str(outcome.get("kind") or "") in {"external_jump", "indirect_jump", "indirect_jump_table"}:
+            return None
+        instructions = transfer.get("instructions") if isinstance(transfer.get("instructions"), list) else []
+        for instruction in instructions:
+            if not isinstance(instruction, dict):
+                return None
+            if _instruction_mnemonic(instruction) == "call":
+                return None
+            instruction_rva = _optional_int(instruction.get("rva"))
+            instruction_size = _optional_int(instruction.get("size"))
+            instruction_bytes = instruction.get("bytes")
+            if (
+                instruction_rva is None
+                or instruction_size is None
+                or instruction_size <= 0
+                or not isinstance(instruction_bytes, str)
+                or not instruction_bytes
+            ):
+                return None
+            if instruction_rva in instructions_by_rva:
+                return None
+            try:
+                raw = bytes.fromhex(instruction_bytes)
+            except ValueError:
+                return None
+            if len(raw) != instruction_size:
+                return None
+            if instruction_rva < rva_start or instruction_rva + instruction_size > rva_end:
+                return None
+            instructions_by_rva[instruction_rva] = instruction
+
+    cursor = rva_start
+    chunks: list[str] = []
+    for instruction_rva in sorted(instructions_by_rva):
+        instruction = instructions_by_rva[instruction_rva]
+        if instruction_rva != cursor:
+            padding_hex = _contract_padding_bytes_for_range(padding_ranges, cursor, instruction_rva)
+            if padding_hex is None:
+                return None
+            chunks.extend(padding_hex)
+            cursor = instruction_rva
+        raw = bytes.fromhex(str(instruction.get("bytes") or ""))
+        chunks.append(raw.hex())
+        cursor += len(raw)
+    if cursor != rva_end:
+        padding_hex = _contract_padding_bytes_for_range(padding_ranges, cursor, rva_end)
+        if padding_hex is None:
+            return None
+        chunks.extend(padding_hex)
+    return chunks
 
 
 def _decompiled_c_contract_guided_indirect_impl(
@@ -4699,21 +4948,10 @@ def _decompiled_c_contract_guided_naked_indirect(
     reason: str,
     asm_lines: list[str],
 ) -> str:
-    rendered_asm: list[str] = []
-    for index, line in enumerate(asm_lines):
-        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
-        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
-    return "\n".join(
-        [
-            "__attribute__((naked, noinline, used))",
-            f"uintptr_t __cdecl {name}(void)",
-            "{",
-            f"  /* Stage B contract-guided indirect-call slice: {reason} at RVA 0x{rva_start:x}, size {size}. */",
-            "  __asm__ __volatile__(",
-            *rendered_asm,
-            "  );",
-            "}",
-        ]
+    return _decompiled_c_contract_guided_top_level_asm(
+        name,
+        comment=f"Stage B contract-guided indirect-call slice: {reason} at RVA 0x{rva_start:x}, size {size}.",
+        asm_lines=asm_lines,
     )
 
 
@@ -4725,21 +4963,10 @@ def _decompiled_c_contract_guided_naked_callback(
     reason: str,
     asm_lines: list[str],
 ) -> str:
-    rendered_asm: list[str] = []
-    for index, line in enumerate(asm_lines):
-        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
-        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
-    return "\n".join(
-        [
-            "__attribute__((naked, noinline, used))",
-            f"uintptr_t __cdecl {name}(void)",
-            "{",
-            f"  /* Stage B contract-guided callback: {reason} at RVA 0x{rva_start:x}, size {size}. */",
-            "  __asm__ __volatile__(",
-            *rendered_asm,
-            "  );",
-            "}",
-        ]
+    return _decompiled_c_contract_guided_top_level_asm(
+        name,
+        comment=f"Stage B contract-guided callback: {reason} at RVA 0x{rva_start:x}, size {size}.",
+        asm_lines=asm_lines,
     )
 
 
@@ -4751,22 +4978,37 @@ def _decompiled_c_contract_guided_naked_leaf(
     reason: str,
     asm_lines: list[str],
 ) -> str:
-    rendered_asm: list[str] = []
-    for index, line in enumerate(asm_lines):
-        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
-        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
-    return "\n".join(
+    return _decompiled_c_contract_guided_top_level_asm(
+        name,
+        comment=f"Stage B contract-guided leaf: {reason} at RVA 0x{rva_start:x}, size {size}.",
+        asm_lines=asm_lines,
+    )
+
+
+def _decompiled_c_contract_guided_top_level_asm(name: str, *, comment: str, asm_lines: list[str]) -> str:
+    asm_symbol = _decompiled_c_i686_c_asm_symbol(name)
+    body_lines = [
+        line
+        for line in asm_lines
+        if line not in {f".globl {asm_symbol}", f"{asm_symbol}:"}
+    ]
+    rendered = [
+        "__asm__(",
+        "\".text\\n\"",
+        f"\".globl {_c_asm_string_line(asm_symbol)}\\n\"",
+        f"\".def {_c_asm_string_line(asm_symbol)}; .scl 2; .type 32; .endef\\n\"",
+        f"\"# {_c_asm_string_line(comment)}\\n\"",
+        f"\"{_c_asm_string_line(asm_symbol)}:\\n\"",
+    ]
+    for index, line in enumerate(body_lines):
+        suffix = "\\n\\t" if index + 1 < len(body_lines) else ""
+        rendered.append(f"\"{_c_asm_string_line(line)}{suffix}\"")
+    rendered.extend(
         [
-            "__attribute__((naked, noinline, used))",
-            f"uintptr_t __cdecl {name}(void)",
-            "{",
-            f"  /* Stage B contract-guided leaf: {reason} at RVA 0x{rva_start:x}, size {size}. */",
-            "  __asm__ __volatile__(",
-            *rendered_asm,
-            "  );",
-            "}",
+            ");",
         ]
     )
+    return "\n".join(rendered)
 
 
 def _decompiled_c_contract_guided_bytecode_impl(
@@ -4784,24 +5026,13 @@ def _decompiled_c_contract_guided_bytecode_impl(
     asm_lines = _decompiled_c_bytecode_asm_lines(chunks)
     if not asm_lines:
         return None
-    rendered_asm: list[str] = []
-    for index, line in enumerate(asm_lines):
-        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
-        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
-    return "\n".join(
-        [
-            "__attribute__((naked, noinline, used))",
-            f"uintptr_t __cdecl {name}()",
-            "{",
-            (
-                "  /* Stage B contract-guided bytecode: contiguous no-call semantic-transfer "
-                f"body at RVA 0x{rva_start:x}, size {size}. */"
-            ),
-            "  __asm__ __volatile__(",
-            *rendered_asm,
-            "  );",
-            "}",
-        ]
+    return _decompiled_c_contract_guided_top_level_asm(
+        name,
+        comment=(
+            "Stage B contract-guided bytecode: contiguous no-call semantic-transfer "
+            f"body at RVA 0x{rva_start:x}, size {size}."
+        ),
+        asm_lines=asm_lines,
     )
 
 
@@ -4820,24 +5051,13 @@ def _decompiled_c_contract_guided_branch_impl(
     asm_lines = [str(line) for line in asm_lines if isinstance(line, str) and line]
     if not asm_lines:
         return None
-    rendered_asm: list[str] = []
-    for index, line in enumerate(asm_lines):
-        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
-        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
-    return "\n".join(
-        [
-            "__attribute__((naked, noinline, used))",
-            f"uintptr_t __cdecl {name}()",
-            "{",
-            (
-                "  /* Stage B contract-guided branch: no-call semantic-transfer block "
-                f"with symbolic Stage A targets at RVA 0x{rva_start:x}, size {size}. */"
-            ),
-            "  __asm__ __volatile__(",
-            *rendered_asm,
-            "  );",
-            "}",
-        ]
+    return _decompiled_c_contract_guided_top_level_asm(
+        name,
+        comment=(
+            "Stage B contract-guided branch: no-call semantic-transfer block "
+            f"with symbolic Stage A targets at RVA 0x{rva_start:x}, size {size}."
+        ),
+        asm_lines=asm_lines,
     )
 
 
@@ -5003,24 +5223,13 @@ def _decompiled_c_contract_guided_flow_impl(
                 return None
     if not asm_lines:
         return None
-    rendered_asm: list[str] = []
-    for index, line in enumerate(asm_lines):
-        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
-        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
-    return "\n".join(
-        [
-            "__attribute__((naked, noinline, used))",
-            f"uintptr_t __cdecl {name}()",
-            "{",
-            (
-                "  /* Stage B contract-guided flow: semantic-transfer CFG with symbolic "
-                f"direct calls/branches at RVA 0x{rva_start:x}, size {size}. */"
-            ),
-            "  __asm__ __volatile__(",
-            *rendered_asm,
-            "  );",
-            "}",
-        ]
+    return _decompiled_c_contract_guided_top_level_asm(
+        name,
+        comment=(
+            "Stage B contract-guided flow: semantic-transfer CFG with symbolic "
+            f"direct calls/branches at RVA 0x{rva_start:x}, size {size}."
+        ),
+        asm_lines=asm_lines,
     )
 
 
@@ -6408,30 +6617,26 @@ def _decompiled_c_runtime_entry_stubs(functions: list[dict[str, Any]]) -> list[s
     target = _decompiled_c_i686_c_asm_symbol("___tmainCRTStartup")
     lines: list[str] = []
     if "WinMainCRTStartup" in names:
-        lines.extend(
-            [
-                "__attribute__((naked, noinline, used))",
-                "void __cdecl WinMainCRTStartup(void)",
-                "{",
-                "  __asm__ __volatile__(",
-                '    "movl $1, 0x410040\\n\\t"',
-                f'    "jmp {target}"',
-                "  );",
-                "}",
-                "",
-            ]
+        lines.append(
+            _decompiled_c_contract_guided_top_level_asm(
+                "WinMainCRTStartup",
+                comment="Stage B generated runtime entry stub: WinMain CRT mode.",
+                asm_lines=[
+                    "movl $1, 0x410040",
+                    f"jmp {target}",
+                ],
+            )
         )
-    lines.extend(
-        [
-            "__attribute__((naked, noinline, used))",
-            "void __cdecl mainCRTStartup(void)",
-            "{",
-            "  __asm__ __volatile__(",
-            '    "movl $0, 0x410040\\n\\t"',
-            f'    "jmp {target}"',
-            "  );",
-            "}",
-        ]
+        lines.append("")
+    lines.append(
+        _decompiled_c_contract_guided_top_level_asm(
+            "mainCRTStartup",
+            comment="Stage B generated runtime entry stub: console CRT mode.",
+            asm_lines=[
+                "movl $0, 0x410040",
+                f"jmp {target}",
+            ],
+        )
     )
     return lines
 
@@ -6469,7 +6674,7 @@ def _decompiled_c_layout_support_lines(
             *contract_anchor_lines,
             "static void stage_b_layout_keepalive(void);",
             "__attribute__((used, section(\".CRT$XCU\"))) static void (* const stage_b_layout_keepalive_ctor)(void) = stage_b_layout_keepalive;",
-            "static void stage_b_layout_keepalive(void) {",
+            "static void __attribute__((used, noinline, section(\".text$stage_b_layout_keepalive\"))) stage_b_layout_keepalive(void) {",
             "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_contract_section_gap_anchor) : \"memory\");",
             "}",
         ]
@@ -6500,7 +6705,7 @@ def _decompiled_c_layout_support_lines(
         )
     lines.extend(
         [
-            "static void stage_b_layout_keepalive(void) {",
+            "static void __attribute__((used, noinline, section(\".text$stage_b_layout_keepalive\"))) stage_b_layout_keepalive(void) {",
             "    __asm__ __volatile__(\"\" : : \"r\"((void *)stage_b_jq_layout_anchor) : \"memory\");",
         ]
     )
@@ -7024,41 +7229,6 @@ def _decompiled_c_link_placeholder_definitions(
             and _is_c_identifier(str(function["name"]))
             and not _decompiled_c_has_checked_semantic_region_contract(function)
         )
-        for function in synthetic_section_gap_placeholders:
-            if _decompiled_c_has_checked_semantic_region_contract(function) or (
-                allow_contract_bytecode
-                and _decompiled_c_has_reimplementable_contract_bytecode(function)
-            ) or (
-                allow_contract_bytecode
-                and _decompiled_c_has_reimplementable_contract_symbolic_branch(function)
-            ) or (
-                allow_contract_bytecode
-                and _decompiled_c_has_reimplementable_contract_guided_impl(
-                    function,
-                    call_targets=call_targets or {},
-                    call_target_profiles=call_target_profiles or {},
-                    call_target_spans=call_target_spans or {},
-                    branch_target_symbols=branch_target_symbols or {},
-                )
-            ):
-                lines.append(
-                    _decompiled_c_contract_placeholder(
-                        function,
-                        call_targets=call_targets or {},
-                        call_target_profiles=call_target_profiles or {},
-                        call_target_spans=call_target_spans or {},
-                        branch_target_symbols=branch_target_symbols or {},
-                        allow_contract_bytecode=allow_contract_bytecode,
-                    )
-                )
-            else:
-                lines.append(
-                    _decompiled_c_contract_asm_placeholder(
-                        function,
-                        call_targets=call_targets or {},
-                        call_target_profiles=call_target_profiles or {},
-                    )
-                )
     return lines
 
 

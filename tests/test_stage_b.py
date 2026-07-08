@@ -371,7 +371,7 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_bytecode")
             self.assertIn("section-gap--text-0000", by_function[generated_name]["aliases"])
 
-    def test_contract_guided_c_lowers_section_gap_symbolic_branch_targets(self):
+    def test_contract_guided_c_preserves_no_call_section_gap_branch_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             body = bytes.fromhex("39 c3 74 03 31 c0 c3 c3 c3")
@@ -453,12 +453,12 @@ class StageBTests(unittest.TestCase):
 
             source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             generated_name = "stage_b_contract_section_gap__text_0000"
-            self.assertIn("Stage B contract-guided branch: no-call semantic-transfer block", source)
-            self.assertIn('".byte 0x39, 0xc3\\n\\t"', source)
-            self.assertIn('"je _stage_b_contract_section_gap__text_0002\\n\\t"', source)
-            self.assertIn('"jmp _stage_b_contract_section_gap__text_0001"', source)
+            self.assertIn("Stage B contract-guided raw flow: no-call section-gap bytes", source)
+            self.assertIn('".byte 0x39, 0xc3, 0x74, 0x03"', source)
+            self.assertNotIn('"je _stage_b_contract_section_gap__text_0002\\n\\t"', source)
+            self.assertNotIn('"jmp _stage_b_contract_section_gap__text_0001"', source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
-            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_branch")
+            self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_raw_flow")
             self.assertIn("section-gap--text-0000", by_function[generated_name]["aliases"])
 
     def test_contract_guided_c_lowers_single_block_section_gap_flow(self):
@@ -4694,6 +4694,48 @@ class StageBTests(unittest.TestCase):
         self.assertIn(".section .text$stage_b_contract_section_gap__text_0021", source)
         self.assertEqual(source.count("Stage B compact contract placeholder for missing decompiler body"), 22)
 
+    def test_decompiled_c_interleaves_synthetic_section_gaps_by_rva(self):
+        section_gap_functions = [
+            {
+                "name": "section-gap--text-0000",
+                "blocks": [{"block_id": "section-gap--text-0000", "rva_start": 0x1000, "rva_end": 0x1008}],
+                "callsites": [],
+            },
+            {
+                "name": "section-gap--text-0001",
+                "blocks": [{"block_id": "section-gap--text-0001", "rva_start": 0x2000, "rva_end": 0x2008}],
+                "callsites": [],
+            },
+        ]
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {"basic_blocks": [{"id": item["name"]} for item in section_gap_functions]},
+                "abi_callsites": {"original": {"functions": section_gap_functions}},
+            }
+        }
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "middle",
+                    "rva_start": 0x1500,
+                    "rva_end": 0x1505,
+                    "size": 5,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __cdecl middle(void)\n{\n  return 0;\n}",
+                    },
+                }
+            ],
+            reference_contract_payload=reference_contract,
+        )
+
+        early = source.index("name stage_b_contract_section_gap__text_0000")
+        middle = source.index("name middle")
+        late = source.index("name stage_b_contract_section_gap__text_0001")
+        self.assertLess(early, middle)
+        self.assertLess(middle, late)
+
     def test_decompiled_c_synthesizes_no_callsite_section_gap_contract_placeholder(self):
         reference_contract = {
             "constraints": {
@@ -6125,7 +6167,7 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("return ___tmainCRTStartup();", source)
         self.assertIn("int _wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
         self.assertIn("void __cdecl ___tmainCRTStartup(void)", source)
-        self.assertIn("void __cdecl mainCRTStartup(void)", source)
+        self.assertIn(".globl _mainCRTStartup", source)
         self.assertIn('"movl $0, 0x410040\\n\\t"', source)
         self.assertIn('"jmp ____tmainCRTStartup"', source)
         self.assertIn("__wgetmainargs(&argc,(int *)&wargv,(int *)&wenv,0,&startup_info)", source)
