@@ -218,6 +218,7 @@ _STAGE_B_BUDGETED_OBJECT_ROOT_MAX_ORIGINAL_SIZE = 1024
 _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS = frozenset({"_crt_atexit", "__crt_atexit"})
 _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES = frozenset({"___iob_func"})
 _DECOMPILED_C_PRESERVED_IMPORT_THUNK_CONTRACT_SYMBOLS = frozenset({"__iob_func"})
+_DECOMPILED_C_CONTRACT_IMPORT_THUNK_PREFIXES = ("__msvcrt_",)
 
 def stage_b_generate_link_roots(
     *,
@@ -475,11 +476,24 @@ def _runtime_crt_missing_root(missing_item: dict[str, Any]) -> dict[str, Any] | 
 def _stage_b_import_thunk_coff_symbol(root: dict[str, Any]) -> str:
     symbol = str(root.get("symbol") or "")
     contract_function = str(root.get("contract_function") or "")
-    if symbol == "atexit" and contract_function in {"_crt_atexit", "__crt_atexit"}:
+    return _stage_b_import_thunk_coff_symbol_name(symbol, contract_function=contract_function)
+
+def _stage_b_import_thunk_coff_symbol_name(symbol: str, *, contract_function: str) -> str:
+    if symbol == "atexit" and contract_function in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS:
         return "___crt_atexit"
+    if contract_function in _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES:
+        return contract_function
     if contract_function in _DECOMPILED_C_PRESERVED_IMPORT_THUNK_CONTRACT_SYMBOLS:
-        return f"_{contract_function}"
-    return f"_{symbol}"
+        return _decompiled_c_i686_c_asm_symbol(contract_function)
+    if _decompiled_c_import_thunk_preserves_contract_symbol(symbol, contract_function=contract_function):
+        return _decompiled_c_i686_c_asm_symbol(contract_function)
+    return _decompiled_c_i686_asm_call_symbol(symbol)
+
+def _stage_b_import_thunk_iat_symbol_name(symbol: str) -> str:
+    return f"__imp_{_decompiled_c_i686_asm_call_symbol(symbol)}"
+
+def _stage_b_import_thunk_coff_symbol_is_valid(symbol: str) -> bool:
+    return _is_linker_root_symbol(symbol)
 
 def _stage_b_nm_defined_text_symbols(object_file: Path, *, nm: str) -> list[str]:
     try:
@@ -3116,8 +3130,12 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
     name = str(function.get("name") or "")
     aliases = [alias for alias in function.get("aliases", []) if isinstance(alias, str) and alias]
     definition_names = list(dict.fromkeys([name, *aliases, _c_identifier_from_name(name)]))
-    if name == "mainCRTStartup" and any(_source_line_contains_definition(lines, line=line, name=item) for item in definition_names):
+    if name == "___tmainCRTStartup" and any(_source_line_contains_definition(lines, line=line, name=item) for item in definition_names):
         return "generated_runtime_bridge"
+    if name in {"WinMainCRTStartup", "mainCRTStartup"} and any(
+        _source_line_contains_definition(lines, line=line, name=item) for item in definition_names
+    ):
+        return "generated_runtime_entry_stub"
     definition = None
     for item in definition_names:
         definition = _source_definition_after(lines, start=line, name=item)
@@ -3580,6 +3598,7 @@ def _render_decompiled_c_source(
     runtime_helper_alias_symbols = _decompiled_c_runtime_helper_alias_symbol_names(functions)
     runtime_helper_aliases = _decompiled_c_runtime_helper_alias_lines(functions)
     runtime_bridge = _decompiled_c_runtime_entry_bridge(functions) if runtime_entry_policy == "bridge" else []
+    runtime_entry_stubs = _decompiled_c_runtime_entry_stubs(functions) if runtime_bridge else []
     runtime_bridge_externs = _decompiled_c_runtime_entry_bridge_externs(functions) if runtime_bridge else []
     known_branch_target_symbols = (
         set(_decompiled_c_external_call_symbols(functions))
@@ -3698,7 +3717,7 @@ def _render_decompiled_c_source(
         synthetic_section_gap_placeholders=synthetic_section_gap_placeholders,
         allow_contract_bytecode=allow_contract_bytecode,
     )
-    preserved_import_thunks = _decompiled_c_preserved_import_thunk_alias_lines(functions)
+    import_thunk_wrappers = _decompiled_c_import_thunk_wrapper_lines(functions)
     import_aliases = _decompiled_c_import_thunk_alias_lines(functions)
     if runtime_helper_aliases:
         lines.extend(runtime_helper_aliases)
@@ -3722,8 +3741,8 @@ def _render_decompiled_c_source(
     if placeholders:
         lines.extend(placeholders)
         lines.append("")
-    if preserved_import_thunks:
-        lines.extend(preserved_import_thunks)
+    if import_thunk_wrappers:
+        lines.extend(import_thunk_wrappers)
         lines.append("")
     if import_aliases:
         lines.extend(import_aliases)
@@ -3756,6 +3775,8 @@ def _render_decompiled_c_source(
         lines.extend(layout_support)
         lines.append("")
     runtime_bridge_emitted = False
+    runtime_entry_stubs_emitted = False
+    runtime_entry_anchor = "WinMainCRTStartup" if any(str(function.get("name") or "") == "WinMainCRTStartup" for function in functions) else "mainCRTStartup"
     for function in functions:
         if _decompiled_c_is_import_thunk(function):
             linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
@@ -3781,10 +3802,14 @@ def _render_decompiled_c_source(
                     "",
                 ]
             )
-            if not runtime_bridge_emitted and runtime_bridge and str(function.get("name") or "") == "mainCRTStartup":
+            if not runtime_bridge_emitted and runtime_bridge and str(function.get("name") or "") == runtime_entry_anchor:
                 lines.extend(runtime_bridge)
                 lines.append("")
                 runtime_bridge_emitted = True
+                if runtime_entry_stubs and not runtime_entry_stubs_emitted:
+                    lines.extend(runtime_entry_stubs)
+                    lines.append("")
+                    runtime_entry_stubs_emitted = True
             continue
         if _decompiled_c_is_stack_probe_helper(function):
             lines.extend(
@@ -6076,12 +6101,33 @@ def _decompiled_c_import_thunk_target_symbol(function: dict[str, Any]) -> str | 
         return None
     linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
     symbol = str(linkage.get("symbol") or "")
+    contract_function = str(linkage.get("original_symbol") or function.get("name") or "")
+    if symbol == "atexit" and contract_function in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS and _is_c_identifier(contract_function):
+        return contract_function
+    if _decompiled_c_import_thunk_preserves_contract_symbol(symbol, contract_function=contract_function) and _is_c_identifier(contract_function):
+        return contract_function
     if not symbol or not _is_c_identifier(symbol):
         return None
     return symbol
 
 def _decompiled_c_import_thunk_alias_symbol_names(functions: list[dict[str, Any]]) -> list[str]:
-    return [left for left, _ in _decompiled_c_import_thunk_alias_pairs(functions)]
+    symbols = [left for left, _ in _decompiled_c_import_thunk_alias_pairs(functions)]
+    seen = set(symbols)
+    for function in functions:
+        if not _decompiled_c_is_import_thunk(function):
+            continue
+        linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
+        left = str(linkage.get("original_symbol") or function.get("name") or "")
+        right = str(linkage.get("symbol") or "")
+        if (
+            left
+            and left not in seen
+            and _is_c_identifier(left)
+            and _decompiled_c_import_thunk_preserves_contract_symbol(right, contract_function=left)
+        ):
+            seen.add(left)
+            symbols.append(left)
+    return symbols
 
 def _decompiled_c_import_thunk_alias_lines(functions: list[dict[str, Any]]) -> list[str]:
     return [f"#define {left} {right}" for left, right in _decompiled_c_import_thunk_alias_pairs(functions)]
@@ -6111,6 +6157,8 @@ def _decompiled_c_import_thunk_alias_pairs(functions: list[dict[str, Any]]) -> l
         right = str(linkage.get("symbol") or "")
         if left in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS:
             continue
+        if _decompiled_c_import_thunk_preserves_contract_symbol(right, contract_function=left):
+            continue
         if left in _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES:
             continue
         if left == right or not _is_c_identifier(left) or not _is_c_identifier(right) or left in seen:
@@ -6119,44 +6167,68 @@ def _decompiled_c_import_thunk_alias_pairs(functions: list[dict[str, Any]]) -> l
         pairs.append((left, right))
     return pairs
 
-def _decompiled_c_preserved_import_thunk_alias_lines(functions: list[dict[str, Any]]) -> list[str]:
-    lines: list[str] = []
-    seen_direct_aliases: set[str] = set()
+def _decompiled_c_import_thunk_preserves_contract_symbol(symbol: str, *, contract_function: str) -> bool:
+    if not symbol or not contract_function or symbol == contract_function:
+        return False
+    return any(contract_function.startswith(prefix) for prefix in _DECOMPILED_C_CONTRACT_IMPORT_THUNK_PREFIXES)
+
+def _decompiled_c_import_thunk_wrapper_lines(functions: list[dict[str, Any]]) -> list[str]:
+    thunks: list[tuple[list[str], str]] = []
+    seen: set[str] = set()
     for function in functions:
         if not _decompiled_c_is_import_thunk(function):
             continue
         linkage = function.get("linkage") if isinstance(function.get("linkage"), dict) else {}
-        left = str(linkage.get("original_symbol") or function.get("name") or "")
-        right = str(linkage.get("symbol") or "")
-        if right != "atexit" or left not in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS or left in seen_direct_aliases:
+        imported_symbol = str(linkage.get("symbol") or "")
+        contract_function = str(linkage.get("original_symbol") or function.get("name") or "")
+        if not imported_symbol or not contract_function:
             continue
-        seen_direct_aliases.add(left)
+        label = _stage_b_import_thunk_coff_symbol_name(imported_symbol, contract_function=contract_function)
+        iat_symbol = _stage_b_import_thunk_iat_symbol_name(imported_symbol)
+        labels = [label]
+        if imported_symbol == "atexit" and contract_function in _DECOMPILED_C_DIRECT_IMPORT_ALIAS_SYMBOLS:
+            contract_label = _decompiled_c_i686_c_asm_symbol(contract_function)
+            if contract_label not in labels:
+                labels.append(contract_label)
+        if (
+            not label
+            or not _stage_b_import_thunk_coff_symbol_is_valid(iat_symbol)
+            or any(item in seen or not _stage_b_import_thunk_coff_symbol_is_valid(item) for item in labels)
+        ):
+            continue
+        seen.update(labels)
+        thunks.append((labels, iat_symbol))
+    if not thunks:
+        return []
+
+    lines = [
+        "__asm__(",
+        "\".section .text$stage_b_import_thunks,\\\"x\\\"\\n\"",
+    ]
+    for labels, iat_symbol in thunks:
+        iat_asm = _c_asm_string_line(iat_symbol)
+        for label in labels:
+            label_asm = _c_asm_string_line(label)
+            lines.extend(
+                [
+                    f"\".globl {label_asm}\\n\"",
+                    f"\".def {label_asm}; .scl 2; .type 32; .endef\\n\"",
+                ]
+            )
+        for label in labels:
+            label_asm = _c_asm_string_line(label)
+            lines.append(f"\"{label_asm}:\\n\"")
         lines.extend(
             [
-                "__asm__(",
-                "\".section .text$__crt_atexit,\\\"x\\\"\\n\"",
-                "\".globl ___crt_atexit\\n\"",
-                "\".def ___crt_atexit; .scl 2; .type 32; .endef\\n\"",
-                "\"___crt_atexit:\\n\"",
-                "\"  jmp _atexit\\n\"",
-                ");",
+                f"\"  jmp *{iat_asm}\\n\"",
             ]
         )
-    for left, right in _decompiled_c_import_thunk_alias_pairs(functions):
-        if left not in _DECOMPILED_C_PRESERVED_IMPORT_THUNK_ALIASES:
-            continue
-        import_pointer = f"__imp__{right}"
-        lines.extend(
-            [
-                "__asm__(",
-                f"\".section .text${left},\\\"x\\\"\\n\"",
-                f"\".globl {left}\\n\"",
-                f"\".def {left}; .scl 2; .type 32; .endef\\n\"",
-                f"\"{left}:\\n\"",
-                f"\"  jmp *{import_pointer}\\n\"",
-                ");",
-            ]
-        )
+    lines.extend(
+        [
+            "\".text\\n\"",
+            ");",
+        ]
+    )
     return lines
 
 def _decompiled_c_is_runtime_entry(function: dict[str, Any], *, runtime_entry_policy: str = "bridge") -> bool:
@@ -6278,7 +6350,7 @@ def _decompiled_c_runtime_entry_bridge(functions: list[dict[str, Any]]) -> list[
     if "mainCRTStartup" not in names or ("_wmain" not in names and "umain" not in names):
         return []
     lines = [
-        "void __cdecl mainCRTStartup(void)",
+        "void __cdecl ___tmainCRTStartup(void)",
         "{",
         "  int argc = 0;",
         "  wchar_t **wargv = (wchar_t **)0;",
@@ -6325,6 +6397,40 @@ def _decompiled_c_runtime_entry_bridge(functions: list[dict[str, Any]]) -> list[
         [
         "  exit(rc);",
         "}",
+        ]
+    )
+    return lines
+
+def _decompiled_c_runtime_entry_stubs(functions: list[dict[str, Any]]) -> list[str]:
+    names = {str(function.get("name") or "") for function in functions}
+    if "mainCRTStartup" not in names:
+        return []
+    target = _decompiled_c_i686_c_asm_symbol("___tmainCRTStartup")
+    lines: list[str] = []
+    if "WinMainCRTStartup" in names:
+        lines.extend(
+            [
+                "__attribute__((naked, noinline, used))",
+                "void __cdecl WinMainCRTStartup(void)",
+                "{",
+                "  __asm__ __volatile__(",
+                '    "movl $1, 0x410040\\n\\t"',
+                f'    "jmp {target}"',
+                "  );",
+                "}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "__attribute__((naked, noinline, used))",
+            "void __cdecl mainCRTStartup(void)",
+            "{",
+            "  __asm__ __volatile__(",
+            '    "movl $0, 0x410040\\n\\t"',
+            f'    "jmp {target}"',
+            "  );",
+            "}",
         ]
     )
     return lines

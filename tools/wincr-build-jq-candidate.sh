@@ -26,6 +26,24 @@ fi
 
 mkdir -p "$build_dir" "$out_dir"
 
+strip_import_library_text_stubs() {
+  local import_lib=$1
+  local tmp
+  tmp=$(mktemp -d "$import_lib_dir/strip.XXXXXX")
+  (
+    cd "$tmp"
+    i686-w64-mingw32-ar x "$import_lib"
+    shopt -s nullglob
+    for object_file in *_s*.o; do
+      i686-w64-mingw32-objcopy --remove-section .text "$object_file" "$object_file.stripped"
+      mv "$object_file.stripped" "$object_file"
+    done
+    rm -f "$import_lib"
+    i686-w64-mingw32-ar crs "$import_lib" ./*.o
+  )
+  rm -rf "$tmp"
+}
+
 reference_contract="$workspace/contracts/reference_contract.json"
 current_candidate="$workspace/candidate/current-candidate.json"
 source_file="$source_dir/jq_stage_b_skeleton.c"
@@ -62,6 +80,16 @@ payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 print(payload["skeleton_manifest"])
 PY
 )
+skeleton_directory=$(
+  python - "$current_candidate" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(payload["directory"])
+PY
+)
 skeleton_functions=$(
   python - "$current_candidate" <<'PY'
 import json
@@ -73,9 +101,25 @@ print(payload["functions"])
 PY
 )
 
-cp "$skeleton_manifest" "$out_manifest"
+skeleton_manifest=$(abs_path "$skeleton_manifest")
+skeleton_directory=$(abs_path "$skeleton_directory")
+prepared_manifest="$skeleton_directory/manifest.json"
+if [[ ! -f "$skeleton_manifest" || "$(readlink -m "$skeleton_manifest")" == "$(readlink -m "$out_manifest")" ]]; then
+  if [[ -f "$prepared_manifest" ]]; then
+    skeleton_manifest="$prepared_manifest"
+  fi
+fi
 
-i686-w64-mingw32-gcc -std=gnu11 -O2 -ffunction-sections -fdata-sections \
+rm -f "$candidate_exe" "$candidate_map" "$build_report" "$provenance"
+if [[ "$(readlink -m "$skeleton_manifest")" != "$(readlink -m "$out_manifest")" ]]; then
+  rm -f "$out_manifest"
+  cp "$skeleton_manifest" "$out_manifest"
+else
+  chmod u+w "$out_manifest" 2>/dev/null || true
+fi
+
+i686-w64-mingw32-gcc -std=gnu11 -Os \
+  -fno-align-functions -fno-align-labels -fno-align-loops -fno-align-jumps \
   -c "$source_file" -o "$object_file" \
   >"$build_dir/compile.stdout.txt" 2>"$build_dir/compile.stderr.txt"
 
@@ -99,7 +143,7 @@ import sys
 from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-system = {"kernel32.dll", "msvcrt.dll"}
+system = {"kernel32.dll"}
 dlls = sorted({
     str(item.get("dll") or "")
     for item in payload.get("original", {}).get("imports", [])
@@ -116,18 +160,42 @@ generated_import_libraries=()
 for dll in "${imported_dlls[@]}"; do
   [[ -n "$dll" ]] || continue
   dll_path="$fixture_dir/$dll"
-  if [[ ! -f "$dll_path" ]]; then
-    echo "missing fixture DLL for import library: $dll_path" >&2
-    exit 1
-  fi
   def_file="$import_lib_dir/${dll%.dll}.def"
   import_lib="$import_lib_dir/$dll.a"
   {
     printf 'LIBRARY %s\n' "$dll"
     printf 'EXPORTS\n'
-    llvm-readobj --coff-exports "$dll_path" | awk '/  Name: / {print "  " $2}'
+    python - "$reference_contract" "$dll" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+dll = sys.argv[2].lower()
+seen = set()
+for item in payload.get("original", {}).get("imports", []):
+    if not isinstance(item, dict) or str(item.get("dll") or "").lower() != dll:
+        continue
+    symbol = str(item.get("symbol") or "")
+    if not symbol or symbol in seen:
+        continue
+    seen.add(symbol)
+    print(f"  {symbol}")
+PY
   } >"$def_file"
+  if ! grep -q '^  ' "$def_file"; then
+    if [[ ! -f "$dll_path" ]]; then
+      echo "missing fixture DLL and reference imports for import library: $dll_path" >&2
+      exit 1
+    fi
+    {
+      printf 'LIBRARY %s\n' "$dll"
+      printf 'EXPORTS\n'
+      llvm-readobj --coff-exports "$dll_path" | awk '/  Name: / {print "  " $2}'
+    } >"$def_file"
+  fi
   i686-w64-mingw32-dlltool -d "$def_file" -D "$dll" -l "$import_lib"
+  strip_import_library_text_stubs "$import_lib"
   lib_args+=("-l:$dll.a")
   generated_import_libraries+=("$dll.a")
 done
@@ -304,4 +372,3 @@ if [[ ! -f "$provenance" ]]; then
   cat "$build_dir/provenance.stderr.txt" >&2
   exit "$provenance_rc"
 fi
-

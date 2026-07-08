@@ -5883,7 +5883,7 @@ class StageBTests(unittest.TestCase):
         self.assertIn("extern uintptr_t __crt_atexit();", source)
         self.assertNotIn("#define __crt_atexit atexit", source)
         self.assertIn(".globl ___crt_atexit", source)
-        self.assertIn("jmp _atexit", source)
+        self.assertIn("jmp *__imp__atexit", source)
         self.assertIn("uintptr_t __cdecl atexit(_func_4879 *param_1)", source)
         self.assertIn("return __crt_atexit(param_1);", source)
         self.assertNotIn("return atexit(param_1);", source)
@@ -5935,6 +5935,8 @@ class StageBTests(unittest.TestCase):
         self.assertIn("extern uintptr_t jq_get_exit_code();", source)
         self.assertIn("int main_like(void)", source)
         self.assertIn("return (int)jq_get_exit_code();", source)
+        self.assertIn(".globl _jq_get_exit_code", source)
+        self.assertIn("jmp *__imp__jq_get_exit_code", source)
         self.assertIn("import thunk for jq_get_exit_code; body omitted", source)
         self.assertNotIn("void jq_get_exit_code(void)", source)
         self.assertNotIn("  jq_get_exit_code();\n  return;", source)
@@ -5958,7 +5960,44 @@ class StageBTests(unittest.TestCase):
         )
 
         self.assertNotIn("#define ___iob_func __p__iob", source)
+        self.assertIn(".globl ___iob_func", source)
+        self.assertIn("jmp *__imp____p__iob", source)
         self.assertIn("import thunk for __p__iob; body omitted", source)
+
+    def test_decompiled_c_renderer_preserves_contract_import_thunk_when_import_name_collides(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {
+                    "name": "__msvcrt_wgetmainargs",
+                    "rva_start": 0xC3B8,
+                    "rva_end": 0xC3BE,
+                    "size": 6,
+                    "linkage": {
+                        "kind": "import_thunk",
+                        "symbol": "__wgetmainargs",
+                        "original_symbol": "__msvcrt_wgetmainargs",
+                    },
+                    "decompiler": {"status": "success", "code": "uintptr_t __msvcrt_wgetmainargs(void) { return __wgetmainargs(); }"},
+                },
+                {
+                    "name": "__wgetmainargs",
+                    "rva_start": 0xC1B0,
+                    "rva_end": 0xC1B8,
+                    "size": 8,
+                    "decompiler": {
+                        "status": "success",
+                        "code": "uintptr_t __wgetmainargs(void) { return __msvcrt_wgetmainargs(); }",
+                    },
+                },
+            ],
+        )
+
+        self.assertNotIn("#define __msvcrt_wgetmainargs __wgetmainargs", source)
+        self.assertIn("extern uintptr_t __msvcrt_wgetmainargs();", source)
+        self.assertIn(".globl ___msvcrt_wgetmainargs", source)
+        self.assertIn("jmp *__imp____wgetmainargs", source)
+        self.assertIn("return __msvcrt_wgetmainargs();", source)
 
     def test_decompiled_c_renderer_anchors_jq_reference_import_surface(self):
         source = _render_decompiled_c_source(target_name="jq", functions=[])
@@ -6010,9 +6049,29 @@ class StageBTests(unittest.TestCase):
 
         self.assertIn("extern uintptr_t __crt_atexit();", source)
         self.assertIn(".globl ___crt_atexit", source)
-        self.assertIn("jmp _atexit", source)
+        self.assertIn("jmp *__imp__atexit", source)
         self.assertIn('"  .long ___crt_atexit - _stage_b_jq_import_anchor\\n"', source)
         self.assertNotIn('"  .long _atexit - _stage_b_jq_import_anchor\\n"', source)
+
+    def test_decompiled_c_renderer_exposes_crt_atexit_object_alias_at_same_thunk(self):
+        source = _render_decompiled_c_source(
+            target_name="jq",
+            external_function_names=["atexit"],
+            functions=[
+                {
+                    "name": "_crt_atexit",
+                    "rva_start": 0xC3F0,
+                    "rva_end": 0xC3F6,
+                    "size": 6,
+                    "linkage": {"kind": "import_thunk", "symbol": "atexit", "original_symbol": "_crt_atexit"},
+                },
+            ],
+        )
+
+        self.assertIn(".globl ___crt_atexit", source)
+        self.assertIn(".globl __crt_atexit", source)
+        self.assertIn("___crt_atexit:\\n\"\n\"__crt_atexit:", source)
+        self.assertIn("jmp *__imp__atexit", source)
 
     def test_decompiled_c_renderer_replaces_mingw_crt_entry_with_bridge(self):
         source = _render_decompiled_c_source(
@@ -6065,7 +6124,10 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("return *(int *)0x18;", source)
         self.assertNotIn("return ___tmainCRTStartup();", source)
         self.assertIn("int _wmain(int argc,wchar_t **argv,wchar_t **envp)", source)
+        self.assertIn("void __cdecl ___tmainCRTStartup(void)", source)
         self.assertIn("void __cdecl mainCRTStartup(void)", source)
+        self.assertIn('"movl $0, 0x410040\\n\\t"', source)
+        self.assertIn('"jmp ____tmainCRTStartup"', source)
         self.assertIn("__wgetmainargs(&argc,(int *)&wargv,(int *)&wenv,0,&startup_info)", source)
         self.assertIn("argv = (char **)malloc((argc + 1) * sizeof(char *));", source)
         self.assertIn("argv[i][j] = (char)((ch < 0x80) ? ch : '?');", source)
@@ -6357,13 +6419,13 @@ class StageBTests(unittest.TestCase):
         )
 
         by_function = {item["function"]: item for item in source_map["functions"]}
-        self.assertEqual(by_function["mainCRTStartup"]["source_kind"], "generated_runtime_bridge")
-        self.assertEqual(by_function["___tmainCRTStartup"]["source_kind"], "omitted_runtime_entry")
+        self.assertEqual(by_function["mainCRTStartup"]["source_kind"], "generated_runtime_entry_stub")
+        self.assertEqual(by_function["___tmainCRTStartup"]["source_kind"], "generated_runtime_bridge")
         self.assertEqual(by_function["___wgetmainargs"]["source_kind"], "omitted_runtime_entry")
         self.assertEqual(by_function["_wmain"]["source_kind"], "decompiled_function")
         self.assertEqual(by_function["_wmain"]["aliases"], ["wmain"])
-        bridge_line = source.splitlines()[by_function["mainCRTStartup"]["line_start"] - 1]
-        self.assertIn("void __cdecl mainCRTStartup(void)", bridge_line)
+        bridge_line = source.splitlines()[by_function["___tmainCRTStartup"]["line_start"] - 1]
+        self.assertIn("void __cdecl ___tmainCRTStartup(void)", bridge_line)
 
     def test_decompiled_c_skeleton_omits_stack_probe_helper_body(self):
         functions = [
