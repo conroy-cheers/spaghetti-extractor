@@ -9877,6 +9877,7 @@ def _verify_waiver_side(side: str, binary: StageABinary, waiver: NonCodeWaiver) 
         "rva_end": waiver.rva_end,
         "section": section.name,
         "bytes_sha256": sha256_bytes(data),
+        "bytes_hex": data.hex(),
     }
 
 

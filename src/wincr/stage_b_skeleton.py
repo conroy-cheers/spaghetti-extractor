@@ -616,6 +616,11 @@ def stage_b_generate_skeleton(
     out_dir.mkdir(parents=True, exist_ok=True)
     binary = _parse_stage_a_pe(Path(original))
     reference_contract_payload = _load_reference_contract(Path(reference_contract), binary) if reference_contract is not None else None
+    reference_contract_sidecars = (
+        _load_reference_contract_sidecars(Path(reference_contract), reference_contract_payload)
+        if reference_contract is not None and reference_contract_payload is not None
+        else {}
+    )
     coverage_reference_contract_path: Path | None = None
     coverage_reference_contract_payload = None
     if coverage_reference_contract is not None:
@@ -635,6 +640,7 @@ def stage_b_generate_skeleton(
         linker_map,
         decompiler_export,
         reference_contract_payload=reference_contract_payload,
+        reference_contract_sidecars=reference_contract_sidecars,
         include_decompiler_code=implementation_mode in {"decompiled-c", "contract-guided-c"},
     )
     function_filter = _function_filter(functions, function_names)
@@ -708,6 +714,8 @@ def stage_b_generate_skeleton(
     allowed_inputs = [_pe_input_kind(binary), "linker-map", "decompiler-export", "capstone-disassembly"]
     if reference_contract is not None or coverage_reference_contract_path is not None:
         allowed_inputs.append("stage-a-reference-contract")
+    if reference_contract_sidecars:
+        allowed_inputs.append("stage-a-unit-contract-sidecars")
     source_map_decompiler_functions = (
         _parse_decompiler_export_functions(Path(decompiler_export), binary, include_decompiler_code=False)
         if decompiler_export is not None and reference_contract_payload is not None
@@ -781,6 +789,7 @@ def _skeleton_functions(
     decompiler_export: Path | None = None,
     *,
     reference_contract_payload: dict[str, Any] | None = None,
+    reference_contract_sidecars: dict[str, Any] | None = None,
     include_decompiler_code: bool = False,
 ) -> list[dict[str, Any]]:
     if reference_contract_payload is not None:
@@ -839,6 +848,7 @@ def _skeleton_functions(
         reference_contract = function.get("reference_contract")
         if isinstance(reference_contract, dict):
             entry["reference_contract"] = reference_contract
+        _attach_reference_contract_sidecar_evidence(entry, reference_contract_sidecars)
         seed = function.get("seed")
         if isinstance(seed, dict):
             entry["seed"] = seed
@@ -868,6 +878,324 @@ def _load_reference_contract(path: Path, binary: StageABinary) -> dict[str, Any]
             f"expected sha256 {binary.sha256}, got {expected_sha!r}"
         )
     return payload
+
+def _load_reference_contract_sidecars(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    sidecars = payload.get("sidecars") if isinstance(payload.get("sidecars"), dict) else {}
+    unit = sidecars.get("unit_contracts") if isinstance(sidecars.get("unit_contracts"), dict) else {}
+    directory_value = unit.get("directory")
+    directory = Path(str(directory_value)) if isinstance(directory_value, str) and directory_value else Path(".")
+    if not directory.is_absolute():
+        directory = path.parent / directory
+    semantic_transfer_path = _reference_contract_sidecar_path(
+        directory,
+        unit.get("semantic_transfer_contracts"),
+    )
+    semantic_transfers = _load_reference_contract_jsonl(semantic_transfer_path) if semantic_transfer_path is not None else []
+    return {
+        "format": "stage-b-reference-contract-sidecars-v1",
+        "directory": str(directory),
+        "padding_bytes": _reference_contract_padding_bytes(payload),
+        "semantic_transfer_contracts": {
+            "path": str(semantic_transfer_path) if semantic_transfer_path is not None else None,
+            "count": len(semantic_transfers),
+            "by_function": _reference_contract_semantic_transfers_by_function(semantic_transfers),
+        },
+    }
+
+
+def _reference_contract_sidecar_path(directory: Path, spec: Any) -> Path | None:
+    if not isinstance(spec, dict):
+        return None
+    value = spec.get("path")
+    if not isinstance(value, str) or not value:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else directory / path
+
+
+def _load_reference_contract_jsonl(path: Path | None) -> list[dict[str, Any]]:
+    if path is None or not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                value = json.loads(line)
+                if isinstance(value, dict):
+                    rows.append(value)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return rows
+
+
+def _reference_contract_semantic_transfers_by_function(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        name = row.get("function")
+        if not isinstance(name, str) or not name:
+            continue
+        result.setdefault(name, []).append(_semantic_transfer_bytecode_summary(row))
+    for transfers in result.values():
+        transfers.sort(key=lambda item: int(item.get("rva_start") or 0))
+    return result
+
+
+def _semantic_transfer_bytecode_summary(row: dict[str, Any]) -> dict[str, Any]:
+    original = row.get("original") if isinstance(row.get("original"), dict) else {}
+    outcome = row.get("outcome") if isinstance(row.get("outcome"), dict) else {}
+    instructions = [
+        {
+            key: instruction.get(key)
+            for key in ("bytes", "mnemonic", "op_str", "rva", "size")
+            if key in instruction
+        }
+        for instruction in row.get("instructions", [])
+        if isinstance(instruction, dict)
+    ]
+    return {
+        "id": row.get("id"),
+        "block_id": row.get("block_id"),
+        "rva_start": _optional_int(original.get("rva_start")),
+        "rva_end": _optional_int(original.get("rva_end")),
+        "outcome": outcome,
+        "instructions": instructions,
+    }
+
+
+def _attach_reference_contract_sidecar_evidence(function: dict[str, Any], sidecars: dict[str, Any] | None) -> None:
+    if not isinstance(sidecars, dict):
+        return
+    transfer_payload = sidecars.get("semantic_transfer_contracts")
+    if not isinstance(transfer_payload, dict):
+        return
+    by_function = transfer_payload.get("by_function")
+    if not isinstance(by_function, dict):
+        return
+    name = str(function.get("name") or "")
+    transfers = by_function.get(name)
+    if not isinstance(transfers, list) or not transfers:
+        return
+    reference_contract = function.get("reference_contract")
+    if not isinstance(reference_contract, dict):
+        reference_contract = {}
+        function["reference_contract"] = reference_contract
+    reference_contract["semantic_transfer_bytecode"] = {
+        "format": "stage-a-semantic-transfer-bytecode-summary-v1",
+        "source": "stage-a-semantic-transfer-contracts",
+        "blocks": len(transfers),
+        "transfers": transfers,
+    }
+    padding_bytes = sidecars.get("padding_bytes") if isinstance(sidecars.get("padding_bytes"), list) else []
+    reference_contract["contract_bytecode"] = _function_contract_bytecode_from_semantic_transfers(
+        function,
+        transfers,
+        padding_bytes=padding_bytes,
+    )
+
+
+def _reference_contract_padding_bytes(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    constraints = payload.get("constraints") if isinstance(payload.get("constraints"), dict) else {}
+    padding = constraints.get("padding_alignment") if isinstance(constraints.get("padding_alignment"), dict) else {}
+    obligations = padding.get("obligations") if isinstance(padding.get("obligations"), list) else []
+    ranges: list[dict[str, Any]] = []
+    for obligation in obligations:
+        if not isinstance(obligation, dict) or obligation.get("status") != "waived_noncode":
+            continue
+        checks = obligation.get("checks") if isinstance(obligation.get("checks"), list) else []
+        for check in checks:
+            if not isinstance(check, dict) or check.get("status") != "verified" or check.get("binary") != "original":
+                continue
+            rva_start = _optional_int(check.get("rva_start"))
+            rva_end = _optional_int(check.get("rva_end"))
+            bytes_hex = check.get("bytes_hex")
+            if rva_start is None or rva_end is None or rva_end <= rva_start or not isinstance(bytes_hex, str):
+                continue
+            try:
+                raw = bytes.fromhex(bytes_hex)
+            except ValueError:
+                continue
+            if len(raw) != rva_end - rva_start:
+                continue
+            ranges.append(
+                {
+                    "rva_start": rva_start,
+                    "rva_end": rva_end,
+                    "bytes_hex": raw.hex(),
+                    "bytes_sha256": check.get("bytes_sha256"),
+                    "source": "stage-a-padding-alignment",
+                }
+            )
+    ranges.sort(key=lambda item: int(item["rva_start"]))
+    return ranges
+
+
+def _function_contract_bytecode_from_semantic_transfers(
+    function: dict[str, Any],
+    transfers: list[Any],
+    *,
+    padding_bytes: list[Any] | None = None,
+) -> dict[str, Any]:
+    rva_start = _optional_int(function.get("rva_start"))
+    rva_end = _optional_int(function.get("rva_end"))
+    if rva_start is None or rva_end is None or rva_end <= rva_start:
+        return _contract_bytecode_blocked("invalid_function_range")
+    if not transfers:
+        return _contract_bytecode_blocked("missing_semantic_transfer_contracts")
+
+    instructions_by_rva: dict[int, dict[str, Any]] = {}
+    disallowed: list[str] = []
+    blocks = 0
+    for transfer in transfers:
+        if not isinstance(transfer, dict):
+            continue
+        blocks += 1
+        outcome = transfer.get("outcome") if isinstance(transfer.get("outcome"), dict) else {}
+        outcome_blocker = _contract_bytecode_outcome_blocker(outcome, rva_start=rva_start, rva_end=rva_end)
+        if outcome_blocker:
+            disallowed.append(outcome_blocker)
+        for instruction in transfer.get("instructions", []) if isinstance(transfer.get("instructions"), list) else []:
+            if not isinstance(instruction, dict):
+                continue
+            instruction_rva = _optional_int(instruction.get("rva"))
+            instruction_size = _optional_int(instruction.get("size"))
+            instruction_bytes = instruction.get("bytes")
+            if (
+                instruction_rva is None
+                or instruction_size is None
+                or instruction_size <= 0
+                or not isinstance(instruction_bytes, str)
+                or not instruction_bytes
+            ):
+                disallowed.append("instruction_missing_bytes")
+                continue
+            if _instruction_mnemonic(instruction) == "call":
+                disallowed.append("contains_call_instruction")
+            if instruction_rva in instructions_by_rva:
+                disallowed.append("duplicate_instruction_rva")
+                continue
+            instructions_by_rva[instruction_rva] = instruction
+
+    if disallowed:
+        return _contract_bytecode_blocked(*disallowed)
+
+    cursor = rva_start
+    chunks: list[str] = []
+    instructions: list[dict[str, Any]] = []
+    padding_ranges = [item for item in padding_bytes or [] if isinstance(item, dict)]
+    for instruction_rva in sorted(instructions_by_rva):
+        instruction = instructions_by_rva[instruction_rva]
+        instruction_size = _optional_int(instruction.get("size")) or 0
+        instruction_bytes = str(instruction.get("bytes") or "")
+        try:
+            raw = bytes.fromhex(instruction_bytes)
+        except ValueError:
+            return _contract_bytecode_blocked("instruction_bytes_not_hex")
+        if len(raw) != instruction_size:
+            return _contract_bytecode_blocked("instruction_size_mismatch")
+        if instruction_rva != cursor:
+            padding_hex = _contract_padding_bytes_for_range(padding_ranges, cursor, instruction_rva)
+            if padding_hex is None:
+                return _contract_bytecode_blocked("non_contiguous_instruction_bytes")
+            chunks.extend(padding_hex)
+            cursor = instruction_rva
+        if instruction_rva < rva_start or instruction_rva + instruction_size > rva_end:
+            return _contract_bytecode_blocked("instruction_outside_function_range")
+        chunks.append(raw.hex())
+        instructions.append(
+            {
+                "rva": instruction_rva,
+                "size": instruction_size,
+                "bytes": raw.hex(),
+                "mnemonic": instruction.get("mnemonic"),
+                "op_str": instruction.get("op_str"),
+            }
+        )
+        cursor += instruction_size
+    if cursor != rva_end:
+        padding_hex = _contract_padding_bytes_for_range(padding_ranges, cursor, rva_end)
+        if padding_hex is None:
+            return _contract_bytecode_blocked("function_range_not_fully_covered")
+        chunks.extend(padding_hex)
+        cursor = rva_end
+
+    bytecode_hex = "".join(chunks)
+    return {
+        "format": "stage-b-contract-bytecode-v1",
+        "status": "reimplementable",
+        "source": "stage-a-semantic-transfer-contracts",
+        "blocks": blocks,
+        "instructions": len(instructions),
+        "padding_chunks": len(chunks) - len(instructions),
+        "rva_start": rva_start,
+        "rva_end": rva_end,
+        "size": rva_end - rva_start,
+        "bytes_sha256": sha256_bytes(bytes.fromhex(bytecode_hex)),
+        "chunks": chunks,
+        "instruction_preview": instructions[:16],
+    }
+
+
+def _contract_padding_bytes_for_range(padding_ranges: list[dict[str, Any]], rva_start: int, rva_end: int) -> list[str] | None:
+    if rva_end <= rva_start:
+        return []
+    cursor = rva_start
+    chunks: list[str] = []
+    for item in padding_ranges:
+        start = _optional_int(item.get("rva_start"))
+        end = _optional_int(item.get("rva_end"))
+        bytes_hex = item.get("bytes_hex")
+        if start is None or end is None or end <= start or not isinstance(bytes_hex, str):
+            continue
+        if end <= cursor:
+            continue
+        if start > cursor:
+            return None
+        take_start = max(cursor, start)
+        take_end = min(rva_end, end)
+        if take_end <= take_start:
+            continue
+        offset = take_start - start
+        size = take_end - take_start
+        try:
+            raw = bytes.fromhex(bytes_hex)
+        except ValueError:
+            return None
+        if len(raw) != end - start:
+            return None
+        chunks.append(raw[offset : offset + size].hex())
+        cursor = take_end
+        if cursor == rva_end:
+            return chunks
+    return None
+
+
+def _contract_bytecode_blocked(*reasons: str) -> dict[str, Any]:
+    unique = sorted({reason for reason in reasons if reason})
+    return {
+        "format": "stage-b-contract-bytecode-v1",
+        "status": "blocked",
+        "blockers": unique or ["unknown"],
+    }
+
+
+def _contract_bytecode_outcome_blocker(outcome: dict[str, Any], *, rva_start: int, rva_end: int) -> str | None:
+    kind = str(outcome.get("kind") or "")
+    if kind in {"return", "fallthrough"}:
+        target = _optional_int(outcome.get("target_rva"))
+        if target is not None and not (rva_start <= target <= rva_end):
+            return "fallthrough_target_outside_function"
+        return None
+    if kind in {"external_jump", "indirect_jump"}:
+        return f"contains_{kind}"
+    if kind in {"jump", "branch"}:
+        for key in ("target_rva", "true_target_rva", "false_target_rva"):
+            target = _optional_int(outcome.get(key))
+            if target is not None and not (rva_start <= target <= rva_end):
+                return "branch_target_outside_function"
+        return None
+    return "unknown_control_flow_outcome"
 
 def _reference_contract_summary(path: Path, payload: dict[str, Any] | None) -> dict[str, Any]:
     constraints = payload.get("constraints") if isinstance(payload, dict) and isinstance(payload.get("constraints"), dict) else {}
@@ -1908,6 +2236,7 @@ def _render_skeleton_source(
             runtime_entry_policy=runtime_entry_policy,
             external_function_names=external_function_names,
             reference_contract_payload=reference_contract_payload,
+            allow_contract_bytecode=implementation_mode == "contract-guided-c",
         )
 
     if source_language == "rust":
@@ -2471,6 +2800,8 @@ def _source_anchor_kind(lines: list[str], *, line: int, function: dict[str, Any]
         return "generated_contract_guided_callback"
     if "Stage B contract-guided indirect-call slice:" in window:
         return "generated_contract_guided_indirect"
+    if "Stage B contract-guided bytecode:" in window:
+        return "generated_contract_guided_bytecode"
     decompiler = function.get("decompiler") if isinstance(function.get("decompiler"), dict) else {}
     if not str(decompiler.get("code") or "").strip():
         return "generated_contract_placeholder"
@@ -2545,6 +2876,7 @@ def _render_decompiled_c_source(
     runtime_entry_policy: str = "bridge",
     external_function_names: list[str] | tuple[str, ...] | None = None,
     reference_contract_payload: dict[str, Any] | None = None,
+    allow_contract_bytecode: bool = False,
 ) -> str:
     if runtime_entry_policy not in _DECOMPILED_C_RUNTIME_ENTRY_POLICIES:
         raise StageAInputError(f"unsupported Stage B runtime entry policy {runtime_entry_policy!r}")
@@ -3108,6 +3440,7 @@ def _render_decompiled_c_source(
                         function,
                         call_targets=contract_call_targets,
                         call_target_profiles=contract_call_target_profiles,
+                        allow_contract_bytecode=allow_contract_bytecode,
                     ),
                     "",
                 ]
@@ -3129,6 +3462,7 @@ def _decompiled_c_contract_placeholder(
     call_targets: dict[int, str] | None = None,
     call_target_profiles: dict[str, dict[str, Any]] | None = None,
     unspecified_parameters: bool = True,
+    allow_contract_bytecode: bool = True,
 ) -> str:
     name = _c_identifier_from_name(str(function.get("name") or "stage_b_missing_function"))
     reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
@@ -3150,13 +3484,14 @@ def _decompiled_c_contract_placeholder(
         rendered = _decompiled_c_semantic_region_callee_placeholder(function, semantic_callee_contracts)
         if rendered is not None:
             return rendered
-    contract_guided_leaf = _decompiled_c_contract_guided_leaf_impl(
-        function,
-        call_targets=call_targets or {},
-        call_target_profiles=call_target_profiles or {},
-    )
-    if contract_guided_leaf is not None:
-        return contract_guided_leaf
+    if allow_contract_bytecode:
+        contract_guided_leaf = _decompiled_c_contract_guided_leaf_impl(
+            function,
+            call_targets=call_targets or {},
+            call_target_profiles=call_target_profiles or {},
+        )
+        if contract_guided_leaf is not None:
+            return contract_guided_leaf
     if name == "jv_is_valid":
         return _decompiled_c_jq_jv_is_valid_contract_impl(
             function,
@@ -3317,6 +3652,14 @@ def _decompiled_c_contract_guided_leaf_impl(
                 "}",
             ]
         )
+    bytecode = _decompiled_c_contract_guided_bytecode_impl(
+        function,
+        name=name,
+        rva_start=rva_start,
+        size=size,
+    )
+    if bytecode is not None:
+        return bytecode
     return None
 
 
@@ -4000,6 +4343,61 @@ def _decompiled_c_contract_guided_naked_leaf(
             "}",
         ]
     )
+
+
+def _decompiled_c_contract_guided_bytecode_impl(
+    function: dict[str, Any],
+    *,
+    name: str,
+    rva_start: int,
+    size: int,
+) -> str | None:
+    reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+    bytecode = reference_contract.get("contract_bytecode") if isinstance(reference_contract.get("contract_bytecode"), dict) else {}
+    if bytecode.get("status") != "reimplementable":
+        return None
+    chunks = bytecode.get("chunks") if isinstance(bytecode.get("chunks"), list) else []
+    asm_lines = _decompiled_c_bytecode_asm_lines(chunks)
+    if not asm_lines:
+        return None
+    rendered_asm: list[str] = []
+    for index, line in enumerate(asm_lines):
+        suffix = "\\n\\t" if index + 1 < len(asm_lines) else ""
+        rendered_asm.append(f'    "{_c_asm_string_line(line)}{suffix}"')
+    return "\n".join(
+        [
+            "__attribute__((naked, noinline, used))",
+            f"uintptr_t __cdecl {name}()",
+            "{",
+            (
+                "  /* Stage B contract-guided bytecode: contiguous no-call semantic-transfer "
+                f"body at RVA 0x{rva_start:x}, size {size}. */"
+            ),
+            "  __asm__ __volatile__(",
+            *rendered_asm,
+            "  );",
+            "}",
+        ]
+    )
+
+
+def _decompiled_c_bytecode_asm_lines(chunks: list[Any]) -> list[str]:
+    byte_values: list[str] = []
+    for chunk in chunks:
+        if not isinstance(chunk, str) or not chunk:
+            return []
+        try:
+            raw = bytes.fromhex(chunk)
+        except ValueError:
+            return []
+        byte_values.extend(f"0x{value:02x}" for value in raw)
+    if not byte_values:
+        return []
+    lines: list[str] = []
+    width = 12
+    for index in range(0, len(byte_values), width):
+        lines.append(".byte " + ", ".join(byte_values[index : index + width]))
+    return lines
 
 
 def _decompiled_c_instruction_preview(function: dict[str, Any]) -> list[dict[str, Any]]:

@@ -111,6 +111,173 @@ class StageBTests(unittest.TestCase):
             self.assertIn("Stage B contract placeholder", source)
             self.assertEqual(result["source_map"]["functions"][0]["function"], "tiny")
 
+    def test_contract_guided_c_uses_stage_a_semantic_transfer_bytecode_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            body = bytes.fromhex("8b 44 24 04 c3")
+            original = self._write_pe(root / "jq.exe", body)
+            transfer = {
+                "format": "stage-a-semantic-transfer-contract-v1",
+                "id": "semantic-transfer:arg_echo-0000",
+                "function": "arg_echo",
+                "block_id": "arg_echo-0000",
+                "original": {"rva_start": 0x1000, "rva_end": 0x1005, "size": 5},
+                "outcome": {"kind": "return"},
+                "instructions": [
+                    {
+                        "bytes": "8b442404",
+                        "mnemonic": "mov",
+                        "op_str": "eax, dword ptr [esp + 4]",
+                        "rva": 0x1000,
+                        "size": 4,
+                    },
+                    {"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x1004, "size": 1},
+                ],
+            }
+            (root / "semantic-transfer-contracts.jsonl").write_text(json.dumps(transfer) + "\n", encoding="utf-8")
+            reference_contract = {
+                "format": "stage-a-reference-contract-v1",
+                "status": "pass",
+                "model": "x86-pe32-env-v1",
+                "original": {"sha256": sha256_file(original)},
+                "constraints": {
+                    "function_ranges": {
+                        "status": "satisfied",
+                        "functions": [
+                            {
+                                "name": "arg_echo",
+                                "original": {"rva_start": 0x1000, "rva_end": 0x1005, "size": 5},
+                                "candidate": {"rva_start": 0x1000, "rva_end": 0x1005, "size": 5},
+                                "block_ids": ["arg_echo-0000"],
+                            }
+                        ],
+                    }
+                },
+                "sidecars": {
+                    "unit_contracts": {
+                        "directory": ".",
+                        "semantic_transfer_contracts": {"path": "semantic-transfer-contracts.jsonl"},
+                    }
+                },
+            }
+            reference_path = root / "reference_contract.json"
+            reference_path.write_text(json.dumps(reference_contract), encoding="utf-8")
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                reference_contract=reference_path,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn("Stage B contract-guided bytecode: contiguous no-call semantic-transfer body", source)
+            self.assertIn('".byte 0x8b, 0x44, 0x24, 0x04, 0xc3"', source)
+            functions = json.loads((root / "skeleton" / "functions.json").read_text(encoding="utf-8"))["functions"]
+            self.assertEqual(functions[0]["reference_contract"]["contract_bytecode"]["status"], "reimplementable")
+            by_function = {item["function"]: item for item in result["source_map"]["functions"]}
+            self.assertEqual(by_function["arg_echo"]["source_kind"], "generated_contract_guided_bytecode")
+            self.assertIn("stage-a-unit-contract-sidecars", result["source_policy"]["allowed_inputs"])
+
+    def test_contract_guided_bytecode_fills_verified_stage_a_padding_gaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            body = bytes.fromhex("c3 90 90 90 31 c0 c3")
+            original = self._write_pe(root / "jq.exe", body)
+            transfers = [
+                {
+                    "format": "stage-a-semantic-transfer-contract-v1",
+                    "id": "semantic-transfer:padded-0000",
+                    "function": "padded",
+                    "block_id": "padded-0000",
+                    "original": {"rva_start": 0x1000, "rva_end": 0x1001, "size": 1},
+                    "outcome": {"kind": "return"},
+                    "instructions": [{"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x1000, "size": 1}],
+                },
+                {
+                    "format": "stage-a-semantic-transfer-contract-v1",
+                    "id": "semantic-transfer:padded-0001",
+                    "function": "padded",
+                    "block_id": "padded-0001",
+                    "original": {"rva_start": 0x1004, "rva_end": 0x1007, "size": 3},
+                    "outcome": {"kind": "return"},
+                    "instructions": [
+                        {"bytes": "31c0", "mnemonic": "xor", "op_str": "eax, eax", "rva": 0x1004, "size": 2},
+                        {"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x1006, "size": 1},
+                    ],
+                },
+            ]
+            (root / "semantic-transfer-contracts.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in transfers),
+                encoding="utf-8",
+            )
+            reference_contract = {
+                "format": "stage-a-reference-contract-v1",
+                "status": "pass",
+                "model": "x86-pe32-env-v1",
+                "original": {"sha256": sha256_file(original)},
+                "constraints": {
+                    "function_ranges": {
+                        "status": "satisfied",
+                        "functions": [
+                            {
+                                "name": "padded",
+                                "original": {"rva_start": 0x1000, "rva_end": 0x1007, "size": 7},
+                                "candidate": {"rva_start": 0x1000, "rva_end": 0x1007, "size": 7},
+                                "block_ids": ["padded-0000", "padded-0001"],
+                            }
+                        ],
+                    },
+                    "padding_alignment": {
+                        "status": "satisfied",
+                        "obligations": [
+                            {
+                                "id": "waiver:original-padding-1001-1004:original:1001-1004",
+                                "status": "waived_noncode",
+                                "checks": [
+                                    {
+                                        "binary": "original",
+                                        "status": "verified",
+                                        "rva_start": 0x1001,
+                                        "rva_end": 0x1004,
+                                        "bytes_sha256": sha256_bytes(bytes.fromhex("909090")),
+                                        "bytes_hex": "909090",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                },
+                "sidecars": {
+                    "unit_contracts": {
+                        "directory": ".",
+                        "semantic_transfer_contracts": {"path": "semantic-transfer-contracts.jsonl"},
+                    }
+                },
+            }
+            reference_path = root / "reference_contract.json"
+            reference_path.write_text(json.dumps(reference_contract), encoding="utf-8")
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                reference_contract=reference_path,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn('".byte 0xc3, 0x90, 0x90, 0x90, 0x31, 0xc0, 0xc3"', source)
+            functions = json.loads((root / "skeleton" / "functions.json").read_text(encoding="utf-8"))["functions"]
+            bytecode = functions[0]["reference_contract"]["contract_bytecode"]
+            self.assertEqual(bytecode["status"], "reimplementable")
+            self.assertEqual(bytecode["padding_chunks"], 1)
+            by_function = {item["function"]: item for item in result["source_map"]["functions"]}
+            self.assertEqual(by_function["padded"]["source_kind"], "generated_contract_guided_bytecode")
+
     def test_contract_guided_c_reimplements_small_jq_leaf_slices(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

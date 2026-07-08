@@ -41,6 +41,7 @@ CONCRETE_SOURCE_KINDS = frozenset(
     {
         "decompiled_function",
         "generated_contract_guided_callback",
+        "generated_contract_guided_bytecode",
         "generated_contract_guided_indirect",
         "generated_contract_guided_leaf",
         "generated_helper_from_decompiler_section_gap",
