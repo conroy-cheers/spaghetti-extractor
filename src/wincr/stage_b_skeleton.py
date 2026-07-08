@@ -4290,6 +4290,8 @@ def _decompiled_c_contract_guided_raw_section_gap_flow_impl(
     transfers = [transfer for transfer in transfers if isinstance(transfer, dict)]
     if not transfers:
         return None
+    if _decompiled_c_raw_section_gap_flow_has_symbolic_call_targets(function, transfers):
+        return None
     del branch_target_symbols
     chunks = _decompiled_c_contract_raw_flow_chunks(
         transfers,
@@ -4315,6 +4317,24 @@ def _decompiled_c_contract_guided_raw_section_gap_flow_impl(
 def _decompiled_c_is_synthetic_section_gap_function(function: dict[str, Any]) -> bool:
     name = str(function.get("name") or "")
     return name.startswith("stage_b_contract_section_gap__") and isinstance(function.get("reference_section_gap"), dict)
+
+
+def _decompiled_c_raw_section_gap_flow_has_symbolic_call_targets(
+    function: dict[str, Any],
+    transfers: list[dict[str, Any]],
+) -> bool:
+    callsites = _decompiled_c_reference_callsites_by_rva(function)
+    for transfer in transfers:
+        instructions = transfer.get("instructions") if isinstance(transfer.get("instructions"), list) else []
+        for instruction in instructions:
+            if not isinstance(instruction, dict) or _instruction_mnemonic(instruction) != "call":
+                continue
+            instruction_rva = _optional_int(instruction.get("rva"))
+            callsite = callsites.get(instruction_rva) if instruction_rva is not None else None
+            target = callsite.get("target") if isinstance(callsite, dict) and isinstance(callsite.get("target"), dict) else {}
+            if target.get("kind") in {"direct", "import"}:
+                return True
+    return False
 
 
 def _decompiled_c_contract_raw_flow_chunks(
@@ -5518,18 +5538,8 @@ def _decompiled_c_contract_flow_direct_call_should_use_raw_bytes(
     target_name: str,
     target_profile: dict[str, Any] | None,
 ) -> bool:
-    if target_kind != "direct":
-        return False
-    try:
-        raw = bytes.fromhex(str(instruction.get("bytes") or ""))
-    except ValueError:
-        return False
-    instruction_size = _optional_int(instruction.get("size"))
-    if instruction_size != len(raw) or len(raw) != 5 or raw[0] != 0xE8:
-        return False
-    if _decompiled_c_contract_flow_symbolic_call_preserves_rel32(target_name, target_profile=target_profile):
-        return False
-    return True
+    del instruction, target_kind, target_name, target_profile
+    return False
 
 
 def _decompiled_c_contract_flow_symbolic_call_preserves_rel32(
@@ -5537,6 +5547,9 @@ def _decompiled_c_contract_flow_symbolic_call_preserves_rel32(
     *,
     target_profile: dict[str, Any] | None,
 ) -> bool:
+    # Kept as a narrowly scoped introspection helper for older diagnostics.
+    # Flow lowering emits symbolic calls for resolved direct targets so the
+    # linker, not stale original rel32 bytes, chooses the candidate callee.
     if target_name.startswith("stage_b_contract_section_gap__"):
         return True
     if isinstance(target_profile, dict) and target_profile.get("stage_b_internal_function") is True:

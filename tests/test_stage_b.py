@@ -691,6 +691,114 @@ class StageBTests(unittest.TestCase):
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
             self.assertEqual(by_function["flow_func"]["source_kind"], "generated_contract_guided_flow")
 
+    def test_contract_guided_c_lowers_direct_import_thunk_flow_symbolically(self):
+        functions = [
+            {
+                "name": "caller",
+                "rva_start": 0x1000,
+                "rva_end": 0x1006,
+                "size": 6,
+                "reference_contract": {
+                    "semantic_transfer_bytecode": {
+                        "transfers": [
+                            {
+                                "function": "caller",
+                                "block_id": "caller-0000",
+                                "rva_start": 0x1000,
+                                "rva_end": 0x1006,
+                                "outcome": {"kind": "return"},
+                                "instructions": [
+                                    {"bytes": "e8fb0f0000", "mnemonic": "call", "op_str": "0x402000", "rva": 0x1000, "size": 5},
+                                    {"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x1005, "size": 1},
+                                ],
+                            }
+                        ]
+                    },
+                    "abi_callsites": [
+                        {
+                            "id": "callsite:caller-0000:1000",
+                            "block_id": "caller-0000",
+                            "instruction": {"bytes": "e8fb0f0000", "mnemonic": "call", "op_str": "0x402000", "rva": 0x1000, "size": 5},
+                            "target": {"kind": "direct", "target_rva": 0x2000},
+                            "argument_inventory": {"argument_count": 0, "stack_args": []},
+                        }
+                    ],
+                },
+            },
+            {
+                "name": "strlen",
+                "rva_start": 0x2000,
+                "rva_end": 0x2006,
+                "size": 6,
+                "linkage": {"kind": "import_thunk", "dll": "msvcrt.dll", "symbol": "strlen"},
+            },
+        ]
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            allow_contract_bytecode=True,
+        )
+
+        self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
+        self.assertIn('"call _strlen\\n\\t"', source)
+        self.assertNotIn('".byte 0xe8, 0xfb, 0x0f, 0x00, 0x00\\n\\t"', source)
+
+    def test_contract_guided_c_lowers_section_gap_import_call_symbolically(self):
+        functions = [
+            {
+                "name": "stage_b_contract_section_gap__text_0000",
+                "rva_start": 0x1000,
+                "rva_end": 0x1009,
+                "size": 9,
+                "reference_section_gap": {"name": "section-gap--text-0000"},
+                "reference_contract": {
+                    "semantic_transfer_bytecode": {
+                        "transfers": [
+                            {
+                                "function": "section-gap--text-0000",
+                                "block_id": "section-gap--text-0000",
+                                "rva_start": 0x1000,
+                                "rva_end": 0x1009,
+                                "outcome": {"kind": "return"},
+                                "instructions": [
+                                    {"bytes": "6a01", "mnemonic": "push", "op_str": "1", "rva": 0x1000, "size": 2},
+                                    {"bytes": "ff1550344100", "mnemonic": "call", "op_str": "dword ptr [0x413450]", "rva": 0x1002, "size": 6},
+                                    {"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x1008, "size": 1},
+                                ],
+                            }
+                        ]
+                    },
+                    "abi_callsites": [
+                        {
+                            "id": "callsite:section-gap--text-0000:1002",
+                            "block_id": "section-gap--text-0000",
+                            "instruction": {"bytes": "ff1550344100", "mnemonic": "call", "op_str": "dword ptr [0x413450]", "rva": 0x1002, "size": 6},
+                            "target": {"kind": "import", "dll": "kernel32.dll", "symbol": "Sleep"},
+                            "argument_inventory": {
+                                "argument_count": 1,
+                                "stack_args": [
+                                    {"index": 0, "role": "immediate", "source": {"kind": "immediate", "value": 1}}
+                                ],
+                            },
+                            "arguments": [{"kind": "immediate", "value": 1, "stack_offset": 0}],
+                        }
+                    ],
+                },
+            }
+        ]
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            allow_contract_bytecode=True,
+        )
+
+        self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
+        self.assertIn('"call _Sleep@4\\n\\t"', source)
+        self.assertNotIn("Stage B contract-guided raw flow: exact section-gap bytes", source)
+        self.assertNotIn('".byte 0xff, 0x15, 0x50, 0x34, 0x41, 0x00\\n\\t"', source)
+
     def test_contract_guided_c_lowers_flow_branch_into_verified_padding(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1080,7 +1188,7 @@ class StageBTests(unittest.TestCase):
             [".byte 0xff, 0x15, 0x90, 0xf5, 0x40, 0x00"],
         )
 
-    def test_contract_guided_flow_preserves_external_direct_call_bytes(self):
+    def test_contract_guided_flow_lowers_external_direct_call_symbolically(self):
         callsite = {
             "instruction": {
                 "bytes": "e8c2af0000",
@@ -1100,7 +1208,7 @@ class StageBTests(unittest.TestCase):
                 call_targets={0xC3C0: "__amsg_exit"},
                 call_target_profiles={"__amsg_exit": {}},
             ),
-            [".byte 0xe8, 0xc2, 0xaf, 0x00, 0x00"],
+            ["call ___amsg_exit"],
         )
 
     def test_contract_guided_c_lowers_flow_indirect_jump_bytes(self):

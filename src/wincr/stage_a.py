@@ -5306,10 +5306,7 @@ def _contract_candidate_abi_coverage_gaps(
         if not candidates:
             missing_functions.append(_abi_function_gap_sample(function, key))
             continue
-        best_candidate = max(
-            candidates,
-            key=lambda item: len(item.get("callsites", [])) if isinstance(item.get("callsites"), list) else 0,
-        )
+        best_candidate = _contract_candidate_abi_best_candidate(candidates, alias_matches.get(name))
         function_mismatch = _contract_candidate_abi_function_mismatch(
             name,
             key,
@@ -6349,6 +6346,8 @@ def _contract_candidate_abi_argument_role_match(reference: Any, candidate: Any) 
         return False
     if reference == "register" and candidate in _ABI_ADDRESS_LIKE_ARGUMENT_ROLES:
         return True
+    if reference == "immediate" and candidate == "string_literal":
+        return True
     if reference in _ABI_BY_VALUE_ARGUMENT_ROLES and candidate in _ABI_BY_VALUE_ARGUMENT_ROLES:
         return True
     return False
@@ -6472,6 +6471,26 @@ def _contract_candidate_abi_candidates(
                         if function not in candidates:
                             candidates.append(function)
     return candidates
+
+
+def _contract_candidate_abi_best_candidate(candidates: list[dict[str, Any]], alias_match: Any) -> dict[str, Any]:
+    preferred_names: set[str] = set()
+    if isinstance(alias_match, dict):
+        candidate = alias_match.get("candidate") if isinstance(alias_match.get("candidate"), dict) else {}
+        for name in (candidate.get("name"), alias_match.get("source_function")):
+            if isinstance(name, str) and name:
+                preferred_names.add(name)
+    preferred = [
+        function
+        for function in candidates
+        if preferred_names & set(_contract_candidate_function_symbol_names(function))
+    ]
+    if preferred:
+        candidates = preferred
+    return max(
+        candidates,
+        key=lambda item: len(item.get("callsites", [])) if isinstance(item.get("callsites"), list) else 0,
+    )
 
 
 def _contract_candidate_abi_alias_sample(alias_match: Any) -> dict[str, Any] | None:

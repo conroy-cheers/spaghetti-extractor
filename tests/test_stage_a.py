@@ -3845,6 +3845,64 @@ class StageAValidateTests(unittest.TestCase):
 
         self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
 
+    def test_contract_candidate_abi_coverage_gaps_accept_candidate_string_literal_refinement(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "callsites": [
+                            {
+                                "id": "callsite:reference",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x3000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "immediate"}],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x3000, "rva_end": 0x3010}],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "callsites": [
+                            {
+                                "id": "callsite:candidate",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x5000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "string_literal"}],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x5000, "rva_end": 0x5010}],
+                    },
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
+
     def test_contract_candidate_abi_coverage_gaps_reports_underconstrained_reference_arguments(self):
         reference_abi = {
             "original": {
@@ -4084,6 +4142,83 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(gaps["counts"]["missing_functions"], 0)
         self.assertEqual(gaps["counts"]["ambiguous_functions"], 0)
         self.assertEqual(alias_evidence["matches_by_reference"]["__dyn_tls_dtor@12"]["source_function"], "___dyn_tls_dtor_12")
+
+    def test_contract_candidate_abi_coverage_gaps_prefer_explicit_alias_over_same_rva_probe(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "section-gap--text-0130",
+                        "blocks": [{"block_id": "section-gap--text-0130", "rva_start": 0x4EF8, "rva_end": 0x4F38}],
+                        "callsites": [
+                            {
+                                "id": "callsite:section-gap--text-0130:4f2b",
+                                "block_id": "section-gap--text-0130",
+                                "instruction": {"rva": 0x4F2B},
+                                "target": {"kind": "import", "dll": "kernel32.dll", "symbol": "VirtualProtect"},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 4,
+                                    "stack_args": [{"index": index, "role": "register"} for index in range(4)],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        matching_callsite = {
+            "id": "callsite:stage_b_contract_section_gap__text_0130:4e9a",
+            "block_id": "stage_b_contract_section_gap__text_0130",
+            "instruction": {"rva": 0x4E9A},
+            "target": {"kind": "import", "dll": "kernel32.dll", "symbol": "VirtualProtect"},
+            "argument_inventory": {
+                "calling_convention": "cdecl_or_stdcall_stack",
+                "argument_count": 4,
+                "stack_args": [{"index": index, "role": "register"} for index in range(4)],
+                "register_args": [],
+            },
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "section-gap--text-0130",
+                        "callsites": [
+                            {
+                                "target": {"kind": "direct", "target_rva": 0x58E9},
+                                "argument_inventory": {"calling_convention": "cdecl_or_stdcall_stack", "argument_count": 0, "stack_args": []},
+                            },
+                            {
+                                "target": {"kind": "direct", "target_rva": 0x5B59},
+                                "argument_inventory": {"calling_convention": "cdecl_or_stdcall_stack", "argument_count": 0, "stack_args": []},
+                            },
+                        ],
+                    },
+                    {
+                        "name": "stage_b_contract_section_gap__text_0130",
+                        "callsites": [matching_callsite],
+                    },
+                ]
+            }
+        }
+        alias_evidence = {
+            "matches_by_reference": {
+                "section-gap--text-0130": {
+                    "source_function": "stage_b_contract_section_gap__text_0130",
+                    "source_kind": "generated_contract_guided_flow",
+                    "candidate": {"name": "stage_b_contract_section_gap__text_0130"},
+                }
+            },
+            "ambiguities_by_reference": {},
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi, alias_evidence=alias_evidence)
+
+        self.assertEqual(gaps["counts"]["missing_functions"], 0)
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
+        self.assertEqual(gaps["counts"]["incomplete_callsite_functions"], 0)
 
     def test_candidate_abi_probes_reference_section_gap_units_at_same_rva(self):
         with tempfile.TemporaryDirectory() as tmp:
