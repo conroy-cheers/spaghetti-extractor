@@ -27,6 +27,9 @@ from wincr.stage_b_functional import stage_b_materialize_upstream_suite, stage_b
 from wincr.stage_b_provenance import stage_b_generate_candidate_provenance
 from wincr.stage_b_skeleton import (
     _decompiled_c_contract_direct_call_target_is_asm_linkable,
+    _decompiled_c_contract_flow_call_lines,
+    _decompiled_c_section_gap_callsite_is_asm_anchorable,
+    _decompiled_c_section_gap_target_symbols,
     _render_decompiled_c_source,
     _render_decompiled_c_source as _render_skeleton_decompiled_c_source,
     _skeleton_source_map,
@@ -1018,6 +1021,62 @@ class StageBTests(unittest.TestCase):
             self.assertIn('".byte 0xff, 0xd0"', source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
             self.assertEqual(by_function[generated_name]["source_kind"], "generated_contract_guided_flow")
+
+    def test_contract_branch_target_prefers_import_symbol_over_generic_block_label(self):
+        reference_contract = {
+            "original": {"imports": [{"thunk_rva": 0x2000, "symbol": "free"}]},
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {"kind": "code", "original": {"rva_start": 0x2000, "rva_end": 0x2006}}
+                    ]
+                },
+                "function_ranges": {
+                    "functions": [
+                        {
+                            "name": "free",
+                            "original": {"rva_start": 0x2000, "rva_end": 0x2006},
+                            "candidate": {"rva_start": 0x3000, "rva_end": 0x3006},
+                        }
+                    ]
+                },
+            },
+        }
+
+        targets = _decompiled_c_section_gap_target_symbols(reference_contract, known_symbols=set())
+
+        self.assertEqual(targets[0x2000], "free")
+
+    def test_section_gap_direct_memory_indirect_callsite_is_anchorable_as_raw_bytes(self):
+        callsite = {
+            "instruction": {
+                "bytes": "ff1590f54000",
+                "mnemonic": "call",
+                "op_str": "dword ptr [0x40f590]",
+                "rva": 0x1007,
+                "size": 6,
+            },
+            "target": {"kind": "direct", "target_rva": 0x4CB0},
+            "arguments": [{"kind": "immediate", "stack_offset": 0, "value": 0}],
+        }
+        instruction = callsite["instruction"]
+
+        self.assertTrue(
+            _decompiled_c_section_gap_callsite_is_asm_anchorable(
+                callsite,
+                call_targets={},
+                linkable_symbols=set(),
+            )
+        )
+        self.assertEqual(
+            _decompiled_c_contract_flow_call_lines(
+                instruction,
+                callsite=callsite,
+                call_targets={},
+                call_target_profiles={},
+            ),
+            [".byte 0xff, 0x15, 0x90, 0xf5, 0x40, 0x00"],
+        )
 
     def test_contract_guided_c_lowers_flow_indirect_jump_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -432,6 +432,36 @@ class SliceLoopTests(unittest.TestCase):
             )
             self.assertEqual(report["contract_candidate_validation"]["cache"]["status"], "miss")
 
+    def test_skip_delta_still_runs_contract_candidate_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._prepared_workspace(root)
+
+            with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
+                "wincr.slice_loop.stage_a_validate_contract_candidate", side_effect=self._contract_candidate_validation
+            ) as validate_candidate, patch("wincr.slice_loop.stage_b_explain_delta") as explain:
+                code = self._run_main(
+                    [
+                        "--work-dir",
+                        str(root / "work"),
+                        "check",
+                        "jq",
+                        "--skip-delta",
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(validate_candidate.call_count, 1)
+            explain.assert_not_called()
+            report = json.loads(
+                (root / "work" / "jq" / "checks" / "all" / "fast" / "wincr-slice-check.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(report["contract_candidate_validation"]["cache"]["status"], "miss")
+            self.assertNotIn("stage_b_delta", report["artifacts"])
+
     def test_copytree_force_replaces_read_only_cached_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

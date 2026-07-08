@@ -3585,6 +3585,10 @@ def _render_decompiled_c_source(
         set(_decompiled_c_external_call_symbols(functions))
         | {str(name) for name in external_function_names or ()}
         | _decompiled_c_defined_symbol_names(functions)
+        | set(import_thunk_symbols)
+        | set(import_thunk_alias_symbols)
+        | set(direct_import_alias_symbols)
+        | set(runtime_helper_alias_symbols)
     )
     contract_branch_target_symbols = (
         _decompiled_c_section_gap_target_symbols(
@@ -6505,6 +6509,8 @@ def _decompiled_c_contract_synthetic_section_gap_placeholders(
     external_call_symbols = _decompiled_c_external_call_symbols(functions)
     defined_symbols = _decompiled_c_defined_symbol_names(functions)
     known_symbols = set(external_call_symbols) | {str(name) for name in external_function_names} | defined_symbols
+    known_symbols.update(str(name) for name in additional_linkable_symbols)
+    known_symbols.update(str(name) for name in runtime_linked_call_targets or set())
     branch_target_symbols = _decompiled_c_section_gap_target_symbols(
         reference_contract_payload,
         known_symbols=known_symbols,
@@ -6551,6 +6557,7 @@ def _decompiled_c_section_gap_target_symbols(
     known_symbols: set[str],
 ) -> dict[int, str]:
     result: dict[int, str] = _decompiled_c_basic_block_target_symbols(reference_contract_payload)
+    result.update(_decompiled_c_function_start_target_symbols(reference_contract_payload, known_symbols=known_symbols))
     for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
         rva_start = _optional_int(entry.get("rva_start"))
         if rva_start is None:
@@ -6560,6 +6567,45 @@ def _decompiled_c_section_gap_target_symbols(
             symbol = _decompiled_c_synthetic_section_gap_name(entry)
         if _is_c_identifier(symbol):
             result[rva_start] = symbol
+    return result
+
+
+def _decompiled_c_function_start_target_symbols(
+    reference_contract_payload: dict[str, Any],
+    *,
+    known_symbols: set[str],
+) -> dict[int, str]:
+    constraints = reference_contract_payload.get("constraints") if isinstance(reference_contract_payload.get("constraints"), dict) else {}
+    function_ranges = constraints.get("function_ranges") if isinstance(constraints.get("function_ranges"), dict) else {}
+    functions = function_ranges.get("functions") if isinstance(function_ranges.get("functions"), list) else []
+    original = reference_contract_payload.get("original") if isinstance(reference_contract_payload.get("original"), dict) else {}
+    imports = original.get("imports") if isinstance(original.get("imports"), list) else []
+    imports_by_thunk: dict[int, str] = {}
+    for item in imports:
+        if not isinstance(item, dict):
+            continue
+        thunk_rva = _optional_int(item.get("thunk_rva"))
+        symbol = item.get("symbol")
+        if thunk_rva is not None and isinstance(symbol, str) and _is_c_identifier(symbol):
+            imports_by_thunk.setdefault(thunk_rva, symbol)
+
+    result: dict[int, str] = {}
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        entry = function.get("original") if isinstance(function.get("original"), dict) else {}
+        rva_start = _optional_int(entry.get("rva_start"))
+        if rva_start is None:
+            rva_start = _optional_int(function.get("rva_start"))
+        if rva_start is None:
+            continue
+        import_symbol = imports_by_thunk.get(rva_start)
+        if import_symbol is not None:
+            result[rva_start] = import_symbol
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name in known_symbols and _is_c_identifier(name):
+            result[rva_start] = name
     return result
 
 
@@ -7420,6 +7466,8 @@ def _decompiled_c_section_gap_callsite_is_asm_anchorable(
         if target_rva is None:
             return False
         target_name = call_targets.get(target_rva)
+        if not target_name and _decompiled_c_contract_flow_call_is_indirect(callsite.get("instruction", {})):
+            return _decompiled_c_contract_callsite_arguments(callsite) is not None
         if not target_name or not _is_c_identifier(target_name):
             return False
         target_profile = None

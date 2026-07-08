@@ -71,6 +71,11 @@ TARGET_DEFAULTS: dict[str, dict[str, Any]] = {
         "build_report": "decompiled-c-generated-closure-link-report.json",
         "build_target": "i686-w64-mingw32",
         "build_compiler": "i686-w64-mingw32-cc",
+        "build_command_json": [
+            "bash",
+            "-lc",
+            'exec "$WINCR_SLICE_REPO_ROOT/tools/wincr-build-jq-candidate.sh"',
+        ],
         "candidate_modules": [
             {
                 "name": "libjq-1.dll",
@@ -382,6 +387,7 @@ def prepare_workspace(
         "target": target,
         "prepared_at": utc_now(),
         "workspace": str(workspace),
+        "repo_root": str(Path.cwd()),
         "policy": {
             "stage_a_contract_first": True,
             "original_runtime_tracing": False,
@@ -408,7 +414,9 @@ def prepare_workspace(
         "source_skeleton": source_skeleton or None,
         "build": {
             "command": build_command,
-            "command_json": _parse_command_json(build_command_json) if build_command_json else None,
+            "command_json": _parse_command_json(build_command_json)
+            if build_command_json
+            else list(defaults.get("build_command_json") or []),
             "target": defaults.get("build_target"),
             "compiler": defaults.get("build_compiler"),
         },
@@ -620,6 +628,7 @@ def slice_build(
             "WINCR_SLICE_BUILD_DIR": str(build_dir),
             "WINCR_SLICE_OUT_DIR": str(out_dir),
             "WINCR_SLICE_SOURCE_DIR": str(workspace / "candidate" / "src"),
+            "WINCR_SLICE_REPO_ROOT": str(manifest.get("repo_root") or Path.cwd()),
         }
     )
     if dry_run:
@@ -867,24 +876,23 @@ def slice_check(
     artifacts: dict[str, Any] = {"contract_smoke": str(check_dir / "contract-smoke.json")}
     contract_candidate_validation: dict[str, Any] | None = None
     contract_candidate_cache: dict[str, Any] | None = None
-    if focus or not skip_delta:
-        validation_started = time.monotonic()
-        try:
-            contract_candidate_validation, contract_candidate_cache = _contract_candidate_validation(
-                target=target,
-                workspace=workspace,
-                check_dir=check_dir,
-                reference_contract=paths["reference_contract"],
-                candidate_info=candidate_info,
-                model=STAGE_A_MODEL_ID,
-                refresh=refresh_validation,
-                use_cache=use_cache,
-            )
-            artifacts["candidate_validation_fingerprint"] = str(contract_candidate_cache["fingerprint_path"])
-            artifacts["contract_candidate_validation"] = str(contract_candidate_cache["validation_path"])
-        except Exception as exc:  # noqa: BLE001
-            issues.append(_exception_issue("contract_candidate_validation_error", exc, "inspect candidate/map inputs before focused iteration"))
-        timings["contract_candidate_validation"] = round(time.monotonic() - validation_started, 3)
+    validation_started = time.monotonic()
+    try:
+        contract_candidate_validation, contract_candidate_cache = _contract_candidate_validation(
+            target=target,
+            workspace=workspace,
+            check_dir=check_dir,
+            reference_contract=paths["reference_contract"],
+            candidate_info=candidate_info,
+            model=STAGE_A_MODEL_ID,
+            refresh=refresh_validation,
+            use_cache=use_cache,
+        )
+        artifacts["candidate_validation_fingerprint"] = str(contract_candidate_cache["fingerprint_path"])
+        artifacts["contract_candidate_validation"] = str(contract_candidate_cache["validation_path"])
+    except Exception as exc:  # noqa: BLE001
+        issues.append(_exception_issue("contract_candidate_validation_error", exc, "inspect candidate/map inputs before focused iteration"))
+    timings["contract_candidate_validation"] = round(time.monotonic() - validation_started, 3)
     contract_candidate_validation_input: dict[str, Any] | Path | None = contract_candidate_validation
     if contract_candidate_cache is not None and contract_candidate_cache.get("validation_path"):
         contract_candidate_validation_input = Path(str(contract_candidate_cache["validation_path"]))
