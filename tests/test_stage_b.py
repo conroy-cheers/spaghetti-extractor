@@ -2213,6 +2213,55 @@ class StageBTests(unittest.TestCase):
             self.assertEqual((root / "roots" / "link-root-flags.txt").read_text(encoding="utf-8"), "-Wl,--undefined,___foo\n-Wl,--undefined,_bar\n")
             self.assertEqual((root / "roots" / "budgeted-link-root-flags.txt").read_text(encoding="utf-8"), "-Wl,--undefined,___foo\n-Wl,--undefined,_bar\n")
 
+    def test_generate_link_roots_keeps_generated_contract_and_reference_layout_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "jq.exe", b"\xc3")
+            linker_map = root / "jq.map"
+            linker_map.write_text("                0x00401000                foo\n", encoding="utf-8")
+            obj = root / "candidate.o"
+            obj.write_bytes(b"not really coff")
+            nm = root / "fake-nm"
+            nm.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' "
+                "'00000000 T _foo' "
+                "'00000010 T _stage_b_contract_section_gap__text_0001' "
+                "'00000000 D _stage_b_jq_reference_data' "
+                "'00000000 R _stage_b_jq_reference_rdata'\n",
+                encoding="utf-8",
+            )
+            nm.chmod(0o755)
+
+            result = stage_b_generate_link_roots(
+                original=original,
+                linker_map_original=linker_map,
+                object_file=obj,
+                nm=str(nm),
+                out=root / "roots",
+            )
+
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(result["counts"]["roots"], 1)
+            self.assertEqual(result["counts"]["generated_layout_roots"], 3)
+            self.assertEqual(
+                result["generated_layout_root_symbols"],
+                [
+                    "_stage_b_contract_section_gap__text_0001",
+                    "_stage_b_jq_reference_data",
+                    "_stage_b_jq_reference_rdata",
+                ],
+            )
+            self.assertEqual(
+                result["linker_flags"],
+                [
+                    "-Wl,--undefined,_foo",
+                    "-Wl,--undefined,_stage_b_contract_section_gap__text_0001",
+                    "-Wl,--undefined,_stage_b_jq_reference_data",
+                    "-Wl,--undefined,_stage_b_jq_reference_rdata",
+                ],
+            )
+
     def test_generate_link_roots_can_use_stage_a_reference_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2267,6 +2316,64 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["function_source"], "stage_a_reference_contract")
             self.assertEqual(result["inputs"]["reference_contract"]["sha256"], sha256_file(reference_contract))
             self.assertEqual(result["linker_flags"], ["-Wl,--undefined,___foo", "-Wl,--undefined,_bar"])
+
+    def test_generate_link_roots_roots_reference_imports_not_present_as_functions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            reference_contract = root / "reference-contract.json"
+            reference_contract.write_text(
+                json.dumps(
+                    {
+                        "format": "stage-a-reference-contract-v1",
+                        "original": {
+                            "sha256": sha256_file(original),
+                            "imports": [
+                                {
+                                    "dll": "kernel32.dll",
+                                    "symbol": "TlsGetValue",
+                                    "ordinal": None,
+                                    "thunk_rva": 0x1234,
+                                }
+                            ],
+                        },
+                        "constraints": {
+                            "function_ranges": {
+                                "status": "satisfied",
+                                "functions": [
+                                    {
+                                        "name": "foo",
+                                        "original": {"rva_start": 0x1000, "rva_end": 0x1001},
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            obj = root / "candidate.o"
+            obj.write_bytes(b"not really coff")
+            nm = root / "fake-nm"
+            nm.write_text("#!/bin/sh\nprintf '%s\\n' '00000000 T _foo'\n", encoding="utf-8")
+            nm.chmod(0o755)
+
+            result = stage_b_generate_link_roots(
+                original=original,
+                reference_contract=reference_contract,
+                object_file=obj,
+                nm=str(nm),
+                out=root / "roots",
+            )
+
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(result["counts"]["reference_import_roots"], 1)
+            self.assertEqual(result["reference_import_roots"][0]["object_symbol"], "_TlsGetValue@4")
+            self.assertIn("-Wl,--undefined,_TlsGetValue@4", result["import_thunk_linker_flags"])
+            self.assertIn(
+                "-Wl,--undefined,_TlsGetValue@4\n",
+                (root / "roots" / "import-thunk-root-flags.txt").read_text(encoding="utf-8"),
+            )
 
     def test_generate_link_roots_matches_decorated_mingw_runtime_symbols(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3983,6 +4090,76 @@ class StageBTests(unittest.TestCase):
         self.assertIn("Stage A direct-call anchor: callsite:basename-0004:5f98 at RVA 0x5f98", source)
         self.assertIn("do_get_path_info();", source)
         self.assertNotIn("stage_b_contract_anchor ^= (uintptr_t)0x5f98;", source)
+
+    def test_decompiled_c_renderer_materializes_jq_reference_data_sections(self):
+        reference_contract = {
+            "original": {
+                "image_base": 0x400000,
+                "sections": [
+                    {"name": ".data", "rva_start": 0xD000, "rva_end": 0xD05C},
+                    {"name": ".rdata", "rva_start": 0xE000, "rva_end": 0xE100},
+                ],
+            },
+            "constraints": {
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "caller",
+                                "callsites": [
+                                    {
+                                        "instruction": {
+                                            "mnemonic": "call",
+                                            "op_str": "dword ptr [0x40e020]",
+                                            "rva": 0x1010,
+                                        },
+                                        "target": {"kind": "direct", "target_rva": 0x2000},
+                                    }
+                                ],
+                                "memory_reads": [
+                                    {
+                                        "memory_rva": 0xE000,
+                                        "string_literal": {
+                                            "rva": 0xE000,
+                                            "size": 3,
+                                            "text": "hi",
+                                            "sha256": sha256_bytes(b"hi"),
+                                        },
+                                    },
+                                    {
+                                        "memory_rva": 0xE020,
+                                        "string_literal": {
+                                            "rva": 0xE020,
+                                            "size": 4,
+                                            "text": "\u0000 @",
+                                            "sha256": sha256_bytes(b"\x00 @"),
+                                        },
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                }
+            },
+        }
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[
+                {"name": "caller", "rva_start": 0x1000, "rva_end": 0x1020, "size": 0x20},
+                {"name": "target_func", "rva_start": 0x2000, "rva_end": 0x2010, "size": 0x10},
+            ],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn(".section .data$000_stage_b_reference_data", source)
+        self.assertIn(".section .rdata$000_stage_b_reference_rdata", source)
+        self.assertIn(".globl _stage_b_jq_reference_rdata", source)
+        self.assertIn(".byte 0x68, 0x69, 0x00", source)
+        self.assertIn(".long _target_func", source)
+        self.assertNotIn("stage_b_jq_layout_data_tail", source)
+        self.assertNotIn("stage_b_jq_import_anchor", source)
+        self.assertNotIn("stage_b_contract_section_gap_anchor", source)
 
     def test_decompiled_c_renderer_preserves_dirname_path_info_out_params(self):
         source = _render_skeleton_decompiled_c_source(

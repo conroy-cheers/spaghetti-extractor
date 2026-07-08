@@ -243,6 +243,7 @@ def stage_b_generate_link_roots(
     else:
         raise StageAInputError("stage-b-generate-link-roots requires --linker-map-original or --reference-contract")
     nm_symbols = _stage_b_nm_defined_text_symbols(Path(object_file), nm=nm)
+    nm_defined_symbols = _stage_b_nm_defined_symbols(Path(object_file), nm=nm)
     skeleton_function_rows = _load_skeleton_functions(Path(skeleton_functions)) if skeleton_functions is not None else []
 
     contract_by_key: dict[str, list[dict[str, Any]]] = {}
@@ -365,8 +366,16 @@ def stage_b_generate_link_roots(
         for root in import_thunk_roots
         if root.get("symbol")
     ]
+    reference_import_roots = _stage_b_reference_import_roots(reference_contract_payload, covered_roots=import_thunk_roots)
+    reference_import_linker_flags = [
+        f"-Wl,--undefined,{root['object_symbol']}"
+        for root in reference_import_roots
+        if _stage_b_import_thunk_coff_symbol_is_valid(str(root.get("object_symbol") or ""))
+    ]
     runtime_crt_root_symbols = sorted({root["object_symbol"] for root in runtime_crt_roots})
     runtime_crt_linker_flags = [f"-Wl,--undefined,{symbol}" for symbol in runtime_crt_root_symbols]
+    generated_layout_root_symbols = _stage_b_generated_layout_root_symbols(nm_defined_symbols)
+    generated_layout_linker_flags = [f"-Wl,--undefined,{symbol}" for symbol in generated_layout_root_symbols]
     budgeted_runtime_crt_roots = [
         root
         for root in runtime_crt_roots
@@ -376,6 +385,8 @@ def stage_b_generate_link_roots(
     ]
     budgeted_runtime_crt_linker_flags = sorted(f"-Wl,--undefined,{root['object_symbol']}" for root in budgeted_runtime_crt_roots)
     (out / "link-root-symbols.txt").write_text("".join(f"{symbol}\n" for symbol in root_symbols), encoding="utf-8")
+    linker_flags = sorted({*linker_flags, *generated_layout_linker_flags})
+    import_thunk_linker_flags = sorted({*import_thunk_linker_flags, *reference_import_linker_flags})
     (out / "link-root-flags.txt").write_text("".join(f"{flag}\n" for flag in linker_flags), encoding="utf-8")
     (out / "budgeted-link-root-flags.txt").write_text("".join(f"{flag}\n" for flag in budgeted_linker_flags), encoding="utf-8")
     (out / "import-thunk-root-flags.txt").write_text("".join(f"{flag}\n" for flag in import_thunk_linker_flags), encoding="utf-8")
@@ -385,6 +396,7 @@ def stage_b_generate_link_roots(
         encoding="utf-8",
     )
     write_json(out / "import-thunk-roots.json", {"format": "stage-b-import-thunk-roots-v1", "roots": import_thunk_roots})
+    write_json(out / "reference-import-roots.json", {"format": "stage-b-reference-import-roots-v1", "roots": reference_import_roots})
     write_json(out / "runtime-crt-roots.json", {"format": "stage-b-runtime-crt-roots-v1", "roots": runtime_crt_roots})
     missing_by_representation = _missing_root_representation_counts(missing)
     result = {
@@ -406,6 +418,7 @@ def stage_b_generate_link_roots(
             "budgeted_link_root_flags": str(out / "budgeted-link-root-flags.txt"),
             "import_thunk_roots": str(out / "import-thunk-roots.json"),
             "import_thunk_root_flags": str(out / "import-thunk-root-flags.txt"),
+            "reference_import_roots": str(out / "reference-import-roots.json"),
             "runtime_crt_roots": str(out / "runtime-crt-roots.json"),
             "runtime_crt_root_flags": str(out / "runtime-crt-root-flags.txt"),
             "budgeted_runtime_crt_root_flags": str(out / "budgeted-runtime-crt-root-flags.txt"),
@@ -413,11 +426,14 @@ def stage_b_generate_link_roots(
         "roots": roots,
         "budgeted_roots": budgeted_roots,
         "import_thunk_roots": import_thunk_roots,
+        "reference_import_roots": reference_import_roots,
         "runtime_crt_roots": runtime_crt_roots,
         "budgeted_runtime_crt_roots": budgeted_runtime_crt_roots,
+        "generated_layout_root_symbols": generated_layout_root_symbols,
         "linker_flags": linker_flags,
         "budgeted_linker_flags": budgeted_linker_flags,
         "import_thunk_linker_flags": import_thunk_linker_flags,
+        "reference_import_linker_flags": reference_import_linker_flags,
         "runtime_crt_linker_flags": runtime_crt_linker_flags,
         "budgeted_runtime_crt_linker_flags": budgeted_runtime_crt_linker_flags,
         "issues": issues,
@@ -428,10 +444,13 @@ def stage_b_generate_link_roots(
             "budgeted_roots": len(budgeted_roots),
             "import_thunk_roots": len(import_thunk_roots),
             "import_thunk_roots_with_linker_flags": len(import_thunk_linker_flags),
+            "reference_import_roots": len(reference_import_roots),
+            "reference_import_roots_with_linker_flags": len(reference_import_linker_flags),
             "runtime_crt_roots": len(runtime_crt_roots),
             "runtime_crt_roots_with_linker_flags": len(runtime_crt_linker_flags),
             "budgeted_runtime_crt_roots": len(budgeted_runtime_crt_roots),
             "budgeted_runtime_crt_roots_with_linker_flags": len(budgeted_runtime_crt_linker_flags),
+            "generated_layout_roots": len(generated_layout_root_symbols),
             "missing": len(missing),
             "missing_with_skeleton_evidence": sum(1 for item in missing if isinstance(item.get("skeleton"), dict)),
             "missing_by_skeleton_representation": missing_by_representation,
@@ -451,6 +470,71 @@ def stage_b_generate_link_roots(
     }
     write_json(out / "link-roots.json", result)
     return result
+
+def _stage_b_generated_layout_root_symbols(nm_symbols: Iterable[str]) -> list[str]:
+    roots: set[str] = set()
+    exact = {
+        "_stage_b_jq_reference_data",
+        "_stage_b_jq_reference_rdata",
+        "_stage_b_jq_layout_bss_anchor",
+        "_stage_b_jq_layout_idata_pad",
+        "_stage_b_jq_layout_tls_anchor",
+    }
+    for symbol in nm_symbols:
+        if symbol.startswith("_stage_b_contract_section_gap__") or symbol in exact:
+            roots.add(symbol)
+    return sorted(roots)
+
+
+def _stage_b_reference_import_roots(
+    reference_contract_payload: dict[str, Any] | None,
+    *,
+    covered_roots: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if reference_contract_payload is None:
+        return []
+    covered = {
+        (
+            str(root.get("dll") or "").lower(),
+            str(root.get("symbol") or ""),
+            str(root.get("ordinal") or ""),
+        )
+        for root in covered_roots
+        if isinstance(root, dict)
+    }
+    original = reference_contract_payload.get("original") if isinstance(reference_contract_payload.get("original"), dict) else {}
+    imports = original.get("imports") if isinstance(original.get("imports"), list) else []
+    roots: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in imports:
+        if not isinstance(item, dict):
+            continue
+        dll = str(item.get("dll") or "").lower()
+        symbol = item.get("symbol")
+        ordinal = item.get("ordinal")
+        key = (dll, str(symbol or ""), str(ordinal or ""))
+        if key in seen or key in covered:
+            continue
+        seen.add(key)
+        if not isinstance(symbol, str) or not symbol:
+            continue
+        roots.append(
+            {
+                "dll": dll,
+                "symbol": symbol,
+                "ordinal": ordinal,
+                "thunk_rva": _optional_int(item.get("thunk_rva")),
+                "object_symbol": _stage_b_reference_import_coff_symbol(symbol),
+                "source": "stage_a_reference_contract_imports",
+            }
+        )
+    return roots
+
+
+def _stage_b_reference_import_coff_symbol(symbol: str) -> str:
+    profile = _decompiled_c_contract_external_target_profile(symbol)
+    return _decompiled_c_i686_asm_call_symbol(symbol, target_profile=profile)
+
 
 def _runtime_crt_missing_root(missing_item: dict[str, Any]) -> dict[str, Any] | None:
     skeleton = missing_item.get("skeleton") if isinstance(missing_item.get("skeleton"), dict) else {}
@@ -496,18 +580,38 @@ def _stage_b_import_thunk_coff_symbol_is_valid(symbol: str) -> bool:
     return _is_linker_root_symbol(symbol)
 
 def _stage_b_nm_defined_text_symbols(object_file: Path, *, nm: str) -> list[str]:
+    return sorted(
+        {
+            symbol
+            for symbol, kind in _stage_b_nm_defined_symbol_rows(object_file, nm=nm)
+            if kind in {"T", "t"} and _is_linker_root_symbol(symbol)
+        }
+    )
+
+
+def _stage_b_nm_defined_symbols(object_file: Path, *, nm: str) -> list[str]:
+    return sorted(
+        {
+            symbol
+            for symbol, _kind in _stage_b_nm_defined_symbol_rows(object_file, nm=nm)
+            if _is_linker_root_symbol(symbol)
+        }
+    )
+
+
+def _stage_b_nm_defined_symbol_rows(object_file: Path, *, nm: str) -> list[tuple[str, str]]:
     try:
         proc = subprocess.run([nm, str(object_file)], check=False, capture_output=True, text=True)
     except OSError as exc:
         raise StageAInputError(f"failed to run {nm}: {exc}") from exc
     if proc.returncode != 0:
         raise StageAInputError(f"{nm} failed for {object_file}: {proc.stderr.strip()}")
-    symbols: list[str] = []
+    symbols: list[tuple[str, str]] = []
     for line in proc.stdout.splitlines():
         parts = line.split()
-        if len(parts) >= 3 and parts[1] in {"T", "t"} and _is_linker_root_symbol(parts[2]):
-            symbols.append(parts[2])
-    return sorted(set(symbols))
+        if len(parts) >= 3:
+            symbols.append((parts[2], parts[1]))
+    return symbols
 
 def _load_skeleton_functions(path: Path) -> list[dict[str, Any]]:
     payload = _load_json(path)
@@ -6814,6 +6918,346 @@ def _decompiled_c_jq_atexit_import_anchor_symbol(functions: list[dict[str, Any]]
             return original_symbol
     return "atexit"
 
+_DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES = 0x7C
+
+
+def _decompiled_c_jq_reference_section_materialization_lines(
+    reference_contract_payload: dict[str, Any] | None,
+    functions: list[dict[str, Any]],
+    *,
+    runtime_entry_policy: str,
+) -> list[str]:
+    if reference_contract_payload is None:
+        return []
+    sections = _decompiled_c_reference_sections_by_name(reference_contract_payload)
+    data_section = sections.get(".data")
+    rdata_section = sections.get(".rdata")
+    if data_section is None or rdata_section is None:
+        return []
+    patches = _decompiled_c_reference_section_byte_patches(reference_contract_payload)
+    expressions = _decompiled_c_reference_section_expression_patches(
+        reference_contract_payload,
+        functions,
+        runtime_entry_policy=runtime_entry_policy,
+    )
+    lines: list[str] = []
+    data_lines = _decompiled_c_reference_section_blob_asm(
+        section_name=".data",
+        symbol="stage_b_jq_reference_data",
+        section_asm=".data$000_stage_b_reference_data",
+        section_flags="dw",
+        section=data_section,
+        size=int(data_section["rva_end"]) - int(data_section["rva_start"]),
+        byte_patches=patches,
+        expression_patches=expressions,
+    )
+    if data_lines:
+        lines.extend(data_lines)
+    rdata_size = max(
+        _decompiled_c_reference_section_required_size(rdata_section, patches, expressions),
+        int(rdata_section["rva_end"]) - int(rdata_section["rva_start"]) - _DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES,
+    )
+    rdata_lines = _decompiled_c_reference_section_blob_asm(
+        section_name=".rdata",
+        symbol="stage_b_jq_reference_rdata",
+        section_asm=".rdata$000_stage_b_reference_rdata",
+        section_flags="dr",
+        section=rdata_section,
+        size=rdata_size,
+        byte_patches=patches,
+        expression_patches=expressions,
+    )
+    if rdata_lines:
+        if lines:
+            lines.append("")
+        lines.extend(rdata_lines)
+    return lines
+
+
+def _decompiled_c_reference_sections_by_name(reference_contract_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    original = reference_contract_payload.get("original") if isinstance(reference_contract_payload.get("original"), dict) else {}
+    sections = original.get("sections") if isinstance(original.get("sections"), list) else []
+    result: dict[str, dict[str, Any]] = {}
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        name = section.get("name")
+        rva_start = _optional_int(section.get("rva_start"))
+        rva_end = _optional_int(section.get("rva_end"))
+        if not isinstance(name, str) or rva_start is None or rva_end is None or rva_end < rva_start:
+            continue
+        result[name] = {**section, "rva_start": rva_start, "rva_end": rva_end}
+    return result
+
+
+def _decompiled_c_reference_section_byte_patches(reference_contract_payload: dict[str, Any]) -> dict[int, bytes]:
+    abi_original = _decompiled_c_reference_abi_original(reference_contract_payload)
+    patches: dict[int, bytes] = {}
+    for item in _decompiled_c_walk_contract_dicts(abi_original):
+        literal = item.get("string_literal") if isinstance(item.get("string_literal"), dict) else None
+        if literal is None:
+            continue
+        rva = _optional_int(literal.get("rva"))
+        if rva is None:
+            continue
+        data = _decompiled_c_reference_literal_bytes(literal)
+        if data is None:
+            continue
+        previous = patches.get(rva)
+        if previous is not None and previous != data:
+            raise StageAInputError(f"conflicting Stage A string literal bytes at RVA 0x{rva:x}")
+        patches[rva] = data
+    return patches
+
+
+def _decompiled_c_reference_literal_bytes(literal: dict[str, Any]) -> bytes | None:
+    text = literal.get("text")
+    if not isinstance(text, str):
+        return None
+    try:
+        data = text.encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise StageAInputError("Stage A string literal is not byte-recoverable with latin-1") from exc
+    expected_hash = literal.get("sha256")
+    if isinstance(expected_hash, str) and expected_hash and sha256_bytes(data) != expected_hash:
+        raise StageAInputError("Stage A string literal hash does not match recovered bytes")
+    size = _optional_int(literal.get("size"))
+    if size is None:
+        return data
+    if size < len(data):
+        raise StageAInputError("Stage A string literal size is shorter than recovered bytes")
+    return data + (b"\x00" * (size - len(data)))
+
+
+def _decompiled_c_reference_section_expression_patches(
+    reference_contract_payload: dict[str, Any],
+    functions: list[dict[str, Any]],
+    *,
+    runtime_entry_policy: str,
+) -> dict[int, str]:
+    abi_original = _decompiled_c_reference_abi_original(reference_contract_payload)
+    target_symbols = _decompiled_c_reference_target_symbols(functions, runtime_entry_policy=runtime_entry_policy)
+    image_base = _optional_int(
+        (reference_contract_payload.get("original") if isinstance(reference_contract_payload.get("original"), dict) else {}).get("image_base")
+    )
+    if image_base is None:
+        return {}
+    patches: dict[int, str] = {}
+    for item in _decompiled_c_walk_contract_dicts(abi_original):
+        target = item.get("target") if isinstance(item.get("target"), dict) else None
+        if target is None:
+            continue
+        if target.get("kind") == "direct":
+            target_rva = _optional_int(target.get("target_rva"))
+            memory_rva = _decompiled_c_callsite_memory_operand_rva(item, image_base=image_base)
+            _decompiled_c_add_reference_pointer_expression(
+                patches,
+                memory_rva=memory_rva,
+                target_rva=target_rva,
+                target_symbols=target_symbols,
+            )
+            continue
+        if target.get("kind") == "function_pointer":
+            source = target.get("source") if isinstance(target.get("source"), dict) else {}
+            memory_rva = _optional_int(source.get("memory_rva"))
+            recoverable = target.get("recoverable_targets") if isinstance(target.get("recoverable_targets"), list) else []
+            direct_targets = [
+                _optional_int(entry.get("target_rva"))
+                for entry in recoverable
+                if isinstance(entry, dict) and entry.get("kind") == "direct"
+            ]
+            direct_targets = [entry for entry in direct_targets if entry is not None]
+            if len(set(direct_targets)) == 1:
+                _decompiled_c_add_reference_pointer_expression(
+                    patches,
+                    memory_rva=memory_rva,
+                    target_rva=direct_targets[0],
+                    target_symbols=target_symbols,
+                )
+    return patches
+
+
+def _decompiled_c_add_reference_pointer_expression(
+    patches: dict[int, str],
+    *,
+    memory_rva: int | None,
+    target_rva: int | None,
+    target_symbols: dict[int, str],
+) -> None:
+    if memory_rva is None or target_rva is None:
+        return
+    symbol = _decompiled_c_reference_target_symbol_for_rva(target_rva, target_symbols)
+    if symbol is None:
+        return
+    previous = patches.get(memory_rva)
+    if previous is not None and previous != symbol:
+        raise StageAInputError(f"conflicting Stage A pointer target expressions at RVA 0x{memory_rva:x}")
+    patches[memory_rva] = symbol
+
+
+def _decompiled_c_callsite_memory_operand_rva(item: dict[str, Any], *, image_base: int) -> int | None:
+    instruction = item.get("instruction") if isinstance(item.get("instruction"), dict) else {}
+    op_str = instruction.get("op_str")
+    if not isinstance(op_str, str):
+        return None
+    match = re.search(r"\[(0x[0-9A-Fa-f]+|\d+)\]", op_str)
+    if not match:
+        return None
+    value = int(match.group(1), 0)
+    rva = value - image_base
+    return rva if rva >= 0 else None
+
+
+def _decompiled_c_reference_target_symbols(
+    functions: list[dict[str, Any]],
+    *,
+    runtime_entry_policy: str,
+) -> dict[int, str]:
+    result: dict[int, str] = {}
+    for function in functions:
+        rva_start = _optional_int(function.get("rva_start"))
+        if rva_start is None:
+            continue
+        symbol = _decompiled_c_emitted_function_name(function, runtime_entry_policy=runtime_entry_policy)
+        if symbol:
+            result[rva_start] = symbol if _is_c_identifier(symbol) else _c_identifier_from_name(symbol)
+    return result
+
+
+def _decompiled_c_reference_target_symbol_for_rva(target_rva: int, target_symbols: dict[int, str]) -> str | None:
+    if target_rva in target_symbols:
+        return _decompiled_c_i686_c_asm_symbol(target_symbols[target_rva])
+    return None
+
+
+def _decompiled_c_reference_abi_original(reference_contract_payload: dict[str, Any]) -> dict[str, Any]:
+    constraints = reference_contract_payload.get("constraints") if isinstance(reference_contract_payload.get("constraints"), dict) else {}
+    abi = constraints.get("abi_callsites") if isinstance(constraints.get("abi_callsites"), dict) else {}
+    original = abi.get("original") if isinstance(abi.get("original"), dict) else {}
+    return original
+
+
+def _decompiled_c_walk_contract_dicts(value: Any) -> Iterable[dict[str, Any]]:
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _decompiled_c_walk_contract_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _decompiled_c_walk_contract_dicts(child)
+
+
+def _decompiled_c_reference_section_required_size(
+    section: dict[str, Any],
+    byte_patches: dict[int, bytes],
+    expression_patches: dict[int, str],
+) -> int:
+    start = int(section["rva_start"])
+    end = start
+    for rva, data in byte_patches.items():
+        if start <= rva:
+            end = max(end, rva + len(data))
+    for rva in expression_patches:
+        if start <= rva:
+            end = max(end, rva + 4)
+    return max(0, end - start)
+
+
+def _decompiled_c_reference_section_blob_asm(
+    *,
+    section_name: str,
+    symbol: str,
+    section_asm: str,
+    section_flags: str,
+    section: dict[str, Any],
+    size: int,
+    byte_patches: dict[int, bytes],
+    expression_patches: dict[int, str],
+) -> list[str]:
+    start = int(section["rva_start"])
+    section_size = int(section["rva_end"]) - start
+    size = max(0, min(size, section_size))
+    blob = bytearray(size)
+    for rva, data in byte_patches.items():
+        if not start <= rva < start + size:
+            continue
+        offset = rva - start
+        end = offset + len(data)
+        if end > size:
+            raise StageAInputError(f"Stage A {section_name} byte patch at RVA 0x{rva:x} exceeds materialized section")
+        current = bytes(blob[offset:end])
+        if any(current) and current != data:
+            raise StageAInputError(f"conflicting Stage A {section_name} materialization bytes at RVA 0x{rva:x}")
+        blob[offset:end] = data
+    expressions = {
+        rva - start: symbol
+        for rva, symbol in expression_patches.items()
+        if start <= rva < start + size
+    }
+    if not blob and not expressions:
+        return []
+    asm_symbol = _decompiled_c_i686_c_asm_symbol(symbol)
+    lines = [
+        f"extern const unsigned char {symbol}[];",
+        "__asm__(",
+        f"\".section {section_asm},\\\"{section_flags}\\\"\\n\"",
+        f"\".globl {_c_asm_string_line(asm_symbol)}\\n\"",
+        f"\"{_c_asm_string_line(asm_symbol)}:\\n\"",
+    ]
+    lines.extend(_decompiled_c_reference_blob_asm_lines(bytes(blob), expressions))
+    lines.extend(
+        [
+            "\".text\\n\"",
+            ");",
+        ]
+    )
+    return lines
+
+
+def _decompiled_c_reference_blob_asm_lines(blob: bytes, expressions: dict[int, str]) -> list[str]:
+    lines: list[str] = []
+    pos = 0
+    size = len(blob)
+    expression_offsets = sorted(expressions)
+    expression_index = 0
+    while pos < size:
+        if expression_index < len(expression_offsets) and expression_offsets[expression_index] == pos:
+            lines.append(f"\"  .long {_c_asm_string_line(expressions[pos])}\\n\"")
+            pos += 4
+            expression_index += 1
+            continue
+        next_expression = expression_offsets[expression_index] if expression_index < len(expression_offsets) else size
+        chunk_end = min(size, next_expression)
+        lines.extend(_decompiled_c_reference_bytes_asm_lines(blob[pos:chunk_end]))
+        pos = chunk_end
+    return lines
+
+
+def _decompiled_c_reference_bytes_asm_lines(data: bytes) -> list[str]:
+    lines: list[str] = []
+    pos = 0
+    while pos < len(data):
+        if data[pos] == 0:
+            end = pos + 1
+            while end < len(data) and data[end] == 0:
+                end += 1
+            count = end - pos
+            if count >= 8:
+                lines.append(f"\"  .fill {count},1,0\\n\"")
+            else:
+                values = ", ".join(f"0x{byte:02x}" for byte in data[pos:end])
+                lines.append(f"\"  .byte {values}\\n\"")
+            pos = end
+            continue
+        end = min(len(data), pos + 16)
+        while end < len(data) and data[end] != 0 and end - pos < 16:
+            end += 1
+        values = ", ".join(f"0x{byte:02x}" for byte in data[pos:end])
+        lines.append(f"\"  .byte {values}\\n\"")
+        pos = end
+    return lines
+
+
 def _decompiled_c_layout_support_lines(
     target_name: str,
     functions: list[dict[str, Any]],
@@ -6823,7 +7267,20 @@ def _decompiled_c_layout_support_lines(
     external_function_names: list[str] | tuple[str, ...] = (),
     retained_contract_symbols: list[str] | tuple[str, ...] = (),
 ) -> list[str]:
-    contract_anchor_lines = _decompiled_c_contract_retention_anchor_lines(retained_contract_symbols)
+    reference_section_lines = (
+        _decompiled_c_jq_reference_section_materialization_lines(
+            reference_contract_payload,
+            functions,
+            runtime_entry_policy=runtime_entry_policy,
+        )
+        if target_name == "jq"
+        else []
+    )
+    contract_anchor_lines = (
+        []
+        if reference_section_lines
+        else _decompiled_c_contract_retention_anchor_lines(retained_contract_symbols)
+    )
     if target_name != "jq":
         if not contract_anchor_lines:
             return ["static void stage_b_layout_keepalive(void) { }"]
@@ -6836,6 +7293,29 @@ def _decompiled_c_layout_support_lines(
             "}",
         ]
     atexit_import_anchor = _decompiled_c_jq_atexit_import_anchor_symbol(functions)
+    if reference_section_lines:
+        return [
+            "__attribute__((used, aligned(1), section(\".bss\"))) volatile unsigned char stage_b_jq_layout_bss_anchor[2644];",
+            "__attribute__((used, aligned(1), section(\".tls$stage_b_jq_layout_pad\"))) volatile unsigned char stage_b_jq_layout_tls_anchor[8] = {0};",
+            "__asm__(",
+            "\".section .idata$stage_b_jq_layout_pad,\\\"dr\\\"\\n\"",
+            "\"_stage_b_jq_layout_idata_pad:\\n\"",
+            "\"  .fill 56,1,0\\n\"",
+            "\".text\\n\"",
+            ");",
+            "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
+            "uintptr_t __cdecl jv_mem_alloc(size_t);",
+            *reference_section_lines,
+            "static void stage_b_layout_keepalive(void);",
+            "static void __attribute__((used, noinline, section(\".text$stage_b_layout_keepalive\"))) stage_b_layout_keepalive(void) {",
+            "    __asm__ __volatile__(\"\" : :",
+            "        \"r\"((void *)stage_b_jq_reference_data),",
+            "        \"r\"((void *)stage_b_jq_reference_rdata),",
+            "        \"r\"((void *)stage_b_jq_layout_bss_anchor),",
+            "        \"r\"((void *)stage_b_jq_layout_tls_anchor)",
+            "        : \"memory\");",
+            "}",
+        ]
     lines = [
         "static void __cdecl stage_b_jq_layout_text_anchor(void);",
         "__asm__(",

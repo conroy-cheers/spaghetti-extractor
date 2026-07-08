@@ -6346,6 +6346,8 @@ def _contract_candidate_abi_argument_role_match(reference: Any, candidate: Any) 
         return False
     if reference == "register" and candidate in _ABI_ADDRESS_LIKE_ARGUMENT_ROLES:
         return True
+    if reference == "register" and candidate in {"global_readonly_pointer_slot", "global_writable_pointer_slot"}:
+        return True
     if reference == "immediate" and candidate == "string_literal":
         return True
     if reference in _ABI_BY_VALUE_ARGUMENT_ROLES and candidate in _ABI_BY_VALUE_ARGUMENT_ROLES:

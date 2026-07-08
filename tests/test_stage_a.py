@@ -3903,6 +3903,70 @@ class StageAValidateTests(unittest.TestCase):
 
         self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
 
+    def test_contract_candidate_abi_coverage_gaps_accept_candidate_global_pointer_refinement(self):
+        reference_abi = {
+            "original": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "callsites": [
+                            {
+                                "id": "callsite:reference",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x3000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [{"index": 0, "role": "register", "source": {"kind": "register"}}],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x3000, "rva_end": 0x3010}],
+                    },
+                ]
+            }
+        }
+        candidate_abi = {
+            "candidate": {
+                "functions": [
+                    {
+                        "name": "caller",
+                        "callsites": [
+                            {
+                                "id": "callsite:candidate",
+                                "block_id": "caller",
+                                "target": {"kind": "direct", "target_rva": 0x5000},
+                                "argument_inventory": {
+                                    "calling_convention": "cdecl_or_stdcall_stack",
+                                    "argument_count": 1,
+                                    "stack_args": [
+                                        {
+                                            "index": 0,
+                                            "role": "global_writable_pointer_slot",
+                                            "source": {"kind": "register"},
+                                        }
+                                    ],
+                                    "register_args": [],
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "target",
+                        "blocks": [{"block_id": "target", "rva_start": 0x5000, "rva_end": 0x5010}],
+                    },
+                ]
+            }
+        }
+
+        gaps = stage_a._contract_candidate_abi_coverage_gaps(reference_abi, candidate_abi)
+
+        self.assertEqual(gaps["counts"]["callsite_mismatches"], 0)
+
     def test_contract_candidate_abi_coverage_gaps_reports_underconstrained_reference_arguments(self):
         reference_abi = {
             "original": {
