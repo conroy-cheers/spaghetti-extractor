@@ -4757,7 +4757,7 @@ def _decompiled_c_contract_guided_flow_impl(
     bytecode = reference_contract.get("semantic_transfer_bytecode") if isinstance(reference_contract.get("semantic_transfer_bytecode"), dict) else {}
     transfers = bytecode.get("transfers") if isinstance(bytecode.get("transfers"), list) else []
     transfers = [transfer for transfer in transfers if isinstance(transfer, dict)]
-    if len(transfers) < 2:
+    if not transfers:
         return None
     padding_ranges = _decompiled_c_contract_padding_ranges(reference_contract)
     block_starts: dict[int, dict[str, Any]] = {}
@@ -4770,18 +4770,36 @@ def _decompiled_c_contract_guided_flow_impl(
             return None
         block_starts[start] = transfer
     callsites = _decompiled_c_reference_callsites_by_rva(function)
-    labels = {start: _decompiled_c_flow_local_label(name, start) for start in block_starts}
+    labels = _decompiled_c_contract_flow_labels(
+        name,
+        block_starts=block_starts,
+        transfers=transfers,
+        padding_ranges=padding_ranges,
+        function_start=rva_start,
+        function_end=rva_start + size,
+    )
     asm_lines: list[str] = []
-    for block_start in sorted(block_starts):
+    emitted_cursor: int | None = None
+    ordered_block_starts = sorted(block_starts)
+    for block_index, block_start in enumerate(ordered_block_starts):
         transfer = block_starts[block_start]
         block_end = _optional_int(transfer.get("rva_end"))
         if block_end is None:
             return None
+        if emitted_cursor is not None and emitted_cursor < block_start:
+            if not _decompiled_c_contract_flow_append_padding(
+                asm_lines,
+                padding_ranges=padding_ranges,
+                rva_start=emitted_cursor,
+                rva_end=block_start,
+                labels=labels,
+            ):
+                return None
         asm_lines.append(f"{labels[block_start]}:")
         cursor = block_start
         instructions = transfer.get("instructions") if isinstance(transfer.get("instructions"), list) else []
         outcome = transfer.get("outcome") if isinstance(transfer.get("outcome"), dict) else {}
-        if str(outcome.get("kind") or "") in {"external_jump", "indirect_jump"}:
+        if str(outcome.get("kind") or "") == "indirect_jump":
             return None
         for instruction in instructions:
             if not isinstance(instruction, dict):
@@ -4805,15 +4823,15 @@ def _decompiled_c_contract_guided_flow_impl(
                 cursor = instruction_rva
             mnemonic = _instruction_mnemonic(instruction)
             if mnemonic == "call":
-                call_line = _decompiled_c_contract_flow_call_line(
+                call_lines = _decompiled_c_contract_flow_call_lines(
                     instruction,
                     callsite=callsites.get(instruction_rva),
                     call_targets=call_targets,
                     call_target_profiles=call_target_profiles,
                 )
-                if call_line is None:
+                if call_lines is None:
                     return None
-                asm_lines.append(call_line)
+                asm_lines.extend(call_lines)
             elif mnemonic.startswith("j"):
                 branch_lines = _decompiled_c_contract_flow_branch_lines(
                     instruction,
@@ -4838,6 +4856,29 @@ def _decompiled_c_contract_guided_flow_impl(
             if padding is None:
                 return None
             asm_lines.extend(_decompiled_c_bytecode_asm_lines(padding))
+        fallthrough = _decompiled_c_contract_flow_fallthrough_lines(
+            outcome,
+            block_end=block_end,
+            next_block_start=ordered_block_starts[block_index + 1] if block_index + 1 < len(ordered_block_starts) else None,
+            labels=labels,
+            call_targets=call_targets,
+        )
+        if fallthrough is None:
+            return None
+        asm_lines.extend(fallthrough)
+        emitted_cursor = block_end
+    function_end = rva_start + size
+    if emitted_cursor is not None and emitted_cursor < function_end:
+        if not _decompiled_c_contract_flow_append_padding(
+            asm_lines,
+            padding_ranges=padding_ranges,
+            rva_start=emitted_cursor,
+            rva_end=function_end,
+            labels=labels,
+        ):
+            unreferenced_tail_labels = [rva for rva in labels if emitted_cursor <= rva < function_end]
+            if unreferenced_tail_labels:
+                return None
     if not asm_lines:
         return None
     rendered_asm: list[str] = []
@@ -4885,13 +4926,76 @@ def _decompiled_c_flow_local_label(name: str, rva: int) -> str:
     return f".Lstageb_{_c_identifier_from_name(name)}_{rva:x}"
 
 
-def _decompiled_c_contract_flow_call_line(
+def _decompiled_c_contract_flow_labels(
+    name: str,
+    *,
+    block_starts: dict[int, dict[str, Any]],
+    transfers: list[dict[str, Any]],
+    padding_ranges: list[dict[str, Any]],
+    function_start: int,
+    function_end: int,
+) -> dict[int, str]:
+    labels = {start: _decompiled_c_flow_local_label(name, start) for start in block_starts}
+    boundaries = sorted([*block_starts, function_end])
+    for target_rva in _decompiled_c_contract_flow_target_rvas(transfers):
+        if target_rva in labels:
+            continue
+        if target_rva < function_start or target_rva >= function_end:
+            continue
+        next_boundary = next((boundary for boundary in boundaries if boundary > target_rva), None)
+        if next_boundary is None:
+            continue
+        if _contract_padding_bytes_for_range(padding_ranges, target_rva, next_boundary) is None:
+            continue
+        labels[target_rva] = _decompiled_c_flow_local_label(name, target_rva)
+    return labels
+
+
+def _decompiled_c_contract_flow_target_rvas(transfers: list[dict[str, Any]]) -> set[int]:
+    targets: set[int] = set()
+    for transfer in transfers:
+        outcome = transfer.get("outcome") if isinstance(transfer.get("outcome"), dict) else {}
+        for key in ("target_rva", "true_target_rva", "false_target_rva"):
+            target = _optional_int(outcome.get(key))
+            if target is not None:
+                targets.add(target)
+    return targets
+
+
+def _decompiled_c_contract_flow_append_padding(
+    asm_lines: list[str],
+    *,
+    padding_ranges: list[dict[str, Any]],
+    rva_start: int,
+    rva_end: int,
+    labels: dict[int, str],
+) -> bool:
+    if rva_end <= rva_start:
+        return True
+    cursor = rva_start
+    for label_rva in sorted(rva for rva in labels if rva_start <= rva < rva_end):
+        if cursor < label_rva:
+            chunks = _contract_padding_bytes_for_range(padding_ranges, cursor, label_rva)
+            if chunks is None:
+                return False
+            asm_lines.extend(_decompiled_c_bytecode_asm_lines(chunks))
+            cursor = label_rva
+        asm_lines.append(f"{labels[label_rva]}:")
+    if cursor < rva_end:
+        chunks = _contract_padding_bytes_for_range(padding_ranges, cursor, rva_end)
+        if chunks is None:
+            return False
+        asm_lines.extend(_decompiled_c_bytecode_asm_lines(chunks))
+    return True
+
+
+def _decompiled_c_contract_flow_call_lines(
     instruction: dict[str, Any],
     *,
     callsite: dict[str, Any] | None,
     call_targets: dict[int, str],
     call_target_profiles: dict[str, dict[str, Any]],
-) -> str | None:
+) -> list[str] | None:
     target = callsite.get("target") if isinstance(callsite, dict) and isinstance(callsite.get("target"), dict) else {}
     target_name: str | None = None
     target_profile: dict[str, Any] | None = None
@@ -4906,6 +5010,20 @@ def _decompiled_c_contract_flow_call_line(
         target_rva = _decompiled_c_contract_flow_operand_target_rva(instruction)
         target_name = call_targets.get(target_rva) if target_rva is not None else None
         target_profile = call_target_profiles.get(str(target_name or ""))
+    if target.get("kind") == "function_pointer" or (
+        not target_name and _decompiled_c_contract_flow_call_is_indirect(instruction)
+    ):
+        instruction_bytes = instruction.get("bytes")
+        instruction_size = _optional_int(instruction.get("size"))
+        if not isinstance(instruction_bytes, str) or instruction_size is None or instruction_size <= 0:
+            return None
+        try:
+            raw = bytes.fromhex(instruction_bytes)
+        except ValueError:
+            return None
+        if len(raw) != instruction_size:
+            return None
+        return _decompiled_c_bytecode_asm_lines([raw.hex()])
     if not target_name or not _is_c_identifier(target_name):
         return None
     if not _decompiled_c_contract_direct_call_target_is_asm_linkable(
@@ -4913,7 +5031,20 @@ def _decompiled_c_contract_flow_call_line(
         target_profile=target_profile,
     ):
         return None
-    return f"call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}"
+    return [f"call {_decompiled_c_i686_asm_call_symbol(target_name, target_profile=target_profile)}"]
+
+
+def _decompiled_c_contract_flow_call_is_indirect(instruction: dict[str, Any]) -> bool:
+    op_str = str(instruction.get("op_str") or "").strip()
+    if not op_str:
+        return False
+    if op_str.startswith("0x"):
+        return False
+    try:
+        raw = bytes.fromhex(str(instruction.get("bytes") or ""))
+    except ValueError:
+        return False
+    return bool(raw) and raw[0] != 0xE8
 
 
 def _decompiled_c_contract_flow_branch_lines(
@@ -4946,6 +5077,31 @@ def _decompiled_c_contract_flow_branch_lines(
     if true_target is None or false_target is None:
         return None
     return [f"{mnemonic} {true_target}", f"jmp {false_target}"]
+
+
+def _decompiled_c_contract_flow_fallthrough_lines(
+    outcome: dict[str, Any],
+    *,
+    block_end: int,
+    next_block_start: int | None,
+    labels: dict[int, str],
+    call_targets: dict[int, str],
+) -> list[str] | None:
+    if str(outcome.get("kind") or "") != "fallthrough":
+        return []
+    target_rva = _optional_int(outcome.get("target_rva"))
+    if target_rva is None:
+        return []
+    if target_rva == next_block_start:
+        return []
+    if target_rva == block_end and next_block_start is not None:
+        return []
+    target = _decompiled_c_contract_flow_target_symbol(
+        target_rva,
+        labels=labels,
+        call_targets=call_targets,
+    )
+    return [f"jmp {target}"] if target is not None else None
 
 
 def _decompiled_c_contract_flow_target_symbol(
@@ -6396,6 +6552,13 @@ def _decompiled_c_link_placeholder_definitions(
             ) or (
                 allow_contract_bytecode
                 and _decompiled_c_has_reimplementable_contract_symbolic_branch(function)
+            ) or (
+                allow_contract_bytecode
+                and _decompiled_c_has_reimplementable_contract_guided_impl(
+                    function,
+                    call_targets=call_targets or {},
+                    call_target_profiles=call_target_profiles or {},
+                )
             ):
                 lines.append(
                     _decompiled_c_contract_placeholder(
@@ -6437,6 +6600,19 @@ def _decompiled_c_has_reimplementable_contract_symbolic_branch(function: dict[st
     branch = reference_contract.get("contract_symbolic_branch") if isinstance(reference_contract.get("contract_symbolic_branch"), dict) else {}
     asm_lines = branch.get("asm_lines")
     return branch.get("status") == "reimplementable" and isinstance(asm_lines, list) and bool(asm_lines)
+
+
+def _decompiled_c_has_reimplementable_contract_guided_impl(
+    function: dict[str, Any],
+    *,
+    call_targets: dict[int, str],
+    call_target_profiles: dict[str, dict[str, Any]],
+) -> bool:
+    return _decompiled_c_contract_guided_leaf_impl(
+        function,
+        call_targets=call_targets,
+        call_target_profiles=call_target_profiles,
+    ) is not None
 
 
 def _decompiled_c_has_checked_semantic_region_caller_contract(function: dict[str, Any]) -> bool:
@@ -6778,7 +6954,9 @@ def _decompiled_c_contract_direct_call_target_is_asm_linkable(
         return False
     if name.startswith("stage_b_contract_section_gap__"):
         return True
-    if name.startswith(("___p__", "__p__", "_imp__")):
+    if name.startswith(("___p__", "__p__")):
+        return isinstance(target_profile, dict) and bool(target_profile.get("prototype"))
+    if name.startswith("_imp__"):
         return False
     if target_profile is not None:
         return True
