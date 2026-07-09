@@ -5,6 +5,8 @@ repo_root=${WINCR_SLICE_REPO_ROOT:-}
 if [[ -z "$repo_root" ]]; then
   repo_root=$(git rev-parse --show-toplevel)
 fi
+export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
+wincr_cmd=(python -m wincr)
 
 abs_path() {
   case "$1" in
@@ -125,7 +127,7 @@ i686-w64-mingw32-gcc -std=gnu11 -Os \
   >"$build_dir/compile.stdout.txt" 2>"$build_dir/compile.stderr.txt"
 
 set +e
-wincr stage-b-generate-link-roots \
+"${wincr_cmd[@]}" stage-b-generate-link-roots \
   --original "$original" \
   --reference-contract "$reference_contract" \
   --skeleton-functions "$skeleton_functions" \

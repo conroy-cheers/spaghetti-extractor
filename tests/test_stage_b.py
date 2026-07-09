@@ -1757,8 +1757,8 @@ class StageBTests(unittest.TestCase):
             self.assertIn('"ret $0xc\\n\\t"', source)
             self.assertIn('"call ___mingw_TLScallback\\n\\t"', source)
             self.assertIn('"call _stage_b_contract_section_gap__text_0135\\n\\t"', source)
-            self.assertIn('"call _DeleteCriticalSection@4\\n\\t"', source)
-            self.assertIn('"call _InitializeCriticalSection@4\\n\\t"', source)
+            self.assertIn('"call *__imp__DeleteCriticalSection@4\\n\\t"', source)
+            self.assertIn('"call *__imp__InitializeCriticalSection@4\\n\\t"', source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
             for name, _body in parts:
                 self.assertEqual(by_function[name]["source_kind"], "generated_contract_guided_callback")
@@ -2575,10 +2575,10 @@ class StageBTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "pass")
             self.assertEqual(result["counts"]["reference_import_roots"], 1)
-            self.assertEqual(result["reference_import_roots"][0]["object_symbol"], "_TlsGetValue@4")
-            self.assertIn("-Wl,--undefined,_TlsGetValue@4", result["import_thunk_linker_flags"])
+            self.assertEqual(result["reference_import_roots"][0]["object_symbol"], "__imp__TlsGetValue@4")
+            self.assertIn("-Wl,--undefined,__imp__TlsGetValue@4", result["import_thunk_linker_flags"])
             self.assertIn(
-                "-Wl,--undefined,_TlsGetValue@4\n",
+                "-Wl,--undefined,__imp__TlsGetValue@4\n",
                 (root / "roots" / "import-thunk-root-flags.txt").read_text(encoding="utf-8"),
             )
 
@@ -4371,6 +4371,33 @@ class StageBTests(unittest.TestCase):
         self.assertNotIn("stage_b_jq_layout_data_tail", source)
         self.assertNotIn("stage_b_jq_import_anchor", source)
         self.assertNotIn("stage_b_contract_section_gap_anchor", source)
+
+    def test_decompiled_c_renderer_emits_full_jq_layout_normalization_pads(self):
+        reference_contract = {
+            "original": {
+                "image_base": 0x400000,
+                "sections": [
+                    {"name": ".text", "rva_start": 0x1000, "rva_end": 0xC500},
+                    {"name": ".data", "rva_start": 0xD000, "rva_end": 0xD05C},
+                    {"name": ".rdata", "rva_start": 0xE000, "rva_end": 0xE100},
+                    {"name": ".reloc", "rva_start": 0x14000, "rva_end": 0x145A0},
+                ],
+            },
+        }
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=[],
+            reference_contract_payload=reference_contract,
+        )
+
+        self.assertIn(".text$zz_stage_b_jq_layout_tail_pad", source)
+        self.assertIn("_stage_b_jq_layout_text_tail_pad", source)
+        self.assertIn(".fill 84,1,0x90", source)
+        self.assertIn(".section .reloc", source)
+        self.assertIn("_stage_b_jq_reloc_absolute_pad", source)
+        self.assertIn(".long 872", source)
+        self.assertIn(".fill 432,2,0", source)
 
     def test_decompiled_c_renderer_preserves_dirname_path_info_out_params(self):
         source = _render_skeleton_decompiled_c_source(

@@ -478,6 +478,8 @@ def _stage_b_generated_layout_root_symbols(nm_symbols: Iterable[str]) -> list[st
         "_stage_b_jq_reference_rdata",
         "_stage_b_jq_layout_bss_anchor",
         "_stage_b_jq_layout_idata_pad",
+        "_stage_b_jq_layout_text_tail_pad",
+        "_stage_b_jq_reloc_absolute_pad",
         "_stage_b_jq_layout_tls_anchor",
     }
     for symbol in nm_symbols:
@@ -533,7 +535,7 @@ def _stage_b_reference_import_roots(
 
 def _stage_b_reference_import_coff_symbol(symbol: str) -> str:
     profile = _decompiled_c_contract_external_target_profile(symbol)
-    return _decompiled_c_i686_asm_call_symbol(symbol, target_profile=profile)
+    return _decompiled_c_i686_asm_iat_symbol(symbol, target_profile=profile)
 
 
 def _runtime_crt_missing_root(missing_item: dict[str, Any]) -> dict[str, Any] | None:
@@ -5041,11 +5043,11 @@ def _decompiled_c_contract_guided_tls_callback_impl(
             str(call_targets.get(0x57C0) or "_fpreset"),
             target_profile=call_target_profiles.get(str(call_targets.get(0x57C0) or "_fpreset")),
         )
-        delete_cs = _decompiled_c_i686_asm_call_symbol(
+        delete_cs = _decompiled_c_i686_asm_iat_symbol(
             "DeleteCriticalSection",
             target_profile=_decompiled_c_contract_external_target_profile("DeleteCriticalSection"),
         )
-        init_cs = _decompiled_c_i686_asm_call_symbol(
+        init_cs = _decompiled_c_i686_asm_iat_symbol(
             "InitializeCriticalSection",
             target_profile=_decompiled_c_contract_external_target_profile("InitializeCriticalSection"),
         )
@@ -5104,7 +5106,7 @@ def _decompiled_c_contract_guided_tls_callback_impl(
                 "movl $0x0, 0x41005c",
                 "movl $0x0, 0x410060",
                 "movl $0x410064, (%esp)",
-                f"call {delete_cs}",
+                f"call *{delete_cs}",
                 "subl $0x4, %esp",
                 "jmp 1b",
                 "7:",
@@ -5118,7 +5120,7 @@ def _decompiled_c_contract_guided_tls_callback_impl(
                 "jmp 4b",
                 "9:",
                 "movl $0x410064, (%esp)",
-                f"call {init_cs}",
+                f"call *{init_cs}",
                 "subl $0x4, %esp",
                 "jmp 8b",
             ],
@@ -7147,6 +7149,8 @@ def _decompiled_c_jq_atexit_import_anchor_symbol(functions: list[dict[str, Any]]
     return "atexit"
 
 _DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES = 0x38
+_DECOMPILED_C_JQ_TEXT_TAIL_PAD_BYTES = 0x54
+_DECOMPILED_C_JQ_RELOC_ABSOLUTE_PAD_BYTES = 0x368
 
 
 def _decompiled_c_uses_reference_section_materialization(
@@ -7157,6 +7161,44 @@ def _decompiled_c_uses_reference_section_materialization(
         return False
     sections = _decompiled_c_reference_sections_by_name(reference_contract_payload)
     return ".data" in sections and ".rdata" in sections
+
+
+def _decompiled_c_jq_uses_full_layout_contract(reference_contract_payload: dict[str, Any] | None) -> bool:
+    if reference_contract_payload is None:
+        return False
+    sections = _decompiled_c_reference_sections_by_name(reference_contract_payload)
+    text = sections.get(".text")
+    reloc = sections.get(".reloc")
+    if text is None or reloc is None:
+        return False
+    text_size = int(text["rva_end"]) - int(text["rva_start"])
+    reloc_size = int(reloc["rva_end"]) - int(reloc["rva_start"])
+    return text_size == 0xB500 and reloc_size == 0x5A0
+
+
+def _decompiled_c_jq_layout_normalization_pad_lines(reference_contract_payload: dict[str, Any] | None) -> list[str]:
+    if not _decompiled_c_jq_uses_full_layout_contract(reference_contract_payload):
+        return []
+    reloc_entries = (_DECOMPILED_C_JQ_RELOC_ABSOLUTE_PAD_BYTES - 8) // 2
+    return [
+        "__asm__(",
+        "\".section .text$zz_stage_b_jq_layout_tail_pad,\\\"x\\\"\\n\"",
+        "\".globl _stage_b_jq_layout_text_tail_pad\\n\"",
+        "\"_stage_b_jq_layout_text_tail_pad:\\n\"",
+        f"\"  .fill {_DECOMPILED_C_JQ_TEXT_TAIL_PAD_BYTES},1,0x90\\n\"",
+        "\".text\\n\"",
+        ");",
+        "",
+        "__asm__(",
+        "\".section .reloc,\\\"dr\\\"\\n\"",
+        "\".globl _stage_b_jq_reloc_absolute_pad\\n\"",
+        "\"_stage_b_jq_reloc_absolute_pad:\\n\"",
+        "\"  .long 0x1000\\n\"",
+        f"\"  .long {_DECOMPILED_C_JQ_RELOC_ABSOLUTE_PAD_BYTES}\\n\"",
+        f"\"  .fill {reloc_entries},2,0\\n\"",
+        "\".text\\n\"",
+        ");",
+    ]
 
 
 def _decompiled_c_jq_reference_section_materialization_lines(
@@ -7630,6 +7672,7 @@ def _decompiled_c_layout_support_lines(
             "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
             "uintptr_t __cdecl jv_mem_alloc(size_t);",
             *reference_section_lines,
+            *_decompiled_c_jq_layout_normalization_pad_lines(reference_contract_payload),
         ]
     lines = [
         "static void __cdecl stage_b_jq_layout_text_anchor(void);",
