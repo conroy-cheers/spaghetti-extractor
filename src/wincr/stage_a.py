@@ -17,27 +17,44 @@ import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 import pefile
 
-from .pe import (
-    IMAGE_SCN_CNT_CODE,
-    IMAGE_SCN_MEM_EXECUTE,
-    IMAGE_SCN_MEM_READ,
-    IMAGE_SCN_MEM_WRITE,
-    mapped_section_size,
+from .stage_binary import (
+    STAGE_A_MODEL_ID,
+    STAGE_A_MODEL_SPECS,
+    STAGE_A_X86_64_MODEL_ID,
+    BlockSide,
+    StageABinary,
+    StageAImport,
+    StageAInputError,
+    StageASection,
+    _artifact_name,
+    _coff_symbol_aliases_by_rva,
+    _executable_section_for_rva,
+    _parse_linker_map_functions,
+    _parse_linker_map_symbol_line,
+    _parse_stage_a_pe,
+    _section_for_rva,
 )
-from .stage_binary import StageAInputError, _artifact_name, _coff_symbol_aliases_by_rva
+from .stage_a_proof import (
+    DEPRECATED_PROOF_RULE_ALIASES,
+    generic_proof_rule,
+    proof_model_hash,
+    stage_a_model_description,
+    write_proof_ir,
+    write_solver_evidence_inventory,
+)
 from .util import sha256_bytes, sha256_file, utc_now, write_json
 
 
-STAGE_A_MODEL_ID = "x86-pe32-env-v1"
-STAGE_A_X86_64_MODEL_ID = "x86_64-pe32plus-env-v1"
-STAGE_A_MODEL_SPECS = {
-    STAGE_A_MODEL_ID: {"architecture": "x86", "machine": "i386", "bitness": 32, "magic": 0x10B},
-    STAGE_A_X86_64_MODEL_ID: {"architecture": "x86_64", "machine": "x86_64", "bitness": 64, "magic": 0x20B},
-}
 CHECKED_GENERATED_MAPPING_PROOF_RULES = {
+    "same_source_layout_preserving_build_v1",
     "reproducible_jq_same_source_optimization_pair_v1",
+    "stage_b_skeleton_reimplementation_contract_v1",
     "reproducible_stage_b_skeleton_reimplementation_v1",
 }
+CHECKED_GENERATED_MAPPING_GENERIC_PROOF_RULES = {
+    generic_proof_rule(rule) for rule in CHECKED_GENERATED_MAPPING_PROOF_RULES
+}
+LEAN_GENERATED_SOURCE_PATHS = ("StageA/Model.lean", "StageA/ProofIR.lean", "StageA/Obligations.lean")
 CHECKED_GENERATED_CFG_SOURCE_KINDS = {
     "linker_map_capstone_block_match_v1",
     "paired_executable_section_gap_v1",
@@ -79,6 +96,11 @@ ABI_FIXED_STDCALL_IMPORT_STACK_ARG_COUNTS = {
     "writeconsolew": 5,
     "writefile": 5,
 }
+STAGE_A_ABI_PROFILE_FUNCTION_MISMATCH_CATEGORIES = {
+    "stack_delta_mismatch",
+    "preserved_register_mismatch",
+    "clobbered_register_mismatch",
+}
 OBLIGATION_STATUSES = {
     "proved",
     "failed",
@@ -87,54 +109,6 @@ OBLIGATION_STATUSES = {
     "waived_noncode",
     "out_of_model",
 }
-
-
-@dataclass(frozen=True)
-class StageASection:
-    name: str
-    rva_start: int
-    rva_end: int
-    raw_pointer: int
-    raw_size: int
-    characteristics: int
-    executable: bool
-    readable: bool
-    writable: bool
-    contains_code: bool
-
-
-@dataclass(frozen=True)
-class StageAImport:
-    dll: str
-    symbol: str | None
-    ordinal: int | None
-    thunk_rva: int | None
-
-
-@dataclass(frozen=True)
-class StageABinary:
-    path: Path
-    sha256: str
-    size: int
-    machine: str
-    bitness: int
-    image_base: int
-    entrypoint_rva: int
-    size_of_image: int
-    subsystem: str
-    sections: tuple[StageASection, ...]
-    imports: tuple[StageAImport, ...]
-    pe: pefile.PE
-
-
-@dataclass(frozen=True)
-class BlockSide:
-    rva_start: int
-    rva_end: int
-
-    @property
-    def size(self) -> int:
-        return self.rva_end - self.rva_start
 
 
 @dataclass(frozen=True)
@@ -201,6 +175,8 @@ def stage_a_validate(
             started_at=started_at,
             original=original,
             candidate=candidate,
+            original_bin=None,
+            candidate_bin=None,
             model=model,
             layout=layout,
             obligations=obligations,
@@ -230,6 +206,8 @@ def stage_a_validate(
             started_at=started_at,
             original=original,
             candidate=candidate,
+            original_bin=None,
+            candidate_bin=None,
             model=model,
             layout=layout,
             obligations=obligations,
@@ -262,6 +240,7 @@ def stage_a_validate(
 
     mappings, waivers, map_issues = _parse_block_map(mapping_payload, original_bin)
     map_issues.extend(_generated_map_issues(mapping_payload))
+    mapping_contract = _stage_a_validation_mapping_contract(mappings, waivers, map_issues)
     for issue in map_issues:
         if issue["status"] == "failed":
             failures.append(issue)
@@ -318,6 +297,9 @@ def stage_a_validate(
             incomplete.append(blocker)
             _write_incomplete_artifact(out, blocker)
 
+    abi_contract, abi_issues = _stage_a_validation_abi_contract(original_bin, candidate_bin, mappings, map_issues)
+    incomplete.extend(abi_issues)
+
     verdict = _derive_verdict(failures, incomplete, obligations)
     return _write_report(
         out=out,
@@ -325,6 +307,8 @@ def stage_a_validate(
         started_at=started_at,
         original=original,
         candidate=candidate,
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
         model=model,
         layout=layout,
         obligations=obligations,
@@ -333,6 +317,8 @@ def stage_a_validate(
         proof_cache=proof_cache,
         mapping_payload=mapping_payload,
         invariant_payload=invariant_payload,
+        mapping_contract=mapping_contract,
+        abi_contract=abi_contract,
         lean_inputs=lean_input_paths,
     )
 
@@ -427,16 +413,18 @@ def stage_a_generate_map(
     layout_contract_out: Path | None = None,
     original_flags: str = "",
     candidate_flags: str = "",
-    proof_rule: str = "reproducible_jq_same_source_optimization_pair_v1",
+    proof_rule: str = "same_source_layout_preserving_build_v1",
     proof_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if proof_rule not in CHECKED_GENERATED_MAPPING_PROOF_RULES:
-        raise StageAInputError(f"unsupported generated mapping proof rule {proof_rule!r}")
+    requested_proof_rule = proof_rule
+    proof_rule = generic_proof_rule(proof_rule)
+    if proof_rule not in CHECKED_GENERATED_MAPPING_GENERIC_PROOF_RULES:
+        raise StageAInputError(f"unsupported generated mapping proof rule {requested_proof_rule!r}")
     original_bin = _parse_stage_a_pe(original)
     candidate_bin = _parse_stage_a_pe(candidate)
     original_functions = _parse_linker_map_functions(linker_map_original, original_bin)
     candidate_functions = _parse_linker_map_functions(linker_map_candidate, candidate_bin)
-    issues = _jq_map_layout_issues(original_bin, candidate_bin)
+    issues = _generic_map_layout_issues(original_bin, candidate_bin)
     issues.extend(_generated_mapping_proof_metadata_issues(proof_rule, proof_metadata))
     issues.extend(_linker_function_issues("original", original_functions))
     issues.extend(_linker_function_issues("candidate", candidate_functions))
@@ -502,7 +490,7 @@ def stage_a_generate_map(
             issues.append(
                 _incomplete_record(
                     category="ambiguous_import_thunk_match",
-                    obligation_id=f"jq-map:import-thunk:{_artifact_name(name)}",
+                    obligation_id=f"map:import-thunk:{_artifact_name(name)}",
                     blocker="matched linker-map functions do not decode as the same PE import thunk",
                     next_action="preserve import thunk boundaries or add a more specific import-thunk matching rule",
                     details={
@@ -536,6 +524,7 @@ def stage_a_generate_map(
                 },
                 "proof": _generated_mapping_proof(
                     proof_rule=proof_rule,
+                    requested_proof_rule=requested_proof_rule,
                     function=name,
                     original_flags=original_flags,
                     candidate_flags=candidate_flags,
@@ -552,9 +541,9 @@ def stage_a_generate_map(
         issues.append(
             _incomplete_record(
                 category="missing_linker_map_entry",
-                obligation_id="jq-map:unmatched-original-functions",
+                obligation_id="map:unmatched-original-functions",
                 blocker="original linker-map functions have no candidate function with the same canonical name",
-                next_action="add a stronger jq function matcher or verify the build flags preserve these functions",
+                next_action="add a stronger linker-map function matcher or verify the build flags preserve these functions",
                 details={"functions": unmatched_original[:200], "count": len(unmatched_original)},
             )
         )
@@ -562,9 +551,9 @@ def stage_a_generate_map(
         issues.append(
             _incomplete_record(
                 category="missing_linker_map_entry",
-                obligation_id="jq-map:unmatched-candidate-functions",
+                obligation_id="map:unmatched-candidate-functions",
                 blocker="candidate linker-map functions have no original function with the same canonical name",
-                next_action="add a stronger jq function matcher or verify the build flags preserve these functions",
+                next_action="add a stronger linker-map function matcher or verify the build flags preserve these functions",
                 details={
                     "functions": sorted(unmatched_candidate)[:200],
                     "count": len(unmatched_candidate),
@@ -579,6 +568,7 @@ def stage_a_generate_map(
         original_flags=original_flags,
         candidate_flags=candidate_flags,
         proof_rule=proof_rule,
+        requested_proof_rule=requested_proof_rule,
         proof_metadata=proof_metadata,
     )
     blocks.extend(gap_blocks)
@@ -800,6 +790,7 @@ def stage_a_validate_contract_candidate(
     candidate_functions = _parse_linker_map_functions(linker_map_candidate, candidate_bin)
     candidate_rva_anchors = _parse_stage_b_contract_rva_anchors(linker_map_candidate, candidate_bin)
     alias_evidence = _empty_contract_candidate_alias_evidence()
+    skeleton_payload: dict[str, Any] | None = None
     if skeleton_manifest is not None:
         try:
             skeleton_payload = _load_json(skeleton_manifest)
@@ -822,6 +813,18 @@ def stage_a_validate_contract_candidate(
         alias_evidence=alias_evidence,
         candidate_rva_anchors=candidate_rva_anchors,
     )
+    shortfall_audit = _stage_a_contract_shortfall_audit(
+        contract=contract,
+        contract_path=reference_contract,
+        model=model,
+        candidate_bin=candidate_bin,
+        candidate_functions=candidate_functions,
+        alias_evidence=alias_evidence,
+        skeleton_payload=skeleton_payload,
+        linker_map_candidate=linker_map_candidate,
+    )
+    if shortfall_audit["status"] != "pass":
+        families.append(_contract_candidate_shortfall_family(shortfall_audit))
     for family in families:
         if family["status"] in {"incomplete", "violated"}:
             issues.append(
@@ -843,6 +846,7 @@ def stage_a_validate_contract_candidate(
         "candidate": _reference_input_artifact(candidate),
         "linker_map_candidate": _reference_input_artifact(linker_map_candidate),
         "skeleton_manifest": _reference_input_artifact(skeleton_manifest) if skeleton_manifest is not None else None,
+        "shortfall_audit": shortfall_audit,
         "families": families,
         "issues": issues,
         "counts": {
@@ -852,10 +856,72 @@ def stage_a_validate_contract_candidate(
             "alias_matches": alias_evidence["counts"]["alias_matches"],
             "alias_ambiguities": alias_evidence["counts"]["ambiguities"],
             "unmatched_aliases": alias_evidence["counts"].get("unmatched_aliases", 0),
+            "shortfall_findings": shortfall_audit.get("counts", {}).get("findings", 0)
+            if isinstance(shortfall_audit.get("counts"), dict)
+            else 0,
         },
     }
     write_json(out / "verdict.json", result)
     write_json(out / "contract-candidate.json", result)
+    return result
+
+
+def stage_a_audit_contract_shortfalls(
+    *,
+    reference_contract: Path,
+    out: Path,
+    contract_candidate_validation: Path | None = None,
+    candidate: Path | None = None,
+    linker_map_candidate: Path | None = None,
+    skeleton_manifest: Path | None = None,
+    candidate_crash_report: Path | None = None,
+    unit_contract_dir: Path | None = None,
+    target_name: str | None = None,
+    model: str = STAGE_A_MODEL_ID,
+) -> dict[str, Any]:
+    reference_contract = Path(reference_contract)
+    contract = _load_json(reference_contract)
+    if not isinstance(contract, dict) or contract.get("format") != "stage-a-reference-contract-v1":
+        raise StageAInputError("reference contract must have format stage-a-reference-contract-v1")
+    candidate_bin: StageABinary | None = None
+    candidate_functions: list[dict[str, Any]] = []
+    if candidate is not None:
+        candidate_bin = _parse_stage_a_pe(Path(candidate))
+    if linker_map_candidate is not None:
+        if candidate_bin is None:
+            raise StageAInputError("--linker-map-candidate requires --candidate")
+        candidate_functions = _parse_linker_map_functions(Path(linker_map_candidate), candidate_bin)
+    skeleton_payload = _load_json(Path(skeleton_manifest)) if skeleton_manifest is not None else None
+    if skeleton_payload is not None and (not isinstance(skeleton_payload, dict) or skeleton_payload.get("format") != "stage-b-skeleton-v1"):
+        raise StageAInputError("skeleton manifest must have format stage-b-skeleton-v1")
+    alias_evidence = (
+        _contract_candidate_skeleton_alias_evidence(skeleton_payload, candidate_functions)
+        if isinstance(skeleton_payload, dict) and candidate_functions
+        else _empty_contract_candidate_alias_evidence()
+    )
+    validation_payload = _load_json(Path(contract_candidate_validation)) if contract_candidate_validation is not None else None
+    crash_payload = _load_json(Path(candidate_crash_report)) if candidate_crash_report is not None else None
+    result = _stage_a_contract_shortfall_audit(
+        contract=contract,
+        contract_path=reference_contract,
+        model=model,
+        candidate_bin=candidate_bin,
+        candidate_functions=candidate_functions,
+        alias_evidence=alias_evidence,
+        skeleton_payload=skeleton_payload if isinstance(skeleton_payload, dict) else None,
+        contract_candidate_validation=validation_payload if isinstance(validation_payload, dict) else None,
+        candidate_crash=crash_payload if isinstance(crash_payload, dict) else None,
+        unit_contract_dir=Path(unit_contract_dir) if unit_contract_dir is not None else None,
+        target_name=target_name,
+        linker_map_candidate=Path(linker_map_candidate) if linker_map_candidate is not None else None,
+    )
+    out = Path(out)
+    if out.suffix.lower() == ".json":
+        out.parent.mkdir(parents=True, exist_ok=True)
+        write_json(out, result)
+    else:
+        out.mkdir(parents=True, exist_ok=True)
+        write_json(out / "stage-a-shortfalls.json", result)
     return result
 
 
@@ -919,8 +985,8 @@ def stage_a_semantic_coverage(
         "blockers": blockers[:250],
         "next_work": _semantic_coverage_next_work(blockers),
         "acceptance": {
-            "jq_full_reimplementation_ready": status == "pass",
-            "requirement": "all executable jq regions must have implementable transfer/cluster contracts or explicit external-boundary contracts",
+            "full_reimplementation_ready": status == "pass",
+            "requirement": "all executable regions must have implementable transfer/cluster contracts or explicit external-boundary contracts",
             "final_acceptance": "compiled candidates still require full Stage A validation; this ledger only gates analysis coverage",
         },
     }
@@ -1232,84 +1298,6 @@ def _load_optional_json(path: Path | None) -> Any:
     return None if path is None else _load_json(path)
 
 
-def _parse_stage_a_pe(path: Path) -> StageABinary:
-    try:
-        pe = pefile.PE(str(path), fast_load=False)
-    except Exception as exc:  # pefile raises several non-public exception types.
-        raise StageAInputError(f"{path} is not a parseable PE file: {exc}") from exc
-
-    machine = pe.FILE_HEADER.Machine
-    magic = pe.OPTIONAL_HEADER.Magic
-    if machine == 0x014C and magic == 0x10B:
-        machine_name = "i386"
-        bitness = 32
-    elif machine == 0x8664 and magic == 0x20B:
-        machine_name = "x86_64"
-        bitness = 64
-    else:
-        machine_name = f"0x{machine:04x}"
-        magic_name = f"0x{magic:04x}"
-        raise StageAInputError(f"{path} is out of model: expected x86 PE32 or x86_64 PE32+, got machine={machine_name} magic={magic_name}")
-
-    imports = _imports(pe)
-    sections = tuple(_stage_a_section(section) for section in pe.sections)
-    return StageABinary(
-        path=path,
-        sha256=sha256_file(path),
-        size=path.stat().st_size,
-        machine=machine_name,
-        bitness=bitness,
-        image_base=int(pe.OPTIONAL_HEADER.ImageBase),
-        entrypoint_rva=int(pe.OPTIONAL_HEADER.AddressOfEntryPoint),
-        size_of_image=int(pe.OPTIONAL_HEADER.SizeOfImage),
-        subsystem=_subsystem_name(int(pe.OPTIONAL_HEADER.Subsystem)),
-        sections=sections,
-        imports=imports,
-        pe=pe,
-    )
-
-
-def _stage_a_section(section: Any) -> StageASection:
-    name = section.Name.rstrip(b"\0").decode("utf-8", errors="replace")
-    rva_start = int(section.VirtualAddress)
-    rva_end = rva_start + mapped_section_size(int(section.Misc_VirtualSize), int(section.SizeOfRawData))
-    characteristics = int(section.Characteristics)
-    return StageASection(
-        name=name,
-        rva_start=rva_start,
-        rva_end=rva_end,
-        raw_pointer=int(section.PointerToRawData),
-        raw_size=int(section.SizeOfRawData),
-        characteristics=characteristics,
-        executable=bool(characteristics & IMAGE_SCN_MEM_EXECUTE),
-        readable=bool(characteristics & IMAGE_SCN_MEM_READ),
-        writable=bool(characteristics & IMAGE_SCN_MEM_WRITE),
-        contains_code=bool(characteristics & IMAGE_SCN_CNT_CODE),
-    )
-
-
-def _imports(pe: pefile.PE) -> tuple[StageAImport, ...]:
-    imports: list[StageAImport] = []
-    for entry in getattr(pe, "DIRECTORY_ENTRY_IMPORT", []) or []:
-        dll = entry.dll.decode("utf-8", errors="replace") if isinstance(entry.dll, bytes) else str(entry.dll)
-        for item in entry.imports:
-            symbol = item.name.decode("utf-8", errors="replace") if item.name else None
-            thunk_rva = int(item.address - pe.OPTIONAL_HEADER.ImageBase) if item.address is not None else None
-            imports.append(StageAImport(dll=dll.lower(), symbol=symbol, ordinal=item.ordinal, thunk_rva=thunk_rva))
-    return tuple(imports)
-
-
-def _subsystem_name(value: int) -> str:
-    names = {
-        1: "native",
-        2: "windows_gui",
-        3: "windows_cui",
-        7: "posix_cui",
-        9: "windows_ce_gui",
-    }
-    return names.get(value, f"unknown_{value}")
-
-
 def _empty_layout(original: Path, candidate: Path) -> dict[str, Any]:
     return {
         "model": STAGE_A_MODEL_ID,
@@ -1451,7 +1439,16 @@ def _reference_input_artifact(path: Path) -> dict[str, Any]:
 def _reference_validation_report_artifact(path: Path) -> dict[str, Any]:
     if path.is_dir():
         files = {}
-        for name in ("verdict.json", "obligations.json", "layout.json"):
+        for name in (
+            "verdict.json",
+            "obligations.json",
+            "layout.json",
+            "proof-ir.json",
+            "solver-evidence.jsonl",
+            "solver-evidence-index.json",
+            "proof-cache/index.json",
+            "lean/summary.json",
+        ):
             item = path / name
             files[name] = _reference_input_artifact(item) if item.exists() else {"path": str(item), "sha256": None, "exists": False}
         return {"path": str(path), "exists": True, "files": files}
@@ -1476,8 +1473,8 @@ _REFERENCE_CONTRACT_FAMILY_KEYS = (
 
 _VERIFIED_DECOMPILER_VERTICAL_SLICE_REGIONS = (
     {
-        "id": "jq-section-gap-0498-to-0202",
-        "source_map_id": "jq:section-gap--text-0498:call:section-gap--text-0202",
+        "id": "section-gap-0498-to-0202",
+        "source_map_id": "section-gap--text-0498:call:section-gap--text-0202",
         "caller_function": "section-gap--text-0498",
         "caller_block_id": "section-gap--text-0498",
         "callee_function": "section-gap--text-0202",
@@ -4559,6 +4556,671 @@ def _stage_a_smoke_sidecar_issues(contract: dict[str, Any], contract_path: Path)
     return issues
 
 
+def _stage_a_contract_shortfall_audit(
+    *,
+    contract: dict[str, Any],
+    contract_path: Path,
+    model: str,
+    candidate_bin: StageABinary | None = None,
+    candidate_functions: list[dict[str, Any]] | None = None,
+    alias_evidence: dict[str, Any] | None = None,
+    skeleton_payload: dict[str, Any] | None = None,
+    contract_candidate_validation: dict[str, Any] | None = None,
+    candidate_crash: dict[str, Any] | None = None,
+    unit_contract_dir: Path | None = None,
+    target_name: str | None = None,
+    linker_map_candidate: Path | None = None,
+) -> dict[str, Any]:
+    candidate_functions = candidate_functions or []
+    alias_evidence = alias_evidence or _empty_contract_candidate_alias_evidence()
+    contract_ref = _reference_sidecar_contract_ref(contract_path)
+    unit_contracts = _load_reference_unit_contract_sidecars(
+        contract,
+        contract_path,
+        unit_contract_dir=unit_contract_dir,
+        contract_ref=contract_ref,
+    )
+    sidecars = _load_reference_contract_sidecars(contract, contract_path)
+    source_entries = _audit_source_map_entries(skeleton_payload)
+    findings: list[dict[str, Any]] = []
+
+    if contract.get("model") != model:
+        findings.append(
+            _audit_finding(
+                family="candidate_semantics_not_proven",
+                category="contract_model_mismatch",
+                severity="incomplete",
+                location={"reference_contract": str(contract_path)},
+                expected=f"reference contract model {model}",
+                observed=contract.get("model"),
+                cause_hint="candidate audit was run against a different machine model",
+                next_action="rerun with the reference contract model or regenerate the contract",
+                evidence={},
+            )
+        )
+
+    crash_finding = _audit_candidate_crash_finding(candidate_crash, candidate_bin, candidate_functions, source_entries)
+    if crash_finding is not None:
+        findings.append(crash_finding)
+
+    findings.extend(_audit_alias_shortfall_findings(alias_evidence))
+    findings.extend(_audit_target_owned_import_findings(contract, candidate_bin, target_name=target_name))
+    findings.extend(_audit_raw_section_gap_findings(candidate_bin, candidate_functions, source_entries))
+    findings.extend(_audit_unit_contract_shortfall_findings(contract, unit_contracts, source_entries))
+    findings.extend(_audit_coverage_gap_mask_findings(sidecars, unit_contracts, alias_evidence, source_entries))
+    findings.extend(_audit_validation_shortfall_findings(contract_candidate_validation))
+
+    findings = _rank_audit_findings(_dedupe_audit_findings(findings))
+    families = _audit_families(findings)
+    return {
+        "format": "stage-a-contract-shortfall-audit-v1",
+        "status": "pass" if not findings else "incomplete",
+        "model": model,
+        "reference_contract": _reference_input_artifact(contract_path),
+        "candidate": _reference_input_artifact(candidate_bin.path) if candidate_bin is not None else None,
+        "linker_map_candidate": _reference_input_artifact(linker_map_candidate) if linker_map_candidate is not None else None,
+        "contract_candidate_validation": contract_candidate_validation
+        if isinstance(contract_candidate_validation, dict)
+        else None,
+        "families": families,
+        "findings": findings,
+        "next_work": [
+            {
+                "id": item["id"],
+                "family": item["family"],
+                "category": item["category"],
+                "severity": item["severity"],
+                "next_action": item["next_action"],
+                "location": item["location"],
+            }
+            for item in findings[:10]
+        ],
+        "counts": {
+            "findings": len(findings),
+            "by_family": _count_by(findings, "family"),
+            "by_category": _count_by(findings, "category"),
+            "by_severity": _count_by(findings, "severity"),
+            "source_map_entries": len(source_entries),
+            "candidate_functions": len(candidate_functions),
+        },
+    }
+
+
+def _contract_candidate_shortfall_family(shortfall_audit: dict[str, Any]) -> dict[str, Any]:
+    findings = shortfall_audit.get("findings") if isinstance(shortfall_audit.get("findings"), list) else []
+    return _contract_candidate_family(
+        "contract_shortfalls",
+        "satisfied" if not findings else "incomplete",
+        "Stage A generated-candidate audit found underconstrained contract evidence",
+        "fix the ranked Stage A shortfalls before treating this generated candidate as accepted",
+        None,
+        evidence={
+            "audit_format": shortfall_audit.get("format"),
+            "audit_status": shortfall_audit.get("status"),
+            "counts": shortfall_audit.get("counts"),
+            "families": shortfall_audit.get("families"),
+            "findings": findings[:25],
+            "next_work": shortfall_audit.get("next_work"),
+        },
+    )
+
+
+def _audit_finding(
+    *,
+    family: str,
+    category: str,
+    severity: str,
+    location: dict[str, Any],
+    expected: Any,
+    observed: Any,
+    cause_hint: str,
+    next_action: str,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    finding_id = f"shortfall:{family}:{category}:{_safe_gap_part(json.dumps(location, sort_keys=True, default=str))}"
+    return {
+        "id": finding_id[:240],
+        "family": family,
+        "category": category,
+        "severity": severity,
+        "location": location,
+        "expected": expected,
+        "observed": observed,
+        "cause_hint": cause_hint,
+        "next_action": next_action,
+        "evidence": evidence,
+    }
+
+
+def _audit_alias_shortfall_findings(alias_evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    counts = alias_evidence.get("counts") if isinstance(alias_evidence.get("counts"), dict) else {}
+    findings: list[dict[str, Any]] = []
+    unmatched_count = int(counts.get("unmatched_aliases") or 0)
+    if unmatched_count:
+        findings.append(
+            _audit_finding(
+                family="candidate_semantics_not_proven",
+                category="unmatched_skeleton_aliases",
+                severity="incomplete",
+                location={"alias_evidence": "skeleton_manifest", "unmatched_aliases": unmatched_count},
+                expected="every source-map alias that claims reference coverage maps to a candidate linker symbol",
+                observed=f"{unmatched_count} unmatched aliases",
+                cause_hint="candidate source-map coverage is not fully bound to candidate code",
+                next_action="root or remove unmatched source-map aliases, then rerun Stage A candidate validation",
+                evidence=_contract_candidate_alias_evidence_summary(alias_evidence),
+            )
+        )
+    ambiguity_count = int(counts.get("ambiguities") or 0)
+    if ambiguity_count:
+        findings.append(
+            _audit_finding(
+                family="candidate_semantics_not_proven",
+                category="ambiguous_skeleton_aliases",
+                severity="incomplete",
+                location={"alias_evidence": "skeleton_manifest", "ambiguities": ambiguity_count},
+                expected="each reference source-map alias resolves to one candidate linker symbol",
+                observed=f"{ambiguity_count} ambiguous aliases",
+                cause_hint="Stage A cannot identify which candidate code satisfies a claimed source alias",
+                next_action="make source-map aliases deterministic and unique",
+                evidence=_contract_candidate_alias_evidence_summary(alias_evidence),
+            )
+        )
+    return findings
+
+
+def _audit_target_owned_import_findings(
+    contract: dict[str, Any],
+    candidate_bin: StageABinary | None,
+    *,
+    target_name: str | None,
+) -> list[dict[str, Any]]:
+    target = target_name or _audit_infer_target_name(contract)
+    if not target or candidate_bin is None:
+        return []
+    imports = _contract_import_signature(_binary_reference_layout(candidate_bin))
+    owned_by_dll: dict[str, list[dict[str, Any]]] = {}
+    for imported in imports:
+        dll = str(imported.get("dll") or "")
+        if _audit_dll_is_target_owned(dll, target):
+            owned_by_dll.setdefault(dll.lower(), []).append(imported)
+    if not owned_by_dll:
+        return []
+    samples = [
+        {"dll": dll, "symbols": [str(item.get("symbol") or item.get("ordinal") or "") for item in rows[:12]], "imports": len(rows)}
+        for dll, rows in sorted(owned_by_dll.items())
+    ]
+    return [
+        _audit_finding(
+            family="target_owned_import_borrowed",
+            category="candidate_imports_target_owned_library",
+            severity="incomplete",
+            location={"target_name": target, "dlls": sorted(owned_by_dll)},
+            expected="generated candidate reimplements target-owned libraries or includes them in an explicit checked closure contract",
+            observed="candidate imports target-owned DLL symbols",
+            cause_hint="matching PE imports alone does not prove that borrowed target-owned library behavior is faithfully reimplemented",
+            next_action="reimplement the target-owned DLL closure or add a Stage A closure contract that validates it as part of the candidate",
+            evidence={"imports_by_dll": samples},
+        )
+    ]
+
+
+def _audit_raw_section_gap_findings(
+    candidate_bin: StageABinary | None,
+    candidate_functions: list[dict[str, Any]],
+    source_entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    raw_entries = [entry for entry in source_entries if _audit_source_entry_is_raw_section_gap(entry)]
+    if not raw_entries:
+        return []
+    risky: list[dict[str, Any]] = []
+    missing_ranges = 0
+    for entry in raw_entries:
+        function = _audit_candidate_function_for_source_entry(candidate_functions, entry)
+        if function is None:
+            missing_ranges += 1
+            continue
+        instructions = _audit_function_instruction_sample(candidate_bin, function)
+        risk_instructions = [item for item in instructions if _audit_raw_instruction_needs_checked_contract(item)]
+        if risk_instructions:
+            risky.append(
+                {
+                    "source_entry": _audit_source_entry_sample(entry),
+                    "candidate_function": _contract_candidate_function_sample(function),
+                    "risk_instructions": risk_instructions[:8],
+                    "instruction_count": len(instructions),
+                }
+            )
+    findings: list[dict[str, Any]] = [
+        _audit_finding(
+            family="raw_section_gap_accepted",
+            category="raw_section_gap_source_without_checked_semantics",
+            severity="incomplete",
+            location={"source_map": "stage-b-skeleton", "raw_section_gap_entries": len(raw_entries)},
+            expected="section-gap generated code is represented by checked semantic contracts before final generated-candidate acceptance",
+            observed=f"{len(raw_entries)} raw section-gap source-map entries",
+            cause_hint="layout/byte coverage does not prove generated source faithfully implements section-gap control flow",
+            next_action="replace raw section-gap helpers with checked semantic-region/source contracts or keep the candidate incomplete",
+            evidence={"samples": [_audit_source_entry_sample(entry) for entry in raw_entries[:20]], "missing_candidate_ranges": missing_ranges},
+        )
+    ]
+    if risky:
+        findings.append(
+            _audit_finding(
+                family="raw_section_gap_accepted",
+                category="effectful_raw_section_gap_code",
+                severity="incomplete",
+                location={"source_map": "stage-b-skeleton", "effectful_raw_section_gap_entries": len(risky)},
+                expected="raw section-gap code with calls, returns, or indirect control flow has a checked compositional proof",
+                observed=f"{len(risky)} raw section-gap entries contain effectful control-flow instructions",
+                cause_hint="effectful raw-flow helpers can crash or diverge even when layout validation passes",
+                next_action="emit checked per-block/cluster contracts for these helpers before accepting the candidate",
+                evidence={"samples": risky[:20]},
+            )
+        )
+    return findings
+
+
+def _audit_unit_contract_shortfall_findings(
+    contract: dict[str, Any],
+    unit_contracts: dict[str, Any],
+    source_entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not _audit_explicit_unit_sidecar_exists(unit_contracts, "repair_units"):
+        return []
+    repair_units = unit_contracts.get("repair_units") if isinstance(unit_contracts.get("repair_units"), dict) else {}
+    work_items = repair_units.get("work_items") if isinstance(repair_units.get("work_items"), list) else []
+    unresolved = [item for item in work_items if isinstance(item, dict)]
+    findings: list[dict[str, Any]] = []
+    if unresolved and source_entries:
+        findings.append(
+            _audit_finding(
+                family="candidate_semantics_not_proven",
+                category="unresolved_repair_units",
+                severity="incomplete",
+                location={"repair_units": "stage-a-unit-contract-sidecar", "work_items": len(unresolved)},
+                expected="all Stage A repair units are represented by checked generated-candidate contracts",
+                observed=f"{len(unresolved)} repair units still require representation/proof",
+                cause_hint="the reference contract contains actionable work items that are not acceptance proofs",
+                next_action="close or explicitly bind repair units to checked generated-candidate contracts",
+                evidence={"counts": repair_units.get("counts"), "samples": unresolved[:20]},
+            )
+        )
+    abi_items = [
+        item
+        for item in unresolved
+        if str(item.get("repair_class") or "")
+        in {"hidden_sret_or_out_param", "import_prototype_mismatch", "function_pointer_target", "switch_or_jump_table_dispatch", "tls_callback_abi"}
+        or str(item.get("family") or "") == "abi_callsites"
+    ]
+    if abi_items:
+        findings.append(
+            _audit_finding(
+                family="abi_underconstrained",
+                category="abi_repair_units_not_blocking_verified",
+                severity="incomplete",
+                location={"repair_units": "stage-a-unit-contract-sidecar", "abi_items": len(abi_items)},
+                expected="ABI/callsite evidence used for acceptance is blocking-verified, not only derived guidance",
+                observed=f"{len(abi_items)} ABI-related repair units remain",
+                cause_hint="static ABI hints do not prove source-level prototypes, sret/out-param handling, varargs, or preserved state",
+                next_action="promote ABI repair units to checked obligations or keep generated-candidate validation incomplete",
+                evidence={"samples": abi_items[:20], "contract_abi_counts": _contract_constraint(contract, "abi_callsites").get("counts", {})},
+            )
+        )
+    external_items = [item for item in abi_items if str(item.get("repair_class") or "") in {"import_prototype_mismatch", "function_pointer_target"}]
+    if external_items:
+        findings.append(
+            _audit_finding(
+                family="external_environment_underspecified",
+                category="external_call_boundary_underconstrained",
+                severity="incomplete",
+                location={"repair_units": "stage-a-unit-contract-sidecar", "external_boundary_items": len(external_items)},
+                expected="external/import/function-pointer boundaries have checked prototypes, argument roles, and environment effects",
+                observed=f"{len(external_items)} external-boundary repair units remain",
+                cause_hint="uninterpreted external calls are sound for local binary-pair proof, but insufficient for generated source behavior claims",
+                next_action="add checked import/function-pointer boundary contracts before accepting generated behavior",
+                evidence={"samples": external_items[:20]},
+            )
+        )
+    return findings
+
+
+def _audit_coverage_gap_mask_findings(
+    sidecars: dict[str, Any],
+    unit_contracts: dict[str, Any],
+    alias_evidence: dict[str, Any],
+    source_entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    coverage = sidecars.get("coverage_gaps") if isinstance(sidecars.get("coverage_gaps"), dict) else {}
+    gap_count = int((coverage.get("counts") if isinstance(coverage.get("counts"), dict) else {}).get("gaps") or 0)
+    repair_units = unit_contracts.get("repair_units") if isinstance(unit_contracts.get("repair_units"), dict) else {}
+    work_items = (
+        repair_units.get("work_items")
+        if _audit_explicit_unit_sidecar_exists(unit_contracts, "repair_units") and isinstance(repair_units.get("work_items"), list)
+        else []
+    )
+    alias_counts = alias_evidence.get("counts") if isinstance(alias_evidence.get("counts"), dict) else {}
+    unmatched_aliases = int(alias_counts.get("unmatched_aliases") or 0)
+    raw_entries = [entry for entry in source_entries if _audit_source_entry_is_raw_section_gap(entry)]
+    masked_count = len(work_items) + unmatched_aliases + len(raw_entries)
+    if gap_count or not masked_count:
+        return []
+    return [
+        _audit_finding(
+            family="coverage_gap_masked",
+            category="coverage_gaps_omit_acceptance_shortfalls",
+            severity="incomplete",
+            location={"coverage_gaps": "coverage_gaps.json"},
+            expected="coverage_gaps reflects generated-candidate acceptance blockers as well as Stage A reference-pair proof gaps",
+            observed="coverage_gaps reports zero gaps while other acceptance shortfalls exist",
+            cause_hint="the current sidecar can suggest there is no work even when generated-candidate proof obligations are only guidance",
+            next_action="include repair units, unmatched aliases, raw section-gap helpers, and closure/import blockers in generated-candidate audit output",
+            evidence={
+                "coverage_counts": coverage.get("counts"),
+                "repair_unit_count": len(work_items),
+                "unmatched_aliases": unmatched_aliases,
+                "raw_section_gap_entries": len(raw_entries),
+            },
+        )
+    ]
+
+
+def _audit_explicit_unit_sidecar_exists(unit_contracts: dict[str, Any], name: str) -> bool:
+    paths = unit_contracts.get("paths") if isinstance(unit_contracts.get("paths"), dict) else {}
+    path_text = paths.get(name)
+    return isinstance(path_text, str) and Path(path_text).is_file()
+
+
+def _audit_validation_shortfall_findings(validation: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(validation, dict) or validation.get("status") != "pass":
+        return []
+    counts = validation.get("counts") if isinstance(validation.get("counts"), dict) else {}
+    unmatched = int(counts.get("unmatched_aliases") or 0)
+    if not unmatched:
+        return []
+    return [
+        _audit_finding(
+            family="candidate_semantics_not_proven",
+            category="passing_validation_with_unmatched_aliases",
+            severity="incomplete",
+            location={"contract_candidate_validation": validation.get("format")},
+            expected="candidate validation cannot pass with unmatched source-map aliases",
+            observed=f"validation passed with {unmatched} unmatched aliases",
+            cause_hint="candidate validation treated unbound source coverage as non-blocking",
+            next_action="make unmatched aliases blocking for generated-candidate acceptance",
+            evidence={"counts": counts},
+        )
+    ]
+
+
+def _audit_candidate_crash_finding(
+    crash: dict[str, Any] | None,
+    candidate_bin: StageABinary | None,
+    candidate_functions: list[dict[str, Any]],
+    source_entries: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not isinstance(crash, dict) or crash.get("status") not in {"detected", "crash_detected"}:
+        return None
+    address = _audit_hex_int(crash.get("instruction_address") or crash.get("address") or crash.get("eip"))
+    location: dict[str, Any] = {"crash_kind": crash.get("crash_kind")}
+    function = None
+    source_entry = None
+    if candidate_bin is not None and address is not None:
+        rva = _audit_va_to_rva(candidate_bin, address)
+        location["instruction_address"] = f"0x{address:08X}"
+        location["rva"] = rva
+        function = _audit_candidate_function_for_rva(candidate_functions, rva)
+        source_entry = _audit_source_entry_for_rva(source_entries, rva)
+        if function is not None:
+            location["candidate_function"] = function.get("name")
+        if source_entry is not None:
+            location["source_function"] = source_entry.get("function")
+    return _audit_finding(
+        family="candidate_runtime_witness",
+        category="candidate_only_crash_static_location",
+        severity="violated",
+        location=location,
+        expected="a candidate accepted by Stage A does not crash on public candidate-only behavior tests",
+        observed=crash.get("crash_kind") or "candidate crash",
+        cause_hint="runtime crash falsifies the current generated-candidate acceptance story",
+        next_action="use the mapped source/function location to add a blocking Stage A contract or reject this candidate statically",
+        evidence={
+            "crash": crash,
+            "candidate_function": _contract_candidate_function_sample(function) if isinstance(function, dict) else None,
+            "source_entry": _audit_source_entry_sample(source_entry) if isinstance(source_entry, dict) else None,
+        },
+    )
+
+
+def _audit_source_map_entries(skeleton: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(skeleton, dict):
+        return []
+    source_map = skeleton.get("source_map") if isinstance(skeleton.get("source_map"), dict) else {}
+    entries = source_map.get("functions") if isinstance(source_map.get("functions"), list) else []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _audit_source_entry_is_raw_section_gap(entry: dict[str, Any]) -> bool:
+    name = str(entry.get("function") or "")
+    source_kind = str(entry.get("source_kind") or "")
+    aliases = entry.get("aliases") if isinstance(entry.get("aliases"), list) else []
+    text = " ".join([name, source_kind, *[str(alias) for alias in aliases]])
+    return (
+        name.startswith("stage_b_contract_section_gap__")
+        or "section-gap" in text
+        or source_kind in {"generated_contract_guided_raw_flow", "generated_contract_placeholder_from_section_gap"}
+    )
+
+
+def _audit_source_entry_sample(entry: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    return {
+        "function": entry.get("function"),
+        "aliases": entry.get("aliases") if isinstance(entry.get("aliases"), list) else [],
+        "source_kind": entry.get("source_kind"),
+        "file": entry.get("file"),
+        "line_start": entry.get("line_start"),
+        "line_end": entry.get("line_end"),
+        "rva_start": entry.get("rva_start"),
+        "rva_end": entry.get("rva_end"),
+    }
+
+
+def _audit_candidate_function_for_source_entry(
+    candidate_functions: list[dict[str, Any]],
+    entry: dict[str, Any],
+) -> dict[str, Any] | None:
+    lookup = _contract_candidate_function_lookup(candidate_functions)
+    names = [str(entry.get("function") or "")]
+    aliases = entry.get("aliases") if isinstance(entry.get("aliases"), list) else []
+    names.extend(str(alias) for alias in aliases if isinstance(alias, str))
+    matches = _contract_candidate_lookup_matches(lookup, *names)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        exact = _contract_candidate_disambiguate_exact_source_match(matches, str(entry.get("function") or ""))
+        return exact or matches[0]
+    start = _safe_int(entry.get("rva_start"))
+    if start is not None:
+        return _audit_candidate_function_for_rva(candidate_functions, start)
+    return None
+
+
+def _audit_candidate_function_for_rva(candidate_functions: list[dict[str, Any]], rva: int) -> dict[str, Any] | None:
+    containing = [
+        function
+        for function in candidate_functions
+        if (_safe_int(function.get("rva_start")) is not None and _safe_int(function.get("rva_end")) is not None)
+        and _safe_int(function.get("rva_start")) <= rva < _safe_int(function.get("rva_end"))
+    ]
+    if not containing:
+        return None
+    return sorted(containing, key=lambda item: (_safe_int(item.get("rva_end")) or 0) - (_safe_int(item.get("rva_start")) or 0))[0]
+
+
+def _audit_source_entry_for_rva(source_entries: list[dict[str, Any]], rva: int) -> dict[str, Any] | None:
+    containing = [
+        entry
+        for entry in source_entries
+        if _safe_int(entry.get("rva_start")) is not None
+        and _safe_int(entry.get("rva_end")) is not None
+        and _safe_int(entry.get("rva_start")) <= rva < _safe_int(entry.get("rva_end"))
+    ]
+    if not containing:
+        return None
+    return sorted(containing, key=lambda item: (_safe_int(item.get("rva_end")) or 0) - (_safe_int(item.get("rva_start")) or 0))[0]
+
+
+def _audit_function_instruction_sample(candidate_bin: StageABinary | None, function: dict[str, Any]) -> list[dict[str, Any]]:
+    if candidate_bin is None:
+        return []
+    start = _safe_int(function.get("rva_start"))
+    end = _safe_int(function.get("rva_end"))
+    if start is None or end is None or end <= start:
+        return []
+    size = min(end - start, 256)
+    data = candidate_bin.pe.get_data(start, size)
+    if len(data) <= 0:
+        return []
+    return _semantic_disassemble_block(candidate_bin, BlockSide(start, start + len(data)), data)[:32]
+
+
+def _audit_raw_instruction_needs_checked_contract(instruction: dict[str, Any]) -> bool:
+    mnemonic = str(instruction.get("mnemonic") or "").lower()
+    op_str = str(instruction.get("op_str") or "").lower()
+    if mnemonic.startswith("call") or mnemonic.startswith("ret"):
+        return True
+    if mnemonic.startswith("jmp") and not re.match(r"^(0x[0-9a-f]+|[0-9]+)$", op_str.strip()):
+        return True
+    if mnemonic.startswith("j") and not re.match(r"^(0x[0-9a-f]+|[0-9]+)$", op_str.strip()):
+        return True
+    return False
+
+
+def _audit_hex_int(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return int(value, 0)
+        except ValueError:
+            try:
+                return int(value, 16)
+            except ValueError:
+                return None
+    return None
+
+
+def _audit_va_to_rva(binary: StageABinary, address: int) -> int:
+    if binary.image_base <= address < binary.image_base + binary.size_of_image:
+        return address - binary.image_base
+    return address
+
+
+def _audit_infer_target_name(contract: dict[str, Any]) -> str:
+    for key in ("target_name", "target"):
+        value = contract.get(key)
+        if isinstance(value, str) and value:
+            return value
+    inputs = contract.get("inputs") if isinstance(contract.get("inputs"), dict) else {}
+    original = inputs.get("original") if isinstance(inputs.get("original"), dict) else {}
+    path_text = original.get("path")
+    if isinstance(path_text, str) and path_text:
+        stem = Path(path_text).stem.lower()
+        for suffix in ("-original", "_original", ".original", "-reference", "_reference"):
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+        if stem and stem not in {"original", "candidate", "reference"}:
+            return stem
+    return ""
+
+
+def _audit_dll_is_target_owned(dll: str, target_name: str) -> bool:
+    aliases = _audit_target_library_aliases(target_name)
+    name = Path(str(dll)).name.lower()
+    for suffix in (".dll", ".drv", ".ocx"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    token = _audit_library_alias_token(name)
+    for alias in aliases:
+        if token in {alias, f"lib{alias}"}:
+            return True
+        if token.startswith(f"lib{alias}") or token.startswith(alias):
+            return True
+    return False
+
+
+def _audit_target_library_aliases(target_name: str) -> set[str]:
+    normalized = _audit_library_alias_token(target_name)
+    aliases = {normalized, _audit_library_alias_token(target_name.replace("-", "")), _audit_library_alias_token(target_name.replace("_", ""))}
+    if normalized in {"ripgrep", "rg"}:
+        aliases.update({"ripgrep", "rg"})
+    return {alias for alias in aliases if alias}
+
+
+def _audit_library_alias_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _dedupe_audit_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for finding in findings:
+        key = str(finding.get("id") or json.dumps(finding, sort_keys=True, default=str))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(finding)
+    return result
+
+
+def _rank_audit_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ranked = sorted(
+        findings,
+        key=lambda item: (
+            _audit_family_rank(str(item.get("family") or "")),
+            -_gap_severity_rank(item.get("severity")),
+            str(item.get("id") or ""),
+        ),
+    )
+    for index, item in enumerate(ranked, start=1):
+        item["rank"] = index
+    return ranked
+
+
+def _audit_families(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    by_family: dict[str, list[dict[str, Any]]] = {}
+    for finding in findings:
+        by_family.setdefault(str(finding.get("family") or "unknown"), []).append(finding)
+    for family, items in sorted(by_family.items(), key=lambda pair: _audit_family_rank(pair[0])):
+        severity = "violated" if any(item.get("severity") == "violated" for item in items) else "incomplete"
+        rows.append(
+            {
+                "family": family,
+                "status": severity,
+                "blocking": True,
+                "counts": {"findings": len(items), "by_category": _count_by(items, "category")},
+                "top_finding": items[0].get("id") if items else None,
+            }
+        )
+    return rows
+
+
+def _audit_family_rank(family: str) -> int:
+    order = {
+        "candidate_runtime_witness": 0,
+        "raw_section_gap_accepted": 1,
+        "target_owned_import_borrowed": 2,
+        "abi_underconstrained": 3,
+        "coverage_gap_masked": 4,
+        "candidate_semantics_not_proven": 5,
+        "external_environment_underspecified": 6,
+    }
+    return order.get(family, 99)
+
+
 def _contract_candidate_families(
     contract: dict[str, Any],
     candidate: StageABinary,
@@ -7227,13 +7889,36 @@ def _load_stage_a_validation_report(path: Path | None) -> dict[str, Any] | None:
             "path": str(path),
             "verdict": _load_json(verdict_path),
             "obligations": _load_json(obligations_path),
+            "verdict_file_sha256": sha256_file(verdict_path),
+            "obligations_file_sha256": sha256_file(obligations_path),
         }
         layout_path = path / "layout.json"
         if layout_path.is_file():
             payload["layout"] = _load_json(layout_path)
+            payload["layout_file_sha256"] = sha256_file(layout_path)
+        proof_ir_path = path / "proof-ir.json"
+        if proof_ir_path.is_file():
+            payload["proof_ir"] = _load_json(proof_ir_path)
+            payload["proof_ir_file_sha256"] = sha256_file(proof_ir_path)
+        solver_evidence_path = path / "solver-evidence.jsonl"
+        if solver_evidence_path.is_file():
+            payload["solver_evidence_jsonl_file_sha256"] = sha256_file(solver_evidence_path)
+        solver_evidence_index_path = path / "solver-evidence-index.json"
+        if solver_evidence_index_path.is_file():
+            payload["solver_evidence_index"] = _load_json(solver_evidence_index_path)
+            payload["solver_evidence_index_file_sha256"] = sha256_file(solver_evidence_index_path)
+        proof_cache_index_path = path / "proof-cache" / "index.json"
+        if proof_cache_index_path.is_file():
+            payload["proof_cache_index"] = _load_json(proof_cache_index_path)
+            payload["proof_cache_index_file_sha256"] = sha256_file(proof_cache_index_path)
+        lean_summary_path = path / "lean" / "summary.json"
+        if lean_summary_path.is_file():
+            payload["lean_summary"] = _load_json(lean_summary_path)
+            payload["lean_summary_file_sha256"] = sha256_file(lean_summary_path)
         lean_inputs_path = path / "lean" / "inputs.json"
         if lean_inputs_path.is_file():
             payload["lean_inputs"] = _load_json(lean_inputs_path)
+            payload["lean_inputs_file_sha256"] = sha256_file(lean_inputs_path)
         return payload
     payload = _load_json(path)
     if not isinstance(payload, dict):
@@ -7263,11 +7948,62 @@ def _reference_validation_report_binding_constraint(
         }
 
     verdict = payload.get("verdict") if isinstance(payload.get("verdict"), dict) else {}
+    obligations_payload = payload.get("obligations") if isinstance(payload.get("obligations"), dict) else {}
     layout = payload.get("layout") if isinstance(payload.get("layout"), dict) else {}
     lean_inputs = payload.get("lean_inputs") if isinstance(payload.get("lean_inputs"), dict) else {}
+    lean_summary = payload.get("lean_summary") if isinstance(payload.get("lean_summary"), dict) else {}
+    proof_ir = payload.get("proof_ir") if isinstance(payload.get("proof_ir"), dict) else {}
+    solver_evidence_index = payload.get("solver_evidence_index") if isinstance(payload.get("solver_evidence_index"), dict) else {}
+    proof_cache_index = payload.get("proof_cache_index") if isinstance(payload.get("proof_cache_index"), dict) else {}
     issues: list[dict[str, Any]] = []
+    verdict_proof = verdict.get("proof") if isinstance(verdict.get("proof"), dict) else {}
+    verdict_proof_ir = verdict_proof.get("proof_ir") if isinstance(verdict_proof.get("proof_ir"), dict) else {}
+    verdict_solver_evidence = (
+        verdict_proof.get("solver_evidence") if isinstance(verdict_proof.get("solver_evidence"), dict) else {}
+    )
+    verdict_lean_summary = verdict_proof.get("lean") if isinstance(verdict_proof.get("lean"), dict) else {}
+    proof_ir_file_sha256 = payload.get("proof_ir_file_sha256")
+    solver_evidence_jsonl_file_sha256 = payload.get("solver_evidence_jsonl_file_sha256")
+    solver_evidence_index_file_sha256 = payload.get("solver_evidence_index_file_sha256")
+    proof_cache_index_file_sha256 = payload.get("proof_cache_index_file_sha256")
+    lean_summary_file_sha256 = payload.get("lean_summary_file_sha256")
+    lean_inputs_file_sha256 = payload.get("lean_inputs_file_sha256")
+    obligations_file_sha256 = payload.get("obligations_file_sha256")
+    layout_file_sha256 = payload.get("layout_file_sha256")
+    layout_payload_sha256 = _canonical_json_sha256(layout) if layout else None
+    lean_inputs_payload_sha256 = _canonical_json_sha256(lean_inputs) if lean_inputs else None
+    verdict_proof_ir_sha256 = verdict_proof_ir.get("sha256")
+    verdict_solver_evidence_sha256 = verdict_solver_evidence.get("sha256")
+    verdict_solver_evidence_index_sha256 = verdict_solver_evidence.get("index_sha256")
+    layout_artifact_matches_proof_ir: bool | None = None
+    obligations_artifact_matches_verdict: bool | None = None
+    obligations_artifact_matches_proof_ir: bool | None = None
+    proof_ir_artifact_matches_verdict: bool | None = None
+    proof_cache_artifacts_match_proof_ir: bool | None = None
+    proof_cache_index_payload_matches_proof_ir: bool | None = None
+    proof_cache_payload_hashes_match_index: bool | None = None
+    proof_cache_payload_hash_mismatches = 0
+    proof_cache_payload_missing = 0
+    proof_cache_payload_unreadable = 0
+    solver_evidence_artifacts_match_verdict: bool | None = None
+    lean_summary_matches_verdict: bool | None = None
+    lean_summary_final_pass_allowed: bool | None = None
+    lean_inputs_matches_summary: bool | None = None
+    lean_source_artifacts_match_summary: bool | None = None
+    lean_generated_sources_match_summary: bool | None = None
+    lean_supplemental_sources_match_summary: bool | None = None
+    lean_source_artifact_mismatches = 0
+    lean_source_artifact_missing = 0
+    lean_source_artifact_unreadable = 0
+    lean_source_artifact_invalid = 0
 
     requested_model = verdict.get("requested_model")
+    verdict_model = verdict.get("model") if isinstance(verdict.get("model"), dict) else {}
+    verdict_model_hash = verdict.get("model_hash")
+    expected_verdict_model_hash = proof_model_hash(verdict_model) if verdict_model else None
+    verdict_model_hash_matches_payload = bool(
+        verdict_model and _is_sha256_hex(verdict_model_hash) and verdict_model_hash == expected_verdict_model_hash
+    )
     if requested_model != model:
         issues.append(
             _incomplete_record(
@@ -7276,6 +8012,56 @@ def _reference_validation_report_binding_constraint(
                 blocker="Stage A validation report was generated for a different model",
                 next_action="rerun stage-a-validate with the same --model used for the reference contract",
                 details={"expected": model, "actual": requested_model},
+            )
+        )
+    if not verdict_model_hash_matches_payload:
+        issues.append(
+            _incomplete_record(
+                category="validation_report_model_hash_mismatch",
+                obligation_id="reference-contract:validation-report-binding:model-hash",
+                blocker="Stage A verdict model hash is not the canonical hash of verdict.json model",
+                next_action="rerun stage-a-validate with current tooling so the selected model payload and hash are generated together",
+                details={
+                    "expected_model_hash": expected_verdict_model_hash,
+                    "verdict_model_hash": verdict_model_hash,
+                },
+            )
+        )
+
+    obligations_counts = obligations_payload.get("counts") if isinstance(obligations_payload.get("counts"), dict) else {}
+    verdict_counts = verdict.get("counts") if isinstance(verdict.get("counts"), dict) else {}
+    if obligations_payload.get("format") != "stage-a-obligations-v1":
+        issues.append(
+            _incomplete_record(
+                category="validation_report_obligations_missing",
+                obligation_id="reference-contract:validation-report-binding:obligations",
+                blocker="Stage A validation report does not include canonical obligations.json",
+                next_action="rerun stage-a-validate with current tooling and re-export the reference contract",
+            )
+        )
+    else:
+        obligations_artifact_matches_verdict = obligations_counts == verdict_counts
+        if not obligations_artifact_matches_verdict:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_obligations_count_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:obligations-counts",
+                    blocker="obligations.json counts do not match verdict.json counts",
+                    next_action="rerun stage-a-validate so obligations.json and verdict.json come from the same validation run",
+                    details={
+                        "verdict_counts": verdict_counts,
+                        "obligations_counts": obligations_counts,
+                    },
+            )
+        )
+
+    if not layout:
+        issues.append(
+            _incomplete_record(
+                category="validation_report_layout_missing",
+                obligation_id="reference-contract:validation-report-binding:layout",
+                blocker="Stage A validation report does not include canonical layout.json",
+                next_action="rerun stage-a-validate with current tooling and re-export the reference contract",
             )
         )
 
@@ -7335,17 +8121,959 @@ def _reference_validation_report_binding_constraint(
                 )
             )
 
+    proof_ir_present = proof_ir.get("format") == "stage-a-proof-ir-v1"
+    if not proof_ir_present:
+        issues.append(
+            _incomplete_record(
+                category="validation_report_proof_ir_missing",
+                obligation_id="reference-contract:validation-report-binding:proof-ir",
+                blocker="Stage A validation report does not include canonical proof-ir.json",
+                next_action="rerun stage-a-validate with current tooling and re-export the reference contract",
+            )
+        )
+    else:
+        proof_ir_artifact_matches_verdict = (
+            isinstance(proof_ir_file_sha256, str)
+            and _is_sha256_hex(proof_ir_file_sha256)
+            and proof_ir_file_sha256 == verdict_proof_ir_sha256
+        )
+        if not proof_ir_artifact_matches_verdict:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_artifact_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-artifact",
+                    blocker="standalone proof-ir.json does not match the proof IR hash embedded in verdict.json",
+                    next_action="rerun stage-a-validate so verdict.json and proof-ir.json come from the same validation run",
+                    details={
+                        "verdict_proof_ir_sha256": verdict_proof_ir_sha256,
+                        "proof_ir_file_sha256": proof_ir_file_sha256,
+                    },
+                )
+            )
+    proof_ir_mapping_sha256 = None
+    proof_ir_layout_sha256 = None
+    proof_ir_model_hash = None
+    proof_ir_expected_model_hash = None
+    proof_ir_model_hash_matches_payload: bool | None = None
+    proof_ir_context_model_hash_bound: bool | None = None
+    proof_ir_context_status = None
+    proof_ir_closure_certificate_status = None
+    proof_ir_closure_certificate_sha256 = None
+    proof_ir_target_profile_status = None
+    proof_ir_loader_frontend_profile_status = None
+    proof_ir_loader_profile_status = None
+    proof_ir_coverage_profile_status = None
+    proof_ir_proof_cache_profile_status = None
+    proof_ir_proof_rule_profile_status = None
+    proof_ir_mapping_profile_status = None
+    proof_ir_cfg_profile_status = None
+    proof_ir_reachability_profile_status = None
+    proof_ir_abi_profile_status = None
+    proof_ir_environment_profile_status = None
+    proof_ir_instruction_profile_status = None
+    proof_ir_semantic_profile_status = None
+    proof_ir_solver_evidence_profile_status = None
+    proof_ir_solver_backend_profile_status = None
+    proof_ir_trusted_boundary_profile_status = None
+    proof_ir_profile_manifest_status = None
+    if proof_ir_present:
+        proof_ir_inputs = proof_ir.get("inputs") if isinstance(proof_ir.get("inputs"), dict) else {}
+        proof_ir_mapping_sha256 = proof_ir_inputs.get("mapping_payload_sha256")
+        proof_ir_model_hash = proof_ir.get("model_hash")
+        proof_ir_model = proof_ir.get("model") if isinstance(proof_ir.get("model"), dict) else {}
+        proof_ir_expected_model_hash = proof_model_hash(proof_ir_model) if proof_ir_model else None
+        proof_ir_model_hash_matches_payload = bool(
+            proof_ir_model and _is_sha256_hex(proof_ir_model_hash) and proof_ir_model_hash == proof_ir_expected_model_hash
+        )
+        if not proof_ir_model_hash_matches_payload:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_model_hash_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-model-hash",
+                    blocker="Stage A proof IR model hash is not the canonical hash of proof-ir.json model",
+                    next_action="rerun stage-a-validate so proof-ir.json model and model_hash are generated together",
+                    details={
+                        "expected_model_hash": proof_ir_expected_model_hash,
+                        "proof_ir_model_hash": proof_ir_model_hash,
+                    },
+                )
+            )
+        proof_ir_obligations = proof_ir.get("obligations") if isinstance(proof_ir.get("obligations"), dict) else {}
+        proof_ir_proof_cache = proof_ir.get("proof_cache") if isinstance(proof_ir.get("proof_cache"), dict) else {}
+        proof_ir_proof_cache_index = (
+            proof_ir_proof_cache.get("index") if isinstance(proof_ir_proof_cache.get("index"), dict) else {}
+        )
+        proof_ir_obligation_items = (
+            proof_ir_obligations.get("items") if isinstance(proof_ir_obligations.get("items"), list) else []
+        )
+        proof_ir_obligation_counts = (
+            proof_ir_obligations.get("counts") if isinstance(proof_ir_obligations.get("counts"), dict) else {}
+        )
+        obligations_artifact_matches_proof_ir = bool(
+            obligations_payload.get("format") == "stage-a-obligations-v1"
+            and obligations_counts == proof_ir_obligation_counts
+            and _canonical_json_sha256(_validation_report_obligation_rows(obligations_payload))
+            == _canonical_json_sha256(proof_ir_obligation_items)
+        )
+        if not obligations_artifact_matches_proof_ir:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_obligations_artifact_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:obligations-artifact",
+                    blocker="standalone obligations.json does not match proof-ir.json obligation items",
+                    next_action="rerun stage-a-validate so obligations.json and proof-ir.json come from the same validation run",
+                    details={
+                        "obligations_file_sha256": obligations_file_sha256,
+                        "obligations_counts": obligations_counts,
+                        "proof_ir_obligation_counts": proof_ir_obligation_counts,
+                    },
+                )
+            )
+        if proof_cache_index.get("format") != "stage-a-proof-cache-index-v1":
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_cache_index_missing",
+                    obligation_id="reference-contract:validation-report-binding:proof-cache-index",
+                    blocker="Stage A validation report does not include canonical proof-cache/index.json",
+                    next_action="rerun stage-a-validate so proof-cache/index.json and proof-ir.json come from the same validation run",
+                )
+            )
+        else:
+            proof_cache_index_payload_matches_proof_ir = (
+                _canonical_json_sha256(proof_cache_index) == _canonical_json_sha256(proof_ir_proof_cache_index)
+            )
+            proof_cache_index_file_matches_proof_ir = (
+                isinstance(proof_cache_index_file_sha256, str)
+                and _is_sha256_hex(proof_cache_index_file_sha256)
+                and proof_cache_index_file_sha256 == proof_ir_proof_cache.get("sha256")
+            )
+            if not proof_cache_index_payload_matches_proof_ir or not proof_cache_index_file_matches_proof_ir:
+                issues.append(
+                    _incomplete_record(
+                        category="validation_report_proof_cache_index_mismatch",
+                        obligation_id="reference-contract:validation-report-binding:proof-cache-index",
+                        blocker="standalone proof-cache/index.json does not match proof-ir.json proof-cache summary",
+                        next_action="rerun stage-a-validate so proof-cache/index.json and proof-ir.json come from the same validation run",
+                        details={
+                            "proof_cache_index_file_sha256": proof_cache_index_file_sha256,
+                            "proof_ir_proof_cache_index_sha256": proof_ir_proof_cache.get("sha256"),
+                            "proof_cache_index_payload_matches_proof_ir": proof_cache_index_payload_matches_proof_ir,
+                            "proof_cache_index_file_matches_proof_ir": proof_cache_index_file_matches_proof_ir,
+                        },
+                    )
+                )
+            report_root = Path(str(payload.get("path") or ""))
+            for entry in proof_cache_index.get("entries") if isinstance(proof_cache_index.get("entries"), list) else []:
+                if not isinstance(entry, dict):
+                    proof_cache_payload_unreadable += 1
+                    continue
+                relative_path = entry.get("path")
+                expected_sha256 = entry.get("sha256")
+                if not isinstance(relative_path, str) or not relative_path or Path(relative_path).is_absolute():
+                    proof_cache_payload_unreadable += 1
+                    continue
+                if ".." in Path(relative_path).parts:
+                    proof_cache_payload_unreadable += 1
+                    continue
+                proof_cache_payload_path = report_root / relative_path
+                if not proof_cache_payload_path.is_file():
+                    proof_cache_payload_missing += 1
+                    continue
+                try:
+                    proof_cache_payload = _load_json(proof_cache_payload_path)
+                except StageAInputError:
+                    proof_cache_payload_unreadable += 1
+                    continue
+                actual_sha256 = _validation_report_proof_cache_payload_sha256(proof_cache_payload)
+                if actual_sha256 != expected_sha256:
+                    proof_cache_payload_hash_mismatches += 1
+            proof_cache_payload_hashes_match_index = (
+                proof_cache_payload_hash_mismatches == 0
+                and proof_cache_payload_missing == 0
+                and proof_cache_payload_unreadable == 0
+            )
+            if not proof_cache_payload_hashes_match_index:
+                issues.append(
+                    _incomplete_record(
+                        category="validation_report_proof_cache_payload_mismatch",
+                        obligation_id="reference-contract:validation-report-binding:proof-cache-payloads",
+                        blocker="one or more standalone proof-cache payloads do not match proof-cache/index.json",
+                        next_action="rerun stage-a-validate so proof-cache payloads, proof-cache/index.json, and proof-ir.json come from the same validation run",
+                        details={
+                            "payload_hash_mismatches": proof_cache_payload_hash_mismatches,
+                            "payload_missing": proof_cache_payload_missing,
+                            "payload_unreadable": proof_cache_payload_unreadable,
+                        },
+                    )
+                )
+            proof_cache_artifacts_match_proof_ir = bool(
+                proof_cache_index_payload_matches_proof_ir
+                and proof_cache_index_file_matches_proof_ir
+                and proof_cache_payload_hashes_match_index
+            )
+        proof_ir_context = proof_ir.get("proof_context") if isinstance(proof_ir.get("proof_context"), dict) else {}
+        proof_ir_context_status = proof_ir_context.get("status")
+        proof_ir_context_hashes = (
+            proof_ir_context.get("hashes") if isinstance(proof_ir_context.get("hashes"), dict) else {}
+        )
+        proof_ir_context_model = (
+            proof_ir_context.get("model") if isinstance(proof_ir_context.get("model"), dict) else {}
+        )
+        proof_ir_context_model_hash_bound = bool(
+            proof_ir_model_hash_matches_payload
+            and proof_ir_context.get("model_hash") == proof_ir_expected_model_hash
+            and proof_ir_context_hashes.get("model_hash") == proof_ir_expected_model_hash
+            and proof_ir_context_hashes.get("model_description_sha256") == proof_ir_expected_model_hash
+            and proof_ir_context_model.get("sha256") == proof_ir_expected_model_hash
+        )
+        if not proof_ir_context_model_hash_bound:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_context_model_hash_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-context-model-hash",
+                    blocker="Stage A proof IR context does not bind the canonical model hash",
+                    next_action="rerun stage-a-validate so proof-ir.json proof_context hashes are generated from the same model payload",
+                    details={
+                        "expected_model_hash": proof_ir_expected_model_hash,
+                        "proof_ir_model_hash": proof_ir_model_hash,
+                        "context_model_hash": proof_ir_context.get("model_hash"),
+                        "context_hash_model_hash": proof_ir_context_hashes.get("model_hash"),
+                        "context_model_description_sha256": proof_ir_context_hashes.get("model_description_sha256"),
+                        "context_model_sha256": proof_ir_context_model.get("sha256"),
+                    },
+                )
+            )
+        proof_ir_layout_sha256 = proof_ir_context_hashes.get("layout_payload_sha256")
+        proof_ir_layout_summary_sha256 = proof_ir_context_hashes.get("layout_sha256")
+        layout_artifact_matches_proof_ir = bool(
+            layout_payload_sha256 is not None
+            and _is_sha256_hex(layout_payload_sha256)
+            and layout_payload_sha256 == proof_ir_layout_sha256
+        )
+        if not layout_artifact_matches_proof_ir:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_layout_artifact_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:layout-artifact",
+                    blocker="standalone layout.json does not match proof-ir.json proof-context layout hash",
+                    next_action="rerun stage-a-validate so layout.json and proof-ir.json come from the same validation run",
+                    details={
+                        "layout_file_sha256": layout_file_sha256,
+                        "layout_payload_sha256": layout_payload_sha256,
+                        "proof_ir_layout_sha256": proof_ir_layout_sha256,
+                        "proof_ir_layout_summary_sha256": proof_ir_layout_summary_sha256,
+                    },
+                )
+            )
+        proof_ir_closure_certificate = proof_ir.get("closure_certificate") if isinstance(proof_ir.get("closure_certificate"), dict) else {}
+        proof_ir_closure_certificate_status = proof_ir_closure_certificate.get("status")
+        proof_ir_closure_certificate_sha256 = _canonical_json_sha256(proof_ir_closure_certificate) if proof_ir_closure_certificate else None
+        proof_ir_target_profile = proof_ir.get("target_profile") if isinstance(proof_ir.get("target_profile"), dict) else {}
+        proof_ir_target_profile_status = proof_ir_target_profile.get("status")
+        proof_ir_loader_frontend_profile = (
+            proof_ir.get("loader_frontend_profile") if isinstance(proof_ir.get("loader_frontend_profile"), dict) else {}
+        )
+        proof_ir_loader_frontend_profile_status = proof_ir_loader_frontend_profile.get("status")
+        proof_ir_loader_profile = proof_ir.get("loader_profile") if isinstance(proof_ir.get("loader_profile"), dict) else {}
+        proof_ir_loader_profile_status = proof_ir_loader_profile.get("status")
+        proof_ir_coverage_profile = proof_ir.get("coverage_profile") if isinstance(proof_ir.get("coverage_profile"), dict) else {}
+        proof_ir_coverage_profile_status = proof_ir_coverage_profile.get("status")
+        proof_ir_proof_cache_profile = (
+            proof_ir.get("proof_cache_profile") if isinstance(proof_ir.get("proof_cache_profile"), dict) else {}
+        )
+        proof_ir_proof_cache_profile_status = proof_ir_proof_cache_profile.get("status")
+        proof_ir_proof_rule_profile = proof_ir.get("proof_rule_profile") if isinstance(proof_ir.get("proof_rule_profile"), dict) else {}
+        proof_ir_proof_rule_profile_status = proof_ir_proof_rule_profile.get("status")
+        proof_ir_mapping_profile = proof_ir.get("mapping_profile") if isinstance(proof_ir.get("mapping_profile"), dict) else {}
+        proof_ir_mapping_profile_status = proof_ir_mapping_profile.get("status")
+        proof_ir_cfg_profile = proof_ir.get("cfg_profile") if isinstance(proof_ir.get("cfg_profile"), dict) else {}
+        proof_ir_cfg_profile_status = proof_ir_cfg_profile.get("status")
+        proof_ir_reachability_profile = proof_ir.get("reachability_profile") if isinstance(proof_ir.get("reachability_profile"), dict) else {}
+        proof_ir_reachability_profile_status = proof_ir_reachability_profile.get("status")
+        proof_ir_abi_profile = proof_ir.get("abi_profile") if isinstance(proof_ir.get("abi_profile"), dict) else {}
+        proof_ir_abi_profile_status = proof_ir_abi_profile.get("status")
+        proof_ir_environment_profile = proof_ir.get("environment_profile") if isinstance(proof_ir.get("environment_profile"), dict) else {}
+        proof_ir_environment_profile_status = proof_ir_environment_profile.get("status")
+        proof_ir_instruction_profile = proof_ir.get("instruction_profile") if isinstance(proof_ir.get("instruction_profile"), dict) else {}
+        proof_ir_instruction_profile_status = proof_ir_instruction_profile.get("status")
+        proof_ir_semantic_profile = proof_ir.get("semantic_profile") if isinstance(proof_ir.get("semantic_profile"), dict) else {}
+        proof_ir_semantic_profile_status = proof_ir_semantic_profile.get("status")
+        proof_ir_solver_evidence_profile = (
+            proof_ir.get("solver_evidence_profile") if isinstance(proof_ir.get("solver_evidence_profile"), dict) else {}
+        )
+        proof_ir_solver_evidence_profile_status = proof_ir_solver_evidence_profile.get("status")
+        proof_ir_solver_backend_profile = (
+            proof_ir.get("solver_backend_profile") if isinstance(proof_ir.get("solver_backend_profile"), dict) else {}
+        )
+        proof_ir_solver_backend_profile_status = proof_ir_solver_backend_profile.get("status")
+        proof_ir_trusted_boundary_profile = (
+            proof_ir.get("trusted_boundary_profile")
+            if isinstance(proof_ir.get("trusted_boundary_profile"), dict)
+            else {}
+        )
+        proof_ir_trusted_boundary_profile_status = proof_ir_trusted_boundary_profile.get("status")
+        proof_ir_profile_manifest = (
+            proof_ir.get("profile_manifest") if isinstance(proof_ir.get("profile_manifest"), dict) else {}
+        )
+        proof_ir_profile_manifest_status = proof_ir_profile_manifest.get("status")
+        if expected_mapping_sha256 is not None and proof_ir_mapping_sha256 != expected_mapping_sha256:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_mapping_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-mapping",
+                    blocker="Stage A proof IR was generated from a different block map",
+                    next_action="rerun stage-a-validate with the current block map",
+                    details={
+                        "expected_mapping_sha256": expected_mapping_sha256,
+                        "actual_mapping_sha256": proof_ir_mapping_sha256,
+                    },
+                )
+            )
+        proof_ir_context_checks = (
+            proof_ir_context.get("checks") if isinstance(proof_ir_context.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_context.get("format") != "stage-a-proof-context-binding-v1"
+            or proof_ir_context_status != "satisfied"
+            or not proof_ir_context_checks
+            or not all(value is True for value in proof_ir_context_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_context_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-context",
+                    blocker="Stage A proof IR context binding is missing or incomplete",
+                    next_action="rerun stage-a-validate and close proof IR context/hash-binding gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_context_status,
+                        "checks": proof_ir_context_checks,
+                    },
+                )
+            )
+        proof_ir_closure_checks = (
+            proof_ir_closure_certificate.get("checks") if isinstance(proof_ir_closure_certificate.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_closure_certificate.get("format") != "stage-a-proof-ir-closure-certificate-v1"
+            or proof_ir_closure_certificate_status != "satisfied"
+            or not proof_ir_closure_checks
+            or not all(value is True for value in proof_ir_closure_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_closure_certificate_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-closure-certificate",
+                    blocker="Stage A proof IR closure certificate is missing or incomplete",
+                    next_action="rerun stage-a-validate and close proof IR closure certificate gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_closure_certificate_status,
+                        "sha256": proof_ir_closure_certificate_sha256,
+                        "checks": proof_ir_closure_checks,
+                    },
+                )
+            )
+        proof_ir_target_profile_checks = (
+            proof_ir_target_profile.get("checks") if isinstance(proof_ir_target_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_target_profile.get("format") != "stage-a-target-profile-v1"
+            or proof_ir_target_profile_status != "satisfied"
+            or not proof_ir_target_profile_checks
+            or not all(value is True for value in proof_ir_target_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_target_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-target-profile",
+                    blocker="Stage A proof IR target profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close model/schema/loader target-profile gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_target_profile_status,
+                        "checks": proof_ir_target_profile_checks,
+                    },
+                )
+            )
+        proof_ir_loader_frontend_profile_checks = (
+            proof_ir_loader_frontend_profile.get("checks")
+            if isinstance(proof_ir_loader_frontend_profile.get("checks"), dict)
+            else {}
+        )
+        if (
+            proof_ir_loader_frontend_profile.get("format") != "stage-a-loader-frontend-profile-v1"
+            or proof_ir_loader_frontend_profile_status != "satisfied"
+            or not proof_ir_loader_frontend_profile_checks
+            or not all(value is True for value in proof_ir_loader_frontend_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_loader_frontend_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-loader-frontend-profile",
+                    blocker="Stage A proof IR loader frontend profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close loader frontend fact/interface gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_loader_frontend_profile_status,
+                        "checks": proof_ir_loader_frontend_profile_checks,
+                    },
+                )
+            )
+        proof_ir_loader_profile_checks = (
+            proof_ir_loader_profile.get("checks") if isinstance(proof_ir_loader_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_loader_profile.get("format") != "stage-a-loader-profile-v1"
+            or proof_ir_loader_profile_status != "satisfied"
+            or not proof_ir_loader_profile_checks
+            or not all(value is True for value in proof_ir_loader_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_loader_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-loader-profile",
+                    blocker="Stage A proof IR loader profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close loader/layout/import/reloc gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_loader_profile_status,
+                        "checks": proof_ir_loader_profile_checks,
+                    },
+                )
+            )
+        proof_ir_coverage_profile_checks = (
+            proof_ir_coverage_profile.get("checks") if isinstance(proof_ir_coverage_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_coverage_profile.get("format") != "stage-a-executable-coverage-profile-v1"
+            or proof_ir_coverage_profile_status != "satisfied"
+            or not proof_ir_coverage_profile_checks
+            or not all(value is True for value in proof_ir_coverage_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_coverage_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-coverage-profile",
+                    blocker="Stage A proof IR executable coverage profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and classify executable bytes before exporting the reference contract",
+                    details={
+                        "status": proof_ir_coverage_profile_status,
+                        "checks": proof_ir_coverage_profile_checks,
+                    },
+                )
+            )
+        proof_ir_proof_cache_profile_checks = (
+            proof_ir_proof_cache_profile.get("checks") if isinstance(proof_ir_proof_cache_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_proof_cache_profile.get("format") != "stage-a-proof-cache-profile-v1"
+            or proof_ir_proof_cache_profile_status != "satisfied"
+            or not proof_ir_proof_cache_profile_checks
+            or not all(value is True for value in proof_ir_proof_cache_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_proof_cache_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-proof-cache-profile",
+                    blocker="Stage A proof IR proof-cache profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close proof-cache artifact/hash-binding gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_proof_cache_profile_status,
+                        "checks": proof_ir_proof_cache_profile_checks,
+                    },
+                )
+            )
+        proof_ir_proof_rule_profile_checks = (
+            proof_ir_proof_rule_profile.get("checks") if isinstance(proof_ir_proof_rule_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_proof_rule_profile.get("format") != "stage-a-proof-rule-profile-v1"
+            or proof_ir_proof_rule_profile_status != "satisfied"
+            or not proof_ir_proof_rule_profile_checks
+            or not all(value is True for value in proof_ir_proof_rule_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_proof_rule_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-proof-rule-profile",
+                    blocker="Stage A proof IR proof-rule profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close unknown proof rules or rule-binding gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_proof_rule_profile_status,
+                        "checks": proof_ir_proof_rule_profile_checks,
+                    },
+                )
+            )
+        proof_ir_mapping_profile_checks = (
+            proof_ir_mapping_profile.get("checks") if isinstance(proof_ir_mapping_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_mapping_profile.get("format") != "stage-a-mapping-profile-v1"
+            or proof_ir_mapping_profile_status != "satisfied"
+            or not proof_ir_mapping_profile_checks
+            or proof_ir_mapping_profile_checks.get("mapping_contract_present") is not True
+            or not all(value is True for value in proof_ir_mapping_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_mapping_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-mapping-profile",
+                    blocker="Stage A proof IR mapping profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close block-map/profile gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_mapping_profile_status,
+                        "checks": proof_ir_mapping_profile_checks,
+                    },
+                )
+            )
+        proof_ir_cfg_profile_checks = (
+            proof_ir_cfg_profile.get("checks") if isinstance(proof_ir_cfg_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_cfg_profile.get("format") != "stage-a-cfg-profile-v1"
+            or proof_ir_cfg_profile_status != "satisfied"
+            or not proof_ir_cfg_profile_checks
+            or not all(value is True for value in proof_ir_cfg_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_cfg_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-cfg-profile",
+                    blocker="Stage A proof IR CFG profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close direct CFG, block-structure, or indirect-target gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_cfg_profile_status,
+                        "checks": proof_ir_cfg_profile_checks,
+                    },
+                )
+            )
+        proof_ir_reachability_profile_checks = (
+            proof_ir_reachability_profile.get("checks") if isinstance(proof_ir_reachability_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_reachability_profile.get("format") != "stage-a-reachability-profile-v1"
+            or proof_ir_reachability_profile_status != "satisfied"
+            or not proof_ir_reachability_profile_checks
+            or not all(value is True for value in proof_ir_reachability_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_reachability_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-reachability-profile",
+                    blocker="Stage A proof IR reachability profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close CFG/root/direct-edge reachability gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_reachability_profile_status,
+                        "checks": proof_ir_reachability_profile_checks,
+                    },
+                )
+            )
+        proof_ir_abi_profile_checks = (
+            proof_ir_abi_profile.get("checks") if isinstance(proof_ir_abi_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_abi_profile.get("format") != "stage-a-abi-callsite-profile-v1"
+            or proof_ir_abi_profile_status not in {"satisfied", "not_applicable"}
+            or not proof_ir_abi_profile_checks
+            or not all(value is True for value in proof_ir_abi_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_abi_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-abi-profile",
+                    blocker="Stage A proof IR ABI/callsite profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close ABI/callsite gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_abi_profile_status,
+                        "checks": proof_ir_abi_profile_checks,
+                    },
+                )
+            )
+        proof_ir_environment_profile_checks = (
+            proof_ir_environment_profile.get("checks") if isinstance(proof_ir_environment_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_environment_profile.get("format") != "stage-a-environment-profile-v1"
+            or proof_ir_environment_profile_status != "satisfied"
+            or not proof_ir_environment_profile_checks
+            or not all(value is True for value in proof_ir_environment_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_environment_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-environment-profile",
+                    blocker="Stage A proof IR environment profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close external environment or import-thunk gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_environment_profile_status,
+                        "checks": proof_ir_environment_profile_checks,
+                    },
+                )
+            )
+        proof_ir_instruction_profile_checks = (
+            proof_ir_instruction_profile.get("checks") if isinstance(proof_ir_instruction_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_instruction_profile.get("format") != "stage-a-instruction-semantics-profile-v1"
+            or proof_ir_instruction_profile_status != "satisfied"
+            or not proof_ir_instruction_profile_checks
+            or not all(value is True for value in proof_ir_instruction_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_instruction_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-instruction-profile",
+                    blocker="Stage A proof IR instruction-semantics profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close instruction decode/hash gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_instruction_profile_status,
+                        "checks": proof_ir_instruction_profile_checks,
+                    },
+                )
+            )
+        proof_ir_semantic_profile_checks = (
+            proof_ir_semantic_profile.get("checks") if isinstance(proof_ir_semantic_profile.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_semantic_profile.get("format") != "stage-a-semantic-observable-profile-v1"
+            or proof_ir_semantic_profile_status != "satisfied"
+            or not proof_ir_semantic_profile_checks
+            or not all(value is True for value in proof_ir_semantic_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_semantic_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-semantic-profile",
+                    blocker="Stage A proof IR semantic-observable profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close semantic claim/trusted-boundary gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_semantic_profile_status,
+                        "checks": proof_ir_semantic_profile_checks,
+                    },
+                )
+            )
+        proof_ir_solver_evidence_profile_checks = (
+            proof_ir_solver_evidence_profile.get("checks")
+            if isinstance(proof_ir_solver_evidence_profile.get("checks"), dict)
+            else {}
+        )
+        if (
+            proof_ir_solver_evidence_profile.get("format") != "stage-a-solver-evidence-profile-v1"
+            or proof_ir_solver_evidence_profile_status != "satisfied"
+            or not proof_ir_solver_evidence_profile_checks
+            or not all(value is True for value in proof_ir_solver_evidence_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_solver_evidence_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-solver-evidence-profile",
+                    blocker="Stage A proof IR solver-evidence profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close solver-evidence/query-hash gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_solver_evidence_profile_status,
+                        "checks": proof_ir_solver_evidence_profile_checks,
+                    },
+                )
+            )
+        proof_ir_solver_backend_profile_checks = (
+            proof_ir_solver_backend_profile.get("checks")
+            if isinstance(proof_ir_solver_backend_profile.get("checks"), dict)
+            else {}
+        )
+        if (
+            proof_ir_solver_backend_profile.get("format") != "stage-a-solver-backend-profile-v1"
+            or proof_ir_solver_backend_profile_status != "satisfied"
+            or not proof_ir_solver_backend_profile_checks
+            or not all(value is True for value in proof_ir_solver_backend_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_solver_backend_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-solver-backend-profile",
+                    blocker="Stage A proof IR solver-backend profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close solver backend identity/hash gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_solver_backend_profile_status,
+                        "checks": proof_ir_solver_backend_profile_checks,
+                    },
+                )
+            )
+        proof_ir_trusted_boundary_profile_checks = (
+            proof_ir_trusted_boundary_profile.get("checks")
+            if isinstance(proof_ir_trusted_boundary_profile.get("checks"), dict)
+            else {}
+        )
+        if (
+            proof_ir_trusted_boundary_profile.get("format") != "stage-a-trusted-boundary-profile-v1"
+            or proof_ir_trusted_boundary_profile_status != "satisfied"
+            or not proof_ir_trusted_boundary_profile_checks
+            or not all(value is True for value in proof_ir_trusted_boundary_profile_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_trusted_boundary_profile_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-trusted-boundary-profile",
+                    blocker="Stage A proof IR trusted-boundary profile is missing or incomplete",
+                    next_action="rerun stage-a-validate and close trusted-boundary inventory/model/hash gaps before exporting the reference contract",
+                    details={
+                        "status": proof_ir_trusted_boundary_profile_status,
+                        "checks": proof_ir_trusted_boundary_profile_checks,
+                    },
+                )
+            )
+        proof_ir_profile_manifest_checks = (
+            proof_ir_profile_manifest.get("checks") if isinstance(proof_ir_profile_manifest.get("checks"), dict) else {}
+        )
+        if (
+            proof_ir_profile_manifest.get("format") != "stage-a-proof-profile-manifest-v1"
+            or proof_ir_profile_manifest_status != "satisfied"
+            or not proof_ir_profile_manifest_checks
+            or not all(value is True for value in proof_ir_profile_manifest_checks.values())
+        ):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_profile_manifest_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-profile-manifest",
+                    blocker="Stage A proof IR profile manifest is missing or incomplete",
+                    next_action="rerun stage-a-validate and close missing, stale, or unchecked proof-family profile rows before exporting the reference contract",
+                    details={
+                        "status": proof_ir_profile_manifest_status,
+                        "checks": proof_ir_profile_manifest_checks,
+                    },
+                )
+            )
+        if proof_ir_model_hash != verdict.get("model_hash"):
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_proof_ir_model_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:proof-ir-model",
+                    blocker="Stage A proof IR model hash does not match verdict.json",
+                    next_action="rerun stage-a-validate with current tooling",
+                    details={"verdict_model_hash": verdict.get("model_hash"), "proof_ir_model_hash": proof_ir_model_hash},
+                )
+            )
+
+    solver_evidence_status = solver_evidence_index.get("status")
+    if solver_evidence_index.get("format") != "stage-a-solver-evidence-v1":
+        issues.append(
+            _incomplete_record(
+                category="validation_report_solver_evidence_missing",
+                obligation_id="reference-contract:validation-report-binding:solver-evidence",
+                blocker="Stage A validation report does not include solver-evidence-index.json",
+                next_action="rerun stage-a-validate with current tooling and re-export the reference contract",
+            )
+        )
+    elif solver_evidence_status != "satisfied":
+        issues.append(
+            _incomplete_record(
+                category="validation_report_solver_evidence_incomplete",
+                obligation_id="reference-contract:validation-report-binding:solver-evidence",
+                blocker="Stage A solver evidence inventory is not fully satisfied",
+                next_action="repair stale/missing proof-cache entries and rerun stage-a-validate",
+                details={"status": solver_evidence_status, "counts": solver_evidence_index.get("counts")},
+            )
+        )
+    else:
+        solver_evidence_jsonl_matches_index = (
+            isinstance(solver_evidence_jsonl_file_sha256, str)
+            and _is_sha256_hex(solver_evidence_jsonl_file_sha256)
+            and solver_evidence_jsonl_file_sha256 == solver_evidence_index.get("sha256")
+        )
+        solver_evidence_artifacts_match_verdict = bool(
+            solver_evidence_index.get("sha256") == verdict_solver_evidence_sha256
+            and solver_evidence_index_file_sha256 == verdict_solver_evidence_index_sha256
+            and solver_evidence_jsonl_matches_index
+        )
+        if not solver_evidence_artifacts_match_verdict:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_solver_evidence_artifact_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:solver-evidence-artifacts",
+                    blocker="standalone solver-evidence artifacts do not match the hashes embedded in verdict.json",
+                    next_action="rerun stage-a-validate so solver-evidence.jsonl, solver-evidence-index.json, and verdict.json come from the same validation run",
+                    details={
+                        "verdict_solver_evidence_sha256": verdict_solver_evidence_sha256,
+                        "solver_evidence_jsonl_file_sha256": solver_evidence_jsonl_file_sha256,
+                        "solver_evidence_index_payload_sha256": solver_evidence_index.get("sha256"),
+                        "verdict_solver_evidence_index_sha256": verdict_solver_evidence_index_sha256,
+                        "solver_evidence_index_file_sha256": solver_evidence_index_file_sha256,
+                    },
+                )
+            )
+
+    if not lean_summary:
+        issues.append(
+            _incomplete_record(
+                category="validation_report_lean_summary_missing",
+                obligation_id="reference-contract:validation-report-binding:lean-summary",
+                blocker="Stage A validation report does not include lean/summary.json",
+                next_action="rerun stage-a-validate with Lean enabled and export the reference contract from the complete report directory",
+            )
+        )
+    else:
+        lean_summary_matches_verdict = _canonical_json_sha256(lean_summary) == _canonical_json_sha256(verdict_lean_summary)
+        lean_summary_final_pass_allowed = lean_summary.get("final_pass_allowed") is True
+        lean_proof_ir = lean_summary.get("proof_ir") if isinstance(lean_summary.get("proof_ir"), dict) else {}
+        lean_solver_evidence = (
+            lean_summary.get("solver_evidence") if isinstance(lean_summary.get("solver_evidence"), dict) else {}
+        )
+        lean_input_artifact = (
+            lean_summary.get("input_artifact") if isinstance(lean_summary.get("input_artifact"), dict) else {}
+        )
+        lean_inputs_matches_summary = bool(
+            lean_inputs
+            and lean_input_artifact.get("sha256") == lean_inputs_file_sha256
+            and lean_input_artifact.get("canonical_sha256") == lean_inputs_payload_sha256
+        )
+        lean_source_status = _validation_report_lean_source_artifact_status(
+            Path(str(payload.get("path") or "")),
+            lean_summary.get("source_artifacts") if isinstance(lean_summary.get("source_artifacts"), dict) else {},
+        )
+        lean_source_artifacts_match_summary = lean_source_status["match"]
+        lean_generated_sources_match_summary = lean_source_status["groups"]["generated"]["match"]
+        lean_supplemental_sources_match_summary = lean_source_status["groups"]["supplemental"]["match"]
+        lean_source_artifact_mismatches = lean_source_status["counts"]["mismatches"]
+        lean_source_artifact_missing = lean_source_status["counts"]["missing"]
+        lean_source_artifact_unreadable = lean_source_status["counts"]["unreadable"]
+        lean_source_artifact_invalid = lean_source_status["counts"]["invalid"]
+        lean_summary_hashes_match = bool(
+            lean_proof_ir.get("sha256") == verdict_proof_ir_sha256
+            and lean_proof_ir.get("sha256") == proof_ir_file_sha256
+            and lean_solver_evidence.get("sha256") == verdict_solver_evidence_sha256
+            and lean_solver_evidence.get("index_sha256") == verdict_solver_evidence_index_sha256
+        )
+        if not lean_inputs_matches_summary:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_lean_inputs_artifact_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:lean-inputs-artifact",
+                    blocker="standalone lean/inputs.json does not match the Lean input artifact embedded in lean/summary.json",
+                    next_action="rerun stage-a-validate so lean/inputs.json, lean/summary.json, and verdict.json come from the same validation run",
+                    details={
+                        "lean_inputs_file_sha256": lean_inputs_file_sha256,
+                        "lean_inputs_payload_sha256": lean_inputs_payload_sha256,
+                        "summary_input_file_sha256": lean_input_artifact.get("sha256"),
+                        "summary_input_canonical_sha256": lean_input_artifact.get("canonical_sha256"),
+                    },
+                )
+            )
+        if not lean_source_artifacts_match_summary:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_lean_source_artifact_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:lean-source-artifacts",
+                    blocker="one or more generated or supplemental Lean source artifacts do not match lean/summary.json",
+                    next_action="rerun stage-a-validate so Lean source artifacts, lean/summary.json, and verdict.json come from the same validation run",
+                    details=lean_source_status,
+                )
+            )
+        if not lean_summary_matches_verdict:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_lean_summary_artifact_mismatch",
+                    obligation_id="reference-contract:validation-report-binding:lean-summary-artifact",
+                    blocker="standalone lean/summary.json does not match the Lean summary embedded in verdict.json",
+                    next_action="rerun stage-a-validate so verdict.json and lean/summary.json come from the same validation run",
+                    details={
+                        "lean_summary_file_sha256": lean_summary_file_sha256,
+                        "lean_summary_canonical_sha256": _canonical_json_sha256(lean_summary),
+                        "verdict_lean_summary_canonical_sha256": _canonical_json_sha256(verdict_lean_summary),
+                    },
+                )
+            )
+        if not lean_summary_final_pass_allowed or not lean_summary_hashes_match:
+            issues.append(
+                _incomplete_record(
+                    category="validation_report_lean_summary_incomplete",
+                    obligation_id="reference-contract:validation-report-binding:lean-summary",
+                    blocker="Lean summary does not close the same proof IR and solver evidence artifacts",
+                    next_action="inspect lean/summary.json and rerun stage-a-validate after closing generated Lean or artifact-binding gaps",
+                    details={
+                        "final_pass_allowed": lean_summary.get("final_pass_allowed"),
+                        "checked": lean_summary.get("checked"),
+                        "proof_ir_sha256": lean_proof_ir.get("sha256"),
+                        "expected_proof_ir_sha256": proof_ir_file_sha256,
+                        "solver_evidence_sha256": lean_solver_evidence.get("sha256"),
+                        "expected_solver_evidence_sha256": verdict_solver_evidence_sha256,
+                        "solver_evidence_index_sha256": lean_solver_evidence.get("index_sha256"),
+                        "expected_solver_evidence_index_sha256": verdict_solver_evidence_index_sha256,
+                    },
+                )
+            )
+
     return {
         "status": "satisfied" if not issues else "incomplete",
         "evidence_kind": "stage-a-validation-report-binding",
         "report": payload.get("path"),
         "facts": {
             "matching_model": requested_model == model,
+            "verdict_model_hash": verdict_model_hash,
+            "expected_verdict_model_hash": expected_verdict_model_hash,
+            "verdict_model_hash_matches_payload": verdict_model_hash_matches_payload,
             "matching_original_sha256": original_sha == original.sha256,
             "matching_candidate_sha256": None if candidate is None else candidate_sha == candidate.sha256,
             "matching_mapping_payload": mapping_matches,
             "expected_mapping_sha256": expected_mapping_sha256,
             "actual_mapping_sha256": actual_mapping_sha256,
+            "layout_artifact_sha256": layout_file_sha256,
+            "layout_payload_sha256": layout_payload_sha256,
+            "proof_ir_layout_sha256": proof_ir_layout_sha256,
+            "layout_artifact_matches_proof_ir": layout_artifact_matches_proof_ir,
+            "obligations_artifact_sha256": obligations_file_sha256,
+            "obligations_artifact_matches_verdict": obligations_artifact_matches_verdict,
+            "obligations_artifact_matches_proof_ir": obligations_artifact_matches_proof_ir,
+            "proof_ir_present": proof_ir_present,
+            "proof_ir_artifact_sha256": proof_ir_file_sha256,
+            "verdict_proof_ir_sha256": verdict_proof_ir_sha256,
+            "proof_ir_artifact_matches_verdict": proof_ir_artifact_matches_verdict,
+            "proof_cache_index_artifact_sha256": proof_cache_index_file_sha256,
+            "proof_cache_index_payload_matches_proof_ir": proof_cache_index_payload_matches_proof_ir,
+            "proof_cache_payload_hashes_match_index": proof_cache_payload_hashes_match_index,
+            "proof_cache_payload_hash_mismatches": proof_cache_payload_hash_mismatches,
+            "proof_cache_payload_missing": proof_cache_payload_missing,
+            "proof_cache_payload_unreadable": proof_cache_payload_unreadable,
+            "proof_cache_artifacts_match_proof_ir": proof_cache_artifacts_match_proof_ir,
+            "proof_ir_model_hash": proof_ir_model_hash,
+            "proof_ir_expected_model_hash": proof_ir_expected_model_hash,
+            "proof_ir_model_hash_matches_payload": proof_ir_model_hash_matches_payload,
+            "proof_ir_context_model_hash_bound": proof_ir_context_model_hash_bound,
+            "proof_ir_mapping_sha256": proof_ir_mapping_sha256,
+            "proof_ir_context_status": proof_ir_context_status,
+            "proof_ir_closure_certificate_status": proof_ir_closure_certificate_status,
+            "proof_ir_closure_certificate_sha256": proof_ir_closure_certificate_sha256,
+            "proof_ir_target_profile_status": proof_ir_target_profile_status,
+            "proof_ir_loader_frontend_profile_status": proof_ir_loader_frontend_profile_status,
+            "proof_ir_loader_profile_status": proof_ir_loader_profile_status,
+            "proof_ir_coverage_profile_status": proof_ir_coverage_profile_status,
+            "proof_ir_proof_cache_profile_status": proof_ir_proof_cache_profile_status,
+            "proof_ir_proof_rule_profile_status": proof_ir_proof_rule_profile_status,
+            "proof_ir_mapping_profile_status": proof_ir_mapping_profile_status,
+            "proof_ir_cfg_profile_status": proof_ir_cfg_profile_status,
+            "proof_ir_reachability_profile_status": proof_ir_reachability_profile_status,
+            "proof_ir_abi_profile_status": proof_ir_abi_profile_status,
+            "proof_ir_environment_profile_status": proof_ir_environment_profile_status,
+            "proof_ir_instruction_profile_status": proof_ir_instruction_profile_status,
+            "proof_ir_semantic_profile_status": proof_ir_semantic_profile_status,
+            "proof_ir_solver_evidence_profile_status": proof_ir_solver_evidence_profile_status,
+            "proof_ir_solver_backend_profile_status": proof_ir_solver_backend_profile_status,
+            "proof_ir_trusted_boundary_profile_status": proof_ir_trusted_boundary_profile_status,
+            "proof_ir_profile_manifest_status": proof_ir_profile_manifest_status,
+            "solver_evidence_jsonl_artifact_sha256": solver_evidence_jsonl_file_sha256,
+            "solver_evidence_index_artifact_sha256": solver_evidence_index_file_sha256,
+            "verdict_solver_evidence_sha256": verdict_solver_evidence_sha256,
+            "verdict_solver_evidence_index_sha256": verdict_solver_evidence_index_sha256,
+            "solver_evidence_artifacts_match_verdict": solver_evidence_artifacts_match_verdict,
+            "lean_summary_present": bool(lean_summary),
+            "lean_summary_artifact_sha256": lean_summary_file_sha256,
+            "lean_summary_matches_verdict": lean_summary_matches_verdict,
+            "lean_summary_final_pass_allowed": lean_summary_final_pass_allowed,
+            "lean_inputs_artifact_sha256": lean_inputs_file_sha256,
+            "lean_inputs_payload_sha256": lean_inputs_payload_sha256,
+            "lean_inputs_matches_summary": lean_inputs_matches_summary,
+            "lean_generated_sources_match_summary": lean_generated_sources_match_summary,
+            "lean_supplemental_sources_match_summary": lean_supplemental_sources_match_summary,
+            "lean_source_artifacts_match_summary": lean_source_artifacts_match_summary,
+            "lean_source_artifact_mismatches": lean_source_artifact_mismatches,
+            "lean_source_artifact_missing": lean_source_artifact_missing,
+            "lean_source_artifact_unreadable": lean_source_artifact_unreadable,
+            "lean_source_artifact_invalid": lean_source_artifact_invalid,
+            "solver_evidence_status": solver_evidence_status,
         },
         "issues": issues,
     }
@@ -7353,6 +9081,173 @@ def _reference_validation_report_binding_constraint(
 
 def _canonical_json_sha256(value: Any) -> str:
     return sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
+
+
+def _validation_report_proof_cache_payload_sha256(value: Any) -> str:
+    return sha256_bytes(json.dumps(value, sort_keys=True).encode("utf-8"))
+
+
+def _validation_report_lean_source_artifact_status(report_root: Path, source_artifacts: dict[str, Any]) -> dict[str, Any]:
+    generated = source_artifacts.get("generated") if isinstance(source_artifacts.get("generated"), list) else None
+    supplemental = source_artifacts.get("supplemental") if isinstance(source_artifacts.get("supplemental"), list) else None
+    generated_status = _validation_report_lean_source_artifact_group_status(
+        report_root,
+        generated,
+        expected_paths=set(LEAN_GENERATED_SOURCE_PATHS),
+    )
+    supplemental_status = _validation_report_lean_source_artifact_group_status(report_root, supplemental)
+    counts = {
+        "expected": generated_status["counts"]["expected"] + supplemental_status["counts"]["expected"],
+        "matched": generated_status["counts"]["matched"] + supplemental_status["counts"]["matched"],
+        "missing": generated_status["counts"]["missing"] + supplemental_status["counts"]["missing"],
+        "mismatches": generated_status["counts"]["mismatches"] + supplemental_status["counts"]["mismatches"],
+        "unreadable": generated_status["counts"]["unreadable"] + supplemental_status["counts"]["unreadable"],
+        "invalid": generated_status["counts"]["invalid"] + supplemental_status["counts"]["invalid"],
+    }
+    manifest_counts = source_artifacts.get("counts") if isinstance(source_artifacts.get("counts"), dict) else {}
+    manifest_counts_match = (
+        manifest_counts.get("generated") == generated_status["counts"]["expected"]
+        and manifest_counts.get("supplemental") == supplemental_status["counts"]["expected"]
+        and manifest_counts.get("missing") == counts["missing"]
+    )
+    if not manifest_counts_match:
+        counts["invalid"] += 1
+    format_ok = source_artifacts.get("format") == "stage-a-lean-source-artifacts-v1"
+    manifest_status_ok = source_artifacts.get("status") == "satisfied"
+    return {
+        "format": source_artifacts.get("format"),
+        "status": source_artifacts.get("status"),
+        "format_ok": format_ok,
+        "manifest_status_ok": manifest_status_ok,
+        "manifest_counts": manifest_counts,
+        "manifest_counts_match": manifest_counts_match,
+        "counts": counts,
+        "groups": {
+            "generated": generated_status,
+            "supplemental": supplemental_status,
+        },
+        "match": bool(
+            format_ok
+            and manifest_status_ok
+            and manifest_counts_match
+            and generated_status["match"]
+            and supplemental_status["match"]
+        ),
+    }
+
+
+def _validation_report_lean_source_artifact_group_status(
+    report_root: Path,
+    entries: list[Any] | None,
+    *,
+    expected_paths: set[str] | None = None,
+) -> dict[str, Any]:
+    counts = {"expected": 0, "matched": 0, "missing": 0, "mismatches": 0, "unreadable": 0, "invalid": 0}
+    if entries is None:
+        counts["invalid"] += 1
+        return {
+            "match": False,
+            "counts": counts,
+            "paths": [],
+            "expected_paths": sorted(expected_paths or []),
+            "missing_manifest_paths": sorted(expected_paths or []),
+            "extra_manifest_paths": [],
+        }
+
+    paths: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            counts["invalid"] += 1
+            continue
+        relative_path = entry.get("path")
+        expected_sha256 = entry.get("sha256")
+        if not isinstance(relative_path, str) or not relative_path:
+            counts["invalid"] += 1
+            continue
+        relative = Path(relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            counts["invalid"] += 1
+            continue
+        paths.append(relative.as_posix())
+        counts["expected"] += 1
+        if not isinstance(expected_sha256, str) or not _is_sha256_hex(expected_sha256):
+            counts["invalid"] += 1
+            continue
+        source_path = report_root / "lean" / relative
+        if not source_path.is_file():
+            counts["missing"] += 1
+            continue
+        try:
+            actual_sha256 = sha256_file(source_path)
+        except OSError:
+            counts["unreadable"] += 1
+            continue
+        if actual_sha256 == expected_sha256:
+            counts["matched"] += 1
+        else:
+            counts["mismatches"] += 1
+
+    actual_paths = set(paths)
+    missing_manifest_paths = sorted((expected_paths or set()) - actual_paths)
+    extra_manifest_paths = sorted(actual_paths - (expected_paths or actual_paths))
+    if missing_manifest_paths or extra_manifest_paths:
+        counts["invalid"] += len(missing_manifest_paths) + len(extra_manifest_paths)
+    return {
+        "match": bool(
+            counts["expected"] == counts["matched"]
+            and counts["missing"] == 0
+            and counts["mismatches"] == 0
+            and counts["unreadable"] == 0
+            and counts["invalid"] == 0
+        ),
+        "counts": counts,
+        "paths": paths,
+        "expected_paths": sorted(expected_paths or []),
+        "missing_manifest_paths": missing_manifest_paths,
+        "extra_manifest_paths": extra_manifest_paths,
+    }
+
+
+def _validation_report_obligation_rows(obligations_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    obligations = obligations_payload.get("obligations") if isinstance(obligations_payload.get("obligations"), list) else []
+    rows: list[dict[str, Any]] = []
+    for item in obligations:
+        if not isinstance(item, dict):
+            continue
+        proof_rule = item.get("proof_rule")
+        row = {
+            "id": item.get("id"),
+            "kind": item.get("kind"),
+            "status": item.get("status"),
+            "proof_rule": proof_rule,
+            "generic_proof_rule": generic_proof_rule(proof_rule, deprecated_aliases=DEPRECATED_PROOF_RULE_ALIASES),
+            "proof_cache": item.get("proof_cache"),
+        }
+        for key in (
+            "source_block",
+            "target_block",
+            "edge_kind",
+            "block",
+            "binary",
+            "rva_start",
+            "rva_end",
+            "original_edge",
+            "candidate_edge",
+            "signature",
+            "original",
+            "candidate",
+        ):
+            if key in item:
+                row[key] = item[key]
+        proof = item.get("proof") if isinstance(item.get("proof"), dict) else {}
+        if proof:
+            row["proof_kind"] = proof.get("kind")
+            row["edge_obligation"] = proof.get("edge_obligation")
+            row["proof_source_block"] = proof.get("source_block")
+            row["proof_edge_kind"] = proof.get("edge_kind")
+            row["root_kind"] = proof.get("root_kind")
+        rows.append(row)
+    return rows
 
 
 def _layout_binary_sha256(layout: dict[str, Any], side: str) -> str | None:
@@ -7766,7 +9661,7 @@ def _reference_abi_callsites_constraint(
         if isinstance(candidate_functions, list)
         else None
     )
-    return {
+    payload = {
         "status": map_status if mappings else "incomplete",
         "evidence_kind": "capstone-static-abi-callsites",
         "scope": "original-candidate-pair" if candidate is not None else "original",
@@ -7787,6 +9682,11 @@ def _reference_abi_callsites_constraint(
             "import_prototypes": len(original.imports),
         },
     }
+    if candidate is not None:
+        comparison_gaps = _contract_candidate_abi_coverage_gaps(payload, payload)
+        payload["comparison_gaps"] = comparison_gaps
+        payload["profile_comparison_gaps"] = _stage_a_abi_profile_comparison_gaps(comparison_gaps)
+    return payload
 
 
 def _abi_function_evidence(
@@ -10098,21 +11998,21 @@ def _generated_map_issues(payload: Any) -> list[dict[str, Any]]:
             _incomplete_record(
                 category="generated_map_incomplete",
                 obligation_id="mapping:generated-map",
-                blocker="stage-a-generate-map did not produce a closed jq block map",
-                next_action="inspect mapping issues and extend the jq map generator or Stage A model",
+                blocker="stage-a-generate-map did not produce a closed block map",
+                next_action="inspect mapping issues and extend the generic map generator or Stage A model",
                 details={"issues": issues},
             )
         ]
     return []
 
 
-def _jq_map_layout_issues(original: StageABinary, candidate: StageABinary) -> list[dict[str, Any]]:
+def _generic_map_layout_issues(original: StageABinary, candidate: StageABinary) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     if original.machine != candidate.machine or original.bitness != candidate.bitness:
         issues.append(
             _incomplete_record(
                 category="layout_mismatch",
-                obligation_id="jq-map:layout:architecture",
+                obligation_id="map:layout:architecture",
                 blocker="generated map creation requires both inputs to use the same supported PE architecture",
                 next_action="rebuild the fixtures for a single supported Windows target",
             )
@@ -10121,9 +12021,9 @@ def _jq_map_layout_issues(original: StageABinary, candidate: StageABinary) -> li
         issues.append(
             _incomplete_record(
                 category="layout_mismatch",
-                obligation_id="jq-map:layout:sections",
-                blocker="jq map generation requires matching PE section names and permissions",
-                next_action="make the jq fixture builds use the same linker script and section policy",
+                obligation_id="map:layout:sections",
+                blocker="map generation requires matching PE section names and permissions",
+                next_action="make the fixture builds use the same linker script and section policy",
                 details={
                     "original": _section_compatibility_signature(original),
                     "candidate": _section_compatibility_signature(candidate),
@@ -10134,9 +12034,9 @@ def _jq_map_layout_issues(original: StageABinary, candidate: StageABinary) -> li
         issues.append(
             _incomplete_record(
                 category="layout_mismatch",
-                obligation_id="jq-map:layout:section-rvas",
-                blocker="jq map generation requires matching PE section RVAs before span normalization",
-                next_action="make the jq fixture builds use the same linker script and section placement policy",
+                obligation_id="map:layout:section-rvas",
+                blocker="map generation requires matching PE section RVAs before span normalization",
+                next_action="make the fixture builds use the same linker script and section placement policy",
                 details={
                     "original": _section_rva_start_signature(original),
                     "candidate": _section_rva_start_signature(candidate),
@@ -10147,176 +12047,13 @@ def _jq_map_layout_issues(original: StageABinary, candidate: StageABinary) -> li
         issues.append(
             _incomplete_record(
                 category="layout_mismatch",
-                obligation_id="jq-map:layout:imports",
-                blocker="jq map generation requires matching PE imports",
-                next_action="make the jq fixture builds use the same linkage and dependency policy",
+                obligation_id="map:layout:imports",
+                blocker="map generation requires matching PE imports",
+                next_action="make the fixture builds use the same linkage and dependency policy",
                 details={"original": _import_signature(original), "candidate": _import_signature(candidate)},
             )
         )
     return issues
-
-
-def _parse_linker_map_functions(path: Path, binary: StageABinary) -> list[dict[str, Any]]:
-    try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        raise StageAInputError(f"cannot read linker map {path}: {exc}") from exc
-    symbol_starts: dict[int, list[str]] = {}
-    boundary_starts: set[int] = set()
-    pending_text_section: str | None = None
-    for line in text.splitlines():
-        parsed = _parse_linker_map_symbol_line(line, binary)
-        if parsed is not None:
-            rva, name = parsed
-            if _linker_map_symbol_is_non_function_label(name):
-                continue
-            if _executable_section_for_rva(binary, rva) is None:
-                continue
-            symbol_starts.setdefault(rva, [])
-            if name not in symbol_starts[rva]:
-                symbol_starts[rva].append(name)
-            continue
-        boundary = _parse_linker_map_text_boundary_line(line, binary)
-        if boundary is not None:
-            boundary_starts.add(boundary)
-            fragment_symbol = _linker_map_text_fragment_symbol(line)
-            if fragment_symbol is not None:
-                symbol_starts.setdefault(boundary, [])
-                if fragment_symbol not in symbol_starts[boundary]:
-                    symbol_starts[boundary].append(fragment_symbol)
-            pending_text_section = None
-            continue
-        continuation = _parse_linker_map_text_boundary_continuation_line(line, binary)
-        if continuation is not None and pending_text_section is not None:
-            boundary_starts.add(continuation)
-            fragment_symbol = _linker_map_section_fragment_symbol(pending_text_section)
-            if fragment_symbol is not None:
-                symbol_starts.setdefault(continuation, [])
-                if fragment_symbol not in symbol_starts[continuation]:
-                    symbol_starts[continuation].append(fragment_symbol)
-            pending_text_section = None
-            continue
-        text_section = _parse_linker_map_text_section_only_line(line)
-        if text_section is not None:
-            pending_text_section = text_section
-            continue
-        if line.strip():
-            pending_text_section = None
-
-    functions: list[dict[str, Any]] = []
-    ordered = sorted(symbol_starts)
-    range_boundaries = sorted(set(ordered) | boundary_starts)
-    for index, rva in enumerate(ordered):
-        section = _executable_section_for_rva(binary, rva)
-        if section is None:
-            continue
-        next_starts = [value for value in range_boundaries if value > rva and value <= section.rva_end]
-        rva_end = next_starts[0] if next_starts else section.rva_end
-        if rva_end <= rva:
-            continue
-        primary = _primary_symbol_name(symbol_starts[rva])
-        functions.append(
-            {
-                "name": primary,
-                "aliases": symbol_starts[rva],
-                "rva_start": rva,
-                "rva_end": rva_end,
-                "section": section.name,
-            }
-        )
-    return functions
-
-
-def _parse_linker_map_text_boundary_line(line: str, binary: StageABinary) -> int | None:
-    match = re.match(r"^\s*\.text\S*\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\b", line)
-    if match is None:
-        return None
-    address = int(match.group(1), 16)
-    if address >= binary.image_base:
-        rva = address - binary.image_base
-    else:
-        rva = address
-    if _executable_section_for_rva(binary, rva) is None:
-        return None
-    return rva
-
-
-def _parse_linker_map_text_boundary_continuation_line(line: str, binary: StageABinary) -> int | None:
-    match = re.match(r"^\s*(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\b", line)
-    if match is None:
-        return None
-    address = int(match.group(1), 16)
-    if address >= binary.image_base:
-        rva = address - binary.image_base
-    else:
-        rva = address
-    if _executable_section_for_rva(binary, rva) is None:
-        return None
-    return rva
-
-
-def _parse_linker_map_text_section_only_line(line: str) -> str | None:
-    match = re.match(r"^\s*(\.text\S*)\s*$", line)
-    return match.group(1) if match is not None else None
-
-
-def _linker_map_text_fragment_symbol(line: str) -> str | None:
-    match = re.match(r"^\s*(\.text\S*)\b", line)
-    if match is None:
-        return None
-    return _linker_map_section_fragment_symbol(match.group(1))
-
-
-def _linker_map_section_fragment_symbol(section_name: str) -> str | None:
-    if "$" not in section_name:
-        return None
-    fragment = section_name.split("$", 1)[1].strip()
-    if not fragment or fragment.startswith("."):
-        return None
-    return fragment
-
-
-def _parse_linker_map_symbol_line(line: str, binary: StageABinary) -> tuple[int, str] | None:
-    match = re.match(r"^\s*(0x[0-9a-fA-F]+)\s+([A-Za-z_.$@?][A-Za-z0-9_.$@?~-]*)\s*$", line)
-    if match is None:
-        return None
-    address = int(match.group(1), 16)
-    name = match.group(2)
-    if name.startswith(".") or name in {"PROVIDE", "CREATE_OBJECT_SYMBOLS"}:
-        return None
-    if address >= binary.image_base:
-        rva = address - binary.image_base
-    else:
-        rva = address
-    return rva, name
-
-
-def _linker_map_symbol_is_non_function_label(name: str) -> bool:
-    stripped = name.lstrip("_")
-    if re.match(r"^fu\d+_+", stripped):
-        return True
-    return stripped.startswith("stage_b_contract_rva_")
-
-
-def _primary_symbol_name(names: list[str]) -> str:
-    for name in names:
-        if not name.startswith("__") and not name.startswith("___"):
-            return name
-    return names[0]
-
-
-def _executable_section_for_rva(binary: StageABinary, rva: int) -> StageASection | None:
-    for section in binary.sections:
-        if section.executable and section.rva_start <= rva < section.rva_end:
-            return section
-    return None
-
-
-def _section_for_rva(binary: StageABinary, rva: int) -> StageASection | None:
-    for section in binary.sections:
-        if section.rva_start <= rva < section.rva_end:
-            return section
-    return None
 
 
 def _capstone_mode(binary: StageABinary) -> int:
@@ -10329,9 +12066,9 @@ def _linker_function_issues(binary_name: str, functions: list[dict[str, Any]]) -
         issues.append(
             _incomplete_record(
                 category="missing_linker_map_entries",
-                obligation_id=f"jq-map:{binary_name}:functions",
+                obligation_id=f"map:{binary_name}:functions",
                 blocker=f"{binary_name} linker map did not expose executable symbols",
-                next_action="rebuild jq with linker map emission and unstripped symbols",
+                next_action="rebuild with linker map emission and unstripped symbols",
             )
         )
     by_name: dict[str, list[dict[str, Any]]] = {}
@@ -10349,9 +12086,9 @@ def _linker_function_issues(binary_name: str, functions: list[dict[str, Any]]) -
         issues.append(
             _incomplete_record(
                 category="ambiguous_linker_map",
-                obligation_id=f"jq-map:{binary_name}:duplicate-function-names",
+                obligation_id=f"map:{binary_name}:duplicate-function-names",
                 blocker=f"{binary_name} linker map contains duplicate primary function names",
-                next_action="disambiguate duplicate linker-map symbols before accepting generated jq mappings",
+                next_action="disambiguate duplicate linker-map symbols before accepting generated mappings",
                 details={"functions": duplicates},
             )
         )
@@ -10364,7 +12101,7 @@ def _linker_function_issues(binary_name: str, functions: list[dict[str, Any]]) -
                 category="ambiguous_linker_map",
                 obligation_id=overlap["obligation_id"],
                 blocker=overlap["blocker"],
-                next_action="fix linker-map function range recovery before generating a jq Stage A map",
+                next_action="fix linker-map function range recovery before generating a Stage A map",
                 details=overlap,
             )
         )
@@ -10413,7 +12150,7 @@ def _match_linker_functions_by_name_or_unique_alias(
         issues.append(
             _incomplete_record(
                 category="ambiguous_linker_map",
-                obligation_id=f"jq-map:alias:{_artifact_name(key)}",
+                obligation_id=f"map:alias:{_artifact_name(key)}",
                 blocker="decorated linker-map names produce an ambiguous canonical alias match",
                 next_action="preserve exact function names or add a more specific linker-map alias rule",
                 details={"match_key": key, "original": original_names, "candidate": candidate_names},
@@ -10462,7 +12199,7 @@ def _match_import_thunk_functions_by_signature(
         issues.append(
             _incomplete_record(
                 category="ambiguous_import_thunk_match",
-                obligation_id=f"jq-map:import-thunk:{_artifact_name(signature)}",
+                obligation_id=f"map:import-thunk:{_artifact_name(signature)}",
                 blocker="PE import-thunk linker-map functions do not have a unique import-signature match",
                 next_action="preserve unique import thunk symbols or add disambiguating checked thunk metadata",
                 details={
@@ -10591,9 +12328,9 @@ def _match_function_blocks(
         return [], [
             _incomplete_record(
                 category="ambiguous_block_match",
-                obligation_id=f"jq-map:function:{_artifact_name(name)}",
-                blocker="jq function map recovered different basic-block counts for matching linker-map symbols",
-                next_action="extend the jq map generator to match split basic blocks for this function by CFG shape",
+                obligation_id=f"map:function:{_artifact_name(name)}",
+                blocker="function map recovered different basic-block counts for matching linker-map symbols",
+                next_action="extend the generic map generator to match split basic blocks for this function by CFG shape",
                 details=_ambiguous_block_match_details(
                     name=name,
                     original=original,
@@ -10803,7 +12540,7 @@ def _section_gap_waivers(binary_name: str, binary: StageABinary, ranges: list[Bl
                 issues.append(
                     _incomplete_record(
                         category="unclassified_executable_bytes",
-                        obligation_id=f"jq-map:{binary_name}:gap:{gap.rva_start:x}-{gap.rva_end:x}",
+                        obligation_id=f"map:{binary_name}:gap:{gap.rva_start:x}-{gap.rva_end:x}",
                         blocker=f"{binary_name} executable bytes outside linker-map function ranges are not padding",
                         next_action="recover the missing function range or add a checked jump-table/code target classification",
                         details={"rva_start": gap.rva_start, "rva_end": gap.rva_end, "bytes_sha256": sha256_bytes(data)},
@@ -10820,6 +12557,7 @@ def _paired_section_gap_classification(
     original_flags: str,
     candidate_flags: str,
     proof_rule: str,
+    requested_proof_rule: str,
     proof_metadata: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     original_ranges = [
@@ -10846,9 +12584,9 @@ def _paired_section_gap_classification(
             issues.append(
                 _incomplete_record(
                     category="ambiguous_section_gap_match",
-                    obligation_id=f"jq-map:section-gap:{_artifact_name(section)}",
+                    obligation_id=f"map:section-gap:{_artifact_name(section)}",
                     blocker="original and candidate executable section gap basic blocks do not have the same count after padding normalization",
-                    next_action="extend the jq map generator to match split section-gap blocks by CFG shape",
+                    next_action="extend the generic map generator to match split section-gap blocks by CFG shape",
                     details={
                         "section": section,
                         "original_code_blocks": len(left_code_blocks),
@@ -10890,6 +12628,7 @@ def _paired_section_gap_classification(
                     },
                     "proof": _generated_mapping_proof(
                         proof_rule=proof_rule,
+                        requested_proof_rule=requested_proof_rule,
                         function=name,
                         original_flags=original_flags,
                         candidate_flags=candidate_flags,
@@ -12551,12 +14290,13 @@ def _checked_mapping_proof(mapped: BlockMapping) -> dict[str, Any] | None:
     if not isinstance(proof, dict) or proof.get("checked") is not True:
         return None
     rule = str(proof.get("rule") or "")
-    if rule not in CHECKED_GENERATED_MAPPING_PROOF_RULES:
+    generic_rule = generic_proof_rule(rule)
+    if generic_rule not in CHECKED_GENERATED_MAPPING_GENERIC_PROOF_RULES:
         return None
-    if rule == "reproducible_stage_b_skeleton_reimplementation_v1" and not _stage_b_proof_metadata_checked(proof.get("stage_b")):
+    if generic_rule == "stage_b_skeleton_reimplementation_contract_v1" and not _stage_b_proof_metadata_checked(proof.get("stage_b")):
         return None
-    return {
-        "rule": rule,
+    result = {
+        "rule": generic_rule,
         "checked": True,
         "function": str(proof.get("function") or mapped.id),
         "original_flags": str(proof.get("original_flags") or ""),
@@ -12564,11 +14304,15 @@ def _checked_mapping_proof(mapped: BlockMapping) -> dict[str, Any] | None:
         "source_kind": str(mapped.source.get("source", {}).get("kind") if isinstance(mapped.source.get("source"), dict) else ""),
         "stage_b": proof.get("stage_b") if isinstance(proof.get("stage_b"), dict) else None,
     }
+    if generic_rule != rule:
+        result["deprecated_rule_alias"] = rule
+    return result
 
 
 def _generated_mapping_proof(
     *,
     proof_rule: str,
+    requested_proof_rule: str,
     function: str,
     original_flags: str,
     candidate_flags: str,
@@ -12583,11 +14327,13 @@ def _generated_mapping_proof(
     }
     if proof_metadata:
         proof.update(proof_metadata)
+    if requested_proof_rule != proof_rule:
+        proof["deprecated_rule_alias"] = requested_proof_rule
     return proof
 
 
 def _generated_mapping_proof_metadata_issues(proof_rule: str, proof_metadata: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if proof_rule != "reproducible_stage_b_skeleton_reimplementation_v1":
+    if generic_proof_rule(proof_rule) != "stage_b_skeleton_reimplementation_contract_v1":
         return []
     if _stage_b_proof_metadata_checked((proof_metadata or {}).get("stage_b")):
         return []
@@ -12731,6 +14477,7 @@ def _prove_symbolic_equivalence(
             "proof_rule": "smt_z3_local_equivalence_v1",
             "solver": smt["solver"],
             "smt_status": smt["smt_status"],
+            "solver_backend": smt.get("solver_backend"),
             "smt_query": smt["smt_query"],
             "invariant": invariant,
             "original_observables": _observables_json(original_observables),
@@ -12742,6 +14489,7 @@ def _prove_symbolic_equivalence(
             "proof_rule": "smt_z3_local_equivalence_v1",
             "solver": smt["solver"],
             "smt_status": smt["smt_status"],
+            "solver_backend": smt.get("solver_backend"),
             "smt_query": smt["smt_query"],
             "mismatch": smt["mismatch"],
             "mismatches": smt["mismatches"],
@@ -12758,6 +14506,7 @@ def _prove_symbolic_equivalence(
         "next_action": smt["next_action"],
         "solver": smt.get("solver", "z3"),
         "smt_status": smt.get("smt_status", "unavailable"),
+        "solver_backend": smt.get("solver_backend"),
         "smt_query": smt.get("smt_query", _smt_query_for_observables(original_observables, candidate_observables, invariant["constraints"])),
         "invariant": invariant,
         "original_observables": _observables_json(original_observables),
@@ -13716,12 +15465,14 @@ def _run_z3_equivalence(
     invariant_constraints: list[Any],
 ) -> dict[str, Any]:
     z3 = _import_z3()
+    solver_backend = _z3_solver_backend(z3)
     if z3 is None:
         return {
             "status": "incomplete",
             "category": "solver_unavailable",
             "solver": "z3",
             "smt_status": "unavailable",
+            "solver_backend": solver_backend,
             "blocker": "Python Z3 bindings are not available",
             "next_action": "run inside the flake dev/test shell or install the proof extra before discharging SMT obligations",
             "smt_query": _smt_query_for_observables(original_observables, candidate_observables, invariant_constraints),
@@ -13748,6 +15499,7 @@ def _run_z3_equivalence(
             "category": "unsupported_smt_observable",
             "solver": "z3",
             "smt_status": "not_dispatched",
+            "solver_backend": solver_backend,
             "blocker": unsupported[0]["blocker"],
             "next_action": "extend the Stage A SMT encoder for this observable shape",
             "smt_query": smt_query,
@@ -13762,6 +15514,7 @@ def _run_z3_equivalence(
             "category": "unsupported_invariant",
             "solver": "z3",
             "smt_status": "not_dispatched",
+            "solver_backend": solver_backend,
             "blocker": str(exc),
             "next_action": "rewrite the invariant constraints in the supported Stage A invariant schema",
             "smt_query": _smt_query_for_observables(original_observables, candidate_observables, invariant_constraints),
@@ -13786,6 +15539,7 @@ def _run_z3_equivalence(
             "status": "proved",
             "solver": "z3",
             "smt_status": "unsat",
+            "solver_backend": solver_backend,
             "smt_query": smt_query,
             "comparisons": [_comparison_json(item) for item in comparisons],
         }
@@ -13796,6 +15550,7 @@ def _run_z3_equivalence(
             "status": "failed",
             "solver": "z3",
             "smt_status": "sat",
+            "solver_backend": solver_backend,
             "smt_query": smt_query,
             "mismatch": mismatches[0],
             "mismatches": mismatches,
@@ -13807,6 +15562,7 @@ def _run_z3_equivalence(
         "category": "solver_unknown",
         "solver": "z3",
         "smt_status": "unknown",
+        "solver_backend": solver_backend,
         "blocker": f"Z3 returned unknown: {solver.reason_unknown()}",
         "next_action": "increase solver budget, simplify the obligation, or add an invariant lemma",
         "smt_query": smt_query,
@@ -14288,6 +16044,23 @@ def _import_z3() -> Any | None:
         return import_module("z3")
     except ImportError:
         return None
+
+
+def _z3_solver_backend(z3: Any | None) -> dict[str, Any]:
+    version = "unavailable"
+    if z3 is not None:
+        try:
+            version = str(z3.get_version_string())
+        except Exception:
+            version = "unknown"
+    return {
+        "format": "stage-a-solver-backend-v1",
+        "solver": "z3",
+        "version": version,
+        "engine": "stage-a-local-symbolic-x86-v1",
+        "smt_fragment": "stage-a-local-symbolic-x86-observables-v1",
+        "trust_boundary": "z3_unsat_local_equivalence_oracle_v1",
+    }
 
 
 def _symbolic_incomplete(binary_name: str, category: str, rva: int, mnemonic: str, op_str: str, blocker: str) -> dict[str, Any]:
@@ -15263,6 +17036,190 @@ def _derive_verdict(failures: list[dict[str, Any]], incomplete: list[dict[str, A
     return "pass"
 
 
+def _proof_ir_loader_facts(original: StageABinary | None, candidate: StageABinary | None, layout: dict[str, Any]) -> dict[str, Any]:
+    loader = "pe32plus" if layout.get("bitness") == 64 else "pe32"
+    return {
+        "format": f"stage-a-loader-{loader}-facts-v1",
+        "loader": loader,
+        "original": _binary_reference_layout(original) if original is not None else layout.get("original"),
+        "candidate": _binary_reference_layout(candidate) if candidate is not None else layout.get("candidate"),
+    }
+
+
+def _stage_a_validation_mapping_contract(
+    mappings: list[BlockMapping],
+    waivers: list[NonCodeWaiver],
+    map_issues: list[dict[str, Any]],
+) -> dict[str, Any]:
+    blocks = [_stage_a_mapping_contract_block(mapped) for mapped in mappings]
+    waiver_rows = [
+        {
+            "id": waiver.id,
+            "binary": waiver.binary,
+            "rva_start": waiver.rva_start,
+            "rva_end": waiver.rva_end,
+            "reason": waiver.reason,
+        }
+        for waiver in waivers
+    ]
+    issue_rows = [
+        {
+            "category": issue.get("category"),
+            "status": issue.get("status"),
+            "severity": issue.get("severity"),
+            "obligation_id": issue.get("obligation_id"),
+            "blocker": issue.get("blocker"),
+        }
+        for issue in map_issues
+        if isinstance(issue, dict)
+    ]
+    return {
+        "format": "stage-a-mapping-contract-v1",
+        "status": "satisfied" if blocks and not issue_rows else "incomplete",
+        "evidence_kind": "stage-a-normalized-block-map",
+        "blocks": blocks,
+        "waivers": waiver_rows,
+        "issues": issue_rows,
+        "counts": {
+            "blocks": len(blocks),
+            "code_blocks": sum(1 for item in blocks if item.get("kind") == "code"),
+            "non_code_blocks": sum(1 for item in blocks if item.get("kind") != "code"),
+            "reachable_blocks": sum(1 for item in blocks if item.get("reachable") is True),
+            "unchecked_invariant_blocks": sum(1 for item in blocks if item.get("invariant_checked") is not True),
+            "root_entries": sum(1 for item in blocks if item.get("root_present") is True),
+            "checked_root_entries": sum(1 for item in blocks if item.get("checked_root_kind")),
+            "unknown_checked_root_entries": sum(1 for item in blocks if item.get("unknown_checked_root") is True),
+            "mapping_proofs": sum(1 for item in blocks if item.get("proof_rule")),
+            "checked_mapping_proofs": sum(1 for item in blocks if item.get("proof_checked") is True),
+            "unchecked_mapping_proofs": sum(1 for item in blocks if item.get("proof_rule") and item.get("proof_checked") is not True),
+            "waivers": len(waiver_rows),
+            "issues": len(issue_rows),
+            "failed_issues": sum(1 for item in issue_rows if item.get("status") == "failed" or item.get("severity") == "fail"),
+            "incomplete_issues": sum(1 for item in issue_rows if item.get("status") == "incomplete" or item.get("severity") == "incomplete"),
+        },
+    }
+
+
+def _stage_a_mapping_contract_block(mapped: BlockMapping) -> dict[str, Any]:
+    root = mapped.source.get("root") if isinstance(mapped.source.get("root"), dict) else None
+    reachability = mapped.source.get("reachability") if isinstance(mapped.source.get("reachability"), dict) else None
+    root_entry = root if root is not None else reachability
+    checked_root_kind = _checked_root_kind(mapped)
+    proof = mapped.source.get("proof") if isinstance(mapped.source.get("proof"), dict) else {}
+    rule = proof.get("rule") if isinstance(proof.get("rule"), str) else None
+    return {
+        "id": mapped.id,
+        "kind": mapped.kind,
+        "reachable": mapped.reachable,
+        "invariant_checked": mapped.invariant_checked,
+        "original": {"rva_start": mapped.original.rva_start, "rva_end": mapped.original.rva_end},
+        "candidate": {"rva_start": mapped.candidate.rva_start, "rva_end": mapped.candidate.rva_end},
+        "root_present": root_entry is not None,
+        "root_checked": bool(root_entry.get("checked")) if isinstance(root_entry, dict) else False,
+        "checked_root_kind": checked_root_kind,
+        "unknown_checked_root": bool(root_entry.get("checked") is True and checked_root_kind is None) if isinstance(root_entry, dict) else False,
+        "proof_rule": rule,
+        "proof_checked": bool(proof.get("checked") is True) if proof else False,
+        "proof_source_kind": proof.get("source_kind") if isinstance(proof.get("source_kind"), str) else None,
+        "proof_function": proof.get("function") if isinstance(proof.get("function"), str) else None,
+    }
+
+
+def _stage_a_validation_abi_contract(
+    original: StageABinary,
+    candidate: StageABinary,
+    mappings: list[BlockMapping],
+    map_issues: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    map_status = "derived" if mappings and not map_issues else "incomplete"
+    abi_contract = _reference_abi_callsites_constraint(
+        original,
+        candidate,
+        {
+            "mappings": mappings,
+            "function_ranges": {"status": map_status},
+        },
+    )
+    comparison_gaps = _contract_candidate_abi_coverage_gaps(abi_contract, abi_contract)
+    profile_gaps = _stage_a_abi_profile_comparison_gaps(comparison_gaps)
+    gap_counts = comparison_gaps.get("counts") if isinstance(comparison_gaps.get("counts"), dict) else {}
+    profile_gap_counts = profile_gaps.get("counts") if isinstance(profile_gaps.get("counts"), dict) else {}
+    profile_gap_total = sum(int(profile_gap_counts.get(key) or 0) for key in (
+        "missing_functions",
+        "ambiguous_functions",
+        "incomplete_callsite_functions",
+        "missing_callsites",
+        "function_mismatches",
+        "callsite_mismatches",
+    ))
+    abi_contract["comparison_gaps"] = comparison_gaps
+    abi_contract["profile_comparison_gaps"] = profile_gaps
+    abi_contract["profile_status"] = "satisfied" if map_status == "derived" and profile_gap_total == 0 else "incomplete"
+    if profile_gap_total:
+        abi_contract["status"] = "incomplete"
+    issues: list[dict[str, Any]] = []
+    if profile_gap_total:
+        issues.append(
+            _incomplete_record(
+                category="abi_callsite_profile_incomplete",
+                obligation_id="abi:callsite-profile",
+                blocker="static ABI/callsite evidence differs between original and candidate",
+                next_action="inspect proof-ir.json abi_profile and repair missing functions, callsites, stack/register ABI, varargs, hidden sret/out-param, or function-pointer target gaps",
+                details={
+                    "counts": profile_gap_counts,
+                    "samples": {
+                        "missing_functions": profile_gaps.get("missing_functions", [])[:5],
+                        "incomplete_callsites": profile_gaps.get("incomplete_callsites", [])[:5],
+                        "function_mismatches": profile_gaps.get("function_mismatches", [])[:5],
+                        "callsite_mismatches": profile_gaps.get("callsite_mismatches", [])[:5],
+                    },
+                },
+            )
+        )
+    return abi_contract, issues
+
+
+def _stage_a_abi_profile_comparison_gaps(comparison_gaps: dict[str, Any]) -> dict[str, Any]:
+    function_mismatches = [
+        item
+        for item in comparison_gaps.get("function_mismatches", [])
+        if isinstance(item, dict) and _stage_a_abi_profile_function_mismatch_is_hard(item)
+    ]
+    callsite_mismatches = [
+        item for item in comparison_gaps.get("callsite_mismatches", []) if isinstance(item, dict)
+    ]
+    incomplete_callsites = [
+        item for item in comparison_gaps.get("incomplete_callsites", []) if isinstance(item, dict)
+    ]
+    missing_functions = [
+        item for item in comparison_gaps.get("missing_functions", []) if isinstance(item, dict)
+    ]
+    ambiguous_functions = [
+        item for item in comparison_gaps.get("ambiguous_functions", []) if isinstance(item, dict)
+    ]
+    return {
+        "missing_functions": missing_functions,
+        "ambiguous_functions": ambiguous_functions,
+        "incomplete_callsites": incomplete_callsites,
+        "function_mismatches": function_mismatches,
+        "callsite_mismatches": callsite_mismatches,
+        "counts": {
+            "missing_functions": len(missing_functions),
+            "ambiguous_functions": len(ambiguous_functions),
+            "incomplete_callsite_functions": len(incomplete_callsites),
+            "missing_callsites": sum(int(item.get("missing_callsites") or 0) for item in incomplete_callsites),
+            "function_mismatches": len(function_mismatches),
+            "callsite_mismatches": len(callsite_mismatches),
+        },
+    }
+
+
+def _stage_a_abi_profile_function_mismatch_is_hard(mismatch: dict[str, Any]) -> bool:
+    issues = mismatch.get("issues") if isinstance(mismatch.get("issues"), list) else []
+    categories = {str(item.get("category") or "") for item in issues if isinstance(item, dict)}
+    return bool(categories & STAGE_A_ABI_PROFILE_FUNCTION_MISMATCH_CATEGORIES)
+
+
 def _write_report(
     *,
     out: Path,
@@ -15270,6 +17227,8 @@ def _write_report(
     started_at: str,
     original: Path,
     candidate: Path,
+    original_bin: StageABinary | None,
+    candidate_bin: StageABinary | None,
     model: str,
     layout: dict[str, Any],
     obligations: list[dict[str, Any]],
@@ -15278,29 +17237,59 @@ def _write_report(
     proof_cache: list[dict[str, Any]],
     mapping_payload: Any,
     invariant_payload: Any,
+    mapping_contract: dict[str, Any] | None = None,
+    abi_contract: dict[str, Any] | None = None,
     lean_inputs: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
-    model_spec = STAGE_A_MODEL_SPECS.get(model, STAGE_A_MODEL_SPECS[STAGE_A_MODEL_ID])
-    model_description = {
-        "id": model,
-        "architecture": model_spec["architecture"],
-        "bitness": model_spec["bitness"],
-        "environment": "uninterpreted-external-env",
-        "proof_rules": [
-            "byte_identical_x86_pe32_block",
-            "byte_identical_x86_64_pe32plus_block",
-            "smt_z3_local_equivalence_v1",
-            "direct_cfg_edge_mapping_v1",
-            "entry_root_reachability_v1",
-            "checked_root_reachability_v1",
-            "direct_cfg_reachability_v1",
-            "verified_padding_bytes_v1",
-            "reproducible_jq_same_source_optimization_pair_v1",
-            "reproducible_stage_b_skeleton_reimplementation_v1",
-        ],
-    }
-    model_hash = sha256_bytes(json.dumps(model_description, sort_keys=True).encode("utf-8"))
-    lean_summary = _lean_summary(out, verdict, obligations, incomplete, proof_cache, mapping_payload, invariant_payload, lean_inputs)
+    model_description = stage_a_model_description(
+        model,
+        model_specs=STAGE_A_MODEL_SPECS,
+        default_model=STAGE_A_MODEL_ID,
+        deprecated_aliases=DEPRECATED_PROOF_RULE_ALIASES,
+    )
+    model_hash = proof_model_hash(model_description)
+    counts = _obligation_counts(obligations, failures, incomplete)
+    write_json(out / "layout.json", layout)
+    write_json(out / "obligations.json", {"format": "stage-a-obligations-v1", "obligations": obligations, "counts": counts})
+    proof_cache_index = {"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}
+    write_json(out / "proof-cache" / "index.json", proof_cache_index)
+    solver_evidence = write_solver_evidence_inventory(
+        out,
+        proof_cache,
+        deprecated_aliases=DEPRECATED_PROOF_RULE_ALIASES,
+    )
+    proof_ir = write_proof_ir(
+        out=out,
+        original=original,
+        candidate=candidate,
+        model_description=model_description,
+        model_hash=model_hash,
+        loader_facts=_proof_ir_loader_facts(original_bin, candidate_bin, layout),
+        layout=layout,
+        obligations=obligations,
+        failures=failures,
+        incomplete=incomplete,
+        proof_cache=proof_cache,
+        proof_cache_index=proof_cache_index,
+        solver_evidence=solver_evidence,
+        mapping_payload=mapping_payload,
+        invariant_payload=invariant_payload,
+        mapping_contract=mapping_contract,
+        abi_contract=abi_contract,
+        deprecated_aliases=DEPRECATED_PROOF_RULE_ALIASES,
+    )
+    lean_summary = _lean_summary(
+        out,
+        verdict,
+        obligations,
+        incomplete,
+        proof_cache,
+        mapping_payload,
+        invariant_payload,
+        lean_inputs,
+        proof_ir=proof_ir,
+        solver_evidence=solver_evidence,
+    )
     if verdict == "pass" and not lean_summary["final_pass_allowed"]:
         incomplete.append(
             _incomplete_record(
@@ -15312,14 +17301,46 @@ def _write_report(
             )
         )
         verdict = "incomplete"
-        lean_summary = _lean_summary(out, verdict, obligations, incomplete, proof_cache, mapping_payload, invariant_payload, lean_inputs)
+        counts = _obligation_counts(obligations, failures, incomplete)
+        write_json(out / "obligations.json", {"format": "stage-a-obligations-v1", "obligations": obligations, "counts": counts})
+        proof_ir = write_proof_ir(
+            out=out,
+            original=original,
+            candidate=candidate,
+            model_description=model_description,
+            model_hash=model_hash,
+            loader_facts=_proof_ir_loader_facts(original_bin, candidate_bin, layout),
+            layout=layout,
+            obligations=obligations,
+            failures=failures,
+            incomplete=incomplete,
+            proof_cache=proof_cache,
+            proof_cache_index=proof_cache_index,
+            solver_evidence=solver_evidence,
+            mapping_payload=mapping_payload,
+            invariant_payload=invariant_payload,
+            mapping_contract=mapping_contract,
+            abi_contract=abi_contract,
+            deprecated_aliases=DEPRECATED_PROOF_RULE_ALIASES,
+        )
+        lean_summary = _lean_summary(
+            out,
+            verdict,
+            obligations,
+            incomplete,
+            proof_cache,
+            mapping_payload,
+            invariant_payload,
+            lean_inputs,
+            proof_ir=proof_ir,
+            solver_evidence=solver_evidence,
+        )
 
     for failure in failures:
         _write_failure_artifacts(out, failure)
     for blocker in incomplete:
         _write_incomplete_artifact(out, blocker)
 
-    counts = _obligation_counts(obligations, failures, incomplete)
     verdict_payload = {
         "format": "stage-a-verdict-v1",
         "verdict": verdict,
@@ -15336,13 +17357,12 @@ def _write_report(
             "local_engine": "stage-a-local-symbolic-x86-v1",
             "smt": "z3_optional_fail_closed",
             "lean": lean_summary,
+            "proof_ir": proof_ir,
+            "solver_evidence": solver_evidence,
             "fail_closed": True,
         },
     }
-    write_json(out / "layout.json", layout)
-    write_json(out / "obligations.json", {"format": "stage-a-obligations-v1", "obligations": obligations, "counts": counts})
     write_json(out / "verdict.json", verdict_payload)
-    write_json(out / "proof-cache" / "index.json", {"format": "stage-a-proof-cache-index-v1", "entries": proof_cache})
     return verdict_payload
 
 
@@ -15371,26 +17391,113 @@ def _lean_summary(
     mapping_payload: Any,
     invariant_payload: Any,
     lean_inputs: tuple[Path, ...],
+    *,
+    proof_ir: dict[str, Any],
+    solver_evidence: dict[str, Any],
 ) -> dict[str, Any]:
     lean_available = shutil.which("lean") is not None
     closed_statuses = {"proved", "waived_noncode"}
     closed = verdict == "pass" and not incomplete and all(item.get("status") in closed_statuses for item in obligations)
+    proof_ir_present = proof_ir.get("status") == "present" and bool(proof_ir.get("sha256"))
+    proof_ir_model_hash_bound = _proof_ir_model_hash_bound(proof_ir)
+    proof_ir_target_profile_closed = _proof_ir_target_profile_closed(proof_ir)
+    proof_ir_loader_frontend_profile_closed = _proof_ir_loader_frontend_profile_closed(proof_ir)
+    proof_ir_closure_certificate_closed = _proof_ir_closure_certificate_closed(proof_ir)
+    proof_ir_loader_profile_closed = _proof_ir_loader_profile_closed(proof_ir)
+    proof_ir_coverage_profile_closed = _proof_ir_coverage_profile_closed(proof_ir)
+    proof_ir_proof_cache_profile_closed = _proof_ir_proof_cache_profile_closed(proof_ir)
+    proof_ir_proof_rule_profile_closed = _proof_ir_proof_rule_profile_closed(proof_ir)
+    proof_ir_mapping_profile_closed = _proof_ir_mapping_profile_closed(proof_ir)
+    proof_ir_cfg_profile_closed = _proof_ir_cfg_profile_closed(proof_ir)
+    proof_ir_reachability_profile_closed = _proof_ir_reachability_profile_closed(proof_ir)
+    proof_ir_abi_profile_closed = _proof_ir_abi_profile_closed(proof_ir)
+    proof_ir_environment_profile_closed = _proof_ir_environment_profile_closed(proof_ir)
+    proof_ir_instruction_profile_closed = _proof_ir_instruction_profile_closed(proof_ir)
+    proof_ir_semantic_profile_closed = _proof_ir_semantic_profile_closed(proof_ir)
+    proof_ir_solver_evidence_profile_closed = _proof_ir_solver_evidence_profile_closed(proof_ir)
+    proof_ir_solver_backend_profile_closed = _proof_ir_solver_backend_profile_closed(proof_ir)
+    proof_ir_trusted_boundary_profile_closed = _proof_ir_trusted_boundary_profile_closed(proof_ir)
+    proof_ir_profile_manifest_closed = _proof_ir_profile_manifest_closed(proof_ir)
+    solver_evidence_closed = solver_evidence.get("status") == "satisfied"
+    proof_evidence_binding_closed = _proof_evidence_binding_closed(
+        proof_ir=proof_ir,
+        solver_evidence=solver_evidence,
+        obligations=obligations,
+        proof_cache=proof_cache,
+    )
     unchecked_blockers = [
         item
         for item in incomplete
         if item.get("category") in {"missing_invariant", "unchecked_assumption", "lean_global_summary_unchecked"}
     ]
     lean_input_summary = _copy_lean_inputs(out / "lean", lean_inputs)
-    _write_lean_files(out, verdict, closed, not unchecked_blockers, obligations, proof_cache, lean_input_summary["modules"])
+    _write_lean_files(
+        out,
+        verdict,
+        closed,
+        not unchecked_blockers,
+        obligations,
+        proof_cache,
+        lean_input_summary["modules"],
+        proof_ir=proof_ir,
+        solver_evidence=solver_evidence,
+        proof_ir_present=proof_ir_present,
+        proof_ir_model_hash_bound=proof_ir_model_hash_bound,
+        proof_ir_target_profile_closed=proof_ir_target_profile_closed,
+        proof_ir_loader_frontend_profile_closed=proof_ir_loader_frontend_profile_closed,
+        proof_ir_closure_certificate_closed=proof_ir_closure_certificate_closed,
+        proof_ir_loader_profile_closed=proof_ir_loader_profile_closed,
+        proof_ir_coverage_profile_closed=proof_ir_coverage_profile_closed,
+        proof_ir_proof_cache_profile_closed=proof_ir_proof_cache_profile_closed,
+        proof_ir_proof_rule_profile_closed=proof_ir_proof_rule_profile_closed,
+        proof_ir_mapping_profile_closed=proof_ir_mapping_profile_closed,
+        proof_ir_cfg_profile_closed=proof_ir_cfg_profile_closed,
+        proof_ir_reachability_profile_closed=proof_ir_reachability_profile_closed,
+        proof_ir_abi_profile_closed=proof_ir_abi_profile_closed,
+        proof_ir_environment_profile_closed=proof_ir_environment_profile_closed,
+        proof_ir_instruction_profile_closed=proof_ir_instruction_profile_closed,
+        proof_ir_semantic_profile_closed=proof_ir_semantic_profile_closed,
+        proof_ir_solver_evidence_profile_closed=proof_ir_solver_evidence_profile_closed,
+        proof_ir_solver_backend_profile_closed=proof_ir_solver_backend_profile_closed,
+        proof_ir_trusted_boundary_profile_closed=proof_ir_trusted_boundary_profile_closed,
+        proof_ir_profile_manifest_closed=proof_ir_profile_manifest_closed,
+        solver_evidence_closed=solver_evidence_closed,
+        proof_evidence_binding_closed=proof_evidence_binding_closed,
+    )
     lean_check = _run_lean_check(out / "lean", lean_input_summary["relative_paths"])
     unchecked_markers = _lean_unchecked_markers(out / "lean")
     lean_input_errors = lean_input_summary["errors"]
+    lean_source_artifacts = _lean_source_artifacts_manifest(out / "lean", lean_input_summary)
+    lean_source_artifacts_closed = lean_source_artifacts.get("status") == "satisfied"
     final_pass_allowed = bool(
         verdict == "pass"
         and lean_available
         and closed
+        and proof_ir_present
+        and proof_ir_model_hash_bound
+        and proof_ir_target_profile_closed
+        and proof_ir_loader_frontend_profile_closed
+        and proof_ir_closure_certificate_closed
+        and proof_ir_loader_profile_closed
+        and proof_ir_coverage_profile_closed
+        and proof_ir_proof_cache_profile_closed
+        and proof_ir_proof_rule_profile_closed
+        and proof_ir_mapping_profile_closed
+        and proof_ir_cfg_profile_closed
+        and proof_ir_reachability_profile_closed
+        and proof_ir_abi_profile_closed
+        and proof_ir_environment_profile_closed
+        and proof_ir_instruction_profile_closed
+        and proof_ir_semantic_profile_closed
+        and proof_ir_solver_evidence_profile_closed
+        and proof_ir_solver_backend_profile_closed
+        and proof_ir_trusted_boundary_profile_closed
+        and proof_ir_profile_manifest_closed
+        and solver_evidence_closed
+        and proof_evidence_binding_closed
         and not unchecked_blockers
         and not lean_input_errors
+        and lean_source_artifacts_closed
         and lean_check["status"] == "checked"
         and not unchecked_markers
     )
@@ -15406,24 +17513,132 @@ def _lean_summary(
     elif lean_input_errors:
         blocker = "supplemental Lean input files could not be copied into the proof report"
         next_action = "fix or remove missing supplemental Lean input paths"
+    elif not lean_source_artifacts_closed:
+        blocker = "generated or supplemental Lean source artifacts are missing or unhashable"
+        next_action = "rerun stage-a-validate so all generated and supplemental Lean source artifacts are present in the report"
     elif unchecked_markers:
         blocker = "generated Lean artifacts contain unchecked proof markers"
         next_action = "remove sorry/axiom/admit/unsafe proof markers before accepting a final pass"
+    elif not proof_ir_present:
+        blocker = "generated Stage A proof IR is missing or unhashable"
+        next_action = "regenerate the validation report with proof-ir.json enabled"
+    elif not proof_ir_model_hash_bound:
+        blocker = "Stage A proof IR model hash is not bound to the canonical model payload"
+        next_action = "rerun stage-a-validate so proof-ir.json uses the selected model payload and canonical model hash"
+    elif not proof_ir_target_profile_closed:
+        blocker = "Stage A proof IR target profile is incomplete"
+        next_action = "inspect proof-ir.json target_profile and fix model, schema, loader, ABI, or environment inconsistencies"
+    elif not proof_ir_loader_frontend_profile_closed:
+        blocker = "Stage A proof IR loader frontend profile is incomplete"
+        next_action = "inspect proof-ir.json loader_frontend_profile and fix loader frontend, side fact, executable span, or profile-binding gaps"
+    elif not proof_ir_closure_certificate_closed:
+        blocker = "Stage A proof IR closure certificate is incomplete"
+        next_action = "inspect proof-ir.json closure_certificate and close open obligations, coverage, proof-cache, or solver-evidence gaps"
+    elif not proof_ir_loader_profile_closed:
+        blocker = "Stage A proof IR loader profile is incomplete"
+        next_action = "inspect proof-ir.json loader_profile and fix model, PE loader, import, relocation, or layout gaps"
+    elif not proof_ir_coverage_profile_closed:
+        blocker = "Stage A proof IR executable coverage profile is incomplete"
+        next_action = "inspect proof-ir.json coverage_profile and classify unmapped executable bytes or fix coverage status gaps"
+    elif not proof_ir_proof_cache_profile_closed:
+        blocker = "Stage A proof IR proof-cache profile is incomplete"
+        next_action = "inspect proof-ir.json proof_cache_profile and fix missing, unreadable, stale, or duplicate proof-cache artifacts"
+    elif not proof_ir_proof_rule_profile_closed:
+        blocker = "Stage A proof IR proof-rule profile is incomplete"
+        next_action = "inspect proof-ir.json proof_rule_profile and fix unknown proof rules, alias normalization, or rule-binding gaps"
+    elif not proof_ir_mapping_profile_closed:
+        blocker = "Stage A proof IR mapping profile is incomplete"
+        next_action = "inspect proof-ir.json mapping_profile and fix malformed block-map entries, unchecked invariants, unknown root kinds, or mapping proof-rule gaps"
+    elif not proof_ir_cfg_profile_closed:
+        blocker = "Stage A proof IR CFG profile is incomplete"
+        next_action = "inspect proof-ir.json cfg_profile and fix open CFG, block-structure, or indirect-target gaps"
+    elif not proof_ir_reachability_profile_closed:
+        blocker = "Stage A proof IR reachability profile is incomplete"
+        next_action = "inspect proof-ir.json reachability_profile and fix open CFG, root, or direct-edge reachability gaps"
+    elif not proof_ir_abi_profile_closed:
+        blocker = "Stage A proof IR ABI/callsite profile is incomplete"
+        next_action = "inspect proof-ir.json abi_profile and fix missing ABI functions, callsites, stack/register ABI, varargs, hidden sret/out-param, or function-pointer target gaps"
+    elif not proof_ir_environment_profile_closed:
+        blocker = "Stage A proof IR environment profile is incomplete"
+        next_action = "inspect proof-ir.json environment_profile and fix external-environment, import-thunk, or import-signature gaps"
+    elif not proof_ir_instruction_profile_closed:
+        blocker = "Stage A proof IR instruction-semantics profile is incomplete"
+        next_action = "inspect proof-ir.json instruction_profile and fix decode status, hash, or instruction-semantics gaps"
+    elif not proof_ir_semantic_profile_closed:
+        blocker = "Stage A proof IR semantic-observable profile is incomplete"
+        next_action = "inspect proof-ir.json semantic_profile and fix unknown semantic claims, trusted boundaries, or solver-claim pairings"
+    elif not proof_ir_solver_evidence_profile_closed:
+        blocker = "Stage A proof IR solver-evidence profile is incomplete"
+        next_action = "inspect proof-ir.json solver_evidence_profile and fix missing query hashes, incomplete solver evidence, or solver-claim gaps"
+    elif not proof_ir_solver_backend_profile_closed:
+        blocker = "Stage A proof IR solver-backend profile is incomplete"
+        next_action = "inspect proof-ir.json solver_backend_profile and fix missing solver backend identity, hash, or trusted-boundary gaps"
+    elif not proof_ir_trusted_boundary_profile_closed:
+        blocker = "Stage A proof IR trusted-boundary profile is incomplete"
+        next_action = "inspect proof-ir.json trusted_boundary_profile and fix model boundary names, record hashes, or unapproved trusted-boundary gaps"
+    elif not proof_ir_profile_manifest_closed:
+        blocker = "Stage A proof IR profile manifest is incomplete"
+        next_action = "inspect proof-ir.json profile_manifest and fix missing, stale, or unchecked proof-family profiles"
+    elif not solver_evidence_closed:
+        blocker = "Stage A solver/proof evidence inventory is incomplete"
+        next_action = "regenerate the proof cache and solver-evidence artifacts from current obligations"
+    elif not proof_evidence_binding_closed:
+        blocker = "Stage A proof IR and solver-evidence inventory are not hash-bound to the generated proof cache"
+        next_action = "regenerate proof-ir.json, proof-cache/index.json, and solver-evidence artifacts from the same validation run"
     elif unchecked_blockers:
         blocker = "unchecked invariant or proof assumptions remain"
         next_action = "replace assumptions with checked invariant lemmas"
     else:
         blocker = "obligation statuses are not all closed"
         next_action = "close failed, incomplete, unmapped, or out-of-model obligations before accepting a final pass"
+    lean_inputs_payload = {
+        "mapping": mapping_payload,
+        "invariants": invariant_payload,
+        "lean_inputs": lean_input_summary,
+    }
+    lean_inputs_path = out / "lean" / "inputs.json"
+    write_json(lean_inputs_path, lean_inputs_payload)
+    lean_inputs_artifact = {
+        "path": "inputs.json",
+        "sha256": sha256_file(lean_inputs_path),
+        "canonical_sha256": _canonical_json_sha256(lean_inputs_payload),
+    }
     summary = {
         "available": lean_available,
         "checked": lean_check["status"] == "checked",
         "global_soundness_checked": final_pass_allowed,
         "final_pass_allowed": final_pass_allowed,
-        "generated_stubs": ["StageA/Model.lean", "StageA/Obligations.lean"],
+        "generated_stubs": list(LEAN_GENERATED_SOURCE_PATHS),
+        "source_artifacts": lean_source_artifacts,
         "final_pass_has_unchecked_lean_assumptions": verdict == "pass" and not final_pass_allowed,
         "unchecked_blockers": unchecked_blockers,
         "unchecked_markers": unchecked_markers,
+        "proof_ir": proof_ir,
+        "solver_evidence": solver_evidence,
+        "input_artifact": lean_inputs_artifact,
+        "proof_ir_checked": proof_ir_present and lean_check["status"] == "checked",
+        "proof_ir_model_hash_bound_checked": proof_ir_model_hash_bound and lean_check["status"] == "checked",
+        "proof_ir_target_profile_checked": proof_ir_target_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_loader_frontend_profile_checked": proof_ir_loader_frontend_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_closure_certificate_checked": proof_ir_closure_certificate_closed and lean_check["status"] == "checked",
+        "proof_ir_loader_profile_checked": proof_ir_loader_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_coverage_profile_checked": proof_ir_coverage_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_proof_cache_profile_checked": proof_ir_proof_cache_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_proof_rule_profile_checked": proof_ir_proof_rule_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_mapping_profile_checked": proof_ir_mapping_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_cfg_profile_checked": proof_ir_cfg_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_reachability_profile_checked": proof_ir_reachability_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_abi_profile_checked": proof_ir_abi_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_environment_profile_checked": proof_ir_environment_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_instruction_profile_checked": proof_ir_instruction_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_semantic_profile_checked": proof_ir_semantic_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_solver_evidence_profile_checked": proof_ir_solver_evidence_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_solver_backend_profile_checked": proof_ir_solver_backend_profile_closed and lean_check["status"] == "checked",
+        "proof_ir_trusted_boundary_profile_checked": proof_ir_trusted_boundary_profile_closed
+        and lean_check["status"] == "checked",
+        "proof_ir_profile_manifest_checked": proof_ir_profile_manifest_closed and lean_check["status"] == "checked",
+        "solver_evidence_checked": solver_evidence_closed and lean_check["status"] == "checked",
+        "proof_evidence_binding_checked": proof_evidence_binding_closed and lean_check["status"] == "checked",
         "supplemental_inputs": lean_input_summary,
         "closed_obligations": closed,
         "lean_check": lean_check,
@@ -15431,15 +17646,48 @@ def _lean_summary(
         "next_action": next_action,
     }
     write_json(out / "lean" / "summary.json", summary)
-    write_json(
-        out / "lean" / "inputs.json",
-        {
-            "mapping": mapping_payload,
-            "invariants": invariant_payload,
-            "lean_inputs": lean_input_summary,
-        },
-    )
     return summary
+
+
+def _lean_source_artifacts_manifest(lean_dir: Path, lean_input_summary: dict[str, Any]) -> dict[str, Any]:
+    supplemental_paths = [
+        str(item.get("relative_path"))
+        for item in lean_input_summary.get("copied", [])
+        if isinstance(item, dict) and isinstance(item.get("relative_path"), str)
+    ]
+    generated = _lean_source_artifact_entries(lean_dir, LEAN_GENERATED_SOURCE_PATHS)
+    supplemental = _lean_source_artifact_entries(lean_dir, supplemental_paths)
+    return {
+        "format": "stage-a-lean-source-artifacts-v1",
+        "generated": generated,
+        "supplemental": supplemental,
+        "counts": {
+            "generated": len(generated),
+            "supplemental": len(supplemental),
+            "missing": sum(1 for item in generated + supplemental if not item.get("exists")),
+        },
+        "status": "satisfied" if all(item.get("exists") and _is_sha256_hex(item.get("sha256")) for item in generated + supplemental) else "incomplete",
+    }
+
+
+def _lean_source_artifact_entries(lean_dir: Path, relative_paths: Iterable[str]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for relative_path in relative_paths:
+        entry = {"path": relative_path}
+        path = lean_dir / relative_path
+        try:
+            stat = path.stat()
+            entry.update(
+                {
+                    "exists": path.is_file(),
+                    "bytes": stat.st_size,
+                    "sha256": sha256_file(path) if path.is_file() else None,
+                }
+            )
+        except OSError as exc:
+            entry.update({"exists": False, "sha256": None, "error": str(exc)})
+        entries.append(entry)
+    return entries
 
 
 def _write_lean_files(
@@ -15450,6 +17698,31 @@ def _write_lean_files(
     obligations: list[dict[str, Any]],
     proof_cache: list[dict[str, Any]],
     lean_input_modules: list[str],
+    *,
+    proof_ir: dict[str, Any],
+    solver_evidence: dict[str, Any],
+    proof_ir_present: bool,
+    proof_ir_model_hash_bound: bool,
+    proof_ir_target_profile_closed: bool,
+    proof_ir_loader_frontend_profile_closed: bool,
+    proof_ir_closure_certificate_closed: bool,
+    proof_ir_loader_profile_closed: bool,
+    proof_ir_coverage_profile_closed: bool,
+    proof_ir_proof_cache_profile_closed: bool,
+    proof_ir_proof_rule_profile_closed: bool,
+    proof_ir_mapping_profile_closed: bool,
+    proof_ir_cfg_profile_closed: bool,
+    proof_ir_reachability_profile_closed: bool,
+    proof_ir_abi_profile_closed: bool,
+    proof_ir_environment_profile_closed: bool,
+    proof_ir_instruction_profile_closed: bool,
+    proof_ir_semantic_profile_closed: bool,
+    proof_ir_solver_evidence_profile_closed: bool,
+    proof_ir_solver_backend_profile_closed: bool,
+    proof_ir_trusted_boundary_profile_closed: bool,
+    proof_ir_profile_manifest_closed: bool,
+    solver_evidence_closed: bool,
+    proof_evidence_binding_closed: bool,
 ) -> None:
     (out / "lean" / "StageA").mkdir(parents=True, exist_ok=True)
     (out / "lean" / "StageA" / "Model.lean").write_text(
@@ -15476,9 +17749,1167 @@ def _write_lean_files(
         "  verdict : Verdict\n"
         "  obligationCount : Nat\n"
         "  proofCacheEntries : Nat\n"
+        "  solverEvidenceEntries : Nat\n"
         "  closed : Bool\n"
         "  noUncheckedAssumptions : Bool\n"
+        "  proofIrPresent : Bool\n"
+        "  proofIrModelHashBound : Bool\n"
+        "  proofIrTargetProfileClosed : Bool\n"
+        "  proofIrLoaderFrontendProfileClosed : Bool\n"
+        "  proofIrClosureCertificateClosed : Bool\n"
+        "  proofIrLoaderProfileClosed : Bool\n"
+        "  proofIrCoverageProfileClosed : Bool\n"
+        "  proofIrProofCacheProfileClosed : Bool\n"
+        "  proofIrProofRuleProfileClosed : Bool\n"
+        "  proofIrMappingProfileClosed : Bool\n"
+        "  proofIrCfgProfileClosed : Bool\n"
+        "  proofIrReachabilityProfileClosed : Bool\n"
+        "  proofIrAbiProfileClosed : Bool\n"
+        "  proofIrEnvironmentProfileClosed : Bool\n"
+        "  proofIrInstructionProfileClosed : Bool\n"
+        "  proofIrSemanticProfileClosed : Bool\n"
+        "  proofIrSolverEvidenceProfileClosed : Bool\n"
+        "  proofIrSolverBackendProfileClosed : Bool\n"
+        "  proofIrTrustedBoundaryProfileClosed : Bool\n"
+        "  proofIrProfileManifestClosed : Bool\n"
+        "  solverEvidenceClosed : Bool\n"
+        "  proofEvidenceBindingClosed : Bool\n"
         "deriving Repr\n\n"
+        "end StageA\n",
+        encoding="utf-8",
+    )
+    (out / "lean" / "StageA" / "ProofIR.lean").write_text(
+        "-- Generated Stage A proof IR closure checker.\n"
+        "import StageA.Model\n\n"
+        "namespace StageA\n\n"
+        "structure RuntimeProofCounts where\n"
+        "  obligations : Nat\n"
+        "  proofCacheEntries : Nat\n"
+        "  solverEvidenceEntries : Nat\n"
+        "  proofBackedObligations : Nat\n"
+        "deriving Repr\n\n"
+        "structure ProofIrCounts where\n"
+        "  obligations : Nat\n"
+        "  proofCacheEntries : Nat\n"
+        "  solverEvidenceEntries : Nat\n"
+        "  blockSemanticsRecords : Nat\n"
+        "  instructionSemanticsRecords : Nat\n"
+        "  proofArtifactBindingRecords : Nat\n"
+        "  semanticObservableRecords : Nat\n"
+        "  solverClaimRecords : Nat\n"
+        "  trustedBoundaryRecords : Nat\n"
+        "  proofCompositionRecords : Nat\n"
+        "deriving Repr\n\n"
+        "structure ClosureCertificateCounts where\n"
+        "  obligations : Nat\n"
+        "  openObligations : Nat\n"
+        "  failures : Nat\n"
+        "  incomplete : Nat\n"
+        "  proofCacheEntries : Nat\n"
+        "  solverEvidenceEntries : Nat\n"
+        "  proofBackedObligations : Nat\n"
+        "  proofBackingGaps : Nat\n"
+        "  proofCacheEvidenceGaps : Nat\n"
+        "  proofCacheProfileGaps : Nat\n"
+        "  solverBackendProfileGaps : Nat\n"
+        "  solverUnknownObligationGaps : Nat\n"
+        "  proofArtifactBindings : Nat\n"
+        "  evidenceBindingGaps : Nat\n"
+        "  semanticObservables : Nat\n"
+        "  semanticObservableGaps : Nat\n"
+        "  solverClaims : Nat\n"
+        "  solverClaimGaps : Nat\n"
+        "  trustedBoundaries : Nat\n"
+        "  trustedBoundaryGaps : Nat\n"
+        "  trustedBoundaryProfileGaps : Nat\n"
+        "  profileManifestGaps : Nat\n"
+        "  proofCompositionRecords : Nat\n"
+        "  proofCompositionGaps : Nat\n"
+        "  blockSemanticsRecords : Nat\n"
+        "  blockSemanticsGaps : Nat\n"
+        "  blockSemanticsUnknownObligationGaps : Nat\n"
+        "  decodedInstructionBlockSemantics : Nat\n"
+        "  instructionSemanticsRecords : Nat\n"
+        "  instructionSemanticsGaps : Nat\n"
+        "  mappingProfileGaps : Nat\n"
+        "  cfgProfileGaps : Nat\n"
+        "  reachabilityProfileGaps : Nat\n"
+        "  abiProfileGaps : Nat\n"
+        "  environmentProfileGaps : Nat\n"
+        "deriving Repr\n\n"
+        "structure ClosureCertificateChecks where\n"
+        "  obligationsClosed : Bool\n"
+        "  noFailures : Bool\n"
+        "  noIncompleteRecords : Bool\n"
+        "  coverageSatisfied : Bool\n"
+        "  coverageProfileSatisfied : Bool\n"
+        "  proofCacheProfileSatisfied : Bool\n"
+        "  solverBackendProfileSatisfied : Bool\n"
+        "  proofRuleProfileSatisfied : Bool\n"
+        "  mappingProfileSatisfied : Bool\n"
+        "  cfgProfileSatisfied : Bool\n"
+        "  reachabilityProfileSatisfied : Bool\n"
+        "  abiProfileSatisfied : Bool\n"
+        "  environmentProfileSatisfied : Bool\n"
+        "  solverEvidenceSatisfied : Bool\n"
+        "  proofCacheIndexHashed : Bool\n"
+        "  solverEvidenceHashed : Bool\n"
+        "  solverEvidenceIndexHashed : Bool\n"
+        "  proofCacheEvidenceCountMatches : Bool\n"
+        "  provedBlockObligationsHaveProofCache : Bool\n"
+        "  provedBlockObligationsHaveSolverEvidence : Bool\n"
+        "  proofCacheEntriesHaveSolverEvidence : Bool\n"
+        "  solverEvidenceEntriesBindKnownObligations : Bool\n"
+        "  proofArtifactBindingsSatisfied : Bool\n"
+        "  proofArtifactsBindSameObligations : Bool\n"
+        "  semanticObservablesSatisfied : Bool\n"
+        "  provedBlockObligationsHaveSemanticObservables : Bool\n"
+        "  solverClaimsSatisfied : Bool\n"
+        "  trustedSolverClaimsHaveQueries : Bool\n"
+        "  trustedBoundariesSatisfied : Bool\n"
+        "  trustedBoundaryProfileSatisfied : Bool\n"
+        "  profileManifestSatisfied : Bool\n"
+        "  semanticClaimsUseAllowedTrustedBoundaries : Bool\n"
+        "  proofCompositionSatisfied : Bool\n"
+        "  provedBlockObligationsHaveCompositionRecords : Bool\n"
+        "  blockSemanticsSatisfied : Bool\n"
+        "  provedBlockObligationsHaveBlockSemantics : Bool\n"
+        "  blockSemanticsRecordsBindKnownObligations : Bool\n"
+        "  instructionSemanticsSatisfied : Bool\n"
+        "  decodedBlockSemanticsHaveInstructionSemantics : Bool\n"
+        "deriving Repr\n\n"
+        "structure LoaderProfile where\n"
+        "  modelBitness : Nat\n"
+        "  originalBitness : Nat\n"
+        "  candidateBitness : Nat\n"
+        "  originalSections : Nat\n"
+        "  candidateSections : Nat\n"
+        "  originalExecutableSections : Nat\n"
+        "  candidateExecutableSections : Nat\n"
+        "  originalImports : Nat\n"
+        "  candidateImports : Nat\n"
+        "  originalRelocationBlocks : Nat\n"
+        "  candidateRelocationBlocks : Nat\n"
+        "  originalRelocationEntries : Nat\n"
+        "  candidateRelocationEntries : Nat\n"
+        "  layoutIssues : Nat\n"
+        "  layoutBlockingIssues : Nat\n"
+        "  originalHeaderGaps : Nat\n"
+        "  candidateHeaderGaps : Nat\n"
+        "  originalSectionGaps : Nat\n"
+        "  candidateSectionGaps : Nat\n"
+        "  originalImportGaps : Nat\n"
+        "  candidateImportGaps : Nat\n"
+        "  originalRelocationGaps : Nat\n"
+        "  candidateRelocationGaps : Nat\n"
+        "  binarySignatureMismatches : Nat\n"
+        "  imageBaseMismatches : Nat\n"
+        "  loaderFormatMatchesModel : Bool\n"
+        "  loaderNameMatchesModel : Bool\n"
+        "  originalFactsPresent : Bool\n"
+        "  candidateFactsPresent : Bool\n"
+        "  originalModelMatches : Bool\n"
+        "  candidateModelMatches : Bool\n"
+        "  layoutCompatible : Bool\n"
+        "  noBlockingLayoutIssues : Bool\n"
+        "  headersPresent : Bool\n"
+        "  sectionsPresent : Bool\n"
+        "  executableSectionsPresent : Bool\n"
+        "  importsMatch : Bool\n"
+        "  importsPresent : Bool\n"
+        "  relocationsClosed : Bool\n"
+        "  binarySignaturesMatch : Bool\n"
+        "deriving Repr\n\n"
+        "structure CoverageProfile where\n"
+        "  coverageObligations : Nat\n"
+        "  blockEquivalenceObligations : Nat\n"
+        "  provedBlockEquivalenceObligations : Nat\n"
+        "  waivedNoncodeObligations : Nat\n"
+        "  unmappedCoverageObligations : Nat\n"
+        "  failedCoverageObligations : Nat\n"
+        "  incompleteCoverageObligations : Nat\n"
+        "  outOfModelCoverageObligations : Nat\n"
+        "  unknownCoverageObligationStatuses : Nat\n"
+        "  openCoverageObligations : Nat\n"
+        "  coverageGaps : Nat\n"
+        "  originalCoverageGaps : Nat\n"
+        "  candidateCoverageGaps : Nat\n"
+        "  coverageStatusSatisfied : Bool\n"
+        "  coverageCountsMatch : Bool\n"
+        "  coverageStatusCountsMatch : Bool\n"
+        "  coverageObligationsClassified : Bool\n"
+        "  coverageGapsClosed : Bool\n"
+        "  unknownStatusesClosed : Bool\n"
+        "  blockEquivalencePresent : Bool\n"
+        "  provedBlockEquivalenceWithinTotal : Bool\n"
+        "deriving Repr\n\n"
+        "structure ProofCacheProfile where\n"
+        "  proofCacheEntries : Nat\n"
+        "  proofCacheIndexEntries : Nat\n"
+        "  proofCacheFileMissing : Nat\n"
+        "  proofCacheFileUnreadable : Nat\n"
+        "  proofCachePayloadHashMismatches : Nat\n"
+        "  proofCacheIndexFileMissing : Nat\n"
+        "  proofCacheIndexFileHashMismatches : Nat\n"
+        "  proofCacheIndexPayloadMismatches : Nat\n"
+        "  proofCacheIndexEntryMismatches : Nat\n"
+        "  duplicateProofCachePaths : Nat\n"
+        "  proofCacheGaps : Nat\n"
+        "  proofCacheIndexEntriesMatch : Bool\n"
+        "  proofCacheIndexFilePresent : Bool\n"
+        "  proofCacheIndexFileHashMatches : Bool\n"
+        "  proofCacheIndexPayloadMatches : Bool\n"
+        "  proofCacheFilesPresent : Bool\n"
+        "  proofCacheFilesReadable : Bool\n"
+        "  proofCachePayloadHashesMatch : Bool\n"
+        "  proofCachePathsUnique : Bool\n"
+        "  proofCacheGapsClosed : Bool\n"
+        "deriving Repr\n\n"
+        "structure ProofRuleProfile where\n"
+        "  modelRules : Nat\n"
+        "  obligations : Nat\n"
+        "  obligationsWithRules : Nat\n"
+        "  unknownObligationRules : Nat\n"
+        "  blockSemanticsRecords : Nat\n"
+        "  blockSemanticsRecordsWithRules : Nat\n"
+        "  unknownBlockSemanticsRules : Nat\n"
+        "  solverEvidenceEntries : Nat\n"
+        "  solverEvidenceEntriesWithRules : Nat\n"
+        "  unknownSolverEvidenceRules : Nat\n"
+        "  deprecatedAliasUses : Nat\n"
+        "  unnormalizedDeprecatedAliasUses : Nat\n"
+        "  artifactRuleBindingGaps : Nat\n"
+        "  modelRulesPresent : Bool\n"
+        "  obligationRulesPresent : Bool\n"
+        "  obligationRulesKnown : Bool\n"
+        "  blockSemanticsRulesPresent : Bool\n"
+        "  blockSemanticsRulesKnown : Bool\n"
+        "  solverEvidenceRulesPresent : Bool\n"
+        "  solverEvidenceRulesKnown : Bool\n"
+        "  deprecatedAliasesNormalized : Bool\n"
+        "  artifactRuleBindingsClosed : Bool\n"
+        "deriving Repr\n\n"
+        "structure MappingProfile where\n"
+        "  blocks : Nat\n"
+        "  codeBlocks : Nat\n"
+        "  nonCodeBlocks : Nat\n"
+        "  reachableBlocks : Nat\n"
+        "  uncheckedInvariantBlocks : Nat\n"
+        "  rootEntries : Nat\n"
+        "  checkedRootEntries : Nat\n"
+        "  unknownCheckedRootEntries : Nat\n"
+        "  mappingProofs : Nat\n"
+        "  checkedMappingProofs : Nat\n"
+        "  uncheckedMappingProofs : Nat\n"
+        "  deprecatedMappingProofRules : Nat\n"
+        "  unknownMappingProofRules : Nat\n"
+        "  waivers : Nat\n"
+        "  malformedWaivers : Nat\n"
+        "  issues : Nat\n"
+        "  failedIssues : Nat\n"
+        "  incompleteIssues : Nat\n"
+        "  malformedBlocks : Nat\n"
+        "  mappingGaps : Nat\n"
+        "  mappingContractNotApplicable : Bool\n"
+        "  mappingContractPresent : Bool\n"
+        "  mappingStatusSatisfied : Bool\n"
+        "  mappingEntriesPresent : Bool\n"
+        "  mappingIssuesClosed : Bool\n"
+        "  mappingRangesWellFormed : Bool\n"
+        "  mappingInvariantsChecked : Bool\n"
+        "  checkedRootsKnown : Bool\n"
+        "  mappingProofRulesKnown : Bool\n"
+        "  mappingProofAliasesNormalized : Bool\n"
+        "  waiverRangesWellFormed : Bool\n"
+        "  mappingGapsClosed : Bool\n"
+        "deriving Repr\n\n"
+        "structure CfgProfile where\n"
+        "  blockEquivalenceObligations : Nat\n"
+        "  provedBlockEquivalenceObligations : Nat\n"
+        "  blockStructureObligations : Nat\n"
+        "  openBlockStructureObligations : Nat\n"
+        "  directCfgEdgeObligations : Nat\n"
+        "  provedDirectCfgEdgeObligations : Nat\n"
+        "  openDirectCfgEdgeObligations : Nat\n"
+        "  directCfgTakenEdges : Nat\n"
+        "  directCfgFallthroughEdges : Nat\n"
+        "  directCfgJumpEdges : Nat\n"
+        "  directCfgCallEdges : Nat\n"
+        "  directCfgUnknownEdgeKinds : Nat\n"
+        "  provedDirectCfgEdgesWithSourceBlock : Nat\n"
+        "  provedDirectCfgEdgesWithTargetBlock : Nat\n"
+        "  provedDirectCfgEdgesWithOriginalEvidence : Nat\n"
+        "  provedDirectCfgEdgesWithCandidateEvidence : Nat\n"
+        "  indirectCfgTargetObligations : Nat\n"
+        "  provedIndirectCfgTargetObligations : Nat\n"
+        "  openIndirectCfgTargetObligations : Nat\n"
+        "  provedIndirectCfgTargetsWithSourceBlock : Nat\n"
+        "  provedIndirectCfgTargetsWithSignature : Nat\n"
+        "  provedIndirectCfgTargetsWithOriginalEvidence : Nat\n"
+        "  provedIndirectCfgTargetsWithCandidateEvidence : Nat\n"
+        "  indirectCfgTargetsWithUnknownProofRule : Nat\n"
+        "  cfgGaps : Nat\n"
+        "  blockStructureObligationsClosed : Bool\n"
+        "  directCfgEdgesClosed : Bool\n"
+        "  directCfgEdgeKindsKnown : Bool\n"
+        "  directCfgEdgeMetadataPresent : Bool\n"
+        "  directCfgEdgeEvidencePresent : Bool\n"
+        "  directCfgEdgesBindProvedBlocks : Bool\n"
+        "  indirectCfgTargetsClosed : Bool\n"
+        "  indirectCfgTargetMetadataPresent : Bool\n"
+        "  indirectCfgTargetEvidencePresent : Bool\n"
+        "  indirectCfgTargetsBindProvedBlocks : Bool\n"
+        "  indirectCfgTargetRulesKnown : Bool\n"
+        "  cfgGapsClosed : Bool\n"
+        "deriving Repr\n\n"
+        "structure ReachabilityProfile where\n"
+        "  blockEquivalenceObligations : Nat\n"
+        "  provedBlockEquivalenceObligations : Nat\n"
+        "  cfgEdgeObligations : Nat\n"
+        "  provedCfgEdgeObligations : Nat\n"
+        "  openCfgEdgeObligations : Nat\n"
+        "  reachabilityObligations : Nat\n"
+        "  provedReachabilityObligations : Nat\n"
+        "  openReachabilityObligations : Nat\n"
+        "  entryRootReachability : Nat\n"
+        "  checkedRootReachability : Nat\n"
+        "  directCfgReachability : Nat\n"
+        "  unknownReachabilityRules : Nat\n"
+        "  directCfgReachabilityWithEdgeObligation : Nat\n"
+        "  directCfgReachabilityWithProvedEdge : Nat\n"
+        "  reachabilityGaps : Nat\n"
+        "  cfgEdgeObligationsClosed : Bool\n"
+        "  reachabilityObligationsClosed : Bool\n"
+        "  reachabilityRulesKnown : Bool\n"
+        "  reachabilityRulesAccounted : Bool\n"
+        "  directCfgReachabilityEdgesPresent : Bool\n"
+        "  directCfgReachabilityEdgesProved : Bool\n"
+        "  provedCfgEdgesBindProvedBlocks : Bool\n"
+        "  provedCfgEdgeTargetsHaveReachability : Bool\n"
+        "  provedReachabilityBlocksProved : Bool\n"
+        "  reachabilityGapsClosed : Bool\n"
+        "deriving Repr\n\n"
+        "structure AbiProfile where\n"
+        "  originalFunctions : Nat\n"
+        "  candidateFunctions : Nat\n"
+        "  originalCallsites : Nat\n"
+        "  candidateCallsites : Nat\n"
+        "  originalImportPrototypes : Nat\n"
+        "  candidateImportPrototypes : Nat\n"
+        "  originalHiddenSretOrOutParamCandidates : Nat\n"
+        "  candidateHiddenSretOrOutParamCandidates : Nat\n"
+        "  originalVarargsCandidates : Nat\n"
+        "  candidateVarargsCandidates : Nat\n"
+        "  originalFunctionPointerTargets : Nat\n"
+        "  candidateFunctionPointerTargets : Nat\n"
+        "  missingFunctions : Nat\n"
+        "  ambiguousFunctions : Nat\n"
+        "  incompleteCallsiteFunctions : Nat\n"
+        "  missingCallsites : Nat\n"
+        "  functionMismatches : Nat\n"
+        "  callsiteMismatches : Nat\n"
+        "  abiGaps : Nat\n"
+        "  abiContractNotApplicable : Bool\n"
+        "  abiContractPresent : Bool\n"
+        "  abiModelKnown : Bool\n"
+        "  abiContractStatusSatisfied : Bool\n"
+        "  candidateEvidencePresent : Bool\n"
+        "  functionCountsMatch : Bool\n"
+        "  callsiteCountsMatch : Bool\n"
+        "  importPrototypesMatch : Bool\n"
+        "  noMissingFunctions : Bool\n"
+        "  noAmbiguousFunctions : Bool\n"
+        "  callsitesComplete : Bool\n"
+        "  noFunctionMismatches : Bool\n"
+        "  noCallsiteMismatches : Bool\n"
+        "  abiGapsClosed : Bool\n"
+        "deriving Repr\n\n"
+        "structure EnvironmentProfile where\n"
+        "  originalImports : Nat\n"
+        "  candidateImports : Nat\n"
+        "  importThunkBlockSemanticsRecords : Nat\n"
+        "  importThunkSemanticObservableRecords : Nat\n"
+        "  importThunkTrustedBoundaryRecords : Nat\n"
+        "  importThunkSolverEvidenceEntries : Nat\n"
+        "  importThunkSemanticsWithOriginalSignature : Nat\n"
+        "  importThunkSemanticsWithCandidateSignature : Nat\n"
+        "  importThunkSemanticsWithMatchingSignatures : Nat\n"
+        "  importThunkSemanticsInOriginalLoaderImports : Nat\n"
+        "  importThunkSemanticsInCandidateLoaderImports : Nat\n"
+        "  importThunkClaimsWithOriginalSignatureHash : Nat\n"
+        "  importThunkClaimsWithCandidateSignatureHash : Nat\n"
+        "  importThunkClaimsWithMatchingSignatureHashes : Nat\n"
+        "  symbolicObservableClaims : Nat\n"
+        "  solverClaims : Nat\n"
+        "  environmentGaps : Nat\n"
+        "  environmentModelSupported : Bool\n"
+        "  loaderImportSignaturesMatch : Bool\n"
+        "  loaderImportCountsMatch : Bool\n"
+        "  importThunkRecordsAccounted : Bool\n"
+        "  importThunkSemanticsHaveSignatures : Bool\n"
+        "  importThunkSignaturesMatch : Bool\n"
+        "  importThunkSemanticsMatchLoaderImports : Bool\n"
+        "  importThunkClaimsHaveSignatureHashes : Bool\n"
+        "  importThunkClaimSignatureHashesMatch : Bool\n"
+        "  symbolicClaimsUseEnvironmentModel : Bool\n"
+        "  solverClaimsAccounted : Bool\n"
+        "  environmentGapsClosed : Bool\n"
+        "deriving Repr\n\n"
+        "structure SemanticObservableProfile where\n"
+        "  semanticObservables : Nat\n"
+        "  trustedBoundaries : Nat\n"
+        "  solverClaims : Nat\n"
+        "  decodedInstructionIdentity : Nat\n"
+        "  peImportThunkEquivalence : Nat\n"
+        "  checkedGeneratedMappingAssumption : Nat\n"
+        "  symbolicObservableEquivalence : Nat\n"
+        "  missingClaims : Nat\n"
+        "  unknownClaims : Nat\n"
+        "  byteIdenticalInstructionDecodeBoundaries : Nat\n"
+        "  peImportThunkSignatureEquivalenceBoundaries : Nat\n"
+        "  checkedLayoutPreservingMappingBoundaries : Nat\n"
+        "  z3UnsatLocalEquivalenceBoundaries : Nat\n"
+        "  localSymbolicEquivalenceBoundaries : Nat\n"
+        "  missingTrustedBoundaries : Nat\n"
+        "  unknownTrustedBoundaries : Nat\n"
+        "  unapprovedTrustedBoundaries : Nat\n"
+        "  semanticObservableGaps : Nat\n"
+        "  trustedBoundaryGaps : Nat\n"
+        "  solverClaimGaps : Nat\n"
+        "deriving Repr\n\n"
+        "structure TrustedBoundaryProfile where\n"
+        "  semanticObservables : Nat\n"
+        "  records : Nat\n"
+        "  allowedRecords : Nat\n"
+        "  recordsWithHash : Nat\n"
+        "  incompleteRecords : Nat\n"
+        "  modelAllowedBoundaries : Nat\n"
+        "  unknownModelBoundaries : Nat\n"
+        "  duplicateModelBoundaries : Nat\n"
+        "  trustedBoundaryGaps : Nat\n"
+        "  trustedBoundaryInventoryFormatMatches : Bool\n"
+        "  trustedBoundaryInventoryStatusSatisfied : Bool\n"
+        "  modelBoundariesPresent : Bool\n"
+        "  modelBoundariesKnown : Bool\n"
+        "  modelBoundaryNamesUnique : Bool\n"
+        "  recordCountsMatch : Bool\n"
+        "  recordStatusCountsMatch : Bool\n"
+        "  recordsAllowed : Bool\n"
+        "  recordsHashed : Bool\n"
+        "  recordsGapFree : Bool\n"
+        "deriving Repr\n\n"
+        "structure ProfileManifest where\n"
+        "  requiredProfiles : Nat\n"
+        "  presentProfiles : Nat\n"
+        "  satisfiedProfiles : Nat\n"
+        "  notApplicableProfiles : Nat\n"
+        "  rowsWithSchema : Nat\n"
+        "  rowsWithHash : Nat\n"
+        "  rowsWithAcceptedStatus : Nat\n"
+        "  rowsWithChecks : Nat\n"
+        "  profileManifestGaps : Nat\n"
+        "  profileManifestSchemaMatches : Bool\n"
+        "  requiredProfilesPresent : Bool\n"
+        "  profileSchemasMatch : Bool\n"
+        "  profileHashesPresent : Bool\n"
+        "  profileStatusesAccepted : Bool\n"
+        "  profileChecksClosed : Bool\n"
+        "  profileManifestGapsClosed : Bool\n"
+        "deriving Repr\n\n"
+        "structure InstructionSemanticsProfile where\n"
+        "  instructionSemanticsRecords : Nat\n"
+        "  decodedInstructionBlockSemantics : Nat\n"
+        "  satisfiedRecords : Nat\n"
+        "  incompleteRecords : Nat\n"
+        "  decodedInstructionIdentityRecords : Nat\n"
+        "  peImportThunkSemanticsRecords : Nat\n"
+        "  unknownSemanticsRecords : Nat\n"
+        "  instructionSemanticsGaps : Nat\n"
+        "  originalDecodeStatusGaps : Nat\n"
+        "  candidateDecodeStatusGaps : Nat\n"
+        "  originalHashGaps : Nat\n"
+        "  candidateHashGaps : Nat\n"
+        "  decodedByteHashMismatches : Nat\n"
+        "  blockSemanticsRecordHashGaps : Nat\n"
+        "  missingInstructionSemanticsRecords : Nat\n"
+        "deriving Repr\n\n"
+        "structure SolverEvidenceProfile where\n"
+        "  proofCacheEntries : Nat\n"
+        "  solverEvidenceEntries : Nat\n"
+        "  solverEvidenceIndexEntries : Nat\n"
+        "  solverClaims : Nat\n"
+        "  satisfiedEntries : Nat\n"
+        "  incompleteEntries : Nat\n"
+        "  structuralByteIdentityEntries : Nat\n"
+        "  checkedGeneratedMappingEntries : Nat\n"
+        "  peImportThunkEntries : Nat\n"
+        "  trustedZ3UnsatEntries : Nat\n"
+        "  z3CounterexampleEntries : Nat\n"
+        "  z3SymbolicIncompleteEntries : Nat\n"
+        "  missingProofCacheEntries : Nat\n"
+        "  unreadableProofCacheEntries : Nat\n"
+        "  unknownProofCacheEntries : Nat\n"
+        "  trustedZ3UnsatClaims : Nat\n"
+        "  localSymbolicClaims : Nat\n"
+        "  solverClaimsWithQueryHash : Nat\n"
+        "  solverEvidenceQueryHashGaps : Nat\n"
+        "  solverEvidenceQueryHashMismatches : Nat\n"
+        "  solverEvidenceFileMissing : Nat\n"
+        "  solverEvidenceFileHashMismatches : Nat\n"
+        "  solverEvidenceIndexFileMissing : Nat\n"
+        "  solverEvidenceIndexHashMismatches : Nat\n"
+        "  solverEvidenceJsonlParseGaps : Nat\n"
+        "  solverEvidenceEntryHashMismatches : Nat\n"
+        "  solverEvidenceIndexEntryHashMismatches : Nat\n"
+        "  solverClaimGaps : Nat\n"
+        "  solverEvidenceEntryGaps : Nat\n"
+        "deriving Repr\n\n"
+        "structure SolverBackendProfile where\n"
+        "  solverEvidenceEntries : Nat\n"
+        "  solverBackedEvidenceEntries : Nat\n"
+        "  trustedZ3UnsatEntries : Nat\n"
+        "  solverClaims : Nat\n"
+        "  trustedZ3UnsatClaims : Nat\n"
+        "  solverEvidenceWithBackend : Nat\n"
+        "  solverClaimsWithBackend : Nat\n"
+        "  trustedZ3WithZ3Backend : Nat\n"
+        "  missingBackendEntries : Nat\n"
+        "  missingBackendClaims : Nat\n"
+        "  backendHashMismatches : Nat\n"
+        "  unknownSolverBackends : Nat\n"
+        "  backendGaps : Nat\n"
+        "  solverBackedEvidenceHasBackend : Bool\n"
+        "  solverClaimsHaveBackend : Bool\n"
+        "  solverClaimBackendHashesMatchEvidence : Bool\n"
+        "  trustedZ3UsesZ3Backend : Bool\n"
+        "  backendGapsClosed : Bool\n"
+        "deriving Repr\n\n"
+        "def proofIrCountsAccounted (runtime : RuntimeProofCounts) (proofIr : ProofIrCounts) : Bool :=\n"
+        "  proofIr.obligations == runtime.obligations &&\n"
+        "  proofIr.proofCacheEntries == runtime.proofCacheEntries &&\n"
+        "  proofIr.solverEvidenceEntries == runtime.solverEvidenceEntries &&\n"
+        "  decide (proofIr.instructionSemanticsRecords <= proofIr.blockSemanticsRecords) &&\n"
+        "  proofIr.proofArtifactBindingRecords == runtime.proofBackedObligations &&\n"
+        "  proofIr.semanticObservableRecords == runtime.proofBackedObligations &&\n"
+        "  decide (proofIr.solverClaimRecords <= proofIr.semanticObservableRecords) &&\n"
+        "  proofIr.trustedBoundaryRecords == runtime.proofBackedObligations &&\n"
+        "  proofIr.proofCompositionRecords == runtime.proofBackedObligations\n\n"
+        "def closureCertificateCountsClosed\n"
+        "    (runtime : RuntimeProofCounts)\n"
+        "    (proofIr : ProofIrCounts)\n"
+        "    (cert : ClosureCertificateCounts) : Bool :=\n"
+        "  cert.obligations == runtime.obligations &&\n"
+        "  cert.openObligations == 0 &&\n"
+        "  cert.failures == 0 &&\n"
+        "  cert.incomplete == 0 &&\n"
+        "  cert.proofCacheEntries == runtime.proofCacheEntries &&\n"
+        "  cert.solverEvidenceEntries == runtime.solverEvidenceEntries &&\n"
+        "  cert.proofBackedObligations == runtime.proofBackedObligations &&\n"
+        "  cert.blockSemanticsRecords == proofIr.blockSemanticsRecords &&\n"
+        "  cert.instructionSemanticsRecords == proofIr.instructionSemanticsRecords &&\n"
+        "  cert.decodedInstructionBlockSemantics == proofIr.instructionSemanticsRecords &&\n"
+        "  cert.proofArtifactBindings == proofIr.proofArtifactBindingRecords &&\n"
+        "  cert.semanticObservables == proofIr.semanticObservableRecords &&\n"
+        "  cert.solverClaims == proofIr.solverClaimRecords &&\n"
+        "  cert.trustedBoundaries == proofIr.trustedBoundaryRecords &&\n"
+        "  cert.proofCompositionRecords == proofIr.proofCompositionRecords &&\n"
+        "  cert.proofBackingGaps == 0 &&\n"
+        "  cert.proofCacheEvidenceGaps == 0 &&\n"
+        "  cert.proofCacheProfileGaps == 0 &&\n"
+        "  cert.solverBackendProfileGaps == 0 &&\n"
+        "  cert.solverUnknownObligationGaps == 0 &&\n"
+        "  cert.evidenceBindingGaps == 0 &&\n"
+        "  cert.semanticObservableGaps == 0 &&\n"
+        "  cert.solverClaimGaps == 0 &&\n"
+        "  cert.trustedBoundaryGaps == 0 &&\n"
+        "  cert.trustedBoundaryProfileGaps == 0 &&\n"
+        "  cert.profileManifestGaps == 0 &&\n"
+        "  cert.proofCompositionGaps == 0 &&\n"
+        "  cert.blockSemanticsGaps == 0 &&\n"
+        "  cert.blockSemanticsUnknownObligationGaps == 0 &&\n"
+        "  cert.instructionSemanticsGaps == 0 &&\n"
+        "  cert.mappingProfileGaps == 0 &&\n"
+        "  cert.cfgProfileGaps == 0 &&\n"
+        "  cert.reachabilityProfileGaps == 0 &&\n"
+        "  cert.abiProfileGaps == 0 &&\n"
+        "  cert.environmentProfileGaps == 0\n\n"
+        "def closureCertificateChecksClosed (checks : ClosureCertificateChecks) : Bool :=\n"
+        "  checks.obligationsClosed &&\n"
+        "  checks.noFailures &&\n"
+        "  checks.noIncompleteRecords &&\n"
+        "  checks.coverageSatisfied &&\n"
+        "  checks.coverageProfileSatisfied &&\n"
+        "  checks.proofCacheProfileSatisfied &&\n"
+        "  checks.solverBackendProfileSatisfied &&\n"
+        "  checks.proofRuleProfileSatisfied &&\n"
+        "  checks.mappingProfileSatisfied &&\n"
+        "  checks.cfgProfileSatisfied &&\n"
+        "  checks.reachabilityProfileSatisfied &&\n"
+        "  checks.abiProfileSatisfied &&\n"
+        "  checks.environmentProfileSatisfied &&\n"
+        "  checks.solverEvidenceSatisfied &&\n"
+        "  checks.proofCacheIndexHashed &&\n"
+        "  checks.solverEvidenceHashed &&\n"
+        "  checks.solverEvidenceIndexHashed &&\n"
+        "  checks.proofCacheEvidenceCountMatches &&\n"
+        "  checks.provedBlockObligationsHaveProofCache &&\n"
+        "  checks.provedBlockObligationsHaveSolverEvidence &&\n"
+        "  checks.proofCacheEntriesHaveSolverEvidence &&\n"
+        "  checks.solverEvidenceEntriesBindKnownObligations &&\n"
+        "  checks.proofArtifactBindingsSatisfied &&\n"
+        "  checks.proofArtifactsBindSameObligations &&\n"
+        "  checks.semanticObservablesSatisfied &&\n"
+        "  checks.provedBlockObligationsHaveSemanticObservables &&\n"
+        "  checks.solverClaimsSatisfied &&\n"
+        "  checks.trustedSolverClaimsHaveQueries &&\n"
+        "  checks.trustedBoundariesSatisfied &&\n"
+        "  checks.trustedBoundaryProfileSatisfied &&\n"
+        "  checks.profileManifestSatisfied &&\n"
+        "  checks.semanticClaimsUseAllowedTrustedBoundaries &&\n"
+        "  checks.proofCompositionSatisfied &&\n"
+        "  checks.provedBlockObligationsHaveCompositionRecords &&\n"
+        "  checks.blockSemanticsSatisfied &&\n"
+        "  checks.provedBlockObligationsHaveBlockSemantics &&\n"
+        "  checks.blockSemanticsRecordsBindKnownObligations &&\n"
+        "  checks.instructionSemanticsSatisfied &&\n"
+        "  checks.decodedBlockSemanticsHaveInstructionSemantics\n\n"
+        "structure TargetProfile where\n"
+        "  schemaEntries : Nat\n"
+        "  presentSchemaEntries : Nat\n"
+        "  proofRules : Nat\n"
+        "  trustedBoundaries : Nat\n"
+        "  targetGaps : Nat\n"
+        "  modelIdPresent : Bool\n"
+        "  isaPresent : Bool\n"
+        "  loaderPresent : Bool\n"
+        "  bitnessPresent : Bool\n"
+        "  machinePresent : Bool\n"
+        "  abiPresent : Bool\n"
+        "  environmentPresent : Bool\n"
+        "  proofRulesPresent : Bool\n"
+        "  trustedBoundariesPresent : Bool\n"
+        "  schemaEntriesPresent : Bool\n"
+        "  targetProfileSchemaMatches : Bool\n"
+        "  loaderFactsSchemaMatchesModel : Bool\n"
+        "  loaderFrontendProfileSchemaMatches : Bool\n"
+        "  loaderProfileSchemaMatches : Bool\n"
+        "  blockSemanticsSchemaMatchesIsa : Bool\n"
+        "  instructionSemanticsSchemaMatchesIsa : Bool\n"
+        "  semanticObservablesSchemaMatchesIsa : Bool\n"
+        "  solverBackendProfileSchemaMatches : Bool\n"
+        "  trustedBoundaryProfileSchemaMatches : Bool\n"
+        "  profileManifestSchemaMatches : Bool\n"
+        "  loaderFactsFormatMatchesSchema : Bool\n"
+        "  loaderFactsLoaderMatchesModel : Bool\n"
+        "  loaderFrontendProfileStatusSatisfied : Bool\n"
+        "  loaderProfileModelMatches : Bool\n"
+        "  loaderProfileStatusSatisfied : Bool\n"
+        "  trustedBoundaryProfileStatusSatisfied : Bool\n"
+        "deriving Repr\n\n"
+        "def targetProfileClosed (profile : TargetProfile) : Bool :=\n"
+        "  decide (profile.schemaEntries > 0) &&\n"
+        "  profile.presentSchemaEntries == profile.schemaEntries &&\n"
+        "  decide (profile.proofRules > 0) &&\n"
+        "  decide (profile.trustedBoundaries > 0) &&\n"
+        "  profile.targetGaps == 0 &&\n"
+        "  profile.modelIdPresent &&\n"
+        "  profile.isaPresent &&\n"
+        "  profile.loaderPresent &&\n"
+        "  profile.bitnessPresent &&\n"
+        "  profile.machinePresent &&\n"
+        "  profile.abiPresent &&\n"
+        "  profile.environmentPresent &&\n"
+        "  profile.proofRulesPresent &&\n"
+        "  profile.trustedBoundariesPresent &&\n"
+        "  profile.schemaEntriesPresent &&\n"
+        "  profile.targetProfileSchemaMatches &&\n"
+        "  profile.loaderFactsSchemaMatchesModel &&\n"
+        "  profile.loaderFrontendProfileSchemaMatches &&\n"
+        "  profile.loaderProfileSchemaMatches &&\n"
+        "  profile.blockSemanticsSchemaMatchesIsa &&\n"
+        "  profile.instructionSemanticsSchemaMatchesIsa &&\n"
+        "  profile.semanticObservablesSchemaMatchesIsa &&\n"
+        "  profile.solverBackendProfileSchemaMatches &&\n"
+        "  profile.trustedBoundaryProfileSchemaMatches &&\n"
+        "  profile.profileManifestSchemaMatches &&\n"
+        "  profile.loaderFactsFormatMatchesSchema &&\n"
+        "  profile.loaderFactsLoaderMatchesModel &&\n"
+        "  profile.loaderFrontendProfileStatusSatisfied &&\n"
+        "  profile.loaderProfileModelMatches &&\n"
+        "  profile.loaderProfileStatusSatisfied &&\n"
+        "  profile.trustedBoundaryProfileStatusSatisfied\n\n"
+        "def loaderProfileClosed (profile : LoaderProfile) : Bool :=\n"
+        "  decide (profile.modelBitness > 0) &&\n"
+        "  profile.originalBitness == profile.modelBitness &&\n"
+        "  profile.candidateBitness == profile.modelBitness &&\n"
+        "  profile.originalSections == profile.candidateSections &&\n"
+        "  decide (profile.originalExecutableSections > 0) &&\n"
+        "  decide (profile.candidateExecutableSections > 0) &&\n"
+        "  profile.originalExecutableSections == profile.candidateExecutableSections &&\n"
+        "  profile.originalImports == profile.candidateImports &&\n"
+        "  profile.layoutBlockingIssues == 0 &&\n"
+        "  profile.originalHeaderGaps == 0 &&\n"
+        "  profile.candidateHeaderGaps == 0 &&\n"
+        "  profile.originalSectionGaps == 0 &&\n"
+        "  profile.candidateSectionGaps == 0 &&\n"
+        "  profile.originalImportGaps == 0 &&\n"
+        "  profile.candidateImportGaps == 0 &&\n"
+        "  profile.originalRelocationGaps == 0 &&\n"
+        "  profile.candidateRelocationGaps == 0 &&\n"
+        "  profile.binarySignatureMismatches == 0 &&\n"
+        "  profile.loaderFormatMatchesModel &&\n"
+        "  profile.loaderNameMatchesModel &&\n"
+        "  profile.originalFactsPresent &&\n"
+        "  profile.candidateFactsPresent &&\n"
+        "  profile.originalModelMatches &&\n"
+        "  profile.candidateModelMatches &&\n"
+        "  profile.layoutCompatible &&\n"
+        "  profile.noBlockingLayoutIssues &&\n"
+        "  profile.headersPresent &&\n"
+        "  profile.sectionsPresent &&\n"
+        "  profile.executableSectionsPresent &&\n"
+        "  profile.importsMatch &&\n"
+        "  profile.importsPresent &&\n"
+        "  profile.relocationsClosed &&\n"
+        "  profile.binarySignaturesMatch\n\n"
+        "def coverageProfileClosed\n"
+        "    (proofIr : ProofIrCounts)\n"
+        "    (profile : CoverageProfile) : Bool :=\n"
+        "  decide (profile.coverageObligations <= proofIr.obligations) &&\n"
+        "  decide (profile.blockEquivalenceObligations <= proofIr.obligations) &&\n"
+        "  decide (profile.provedBlockEquivalenceObligations <= profile.blockEquivalenceObligations) &&\n"
+        "  profile.waivedNoncodeObligations +\n"
+        "    profile.unmappedCoverageObligations +\n"
+        "    profile.failedCoverageObligations +\n"
+        "    profile.incompleteCoverageObligations +\n"
+        "    profile.outOfModelCoverageObligations +\n"
+        "    profile.unknownCoverageObligationStatuses == profile.coverageObligations &&\n"
+        "  profile.openCoverageObligations == 0 &&\n"
+        "  profile.unmappedCoverageObligations == 0 &&\n"
+        "  profile.failedCoverageObligations == 0 &&\n"
+        "  profile.incompleteCoverageObligations == 0 &&\n"
+        "  profile.outOfModelCoverageObligations == 0 &&\n"
+        "  profile.unknownCoverageObligationStatuses == 0 &&\n"
+        "  profile.coverageGaps == 0 &&\n"
+        "  profile.originalCoverageGaps == 0 &&\n"
+        "  profile.candidateCoverageGaps == 0 &&\n"
+        "  profile.coverageStatusSatisfied &&\n"
+        "  profile.coverageCountsMatch &&\n"
+        "  profile.coverageStatusCountsMatch &&\n"
+        "  profile.coverageObligationsClassified &&\n"
+        "  profile.coverageGapsClosed &&\n"
+        "  profile.unknownStatusesClosed &&\n"
+        "  profile.blockEquivalencePresent &&\n"
+        "  profile.provedBlockEquivalenceWithinTotal\n\n"
+        "def proofCacheProfileClosed\n"
+        "    (runtime : RuntimeProofCounts)\n"
+        "    (proofIr : ProofIrCounts)\n"
+        "    (cert : ClosureCertificateCounts)\n"
+        "    (profile : ProofCacheProfile) : Bool :=\n"
+        "  profile.proofCacheEntries == runtime.proofCacheEntries &&\n"
+        "  profile.proofCacheEntries == proofIr.proofCacheEntries &&\n"
+        "  profile.proofCacheEntries == cert.proofCacheEntries &&\n"
+        "  profile.proofCacheIndexEntries == profile.proofCacheEntries &&\n"
+        "  profile.proofCacheGaps == cert.proofCacheProfileGaps &&\n"
+        "  profile.proofCacheGaps ==\n"
+        "    profile.proofCacheFileMissing +\n"
+        "    profile.proofCacheFileUnreadable +\n"
+        "    profile.proofCachePayloadHashMismatches +\n"
+        "    profile.proofCacheIndexFileMissing +\n"
+        "    profile.proofCacheIndexFileHashMismatches +\n"
+        "    profile.proofCacheIndexPayloadMismatches +\n"
+        "    profile.proofCacheIndexEntryMismatches +\n"
+        "    profile.duplicateProofCachePaths &&\n"
+        "  profile.proofCacheFileMissing == 0 &&\n"
+        "  profile.proofCacheFileUnreadable == 0 &&\n"
+        "  profile.proofCachePayloadHashMismatches == 0 &&\n"
+        "  profile.proofCacheIndexFileMissing == 0 &&\n"
+        "  profile.proofCacheIndexFileHashMismatches == 0 &&\n"
+        "  profile.proofCacheIndexPayloadMismatches == 0 &&\n"
+        "  profile.proofCacheIndexEntryMismatches == 0 &&\n"
+        "  profile.duplicateProofCachePaths == 0 &&\n"
+        "  profile.proofCacheIndexEntriesMatch &&\n"
+        "  profile.proofCacheIndexFilePresent &&\n"
+        "  profile.proofCacheIndexFileHashMatches &&\n"
+        "  profile.proofCacheIndexPayloadMatches &&\n"
+        "  profile.proofCacheFilesPresent &&\n"
+        "  profile.proofCacheFilesReadable &&\n"
+        "  profile.proofCachePayloadHashesMatch &&\n"
+        "  profile.proofCachePathsUnique &&\n"
+        "  profile.proofCacheGapsClosed\n\n"
+        "def proofRuleProfileClosed\n"
+        "    (proofIr : ProofIrCounts)\n"
+        "    (profile : ProofRuleProfile) : Bool :=\n"
+        "  profile.obligations == proofIr.obligations &&\n"
+        "  profile.blockSemanticsRecords == proofIr.blockSemanticsRecords &&\n"
+        "  profile.solverEvidenceEntries == proofIr.solverEvidenceEntries &&\n"
+        "  profile.obligationsWithRules == profile.obligations &&\n"
+        "  profile.blockSemanticsRecordsWithRules == profile.blockSemanticsRecords &&\n"
+        "  profile.solverEvidenceEntriesWithRules == profile.solverEvidenceEntries &&\n"
+        "  profile.unknownObligationRules == 0 &&\n"
+        "  profile.unknownBlockSemanticsRules == 0 &&\n"
+        "  profile.unknownSolverEvidenceRules == 0 &&\n"
+        "  profile.unnormalizedDeprecatedAliasUses == 0 &&\n"
+        "  profile.artifactRuleBindingGaps == 0 &&\n"
+        "  profile.modelRulesPresent &&\n"
+        "  profile.obligationRulesPresent &&\n"
+        "  profile.obligationRulesKnown &&\n"
+        "  profile.blockSemanticsRulesPresent &&\n"
+        "  profile.blockSemanticsRulesKnown &&\n"
+        "  profile.solverEvidenceRulesPresent &&\n"
+        "  profile.solverEvidenceRulesKnown &&\n"
+        "  profile.deprecatedAliasesNormalized &&\n"
+        "  profile.artifactRuleBindingsClosed\n\n"
+        "def mappingProfileClosed\n"
+        "    (cert : ClosureCertificateCounts)\n"
+        "    (profile : MappingProfile) : Bool :=\n"
+        "  profile.mappingGaps == cert.mappingProfileGaps &&\n"
+        "  profile.mappingGaps ==\n"
+        "    profile.failedIssues +\n"
+        "    profile.incompleteIssues +\n"
+        "    profile.uncheckedInvariantBlocks +\n"
+        "    profile.unknownCheckedRootEntries +\n"
+        "    profile.unknownMappingProofRules +\n"
+        "    profile.malformedBlocks +\n"
+        "    profile.malformedWaivers &&\n"
+        "  ((profile.mappingContractNotApplicable && profile.mappingGaps == 0 && profile.mappingGapsClosed) ||\n"
+        "    (profile.mappingContractPresent &&\n"
+        "      profile.mappingStatusSatisfied &&\n"
+        "      profile.mappingEntriesPresent &&\n"
+        "      decide (profile.blocks > 0) &&\n"
+        "      decide (profile.codeBlocks > 0) &&\n"
+        "      profile.codeBlocks + profile.nonCodeBlocks == profile.blocks &&\n"
+        "      decide (profile.reachableBlocks <= profile.blocks) &&\n"
+        "      decide (profile.checkedRootEntries <= profile.rootEntries) &&\n"
+        "      profile.checkedMappingProofs + profile.uncheckedMappingProofs == profile.mappingProofs &&\n"
+        "      profile.failedIssues == 0 &&\n"
+        "      profile.incompleteIssues == 0 &&\n"
+        "      profile.uncheckedInvariantBlocks == 0 &&\n"
+        "      profile.unknownCheckedRootEntries == 0 &&\n"
+        "      profile.unknownMappingProofRules == 0 &&\n"
+        "      profile.malformedBlocks == 0 &&\n"
+        "      profile.malformedWaivers == 0 &&\n"
+        "      profile.mappingIssuesClosed &&\n"
+        "      profile.mappingRangesWellFormed &&\n"
+        "      profile.mappingInvariantsChecked &&\n"
+        "      profile.checkedRootsKnown &&\n"
+        "      profile.mappingProofRulesKnown &&\n"
+        "      profile.mappingProofAliasesNormalized &&\n"
+        "      profile.waiverRangesWellFormed &&\n"
+        "      profile.mappingGapsClosed))\n\n"
+        "def cfgProfileClosed\n"
+        "    (profile : CfgProfile) : Bool :=\n"
+        "  decide (profile.provedBlockEquivalenceObligations <= profile.blockEquivalenceObligations) &&\n"
+        "  profile.openBlockStructureObligations == 0 &&\n"
+        "  profile.provedDirectCfgEdgeObligations + profile.openDirectCfgEdgeObligations == profile.directCfgEdgeObligations &&\n"
+        "  profile.directCfgTakenEdges +\n"
+        "    profile.directCfgFallthroughEdges +\n"
+        "    profile.directCfgJumpEdges +\n"
+        "    profile.directCfgCallEdges +\n"
+        "    profile.directCfgUnknownEdgeKinds == profile.directCfgEdgeObligations &&\n"
+        "  profile.openDirectCfgEdgeObligations == 0 &&\n"
+        "  profile.directCfgUnknownEdgeKinds == 0 &&\n"
+        "  profile.provedDirectCfgEdgesWithSourceBlock == profile.provedDirectCfgEdgeObligations &&\n"
+        "  profile.provedDirectCfgEdgesWithTargetBlock == profile.provedDirectCfgEdgeObligations &&\n"
+        "  profile.provedDirectCfgEdgesWithOriginalEvidence == profile.provedDirectCfgEdgeObligations &&\n"
+        "  profile.provedDirectCfgEdgesWithCandidateEvidence == profile.provedDirectCfgEdgeObligations &&\n"
+        "  profile.provedIndirectCfgTargetObligations + profile.openIndirectCfgTargetObligations == profile.indirectCfgTargetObligations &&\n"
+        "  profile.openIndirectCfgTargetObligations == 0 &&\n"
+        "  profile.provedIndirectCfgTargetsWithSourceBlock == profile.provedIndirectCfgTargetObligations &&\n"
+        "  profile.provedIndirectCfgTargetsWithSignature == profile.provedIndirectCfgTargetObligations &&\n"
+        "  profile.provedIndirectCfgTargetsWithOriginalEvidence == profile.provedIndirectCfgTargetObligations &&\n"
+        "  profile.provedIndirectCfgTargetsWithCandidateEvidence == profile.provedIndirectCfgTargetObligations &&\n"
+        "  profile.indirectCfgTargetsWithUnknownProofRule == 0 &&\n"
+        "  profile.cfgGaps == 0 &&\n"
+        "  profile.blockStructureObligationsClosed &&\n"
+        "  profile.directCfgEdgesClosed &&\n"
+        "  profile.directCfgEdgeKindsKnown &&\n"
+        "  profile.directCfgEdgeMetadataPresent &&\n"
+        "  profile.directCfgEdgeEvidencePresent &&\n"
+        "  profile.directCfgEdgesBindProvedBlocks &&\n"
+        "  profile.indirectCfgTargetsClosed &&\n"
+        "  profile.indirectCfgTargetMetadataPresent &&\n"
+        "  profile.indirectCfgTargetEvidencePresent &&\n"
+        "  profile.indirectCfgTargetsBindProvedBlocks &&\n"
+        "  profile.indirectCfgTargetRulesKnown &&\n"
+        "  profile.cfgGapsClosed\n\n"
+        "def reachabilityProfileClosed\n"
+        "    (profile : ReachabilityProfile) : Bool :=\n"
+        "  decide (profile.provedBlockEquivalenceObligations <= profile.blockEquivalenceObligations) &&\n"
+        "  profile.provedCfgEdgeObligations + profile.openCfgEdgeObligations == profile.cfgEdgeObligations &&\n"
+        "  profile.provedReachabilityObligations + profile.openReachabilityObligations == profile.reachabilityObligations &&\n"
+        "  profile.entryRootReachability +\n"
+        "    profile.checkedRootReachability +\n"
+        "    profile.directCfgReachability +\n"
+        "    profile.unknownReachabilityRules == profile.provedReachabilityObligations &&\n"
+        "  profile.openCfgEdgeObligations == 0 &&\n"
+        "  profile.openReachabilityObligations == 0 &&\n"
+        "  profile.unknownReachabilityRules == 0 &&\n"
+        "  profile.directCfgReachabilityWithEdgeObligation == profile.directCfgReachability &&\n"
+        "  profile.directCfgReachabilityWithProvedEdge == profile.directCfgReachability &&\n"
+        "  profile.reachabilityGaps == 0 &&\n"
+        "  profile.cfgEdgeObligationsClosed &&\n"
+        "  profile.reachabilityObligationsClosed &&\n"
+        "  profile.reachabilityRulesKnown &&\n"
+        "  profile.reachabilityRulesAccounted &&\n"
+        "  profile.directCfgReachabilityEdgesPresent &&\n"
+        "  profile.directCfgReachabilityEdgesProved &&\n"
+        "  profile.provedCfgEdgesBindProvedBlocks &&\n"
+        "  profile.provedCfgEdgeTargetsHaveReachability &&\n"
+        "  profile.provedReachabilityBlocksProved &&\n"
+        "  profile.reachabilityGapsClosed\n\n"
+        "def abiProfileClosed\n"
+        "    (cert : ClosureCertificateCounts)\n"
+        "    (profile : AbiProfile) : Bool :=\n"
+        "  profile.abiGaps == cert.abiProfileGaps &&\n"
+        "  profile.abiGaps ==\n"
+        "    profile.missingFunctions +\n"
+        "    profile.ambiguousFunctions +\n"
+        "    profile.incompleteCallsiteFunctions +\n"
+        "    profile.missingCallsites +\n"
+        "    profile.functionMismatches +\n"
+        "    profile.callsiteMismatches &&\n"
+        "  ((profile.abiContractNotApplicable && profile.abiGaps == 0 && profile.abiGapsClosed) ||\n"
+        "    (profile.abiContractPresent &&\n"
+        "      profile.abiModelKnown &&\n"
+        "      profile.abiContractStatusSatisfied &&\n"
+        "      profile.candidateEvidencePresent &&\n"
+        "      profile.functionCountsMatch &&\n"
+        "      profile.callsiteCountsMatch &&\n"
+        "      profile.importPrototypesMatch &&\n"
+        "      profile.originalFunctions == profile.candidateFunctions &&\n"
+        "      profile.originalCallsites == profile.candidateCallsites &&\n"
+        "      profile.originalImportPrototypes == profile.candidateImportPrototypes &&\n"
+        "      profile.missingFunctions == 0 &&\n"
+        "      profile.ambiguousFunctions == 0 &&\n"
+        "      profile.incompleteCallsiteFunctions == 0 &&\n"
+        "      profile.missingCallsites == 0 &&\n"
+        "      profile.functionMismatches == 0 &&\n"
+        "      profile.callsiteMismatches == 0 &&\n"
+        "      profile.noMissingFunctions &&\n"
+        "      profile.noAmbiguousFunctions &&\n"
+        "      profile.callsitesComplete &&\n"
+        "      profile.noFunctionMismatches &&\n"
+        "      profile.noCallsiteMismatches &&\n"
+        "      profile.abiGapsClosed))\n\n"
+        "def environmentProfileClosed\n"
+        "    (loader : LoaderProfile)\n"
+        "    (semanticProfile : SemanticObservableProfile)\n"
+        "    (cert : ClosureCertificateCounts)\n"
+        "    (profile : EnvironmentProfile) : Bool :=\n"
+        "  profile.originalImports == loader.originalImports &&\n"
+        "  profile.candidateImports == loader.candidateImports &&\n"
+        "  profile.importThunkSemanticObservableRecords == semanticProfile.peImportThunkEquivalence &&\n"
+        "  profile.importThunkTrustedBoundaryRecords == semanticProfile.peImportThunkSignatureEquivalenceBoundaries &&\n"
+        "  profile.symbolicObservableClaims == semanticProfile.symbolicObservableEquivalence &&\n"
+        "  profile.solverClaims == semanticProfile.solverClaims &&\n"
+        "  profile.environmentGaps == cert.environmentProfileGaps &&\n"
+        "  profile.importThunkBlockSemanticsRecords == profile.importThunkSemanticObservableRecords &&\n"
+        "  profile.importThunkSemanticObservableRecords == profile.importThunkTrustedBoundaryRecords &&\n"
+        "  profile.importThunkTrustedBoundaryRecords == profile.importThunkSolverEvidenceEntries &&\n"
+        "  profile.importThunkSemanticsWithOriginalSignature == profile.importThunkBlockSemanticsRecords &&\n"
+        "  profile.importThunkSemanticsWithCandidateSignature == profile.importThunkBlockSemanticsRecords &&\n"
+        "  profile.importThunkSemanticsWithMatchingSignatures == profile.importThunkBlockSemanticsRecords &&\n"
+        "  profile.importThunkSemanticsInOriginalLoaderImports == profile.importThunkBlockSemanticsRecords &&\n"
+        "  profile.importThunkSemanticsInCandidateLoaderImports == profile.importThunkBlockSemanticsRecords &&\n"
+        "  profile.importThunkClaimsWithOriginalSignatureHash == profile.importThunkSemanticObservableRecords &&\n"
+        "  profile.importThunkClaimsWithCandidateSignatureHash == profile.importThunkSemanticObservableRecords &&\n"
+        "  profile.importThunkClaimsWithMatchingSignatureHashes == profile.importThunkSemanticObservableRecords &&\n"
+        "  profile.originalImports == profile.candidateImports &&\n"
+        "  profile.solverClaims == profile.symbolicObservableClaims &&\n"
+        "  profile.environmentGaps == 0 &&\n"
+        "  profile.environmentModelSupported &&\n"
+        "  profile.loaderImportSignaturesMatch &&\n"
+        "  profile.loaderImportCountsMatch &&\n"
+        "  profile.importThunkRecordsAccounted &&\n"
+        "  profile.importThunkSemanticsHaveSignatures &&\n"
+        "  profile.importThunkSignaturesMatch &&\n"
+        "  profile.importThunkSemanticsMatchLoaderImports &&\n"
+        "  profile.importThunkClaimsHaveSignatureHashes &&\n"
+        "  profile.importThunkClaimSignatureHashesMatch &&\n"
+        "  profile.symbolicClaimsUseEnvironmentModel &&\n"
+        "  profile.solverClaimsAccounted &&\n"
+        "  profile.environmentGapsClosed\n\n"
+        "def semanticObservableProfileClosed\n"
+        "    (proofIr : ProofIrCounts)\n"
+        "    (cert : ClosureCertificateCounts)\n"
+        "    (profile : SemanticObservableProfile) : Bool :=\n"
+        "  profile.semanticObservables == proofIr.semanticObservableRecords &&\n"
+        "  profile.trustedBoundaries == proofIr.trustedBoundaryRecords &&\n"
+        "  profile.solverClaims == proofIr.solverClaimRecords &&\n"
+        "  profile.semanticObservables == cert.semanticObservables &&\n"
+        "  profile.trustedBoundaries == cert.trustedBoundaries &&\n"
+        "  profile.solverClaims == cert.solverClaims &&\n"
+        "  profile.semanticObservableGaps == cert.semanticObservableGaps &&\n"
+        "  profile.trustedBoundaryGaps == cert.trustedBoundaryGaps &&\n"
+        "  profile.solverClaimGaps == cert.solverClaimGaps &&\n"
+        "  profile.decodedInstructionIdentity +\n"
+        "    profile.peImportThunkEquivalence +\n"
+        "    profile.checkedGeneratedMappingAssumption +\n"
+        "    profile.symbolicObservableEquivalence == profile.semanticObservables &&\n"
+        "  profile.missingClaims == 0 &&\n"
+        "  profile.unknownClaims == 0 &&\n"
+        "  profile.byteIdenticalInstructionDecodeBoundaries +\n"
+        "    profile.peImportThunkSignatureEquivalenceBoundaries +\n"
+        "    profile.checkedLayoutPreservingMappingBoundaries +\n"
+        "    profile.z3UnsatLocalEquivalenceBoundaries +\n"
+        "    profile.localSymbolicEquivalenceBoundaries == profile.trustedBoundaries &&\n"
+        "  profile.missingTrustedBoundaries == 0 &&\n"
+        "  profile.unknownTrustedBoundaries == 0 &&\n"
+        "  profile.unapprovedTrustedBoundaries == 0 &&\n"
+        "  profile.decodedInstructionIdentity == profile.byteIdenticalInstructionDecodeBoundaries &&\n"
+        "  profile.peImportThunkEquivalence == profile.peImportThunkSignatureEquivalenceBoundaries &&\n"
+        "  profile.checkedGeneratedMappingAssumption == profile.checkedLayoutPreservingMappingBoundaries &&\n"
+        "  profile.symbolicObservableEquivalence ==\n"
+        "    profile.z3UnsatLocalEquivalenceBoundaries + profile.localSymbolicEquivalenceBoundaries &&\n"
+        "  profile.symbolicObservableEquivalence == profile.solverClaims &&\n"
+        "  profile.semanticObservableGaps == 0 &&\n"
+        "  profile.trustedBoundaryGaps == 0 &&\n"
+        "  profile.solverClaimGaps == 0\n\n"
+        "def trustedBoundaryProfileClosed\n"
+        "    (proofIr : ProofIrCounts)\n"
+        "    (cert : ClosureCertificateCounts)\n"
+        "    (semanticProfile : SemanticObservableProfile)\n"
+        "    (profile : TrustedBoundaryProfile) : Bool :=\n"
+        "  profile.semanticObservables == proofIr.semanticObservableRecords &&\n"
+        "  profile.semanticObservables == semanticProfile.semanticObservables &&\n"
+        "  profile.records == proofIr.trustedBoundaryRecords &&\n"
+        "  profile.records == cert.trustedBoundaries &&\n"
+        "  profile.records == semanticProfile.trustedBoundaries &&\n"
+        "  profile.trustedBoundaryGaps == cert.trustedBoundaryGaps &&\n"
+        "  profile.trustedBoundaryGaps == cert.trustedBoundaryProfileGaps &&\n"
+        "  profile.trustedBoundaryGaps == semanticProfile.trustedBoundaryGaps &&\n"
+        "  profile.allowedRecords == profile.records &&\n"
+        "  profile.recordsWithHash == profile.records &&\n"
+        "  profile.incompleteRecords == 0 &&\n"
+        "  decide (profile.modelAllowedBoundaries > 0) &&\n"
+        "  profile.unknownModelBoundaries == 0 &&\n"
+        "  profile.duplicateModelBoundaries == 0 &&\n"
+        "  profile.trustedBoundaryGaps == 0 &&\n"
+        "  profile.trustedBoundaryInventoryFormatMatches &&\n"
+        "  profile.trustedBoundaryInventoryStatusSatisfied &&\n"
+        "  profile.modelBoundariesPresent &&\n"
+        "  profile.modelBoundariesKnown &&\n"
+        "  profile.modelBoundaryNamesUnique &&\n"
+        "  profile.recordCountsMatch &&\n"
+        "  profile.recordStatusCountsMatch &&\n"
+        "  profile.recordsAllowed &&\n"
+        "  profile.recordsHashed &&\n"
+        "  profile.recordsGapFree\n\n"
+        "def profileManifestClosed\n"
+        "    (cert : ClosureCertificateCounts)\n"
+        "    (profile : ProfileManifest) : Bool :=\n"
+        "  decide (profile.requiredProfiles > 0) &&\n"
+        "  profile.presentProfiles == profile.requiredProfiles &&\n"
+        "  profile.satisfiedProfiles + profile.notApplicableProfiles == profile.requiredProfiles &&\n"
+        "  profile.rowsWithSchema == profile.requiredProfiles &&\n"
+        "  profile.rowsWithHash == profile.requiredProfiles &&\n"
+        "  profile.rowsWithAcceptedStatus == profile.requiredProfiles &&\n"
+        "  profile.rowsWithChecks == profile.requiredProfiles &&\n"
+        "  profile.profileManifestGaps == cert.profileManifestGaps &&\n"
+        "  profile.profileManifestGaps == 0 &&\n"
+        "  profile.profileManifestSchemaMatches &&\n"
+        "  profile.requiredProfilesPresent &&\n"
+        "  profile.profileSchemasMatch &&\n"
+        "  profile.profileHashesPresent &&\n"
+        "  profile.profileStatusesAccepted &&\n"
+        "  profile.profileChecksClosed &&\n"
+        "  profile.profileManifestGapsClosed\n\n"
+        "def instructionSemanticsProfileClosed\n"
+        "    (proofIr : ProofIrCounts)\n"
+        "    (cert : ClosureCertificateCounts)\n"
+        "    (semanticProfile : SemanticObservableProfile)\n"
+        "    (profile : InstructionSemanticsProfile) : Bool :=\n"
+        "  profile.instructionSemanticsRecords == proofIr.instructionSemanticsRecords &&\n"
+        "  profile.instructionSemanticsRecords == cert.instructionSemanticsRecords &&\n"
+        "  profile.decodedInstructionBlockSemantics == cert.decodedInstructionBlockSemantics &&\n"
+        "  profile.decodedInstructionBlockSemantics == profile.instructionSemanticsRecords &&\n"
+        "  profile.satisfiedRecords == profile.instructionSemanticsRecords &&\n"
+        "  profile.incompleteRecords == 0 &&\n"
+        "  profile.decodedInstructionIdentityRecords +\n"
+        "    profile.peImportThunkSemanticsRecords +\n"
+        "    profile.unknownSemanticsRecords == profile.instructionSemanticsRecords &&\n"
+        "  decide (profile.instructionSemanticsRecords <= semanticProfile.semanticObservables) &&\n"
+        "  profile.unknownSemanticsRecords == 0 &&\n"
+        "  profile.instructionSemanticsGaps == cert.instructionSemanticsGaps &&\n"
+        "  profile.instructionSemanticsGaps == 0 &&\n"
+        "  profile.originalDecodeStatusGaps == 0 &&\n"
+        "  profile.candidateDecodeStatusGaps == 0 &&\n"
+        "  profile.originalHashGaps == 0 &&\n"
+        "  profile.candidateHashGaps == 0 &&\n"
+        "  profile.decodedByteHashMismatches == 0 &&\n"
+        "  profile.blockSemanticsRecordHashGaps == 0 &&\n"
+        "  profile.missingInstructionSemanticsRecords == 0\n\n"
+        "def solverEvidenceProfileClosed\n"
+        "    (runtime : RuntimeProofCounts)\n"
+        "    (proofIr : ProofIrCounts)\n"
+        "    (cert : ClosureCertificateCounts)\n"
+        "    (semanticProfile : SemanticObservableProfile)\n"
+        "    (profile : SolverEvidenceProfile) : Bool :=\n"
+        "  profile.proofCacheEntries == runtime.proofCacheEntries &&\n"
+        "  profile.solverEvidenceEntries == runtime.solverEvidenceEntries &&\n"
+        "  profile.solverEvidenceIndexEntries == runtime.solverEvidenceEntries &&\n"
+        "  profile.solverEvidenceEntries == proofIr.solverEvidenceEntries &&\n"
+        "  profile.solverEvidenceEntries == cert.solverEvidenceEntries &&\n"
+        "  profile.solverClaims == proofIr.solverClaimRecords &&\n"
+        "  profile.solverClaims == cert.solverClaims &&\n"
+        "  profile.solverClaims == semanticProfile.solverClaims &&\n"
+        "  profile.solverClaimGaps == cert.solverClaimGaps &&\n"
+        "  profile.solverClaimGaps == semanticProfile.solverClaimGaps &&\n"
+        "  profile.satisfiedEntries == profile.solverEvidenceEntries &&\n"
+        "  profile.incompleteEntries == 0 &&\n"
+        "  profile.structuralByteIdentityEntries +\n"
+        "    profile.checkedGeneratedMappingEntries +\n"
+        "    profile.peImportThunkEntries +\n"
+        "    profile.trustedZ3UnsatEntries +\n"
+        "    profile.z3CounterexampleEntries +\n"
+        "    profile.z3SymbolicIncompleteEntries +\n"
+        "    profile.missingProofCacheEntries +\n"
+        "    profile.unreadableProofCacheEntries +\n"
+        "    profile.unknownProofCacheEntries == profile.solverEvidenceEntries &&\n"
+        "  profile.trustedZ3UnsatEntries == profile.trustedZ3UnsatClaims &&\n"
+        "  profile.solverClaims == profile.trustedZ3UnsatClaims + profile.localSymbolicClaims &&\n"
+        "  profile.solverClaimsWithQueryHash == profile.solverClaims &&\n"
+        "  profile.solverEvidenceQueryHashGaps == 0 &&\n"
+        "  profile.solverEvidenceQueryHashMismatches == 0 &&\n"
+        "  profile.solverEvidenceFileMissing == 0 &&\n"
+        "  profile.solverEvidenceFileHashMismatches == 0 &&\n"
+        "  profile.solverEvidenceIndexFileMissing == 0 &&\n"
+        "  profile.solverEvidenceIndexHashMismatches == 0 &&\n"
+        "  profile.solverEvidenceJsonlParseGaps == 0 &&\n"
+        "  profile.solverEvidenceEntryHashMismatches == 0 &&\n"
+        "  profile.solverEvidenceIndexEntryHashMismatches == 0 &&\n"
+        "  profile.z3CounterexampleEntries == 0 &&\n"
+        "  profile.z3SymbolicIncompleteEntries == 0 &&\n"
+        "  profile.missingProofCacheEntries == 0 &&\n"
+        "  profile.unreadableProofCacheEntries == 0 &&\n"
+        "  profile.unknownProofCacheEntries == 0 &&\n"
+        "  profile.solverClaimGaps == 0 &&\n"
+        "  profile.solverEvidenceEntryGaps == 0\n\n"
+        "def solverBackendProfileClosed\n"
+        "    (semanticProfile : SemanticObservableProfile)\n"
+        "    (solverProfile : SolverEvidenceProfile)\n"
+        "    (profile : SolverBackendProfile) : Bool :=\n"
+        "  profile.solverEvidenceEntries == solverProfile.solverEvidenceEntries &&\n"
+        "  profile.trustedZ3UnsatEntries == solverProfile.trustedZ3UnsatEntries &&\n"
+        "  profile.solverClaims == solverProfile.solverClaims &&\n"
+        "  profile.solverClaims == semanticProfile.solverClaims &&\n"
+        "  profile.trustedZ3UnsatClaims == solverProfile.trustedZ3UnsatClaims &&\n"
+        "  decide (profile.solverBackedEvidenceEntries <= profile.solverEvidenceEntries) &&\n"
+        "  decide (profile.trustedZ3UnsatEntries <= profile.solverBackedEvidenceEntries) &&\n"
+        "  profile.solverEvidenceWithBackend == profile.solverBackedEvidenceEntries &&\n"
+        "  profile.solverClaimsWithBackend == profile.solverClaims &&\n"
+        "  profile.trustedZ3WithZ3Backend == profile.trustedZ3UnsatEntries + profile.trustedZ3UnsatClaims &&\n"
+        "  profile.missingBackendEntries == 0 &&\n"
+        "  profile.missingBackendClaims == 0 &&\n"
+        "  profile.backendHashMismatches == 0 &&\n"
+        "  profile.unknownSolverBackends == 0 &&\n"
+        "  profile.backendGaps == 0 &&\n"
+        "  profile.solverBackedEvidenceHasBackend &&\n"
+        "  profile.solverClaimsHaveBackend &&\n"
+        "  profile.solverClaimBackendHashesMatchEvidence &&\n"
+        "  profile.trustedZ3UsesZ3Backend &&\n"
+        "  profile.backendGapsClosed\n\n"
         "end StageA\n",
         encoding="utf-8",
     )
@@ -15487,6 +18918,949 @@ def _write_lean_files(
     proof_cache_count = len(proof_cache)
     closed_literal = "true" if closed else "false"
     unchecked_literal = "true" if no_unchecked_assumptions else "false"
+    proof_ir_present_literal = "true" if proof_ir_present else "false"
+    proof_ir_model_hash_bound_literal = "true" if proof_ir_model_hash_bound else "false"
+    proof_ir_target_profile_closed_literal = "true" if proof_ir_target_profile_closed else "false"
+    proof_ir_loader_frontend_profile_closed_literal = "true" if proof_ir_loader_frontend_profile_closed else "false"
+    proof_ir_closure_certificate_closed_literal = "true" if proof_ir_closure_certificate_closed else "false"
+    proof_ir_loader_profile_closed_literal = "true" if proof_ir_loader_profile_closed else "false"
+    proof_ir_coverage_profile_closed_literal = "true" if proof_ir_coverage_profile_closed else "false"
+    proof_ir_proof_rule_profile_closed_literal = "true" if proof_ir_proof_rule_profile_closed else "false"
+    proof_ir_mapping_profile_closed_literal = "true" if proof_ir_mapping_profile_closed else "false"
+    proof_ir_cfg_profile_closed_literal = "true" if proof_ir_cfg_profile_closed else "false"
+    proof_ir_reachability_profile_closed_literal = "true" if proof_ir_reachability_profile_closed else "false"
+    proof_ir_environment_profile_closed_literal = "true" if proof_ir_environment_profile_closed else "false"
+    proof_ir_instruction_profile_closed_literal = "true" if proof_ir_instruction_profile_closed else "false"
+    proof_ir_semantic_profile_closed_literal = "true" if proof_ir_semantic_profile_closed else "false"
+    proof_ir_solver_evidence_profile_closed_literal = "true" if proof_ir_solver_evidence_profile_closed else "false"
+    proof_ir_solver_backend_profile_closed_literal = "true" if proof_ir_solver_backend_profile_closed else "false"
+    proof_ir_trusted_boundary_profile_closed_literal = "true" if proof_ir_trusted_boundary_profile_closed else "false"
+    proof_ir_profile_manifest_closed_literal = "true" if proof_ir_profile_manifest_closed else "false"
+    solver_evidence_closed_literal = "true" if solver_evidence_closed else "false"
+    solver_evidence_count = int((solver_evidence.get("counts") if isinstance(solver_evidence.get("counts"), dict) else {}).get("entries") or 0)
+    proof_ir_obligation_count = int((proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}).get("obligations") or 0)
+    proof_ir_proof_cache_count = int((proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}).get("proof_cache_entries") or 0)
+    proof_ir_solver_evidence_count = int((proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}).get("solver_evidence_entries") or 0)
+    proof_ir_block_semantics_count = int((proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}).get("block_semantics_records") or 0)
+    proof_ir_instruction_semantics_count = int(
+        (proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}).get("instruction_semantics_records") or 0
+    )
+    proof_ir_proof_artifact_binding_count = int(
+        (proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}).get("proof_artifact_binding_records") or 0
+    )
+    proof_ir_semantic_observable_count = int(
+        (proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}).get("semantic_observable_records") or 0
+    )
+    proof_ir_solver_claim_count = int(
+        (proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}).get("solver_claim_records") or 0
+    )
+    proof_ir_trusted_boundary_count = int(
+        (proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}).get("trusted_boundary_records") or 0
+    )
+    proof_ir_proof_composition_count = int(
+        (proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}).get("proof_composition_records") or 0
+    )
+    proof_ir_sha256 = str(proof_ir.get("sha256") or "")
+    proof_ir_closure_certificate = proof_ir.get("closure_certificate") if isinstance(proof_ir.get("closure_certificate"), dict) else {}
+    proof_ir_closure_certificate_sha256 = str(proof_ir_closure_certificate.get("sha256") or "")
+    proof_ir_closure_certificate_status = str(proof_ir_closure_certificate.get("status") or "")
+    proof_ir_context = proof_ir.get("proof_context") if isinstance(proof_ir.get("proof_context"), dict) else {}
+    proof_ir_context_sha256 = str(proof_ir_context.get("sha256") or "")
+    proof_ir_context_status = str(proof_ir_context.get("status") or "")
+    proof_ir_context_checks = proof_ir_context.get("checks") if isinstance(proof_ir_context.get("checks"), dict) else {}
+    proof_ir_context_closed_literal = (
+        "true"
+        if proof_ir_context_status == "satisfied"
+        and _is_sha256_hex(proof_ir_context_sha256)
+        and bool(proof_ir_context_checks)
+        and all(value is True for value in proof_ir_context_checks.values())
+        else "false"
+    )
+    proof_ir_closure_certificate_counts = (
+        proof_ir_closure_certificate.get("counts") if isinstance(proof_ir_closure_certificate.get("counts"), dict) else {}
+    )
+    proof_ir_closure_certificate_checks = (
+        proof_ir_closure_certificate.get("checks") if isinstance(proof_ir_closure_certificate.get("checks"), dict) else {}
+    )
+    closure_certificate_obligation_count = int(proof_ir_closure_certificate_counts.get("obligations") or 0)
+    closure_certificate_open_obligation_count = int(proof_ir_closure_certificate_counts.get("open_obligations") or 0)
+    closure_certificate_failure_count = int(proof_ir_closure_certificate_counts.get("failures") or 0)
+    closure_certificate_incomplete_count = int(proof_ir_closure_certificate_counts.get("incomplete") or 0)
+    closure_certificate_proof_cache_entry_count = int(proof_ir_closure_certificate_counts.get("proof_cache_entries") or 0)
+    closure_certificate_solver_evidence_entry_count = int(proof_ir_closure_certificate_counts.get("solver_evidence_entries") or 0)
+    closure_certificate_proof_backed_obligation_count = int(proof_ir_closure_certificate_counts.get("proof_backed_obligations") or 0)
+    closure_certificate_proof_backing_gap_count = int(proof_ir_closure_certificate_counts.get("proof_backing_gaps") or 0)
+    closure_certificate_proof_cache_evidence_gap_count = int(proof_ir_closure_certificate_counts.get("proof_cache_evidence_gaps") or 0)
+    closure_certificate_proof_cache_profile_gap_count = int(proof_ir_closure_certificate_counts.get("proof_cache_profile_gaps") or 0)
+    closure_certificate_solver_backend_profile_gap_count = int(
+        proof_ir_closure_certificate_counts.get("solver_backend_profile_gaps") or 0
+    )
+    closure_certificate_solver_unknown_obligation_gap_count = int(
+        proof_ir_closure_certificate_counts.get("solver_unknown_obligation_gaps") or 0
+    )
+    closure_certificate_proof_artifact_binding_count = int(proof_ir_closure_certificate_counts.get("proof_artifact_bindings") or 0)
+    closure_certificate_evidence_binding_gap_count = int(proof_ir_closure_certificate_counts.get("evidence_binding_gaps") or 0)
+    closure_certificate_semantic_observable_count = int(proof_ir_closure_certificate_counts.get("semantic_observables") or 0)
+    closure_certificate_semantic_observable_gap_count = int(proof_ir_closure_certificate_counts.get("semantic_observable_gaps") or 0)
+    closure_certificate_solver_claim_count = int(proof_ir_closure_certificate_counts.get("solver_claims") or 0)
+    closure_certificate_solver_claim_gap_count = int(proof_ir_closure_certificate_counts.get("solver_claim_gaps") or 0)
+    closure_certificate_trusted_boundary_count = int(proof_ir_closure_certificate_counts.get("trusted_boundaries") or 0)
+    closure_certificate_trusted_boundary_gap_count = int(proof_ir_closure_certificate_counts.get("trusted_boundary_gaps") or 0)
+    closure_certificate_trusted_boundary_profile_gap_count = int(
+        proof_ir_closure_certificate_counts.get("trusted_boundary_profile_gaps") or 0
+    )
+    closure_certificate_profile_manifest_gap_count = int(proof_ir_closure_certificate_counts.get("profile_manifest_gaps") or 0)
+    closure_certificate_proof_composition_count = int(proof_ir_closure_certificate_counts.get("proof_composition_records") or 0)
+    closure_certificate_proof_composition_gap_count = int(proof_ir_closure_certificate_counts.get("proof_composition_gaps") or 0)
+    closure_certificate_block_semantics_record_count = int(proof_ir_closure_certificate_counts.get("block_semantics_records") or 0)
+    closure_certificate_block_semantics_gap_count = int(proof_ir_closure_certificate_counts.get("block_semantics_gaps") or 0)
+    closure_certificate_block_semantics_unknown_obligation_gap_count = int(
+        proof_ir_closure_certificate_counts.get("block_semantics_unknown_obligation_gaps") or 0
+    )
+    closure_certificate_decoded_instruction_block_semantics_count = int(
+        proof_ir_closure_certificate_counts.get("decoded_instruction_block_semantics") or 0
+    )
+    closure_certificate_instruction_semantics_record_count = int(
+        proof_ir_closure_certificate_counts.get("instruction_semantics_records") or 0
+    )
+    closure_certificate_instruction_semantics_gap_count = int(
+        proof_ir_closure_certificate_counts.get("instruction_semantics_gaps") or 0
+    )
+    closure_certificate_mapping_profile_gap_count = int(proof_ir_closure_certificate_counts.get("mapping_profile_gaps") or 0)
+    closure_certificate_cfg_profile_gap_count = int(proof_ir_closure_certificate_counts.get("cfg_profile_gaps") or 0)
+    closure_certificate_reachability_profile_gap_count = int(proof_ir_closure_certificate_counts.get("reachability_profile_gaps") or 0)
+    closure_certificate_abi_profile_gap_count = int(proof_ir_closure_certificate_counts.get("abi_profile_gaps") or 0)
+    closure_certificate_environment_profile_gap_count = int(proof_ir_closure_certificate_counts.get("environment_profile_gaps") or 0)
+    closure_certificate_check_literals = {
+        name: "true" if proof_ir_closure_certificate_checks.get(name) is True else "false"
+        for name in (
+            "obligations_closed",
+            "no_failures",
+            "no_incomplete_records",
+            "coverage_satisfied",
+            "coverage_profile_satisfied",
+            "proof_cache_profile_satisfied",
+            "solver_backend_profile_satisfied",
+            "proof_rule_profile_satisfied",
+            "mapping_profile_satisfied",
+            "cfg_profile_satisfied",
+            "reachability_profile_satisfied",
+            "abi_profile_satisfied",
+            "environment_profile_satisfied",
+            "solver_evidence_satisfied",
+            "proof_cache_index_hashed",
+            "solver_evidence_hashed",
+            "solver_evidence_index_hashed",
+            "proof_cache_evidence_count_matches",
+            "proved_block_obligations_have_proof_cache",
+            "proved_block_obligations_have_solver_evidence",
+            "proof_cache_entries_have_solver_evidence",
+            "solver_evidence_entries_bind_known_obligations",
+            "proof_artifact_bindings_satisfied",
+            "proof_artifacts_bind_same_obligations",
+            "semantic_observables_satisfied",
+            "proved_block_obligations_have_semantic_observables",
+            "solver_claims_satisfied",
+            "trusted_solver_claims_have_queries",
+            "trusted_boundaries_satisfied",
+            "trusted_boundary_profile_satisfied",
+            "profile_manifest_satisfied",
+            "semantic_claims_use_allowed_trusted_boundaries",
+            "proof_composition_satisfied",
+            "proved_block_obligations_have_composition_records",
+            "block_semantics_satisfied",
+            "proved_block_obligations_have_block_semantics",
+            "block_semantics_records_bind_known_obligations",
+            "instruction_semantics_satisfied",
+            "decoded_block_semantics_have_instruction_semantics",
+        )
+    }
+    proof_ir_target_profile = proof_ir.get("target_profile") if isinstance(proof_ir.get("target_profile"), dict) else {}
+    proof_ir_target_profile_counts = (
+        proof_ir_target_profile.get("counts") if isinstance(proof_ir_target_profile.get("counts"), dict) else {}
+    )
+    proof_ir_target_profile_checks = (
+        proof_ir_target_profile.get("checks") if isinstance(proof_ir_target_profile.get("checks"), dict) else {}
+    )
+    target_profile_schema_entry_count = int(proof_ir_target_profile_counts.get("schema_entries") or 0)
+    target_profile_present_schema_entry_count = int(proof_ir_target_profile_counts.get("present_schema_entries") or 0)
+    target_profile_proof_rule_count = int(proof_ir_target_profile_counts.get("proof_rules") or 0)
+    target_profile_trusted_boundary_count = int(proof_ir_target_profile_counts.get("trusted_boundaries") or 0)
+    target_profile_gap_count = int(proof_ir_target_profile_counts.get("target_gaps") or 0)
+    target_profile_check_literals = {
+        name: "true" if proof_ir_target_profile_checks.get(name) is True else "false"
+        for name in (
+            "model_id_present",
+            "isa_present",
+            "loader_present",
+            "bitness_present",
+            "machine_present",
+            "abi_present",
+            "environment_present",
+            "proof_rules_present",
+            "trusted_boundaries_present",
+            "schema_entries_present",
+            "target_profile_schema_matches",
+            "loader_facts_schema_matches_model",
+            "loader_frontend_profile_schema_matches",
+            "loader_profile_schema_matches",
+            "block_semantics_schema_matches_isa",
+            "instruction_semantics_schema_matches_isa",
+            "semantic_observables_schema_matches_isa",
+            "solver_backend_profile_schema_matches",
+            "trusted_boundary_profile_schema_matches",
+            "profile_manifest_schema_matches",
+            "loader_facts_format_matches_schema",
+            "loader_facts_loader_matches_model",
+            "loader_frontend_profile_status_satisfied",
+            "loader_profile_model_matches",
+            "loader_profile_status_satisfied",
+            "trusted_boundary_profile_status_satisfied",
+        )
+    }
+    proof_ir_loader_profile = proof_ir.get("loader_profile") if isinstance(proof_ir.get("loader_profile"), dict) else {}
+    proof_ir_loader_profile_counts = (
+        proof_ir_loader_profile.get("counts") if isinstance(proof_ir_loader_profile.get("counts"), dict) else {}
+    )
+    proof_ir_loader_profile_checks = (
+        proof_ir_loader_profile.get("checks") if isinstance(proof_ir_loader_profile.get("checks"), dict) else {}
+    )
+    loader_profile_model_bitness_count = int(proof_ir_loader_profile_counts.get("model_bitness") or 0)
+    loader_profile_original_bitness_count = int(proof_ir_loader_profile_counts.get("original_bitness") or 0)
+    loader_profile_candidate_bitness_count = int(proof_ir_loader_profile_counts.get("candidate_bitness") or 0)
+    loader_profile_original_section_count = int(proof_ir_loader_profile_counts.get("original_sections") or 0)
+    loader_profile_candidate_section_count = int(proof_ir_loader_profile_counts.get("candidate_sections") or 0)
+    loader_profile_original_executable_section_count = int(proof_ir_loader_profile_counts.get("original_executable_sections") or 0)
+    loader_profile_candidate_executable_section_count = int(proof_ir_loader_profile_counts.get("candidate_executable_sections") or 0)
+    loader_profile_original_import_count = int(proof_ir_loader_profile_counts.get("original_imports") or 0)
+    loader_profile_candidate_import_count = int(proof_ir_loader_profile_counts.get("candidate_imports") or 0)
+    loader_profile_original_relocation_block_count = int(proof_ir_loader_profile_counts.get("original_relocation_blocks") or 0)
+    loader_profile_candidate_relocation_block_count = int(proof_ir_loader_profile_counts.get("candidate_relocation_blocks") or 0)
+    loader_profile_original_relocation_entry_count = int(proof_ir_loader_profile_counts.get("original_relocation_entries") or 0)
+    loader_profile_candidate_relocation_entry_count = int(proof_ir_loader_profile_counts.get("candidate_relocation_entries") or 0)
+    loader_profile_layout_issue_count = int(proof_ir_loader_profile_counts.get("layout_issues") or 0)
+    loader_profile_layout_blocking_issue_count = int(proof_ir_loader_profile_counts.get("layout_blocking_issues") or 0)
+    loader_profile_original_header_gap_count = int(proof_ir_loader_profile_counts.get("original_header_gaps") or 0)
+    loader_profile_candidate_header_gap_count = int(proof_ir_loader_profile_counts.get("candidate_header_gaps") or 0)
+    loader_profile_original_section_gap_count = int(proof_ir_loader_profile_counts.get("original_section_gaps") or 0)
+    loader_profile_candidate_section_gap_count = int(proof_ir_loader_profile_counts.get("candidate_section_gaps") or 0)
+    loader_profile_original_import_gap_count = int(proof_ir_loader_profile_counts.get("original_import_gaps") or 0)
+    loader_profile_candidate_import_gap_count = int(proof_ir_loader_profile_counts.get("candidate_import_gaps") or 0)
+    loader_profile_original_relocation_gap_count = int(proof_ir_loader_profile_counts.get("original_relocation_gaps") or 0)
+    loader_profile_candidate_relocation_gap_count = int(proof_ir_loader_profile_counts.get("candidate_relocation_gaps") or 0)
+    loader_profile_binary_signature_mismatch_count = int(proof_ir_loader_profile_counts.get("binary_signature_mismatches") or 0)
+    loader_profile_image_base_mismatch_count = int(proof_ir_loader_profile_counts.get("image_base_mismatches") or 0)
+    loader_profile_check_literals = {
+        name: "true" if proof_ir_loader_profile_checks.get(name) is True else "false"
+        for name in (
+            "loader_format_matches_model",
+            "loader_name_matches_model",
+            "original_facts_present",
+            "candidate_facts_present",
+            "original_model_matches",
+            "candidate_model_matches",
+            "layout_compatible",
+            "no_blocking_layout_issues",
+            "headers_present",
+            "sections_present",
+            "executable_sections_present",
+            "imports_match",
+            "imports_present",
+            "relocations_closed",
+            "binary_signatures_match",
+        )
+    }
+    proof_ir_coverage_profile = proof_ir.get("coverage_profile") if isinstance(proof_ir.get("coverage_profile"), dict) else {}
+    proof_ir_coverage_profile_counts = (
+        proof_ir_coverage_profile.get("counts") if isinstance(proof_ir_coverage_profile.get("counts"), dict) else {}
+    )
+    proof_ir_coverage_profile_checks = (
+        proof_ir_coverage_profile.get("checks") if isinstance(proof_ir_coverage_profile.get("checks"), dict) else {}
+    )
+    coverage_profile_coverage_obligation_count = int(proof_ir_coverage_profile_counts.get("coverage_obligations") or 0)
+    coverage_profile_block_equivalence_obligation_count = int(
+        proof_ir_coverage_profile_counts.get("block_equivalence_obligations") or 0
+    )
+    coverage_profile_proved_block_equivalence_obligation_count = int(
+        proof_ir_coverage_profile_counts.get("proved_block_equivalence_obligations") or 0
+    )
+    coverage_profile_waived_noncode_obligation_count = int(proof_ir_coverage_profile_counts.get("waived_noncode_obligations") or 0)
+    coverage_profile_unmapped_coverage_obligation_count = int(
+        proof_ir_coverage_profile_counts.get("unmapped_coverage_obligations") or 0
+    )
+    coverage_profile_failed_coverage_obligation_count = int(proof_ir_coverage_profile_counts.get("failed_coverage_obligations") or 0)
+    coverage_profile_incomplete_coverage_obligation_count = int(
+        proof_ir_coverage_profile_counts.get("incomplete_coverage_obligations") or 0
+    )
+    coverage_profile_out_of_model_coverage_obligation_count = int(
+        proof_ir_coverage_profile_counts.get("out_of_model_coverage_obligations") or 0
+    )
+    coverage_profile_unknown_coverage_status_count = int(
+        proof_ir_coverage_profile_counts.get("unknown_coverage_obligation_statuses") or 0
+    )
+    coverage_profile_open_coverage_obligation_count = int(proof_ir_coverage_profile_counts.get("open_coverage_obligations") or 0)
+    coverage_profile_coverage_gap_count = int(proof_ir_coverage_profile_counts.get("coverage_gaps") or 0)
+    coverage_profile_original_coverage_gap_count = int(proof_ir_coverage_profile_counts.get("original_coverage_gaps") or 0)
+    coverage_profile_candidate_coverage_gap_count = int(proof_ir_coverage_profile_counts.get("candidate_coverage_gaps") or 0)
+    coverage_profile_check_literals = {
+        name: "true" if proof_ir_coverage_profile_checks.get(name) is True else "false"
+        for name in (
+            "coverage_status_satisfied",
+            "coverage_counts_match",
+            "coverage_status_counts_match",
+            "coverage_obligations_classified",
+            "coverage_gaps_closed",
+            "unknown_statuses_closed",
+            "block_equivalence_present",
+            "proved_block_equivalence_within_total",
+        )
+    }
+    proof_ir_proof_cache_profile = proof_ir.get("proof_cache_profile") if isinstance(proof_ir.get("proof_cache_profile"), dict) else {}
+    proof_ir_proof_cache_profile_counts = (
+        proof_ir_proof_cache_profile.get("counts") if isinstance(proof_ir_proof_cache_profile.get("counts"), dict) else {}
+    )
+    proof_ir_proof_cache_profile_checks = (
+        proof_ir_proof_cache_profile.get("checks") if isinstance(proof_ir_proof_cache_profile.get("checks"), dict) else {}
+    )
+    proof_cache_profile_entry_count = int(proof_ir_proof_cache_profile_counts.get("proof_cache_entries") or 0)
+    proof_cache_profile_index_entry_count = int(proof_ir_proof_cache_profile_counts.get("proof_cache_index_entries") or 0)
+    proof_cache_profile_file_missing_count = int(proof_ir_proof_cache_profile_counts.get("proof_cache_file_missing") or 0)
+    proof_cache_profile_file_unreadable_count = int(proof_ir_proof_cache_profile_counts.get("proof_cache_file_unreadable") or 0)
+    proof_cache_profile_payload_hash_mismatch_count = int(
+        proof_ir_proof_cache_profile_counts.get("proof_cache_payload_hash_mismatches") or 0
+    )
+    proof_cache_profile_index_file_missing_count = int(
+        proof_ir_proof_cache_profile_counts.get("proof_cache_index_file_missing") or 0
+    )
+    proof_cache_profile_index_file_hash_mismatch_count = int(
+        proof_ir_proof_cache_profile_counts.get("proof_cache_index_file_hash_mismatches") or 0
+    )
+    proof_cache_profile_index_payload_mismatch_count = int(
+        proof_ir_proof_cache_profile_counts.get("proof_cache_index_payload_mismatches") or 0
+    )
+    proof_cache_profile_index_entry_mismatch_count = int(
+        proof_ir_proof_cache_profile_counts.get("proof_cache_index_entry_mismatches") or 0
+    )
+    proof_cache_profile_duplicate_path_count = int(proof_ir_proof_cache_profile_counts.get("duplicate_proof_cache_paths") or 0)
+    proof_cache_profile_gap_count = int(proof_ir_proof_cache_profile_counts.get("proof_cache_gaps") or 0)
+    proof_cache_profile_check_literals = {
+        name: "true" if proof_ir_proof_cache_profile_checks.get(name) is True else "false"
+        for name in (
+            "proof_cache_index_entries_match",
+            "proof_cache_index_file_present",
+            "proof_cache_index_file_hash_matches",
+            "proof_cache_index_payload_matches",
+            "proof_cache_files_present",
+            "proof_cache_files_readable",
+            "proof_cache_payload_hashes_match",
+            "proof_cache_paths_unique",
+            "proof_cache_gaps_closed",
+        )
+    }
+    proof_ir_proof_rule_profile = proof_ir.get("proof_rule_profile") if isinstance(proof_ir.get("proof_rule_profile"), dict) else {}
+    proof_ir_proof_rule_profile_counts = (
+        proof_ir_proof_rule_profile.get("counts") if isinstance(proof_ir_proof_rule_profile.get("counts"), dict) else {}
+    )
+    proof_ir_proof_rule_profile_checks = (
+        proof_ir_proof_rule_profile.get("checks") if isinstance(proof_ir_proof_rule_profile.get("checks"), dict) else {}
+    )
+    proof_rule_profile_model_rule_count = int(proof_ir_proof_rule_profile_counts.get("model_rules") or 0)
+    proof_rule_profile_obligation_count = int(proof_ir_proof_rule_profile_counts.get("obligations") or 0)
+    proof_rule_profile_obligation_with_rule_count = int(proof_ir_proof_rule_profile_counts.get("obligations_with_rules") or 0)
+    proof_rule_profile_unknown_obligation_rule_count = int(proof_ir_proof_rule_profile_counts.get("unknown_obligation_rules") or 0)
+    proof_rule_profile_block_semantics_record_count = int(proof_ir_proof_rule_profile_counts.get("block_semantics_records") or 0)
+    proof_rule_profile_block_semantics_record_with_rule_count = int(
+        proof_ir_proof_rule_profile_counts.get("block_semantics_records_with_rules") or 0
+    )
+    proof_rule_profile_unknown_block_semantics_rule_count = int(
+        proof_ir_proof_rule_profile_counts.get("unknown_block_semantics_rules") or 0
+    )
+    proof_rule_profile_solver_evidence_entry_count = int(proof_ir_proof_rule_profile_counts.get("solver_evidence_entries") or 0)
+    proof_rule_profile_solver_evidence_entry_with_rule_count = int(
+        proof_ir_proof_rule_profile_counts.get("solver_evidence_entries_with_rules") or 0
+    )
+    proof_rule_profile_unknown_solver_evidence_rule_count = int(
+        proof_ir_proof_rule_profile_counts.get("unknown_solver_evidence_rules") or 0
+    )
+    proof_rule_profile_deprecated_alias_use_count = int(proof_ir_proof_rule_profile_counts.get("deprecated_alias_uses") or 0)
+    proof_rule_profile_unnormalized_deprecated_alias_use_count = int(
+        proof_ir_proof_rule_profile_counts.get("unnormalized_deprecated_alias_uses") or 0
+    )
+    proof_rule_profile_artifact_rule_binding_gap_count = int(
+        proof_ir_proof_rule_profile_counts.get("artifact_rule_binding_gaps") or 0
+    )
+    proof_rule_profile_check_literals = {
+        name: "true" if proof_ir_proof_rule_profile_checks.get(name) is True else "false"
+        for name in (
+            "model_rules_present",
+            "obligation_rules_present",
+            "obligation_rules_known",
+            "block_semantics_rules_present",
+            "block_semantics_rules_known",
+            "solver_evidence_rules_present",
+            "solver_evidence_rules_known",
+            "deprecated_aliases_normalized",
+            "artifact_rule_bindings_closed",
+        )
+    }
+    proof_ir_mapping_profile = proof_ir.get("mapping_profile") if isinstance(proof_ir.get("mapping_profile"), dict) else {}
+    proof_ir_mapping_profile_counts = (
+        proof_ir_mapping_profile.get("counts") if isinstance(proof_ir_mapping_profile.get("counts"), dict) else {}
+    )
+    proof_ir_mapping_profile_checks = (
+        proof_ir_mapping_profile.get("checks") if isinstance(proof_ir_mapping_profile.get("checks"), dict) else {}
+    )
+    mapping_profile_not_applicable_literal = "true" if proof_ir_mapping_profile.get("status") == "not_applicable" else "false"
+    mapping_profile_block_count = int(proof_ir_mapping_profile_counts.get("blocks") or 0)
+    mapping_profile_code_block_count = int(proof_ir_mapping_profile_counts.get("code_blocks") or 0)
+    mapping_profile_non_code_block_count = int(proof_ir_mapping_profile_counts.get("non_code_blocks") or 0)
+    mapping_profile_reachable_block_count = int(proof_ir_mapping_profile_counts.get("reachable_blocks") or 0)
+    mapping_profile_unchecked_invariant_block_count = int(proof_ir_mapping_profile_counts.get("unchecked_invariant_blocks") or 0)
+    mapping_profile_root_entry_count = int(proof_ir_mapping_profile_counts.get("root_entries") or 0)
+    mapping_profile_checked_root_entry_count = int(proof_ir_mapping_profile_counts.get("checked_root_entries") or 0)
+    mapping_profile_unknown_checked_root_entry_count = int(proof_ir_mapping_profile_counts.get("unknown_checked_root_entries") or 0)
+    mapping_profile_mapping_proof_count = int(proof_ir_mapping_profile_counts.get("mapping_proofs") or 0)
+    mapping_profile_checked_mapping_proof_count = int(proof_ir_mapping_profile_counts.get("checked_mapping_proofs") or 0)
+    mapping_profile_unchecked_mapping_proof_count = int(proof_ir_mapping_profile_counts.get("unchecked_mapping_proofs") or 0)
+    mapping_profile_deprecated_mapping_proof_rule_count = int(
+        proof_ir_mapping_profile_counts.get("deprecated_mapping_proof_rules") or 0
+    )
+    mapping_profile_unknown_mapping_proof_rule_count = int(
+        proof_ir_mapping_profile_counts.get("unknown_mapping_proof_rules") or 0
+    )
+    mapping_profile_waiver_count = int(proof_ir_mapping_profile_counts.get("waivers") or 0)
+    mapping_profile_malformed_waiver_count = int(proof_ir_mapping_profile_counts.get("malformed_waivers") or 0)
+    mapping_profile_issue_count = int(proof_ir_mapping_profile_counts.get("issues") or 0)
+    mapping_profile_failed_issue_count = int(proof_ir_mapping_profile_counts.get("failed_issues") or 0)
+    mapping_profile_incomplete_issue_count = int(proof_ir_mapping_profile_counts.get("incomplete_issues") or 0)
+    mapping_profile_malformed_block_count = int(proof_ir_mapping_profile_counts.get("malformed_blocks") or 0)
+    mapping_profile_gap_count = int(proof_ir_mapping_profile_counts.get("mapping_gaps") or 0)
+    mapping_profile_check_literals = {
+        name: "true" if proof_ir_mapping_profile_checks.get(name) is True else "false"
+        for name in (
+            "mapping_contract_present",
+            "mapping_status_satisfied",
+            "mapping_entries_present",
+            "mapping_issues_closed",
+            "mapping_ranges_well_formed",
+            "mapping_invariants_checked",
+            "checked_roots_known",
+            "mapping_proof_rules_known",
+            "mapping_proof_aliases_normalized",
+            "waiver_ranges_well_formed",
+            "mapping_gaps_closed",
+        )
+    }
+    proof_ir_cfg_profile = proof_ir.get("cfg_profile") if isinstance(proof_ir.get("cfg_profile"), dict) else {}
+    proof_ir_cfg_profile_counts = (
+        proof_ir_cfg_profile.get("counts") if isinstance(proof_ir_cfg_profile.get("counts"), dict) else {}
+    )
+    proof_ir_cfg_profile_checks = (
+        proof_ir_cfg_profile.get("checks") if isinstance(proof_ir_cfg_profile.get("checks"), dict) else {}
+    )
+    cfg_profile_block_equivalence_obligation_count = int(proof_ir_cfg_profile_counts.get("block_equivalence_obligations") or 0)
+    cfg_profile_proved_block_equivalence_obligation_count = int(
+        proof_ir_cfg_profile_counts.get("proved_block_equivalence_obligations") or 0
+    )
+    cfg_profile_block_structure_obligation_count = int(proof_ir_cfg_profile_counts.get("block_structure_obligations") or 0)
+    cfg_profile_open_block_structure_obligation_count = int(
+        proof_ir_cfg_profile_counts.get("open_block_structure_obligations") or 0
+    )
+    cfg_profile_direct_cfg_edge_obligation_count = int(proof_ir_cfg_profile_counts.get("direct_cfg_edge_obligations") or 0)
+    cfg_profile_proved_direct_cfg_edge_obligation_count = int(
+        proof_ir_cfg_profile_counts.get("proved_direct_cfg_edge_obligations") or 0
+    )
+    cfg_profile_open_direct_cfg_edge_obligation_count = int(
+        proof_ir_cfg_profile_counts.get("open_direct_cfg_edge_obligations") or 0
+    )
+    cfg_profile_direct_cfg_taken_edge_count = int(proof_ir_cfg_profile_counts.get("direct_cfg_taken_edges") or 0)
+    cfg_profile_direct_cfg_fallthrough_edge_count = int(proof_ir_cfg_profile_counts.get("direct_cfg_fallthrough_edges") or 0)
+    cfg_profile_direct_cfg_jump_edge_count = int(proof_ir_cfg_profile_counts.get("direct_cfg_jump_edges") or 0)
+    cfg_profile_direct_cfg_call_edge_count = int(proof_ir_cfg_profile_counts.get("direct_cfg_call_edges") or 0)
+    cfg_profile_direct_cfg_unknown_edge_kind_count = int(proof_ir_cfg_profile_counts.get("direct_cfg_unknown_edge_kinds") or 0)
+    cfg_profile_proved_direct_with_source_count = int(
+        proof_ir_cfg_profile_counts.get("proved_direct_cfg_edges_with_source_block") or 0
+    )
+    cfg_profile_proved_direct_with_target_count = int(
+        proof_ir_cfg_profile_counts.get("proved_direct_cfg_edges_with_target_block") or 0
+    )
+    cfg_profile_proved_direct_with_original_evidence_count = int(
+        proof_ir_cfg_profile_counts.get("proved_direct_cfg_edges_with_original_evidence") or 0
+    )
+    cfg_profile_proved_direct_with_candidate_evidence_count = int(
+        proof_ir_cfg_profile_counts.get("proved_direct_cfg_edges_with_candidate_evidence") or 0
+    )
+    cfg_profile_indirect_cfg_target_obligation_count = int(
+        proof_ir_cfg_profile_counts.get("indirect_cfg_target_obligations") or 0
+    )
+    cfg_profile_proved_indirect_cfg_target_obligation_count = int(
+        proof_ir_cfg_profile_counts.get("proved_indirect_cfg_target_obligations") or 0
+    )
+    cfg_profile_open_indirect_cfg_target_obligation_count = int(
+        proof_ir_cfg_profile_counts.get("open_indirect_cfg_target_obligations") or 0
+    )
+    cfg_profile_proved_indirect_with_source_count = int(
+        proof_ir_cfg_profile_counts.get("proved_indirect_cfg_targets_with_source_block") or 0
+    )
+    cfg_profile_proved_indirect_with_signature_count = int(
+        proof_ir_cfg_profile_counts.get("proved_indirect_cfg_targets_with_signature") or 0
+    )
+    cfg_profile_proved_indirect_with_original_evidence_count = int(
+        proof_ir_cfg_profile_counts.get("proved_indirect_cfg_targets_with_original_evidence") or 0
+    )
+    cfg_profile_proved_indirect_with_candidate_evidence_count = int(
+        proof_ir_cfg_profile_counts.get("proved_indirect_cfg_targets_with_candidate_evidence") or 0
+    )
+    cfg_profile_indirect_unknown_rule_count = int(
+        proof_ir_cfg_profile_counts.get("indirect_cfg_targets_with_unknown_proof_rule") or 0
+    )
+    cfg_profile_gap_count = int(proof_ir_cfg_profile_counts.get("cfg_gaps") or 0)
+    cfg_profile_check_literals = {
+        name: "true" if proof_ir_cfg_profile_checks.get(name) is True else "false"
+        for name in (
+            "block_structure_obligations_closed",
+            "direct_cfg_edges_closed",
+            "direct_cfg_edge_kinds_known",
+            "direct_cfg_edge_metadata_present",
+            "direct_cfg_edge_evidence_present",
+            "direct_cfg_edges_bind_proved_blocks",
+            "indirect_cfg_targets_closed",
+            "indirect_cfg_target_metadata_present",
+            "indirect_cfg_target_evidence_present",
+            "indirect_cfg_targets_bind_proved_blocks",
+            "indirect_cfg_target_rules_known",
+            "cfg_gaps_closed",
+        )
+    }
+    proof_ir_reachability_profile = (
+        proof_ir.get("reachability_profile") if isinstance(proof_ir.get("reachability_profile"), dict) else {}
+    )
+    proof_ir_reachability_profile_counts = (
+        proof_ir_reachability_profile.get("counts") if isinstance(proof_ir_reachability_profile.get("counts"), dict) else {}
+    )
+    proof_ir_reachability_profile_checks = (
+        proof_ir_reachability_profile.get("checks") if isinstance(proof_ir_reachability_profile.get("checks"), dict) else {}
+    )
+    reachability_profile_block_equivalence_obligation_count = int(
+        proof_ir_reachability_profile_counts.get("block_equivalence_obligations") or 0
+    )
+    reachability_profile_proved_block_equivalence_obligation_count = int(
+        proof_ir_reachability_profile_counts.get("proved_block_equivalence_obligations") or 0
+    )
+    reachability_profile_cfg_edge_obligation_count = int(proof_ir_reachability_profile_counts.get("cfg_edge_obligations") or 0)
+    reachability_profile_proved_cfg_edge_obligation_count = int(
+        proof_ir_reachability_profile_counts.get("proved_cfg_edge_obligations") or 0
+    )
+    reachability_profile_open_cfg_edge_obligation_count = int(
+        proof_ir_reachability_profile_counts.get("open_cfg_edge_obligations") or 0
+    )
+    reachability_profile_reachability_obligation_count = int(
+        proof_ir_reachability_profile_counts.get("reachability_obligations") or 0
+    )
+    reachability_profile_proved_reachability_obligation_count = int(
+        proof_ir_reachability_profile_counts.get("proved_reachability_obligations") or 0
+    )
+    reachability_profile_open_reachability_obligation_count = int(
+        proof_ir_reachability_profile_counts.get("open_reachability_obligations") or 0
+    )
+    reachability_profile_entry_root_count = int(proof_ir_reachability_profile_counts.get("entry_root_reachability") or 0)
+    reachability_profile_checked_root_count = int(proof_ir_reachability_profile_counts.get("checked_root_reachability") or 0)
+    reachability_profile_direct_cfg_count = int(proof_ir_reachability_profile_counts.get("direct_cfg_reachability") or 0)
+    reachability_profile_unknown_rule_count = int(proof_ir_reachability_profile_counts.get("unknown_reachability_rules") or 0)
+    reachability_profile_direct_cfg_with_edge_count = int(
+        proof_ir_reachability_profile_counts.get("direct_cfg_reachability_with_edge_obligation") or 0
+    )
+    reachability_profile_direct_cfg_with_proved_edge_count = int(
+        proof_ir_reachability_profile_counts.get("direct_cfg_reachability_with_proved_edge") or 0
+    )
+    reachability_profile_gap_count = int(proof_ir_reachability_profile_counts.get("reachability_gaps") or 0)
+    reachability_profile_check_literals = {
+        name: "true" if proof_ir_reachability_profile_checks.get(name) is True else "false"
+        for name in (
+            "cfg_edge_obligations_closed",
+            "reachability_obligations_closed",
+            "reachability_rules_known",
+            "reachability_rules_accounted",
+            "direct_cfg_reachability_edges_present",
+            "direct_cfg_reachability_edges_proved",
+            "proved_cfg_edges_bind_proved_blocks",
+            "proved_cfg_edge_targets_have_reachability",
+            "proved_reachability_blocks_proved",
+            "reachability_gaps_closed",
+        )
+    }
+    proof_ir_abi_profile = proof_ir.get("abi_profile") if isinstance(proof_ir.get("abi_profile"), dict) else {}
+    proof_ir_abi_profile_counts = (
+        proof_ir_abi_profile.get("counts") if isinstance(proof_ir_abi_profile.get("counts"), dict) else {}
+    )
+    proof_ir_abi_profile_checks = (
+        proof_ir_abi_profile.get("checks") if isinstance(proof_ir_abi_profile.get("checks"), dict) else {}
+    )
+    abi_profile_original_function_count = int(proof_ir_abi_profile_counts.get("original_functions") or 0)
+    abi_profile_candidate_function_count = int(proof_ir_abi_profile_counts.get("candidate_functions") or 0)
+    abi_profile_original_callsite_count = int(proof_ir_abi_profile_counts.get("original_callsites") or 0)
+    abi_profile_candidate_callsite_count = int(proof_ir_abi_profile_counts.get("candidate_callsites") or 0)
+    abi_profile_original_import_prototype_count = int(proof_ir_abi_profile_counts.get("original_import_prototypes") or 0)
+    abi_profile_candidate_import_prototype_count = int(proof_ir_abi_profile_counts.get("candidate_import_prototypes") or 0)
+    abi_profile_original_hidden_sret_count = int(
+        proof_ir_abi_profile_counts.get("original_hidden_sret_or_out_param_candidates") or 0
+    )
+    abi_profile_candidate_hidden_sret_count = int(
+        proof_ir_abi_profile_counts.get("candidate_hidden_sret_or_out_param_candidates") or 0
+    )
+    abi_profile_original_varargs_count = int(proof_ir_abi_profile_counts.get("original_varargs_candidates") or 0)
+    abi_profile_candidate_varargs_count = int(proof_ir_abi_profile_counts.get("candidate_varargs_candidates") or 0)
+    abi_profile_original_function_pointer_target_count = int(
+        proof_ir_abi_profile_counts.get("original_function_pointer_targets") or 0
+    )
+    abi_profile_candidate_function_pointer_target_count = int(
+        proof_ir_abi_profile_counts.get("candidate_function_pointer_targets") or 0
+    )
+    abi_profile_missing_function_count = int(proof_ir_abi_profile_counts.get("missing_functions") or 0)
+    abi_profile_ambiguous_function_count = int(proof_ir_abi_profile_counts.get("ambiguous_functions") or 0)
+    abi_profile_incomplete_callsite_function_count = int(
+        proof_ir_abi_profile_counts.get("incomplete_callsite_functions") or 0
+    )
+    abi_profile_missing_callsite_count = int(proof_ir_abi_profile_counts.get("missing_callsites") or 0)
+    abi_profile_function_mismatch_count = int(proof_ir_abi_profile_counts.get("function_mismatches") or 0)
+    abi_profile_callsite_mismatch_count = int(proof_ir_abi_profile_counts.get("callsite_mismatches") or 0)
+    abi_profile_gap_count = int(proof_ir_abi_profile_counts.get("abi_gaps") or 0)
+    abi_profile_not_applicable_literal = "true" if proof_ir_abi_profile.get("status") == "not_applicable" else "false"
+    abi_profile_check_literals = {
+        name: "true" if proof_ir_abi_profile_checks.get(name) is True else "false"
+        for name in (
+            "abi_contract_present",
+            "abi_model_known",
+            "abi_contract_status_satisfied",
+            "candidate_evidence_present",
+            "function_counts_match",
+            "callsite_counts_match",
+            "import_prototypes_match",
+            "no_missing_functions",
+            "no_ambiguous_functions",
+            "callsites_complete",
+            "no_function_mismatches",
+            "no_callsite_mismatches",
+            "abi_gaps_closed",
+        )
+    }
+    proof_ir_environment_profile = (
+        proof_ir.get("environment_profile") if isinstance(proof_ir.get("environment_profile"), dict) else {}
+    )
+    proof_ir_environment_profile_counts = (
+        proof_ir_environment_profile.get("counts") if isinstance(proof_ir_environment_profile.get("counts"), dict) else {}
+    )
+    proof_ir_environment_profile_checks = (
+        proof_ir_environment_profile.get("checks") if isinstance(proof_ir_environment_profile.get("checks"), dict) else {}
+    )
+    environment_profile_original_import_count = int(proof_ir_environment_profile_counts.get("original_imports") or 0)
+    environment_profile_candidate_import_count = int(proof_ir_environment_profile_counts.get("candidate_imports") or 0)
+    environment_profile_import_block_semantics_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_block_semantics_records") or 0
+    )
+    environment_profile_import_semantic_observable_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_semantic_observable_records") or 0
+    )
+    environment_profile_import_trusted_boundary_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_trusted_boundary_records") or 0
+    )
+    environment_profile_import_solver_evidence_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_solver_evidence_entries") or 0
+    )
+    environment_profile_import_original_signature_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_semantics_with_original_signature") or 0
+    )
+    environment_profile_import_candidate_signature_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_semantics_with_candidate_signature") or 0
+    )
+    environment_profile_import_matching_signature_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_semantics_with_matching_signatures") or 0
+    )
+    environment_profile_import_original_loader_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_semantics_in_original_loader_imports") or 0
+    )
+    environment_profile_import_candidate_loader_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_semantics_in_candidate_loader_imports") or 0
+    )
+    environment_profile_import_claim_original_hash_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_claims_with_original_signature_hash") or 0
+    )
+    environment_profile_import_claim_candidate_hash_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_claims_with_candidate_signature_hash") or 0
+    )
+    environment_profile_import_claim_matching_hash_count = int(
+        proof_ir_environment_profile_counts.get("import_thunk_claims_with_matching_signature_hashes") or 0
+    )
+    environment_profile_symbolic_claim_count = int(proof_ir_environment_profile_counts.get("symbolic_observable_claims") or 0)
+    environment_profile_solver_claim_count = int(proof_ir_environment_profile_counts.get("solver_claims") or 0)
+    environment_profile_gap_count = int(proof_ir_environment_profile_counts.get("environment_gaps") or 0)
+    environment_profile_check_literals = {
+        name: "true" if proof_ir_environment_profile_checks.get(name) is True else "false"
+        for name in (
+            "environment_model_supported",
+            "loader_import_signatures_match",
+            "loader_import_counts_match",
+            "import_thunk_records_accounted",
+            "import_thunk_semantics_have_signatures",
+            "import_thunk_signatures_match",
+            "import_thunk_semantics_match_loader_imports",
+            "import_thunk_claims_have_signature_hashes",
+            "import_thunk_claim_signature_hashes_match",
+            "symbolic_claims_use_environment_model",
+            "solver_claims_accounted",
+            "environment_gaps_closed",
+        )
+    }
+    proof_ir_instruction_profile = (
+        proof_ir.get("instruction_profile") if isinstance(proof_ir.get("instruction_profile"), dict) else {}
+    )
+    proof_ir_instruction_profile_counts = (
+        proof_ir_instruction_profile.get("counts") if isinstance(proof_ir_instruction_profile.get("counts"), dict) else {}
+    )
+    instruction_profile_instruction_semantics_record_count = int(
+        proof_ir_instruction_profile_counts.get("instruction_semantics_records") or 0
+    )
+    instruction_profile_decoded_instruction_block_semantics_count = int(
+        proof_ir_instruction_profile_counts.get("decoded_instruction_block_semantics") or 0
+    )
+    instruction_profile_satisfied_record_count = int(proof_ir_instruction_profile_counts.get("satisfied_records") or 0)
+    instruction_profile_incomplete_record_count = int(proof_ir_instruction_profile_counts.get("incomplete_records") or 0)
+    instruction_profile_decoded_instruction_identity_count = int(
+        proof_ir_instruction_profile_counts.get("decoded_instruction_identity_records") or 0
+    )
+    instruction_profile_pe_import_thunk_semantics_count = int(
+        proof_ir_instruction_profile_counts.get("pe_import_thunk_semantics_records") or 0
+    )
+    instruction_profile_unknown_semantics_count = int(proof_ir_instruction_profile_counts.get("unknown_semantics_records") or 0)
+    instruction_profile_instruction_semantics_gap_count = int(proof_ir_instruction_profile_counts.get("instruction_semantics_gaps") or 0)
+    instruction_profile_original_decode_status_gap_count = int(proof_ir_instruction_profile_counts.get("original_decode_status_gaps") or 0)
+    instruction_profile_candidate_decode_status_gap_count = int(proof_ir_instruction_profile_counts.get("candidate_decode_status_gaps") or 0)
+    instruction_profile_original_hash_gap_count = int(proof_ir_instruction_profile_counts.get("original_hash_gaps") or 0)
+    instruction_profile_candidate_hash_gap_count = int(proof_ir_instruction_profile_counts.get("candidate_hash_gaps") or 0)
+    instruction_profile_decoded_byte_hash_mismatch_count = int(proof_ir_instruction_profile_counts.get("decoded_byte_hash_mismatches") or 0)
+    instruction_profile_block_semantics_record_hash_gap_count = int(
+        proof_ir_instruction_profile_counts.get("block_semantics_record_hash_gaps") or 0
+    )
+    instruction_profile_missing_instruction_semantics_record_count = int(
+        proof_ir_instruction_profile_counts.get("missing_instruction_semantics_records") or 0
+    )
+    proof_ir_semantic_profile = proof_ir.get("semantic_profile") if isinstance(proof_ir.get("semantic_profile"), dict) else {}
+    proof_ir_semantic_profile_counts = (
+        proof_ir_semantic_profile.get("counts") if isinstance(proof_ir_semantic_profile.get("counts"), dict) else {}
+    )
+    semantic_profile_semantic_observable_count = int(proof_ir_semantic_profile_counts.get("semantic_observables") or 0)
+    semantic_profile_trusted_boundary_count = int(proof_ir_semantic_profile_counts.get("trusted_boundaries") or 0)
+    semantic_profile_solver_claim_count = int(proof_ir_semantic_profile_counts.get("solver_claims") or 0)
+    semantic_profile_decoded_instruction_identity_count = int(proof_ir_semantic_profile_counts.get("decoded_instruction_identity") or 0)
+    semantic_profile_pe_import_thunk_equivalence_count = int(proof_ir_semantic_profile_counts.get("pe_import_thunk_equivalence") or 0)
+    semantic_profile_checked_generated_mapping_assumption_count = int(
+        proof_ir_semantic_profile_counts.get("checked_generated_mapping_assumption") or 0
+    )
+    semantic_profile_symbolic_observable_equivalence_count = int(proof_ir_semantic_profile_counts.get("symbolic_observable_equivalence") or 0)
+    semantic_profile_missing_claim_count = int(proof_ir_semantic_profile_counts.get("missing_claims") or 0)
+    semantic_profile_unknown_claim_count = int(proof_ir_semantic_profile_counts.get("unknown_claims") or 0)
+    semantic_profile_byte_decode_boundary_count = int(proof_ir_semantic_profile_counts.get("byte_identical_instruction_decode_boundaries") or 0)
+    semantic_profile_import_boundary_count = int(
+        proof_ir_semantic_profile_counts.get("pe_import_thunk_signature_equivalence_boundaries") or 0
+    )
+    semantic_profile_mapping_boundary_count = int(proof_ir_semantic_profile_counts.get("checked_layout_preserving_mapping_boundaries") or 0)
+    semantic_profile_z3_boundary_count = int(proof_ir_semantic_profile_counts.get("z3_unsat_local_equivalence_boundaries") or 0)
+    semantic_profile_local_symbolic_boundary_count = int(proof_ir_semantic_profile_counts.get("local_symbolic_equivalence_boundaries") or 0)
+    semantic_profile_missing_boundary_count = int(proof_ir_semantic_profile_counts.get("missing_trusted_boundaries") or 0)
+    semantic_profile_unknown_boundary_count = int(proof_ir_semantic_profile_counts.get("unknown_trusted_boundaries") or 0)
+    semantic_profile_unapproved_boundary_count = int(proof_ir_semantic_profile_counts.get("unapproved_trusted_boundaries") or 0)
+    semantic_profile_semantic_observable_gap_count = int(proof_ir_semantic_profile_counts.get("semantic_observable_gaps") or 0)
+    semantic_profile_trusted_boundary_gap_count = int(proof_ir_semantic_profile_counts.get("trusted_boundary_gaps") or 0)
+    semantic_profile_solver_claim_gap_count = int(proof_ir_semantic_profile_counts.get("solver_claim_gaps") or 0)
+    proof_ir_trusted_boundary_profile = (
+        proof_ir.get("trusted_boundary_profile") if isinstance(proof_ir.get("trusted_boundary_profile"), dict) else {}
+    )
+    proof_ir_trusted_boundary_profile_counts = (
+        proof_ir_trusted_boundary_profile.get("counts")
+        if isinstance(proof_ir_trusted_boundary_profile.get("counts"), dict)
+        else {}
+    )
+    proof_ir_trusted_boundary_profile_checks = (
+        proof_ir_trusted_boundary_profile.get("checks")
+        if isinstance(proof_ir_trusted_boundary_profile.get("checks"), dict)
+        else {}
+    )
+    trusted_boundary_profile_semantic_observable_count = int(
+        proof_ir_trusted_boundary_profile_counts.get("semantic_observables") or 0
+    )
+    trusted_boundary_profile_record_count = int(proof_ir_trusted_boundary_profile_counts.get("records") or 0)
+    trusted_boundary_profile_allowed_record_count = int(
+        proof_ir_trusted_boundary_profile_counts.get("allowed_records") or 0
+    )
+    trusted_boundary_profile_record_hash_count = int(proof_ir_trusted_boundary_profile_counts.get("records_with_hash") or 0)
+    trusted_boundary_profile_incomplete_record_count = int(
+        proof_ir_trusted_boundary_profile_counts.get("incomplete_records") or 0
+    )
+    trusted_boundary_profile_model_allowed_boundary_count = int(
+        proof_ir_trusted_boundary_profile_counts.get("model_allowed_boundaries") or 0
+    )
+    trusted_boundary_profile_unknown_model_boundary_count = int(
+        proof_ir_trusted_boundary_profile_counts.get("unknown_model_boundaries") or 0
+    )
+    trusted_boundary_profile_duplicate_model_boundary_count = int(
+        proof_ir_trusted_boundary_profile_counts.get("duplicate_model_boundaries") or 0
+    )
+    trusted_boundary_profile_gap_count = int(proof_ir_trusted_boundary_profile_counts.get("trusted_boundary_gaps") or 0)
+    trusted_boundary_profile_check_literals = {
+        name: "true" if proof_ir_trusted_boundary_profile_checks.get(name) is True else "false"
+        for name in (
+            "trusted_boundary_inventory_format_matches",
+            "trusted_boundary_inventory_status_satisfied",
+            "model_boundaries_present",
+            "model_boundaries_known",
+            "model_boundary_names_unique",
+            "record_counts_match",
+            "record_status_counts_match",
+            "records_allowed",
+            "records_hashed",
+            "records_gap_free",
+        )
+    }
+    proof_ir_profile_manifest = (
+        proof_ir.get("profile_manifest") if isinstance(proof_ir.get("profile_manifest"), dict) else {}
+    )
+    proof_ir_profile_manifest_counts = (
+        proof_ir_profile_manifest.get("counts") if isinstance(proof_ir_profile_manifest.get("counts"), dict) else {}
+    )
+    proof_ir_profile_manifest_checks = (
+        proof_ir_profile_manifest.get("checks") if isinstance(proof_ir_profile_manifest.get("checks"), dict) else {}
+    )
+    profile_manifest_required_profile_count = int(proof_ir_profile_manifest_counts.get("required_profiles") or 0)
+    profile_manifest_present_profile_count = int(proof_ir_profile_manifest_counts.get("present_profiles") or 0)
+    profile_manifest_satisfied_profile_count = int(proof_ir_profile_manifest_counts.get("satisfied_profiles") or 0)
+    profile_manifest_not_applicable_profile_count = int(proof_ir_profile_manifest_counts.get("not_applicable_profiles") or 0)
+    profile_manifest_rows_with_schema_count = int(proof_ir_profile_manifest_counts.get("rows_with_schema") or 0)
+    profile_manifest_rows_with_hash_count = int(proof_ir_profile_manifest_counts.get("rows_with_hash") or 0)
+    profile_manifest_rows_with_accepted_status_count = int(
+        proof_ir_profile_manifest_counts.get("rows_with_accepted_status") or 0
+    )
+    profile_manifest_rows_with_checks_count = int(proof_ir_profile_manifest_counts.get("rows_with_checks") or 0)
+    profile_manifest_gap_count = int(proof_ir_profile_manifest_counts.get("profile_manifest_gaps") or 0)
+    profile_manifest_check_literals = {
+        name: "true" if proof_ir_profile_manifest_checks.get(name) is True else "false"
+        for name in (
+            "profile_manifest_schema_matches",
+            "required_profiles_present",
+            "profile_schemas_match",
+            "profile_hashes_present",
+            "profile_statuses_accepted",
+            "profile_checks_closed",
+            "profile_manifest_gaps_closed",
+        )
+    }
+    proof_ir_solver_evidence_profile = (
+        proof_ir.get("solver_evidence_profile") if isinstance(proof_ir.get("solver_evidence_profile"), dict) else {}
+    )
+    proof_ir_solver_evidence_profile_counts = (
+        proof_ir_solver_evidence_profile.get("counts") if isinstance(proof_ir_solver_evidence_profile.get("counts"), dict) else {}
+    )
+    solver_profile_proof_cache_entry_count = int(proof_ir_solver_evidence_profile_counts.get("proof_cache_entries") or 0)
+    solver_profile_solver_evidence_entry_count = int(proof_ir_solver_evidence_profile_counts.get("solver_evidence_entries") or 0)
+    solver_profile_solver_evidence_index_entry_count = int(proof_ir_solver_evidence_profile_counts.get("solver_evidence_index_entries") or 0)
+    solver_profile_solver_claim_count = int(proof_ir_solver_evidence_profile_counts.get("solver_claims") or 0)
+    solver_profile_satisfied_entry_count = int(proof_ir_solver_evidence_profile_counts.get("satisfied_entries") or 0)
+    solver_profile_incomplete_entry_count = int(proof_ir_solver_evidence_profile_counts.get("incomplete_entries") or 0)
+    solver_profile_structural_byte_identity_entry_count = int(proof_ir_solver_evidence_profile_counts.get("structural_byte_identity_entries") or 0)
+    solver_profile_checked_generated_mapping_entry_count = int(proof_ir_solver_evidence_profile_counts.get("checked_generated_mapping_entries") or 0)
+    solver_profile_pe_import_thunk_entry_count = int(proof_ir_solver_evidence_profile_counts.get("pe_import_thunk_entries") or 0)
+    solver_profile_trusted_z3_unsat_entry_count = int(proof_ir_solver_evidence_profile_counts.get("trusted_z3_unsat_entries") or 0)
+    solver_profile_z3_counterexample_entry_count = int(proof_ir_solver_evidence_profile_counts.get("z3_counterexample_entries") or 0)
+    solver_profile_z3_symbolic_incomplete_entry_count = int(proof_ir_solver_evidence_profile_counts.get("z3_symbolic_incomplete_entries") or 0)
+    solver_profile_missing_proof_cache_entry_count = int(proof_ir_solver_evidence_profile_counts.get("missing_proof_cache_entries") or 0)
+    solver_profile_unreadable_proof_cache_entry_count = int(proof_ir_solver_evidence_profile_counts.get("unreadable_proof_cache_entries") or 0)
+    solver_profile_unknown_proof_cache_entry_count = int(proof_ir_solver_evidence_profile_counts.get("unknown_proof_cache_entries") or 0)
+    solver_profile_trusted_z3_unsat_claim_count = int(proof_ir_solver_evidence_profile_counts.get("trusted_z3_unsat_claims") or 0)
+    solver_profile_local_symbolic_claim_count = int(proof_ir_solver_evidence_profile_counts.get("local_symbolic_claims") or 0)
+    solver_profile_solver_claim_with_query_hash_count = int(proof_ir_solver_evidence_profile_counts.get("solver_claims_with_query_hash") or 0)
+    solver_profile_solver_evidence_query_hash_gap_count = int(proof_ir_solver_evidence_profile_counts.get("solver_evidence_query_hash_gaps") or 0)
+    solver_profile_solver_evidence_query_hash_mismatch_count = int(
+        proof_ir_solver_evidence_profile_counts.get("solver_evidence_query_hash_mismatches") or 0
+    )
+    solver_profile_solver_evidence_file_missing_count = int(
+        proof_ir_solver_evidence_profile_counts.get("solver_evidence_file_missing") or 0
+    )
+    solver_profile_solver_evidence_file_hash_mismatch_count = int(
+        proof_ir_solver_evidence_profile_counts.get("solver_evidence_file_hash_mismatches") or 0
+    )
+    solver_profile_solver_evidence_index_file_missing_count = int(
+        proof_ir_solver_evidence_profile_counts.get("solver_evidence_index_file_missing") or 0
+    )
+    solver_profile_solver_evidence_index_hash_mismatch_count = int(
+        proof_ir_solver_evidence_profile_counts.get("solver_evidence_index_hash_mismatches") or 0
+    )
+    solver_profile_solver_evidence_jsonl_parse_gap_count = int(
+        proof_ir_solver_evidence_profile_counts.get("solver_evidence_jsonl_parse_gaps") or 0
+    )
+    solver_profile_solver_evidence_entry_hash_mismatch_count = int(
+        proof_ir_solver_evidence_profile_counts.get("solver_evidence_entry_hash_mismatches") or 0
+    )
+    solver_profile_solver_evidence_index_entry_hash_mismatch_count = int(
+        proof_ir_solver_evidence_profile_counts.get("solver_evidence_index_entry_hash_mismatches") or 0
+    )
+    solver_profile_solver_claim_gap_count = int(proof_ir_solver_evidence_profile_counts.get("solver_claim_gaps") or 0)
+    solver_profile_solver_evidence_entry_gap_count = int(proof_ir_solver_evidence_profile_counts.get("solver_evidence_entry_gaps") or 0)
+    proof_ir_solver_backend_profile = (
+        proof_ir.get("solver_backend_profile") if isinstance(proof_ir.get("solver_backend_profile"), dict) else {}
+    )
+    proof_ir_solver_backend_profile_counts = (
+        proof_ir_solver_backend_profile.get("counts") if isinstance(proof_ir_solver_backend_profile.get("counts"), dict) else {}
+    )
+    proof_ir_solver_backend_profile_checks = (
+        proof_ir_solver_backend_profile.get("checks") if isinstance(proof_ir_solver_backend_profile.get("checks"), dict) else {}
+    )
+    solver_backend_profile_solver_evidence_entry_count = int(
+        proof_ir_solver_backend_profile_counts.get("solver_evidence_entries") or 0
+    )
+    solver_backend_profile_solver_backed_evidence_entry_count = int(
+        proof_ir_solver_backend_profile_counts.get("solver_backed_evidence_entries") or 0
+    )
+    solver_backend_profile_trusted_z3_unsat_entry_count = int(
+        proof_ir_solver_backend_profile_counts.get("trusted_z3_unsat_entries") or 0
+    )
+    solver_backend_profile_solver_claim_count = int(proof_ir_solver_backend_profile_counts.get("solver_claims") or 0)
+    solver_backend_profile_trusted_z3_unsat_claim_count = int(
+        proof_ir_solver_backend_profile_counts.get("trusted_z3_unsat_claims") or 0
+    )
+    solver_backend_profile_solver_evidence_with_backend_count = int(
+        proof_ir_solver_backend_profile_counts.get("solver_evidence_with_backend") or 0
+    )
+    solver_backend_profile_solver_claims_with_backend_count = int(
+        proof_ir_solver_backend_profile_counts.get("solver_claims_with_backend") or 0
+    )
+    solver_backend_profile_trusted_z3_with_z3_backend_count = int(
+        proof_ir_solver_backend_profile_counts.get("trusted_z3_with_z3_backend") or 0
+    )
+    solver_backend_profile_missing_backend_entry_count = int(
+        proof_ir_solver_backend_profile_counts.get("missing_backend_entries") or 0
+    )
+    solver_backend_profile_missing_backend_claim_count = int(
+        proof_ir_solver_backend_profile_counts.get("missing_backend_claims") or 0
+    )
+    solver_backend_profile_backend_hash_mismatch_count = int(
+        proof_ir_solver_backend_profile_counts.get("backend_hash_mismatches") or 0
+    )
+    solver_backend_profile_unknown_solver_backend_count = int(
+        proof_ir_solver_backend_profile_counts.get("unknown_solver_backends") or 0
+    )
+    solver_backend_profile_backend_gap_count = int(proof_ir_solver_backend_profile_counts.get("backend_gaps") or 0)
+    solver_backend_profile_check_literals = {
+        name: "true" if proof_ir_solver_backend_profile_checks.get(name) is True else "false"
+        for name in (
+            "solver_backed_evidence_has_backend",
+            "solver_claims_have_backend",
+            "solver_claim_backend_hashes_match_evidence",
+            "trusted_z3_uses_z3_backend",
+            "backend_gaps_closed",
+        )
+    }
+    proof_cache_index_sha256 = str(proof_ir.get("proof_cache_index_sha256") or "")
+    solver_evidence_sha256 = str(solver_evidence.get("sha256") or "")
+    solver_evidence_index_sha256 = str(solver_evidence.get("index_sha256") or "")
     status_counts = {status: 0 for status in OBLIGATION_STATUSES}
     for item in obligations:
         status = str(item.get("status"))
@@ -15494,12 +19868,72 @@ def _write_lean_files(
     closed_status_count = status_counts["proved"] + status_counts["waived_noncode"]
     open_status_count = obligation_count - closed_status_count
     closed_by_status_literal = "true" if open_status_count == 0 else "false"
+    proof_evidence_hashes_present_literal = (
+        "true"
+        if all(
+            _is_sha256_hex(value)
+            for value in (
+                proof_ir_sha256,
+                proof_ir_context_sha256,
+                proof_ir_closure_certificate_sha256,
+                proof_cache_index_sha256,
+                solver_evidence_sha256,
+                solver_evidence_index_sha256,
+            )
+        )
+        else "false"
+    )
+    proof_evidence_binding_literal = "true" if proof_evidence_binding_closed else "false"
     if verdict == "pass":
         theorem = (
             "theorem generatedClosedChecked : generatedSummary.closed = true := by native_decide\n"
             "theorem generatedNoUncheckedAssumptionsChecked : generatedSummary.noUncheckedAssumptions = true := by native_decide\n"
             "theorem generatedObligationStatusesClosed : generatedObligationsClosedByStatus = true := by native_decide\n"
             "theorem generatedObligationStatusCountsAccountedChecked : generatedObligationStatusCountsAccounted = true := by native_decide\n"
+            "theorem generatedProofIrPresentChecked : generatedSummary.proofIrPresent = true := by native_decide\n"
+            "theorem generatedProofIrModelHashBoundChecked : generatedSummary.proofIrModelHashBound = true := by native_decide\n"
+            "theorem generatedProofIrContextBindingChecked : generatedProofIrContextBindingClosed = true := by native_decide\n"
+            "theorem generatedProofIrTargetProfileClosedChecked : generatedSummary.proofIrTargetProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrLoaderFrontendProfileClosedChecked : generatedSummary.proofIrLoaderFrontendProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrClosureCertificateClosedChecked : generatedSummary.proofIrClosureCertificateClosed = true := by native_decide\n"
+            "theorem generatedProofIrLoaderProfileClosedChecked : generatedSummary.proofIrLoaderProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrCoverageProfileClosedChecked : generatedSummary.proofIrCoverageProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrProofCacheProfileClosedChecked : generatedSummary.proofIrProofCacheProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrProofRuleProfileClosedChecked : generatedSummary.proofIrProofRuleProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrMappingProfileClosedChecked : generatedSummary.proofIrMappingProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrCfgProfileClosedChecked : generatedSummary.proofIrCfgProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrReachabilityProfileClosedChecked : generatedSummary.proofIrReachabilityProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrAbiProfileClosedChecked : generatedSummary.proofIrAbiProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrEnvironmentProfileClosedChecked : generatedSummary.proofIrEnvironmentProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrInstructionProfileClosedChecked : generatedSummary.proofIrInstructionProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrSemanticProfileClosedChecked : generatedSummary.proofIrSemanticProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrSolverEvidenceProfileClosedChecked : generatedSummary.proofIrSolverEvidenceProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrSolverBackendProfileClosedChecked : generatedSummary.proofIrSolverBackendProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrTrustedBoundaryProfileClosedChecked : generatedSummary.proofIrTrustedBoundaryProfileClosed = true := by native_decide\n"
+            "theorem generatedProofIrProfileManifestClosedChecked : generatedSummary.proofIrProfileManifestClosed = true := by native_decide\n"
+            "theorem generatedProofIrClosureCertificateStatusChecked : generatedClosureCertificateStatusSatisfied = true := by native_decide\n"
+            "theorem generatedProofIrClosureCertificateCountsChecked : generatedClosureCertificateCountsClosed = true := by native_decide\n"
+            "theorem generatedProofIrClosureCertificateChecksClosedChecked : generatedClosureCertificateChecksClosed = true := by native_decide\n"
+            "theorem generatedTargetProfileChecked : generatedTargetProfileClosed = true := by native_decide\n"
+            "theorem generatedLoaderProfileChecked : generatedLoaderProfileClosed = true := by native_decide\n"
+            "theorem generatedCoverageProfileChecked : generatedCoverageProfileClosed = true := by native_decide\n"
+            "theorem generatedProofCacheProfileChecked : generatedProofCacheProfileClosed = true := by native_decide\n"
+            "theorem generatedProofRuleProfileChecked : generatedProofRuleProfileClosed = true := by native_decide\n"
+            "theorem generatedMappingProfileChecked : generatedMappingProfileClosed = true := by native_decide\n"
+            "theorem generatedCfgProfileChecked : generatedCfgProfileClosed = true := by native_decide\n"
+            "theorem generatedReachabilityProfileChecked : generatedReachabilityProfileClosed = true := by native_decide\n"
+            "theorem generatedAbiProfileChecked : generatedAbiProfileClosed = true := by native_decide\n"
+            "theorem generatedEnvironmentProfileChecked : generatedEnvironmentProfileClosed = true := by native_decide\n"
+            "theorem generatedInstructionSemanticsProfileChecked : generatedInstructionSemanticsProfileClosed = true := by native_decide\n"
+            "theorem generatedSemanticObservableProfileChecked : generatedSemanticObservableProfileClosed = true := by native_decide\n"
+            "theorem generatedSolverEvidenceProfileChecked : generatedSolverEvidenceProfileClosed = true := by native_decide\n"
+            "theorem generatedSolverBackendProfileChecked : generatedSolverBackendProfileClosed = true := by native_decide\n"
+            "theorem generatedTrustedBoundaryProfileChecked : generatedTrustedBoundaryProfileClosed = true := by native_decide\n"
+            "theorem generatedProfileManifestChecked : generatedProfileManifestClosed = true := by native_decide\n"
+            "theorem generatedSolverEvidenceClosedChecked : generatedSummary.solverEvidenceClosed = true := by native_decide\n"
+            "theorem generatedProofIrCountsAccountedChecked : generatedProofIrCountsAccounted = true := by native_decide\n"
+            "theorem generatedProofEvidenceHashesPresentChecked : generatedProofEvidenceHashesPresent = true := by native_decide\n"
+            "theorem generatedProofEvidenceBindingClosedChecked : generatedSummary.proofEvidenceBindingClosed = true := by native_decide\n"
         )
     else:
         theorem = "theorem generatedVerdictNotPass : generatedVerdictIsPass = false := by native_decide\n"
@@ -15507,10 +19941,12 @@ def _write_lean_files(
     (out / "lean" / "StageA" / "Obligations.lean").write_text(
         "-- Generated Stage A checked obligation summary.\n"
         "import StageA.Model\n"
+        "import StageA.ProofIR\n"
         f"{extra_imports}\nnamespace StageA\n\n"
         f"def generatedVerdict : Verdict := Verdict.{lean_verdict}\n"
         f"def generatedVerdictIsPass : Bool := generatedVerdict == Verdict.pass\n"
         f"def generatedObligationCount : Nat := {obligation_count}\n"
+        f"def generatedProofIrObligationCount : Nat := {proof_ir_obligation_count}\n"
         f"def generatedProvedObligationCount : Nat := {status_counts['proved']}\n"
         f"def generatedWaivedNoncodeObligationCount : Nat := {status_counts['waived_noncode']}\n"
         f"def generatedFailedObligationCount : Nat := {status_counts['failed']}\n"
@@ -15519,7 +19955,116 @@ def _write_lean_files(
         f"def generatedOutOfModelObligationCount : Nat := {status_counts['out_of_model']}\n"
         f"def generatedClosedObligationCount : Nat := {closed_status_count}\n"
         f"def generatedOpenObligationCount : Nat := {open_status_count}\n"
+        f"def generatedProofCacheEntryCount : Nat := {proof_cache_count}\n"
+        f"def generatedProofIrProofCacheEntryCount : Nat := {proof_ir_proof_cache_count}\n"
+        f"def generatedSolverEvidenceEntryCount : Nat := {solver_evidence_count}\n"
+        f"def generatedProofIrSolverEvidenceEntryCount : Nat := {proof_ir_solver_evidence_count}\n"
+        f"def generatedProofIrBlockSemanticsRecordCount : Nat := {proof_ir_block_semantics_count}\n"
+        f"def generatedProofIrInstructionSemanticsRecordCount : Nat := {proof_ir_instruction_semantics_count}\n"
+        f"def generatedProofIrProofArtifactBindingRecordCount : Nat := {proof_ir_proof_artifact_binding_count}\n"
+        f"def generatedProofIrSemanticObservableRecordCount : Nat := {proof_ir_semantic_observable_count}\n"
+        f"def generatedProofIrSolverClaimRecordCount : Nat := {proof_ir_solver_claim_count}\n"
+        f"def generatedProofIrTrustedBoundaryRecordCount : Nat := {proof_ir_trusted_boundary_count}\n"
+        f"def generatedProofIrProofCompositionRecordCount : Nat := {proof_ir_proof_composition_count}\n"
+        f"def generatedProofIrSha256 : String := {_lean_string_literal(proof_ir_sha256)}\n"
+        f"def generatedProofIrContextSha256 : String := {_lean_string_literal(proof_ir_context_sha256)}\n"
+        f"def generatedProofIrContextStatus : String := {_lean_string_literal(proof_ir_context_status)}\n"
+        f"def generatedProofIrClosureCertificateSha256 : String := {_lean_string_literal(proof_ir_closure_certificate_sha256)}\n"
+        f"def generatedProofIrClosureCertificateStatus : String := {_lean_string_literal(proof_ir_closure_certificate_status)}\n"
+        f"def generatedClosureCertificateObligationCount : Nat := {closure_certificate_obligation_count}\n"
+        f"def generatedClosureCertificateOpenObligationCount : Nat := {closure_certificate_open_obligation_count}\n"
+        f"def generatedClosureCertificateFailureCount : Nat := {closure_certificate_failure_count}\n"
+        f"def generatedClosureCertificateIncompleteCount : Nat := {closure_certificate_incomplete_count}\n"
+        f"def generatedClosureCertificateProofCacheEntryCount : Nat := {closure_certificate_proof_cache_entry_count}\n"
+        f"def generatedClosureCertificateSolverEvidenceEntryCount : Nat := {closure_certificate_solver_evidence_entry_count}\n"
+        f"def generatedClosureCertificateProofBackedObligationCount : Nat := {closure_certificate_proof_backed_obligation_count}\n"
+        f"def generatedClosureCertificateProofBackingGapCount : Nat := {closure_certificate_proof_backing_gap_count}\n"
+        f"def generatedClosureCertificateProofCacheEvidenceGapCount : Nat := {closure_certificate_proof_cache_evidence_gap_count}\n"
+        f"def generatedClosureCertificateProofCacheProfileGapCount : Nat := {closure_certificate_proof_cache_profile_gap_count}\n"
+        f"def generatedClosureCertificateSolverBackendProfileGapCount : Nat := {closure_certificate_solver_backend_profile_gap_count}\n"
+        f"def generatedClosureCertificateSolverUnknownObligationGapCount : Nat := {closure_certificate_solver_unknown_obligation_gap_count}\n"
+        f"def generatedClosureCertificateProofArtifactBindingCount : Nat := {closure_certificate_proof_artifact_binding_count}\n"
+        f"def generatedClosureCertificateEvidenceBindingGapCount : Nat := {closure_certificate_evidence_binding_gap_count}\n"
+        f"def generatedClosureCertificateSemanticObservableCount : Nat := {closure_certificate_semantic_observable_count}\n"
+        f"def generatedClosureCertificateSemanticObservableGapCount : Nat := {closure_certificate_semantic_observable_gap_count}\n"
+        f"def generatedClosureCertificateSolverClaimCount : Nat := {closure_certificate_solver_claim_count}\n"
+        f"def generatedClosureCertificateSolverClaimGapCount : Nat := {closure_certificate_solver_claim_gap_count}\n"
+        f"def generatedClosureCertificateTrustedBoundaryCount : Nat := {closure_certificate_trusted_boundary_count}\n"
+        f"def generatedClosureCertificateTrustedBoundaryGapCount : Nat := {closure_certificate_trusted_boundary_gap_count}\n"
+        f"def generatedClosureCertificateTrustedBoundaryProfileGapCount : Nat := {closure_certificate_trusted_boundary_profile_gap_count}\n"
+        f"def generatedClosureCertificateProfileManifestGapCount : Nat := {closure_certificate_profile_manifest_gap_count}\n"
+        f"def generatedClosureCertificateProofCompositionCount : Nat := {closure_certificate_proof_composition_count}\n"
+        f"def generatedClosureCertificateProofCompositionGapCount : Nat := {closure_certificate_proof_composition_gap_count}\n"
+        f"def generatedClosureCertificateBlockSemanticsRecordCount : Nat := {closure_certificate_block_semantics_record_count}\n"
+        f"def generatedClosureCertificateBlockSemanticsGapCount : Nat := {closure_certificate_block_semantics_gap_count}\n"
+        f"def generatedClosureCertificateBlockSemanticsUnknownObligationGapCount : Nat := {closure_certificate_block_semantics_unknown_obligation_gap_count}\n"
+        f"def generatedClosureCertificateDecodedInstructionBlockSemanticsCount : Nat := {closure_certificate_decoded_instruction_block_semantics_count}\n"
+        f"def generatedClosureCertificateInstructionSemanticsRecordCount : Nat := {closure_certificate_instruction_semantics_record_count}\n"
+        f"def generatedClosureCertificateInstructionSemanticsGapCount : Nat := {closure_certificate_instruction_semantics_gap_count}\n"
+        f"def generatedClosureCertificateMappingProfileGapCount : Nat := {closure_certificate_mapping_profile_gap_count}\n"
+        f"def generatedClosureCertificateCfgProfileGapCount : Nat := {closure_certificate_cfg_profile_gap_count}\n"
+        f"def generatedClosureCertificateReachabilityProfileGapCount : Nat := {closure_certificate_reachability_profile_gap_count}\n"
+        f"def generatedClosureCertificateAbiProfileGapCount : Nat := {closure_certificate_abi_profile_gap_count}\n"
+        f"def generatedClosureCertificateEnvironmentProfileGapCount : Nat := {closure_certificate_environment_profile_gap_count}\n"
+        f"def generatedClosureCheckObligationsClosed : Bool := {closure_certificate_check_literals['obligations_closed']}\n"
+        f"def generatedClosureCheckNoFailures : Bool := {closure_certificate_check_literals['no_failures']}\n"
+        f"def generatedClosureCheckNoIncompleteRecords : Bool := {closure_certificate_check_literals['no_incomplete_records']}\n"
+        f"def generatedClosureCheckCoverageSatisfied : Bool := {closure_certificate_check_literals['coverage_satisfied']}\n"
+        f"def generatedClosureCheckCoverageProfileSatisfied : Bool := {closure_certificate_check_literals['coverage_profile_satisfied']}\n"
+        f"def generatedClosureCheckProofCacheProfileSatisfied : Bool := {closure_certificate_check_literals['proof_cache_profile_satisfied']}\n"
+        f"def generatedClosureCheckSolverBackendProfileSatisfied : Bool := {closure_certificate_check_literals['solver_backend_profile_satisfied']}\n"
+        f"def generatedClosureCheckProofRuleProfileSatisfied : Bool := {closure_certificate_check_literals['proof_rule_profile_satisfied']}\n"
+        f"def generatedClosureCheckMappingProfileSatisfied : Bool := {closure_certificate_check_literals['mapping_profile_satisfied']}\n"
+        f"def generatedClosureCheckCfgProfileSatisfied : Bool := {closure_certificate_check_literals['cfg_profile_satisfied']}\n"
+        f"def generatedClosureCheckReachabilityProfileSatisfied : Bool := {closure_certificate_check_literals['reachability_profile_satisfied']}\n"
+        f"def generatedClosureCheckAbiProfileSatisfied : Bool := {closure_certificate_check_literals['abi_profile_satisfied']}\n"
+        f"def generatedClosureCheckEnvironmentProfileSatisfied : Bool := {closure_certificate_check_literals['environment_profile_satisfied']}\n"
+        f"def generatedClosureCheckSolverEvidenceSatisfied : Bool := {closure_certificate_check_literals['solver_evidence_satisfied']}\n"
+        f"def generatedClosureCheckProofCacheIndexHashed : Bool := {closure_certificate_check_literals['proof_cache_index_hashed']}\n"
+        f"def generatedClosureCheckSolverEvidenceHashed : Bool := {closure_certificate_check_literals['solver_evidence_hashed']}\n"
+        f"def generatedClosureCheckSolverEvidenceIndexHashed : Bool := {closure_certificate_check_literals['solver_evidence_index_hashed']}\n"
+        f"def generatedClosureCheckProofCacheEvidenceCountMatches : Bool := {closure_certificate_check_literals['proof_cache_evidence_count_matches']}\n"
+        f"def generatedClosureCheckProvedBlockObligationsHaveProofCache : Bool := {closure_certificate_check_literals['proved_block_obligations_have_proof_cache']}\n"
+        f"def generatedClosureCheckProvedBlockObligationsHaveSolverEvidence : Bool := {closure_certificate_check_literals['proved_block_obligations_have_solver_evidence']}\n"
+        f"def generatedClosureCheckProofCacheEntriesHaveSolverEvidence : Bool := {closure_certificate_check_literals['proof_cache_entries_have_solver_evidence']}\n"
+        f"def generatedClosureCheckSolverEvidenceEntriesBindKnownObligations : Bool := {closure_certificate_check_literals['solver_evidence_entries_bind_known_obligations']}\n"
+        f"def generatedClosureCheckProofArtifactBindingsSatisfied : Bool := {closure_certificate_check_literals['proof_artifact_bindings_satisfied']}\n"
+        f"def generatedClosureCheckProofArtifactsBindSameObligations : Bool := {closure_certificate_check_literals['proof_artifacts_bind_same_obligations']}\n"
+        f"def generatedClosureCheckSemanticObservablesSatisfied : Bool := {closure_certificate_check_literals['semantic_observables_satisfied']}\n"
+        f"def generatedClosureCheckProvedBlockObligationsHaveSemanticObservables : Bool := {closure_certificate_check_literals['proved_block_obligations_have_semantic_observables']}\n"
+        f"def generatedClosureCheckSolverClaimsSatisfied : Bool := {closure_certificate_check_literals['solver_claims_satisfied']}\n"
+        f"def generatedClosureCheckTrustedSolverClaimsHaveQueries : Bool := {closure_certificate_check_literals['trusted_solver_claims_have_queries']}\n"
+        f"def generatedClosureCheckTrustedBoundariesSatisfied : Bool := {closure_certificate_check_literals['trusted_boundaries_satisfied']}\n"
+        f"def generatedClosureCheckTrustedBoundaryProfileSatisfied : Bool := {closure_certificate_check_literals['trusted_boundary_profile_satisfied']}\n"
+        f"def generatedClosureCheckProfileManifestSatisfied : Bool := {closure_certificate_check_literals['profile_manifest_satisfied']}\n"
+        f"def generatedClosureCheckSemanticClaimsUseAllowedTrustedBoundaries : Bool := {closure_certificate_check_literals['semantic_claims_use_allowed_trusted_boundaries']}\n"
+        f"def generatedClosureCheckProofCompositionSatisfied : Bool := {closure_certificate_check_literals['proof_composition_satisfied']}\n"
+        f"def generatedClosureCheckProvedBlockObligationsHaveCompositionRecords : Bool := {closure_certificate_check_literals['proved_block_obligations_have_composition_records']}\n"
+        f"def generatedClosureCheckBlockSemanticsSatisfied : Bool := {closure_certificate_check_literals['block_semantics_satisfied']}\n"
+        f"def generatedClosureCheckProvedBlockObligationsHaveBlockSemantics : Bool := {closure_certificate_check_literals['proved_block_obligations_have_block_semantics']}\n"
+        f"def generatedClosureCheckBlockSemanticsRecordsBindKnownObligations : Bool := {closure_certificate_check_literals['block_semantics_records_bind_known_obligations']}\n"
+        f"def generatedClosureCheckInstructionSemanticsSatisfied : Bool := {closure_certificate_check_literals['instruction_semantics_satisfied']}\n"
+        f"def generatedClosureCheckDecodedBlockSemanticsHaveInstructionSemantics : Bool := {closure_certificate_check_literals['decoded_block_semantics_have_instruction_semantics']}\n"
+        f"def generatedProofCacheIndexSha256 : String := {_lean_string_literal(proof_cache_index_sha256)}\n"
+        f"def generatedSolverEvidenceSha256 : String := {_lean_string_literal(solver_evidence_sha256)}\n"
+        f"def generatedSolverEvidenceIndexSha256 : String := {_lean_string_literal(solver_evidence_index_sha256)}\n"
         f"def generatedObligationsClosedByStatus : Bool := {closed_by_status_literal}\n"
+        f"def generatedProofIrPresent : Bool := {proof_ir_present_literal}\n"
+        f"def generatedProofIrModelHashBound : Bool := {proof_ir_model_hash_bound_literal}\n"
+        f"def generatedProofIrContextBindingClosed : Bool := {proof_ir_context_closed_literal}\n"
+        f"def generatedProofIrTargetProfileClosed : Bool := {proof_ir_target_profile_closed_literal}\n"
+        f"def generatedProofIrLoaderFrontendProfileClosed : Bool := {proof_ir_loader_frontend_profile_closed_literal}\n"
+        f"def generatedProofIrClosureCertificateClosed : Bool := {proof_ir_closure_certificate_closed_literal}\n"
+        f"def generatedProofIrLoaderProfileClosed : Bool := {proof_ir_loader_profile_closed_literal}\n"
+        f"def generatedProofIrCoverageProfileClosed : Bool := {proof_ir_coverage_profile_closed_literal}\n"
+        f"def generatedProofIrProofCacheProfileClosed : Bool := {'true' if proof_ir_proof_cache_profile_closed else 'false'}\n"
+        f"def generatedProofIrProofRuleProfileClosed : Bool := {proof_ir_proof_rule_profile_closed_literal}\n"
+        f"def generatedProofIrMappingProfileClosed : Bool := {proof_ir_mapping_profile_closed_literal}\n"
+        f"def generatedProofIrCfgProfileClosed : Bool := {proof_ir_cfg_profile_closed_literal}\n"
+        f"def generatedProofIrReachabilityProfileClosed : Bool := {proof_ir_reachability_profile_closed_literal}\n"
+        f"def generatedProofIrAbiProfileClosed : Bool := {'true' if proof_ir_abi_profile_closed else 'false'}\n"
+        f"def generatedSolverEvidenceClosed : Bool := {solver_evidence_closed_literal}\n"
+        f"def generatedProofEvidenceHashesPresent : Bool := {proof_evidence_hashes_present_literal}\n"
         "def generatedObligationStatusCountsAccounted : Bool :=\n"
         "  generatedObligationCount ==\n"
         "    generatedProvedObligationCount +\n"
@@ -15528,17 +20073,903 @@ def _write_lean_files(
         "    generatedIncompleteObligationCount +\n"
         "    generatedUnmappedObligationCount +\n"
         "    generatedOutOfModelObligationCount\n"
+        "def generatedClosureCertificateStatusSatisfied : Bool :=\n"
+        "  generatedProofIrClosureCertificateStatus == \"satisfied\"\n"
+        "def generatedProofIrContextStatusSatisfied : Bool :=\n"
+        "  generatedProofIrContextStatus == \"satisfied\"\n"
+        "def generatedRuntimeProofCounts : RuntimeProofCounts := {\n"
+        "  obligations := generatedObligationCount,\n"
+        "  proofCacheEntries := generatedProofCacheEntryCount,\n"
+        "  solverEvidenceEntries := generatedSolverEvidenceEntryCount,\n"
+        "  proofBackedObligations := generatedClosureCertificateProofBackedObligationCount\n"
+        "}\n"
+        "def generatedProofIrCounts : ProofIrCounts := {\n"
+        "  obligations := generatedProofIrObligationCount,\n"
+        "  proofCacheEntries := generatedProofIrProofCacheEntryCount,\n"
+        "  solverEvidenceEntries := generatedProofIrSolverEvidenceEntryCount,\n"
+        "  blockSemanticsRecords := generatedProofIrBlockSemanticsRecordCount,\n"
+        "  instructionSemanticsRecords := generatedProofIrInstructionSemanticsRecordCount,\n"
+        "  proofArtifactBindingRecords := generatedProofIrProofArtifactBindingRecordCount,\n"
+        "  semanticObservableRecords := generatedProofIrSemanticObservableRecordCount,\n"
+        "  solverClaimRecords := generatedProofIrSolverClaimRecordCount,\n"
+        "  trustedBoundaryRecords := generatedProofIrTrustedBoundaryRecordCount,\n"
+        "  proofCompositionRecords := generatedProofIrProofCompositionRecordCount\n"
+        "}\n"
+        "def generatedClosureCertificateCounts : ClosureCertificateCounts := {\n"
+        "  obligations := generatedClosureCertificateObligationCount,\n"
+        "  openObligations := generatedClosureCertificateOpenObligationCount,\n"
+        "  failures := generatedClosureCertificateFailureCount,\n"
+        "  incomplete := generatedClosureCertificateIncompleteCount,\n"
+        "  proofCacheEntries := generatedClosureCertificateProofCacheEntryCount,\n"
+        "  solverEvidenceEntries := generatedClosureCertificateSolverEvidenceEntryCount,\n"
+        "  proofBackedObligations := generatedClosureCertificateProofBackedObligationCount,\n"
+        "  proofBackingGaps := generatedClosureCertificateProofBackingGapCount,\n"
+        "  proofCacheEvidenceGaps := generatedClosureCertificateProofCacheEvidenceGapCount,\n"
+        "  proofCacheProfileGaps := generatedClosureCertificateProofCacheProfileGapCount,\n"
+        "  solverBackendProfileGaps := generatedClosureCertificateSolverBackendProfileGapCount,\n"
+        "  solverUnknownObligationGaps := generatedClosureCertificateSolverUnknownObligationGapCount,\n"
+        "  proofArtifactBindings := generatedClosureCertificateProofArtifactBindingCount,\n"
+        "  evidenceBindingGaps := generatedClosureCertificateEvidenceBindingGapCount,\n"
+        "  semanticObservables := generatedClosureCertificateSemanticObservableCount,\n"
+        "  semanticObservableGaps := generatedClosureCertificateSemanticObservableGapCount,\n"
+        "  solverClaims := generatedClosureCertificateSolverClaimCount,\n"
+        "  solverClaimGaps := generatedClosureCertificateSolverClaimGapCount,\n"
+        "  trustedBoundaries := generatedClosureCertificateTrustedBoundaryCount,\n"
+        "  trustedBoundaryGaps := generatedClosureCertificateTrustedBoundaryGapCount,\n"
+        "  trustedBoundaryProfileGaps := generatedClosureCertificateTrustedBoundaryProfileGapCount,\n"
+        "  profileManifestGaps := generatedClosureCertificateProfileManifestGapCount,\n"
+        "  proofCompositionRecords := generatedClosureCertificateProofCompositionCount,\n"
+        "  proofCompositionGaps := generatedClosureCertificateProofCompositionGapCount,\n"
+        "  blockSemanticsRecords := generatedClosureCertificateBlockSemanticsRecordCount,\n"
+        "  blockSemanticsGaps := generatedClosureCertificateBlockSemanticsGapCount,\n"
+        "  blockSemanticsUnknownObligationGaps := generatedClosureCertificateBlockSemanticsUnknownObligationGapCount,\n"
+        "  decodedInstructionBlockSemantics := generatedClosureCertificateDecodedInstructionBlockSemanticsCount,\n"
+        "  instructionSemanticsRecords := generatedClosureCertificateInstructionSemanticsRecordCount,\n"
+        "  instructionSemanticsGaps := generatedClosureCertificateInstructionSemanticsGapCount,\n"
+        "  mappingProfileGaps := generatedClosureCertificateMappingProfileGapCount,\n"
+        "  cfgProfileGaps := generatedClosureCertificateCfgProfileGapCount,\n"
+        "  reachabilityProfileGaps := generatedClosureCertificateReachabilityProfileGapCount,\n"
+        "  abiProfileGaps := generatedClosureCertificateAbiProfileGapCount,\n"
+        "  environmentProfileGaps := generatedClosureCertificateEnvironmentProfileGapCount\n"
+        "}\n"
+        "def generatedClosureCertificateChecks : ClosureCertificateChecks := {\n"
+        "  obligationsClosed := generatedClosureCheckObligationsClosed,\n"
+        "  noFailures := generatedClosureCheckNoFailures,\n"
+        "  noIncompleteRecords := generatedClosureCheckNoIncompleteRecords,\n"
+        "  coverageSatisfied := generatedClosureCheckCoverageSatisfied,\n"
+        "  coverageProfileSatisfied := generatedClosureCheckCoverageProfileSatisfied,\n"
+        "  proofCacheProfileSatisfied := generatedClosureCheckProofCacheProfileSatisfied,\n"
+        "  solverBackendProfileSatisfied := generatedClosureCheckSolverBackendProfileSatisfied,\n"
+        "  proofRuleProfileSatisfied := generatedClosureCheckProofRuleProfileSatisfied,\n"
+        "  mappingProfileSatisfied := generatedClosureCheckMappingProfileSatisfied,\n"
+        "  cfgProfileSatisfied := generatedClosureCheckCfgProfileSatisfied,\n"
+        "  reachabilityProfileSatisfied := generatedClosureCheckReachabilityProfileSatisfied,\n"
+        "  abiProfileSatisfied := generatedClosureCheckAbiProfileSatisfied,\n"
+        "  environmentProfileSatisfied := generatedClosureCheckEnvironmentProfileSatisfied,\n"
+        "  solverEvidenceSatisfied := generatedClosureCheckSolverEvidenceSatisfied,\n"
+        "  proofCacheIndexHashed := generatedClosureCheckProofCacheIndexHashed,\n"
+        "  solverEvidenceHashed := generatedClosureCheckSolverEvidenceHashed,\n"
+        "  solverEvidenceIndexHashed := generatedClosureCheckSolverEvidenceIndexHashed,\n"
+        "  proofCacheEvidenceCountMatches := generatedClosureCheckProofCacheEvidenceCountMatches,\n"
+        "  provedBlockObligationsHaveProofCache := generatedClosureCheckProvedBlockObligationsHaveProofCache,\n"
+        "  provedBlockObligationsHaveSolverEvidence := generatedClosureCheckProvedBlockObligationsHaveSolverEvidence,\n"
+        "  proofCacheEntriesHaveSolverEvidence := generatedClosureCheckProofCacheEntriesHaveSolverEvidence,\n"
+        "  solverEvidenceEntriesBindKnownObligations := generatedClosureCheckSolverEvidenceEntriesBindKnownObligations,\n"
+        "  proofArtifactBindingsSatisfied := generatedClosureCheckProofArtifactBindingsSatisfied,\n"
+        "  proofArtifactsBindSameObligations := generatedClosureCheckProofArtifactsBindSameObligations,\n"
+        "  semanticObservablesSatisfied := generatedClosureCheckSemanticObservablesSatisfied,\n"
+        "  provedBlockObligationsHaveSemanticObservables := generatedClosureCheckProvedBlockObligationsHaveSemanticObservables,\n"
+        "  solverClaimsSatisfied := generatedClosureCheckSolverClaimsSatisfied,\n"
+        "  trustedSolverClaimsHaveQueries := generatedClosureCheckTrustedSolverClaimsHaveQueries,\n"
+        "  trustedBoundariesSatisfied := generatedClosureCheckTrustedBoundariesSatisfied,\n"
+        "  trustedBoundaryProfileSatisfied := generatedClosureCheckTrustedBoundaryProfileSatisfied,\n"
+        "  profileManifestSatisfied := generatedClosureCheckProfileManifestSatisfied,\n"
+        "  semanticClaimsUseAllowedTrustedBoundaries := generatedClosureCheckSemanticClaimsUseAllowedTrustedBoundaries,\n"
+        "  proofCompositionSatisfied := generatedClosureCheckProofCompositionSatisfied,\n"
+        "  provedBlockObligationsHaveCompositionRecords := generatedClosureCheckProvedBlockObligationsHaveCompositionRecords,\n"
+        "  blockSemanticsSatisfied := generatedClosureCheckBlockSemanticsSatisfied,\n"
+        "  provedBlockObligationsHaveBlockSemantics := generatedClosureCheckProvedBlockObligationsHaveBlockSemantics,\n"
+        "  blockSemanticsRecordsBindKnownObligations := generatedClosureCheckBlockSemanticsRecordsBindKnownObligations,\n"
+        "  instructionSemanticsSatisfied := generatedClosureCheckInstructionSemanticsSatisfied,\n"
+        "  decodedBlockSemanticsHaveInstructionSemantics := generatedClosureCheckDecodedBlockSemanticsHaveInstructionSemantics\n"
+        "}\n"
+        "def generatedTargetProfile : TargetProfile := {\n"
+        f"  schemaEntries := {target_profile_schema_entry_count},\n"
+        f"  presentSchemaEntries := {target_profile_present_schema_entry_count},\n"
+        f"  proofRules := {target_profile_proof_rule_count},\n"
+        f"  trustedBoundaries := {target_profile_trusted_boundary_count},\n"
+        f"  targetGaps := {target_profile_gap_count},\n"
+        f"  modelIdPresent := {target_profile_check_literals['model_id_present']},\n"
+        f"  isaPresent := {target_profile_check_literals['isa_present']},\n"
+        f"  loaderPresent := {target_profile_check_literals['loader_present']},\n"
+        f"  bitnessPresent := {target_profile_check_literals['bitness_present']},\n"
+        f"  machinePresent := {target_profile_check_literals['machine_present']},\n"
+        f"  abiPresent := {target_profile_check_literals['abi_present']},\n"
+        f"  environmentPresent := {target_profile_check_literals['environment_present']},\n"
+        f"  proofRulesPresent := {target_profile_check_literals['proof_rules_present']},\n"
+        f"  trustedBoundariesPresent := {target_profile_check_literals['trusted_boundaries_present']},\n"
+        f"  schemaEntriesPresent := {target_profile_check_literals['schema_entries_present']},\n"
+        f"  targetProfileSchemaMatches := {target_profile_check_literals['target_profile_schema_matches']},\n"
+        f"  loaderFactsSchemaMatchesModel := {target_profile_check_literals['loader_facts_schema_matches_model']},\n"
+        f"  loaderFrontendProfileSchemaMatches := {target_profile_check_literals['loader_frontend_profile_schema_matches']},\n"
+        f"  loaderProfileSchemaMatches := {target_profile_check_literals['loader_profile_schema_matches']},\n"
+        f"  blockSemanticsSchemaMatchesIsa := {target_profile_check_literals['block_semantics_schema_matches_isa']},\n"
+        f"  instructionSemanticsSchemaMatchesIsa := {target_profile_check_literals['instruction_semantics_schema_matches_isa']},\n"
+        f"  semanticObservablesSchemaMatchesIsa := {target_profile_check_literals['semantic_observables_schema_matches_isa']},\n"
+        f"  solverBackendProfileSchemaMatches := {target_profile_check_literals['solver_backend_profile_schema_matches']},\n"
+        f"  trustedBoundaryProfileSchemaMatches := {target_profile_check_literals['trusted_boundary_profile_schema_matches']},\n"
+        f"  profileManifestSchemaMatches := {target_profile_check_literals['profile_manifest_schema_matches']},\n"
+        f"  loaderFactsFormatMatchesSchema := {target_profile_check_literals['loader_facts_format_matches_schema']},\n"
+        f"  loaderFactsLoaderMatchesModel := {target_profile_check_literals['loader_facts_loader_matches_model']},\n"
+        f"  loaderFrontendProfileStatusSatisfied := {target_profile_check_literals['loader_frontend_profile_status_satisfied']},\n"
+        f"  loaderProfileModelMatches := {target_profile_check_literals['loader_profile_model_matches']},\n"
+        f"  loaderProfileStatusSatisfied := {target_profile_check_literals['loader_profile_status_satisfied']},\n"
+        f"  trustedBoundaryProfileStatusSatisfied := {target_profile_check_literals['trusted_boundary_profile_status_satisfied']}\n"
+        "}\n"
+        "def generatedLoaderProfile : LoaderProfile := {\n"
+        f"  modelBitness := {loader_profile_model_bitness_count},\n"
+        f"  originalBitness := {loader_profile_original_bitness_count},\n"
+        f"  candidateBitness := {loader_profile_candidate_bitness_count},\n"
+        f"  originalSections := {loader_profile_original_section_count},\n"
+        f"  candidateSections := {loader_profile_candidate_section_count},\n"
+        f"  originalExecutableSections := {loader_profile_original_executable_section_count},\n"
+        f"  candidateExecutableSections := {loader_profile_candidate_executable_section_count},\n"
+        f"  originalImports := {loader_profile_original_import_count},\n"
+        f"  candidateImports := {loader_profile_candidate_import_count},\n"
+        f"  originalRelocationBlocks := {loader_profile_original_relocation_block_count},\n"
+        f"  candidateRelocationBlocks := {loader_profile_candidate_relocation_block_count},\n"
+        f"  originalRelocationEntries := {loader_profile_original_relocation_entry_count},\n"
+        f"  candidateRelocationEntries := {loader_profile_candidate_relocation_entry_count},\n"
+        f"  layoutIssues := {loader_profile_layout_issue_count},\n"
+        f"  layoutBlockingIssues := {loader_profile_layout_blocking_issue_count},\n"
+        f"  originalHeaderGaps := {loader_profile_original_header_gap_count},\n"
+        f"  candidateHeaderGaps := {loader_profile_candidate_header_gap_count},\n"
+        f"  originalSectionGaps := {loader_profile_original_section_gap_count},\n"
+        f"  candidateSectionGaps := {loader_profile_candidate_section_gap_count},\n"
+        f"  originalImportGaps := {loader_profile_original_import_gap_count},\n"
+        f"  candidateImportGaps := {loader_profile_candidate_import_gap_count},\n"
+        f"  originalRelocationGaps := {loader_profile_original_relocation_gap_count},\n"
+        f"  candidateRelocationGaps := {loader_profile_candidate_relocation_gap_count},\n"
+        f"  binarySignatureMismatches := {loader_profile_binary_signature_mismatch_count},\n"
+        f"  imageBaseMismatches := {loader_profile_image_base_mismatch_count},\n"
+        f"  loaderFormatMatchesModel := {loader_profile_check_literals['loader_format_matches_model']},\n"
+        f"  loaderNameMatchesModel := {loader_profile_check_literals['loader_name_matches_model']},\n"
+        f"  originalFactsPresent := {loader_profile_check_literals['original_facts_present']},\n"
+        f"  candidateFactsPresent := {loader_profile_check_literals['candidate_facts_present']},\n"
+        f"  originalModelMatches := {loader_profile_check_literals['original_model_matches']},\n"
+        f"  candidateModelMatches := {loader_profile_check_literals['candidate_model_matches']},\n"
+        f"  layoutCompatible := {loader_profile_check_literals['layout_compatible']},\n"
+        f"  noBlockingLayoutIssues := {loader_profile_check_literals['no_blocking_layout_issues']},\n"
+        f"  headersPresent := {loader_profile_check_literals['headers_present']},\n"
+        f"  sectionsPresent := {loader_profile_check_literals['sections_present']},\n"
+        f"  executableSectionsPresent := {loader_profile_check_literals['executable_sections_present']},\n"
+        f"  importsMatch := {loader_profile_check_literals['imports_match']},\n"
+        f"  importsPresent := {loader_profile_check_literals['imports_present']},\n"
+        f"  relocationsClosed := {loader_profile_check_literals['relocations_closed']},\n"
+        f"  binarySignaturesMatch := {loader_profile_check_literals['binary_signatures_match']}\n"
+        "}\n"
+        "def generatedCoverageProfile : CoverageProfile := {\n"
+        f"  coverageObligations := {coverage_profile_coverage_obligation_count},\n"
+        f"  blockEquivalenceObligations := {coverage_profile_block_equivalence_obligation_count},\n"
+        f"  provedBlockEquivalenceObligations := {coverage_profile_proved_block_equivalence_obligation_count},\n"
+        f"  waivedNoncodeObligations := {coverage_profile_waived_noncode_obligation_count},\n"
+        f"  unmappedCoverageObligations := {coverage_profile_unmapped_coverage_obligation_count},\n"
+        f"  failedCoverageObligations := {coverage_profile_failed_coverage_obligation_count},\n"
+        f"  incompleteCoverageObligations := {coverage_profile_incomplete_coverage_obligation_count},\n"
+        f"  outOfModelCoverageObligations := {coverage_profile_out_of_model_coverage_obligation_count},\n"
+        f"  unknownCoverageObligationStatuses := {coverage_profile_unknown_coverage_status_count},\n"
+        f"  openCoverageObligations := {coverage_profile_open_coverage_obligation_count},\n"
+        f"  coverageGaps := {coverage_profile_coverage_gap_count},\n"
+        f"  originalCoverageGaps := {coverage_profile_original_coverage_gap_count},\n"
+        f"  candidateCoverageGaps := {coverage_profile_candidate_coverage_gap_count},\n"
+        f"  coverageStatusSatisfied := {coverage_profile_check_literals['coverage_status_satisfied']},\n"
+        f"  coverageCountsMatch := {coverage_profile_check_literals['coverage_counts_match']},\n"
+        f"  coverageStatusCountsMatch := {coverage_profile_check_literals['coverage_status_counts_match']},\n"
+        f"  coverageObligationsClassified := {coverage_profile_check_literals['coverage_obligations_classified']},\n"
+        f"  coverageGapsClosed := {coverage_profile_check_literals['coverage_gaps_closed']},\n"
+        f"  unknownStatusesClosed := {coverage_profile_check_literals['unknown_statuses_closed']},\n"
+        f"  blockEquivalencePresent := {coverage_profile_check_literals['block_equivalence_present']},\n"
+        f"  provedBlockEquivalenceWithinTotal := {coverage_profile_check_literals['proved_block_equivalence_within_total']}\n"
+        "}\n"
+        "def generatedProofCacheProfile : ProofCacheProfile := {\n"
+        f"  proofCacheEntries := {proof_cache_profile_entry_count},\n"
+        f"  proofCacheIndexEntries := {proof_cache_profile_index_entry_count},\n"
+        f"  proofCacheFileMissing := {proof_cache_profile_file_missing_count},\n"
+        f"  proofCacheFileUnreadable := {proof_cache_profile_file_unreadable_count},\n"
+        f"  proofCachePayloadHashMismatches := {proof_cache_profile_payload_hash_mismatch_count},\n"
+        f"  proofCacheIndexFileMissing := {proof_cache_profile_index_file_missing_count},\n"
+        f"  proofCacheIndexFileHashMismatches := {proof_cache_profile_index_file_hash_mismatch_count},\n"
+        f"  proofCacheIndexPayloadMismatches := {proof_cache_profile_index_payload_mismatch_count},\n"
+        f"  proofCacheIndexEntryMismatches := {proof_cache_profile_index_entry_mismatch_count},\n"
+        f"  duplicateProofCachePaths := {proof_cache_profile_duplicate_path_count},\n"
+        f"  proofCacheGaps := {proof_cache_profile_gap_count},\n"
+        f"  proofCacheIndexEntriesMatch := {proof_cache_profile_check_literals['proof_cache_index_entries_match']},\n"
+        f"  proofCacheIndexFilePresent := {proof_cache_profile_check_literals['proof_cache_index_file_present']},\n"
+        f"  proofCacheIndexFileHashMatches := {proof_cache_profile_check_literals['proof_cache_index_file_hash_matches']},\n"
+        f"  proofCacheIndexPayloadMatches := {proof_cache_profile_check_literals['proof_cache_index_payload_matches']},\n"
+        f"  proofCacheFilesPresent := {proof_cache_profile_check_literals['proof_cache_files_present']},\n"
+        f"  proofCacheFilesReadable := {proof_cache_profile_check_literals['proof_cache_files_readable']},\n"
+        f"  proofCachePayloadHashesMatch := {proof_cache_profile_check_literals['proof_cache_payload_hashes_match']},\n"
+        f"  proofCachePathsUnique := {proof_cache_profile_check_literals['proof_cache_paths_unique']},\n"
+        f"  proofCacheGapsClosed := {proof_cache_profile_check_literals['proof_cache_gaps_closed']}\n"
+        "}\n"
+        "def generatedProofRuleProfile : ProofRuleProfile := {\n"
+        f"  modelRules := {proof_rule_profile_model_rule_count},\n"
+        f"  obligations := {proof_rule_profile_obligation_count},\n"
+        f"  obligationsWithRules := {proof_rule_profile_obligation_with_rule_count},\n"
+        f"  unknownObligationRules := {proof_rule_profile_unknown_obligation_rule_count},\n"
+        f"  blockSemanticsRecords := {proof_rule_profile_block_semantics_record_count},\n"
+        f"  blockSemanticsRecordsWithRules := {proof_rule_profile_block_semantics_record_with_rule_count},\n"
+        f"  unknownBlockSemanticsRules := {proof_rule_profile_unknown_block_semantics_rule_count},\n"
+        f"  solverEvidenceEntries := {proof_rule_profile_solver_evidence_entry_count},\n"
+        f"  solverEvidenceEntriesWithRules := {proof_rule_profile_solver_evidence_entry_with_rule_count},\n"
+        f"  unknownSolverEvidenceRules := {proof_rule_profile_unknown_solver_evidence_rule_count},\n"
+        f"  deprecatedAliasUses := {proof_rule_profile_deprecated_alias_use_count},\n"
+        f"  unnormalizedDeprecatedAliasUses := {proof_rule_profile_unnormalized_deprecated_alias_use_count},\n"
+        f"  artifactRuleBindingGaps := {proof_rule_profile_artifact_rule_binding_gap_count},\n"
+        f"  modelRulesPresent := {proof_rule_profile_check_literals['model_rules_present']},\n"
+        f"  obligationRulesPresent := {proof_rule_profile_check_literals['obligation_rules_present']},\n"
+        f"  obligationRulesKnown := {proof_rule_profile_check_literals['obligation_rules_known']},\n"
+        f"  blockSemanticsRulesPresent := {proof_rule_profile_check_literals['block_semantics_rules_present']},\n"
+        f"  blockSemanticsRulesKnown := {proof_rule_profile_check_literals['block_semantics_rules_known']},\n"
+        f"  solverEvidenceRulesPresent := {proof_rule_profile_check_literals['solver_evidence_rules_present']},\n"
+        f"  solverEvidenceRulesKnown := {proof_rule_profile_check_literals['solver_evidence_rules_known']},\n"
+        f"  deprecatedAliasesNormalized := {proof_rule_profile_check_literals['deprecated_aliases_normalized']},\n"
+        f"  artifactRuleBindingsClosed := {proof_rule_profile_check_literals['artifact_rule_bindings_closed']}\n"
+        "}\n"
+        "def generatedMappingProfile : MappingProfile := {\n"
+        f"  blocks := {mapping_profile_block_count},\n"
+        f"  codeBlocks := {mapping_profile_code_block_count},\n"
+        f"  nonCodeBlocks := {mapping_profile_non_code_block_count},\n"
+        f"  reachableBlocks := {mapping_profile_reachable_block_count},\n"
+        f"  uncheckedInvariantBlocks := {mapping_profile_unchecked_invariant_block_count},\n"
+        f"  rootEntries := {mapping_profile_root_entry_count},\n"
+        f"  checkedRootEntries := {mapping_profile_checked_root_entry_count},\n"
+        f"  unknownCheckedRootEntries := {mapping_profile_unknown_checked_root_entry_count},\n"
+        f"  mappingProofs := {mapping_profile_mapping_proof_count},\n"
+        f"  checkedMappingProofs := {mapping_profile_checked_mapping_proof_count},\n"
+        f"  uncheckedMappingProofs := {mapping_profile_unchecked_mapping_proof_count},\n"
+        f"  deprecatedMappingProofRules := {mapping_profile_deprecated_mapping_proof_rule_count},\n"
+        f"  unknownMappingProofRules := {mapping_profile_unknown_mapping_proof_rule_count},\n"
+        f"  waivers := {mapping_profile_waiver_count},\n"
+        f"  malformedWaivers := {mapping_profile_malformed_waiver_count},\n"
+        f"  issues := {mapping_profile_issue_count},\n"
+        f"  failedIssues := {mapping_profile_failed_issue_count},\n"
+        f"  incompleteIssues := {mapping_profile_incomplete_issue_count},\n"
+        f"  malformedBlocks := {mapping_profile_malformed_block_count},\n"
+        f"  mappingGaps := {mapping_profile_gap_count},\n"
+        f"  mappingContractNotApplicable := {mapping_profile_not_applicable_literal},\n"
+        f"  mappingContractPresent := {mapping_profile_check_literals['mapping_contract_present']},\n"
+        f"  mappingStatusSatisfied := {mapping_profile_check_literals['mapping_status_satisfied']},\n"
+        f"  mappingEntriesPresent := {mapping_profile_check_literals['mapping_entries_present']},\n"
+        f"  mappingIssuesClosed := {mapping_profile_check_literals['mapping_issues_closed']},\n"
+        f"  mappingRangesWellFormed := {mapping_profile_check_literals['mapping_ranges_well_formed']},\n"
+        f"  mappingInvariantsChecked := {mapping_profile_check_literals['mapping_invariants_checked']},\n"
+        f"  checkedRootsKnown := {mapping_profile_check_literals['checked_roots_known']},\n"
+        f"  mappingProofRulesKnown := {mapping_profile_check_literals['mapping_proof_rules_known']},\n"
+        f"  mappingProofAliasesNormalized := {mapping_profile_check_literals['mapping_proof_aliases_normalized']},\n"
+        f"  waiverRangesWellFormed := {mapping_profile_check_literals['waiver_ranges_well_formed']},\n"
+        f"  mappingGapsClosed := {mapping_profile_check_literals['mapping_gaps_closed']}\n"
+        "}\n"
+        "def generatedCfgProfile : CfgProfile := {\n"
+        f"  blockEquivalenceObligations := {cfg_profile_block_equivalence_obligation_count},\n"
+        f"  provedBlockEquivalenceObligations := {cfg_profile_proved_block_equivalence_obligation_count},\n"
+        f"  blockStructureObligations := {cfg_profile_block_structure_obligation_count},\n"
+        f"  openBlockStructureObligations := {cfg_profile_open_block_structure_obligation_count},\n"
+        f"  directCfgEdgeObligations := {cfg_profile_direct_cfg_edge_obligation_count},\n"
+        f"  provedDirectCfgEdgeObligations := {cfg_profile_proved_direct_cfg_edge_obligation_count},\n"
+        f"  openDirectCfgEdgeObligations := {cfg_profile_open_direct_cfg_edge_obligation_count},\n"
+        f"  directCfgTakenEdges := {cfg_profile_direct_cfg_taken_edge_count},\n"
+        f"  directCfgFallthroughEdges := {cfg_profile_direct_cfg_fallthrough_edge_count},\n"
+        f"  directCfgJumpEdges := {cfg_profile_direct_cfg_jump_edge_count},\n"
+        f"  directCfgCallEdges := {cfg_profile_direct_cfg_call_edge_count},\n"
+        f"  directCfgUnknownEdgeKinds := {cfg_profile_direct_cfg_unknown_edge_kind_count},\n"
+        f"  provedDirectCfgEdgesWithSourceBlock := {cfg_profile_proved_direct_with_source_count},\n"
+        f"  provedDirectCfgEdgesWithTargetBlock := {cfg_profile_proved_direct_with_target_count},\n"
+        f"  provedDirectCfgEdgesWithOriginalEvidence := {cfg_profile_proved_direct_with_original_evidence_count},\n"
+        f"  provedDirectCfgEdgesWithCandidateEvidence := {cfg_profile_proved_direct_with_candidate_evidence_count},\n"
+        f"  indirectCfgTargetObligations := {cfg_profile_indirect_cfg_target_obligation_count},\n"
+        f"  provedIndirectCfgTargetObligations := {cfg_profile_proved_indirect_cfg_target_obligation_count},\n"
+        f"  openIndirectCfgTargetObligations := {cfg_profile_open_indirect_cfg_target_obligation_count},\n"
+        f"  provedIndirectCfgTargetsWithSourceBlock := {cfg_profile_proved_indirect_with_source_count},\n"
+        f"  provedIndirectCfgTargetsWithSignature := {cfg_profile_proved_indirect_with_signature_count},\n"
+        f"  provedIndirectCfgTargetsWithOriginalEvidence := {cfg_profile_proved_indirect_with_original_evidence_count},\n"
+        f"  provedIndirectCfgTargetsWithCandidateEvidence := {cfg_profile_proved_indirect_with_candidate_evidence_count},\n"
+        f"  indirectCfgTargetsWithUnknownProofRule := {cfg_profile_indirect_unknown_rule_count},\n"
+        f"  cfgGaps := {cfg_profile_gap_count},\n"
+        f"  blockStructureObligationsClosed := {cfg_profile_check_literals['block_structure_obligations_closed']},\n"
+        f"  directCfgEdgesClosed := {cfg_profile_check_literals['direct_cfg_edges_closed']},\n"
+        f"  directCfgEdgeKindsKnown := {cfg_profile_check_literals['direct_cfg_edge_kinds_known']},\n"
+        f"  directCfgEdgeMetadataPresent := {cfg_profile_check_literals['direct_cfg_edge_metadata_present']},\n"
+        f"  directCfgEdgeEvidencePresent := {cfg_profile_check_literals['direct_cfg_edge_evidence_present']},\n"
+        f"  directCfgEdgesBindProvedBlocks := {cfg_profile_check_literals['direct_cfg_edges_bind_proved_blocks']},\n"
+        f"  indirectCfgTargetsClosed := {cfg_profile_check_literals['indirect_cfg_targets_closed']},\n"
+        f"  indirectCfgTargetMetadataPresent := {cfg_profile_check_literals['indirect_cfg_target_metadata_present']},\n"
+        f"  indirectCfgTargetEvidencePresent := {cfg_profile_check_literals['indirect_cfg_target_evidence_present']},\n"
+        f"  indirectCfgTargetsBindProvedBlocks := {cfg_profile_check_literals['indirect_cfg_targets_bind_proved_blocks']},\n"
+        f"  indirectCfgTargetRulesKnown := {cfg_profile_check_literals['indirect_cfg_target_rules_known']},\n"
+        f"  cfgGapsClosed := {cfg_profile_check_literals['cfg_gaps_closed']}\n"
+        "}\n"
+        "def generatedReachabilityProfile : ReachabilityProfile := {\n"
+        f"  blockEquivalenceObligations := {reachability_profile_block_equivalence_obligation_count},\n"
+        f"  provedBlockEquivalenceObligations := {reachability_profile_proved_block_equivalence_obligation_count},\n"
+        f"  cfgEdgeObligations := {reachability_profile_cfg_edge_obligation_count},\n"
+        f"  provedCfgEdgeObligations := {reachability_profile_proved_cfg_edge_obligation_count},\n"
+        f"  openCfgEdgeObligations := {reachability_profile_open_cfg_edge_obligation_count},\n"
+        f"  reachabilityObligations := {reachability_profile_reachability_obligation_count},\n"
+        f"  provedReachabilityObligations := {reachability_profile_proved_reachability_obligation_count},\n"
+        f"  openReachabilityObligations := {reachability_profile_open_reachability_obligation_count},\n"
+        f"  entryRootReachability := {reachability_profile_entry_root_count},\n"
+        f"  checkedRootReachability := {reachability_profile_checked_root_count},\n"
+        f"  directCfgReachability := {reachability_profile_direct_cfg_count},\n"
+        f"  unknownReachabilityRules := {reachability_profile_unknown_rule_count},\n"
+        f"  directCfgReachabilityWithEdgeObligation := {reachability_profile_direct_cfg_with_edge_count},\n"
+        f"  directCfgReachabilityWithProvedEdge := {reachability_profile_direct_cfg_with_proved_edge_count},\n"
+        f"  reachabilityGaps := {reachability_profile_gap_count},\n"
+        f"  cfgEdgeObligationsClosed := {reachability_profile_check_literals['cfg_edge_obligations_closed']},\n"
+        f"  reachabilityObligationsClosed := {reachability_profile_check_literals['reachability_obligations_closed']},\n"
+        f"  reachabilityRulesKnown := {reachability_profile_check_literals['reachability_rules_known']},\n"
+        f"  reachabilityRulesAccounted := {reachability_profile_check_literals['reachability_rules_accounted']},\n"
+        f"  directCfgReachabilityEdgesPresent := {reachability_profile_check_literals['direct_cfg_reachability_edges_present']},\n"
+        f"  directCfgReachabilityEdgesProved := {reachability_profile_check_literals['direct_cfg_reachability_edges_proved']},\n"
+        f"  provedCfgEdgesBindProvedBlocks := {reachability_profile_check_literals['proved_cfg_edges_bind_proved_blocks']},\n"
+        f"  provedCfgEdgeTargetsHaveReachability := {reachability_profile_check_literals['proved_cfg_edge_targets_have_reachability']},\n"
+        f"  provedReachabilityBlocksProved := {reachability_profile_check_literals['proved_reachability_blocks_proved']},\n"
+        f"  reachabilityGapsClosed := {reachability_profile_check_literals['reachability_gaps_closed']}\n"
+        "}\n"
+        "def generatedAbiProfile : AbiProfile := {\n"
+        f"  originalFunctions := {abi_profile_original_function_count},\n"
+        f"  candidateFunctions := {abi_profile_candidate_function_count},\n"
+        f"  originalCallsites := {abi_profile_original_callsite_count},\n"
+        f"  candidateCallsites := {abi_profile_candidate_callsite_count},\n"
+        f"  originalImportPrototypes := {abi_profile_original_import_prototype_count},\n"
+        f"  candidateImportPrototypes := {abi_profile_candidate_import_prototype_count},\n"
+        f"  originalHiddenSretOrOutParamCandidates := {abi_profile_original_hidden_sret_count},\n"
+        f"  candidateHiddenSretOrOutParamCandidates := {abi_profile_candidate_hidden_sret_count},\n"
+        f"  originalVarargsCandidates := {abi_profile_original_varargs_count},\n"
+        f"  candidateVarargsCandidates := {abi_profile_candidate_varargs_count},\n"
+        f"  originalFunctionPointerTargets := {abi_profile_original_function_pointer_target_count},\n"
+        f"  candidateFunctionPointerTargets := {abi_profile_candidate_function_pointer_target_count},\n"
+        f"  missingFunctions := {abi_profile_missing_function_count},\n"
+        f"  ambiguousFunctions := {abi_profile_ambiguous_function_count},\n"
+        f"  incompleteCallsiteFunctions := {abi_profile_incomplete_callsite_function_count},\n"
+        f"  missingCallsites := {abi_profile_missing_callsite_count},\n"
+        f"  functionMismatches := {abi_profile_function_mismatch_count},\n"
+        f"  callsiteMismatches := {abi_profile_callsite_mismatch_count},\n"
+        f"  abiGaps := {abi_profile_gap_count},\n"
+        f"  abiContractNotApplicable := {abi_profile_not_applicable_literal},\n"
+        f"  abiContractPresent := {abi_profile_check_literals['abi_contract_present']},\n"
+        f"  abiModelKnown := {abi_profile_check_literals['abi_model_known']},\n"
+        f"  abiContractStatusSatisfied := {abi_profile_check_literals['abi_contract_status_satisfied']},\n"
+        f"  candidateEvidencePresent := {abi_profile_check_literals['candidate_evidence_present']},\n"
+        f"  functionCountsMatch := {abi_profile_check_literals['function_counts_match']},\n"
+        f"  callsiteCountsMatch := {abi_profile_check_literals['callsite_counts_match']},\n"
+        f"  importPrototypesMatch := {abi_profile_check_literals['import_prototypes_match']},\n"
+        f"  noMissingFunctions := {abi_profile_check_literals['no_missing_functions']},\n"
+        f"  noAmbiguousFunctions := {abi_profile_check_literals['no_ambiguous_functions']},\n"
+        f"  callsitesComplete := {abi_profile_check_literals['callsites_complete']},\n"
+        f"  noFunctionMismatches := {abi_profile_check_literals['no_function_mismatches']},\n"
+        f"  noCallsiteMismatches := {abi_profile_check_literals['no_callsite_mismatches']},\n"
+        f"  abiGapsClosed := {abi_profile_check_literals['abi_gaps_closed']}\n"
+        "}\n"
+        "def generatedEnvironmentProfile : EnvironmentProfile := {\n"
+        f"  originalImports := {environment_profile_original_import_count},\n"
+        f"  candidateImports := {environment_profile_candidate_import_count},\n"
+        f"  importThunkBlockSemanticsRecords := {environment_profile_import_block_semantics_count},\n"
+        f"  importThunkSemanticObservableRecords := {environment_profile_import_semantic_observable_count},\n"
+        f"  importThunkTrustedBoundaryRecords := {environment_profile_import_trusted_boundary_count},\n"
+        f"  importThunkSolverEvidenceEntries := {environment_profile_import_solver_evidence_count},\n"
+        f"  importThunkSemanticsWithOriginalSignature := {environment_profile_import_original_signature_count},\n"
+        f"  importThunkSemanticsWithCandidateSignature := {environment_profile_import_candidate_signature_count},\n"
+        f"  importThunkSemanticsWithMatchingSignatures := {environment_profile_import_matching_signature_count},\n"
+        f"  importThunkSemanticsInOriginalLoaderImports := {environment_profile_import_original_loader_count},\n"
+        f"  importThunkSemanticsInCandidateLoaderImports := {environment_profile_import_candidate_loader_count},\n"
+        f"  importThunkClaimsWithOriginalSignatureHash := {environment_profile_import_claim_original_hash_count},\n"
+        f"  importThunkClaimsWithCandidateSignatureHash := {environment_profile_import_claim_candidate_hash_count},\n"
+        f"  importThunkClaimsWithMatchingSignatureHashes := {environment_profile_import_claim_matching_hash_count},\n"
+        f"  symbolicObservableClaims := {environment_profile_symbolic_claim_count},\n"
+        f"  solverClaims := {environment_profile_solver_claim_count},\n"
+        f"  environmentGaps := {environment_profile_gap_count},\n"
+        f"  environmentModelSupported := {environment_profile_check_literals['environment_model_supported']},\n"
+        f"  loaderImportSignaturesMatch := {environment_profile_check_literals['loader_import_signatures_match']},\n"
+        f"  loaderImportCountsMatch := {environment_profile_check_literals['loader_import_counts_match']},\n"
+        f"  importThunkRecordsAccounted := {environment_profile_check_literals['import_thunk_records_accounted']},\n"
+        f"  importThunkSemanticsHaveSignatures := {environment_profile_check_literals['import_thunk_semantics_have_signatures']},\n"
+        f"  importThunkSignaturesMatch := {environment_profile_check_literals['import_thunk_signatures_match']},\n"
+        f"  importThunkSemanticsMatchLoaderImports := {environment_profile_check_literals['import_thunk_semantics_match_loader_imports']},\n"
+        f"  importThunkClaimsHaveSignatureHashes := {environment_profile_check_literals['import_thunk_claims_have_signature_hashes']},\n"
+        f"  importThunkClaimSignatureHashesMatch := {environment_profile_check_literals['import_thunk_claim_signature_hashes_match']},\n"
+        f"  symbolicClaimsUseEnvironmentModel := {environment_profile_check_literals['symbolic_claims_use_environment_model']},\n"
+        f"  solverClaimsAccounted := {environment_profile_check_literals['solver_claims_accounted']},\n"
+        f"  environmentGapsClosed := {environment_profile_check_literals['environment_gaps_closed']}\n"
+        "}\n"
+        "def generatedInstructionSemanticsProfile : InstructionSemanticsProfile := {\n"
+        f"  instructionSemanticsRecords := {instruction_profile_instruction_semantics_record_count},\n"
+        f"  decodedInstructionBlockSemantics := {instruction_profile_decoded_instruction_block_semantics_count},\n"
+        f"  satisfiedRecords := {instruction_profile_satisfied_record_count},\n"
+        f"  incompleteRecords := {instruction_profile_incomplete_record_count},\n"
+        f"  decodedInstructionIdentityRecords := {instruction_profile_decoded_instruction_identity_count},\n"
+        f"  peImportThunkSemanticsRecords := {instruction_profile_pe_import_thunk_semantics_count},\n"
+        f"  unknownSemanticsRecords := {instruction_profile_unknown_semantics_count},\n"
+        f"  instructionSemanticsGaps := {instruction_profile_instruction_semantics_gap_count},\n"
+        f"  originalDecodeStatusGaps := {instruction_profile_original_decode_status_gap_count},\n"
+        f"  candidateDecodeStatusGaps := {instruction_profile_candidate_decode_status_gap_count},\n"
+        f"  originalHashGaps := {instruction_profile_original_hash_gap_count},\n"
+        f"  candidateHashGaps := {instruction_profile_candidate_hash_gap_count},\n"
+        f"  decodedByteHashMismatches := {instruction_profile_decoded_byte_hash_mismatch_count},\n"
+        f"  blockSemanticsRecordHashGaps := {instruction_profile_block_semantics_record_hash_gap_count},\n"
+        f"  missingInstructionSemanticsRecords := {instruction_profile_missing_instruction_semantics_record_count}\n"
+        "}\n"
+        "def generatedSemanticObservableProfile : SemanticObservableProfile := {\n"
+        f"  semanticObservables := {semantic_profile_semantic_observable_count},\n"
+        f"  trustedBoundaries := {semantic_profile_trusted_boundary_count},\n"
+        f"  solverClaims := {semantic_profile_solver_claim_count},\n"
+        f"  decodedInstructionIdentity := {semantic_profile_decoded_instruction_identity_count},\n"
+        f"  peImportThunkEquivalence := {semantic_profile_pe_import_thunk_equivalence_count},\n"
+        f"  checkedGeneratedMappingAssumption := {semantic_profile_checked_generated_mapping_assumption_count},\n"
+        f"  symbolicObservableEquivalence := {semantic_profile_symbolic_observable_equivalence_count},\n"
+        f"  missingClaims := {semantic_profile_missing_claim_count},\n"
+        f"  unknownClaims := {semantic_profile_unknown_claim_count},\n"
+        f"  byteIdenticalInstructionDecodeBoundaries := {semantic_profile_byte_decode_boundary_count},\n"
+        f"  peImportThunkSignatureEquivalenceBoundaries := {semantic_profile_import_boundary_count},\n"
+        f"  checkedLayoutPreservingMappingBoundaries := {semantic_profile_mapping_boundary_count},\n"
+        f"  z3UnsatLocalEquivalenceBoundaries := {semantic_profile_z3_boundary_count},\n"
+        f"  localSymbolicEquivalenceBoundaries := {semantic_profile_local_symbolic_boundary_count},\n"
+        f"  missingTrustedBoundaries := {semantic_profile_missing_boundary_count},\n"
+        f"  unknownTrustedBoundaries := {semantic_profile_unknown_boundary_count},\n"
+        f"  unapprovedTrustedBoundaries := {semantic_profile_unapproved_boundary_count},\n"
+        f"  semanticObservableGaps := {semantic_profile_semantic_observable_gap_count},\n"
+        f"  trustedBoundaryGaps := {semantic_profile_trusted_boundary_gap_count},\n"
+        f"  solverClaimGaps := {semantic_profile_solver_claim_gap_count}\n"
+        "}\n"
+        "def generatedTrustedBoundaryProfile : TrustedBoundaryProfile := {\n"
+        f"  semanticObservables := {trusted_boundary_profile_semantic_observable_count},\n"
+        f"  records := {trusted_boundary_profile_record_count},\n"
+        f"  allowedRecords := {trusted_boundary_profile_allowed_record_count},\n"
+        f"  recordsWithHash := {trusted_boundary_profile_record_hash_count},\n"
+        f"  incompleteRecords := {trusted_boundary_profile_incomplete_record_count},\n"
+        f"  modelAllowedBoundaries := {trusted_boundary_profile_model_allowed_boundary_count},\n"
+        f"  unknownModelBoundaries := {trusted_boundary_profile_unknown_model_boundary_count},\n"
+        f"  duplicateModelBoundaries := {trusted_boundary_profile_duplicate_model_boundary_count},\n"
+        f"  trustedBoundaryGaps := {trusted_boundary_profile_gap_count},\n"
+        f"  trustedBoundaryInventoryFormatMatches := {trusted_boundary_profile_check_literals['trusted_boundary_inventory_format_matches']},\n"
+        f"  trustedBoundaryInventoryStatusSatisfied := {trusted_boundary_profile_check_literals['trusted_boundary_inventory_status_satisfied']},\n"
+        f"  modelBoundariesPresent := {trusted_boundary_profile_check_literals['model_boundaries_present']},\n"
+        f"  modelBoundariesKnown := {trusted_boundary_profile_check_literals['model_boundaries_known']},\n"
+        f"  modelBoundaryNamesUnique := {trusted_boundary_profile_check_literals['model_boundary_names_unique']},\n"
+        f"  recordCountsMatch := {trusted_boundary_profile_check_literals['record_counts_match']},\n"
+        f"  recordStatusCountsMatch := {trusted_boundary_profile_check_literals['record_status_counts_match']},\n"
+        f"  recordsAllowed := {trusted_boundary_profile_check_literals['records_allowed']},\n"
+        f"  recordsHashed := {trusted_boundary_profile_check_literals['records_hashed']},\n"
+        f"  recordsGapFree := {trusted_boundary_profile_check_literals['records_gap_free']}\n"
+        "}\n"
+        "def generatedProfileManifest : ProfileManifest := {\n"
+        f"  requiredProfiles := {profile_manifest_required_profile_count},\n"
+        f"  presentProfiles := {profile_manifest_present_profile_count},\n"
+        f"  satisfiedProfiles := {profile_manifest_satisfied_profile_count},\n"
+        f"  notApplicableProfiles := {profile_manifest_not_applicable_profile_count},\n"
+        f"  rowsWithSchema := {profile_manifest_rows_with_schema_count},\n"
+        f"  rowsWithHash := {profile_manifest_rows_with_hash_count},\n"
+        f"  rowsWithAcceptedStatus := {profile_manifest_rows_with_accepted_status_count},\n"
+        f"  rowsWithChecks := {profile_manifest_rows_with_checks_count},\n"
+        f"  profileManifestGaps := {profile_manifest_gap_count},\n"
+        f"  profileManifestSchemaMatches := {profile_manifest_check_literals['profile_manifest_schema_matches']},\n"
+        f"  requiredProfilesPresent := {profile_manifest_check_literals['required_profiles_present']},\n"
+        f"  profileSchemasMatch := {profile_manifest_check_literals['profile_schemas_match']},\n"
+        f"  profileHashesPresent := {profile_manifest_check_literals['profile_hashes_present']},\n"
+        f"  profileStatusesAccepted := {profile_manifest_check_literals['profile_statuses_accepted']},\n"
+        f"  profileChecksClosed := {profile_manifest_check_literals['profile_checks_closed']},\n"
+        f"  profileManifestGapsClosed := {profile_manifest_check_literals['profile_manifest_gaps_closed']}\n"
+        "}\n"
+        "def generatedSolverEvidenceProfile : SolverEvidenceProfile := {\n"
+        f"  proofCacheEntries := {solver_profile_proof_cache_entry_count},\n"
+        f"  solverEvidenceEntries := {solver_profile_solver_evidence_entry_count},\n"
+        f"  solverEvidenceIndexEntries := {solver_profile_solver_evidence_index_entry_count},\n"
+        f"  solverClaims := {solver_profile_solver_claim_count},\n"
+        f"  satisfiedEntries := {solver_profile_satisfied_entry_count},\n"
+        f"  incompleteEntries := {solver_profile_incomplete_entry_count},\n"
+        f"  structuralByteIdentityEntries := {solver_profile_structural_byte_identity_entry_count},\n"
+        f"  checkedGeneratedMappingEntries := {solver_profile_checked_generated_mapping_entry_count},\n"
+        f"  peImportThunkEntries := {solver_profile_pe_import_thunk_entry_count},\n"
+        f"  trustedZ3UnsatEntries := {solver_profile_trusted_z3_unsat_entry_count},\n"
+        f"  z3CounterexampleEntries := {solver_profile_z3_counterexample_entry_count},\n"
+        f"  z3SymbolicIncompleteEntries := {solver_profile_z3_symbolic_incomplete_entry_count},\n"
+        f"  missingProofCacheEntries := {solver_profile_missing_proof_cache_entry_count},\n"
+        f"  unreadableProofCacheEntries := {solver_profile_unreadable_proof_cache_entry_count},\n"
+        f"  unknownProofCacheEntries := {solver_profile_unknown_proof_cache_entry_count},\n"
+        f"  trustedZ3UnsatClaims := {solver_profile_trusted_z3_unsat_claim_count},\n"
+        f"  localSymbolicClaims := {solver_profile_local_symbolic_claim_count},\n"
+        f"  solverClaimsWithQueryHash := {solver_profile_solver_claim_with_query_hash_count},\n"
+        f"  solverEvidenceQueryHashGaps := {solver_profile_solver_evidence_query_hash_gap_count},\n"
+        f"  solverEvidenceQueryHashMismatches := {solver_profile_solver_evidence_query_hash_mismatch_count},\n"
+        f"  solverEvidenceFileMissing := {solver_profile_solver_evidence_file_missing_count},\n"
+        f"  solverEvidenceFileHashMismatches := {solver_profile_solver_evidence_file_hash_mismatch_count},\n"
+        f"  solverEvidenceIndexFileMissing := {solver_profile_solver_evidence_index_file_missing_count},\n"
+        f"  solverEvidenceIndexHashMismatches := {solver_profile_solver_evidence_index_hash_mismatch_count},\n"
+        f"  solverEvidenceJsonlParseGaps := {solver_profile_solver_evidence_jsonl_parse_gap_count},\n"
+        f"  solverEvidenceEntryHashMismatches := {solver_profile_solver_evidence_entry_hash_mismatch_count},\n"
+        f"  solverEvidenceIndexEntryHashMismatches := {solver_profile_solver_evidence_index_entry_hash_mismatch_count},\n"
+        f"  solverClaimGaps := {solver_profile_solver_claim_gap_count},\n"
+        f"  solverEvidenceEntryGaps := {solver_profile_solver_evidence_entry_gap_count}\n"
+        "}\n"
+        "def generatedSolverBackendProfile : SolverBackendProfile := {\n"
+        f"  solverEvidenceEntries := {solver_backend_profile_solver_evidence_entry_count},\n"
+        f"  solverBackedEvidenceEntries := {solver_backend_profile_solver_backed_evidence_entry_count},\n"
+        f"  trustedZ3UnsatEntries := {solver_backend_profile_trusted_z3_unsat_entry_count},\n"
+        f"  solverClaims := {solver_backend_profile_solver_claim_count},\n"
+        f"  trustedZ3UnsatClaims := {solver_backend_profile_trusted_z3_unsat_claim_count},\n"
+        f"  solverEvidenceWithBackend := {solver_backend_profile_solver_evidence_with_backend_count},\n"
+        f"  solverClaimsWithBackend := {solver_backend_profile_solver_claims_with_backend_count},\n"
+        f"  trustedZ3WithZ3Backend := {solver_backend_profile_trusted_z3_with_z3_backend_count},\n"
+        f"  missingBackendEntries := {solver_backend_profile_missing_backend_entry_count},\n"
+        f"  missingBackendClaims := {solver_backend_profile_missing_backend_claim_count},\n"
+        f"  backendHashMismatches := {solver_backend_profile_backend_hash_mismatch_count},\n"
+        f"  unknownSolverBackends := {solver_backend_profile_unknown_solver_backend_count},\n"
+        f"  backendGaps := {solver_backend_profile_backend_gap_count},\n"
+        f"  solverBackedEvidenceHasBackend := {solver_backend_profile_check_literals['solver_backed_evidence_has_backend']},\n"
+        f"  solverClaimsHaveBackend := {solver_backend_profile_check_literals['solver_claims_have_backend']},\n"
+        f"  solverClaimBackendHashesMatchEvidence := {solver_backend_profile_check_literals['solver_claim_backend_hashes_match_evidence']},\n"
+        f"  trustedZ3UsesZ3Backend := {solver_backend_profile_check_literals['trusted_z3_uses_z3_backend']},\n"
+        f"  backendGapsClosed := {solver_backend_profile_check_literals['backend_gaps_closed']}\n"
+        "}\n"
+        "def generatedProofIrCountsAccounted : Bool :=\n"
+        "  proofIrCountsAccounted generatedRuntimeProofCounts generatedProofIrCounts\n"
+        "def generatedClosureCertificateCountsClosed : Bool :=\n"
+        "  closureCertificateCountsClosed generatedRuntimeProofCounts generatedProofIrCounts generatedClosureCertificateCounts\n"
+        "def generatedClosureCertificateChecksClosed : Bool :=\n"
+        "  closureCertificateChecksClosed generatedClosureCertificateChecks\n"
+        "def generatedTargetProfileClosed : Bool :=\n"
+        "  targetProfileClosed generatedTargetProfile\n"
+        "def generatedLoaderProfileClosed : Bool :=\n"
+        "  loaderProfileClosed generatedLoaderProfile\n"
+        "def generatedCoverageProfileClosed : Bool :=\n"
+        "  coverageProfileClosed generatedProofIrCounts generatedCoverageProfile\n"
+        "def generatedProofCacheProfileClosed : Bool :=\n"
+        "  proofCacheProfileClosed generatedRuntimeProofCounts generatedProofIrCounts generatedClosureCertificateCounts generatedProofCacheProfile\n"
+        "def generatedProofRuleProfileClosed : Bool :=\n"
+        "  proofRuleProfileClosed generatedProofIrCounts generatedProofRuleProfile\n"
+        "def generatedMappingProfileClosed : Bool :=\n"
+        "  mappingProfileClosed generatedClosureCertificateCounts generatedMappingProfile\n"
+        "def generatedCfgProfileClosed : Bool :=\n"
+        "  cfgProfileClosed generatedCfgProfile\n"
+        "def generatedReachabilityProfileClosed : Bool :=\n"
+        "  reachabilityProfileClosed generatedReachabilityProfile\n"
+        "def generatedAbiProfileClosed : Bool :=\n"
+        "  abiProfileClosed generatedClosureCertificateCounts generatedAbiProfile\n"
+        "def generatedEnvironmentProfileClosed : Bool :=\n"
+        "  environmentProfileClosed generatedLoaderProfile generatedSemanticObservableProfile generatedClosureCertificateCounts generatedEnvironmentProfile\n"
+        "def generatedInstructionSemanticsProfileClosed : Bool :=\n"
+        "  instructionSemanticsProfileClosed generatedProofIrCounts generatedClosureCertificateCounts generatedSemanticObservableProfile generatedInstructionSemanticsProfile\n"
+        "def generatedSemanticObservableProfileClosed : Bool :=\n"
+        "  semanticObservableProfileClosed generatedProofIrCounts generatedClosureCertificateCounts generatedSemanticObservableProfile\n"
+        "def generatedTrustedBoundaryProfileClosed : Bool :=\n"
+        "  trustedBoundaryProfileClosed generatedProofIrCounts generatedClosureCertificateCounts generatedSemanticObservableProfile generatedTrustedBoundaryProfile\n"
+        "def generatedProfileManifestClosed : Bool :=\n"
+        "  profileManifestClosed generatedClosureCertificateCounts generatedProfileManifest\n"
+        "def generatedSolverEvidenceProfileClosed : Bool :=\n"
+        "  solverEvidenceProfileClosed generatedRuntimeProofCounts generatedProofIrCounts generatedClosureCertificateCounts generatedSemanticObservableProfile generatedSolverEvidenceProfile\n"
+        "def generatedSolverBackendProfileClosed : Bool :=\n"
+        "  solverBackendProfileClosed generatedSemanticObservableProfile generatedSolverEvidenceProfile generatedSolverBackendProfile\n"
+        f"def generatedProofIrInstructionProfileClosed : Bool := {proof_ir_instruction_profile_closed_literal}\n"
+        f"def generatedProofIrEnvironmentProfileClosed : Bool := {proof_ir_environment_profile_closed_literal}\n"
+        f"def generatedProofIrSemanticProfileClosed : Bool := {proof_ir_semantic_profile_closed_literal}\n"
+        f"def generatedProofIrSolverEvidenceProfileClosed : Bool := {proof_ir_solver_evidence_profile_closed_literal}\n"
+        f"def generatedProofIrSolverBackendProfileClosed : Bool := {proof_ir_solver_backend_profile_closed_literal}\n"
+        f"def generatedProofIrTrustedBoundaryProfileClosed : Bool := {proof_ir_trusted_boundary_profile_closed_literal}\n"
+        f"def generatedProofIrProfileManifestClosed : Bool := {proof_ir_profile_manifest_closed_literal}\n"
+        f"def generatedProofEvidenceBindingClosed : Bool := {proof_evidence_binding_literal}\n"
         "def generatedSummary : ProofSummary := {\n"
         f"  verdict := generatedVerdict,\n"
         f"  obligationCount := generatedObligationCount,\n"
-        f"  proofCacheEntries := {proof_cache_count},\n"
+        f"  proofCacheEntries := generatedProofCacheEntryCount,\n"
+        f"  solverEvidenceEntries := generatedSolverEvidenceEntryCount,\n"
         f"  closed := {closed_literal},\n"
-        f"  noUncheckedAssumptions := {unchecked_literal}\n"
+        f"  noUncheckedAssumptions := {unchecked_literal},\n"
+        f"  proofIrPresent := generatedProofIrPresent,\n"
+        f"  proofIrModelHashBound := generatedProofIrModelHashBound,\n"
+        f"  proofIrTargetProfileClosed := generatedProofIrTargetProfileClosed,\n"
+        f"  proofIrLoaderFrontendProfileClosed := generatedProofIrLoaderFrontendProfileClosed,\n"
+        f"  proofIrClosureCertificateClosed := generatedProofIrClosureCertificateClosed,\n"
+        f"  proofIrLoaderProfileClosed := generatedProofIrLoaderProfileClosed,\n"
+        f"  proofIrCoverageProfileClosed := generatedProofIrCoverageProfileClosed,\n"
+        f"  proofIrProofCacheProfileClosed := generatedProofIrProofCacheProfileClosed,\n"
+        f"  proofIrProofRuleProfileClosed := generatedProofIrProofRuleProfileClosed,\n"
+        f"  proofIrMappingProfileClosed := generatedProofIrMappingProfileClosed,\n"
+        f"  proofIrCfgProfileClosed := generatedProofIrCfgProfileClosed,\n"
+        f"  proofIrReachabilityProfileClosed := generatedProofIrReachabilityProfileClosed,\n"
+        f"  proofIrAbiProfileClosed := generatedProofIrAbiProfileClosed,\n"
+        f"  proofIrEnvironmentProfileClosed := generatedProofIrEnvironmentProfileClosed,\n"
+        f"  proofIrInstructionProfileClosed := generatedProofIrInstructionProfileClosed,\n"
+        f"  proofIrSemanticProfileClosed := generatedProofIrSemanticProfileClosed,\n"
+        f"  proofIrSolverEvidenceProfileClosed := generatedProofIrSolverEvidenceProfileClosed,\n"
+        f"  proofIrSolverBackendProfileClosed := generatedProofIrSolverBackendProfileClosed,\n"
+        f"  proofIrTrustedBoundaryProfileClosed := generatedProofIrTrustedBoundaryProfileClosed,\n"
+        f"  proofIrProfileManifestClosed := generatedProofIrProfileManifestClosed,\n"
+        f"  solverEvidenceClosed := generatedSolverEvidenceClosed,\n"
+        f"  proofEvidenceBindingClosed := generatedProofEvidenceBindingClosed\n"
         "}\n\n"
         f"{theorem}\n"
         "end StageA\n",
         encoding="utf-8",
     )
+
+
+def _proof_evidence_binding_closed(
+    *,
+    proof_ir: dict[str, Any],
+    solver_evidence: dict[str, Any],
+    obligations: list[dict[str, Any]],
+    proof_cache: list[dict[str, Any]],
+) -> bool:
+    proof_ir_counts = proof_ir.get("counts") if isinstance(proof_ir.get("counts"), dict) else {}
+    proof_context = proof_ir.get("proof_context") if isinstance(proof_ir.get("proof_context"), dict) else {}
+    proof_context_checks = proof_context.get("checks") if isinstance(proof_context.get("checks"), dict) else {}
+    certificate = proof_ir.get("closure_certificate") if isinstance(proof_ir.get("closure_certificate"), dict) else {}
+    certificate_counts = certificate.get("counts") if isinstance(certificate.get("counts"), dict) else {}
+    solver_counts = solver_evidence.get("counts") if isinstance(solver_evidence.get("counts"), dict) else {}
+    return bool(
+        proof_ir.get("status") == "present"
+        and _proof_ir_model_hash_bound(proof_ir)
+        and _proof_ir_target_profile_closed(proof_ir)
+        and _proof_ir_loader_frontend_profile_closed(proof_ir)
+        and _proof_ir_closure_certificate_closed(proof_ir)
+        and _proof_ir_loader_profile_closed(proof_ir)
+        and _proof_ir_coverage_profile_closed(proof_ir)
+        and _proof_ir_proof_cache_profile_closed(proof_ir)
+        and _proof_ir_proof_rule_profile_closed(proof_ir)
+        and _proof_ir_mapping_profile_closed(proof_ir)
+        and _proof_ir_cfg_profile_closed(proof_ir)
+        and _proof_ir_reachability_profile_closed(proof_ir)
+        and _proof_ir_abi_profile_closed(proof_ir)
+        and _proof_ir_environment_profile_closed(proof_ir)
+        and _proof_ir_solver_backend_profile_closed(proof_ir)
+        and _proof_ir_trusted_boundary_profile_closed(proof_ir)
+        and _proof_ir_profile_manifest_closed(proof_ir)
+        and proof_context.get("status") == "satisfied"
+        and _is_sha256_hex(proof_context.get("sha256"))
+        and bool(proof_context_checks)
+        and all(value is True for value in proof_context_checks.values())
+        and solver_evidence.get("status") == "satisfied"
+        and _is_sha256_hex(proof_ir.get("sha256"))
+        and _is_sha256_hex(proof_ir.get("proof_cache_index_sha256"))
+        and _is_sha256_hex(solver_evidence.get("sha256"))
+        and _is_sha256_hex(solver_evidence.get("index_sha256"))
+        and int(proof_ir_counts.get("obligations") or 0) == len(obligations)
+        and int(proof_ir_counts.get("proof_cache_entries") or 0) == len(proof_cache)
+        and int(proof_ir_counts.get("solver_evidence_entries") or 0) == int(solver_counts.get("entries") or 0)
+        and int(proof_ir_counts.get("block_semantics_records") or 0) == len(proof_cache)
+        and int(proof_ir_counts.get("instruction_semantics_records") or 0)
+        == int(certificate_counts.get("instruction_semantics_records") or 0)
+        and int(proof_ir_counts.get("proof_artifact_binding_records") or 0) == int(certificate_counts.get("proof_backed_obligations") or 0)
+        and int(proof_ir_counts.get("semantic_observable_records") or 0) == int(certificate_counts.get("proof_backed_obligations") or 0)
+        and int(proof_ir_counts.get("solver_claim_records") or 0) == int(certificate_counts.get("solver_claims") or 0)
+        and int(proof_ir_counts.get("trusted_boundary_records") or 0) == int(certificate_counts.get("proof_backed_obligations") or 0)
+        and int(proof_ir_counts.get("proof_composition_records") or 0) == int(certificate_counts.get("proof_composition_records") or 0)
+    )
+
+
+def _proof_ir_model_hash_bound(proof_ir: dict[str, Any]) -> bool:
+    model = proof_ir.get("model") if isinstance(proof_ir.get("model"), dict) else None
+    if model is None:
+        return False
+    expected_hash = proof_model_hash(model)
+    context = proof_ir.get("proof_context") if isinstance(proof_ir.get("proof_context"), dict) else {}
+    context_hashes = context.get("hashes") if isinstance(context.get("hashes"), dict) else {}
+    context_model = context.get("model") if isinstance(context.get("model"), dict) else {}
+    return bool(
+        _is_sha256_hex(expected_hash)
+        and proof_ir.get("model_hash") == expected_hash
+        and context.get("model_hash") == expected_hash
+        and context_hashes.get("model_hash") == expected_hash
+        and context_hashes.get("model_description_sha256") == expected_hash
+        and context_model.get("sha256") == expected_hash
+    )
+
+
+def _proof_ir_target_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("target_profile") if isinstance(proof_ir.get("target_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("format") == "stage-a-target-profile-v1"
+        and profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_loader_frontend_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("loader_frontend_profile") if isinstance(proof_ir.get("loader_frontend_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("format") == "stage-a-loader-frontend-profile-v1"
+        and profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_closure_certificate_closed(proof_ir: dict[str, Any]) -> bool:
+    certificate = proof_ir.get("closure_certificate") if isinstance(proof_ir.get("closure_certificate"), dict) else {}
+    checks = certificate.get("checks") if isinstance(certificate.get("checks"), dict) else {}
+    return bool(
+        certificate.get("status") == "satisfied"
+        and _is_sha256_hex(certificate.get("sha256"))
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_loader_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("loader_profile") if isinstance(proof_ir.get("loader_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_coverage_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("coverage_profile") if isinstance(proof_ir.get("coverage_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_proof_cache_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("proof_cache_profile") if isinstance(proof_ir.get("proof_cache_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_proof_rule_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("proof_rule_profile") if isinstance(proof_ir.get("proof_rule_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_mapping_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("mapping_profile") if isinstance(proof_ir.get("mapping_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    if profile.get("status") == "not_applicable":
+        return bool(
+            checks
+            and checks.get("mapping_contract_present") is False
+            and all(value is True for key, value in checks.items() if key != "mapping_contract_present")
+        )
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_cfg_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("cfg_profile") if isinstance(proof_ir.get("cfg_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_reachability_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("reachability_profile") if isinstance(proof_ir.get("reachability_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_abi_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("abi_profile") if isinstance(proof_ir.get("abi_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    if profile.get("status") == "not_applicable":
+        return bool(
+            checks
+            and checks.get("abi_contract_present") is False
+            and all(value is True for key, value in checks.items() if key != "abi_contract_present")
+        )
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_environment_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("environment_profile") if isinstance(proof_ir.get("environment_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_instruction_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("instruction_profile") if isinstance(proof_ir.get("instruction_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_semantic_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("semantic_profile") if isinstance(proof_ir.get("semantic_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_solver_evidence_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("solver_evidence_profile") if isinstance(proof_ir.get("solver_evidence_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_solver_backend_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("solver_backend_profile") if isinstance(proof_ir.get("solver_backend_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("format") == "stage-a-solver-backend-profile-v1"
+        and profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_trusted_boundary_profile_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("trusted_boundary_profile") if isinstance(proof_ir.get("trusted_boundary_profile"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("format") == "stage-a-trusted-boundary-profile-v1"
+        and profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _proof_ir_profile_manifest_closed(proof_ir: dict[str, Any]) -> bool:
+    profile = proof_ir.get("profile_manifest") if isinstance(proof_ir.get("profile_manifest"), dict) else {}
+    checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    return bool(
+        profile.get("format") == "stage-a-proof-profile-manifest-v1"
+        and profile.get("status") == "satisfied"
+        and checks
+        and all(value is True for value in checks.values())
+    )
+
+
+def _is_sha256_hex(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _lean_string_literal(value: Any) -> str:
+    return json.dumps(str(value or ""))
 
 
 def _lean_obligation_status(status: Any) -> str:
@@ -15607,6 +21038,7 @@ def _run_lean_check(lean_dir: Path, extra_files: Iterable[str] = ()) -> dict[str
         return {"status": "unavailable", "command": ["lean", "StageA/Obligations.lean"], "returncode": None}
     commands = [
         [lean, "-o", "StageA/Model.olean", "StageA/Model.lean"],
+        [lean, "-o", "StageA/ProofIR.olean", "StageA/ProofIR.lean"],
         *[[lean, "-o", str(Path(path).with_suffix(".olean")), path] for path in extra_files],
         [lean, "StageA/Obligations.lean"],
     ]

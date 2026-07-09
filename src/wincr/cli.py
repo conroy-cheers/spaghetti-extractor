@@ -9,6 +9,7 @@ from typing import Any
 from .stage_a import (
     STAGE_A_MODEL_ID,
     StageAInputError,
+    stage_a_audit_contract_shortfalls,
     stage_a_diff_obligations,
     stage_a_explain_obligations,
     stage_a_export_reference_contract,
@@ -87,7 +88,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     generate_map.add_argument("--layout-contract-out", type=Path)
     generate_map.add_argument("--original-flags", default="")
     generate_map.add_argument("--candidate-flags", default="")
-    generate_map.add_argument("--proof-rule", default="reproducible_jq_same_source_optimization_pair_v1")
+    generate_map.add_argument("--proof-rule", default="same_source_layout_preserving_build_v1")
     generate_map.add_argument("--proof-metadata-json")
     generate_map.add_argument("--proof-metadata", type=Path)
     generate_map.set_defaults(func=_cmd_stage_a_generate_map)
@@ -117,6 +118,22 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     contract_candidate.add_argument("--model", default=STAGE_A_MODEL_ID)
     contract_candidate.add_argument("--skeleton-manifest", type=Path)
     contract_candidate.set_defaults(func=_cmd_stage_a_validate_contract_candidate)
+
+    audit_shortfalls = subcommands.add_parser(
+        "stage-a-audit-contract-shortfalls",
+        help="audit underconstrained Stage A generated-candidate contract evidence",
+    )
+    audit_shortfalls.add_argument("--reference-contract", type=Path, required=True)
+    audit_shortfalls.add_argument("--out", type=Path, required=True)
+    audit_shortfalls.add_argument("--contract-candidate-validation", type=Path)
+    audit_shortfalls.add_argument("--candidate", type=Path)
+    audit_shortfalls.add_argument("--linker-map-candidate", type=Path)
+    audit_shortfalls.add_argument("--skeleton-manifest", type=Path)
+    audit_shortfalls.add_argument("--candidate-crash-report", type=Path)
+    audit_shortfalls.add_argument("--unit-contract-dir", type=Path)
+    audit_shortfalls.add_argument("--target-name")
+    audit_shortfalls.add_argument("--model", default=STAGE_A_MODEL_ID)
+    audit_shortfalls.set_defaults(func=_cmd_stage_a_audit_contract_shortfalls)
 
     work_items = subcommands.add_parser("stage-a-extract-work-items", help="extract ranked unit work from a reference contract")
     work_items.add_argument("--reference-contract", type=Path, required=True)
@@ -324,6 +341,21 @@ def _cmd_stage_a_validate_contract_candidate(args: Any) -> dict[str, Any]:
         out=args.out,
         model=args.model,
         skeleton_manifest=args.skeleton_manifest,
+    )
+
+
+def _cmd_stage_a_audit_contract_shortfalls(args: Any) -> dict[str, Any]:
+    return stage_a_audit_contract_shortfalls(
+        reference_contract=args.reference_contract,
+        out=args.out,
+        contract_candidate_validation=args.contract_candidate_validation,
+        candidate=args.candidate,
+        linker_map_candidate=args.linker_map_candidate,
+        skeleton_manifest=args.skeleton_manifest,
+        candidate_crash_report=args.candidate_crash_report,
+        unit_contract_dir=args.unit_contract_dir,
+        target_name=args.target_name,
+        model=args.model,
     )
 
 

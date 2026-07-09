@@ -380,6 +380,13 @@ def _executable_section_for_rva(binary: StageABinary, rva: int) -> StageASection
     return None
 
 
+def _section_for_rva(binary: StageABinary, rva: int) -> StageASection | None:
+    for section in binary.sections:
+        if section.rva_start <= rva < section.rva_end:
+            return section
+    return None
+
+
 def _executable_section_covering_range(binary: StageABinary, rva_start: int, rva_end: int) -> StageASection | None:
     if rva_end <= rva_start:
         return None

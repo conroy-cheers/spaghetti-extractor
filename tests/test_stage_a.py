@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import struct
 import tempfile
@@ -11,6 +12,8 @@ from wincr import stage_a
 from wincr import stage_binary
 from wincr.stage_a import (
     STAGE_A_MODEL_ID,
+    STAGE_A_MODEL_SPECS,
+    STAGE_A_X86_64_MODEL_ID,
     stage_a_diff_obligations,
     stage_a_explain_obligations,
     stage_a_extract_work_items,
@@ -21,6 +24,17 @@ from wincr.stage_a import (
     stage_a_validate,
     stage_a_validate_unit,
 )
+from wincr.stage_a_proof import proof_model_hash, stage_a_model_description, write_proof_ir, write_solver_evidence_inventory
+
+
+TEST_SOLVER_BACKEND = {
+    "format": "stage-a-solver-backend-v1",
+    "solver": "z3",
+    "version": "test-z3",
+    "engine": "stage-a-local-symbolic-x86-v1",
+    "smt_fragment": "stage-a-local-symbolic-x86-observables-v1",
+    "trust_boundary": "z3_unsat_local_equivalence_oracle_v1",
+}
 
 
 class StageAValidateTests(unittest.TestCase):
@@ -62,9 +76,407 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(reachability["proof_rule"], "entry_root_reachability_v1")
             proof_index = json.loads((out / "proof-cache" / "index.json").read_text(encoding="utf-8"))
             self.assertEqual(len(proof_index["entries"]), 1)
+            proof_ir = json.loads((out / "proof-ir.json").read_text(encoding="utf-8"))
+            self.assertEqual(proof_ir["model_hash"], proof_model_hash(proof_ir["model"]))
+            self.assertEqual(proof_ir["proof_context"]["status"], "satisfied")
+            self.assertTrue(proof_ir["proof_context"]["checks"]["model_hash_present"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["model_hash_matches_model"])
+            self.assertEqual(proof_ir["proof_context"]["hashes"]["model_description_sha256"], proof_ir["model_hash"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["original_input_exists"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["candidate_input_exists"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["target_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["closure_certificate_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["loader_frontend_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["loader_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["coverage_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["proof_cache_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["proof_rule_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["mapping_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["cfg_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["reachability_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["environment_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["solver_backend_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["trusted_boundary_profile_satisfied"])
+            self.assertTrue(proof_ir["proof_context"]["checks"]["profile_manifest_satisfied"])
+            self.assertEqual(proof_ir["closure_certificate"]["status"], "satisfied")
+            self.assertTrue(all(proof_ir["closure_certificate"]["checks"].values()))
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["proved_block_obligations_have_solver_evidence"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["proof_artifacts_bind_same_obligations"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["coverage_profile_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["proof_cache_profile_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["solver_backend_profile_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["trusted_boundary_profile_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["profile_manifest_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["proof_rule_profile_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["mapping_profile_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["cfg_profile_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["reachability_profile_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["environment_profile_satisfied"])
+            self.assertEqual(proof_ir["target_profile"]["status"], "satisfied")
+            self.assertTrue(proof_ir["target_profile"]["checks"]["loader_facts_schema_matches_model"])
+            self.assertTrue(proof_ir["target_profile"]["checks"]["loader_frontend_profile_schema_matches"])
+            self.assertTrue(proof_ir["target_profile"]["checks"]["loader_frontend_profile_status_satisfied"])
+            self.assertTrue(proof_ir["target_profile"]["checks"]["solver_backend_profile_schema_matches"])
+            self.assertTrue(proof_ir["target_profile"]["checks"]["trusted_boundary_profile_schema_matches"])
+            self.assertTrue(proof_ir["target_profile"]["checks"]["profile_manifest_schema_matches"])
+            self.assertTrue(proof_ir["target_profile"]["checks"]["trusted_boundary_profile_status_satisfied"])
+            self.assertTrue(proof_ir["target_profile"]["checks"]["loader_profile_model_matches"])
+            self.assertEqual(proof_ir["profile_manifest"]["status"], "satisfied")
+            self.assertTrue(proof_ir["profile_manifest"]["checks"]["profile_manifest_gaps_closed"])
+            self.assertEqual(proof_ir["profile_manifest"]["counts"]["profile_manifest_gaps"], 0)
+            self.assertEqual(proof_ir["loader_frontend_profile"]["status"], "satisfied")
+            self.assertTrue(proof_ir["loader_frontend_profile"]["checks"]["original_required_fields_present"])
+            self.assertTrue(proof_ir["loader_frontend_profile"]["checks"]["candidate_required_fields_present"])
+            self.assertTrue(proof_ir["loader_frontend_profile"]["checks"]["loader_profile_status_satisfied"])
+            self.assertEqual(proof_ir["loader_profile"]["status"], "satisfied")
+            loader_profile_counts = proof_ir["loader_profile"]["counts"]
+            self.assertEqual(loader_profile_counts["model_bitness"], 32)
+            self.assertEqual(loader_profile_counts["original_bitness"], 32)
+            self.assertEqual(loader_profile_counts["candidate_bitness"], 32)
+            self.assertGreater(loader_profile_counts["original_executable_sections"], 0)
+            self.assertEqual(loader_profile_counts["layout_blocking_issues"], 0)
+            self.assertEqual(loader_profile_counts["binary_signature_mismatches"], 0)
+            self.assertTrue(proof_ir["loader_profile"]["checks"]["loader_format_matches_model"])
+            self.assertTrue(proof_ir["loader_profile"]["checks"]["loader_name_matches_model"])
+            self.assertTrue(proof_ir["loader_profile"]["checks"]["relocations_closed"])
+            self.assertEqual(proof_ir["coverage_profile"]["status"], "satisfied")
+            coverage_profile_counts = proof_ir["coverage_profile"]["counts"]
+            self.assertEqual(coverage_profile_counts["coverage_obligations"], 0)
+            self.assertEqual(coverage_profile_counts["block_equivalence_obligations"], 1)
+            self.assertEqual(coverage_profile_counts["proved_block_equivalence_obligations"], 1)
+            self.assertEqual(coverage_profile_counts["open_coverage_obligations"], 0)
+            self.assertEqual(coverage_profile_counts["coverage_gaps"], 0)
+            self.assertTrue(proof_ir["coverage_profile"]["checks"]["coverage_obligations_classified"])
+            self.assertTrue(proof_ir["coverage_profile"]["checks"]["coverage_gaps_closed"])
+            self.assertTrue(proof_ir["coverage_profile"]["checks"]["block_equivalence_present"])
+            self.assertEqual(proof_ir["proof_cache_profile"]["status"], "satisfied")
+            proof_cache_profile_counts = proof_ir["proof_cache_profile"]["counts"]
+            self.assertEqual(proof_cache_profile_counts["proof_cache_entries"], 1)
+            self.assertEqual(proof_cache_profile_counts["proof_cache_index_entries"], 1)
+            self.assertEqual(proof_cache_profile_counts["proof_cache_file_missing"], 0)
+            self.assertEqual(proof_cache_profile_counts["proof_cache_file_unreadable"], 0)
+            self.assertEqual(proof_cache_profile_counts["proof_cache_payload_hash_mismatches"], 0)
+            self.assertEqual(proof_cache_profile_counts["proof_cache_index_file_missing"], 0)
+            self.assertEqual(proof_cache_profile_counts["proof_cache_index_file_hash_mismatches"], 0)
+            self.assertEqual(proof_cache_profile_counts["proof_cache_index_payload_mismatches"], 0)
+            self.assertEqual(proof_cache_profile_counts["proof_cache_index_entry_mismatches"], 0)
+            self.assertEqual(proof_cache_profile_counts["duplicate_proof_cache_paths"], 0)
+            self.assertEqual(proof_cache_profile_counts["proof_cache_gaps"], 0)
+            self.assertTrue(proof_ir["proof_cache_profile"]["checks"]["proof_cache_payload_hashes_match"])
+            self.assertTrue(proof_ir["proof_cache_profile"]["checks"]["proof_cache_index_file_hash_matches"])
+            self.assertTrue(proof_ir["proof_cache_profile"]["checks"]["proof_cache_gaps_closed"])
+            self.assertEqual(proof_ir["proof_rule_profile"]["status"], "satisfied")
+            proof_rule_profile_counts = proof_ir["proof_rule_profile"]["counts"]
+            self.assertGreater(proof_rule_profile_counts["model_rules"], 0)
+            self.assertEqual(proof_rule_profile_counts["obligations"], 2)
+            self.assertEqual(proof_rule_profile_counts["obligations_with_rules"], 2)
+            self.assertEqual(proof_rule_profile_counts["unknown_obligation_rules"], 0)
+            self.assertEqual(proof_rule_profile_counts["block_semantics_records"], 1)
+            self.assertEqual(proof_rule_profile_counts["block_semantics_records_with_rules"], 1)
+            self.assertEqual(proof_rule_profile_counts["unknown_block_semantics_rules"], 0)
+            self.assertEqual(proof_rule_profile_counts["solver_evidence_entries"], 1)
+            self.assertEqual(proof_rule_profile_counts["solver_evidence_entries_with_rules"], 1)
+            self.assertEqual(proof_rule_profile_counts["unknown_solver_evidence_rules"], 0)
+            self.assertEqual(proof_rule_profile_counts["artifact_rule_binding_gaps"], 0)
+            self.assertTrue(proof_ir["proof_rule_profile"]["checks"]["obligation_rules_known"])
+            self.assertTrue(proof_ir["proof_rule_profile"]["checks"]["artifact_rule_bindings_closed"])
+            self.assertEqual(proof_ir["mapping_profile"]["status"], "satisfied")
+            mapping_profile_counts = proof_ir["mapping_profile"]["counts"]
+            self.assertEqual(mapping_profile_counts["blocks"], 1)
+            self.assertEqual(mapping_profile_counts["code_blocks"], 1)
+            self.assertEqual(mapping_profile_counts["non_code_blocks"], 0)
+            self.assertEqual(mapping_profile_counts["reachable_blocks"], 1)
+            self.assertEqual(mapping_profile_counts["unchecked_invariant_blocks"], 0)
+            self.assertEqual(mapping_profile_counts["unknown_checked_root_entries"], 0)
+            self.assertEqual(mapping_profile_counts["unknown_mapping_proof_rules"], 0)
+            self.assertEqual(mapping_profile_counts["malformed_blocks"], 0)
+            self.assertEqual(mapping_profile_counts["malformed_waivers"], 0)
+            self.assertEqual(mapping_profile_counts["mapping_gaps"], 0)
+            self.assertTrue(proof_ir["mapping_profile"]["checks"]["mapping_contract_present"])
+            self.assertTrue(proof_ir["mapping_profile"]["checks"]["mapping_status_satisfied"])
+            self.assertTrue(proof_ir["mapping_profile"]["checks"]["mapping_entries_present"])
+            self.assertTrue(proof_ir["mapping_profile"]["checks"]["mapping_gaps_closed"])
+            self.assertEqual(proof_ir["cfg_profile"]["status"], "satisfied")
+            cfg_profile_counts = proof_ir["cfg_profile"]["counts"]
+            self.assertEqual(cfg_profile_counts["block_equivalence_obligations"], 1)
+            self.assertEqual(cfg_profile_counts["proved_block_equivalence_obligations"], 1)
+            self.assertEqual(cfg_profile_counts["block_structure_obligations"], 0)
+            self.assertEqual(cfg_profile_counts["direct_cfg_edge_obligations"], 0)
+            self.assertEqual(cfg_profile_counts["indirect_cfg_target_obligations"], 0)
+            self.assertEqual(cfg_profile_counts["cfg_gaps"], 0)
+            self.assertTrue(proof_ir["cfg_profile"]["checks"]["cfg_gaps_closed"])
+            self.assertEqual(proof_ir["reachability_profile"]["status"], "satisfied")
+            reachability_profile_counts = proof_ir["reachability_profile"]["counts"]
+            self.assertEqual(reachability_profile_counts["block_equivalence_obligations"], 1)
+            self.assertEqual(reachability_profile_counts["proved_block_equivalence_obligations"], 1)
+            self.assertEqual(reachability_profile_counts["cfg_edge_obligations"], 0)
+            self.assertEqual(reachability_profile_counts["reachability_obligations"], 1)
+            self.assertEqual(reachability_profile_counts["proved_reachability_obligations"], 1)
+            self.assertEqual(reachability_profile_counts["entry_root_reachability"], 1)
+            self.assertEqual(reachability_profile_counts["reachability_gaps"], 0)
+            self.assertTrue(proof_ir["reachability_profile"]["checks"]["reachability_gaps_closed"])
+            self.assertEqual(proof_ir["environment_profile"]["status"], "satisfied")
+            environment_profile_counts = proof_ir["environment_profile"]["counts"]
+            self.assertEqual(environment_profile_counts["original_imports"], 0)
+            self.assertEqual(environment_profile_counts["candidate_imports"], 0)
+            self.assertEqual(environment_profile_counts["import_thunk_block_semantics_records"], 0)
+            self.assertEqual(environment_profile_counts["symbolic_observable_claims"], 0)
+            self.assertEqual(environment_profile_counts["environment_gaps"], 0)
+            self.assertTrue(proof_ir["environment_profile"]["checks"]["environment_model_supported"])
+            self.assertTrue(proof_ir["environment_profile"]["checks"]["loader_import_signatures_match"])
+            self.assertEqual(proof_ir["block_semantics"]["status"], "satisfied")
+            self.assertEqual(proof_ir["block_semantics"]["counts"]["records"], 1)
+            self.assertEqual(proof_ir["block_semantics"]["records"][0]["semantics_kind"], "decoded_instruction_identity")
+            self.assertEqual(proof_ir["block_semantics"]["records"][0]["status"], "present")
+            self.assertEqual(proof_ir["instruction_semantics"]["status"], "satisfied")
+            self.assertEqual(proof_ir["instruction_semantics"]["counts"]["records"], 1)
+            instruction_record = proof_ir["instruction_semantics"]["records"][0]
+            self.assertEqual(instruction_record["status"], "satisfied")
+            self.assertEqual(instruction_record["obligation_id"], "block:entry")
+            self.assertEqual(instruction_record["semantics_kind"], "decoded_instruction_identity")
+            self.assertEqual(proof_ir["instruction_profile"]["status"], "satisfied")
+            instruction_profile_counts = proof_ir["instruction_profile"]["counts"]
+            self.assertEqual(instruction_profile_counts["instruction_semantics_records"], 1)
+            self.assertEqual(instruction_profile_counts["decoded_instruction_block_semantics"], 1)
+            self.assertEqual(instruction_profile_counts["decoded_instruction_identity_records"], 1)
+            self.assertEqual(instruction_profile_counts["pe_import_thunk_semantics_records"], 0)
+            self.assertEqual(instruction_profile_counts["instruction_semantics_gaps"], 0)
+            self.assertEqual(instruction_record["original"]["status"], "ok")
+            self.assertEqual(instruction_record["candidate"]["status"], "ok")
+            self.assertEqual(instruction_record["original"]["instruction_count"], 2)
+            self.assertRegex(instruction_record["original"]["instruction_stream_sha256"], r"^[0-9a-f]{64}$")
+            self.assertRegex(instruction_record["original"]["decoded_bytes_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual(proof_ir["proof_artifact_bindings"]["status"], "satisfied")
+            self.assertEqual(proof_ir["proof_artifact_bindings"]["counts"]["records"], 1)
+            self.assertEqual(proof_ir["proof_artifact_bindings"]["records"][0]["status"], "satisfied")
+            self.assertEqual(proof_ir["proof_artifact_bindings"]["records"][0]["obligation_id"], "block:entry")
+            self.assertEqual(proof_ir["semantic_observables"]["status"], "satisfied")
+            self.assertEqual(proof_ir["semantic_observables"]["counts"]["records"], 1)
+            self.assertEqual(proof_ir["semantic_observables"]["records"][0]["claim_kind"], "decoded_instruction_identity")
+            self.assertEqual(proof_ir["semantic_observables"]["records"][0]["status"], "satisfied")
+            self.assertEqual(proof_ir["semantic_profile"]["status"], "satisfied")
+            semantic_profile_counts = proof_ir["semantic_profile"]["counts"]
+            self.assertEqual(semantic_profile_counts["semantic_observables"], 1)
+            self.assertEqual(semantic_profile_counts["decoded_instruction_identity"], 1)
+            self.assertEqual(semantic_profile_counts["byte_identical_instruction_decode_boundaries"], 1)
+            self.assertEqual(semantic_profile_counts["unknown_claims"], 0)
+            self.assertEqual(semantic_profile_counts["unknown_trusted_boundaries"], 0)
+            self.assertEqual(proof_ir["solver_claims"]["status"], "satisfied")
+            self.assertEqual(proof_ir["solver_claims"]["counts"]["records"], 0)
+            self.assertEqual(proof_ir["solver_evidence_profile"]["status"], "satisfied")
+            solver_profile_counts = proof_ir["solver_evidence_profile"]["counts"]
+            self.assertEqual(solver_profile_counts["proof_cache_entries"], 1)
+            self.assertEqual(solver_profile_counts["solver_evidence_entries"], 1)
+            self.assertEqual(solver_profile_counts["structural_byte_identity_entries"], 1)
+            self.assertEqual(solver_profile_counts["solver_claims"], 0)
+            self.assertEqual(solver_profile_counts["incomplete_entries"], 0)
+            self.assertEqual(proof_ir["solver_backend_profile"]["status"], "satisfied")
+            solver_backend_profile_counts = proof_ir["solver_backend_profile"]["counts"]
+            self.assertEqual(solver_backend_profile_counts["solver_evidence_entries"], 1)
+            self.assertEqual(solver_backend_profile_counts["solver_backed_evidence_entries"], 0)
+            self.assertEqual(solver_backend_profile_counts["solver_claims"], 0)
+            self.assertEqual(solver_backend_profile_counts["backend_gaps"], 0)
+            self.assertEqual(proof_ir["trusted_boundaries"]["status"], "satisfied")
+            self.assertEqual(proof_ir["trusted_boundaries"]["counts"]["records"], 1)
+            self.assertEqual(proof_ir["trusted_boundaries"]["records"][0]["trusted_boundary"], "byte_identical_instruction_decode_v1")
+            self.assertTrue(proof_ir["trusted_boundaries"]["records"][0]["allowed"])
+            self.assertEqual(proof_ir["proof_composition"]["status"], "satisfied")
+            self.assertEqual(proof_ir["proof_composition"]["counts"]["records"], 1)
+            composition_record = proof_ir["proof_composition"]["records"][0]
+            self.assertEqual(composition_record["status"], "satisfied")
+            self.assertEqual(composition_record["obligation_id"], "block:entry")
+            self.assertEqual(composition_record["composition_rule"], "stage-a-local-block-proof-composition-v1")
+            self.assertIn(
+                "instruction_semantics",
+                {dependency["family"] for dependency in composition_record["dependencies"]},
+            )
+            self.assertNotIn(
+                "solver_claim",
+                {dependency["family"] for dependency in composition_record["dependencies"]},
+            )
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["proved_block_obligations_have_block_semantics"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["proved_block_obligations_have_semantic_observables"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["semantic_claims_use_allowed_trusted_boundaries"])
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["proof_backing_gaps"], 0)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["proof_artifact_bindings"], 1)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["semantic_observables"], 1)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["semantic_observable_gaps"], 0)
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["solver_claims_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["trusted_solver_claims_have_queries"])
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["solver_claims"], 0)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["solver_claim_gaps"], 0)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["trusted_boundaries"], 1)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["trusted_boundary_gaps"], 0)
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["proof_composition_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["proved_block_obligations_have_composition_records"])
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["proof_composition_records"], 1)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["proof_composition_gaps"], 0)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["proof_cache_profile_gaps"], 0)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["evidence_binding_gaps"], 0)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["block_semantics_gaps"], 0)
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["instruction_semantics_satisfied"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["decoded_block_semantics_have_instruction_semantics"])
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["instruction_semantics_records"], 1)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["instruction_semantics_gaps"], 0)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["decoded_instruction_block_semantics"], 1)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["cfg_profile_gaps"], 0)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["mapping_profile_gaps"], 0)
+            self.assertEqual(proof_ir["closure_certificate"]["counts"]["reachability_profile_gaps"], 0)
             lean_summary = json.loads((out / "lean" / "summary.json").read_text(encoding="utf-8"))
             self.assertTrue(lean_summary["global_soundness_checked"])
             self.assertTrue(lean_summary["final_pass_allowed"])
+            self.assertTrue(lean_summary["proof_ir_closure_certificate_checked"])
+            self.assertTrue(lean_summary["proof_ir_loader_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_coverage_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_proof_cache_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_proof_rule_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_mapping_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_cfg_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_reachability_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_environment_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_instruction_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_semantic_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_solver_evidence_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_solver_backend_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_trusted_boundary_profile_checked"])
+            self.assertTrue(lean_summary["proof_ir_profile_manifest_checked"])
+            self.assertTrue(lean_summary["proof_evidence_binding_checked"])
+            self.assertIn("StageA/ProofIR.lean", lean_summary["generated_stubs"])
+            self.assertTrue((out / "lean" / "StageA" / "ProofIR.lean").exists())
+            proof_ir_lean = (out / "lean" / "StageA" / "ProofIR.lean").read_text(encoding="utf-8")
+            self.assertIn("structure ProofIrCounts", proof_ir_lean)
+            self.assertIn("structure TargetProfile", proof_ir_lean)
+            self.assertIn("loaderFrontendProfileSchemaMatches : Bool", proof_ir_lean)
+            self.assertIn("loaderFrontendProfileStatusSatisfied : Bool", proof_ir_lean)
+            self.assertIn("solverBackendProfileSchemaMatches : Bool", proof_ir_lean)
+            self.assertIn("trustedBoundaryProfileSchemaMatches : Bool", proof_ir_lean)
+            self.assertIn("trustedBoundaryProfileStatusSatisfied : Bool", proof_ir_lean)
+            self.assertIn("profileManifestSchemaMatches : Bool", proof_ir_lean)
+            self.assertIn("profile.loaderFrontendProfileSchemaMatches", proof_ir_lean)
+            self.assertIn("profile.loaderFrontendProfileStatusSatisfied", proof_ir_lean)
+            self.assertIn("profile.solverBackendProfileSchemaMatches", proof_ir_lean)
+            self.assertIn("profile.trustedBoundaryProfileSchemaMatches", proof_ir_lean)
+            self.assertIn("profile.trustedBoundaryProfileStatusSatisfied", proof_ir_lean)
+            self.assertIn("profile.profileManifestSchemaMatches", proof_ir_lean)
+            self.assertIn("structure LoaderProfile", proof_ir_lean)
+            self.assertIn("structure CoverageProfile", proof_ir_lean)
+            self.assertIn("structure ProofCacheProfile", proof_ir_lean)
+            self.assertIn("structure ProofRuleProfile", proof_ir_lean)
+            self.assertIn("structure MappingProfile", proof_ir_lean)
+            self.assertIn("def mappingProfileClosed", proof_ir_lean)
+            self.assertIn("structure CfgProfile", proof_ir_lean)
+            self.assertIn("structure ReachabilityProfile", proof_ir_lean)
+            self.assertIn("structure EnvironmentProfile", proof_ir_lean)
+            self.assertIn("structure InstructionSemanticsProfile", proof_ir_lean)
+            self.assertIn("structure SemanticObservableProfile", proof_ir_lean)
+            self.assertIn("structure TrustedBoundaryProfile", proof_ir_lean)
+            self.assertIn("structure ProfileManifest", proof_ir_lean)
+            self.assertIn("structure SolverEvidenceProfile", proof_ir_lean)
+            self.assertIn("def proofIrCountsAccounted", proof_ir_lean)
+            self.assertIn("def closureCertificateCountsClosed", proof_ir_lean)
+            self.assertIn("def closureCertificateChecksClosed", proof_ir_lean)
+            self.assertIn("def loaderProfileClosed", proof_ir_lean)
+            self.assertIn("def coverageProfileClosed", proof_ir_lean)
+            self.assertIn("def proofCacheProfileClosed", proof_ir_lean)
+            self.assertIn("def proofRuleProfileClosed", proof_ir_lean)
+            self.assertIn("def cfgProfileClosed", proof_ir_lean)
+            self.assertIn("def reachabilityProfileClosed", proof_ir_lean)
+            self.assertIn("def environmentProfileClosed", proof_ir_lean)
+            self.assertIn("def instructionSemanticsProfileClosed", proof_ir_lean)
+            self.assertIn("def semanticObservableProfileClosed", proof_ir_lean)
+            self.assertIn("def trustedBoundaryProfileClosed", proof_ir_lean)
+            self.assertIn("def profileManifestClosed", proof_ir_lean)
+            self.assertIn("def solverEvidenceProfileClosed", proof_ir_lean)
+            obligations_lean = (out / "lean" / "StageA" / "Obligations.lean").read_text(encoding="utf-8")
+            self.assertIn("import StageA.ProofIR", obligations_lean)
+            self.assertIn("generatedProofIrClosureCertificateClosedChecked", obligations_lean)
+            self.assertIn("generatedProofIrContextBindingChecked", obligations_lean)
+            self.assertIn("generatedProofIrClosureCertificateStatusChecked", obligations_lean)
+            self.assertIn("generatedProofIrClosureCertificateCountsChecked", obligations_lean)
+            self.assertIn("generatedProofIrClosureCertificateChecksClosedChecked", obligations_lean)
+            self.assertIn("generatedProofIrCfgProfileClosedChecked", obligations_lean)
+            self.assertIn("generatedCfgProfile : CfgProfile", obligations_lean)
+            self.assertIn("generatedCfgProfileClosed", obligations_lean)
+            self.assertIn("generatedProofIrReachabilityProfileClosedChecked", obligations_lean)
+            self.assertIn("generatedReachabilityProfile : ReachabilityProfile", obligations_lean)
+            self.assertIn("generatedReachabilityProfileClosed", obligations_lean)
+            self.assertIn("generatedRuntimeProofCounts : RuntimeProofCounts", obligations_lean)
+            self.assertIn("generatedProofIrCounts : ProofIrCounts", obligations_lean)
+            self.assertIn("generatedClosureCertificateCounts : ClosureCertificateCounts", obligations_lean)
+            self.assertIn("generatedClosureCertificateChecks : ClosureCertificateChecks", obligations_lean)
+            self.assertIn("generatedLoaderProfile : LoaderProfile", obligations_lean)
+            self.assertIn("generatedCoverageProfile : CoverageProfile", obligations_lean)
+            self.assertIn("generatedProofCacheProfile : ProofCacheProfile", obligations_lean)
+            self.assertIn("generatedProofRuleProfile : ProofRuleProfile", obligations_lean)
+            self.assertIn("generatedCfgProfile : CfgProfile", obligations_lean)
+            self.assertIn("generatedEnvironmentProfile : EnvironmentProfile", obligations_lean)
+            self.assertIn("generatedInstructionSemanticsProfile : InstructionSemanticsProfile", obligations_lean)
+            self.assertIn("generatedSemanticObservableProfile : SemanticObservableProfile", obligations_lean)
+            self.assertIn("generatedSolverEvidenceProfile : SolverEvidenceProfile", obligations_lean)
+            self.assertIn("proofIrCountsAccounted generatedRuntimeProofCounts generatedProofIrCounts", obligations_lean)
+            self.assertIn(
+                "closureCertificateCountsClosed generatedRuntimeProofCounts generatedProofIrCounts generatedClosureCertificateCounts",
+                obligations_lean,
+            )
+            self.assertIn("closureCertificateChecksClosed generatedClosureCertificateChecks", obligations_lean)
+            self.assertIn("loaderProfileClosed generatedLoaderProfile", obligations_lean)
+            self.assertIn("coverageProfileClosed generatedProofIrCounts generatedCoverageProfile", obligations_lean)
+            self.assertIn(
+                "proofCacheProfileClosed generatedRuntimeProofCounts generatedProofIrCounts generatedClosureCertificateCounts generatedProofCacheProfile",
+                obligations_lean,
+            )
+            self.assertIn("proofRuleProfileClosed generatedProofIrCounts generatedProofRuleProfile", obligations_lean)
+            self.assertIn(
+                "environmentProfileClosed generatedLoaderProfile generatedSemanticObservableProfile generatedClosureCertificateCounts generatedEnvironmentProfile",
+                obligations_lean,
+            )
+            self.assertIn(
+                "instructionSemanticsProfileClosed generatedProofIrCounts generatedClosureCertificateCounts generatedSemanticObservableProfile generatedInstructionSemanticsProfile",
+                obligations_lean,
+            )
+            self.assertIn(
+                "semanticObservableProfileClosed generatedProofIrCounts generatedClosureCertificateCounts generatedSemanticObservableProfile",
+                obligations_lean,
+            )
+            self.assertIn(
+                "solverEvidenceProfileClosed generatedRuntimeProofCounts generatedProofIrCounts generatedClosureCertificateCounts generatedSemanticObservableProfile generatedSolverEvidenceProfile",
+                obligations_lean,
+            )
+            self.assertIn("generatedInstructionSemanticsProfileChecked", obligations_lean)
+            self.assertIn("generatedLoaderProfileChecked", obligations_lean)
+            self.assertIn("generatedProofIrLoaderProfileClosedChecked", obligations_lean)
+            self.assertIn("generatedCoverageProfileChecked", obligations_lean)
+            self.assertIn("generatedProofIrCoverageProfileClosedChecked", obligations_lean)
+            self.assertIn("generatedProofCacheProfileChecked", obligations_lean)
+            self.assertIn("generatedProofIrProofCacheProfileClosedChecked", obligations_lean)
+            self.assertIn("generatedProofRuleProfileChecked", obligations_lean)
+            self.assertIn("generatedProofIrProofRuleProfileClosedChecked", obligations_lean)
+            self.assertIn("generatedEnvironmentProfileChecked", obligations_lean)
+            self.assertIn("generatedProofIrEnvironmentProfileClosedChecked", obligations_lean)
+            self.assertIn("generatedSemanticObservableProfileChecked", obligations_lean)
+            self.assertIn("generatedSolverEvidenceProfileChecked", obligations_lean)
+            self.assertIn("generatedClosureCheckProvedBlockObligationsHaveSolverEvidence", obligations_lean)
+            self.assertIn("generatedClosureCheckProofCacheProfileSatisfied", obligations_lean)
+            self.assertIn("generatedClosureCertificateProofCacheProfileGapCount", obligations_lean)
+            self.assertIn("generatedProofIrProofArtifactBindingRecordCount", obligations_lean)
+            self.assertIn("generatedClosureCheckProofArtifactBindingsSatisfied", obligations_lean)
+            self.assertIn("generatedClosureCheckProofArtifactsBindSameObligations", obligations_lean)
+            self.assertIn("generatedProofIrSemanticObservableRecordCount", obligations_lean)
+            self.assertIn("generatedProofIrSolverClaimRecordCount", obligations_lean)
+            self.assertIn("generatedClosureCheckSolverClaimsSatisfied", obligations_lean)
+            self.assertIn("generatedClosureCheckTrustedSolverClaimsHaveQueries", obligations_lean)
+            self.assertIn("generatedProofIrInstructionSemanticsRecordCount", obligations_lean)
+            self.assertIn("generatedClosureCheckInstructionSemanticsSatisfied", obligations_lean)
+            self.assertIn("generatedClosureCheckDecodedBlockSemanticsHaveInstructionSemantics", obligations_lean)
+            self.assertIn("generatedProofIrProofCompositionRecordCount", obligations_lean)
+            self.assertIn("generatedClosureCheckProofCompositionSatisfied", obligations_lean)
+            self.assertIn("generatedClosureCheckProvedBlockObligationsHaveCompositionRecords", obligations_lean)
+            self.assertIn("generatedClosureCheckSemanticObservablesSatisfied", obligations_lean)
+            self.assertIn("generatedProofIrTrustedBoundaryRecordCount", obligations_lean)
+            self.assertIn("generatedClosureCheckTrustedBoundariesSatisfied", obligations_lean)
+            self.assertIn("generatedProofIrBlockSemanticsRecordCount", obligations_lean)
+            self.assertIn("generatedClosureCheckProvedBlockObligationsHaveBlockSemantics", obligations_lean)
+            self.assertIn("generatedProofEvidenceBindingClosedChecked", obligations_lean)
 
     def test_missing_lean_downgrades_otherwise_closed_pass_to_incomplete(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -112,11 +524,47 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(result["verdict"], "pass")
             summary = json.loads((out / "lean" / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["supplemental_inputs"]["errors"], [])
+            self.assertEqual(summary["source_artifacts"]["status"], "satisfied")
             copied = summary["supplemental_inputs"]["copied"][0]
             self.assertEqual(copied["module"], "StageA.User.FixtureLemma")
             self.assertTrue((out / "lean" / copied["relative_path"]).exists())
             obligations_lean = (out / "lean" / "StageA" / "Obligations.lean").read_text(encoding="utf-8")
             self.assertIn("import StageA.User.FixtureLemma", obligations_lean)
+
+    def test_incomplete_lean_source_artifact_manifest_blocks_final_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xb8\x2a\x00\x00\x00\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xb8\x2a\x00\x00\x00\xc3")
+            mapping = self._write_mapping(root / "block-map.json", size=6)
+            out = root / "report"
+            incomplete_manifest = {
+                "format": "stage-a-lean-source-artifacts-v1",
+                "generated": [],
+                "supplemental": [],
+                "counts": {"generated": 0, "supplemental": 0, "missing": 1},
+                "status": "incomplete",
+            }
+
+            with self._mock_lean_checked(), mock.patch(
+                "wincr.stage_a._lean_source_artifacts_manifest",
+                return_value=incomplete_manifest,
+            ):
+                result = stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=mapping,
+                    model=STAGE_A_MODEL_ID,
+                    out=out,
+                )
+
+            self.assertEqual(result["verdict"], "incomplete")
+            summary = result["proof"]["lean"]
+            self.assertFalse(summary["final_pass_allowed"])
+            self.assertEqual(summary["source_artifacts"]["status"], "incomplete")
+            blocker = json.loads((out / "incomplete" / "lean-global-summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(blocker["category"], "lean_global_summary_unchecked")
+            self.assertIn("Lean source artifacts", blocker["next_action"])
 
     def test_supplemental_lean_input_with_unchecked_marker_blocks_final_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -402,6 +850,31 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual({edge["edge_kind"] for edge in edges}, {"taken", "fallthrough"})
             self.assertEqual({edge["target_block"] for edge in edges}, {"taken", "fallthrough"})
             self.assertTrue(all(edge["status"] == "proved" for edge in edges))
+            proof_ir = json.loads((out / "proof-ir.json").read_text(encoding="utf-8"))
+            cfg_profile = proof_ir["cfg_profile"]
+            self.assertEqual(cfg_profile["status"], "satisfied")
+            self.assertEqual(cfg_profile["counts"]["direct_cfg_edge_obligations"], 2)
+            self.assertEqual(cfg_profile["counts"]["proved_direct_cfg_edge_obligations"], 2)
+            self.assertEqual(cfg_profile["counts"]["open_direct_cfg_edge_obligations"], 0)
+            self.assertEqual(cfg_profile["counts"]["direct_cfg_taken_edges"], 1)
+            self.assertEqual(cfg_profile["counts"]["direct_cfg_fallthrough_edges"], 1)
+            self.assertEqual(cfg_profile["counts"]["proved_direct_cfg_edges_with_source_block"], 2)
+            self.assertEqual(cfg_profile["counts"]["proved_direct_cfg_edges_with_target_block"], 2)
+            self.assertEqual(cfg_profile["counts"]["proved_direct_cfg_edges_with_original_evidence"], 2)
+            self.assertEqual(cfg_profile["counts"]["proved_direct_cfg_edges_with_candidate_evidence"], 2)
+            self.assertEqual(cfg_profile["counts"]["cfg_gaps"], 0)
+            self.assertTrue(cfg_profile["checks"]["direct_cfg_edge_evidence_present"])
+            reachability_profile = proof_ir["reachability_profile"]
+            self.assertEqual(reachability_profile["status"], "satisfied")
+            self.assertEqual(reachability_profile["counts"]["block_equivalence_obligations"], 3)
+            self.assertEqual(reachability_profile["counts"]["cfg_edge_obligations"], 2)
+            self.assertEqual(reachability_profile["counts"]["proved_cfg_edge_obligations"], 2)
+            self.assertEqual(reachability_profile["counts"]["reachability_obligations"], 3)
+            self.assertEqual(reachability_profile["counts"]["entry_root_reachability"], 1)
+            self.assertEqual(reachability_profile["counts"]["direct_cfg_reachability"], 2)
+            self.assertEqual(reachability_profile["counts"]["direct_cfg_reachability_with_proved_edge"], 2)
+            self.assertEqual(reachability_profile["counts"]["reachability_gaps"], 0)
+            self.assertTrue(reachability_profile["checks"]["direct_cfg_reachability_edges_proved"])
 
     def test_unmapped_direct_cfg_edge_reports_incomplete(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -435,6 +908,15 @@ class StageAValidateTests(unittest.TestCase):
             edge_blocker = json.loads((out / "incomplete" / "edge-entry-jump-1003.json").read_text(encoding="utf-8"))
             self.assertEqual(edge_blocker["category"], "unmapped_cfg_edge")
             self.assertEqual(edge_blocker["details"]["original_edge"]["target_rva"], 0x1003)
+            proof_ir = json.loads((out / "proof-ir.json").read_text(encoding="utf-8"))
+            cfg_profile = proof_ir["cfg_profile"]
+            self.assertEqual(cfg_profile["status"], "incomplete")
+            self.assertEqual(cfg_profile["counts"]["direct_cfg_edge_obligations"], 1)
+            self.assertEqual(cfg_profile["counts"]["open_direct_cfg_edge_obligations"], 1)
+            self.assertEqual(cfg_profile["counts"]["cfg_gaps"], 1)
+            self.assertIn("open_direct_cfg_edge_obligation", {gap["category"] for gap in cfg_profile["gaps"]})
+            self.assertFalse(cfg_profile["checks"]["direct_cfg_edges_closed"])
+            self.assertFalse(proof_ir["proof_context"]["checks"]["cfg_profile_satisfied"])
 
     def test_checked_generated_proof_does_not_bypass_unsplit_cfg(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -464,6 +946,16 @@ class StageAValidateTests(unittest.TestCase):
             obligation = self._obligation(out, "structure:entry:original:unsplit:1003")
             self.assertEqual(obligation["kind"], "block_structure")
             self.assertEqual(obligation["incomplete"]["category"], "unsplit_basic_block")
+            proof_ir = json.loads((out / "proof-ir.json").read_text(encoding="utf-8"))
+            cfg_profile = proof_ir["cfg_profile"]
+            self.assertEqual(cfg_profile["status"], "incomplete")
+            self.assertGreaterEqual(cfg_profile["counts"]["block_structure_obligations"], 1)
+            self.assertEqual(
+                cfg_profile["counts"]["open_block_structure_obligations"],
+                cfg_profile["counts"]["block_structure_obligations"],
+            )
+            self.assertIn("open_block_structure_obligation", {gap["category"] for gap in cfg_profile["gaps"]})
+            self.assertFalse(cfg_profile["checks"]["block_structure_obligations_closed"])
 
     def test_checked_generated_proof_does_not_bypass_indirect_target(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -491,6 +983,12 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(result["verdict"], "incomplete")
             obligation = self._obligation(out, "structure:entry:original:unknown-target:1000")
             self.assertEqual(obligation["incomplete"]["category"], "unknown_target")
+            proof_ir = json.loads((out / "proof-ir.json").read_text(encoding="utf-8"))
+            cfg_profile = proof_ir["cfg_profile"]
+            self.assertEqual(cfg_profile["status"], "incomplete")
+            self.assertEqual(cfg_profile["counts"]["block_structure_obligations"], 2)
+            self.assertEqual(cfg_profile["counts"]["open_block_structure_obligations"], 2)
+            self.assertIn("open_block_structure_obligation", {gap["category"] for gap in cfg_profile["gaps"]})
 
     @unittest.skipUnless(stage_a._import_z3() is not None, "requires Python Z3 bindings")
     def test_memory_read_equivalence_allows_different_block_sizes(self):
@@ -632,6 +1130,15 @@ class StageAValidateTests(unittest.TestCase):
             reachability = self._obligation(out, "reachability:orphan")
             self.assertEqual(reachability["status"], "incomplete")
             self.assertEqual(reachability["incomplete"]["category"], "unproved_reachability")
+            proof_ir = json.loads((out / "proof-ir.json").read_text(encoding="utf-8"))
+            reachability_profile = proof_ir["reachability_profile"]
+            self.assertEqual(reachability_profile["status"], "incomplete")
+            self.assertEqual(reachability_profile["counts"]["reachability_obligations"], 2)
+            self.assertEqual(reachability_profile["counts"]["open_reachability_obligations"], 1)
+            self.assertEqual(reachability_profile["counts"]["reachability_gaps"], 1)
+            self.assertIn("open_reachability_obligation", {gap["category"] for gap in reachability_profile["gaps"]})
+            self.assertFalse(reachability_profile["checks"]["reachability_obligations_closed"])
+            self.assertFalse(proof_ir["proof_context"]["checks"]["reachability_profile_satisfied"])
 
     def test_checked_root_can_prove_non_entry_block_reachable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -853,6 +1360,27 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(obligation["proof_rule"], "pe_import_thunk_equivalence_v1")
             self.assertEqual(obligation["original"]["import_signature"], obligation["candidate"]["import_signature"])
             self.assertNotEqual(obligation["original"]["sha256"], obligation["candidate"]["sha256"])
+            proof_ir = json.loads((out / "proof-ir.json").read_text(encoding="utf-8"))
+            self.assertEqual(proof_ir["environment_profile"]["status"], "satisfied")
+            environment_profile_counts = proof_ir["environment_profile"]["counts"]
+            self.assertEqual(environment_profile_counts["original_imports"], 1)
+            self.assertEqual(environment_profile_counts["candidate_imports"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_block_semantics_records"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_semantic_observable_records"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_trusted_boundary_records"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_solver_evidence_entries"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_semantics_with_original_signature"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_semantics_with_candidate_signature"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_semantics_with_matching_signatures"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_semantics_in_original_loader_imports"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_semantics_in_candidate_loader_imports"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_claims_with_original_signature_hash"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_claims_with_candidate_signature_hash"], 1)
+            self.assertEqual(environment_profile_counts["import_thunk_claims_with_matching_signature_hashes"], 1)
+            self.assertEqual(environment_profile_counts["environment_gaps"], 0)
+            self.assertTrue(proof_ir["environment_profile"]["checks"]["import_thunk_records_accounted"])
+            self.assertTrue(proof_ir["environment_profile"]["checks"]["import_thunk_semantics_match_loader_imports"])
+            self.assertTrue(proof_ir["closure_certificate"]["checks"]["environment_profile_satisfied"])
 
     def test_missing_z3_makes_non_identical_symbolic_obligation_incomplete(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -918,6 +1446,15 @@ class StageAValidateTests(unittest.TestCase):
             unmapped = [item for item in obligations if item["status"] == "unmapped"]
             self.assertEqual(len(unmapped), 2)
             self.assertEqual({item["binary"] for item in unmapped}, {"original", "candidate"})
+            proof_ir = json.loads((out / "proof-ir.json").read_text(encoding="utf-8"))
+            self.assertEqual(proof_ir["coverage_profile"]["status"], "incomplete")
+            self.assertEqual(proof_ir["coverage_profile"]["counts"]["coverage_obligations"], 2)
+            self.assertEqual(proof_ir["coverage_profile"]["counts"]["unmapped_coverage_obligations"], 2)
+            self.assertEqual(proof_ir["coverage_profile"]["counts"]["open_coverage_obligations"], 2)
+            self.assertEqual(proof_ir["coverage_profile"]["counts"]["coverage_gaps"], 2)
+            self.assertFalse(proof_ir["coverage_profile"]["checks"]["coverage_status_satisfied"])
+            self.assertFalse(proof_ir["coverage_profile"]["checks"]["coverage_gaps_closed"])
+            self.assertFalse(proof_ir["proof_context"]["checks"]["coverage_profile_satisfied"])
 
     def test_hand_authored_non_padding_waiver_is_incomplete_and_unmapped(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1129,6 +1666,8 @@ class StageAValidateTests(unittest.TestCase):
             stage_a_functions = stage_a._parse_linker_map_functions(linker_map, stage_a._parse_stage_a_pe(binary_path))
             stage_binary_functions = stage_binary._parse_linker_map_functions(linker_map, stage_binary._parse_stage_a_pe(binary_path))
 
+        self.assertIs(stage_a._parse_stage_a_pe, stage_binary._parse_stage_a_pe)
+        self.assertIs(stage_a._parse_linker_map_functions, stage_binary._parse_linker_map_functions)
         for functions in (stage_a_functions, stage_binary_functions):
             by_name = {item["name"]: item for item in functions}
             self.assertEqual(by_name["dirname"]["rva_start"], 0x1000)
@@ -1295,7 +1834,7 @@ class StageAValidateTests(unittest.TestCase):
             duplicate_key_issues = [
                 issue
                 for issue in result["issues"]
-                if issue.get("obligation_id") == "jq-map:alias:same"
+                if issue.get("obligation_id") == "map:alias:same"
             ]
             self.assertEqual(len(duplicate_key_issues), 1)
 
@@ -1389,6 +1928,54 @@ class StageAValidateTests(unittest.TestCase):
 
             self.assertEqual(layout_a.read_bytes(), layout_b.read_bytes())
 
+    def test_stage_a_generate_map_normalizes_deprecated_proof_rule_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+
+            result = stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                proof_rule="reproducible_jq_same_source_optimization_pair_v1",
+            )
+
+            self.assertEqual(result["status"], "pass")
+            generated_map = json.loads(block_map.read_text(encoding="utf-8"))
+            proof = generated_map["blocks"][0]["proof"]
+            self.assertEqual(proof["rule"], "same_source_layout_preserving_build_v1")
+            self.assertEqual(proof["deprecated_rule_alias"], "reproducible_jq_same_source_optimization_pair_v1")
+
+    def test_stage_a_generate_map_requires_stage_b_metadata_for_generic_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+
+            result = stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=root / "block-map.json",
+                proof_rule="stage_b_skeleton_reimplementation_contract_v1",
+            )
+
+            self.assertEqual(result["status"], "incomplete")
+            self.assertIn("missing_stage_b_proof_metadata", {issue["category"] for issue in result["issues"]})
+
     def test_stage_a_export_reference_contract_records_binary_faithfulness_constraints(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1408,8 +1995,10 @@ class StageAValidateTests(unittest.TestCase):
                 out=block_map,
                 layout_contract_out=layout_contract,
             )
+            generated_map = json.loads(block_map.read_text(encoding="utf-8"))
+            self.assertEqual(generated_map["blocks"][0]["proof"]["rule"], "same_source_layout_preserving_build_v1")
             with self._mock_lean_checked():
-                stage_a_validate(
+                validation = stage_a_validate(
                     original=original,
                     candidate=candidate,
                     mapping=block_map,
@@ -1417,6 +2006,18 @@ class StageAValidateTests(unittest.TestCase):
                     out=root / "report",
                     layout_contract=layout_contract,
                 )
+            self.assertEqual(validation["proof"]["proof_ir"]["format"], "stage-a-proof-ir-v1")
+            self.assertEqual(validation["proof"]["solver_evidence"]["format"], "stage-a-solver-evidence-v1")
+            self.assertEqual(validation["proof"]["solver_evidence"]["status"], "satisfied")
+            self.assertTrue(validation["proof"]["lean"]["proof_ir_checked"])
+            self.assertTrue(validation["proof"]["lean"]["proof_ir_model_hash_bound_checked"])
+            self.assertTrue(validation["proof"]["lean"]["proof_ir_target_profile_checked"])
+            self.assertTrue(validation["proof"]["lean"]["proof_ir_loader_frontend_profile_checked"])
+            self.assertTrue(validation["proof"]["lean"]["proof_ir_closure_certificate_checked"])
+            self.assertTrue(validation["proof"]["lean"]["solver_evidence_checked"])
+            self.assertTrue(validation["proof"]["lean"]["proof_evidence_binding_checked"])
+            self.assertTrue((root / "report" / "proof-ir.json").exists())
+            self.assertTrue((root / "report" / "solver-evidence.jsonl").exists())
 
             result = stage_a_export_reference_contract(
                 original=original,
@@ -1434,7 +2035,25 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(result["constraints"]["executable_byte_coverage"]["status"], "satisfied")
             self.assertEqual(result["constraints"]["layout_normalization_assumptions"]["status"], "satisfied")
             self.assertEqual(result["constraints"]["validation_report_artifact_binding"]["status"], "satisfied")
-            self.assertTrue(result["constraints"]["validation_report_artifact_binding"]["facts"]["matching_mapping_payload"])
+            binding_facts = result["constraints"]["validation_report_artifact_binding"]["facts"]
+            self.assertTrue(binding_facts["verdict_model_hash_matches_payload"])
+            self.assertTrue(binding_facts["proof_ir_model_hash_matches_payload"])
+            self.assertTrue(binding_facts["proof_ir_context_model_hash_bound"])
+            self.assertEqual(binding_facts["proof_ir_loader_frontend_profile_status"], "satisfied")
+            self.assertEqual(binding_facts["proof_ir_solver_backend_profile_status"], "satisfied")
+            self.assertEqual(binding_facts["proof_ir_profile_manifest_status"], "satisfied")
+            self.assertTrue(binding_facts["matching_mapping_payload"])
+            self.assertTrue(binding_facts["layout_artifact_matches_proof_ir"])
+            self.assertTrue(binding_facts["obligations_artifact_matches_verdict"])
+            self.assertTrue(binding_facts["obligations_artifact_matches_proof_ir"])
+            self.assertTrue(binding_facts["proof_ir_artifact_matches_verdict"])
+            self.assertTrue(binding_facts["proof_cache_artifacts_match_proof_ir"])
+            self.assertTrue(binding_facts["solver_evidence_artifacts_match_verdict"])
+            self.assertEqual(binding_facts["proof_ir_target_profile_status"], "satisfied")
+            self.assertTrue(binding_facts["lean_summary_matches_verdict"])
+            self.assertTrue(binding_facts["lean_summary_final_pass_allowed"])
+            self.assertTrue(binding_facts["lean_inputs_matches_summary"])
+            self.assertTrue(binding_facts["lean_source_artifacts_match_summary"])
             self.assertEqual(result["constraints"]["function_ranges"]["functions"][0]["name"], "tiny")
             self.assertIn("relocations", result["original"])
             self.assertTrue((root / "reference-contract.json").exists())
@@ -1591,7 +2210,7 @@ class StageAValidateTests(unittest.TestCase):
             )
             self.assertEqual(coverage["status"], "pass")
             self.assertEqual(coverage["counts"]["analysis_blocked"], 0)
-            self.assertTrue(coverage["acceptance"]["jq_full_reimplementation_ready"])
+            self.assertTrue(coverage["acceptance"]["full_reimplementation_ready"])
 
     def test_reference_contract_semantic_transfer_exports_internal_call_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1681,7 +2300,7 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(region["x86_to_ir_validation"]["status"], "proved")
             self.assertEqual(region["c_contract_equivalence"]["status"], "proved")
             proof_ids = {item["id"] for item in result["constraints"]["proof_obligation_inventory"]["obligations"]}
-            self.assertIn("semantic-region:jq-section-gap-0498-to-0202:x86-to-ir", proof_ids)
+            self.assertIn("semantic-region:section-gap-0498-to-0202:x86-to-ir", proof_ids)
             sidecar_rows = [
                 json.loads(line)
                 for line in (units / "semantic-region-contracts.jsonl").read_text(encoding="utf-8").splitlines()
@@ -5193,6 +5812,115 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(families["function_ranges"]["evidence"]["missing_functions"], [])
         self.assertEqual(families["function_ranges"]["evidence"]["ambiguous_aliases"][0]["matches_total"], 2)
 
+    def test_audit_contract_shortfalls_reports_generated_candidate_acceptance_gaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = self._write_import_pe(root / "jq-candidate.exe", b"\xff\xd0\xc3", "jq_init", dll="libjq-1.dll")
+            candidate_bin = stage_a._parse_stage_a_pe(candidate)
+            contract = self._write_reference_contract(root / "jq-original-reference-contract.json", candidate_bin, functions=["stage_b_contract_section_gap__text_0001"])
+            linker_map = root / "candidate.map"
+            linker_map.write_text("0x401000 stage_b_contract_section_gap__text_0001\n", encoding="utf-8")
+            skeleton_manifest = self._write_skeleton_manifest(
+                root / "manifest.json",
+                [
+                    {
+                        "function": "stage_b_contract_section_gap__text_0001",
+                        "aliases": ["section-gap--text-0001", "missing_reference_alias"],
+                        "source_kind": "generated_contract_guided_raw_flow",
+                        "file": "src/jq_stage_b_skeleton.c",
+                        "line_start": 42,
+                        "line_end": 44,
+                        "rva_start": 0x1000,
+                        "rva_end": 0x1003,
+                    }
+                ],
+            )
+            repair_units = {
+                "format": "stage-a-repair-units-v1",
+                "work_items": [
+                    {
+                        "id": "work:hidden-sret",
+                        "family": "abi_callsites",
+                        "repair_class": "hidden_sret_or_out_param",
+                        "severity": "incomplete",
+                        "next_action": "recover hidden sret",
+                    }
+                ],
+                "counts": {"work_items": 1},
+            }
+            (root / "repair-units.json").write_text(json.dumps(repair_units), encoding="utf-8")
+            (root / "source-obligations.json").write_text(json.dumps({"obligations": []}), encoding="utf-8")
+            crash = root / "crash.json"
+            crash.write_text(
+                json.dumps(
+                    {
+                        "format": "stage-b-candidate-crash-v1",
+                        "status": "detected",
+                        "crash_kind": "wine_unhandled_page_fault",
+                        "instruction_address": "0x00401001",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = stage_a.stage_a_audit_contract_shortfalls(
+                reference_contract=contract,
+                candidate=candidate,
+                linker_map_candidate=linker_map,
+                skeleton_manifest=skeleton_manifest,
+                candidate_crash_report=crash,
+                out=root / "audit",
+                target_name="jq",
+            )
+            audit_written = (root / "audit" / "stage-a-shortfalls.json").exists()
+
+        families = {item["family"]: item for item in result["families"]}
+        categories = {item["category"] for item in result["findings"]}
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("candidate_runtime_witness", families)
+        self.assertIn("raw_section_gap_accepted", families)
+        self.assertIn("target_owned_import_borrowed", families)
+        self.assertIn("abi_underconstrained", families)
+        self.assertIn("coverage_gap_masked", families)
+        self.assertIn("candidate_only_crash_static_location", categories)
+        self.assertEqual(result["findings"][0]["category"], "candidate_only_crash_static_location")
+        self.assertEqual(result["findings"][0]["location"]["source_function"], "stage_b_contract_section_gap__text_0001")
+        self.assertTrue(audit_written)
+
+    def test_validate_contract_candidate_fails_closed_on_raw_section_gap_shortfall(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = self._write_pe(root / "candidate.exe", b"\xff\xd0\xc3")
+            candidate_bin = stage_a._parse_stage_a_pe(candidate)
+            contract = self._write_reference_contract(root / "reference-contract.json", candidate_bin, functions=["stage_b_contract_section_gap__text_0001"])
+            linker_map = root / "candidate.map"
+            linker_map.write_text("0x401000 stage_b_contract_section_gap__text_0001\n", encoding="utf-8")
+            skeleton_manifest = self._write_skeleton_manifest(
+                root / "manifest.json",
+                [
+                    {
+                        "function": "stage_b_contract_section_gap__text_0001",
+                        "aliases": ["stage_b_contract_section_gap__text_0001"],
+                        "source_kind": "generated_contract_guided_raw_flow",
+                        "rva_start": 0x1000,
+                        "rva_end": 0x1003,
+                    }
+                ],
+            )
+
+            result = stage_a.stage_a_validate_contract_candidate(
+                reference_contract=contract,
+                candidate=candidate,
+                linker_map_candidate=linker_map,
+                skeleton_manifest=skeleton_manifest,
+                out=root / "out",
+            )
+
+        families = {item["family"]: item for item in result["families"]}
+        self.assertEqual(result["verdict"], "incomplete")
+        self.assertEqual(families["contract_shortfalls"]["status"], "incomplete")
+        self.assertIn("raw_section_gap_accepted", result["shortfall_audit"]["counts"]["by_family"])
+
     def test_stage_a_export_reference_contract_rejects_stale_validation_report_binding(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -5270,6 +5998,2767 @@ class StageAValidateTests(unittest.TestCase):
             smoke = stage_a_smoke_contract(reference_contract=root / "reference-contract.json")
             self.assertEqual(smoke["status"], "incomplete")
             self.assertIn("stale_bound_artifact", {issue["category"] for issue in smoke["issues"]})
+
+    def test_stage_a_export_reference_contract_requires_proof_ir_and_solver_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+            (root / "report" / "proof-ir.json").unlink()
+            (root / "report" / "solver-evidence-index.json").unlink()
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            binding = result["constraints"]["validation_report_artifact_binding"]
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(binding["status"], "incomplete")
+            self.assertIn("validation_report_proof_ir_missing", {issue["category"] for issue in binding["issues"]})
+            self.assertIn("validation_report_solver_evidence_missing", {issue["category"] for issue in binding["issues"]})
+            smoke = stage_a_smoke_contract(reference_contract=root / "reference-contract.json")
+            self.assertEqual(smoke["status"], "incomplete")
+            self.assertIn("missing_bound_artifact", {issue["category"] for issue in smoke["issues"]})
+
+    def test_stage_a_export_reference_contract_rejects_stale_proof_ir_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            proof_ir_path = report / "proof-ir.json"
+            proof_ir = json.loads(proof_ir_path.read_text(encoding="utf-8"))
+            proof_ir["loader_profile"]["counts"]["layout_blocking_issues"] = 999
+            proof_ir_path.write_text(json.dumps(proof_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertFalse(binding["facts"]["proof_ir_artifact_matches_verdict"])
+        self.assertIn(
+            "validation_report_proof_ir_artifact_mismatch",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_stale_verdict_model_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            verdict_path = report / "verdict.json"
+            verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+            verdict["model_hash"] = "0" * 64
+            verdict_path.write_text(json.dumps(verdict, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertFalse(binding["facts"]["verdict_model_hash_matches_payload"])
+        self.assertIn(
+            "validation_report_model_hash_mismatch",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_stale_proof_ir_model_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            proof_ir_path = report / "proof-ir.json"
+            proof_ir = json.loads(proof_ir_path.read_text(encoding="utf-8"))
+            proof_ir["model_hash"] = "0" * 64
+            proof_ir_path.write_text(json.dumps(proof_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertFalse(binding["facts"]["proof_ir_model_hash_matches_payload"])
+        self.assertFalse(binding["facts"]["proof_ir_context_model_hash_bound"])
+        categories = {issue["category"] for issue in binding["issues"]}
+        self.assertIn("validation_report_proof_ir_model_hash_mismatch", categories)
+        self.assertIn("validation_report_proof_ir_context_model_hash_mismatch", categories)
+
+    def test_stage_a_export_reference_contract_rejects_stale_layout_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            layout_path = report / "layout.json"
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+            layout["issues"] = [{"category": "stale-layout-marker"}]
+            layout_path.write_text(json.dumps(layout, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertFalse(binding["facts"]["layout_artifact_matches_proof_ir"])
+        self.assertIn(
+            "validation_report_layout_artifact_mismatch",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_stale_obligations_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            obligations_path = report / "obligations.json"
+            obligations = json.loads(obligations_path.read_text(encoding="utf-8"))
+            obligations["obligations"][0]["status"] = "failed"
+            obligations["counts"]["by_status"] = {"failed": 1}
+            obligations_path.write_text(json.dumps(obligations, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertFalse(binding["facts"]["obligations_artifact_matches_verdict"])
+        self.assertFalse(binding["facts"]["obligations_artifact_matches_proof_ir"])
+        categories = {issue["category"] for issue in binding["issues"]}
+        self.assertIn("validation_report_obligations_count_mismatch", categories)
+        self.assertIn("validation_report_obligations_artifact_mismatch", categories)
+
+    def test_stage_a_export_reference_contract_rejects_stale_proof_cache_index_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            proof_cache_index_path = report / "proof-cache" / "index.json"
+            proof_cache_index = json.loads(proof_cache_index_path.read_text(encoding="utf-8"))
+            proof_cache_index["entries"] = []
+            proof_cache_index_path.write_text(
+                json.dumps(proof_cache_index, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertFalse(binding["facts"]["proof_cache_artifacts_match_proof_ir"])
+        self.assertFalse(binding["facts"]["proof_cache_index_payload_matches_proof_ir"])
+        self.assertIn(
+            "validation_report_proof_cache_index_mismatch",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_stale_proof_cache_payload_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            proof_cache_index = json.loads((report / "proof-cache" / "index.json").read_text(encoding="utf-8"))
+            proof_cache_entry = proof_cache_index["entries"][0]
+            proof_cache_path = report / proof_cache_entry["path"]
+            proof_cache_payload = json.loads(proof_cache_path.read_text(encoding="utf-8"))
+            proof_cache_payload["stale_marker"] = True
+            proof_cache_path.write_text(
+                json.dumps(proof_cache_payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertFalse(binding["facts"]["proof_cache_artifacts_match_proof_ir"])
+        self.assertFalse(binding["facts"]["proof_cache_payload_hashes_match_index"])
+        self.assertEqual(binding["facts"]["proof_cache_payload_hash_mismatches"], 1)
+        self.assertIn(
+            "validation_report_proof_cache_payload_mismatch",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_stale_solver_evidence_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            solver_index_path = report / "solver-evidence-index.json"
+            solver_index = json.loads(solver_index_path.read_text(encoding="utf-8"))
+            solver_index["counts"]["entries"] = 999
+            solver_index_path.write_text(json.dumps(solver_index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertFalse(binding["facts"]["solver_evidence_artifacts_match_verdict"])
+        self.assertIn(
+            "validation_report_solver_evidence_artifact_mismatch",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_stale_lean_inputs_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            lean_inputs_path = report / "lean" / "inputs.json"
+            lean_inputs = json.loads(lean_inputs_path.read_text(encoding="utf-8"))
+            lean_inputs["lean_inputs"]["errors"].append({"source": "stale-input.lean", "error": "edited"})
+            lean_inputs_path.write_text(json.dumps(lean_inputs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertTrue(binding["facts"]["lean_summary_matches_verdict"])
+        self.assertFalse(binding["facts"]["lean_inputs_matches_summary"])
+        self.assertIn(
+            "validation_report_lean_inputs_artifact_mismatch",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_stale_generated_lean_source_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            generated_source = report / "lean" / "StageA" / "Obligations.lean"
+            generated_source.write_text(
+                generated_source.read_text(encoding="utf-8") + "\n-- edited after validation\n",
+                encoding="utf-8",
+            )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertFalse(binding["facts"]["lean_generated_sources_match_summary"])
+        self.assertFalse(binding["facts"]["lean_source_artifacts_match_summary"])
+        self.assertEqual(binding["facts"]["lean_source_artifact_mismatches"], 1)
+        self.assertIn(
+            "validation_report_lean_source_artifact_mismatch",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_stale_supplemental_lean_source_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lean_input = root / "fixture lemma.lean"
+            lean_input.write_text(
+                "namespace StageAUserFixture\n\ntheorem extraChecked : True := True.intro\n\nend StageAUserFixture\n",
+                encoding="utf-8",
+            )
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(
+                root,
+                lean_inputs=(lean_input,),
+            )
+            summary = json.loads((report / "lean" / "summary.json").read_text(encoding="utf-8"))
+            copied_path = report / "lean" / summary["supplemental_inputs"]["copied"][0]["relative_path"]
+            copied_path.write_text(
+                copied_path.read_text(encoding="utf-8") + "\n-- edited after validation\n",
+                encoding="utf-8",
+            )
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertTrue(binding["facts"]["lean_generated_sources_match_summary"])
+        self.assertFalse(binding["facts"]["lean_supplemental_sources_match_summary"])
+        self.assertFalse(binding["facts"]["lean_source_artifacts_match_summary"])
+        self.assertEqual(binding["facts"]["lean_source_artifact_mismatches"], 1)
+        self.assertIn(
+            "validation_report_lean_source_artifact_mismatch",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_stale_lean_summary_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+            lean_summary_path = report / "lean" / "summary.json"
+            lean_summary = json.loads(lean_summary_path.read_text(encoding="utf-8"))
+            lean_summary["final_pass_allowed"] = False
+            lean_summary["proof_ir_checked"] = False
+            lean_summary_path.write_text(json.dumps(lean_summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=report,
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertFalse(binding["facts"]["lean_summary_matches_verdict"])
+        self.assertFalse(binding["facts"]["lean_summary_final_pass_allowed"])
+        self.assertIn(
+            "validation_report_lean_summary_artifact_mismatch",
+            {issue["category"] for issue in binding["issues"]},
+        )
+        self.assertIn(
+            "validation_report_lean_summary_incomplete",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_incomplete_proof_ir_closure_certificate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+            proof_ir_path = root / "report" / "proof-ir.json"
+            proof_ir = json.loads(proof_ir_path.read_text(encoding="utf-8"))
+            proof_ir["closure_certificate"]["status"] = "incomplete"
+            proof_ir["closure_certificate"]["checks"]["obligations_closed"] = False
+            proof_ir_path.write_text(json.dumps(proof_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertIn(
+            "validation_report_proof_ir_closure_certificate_incomplete",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_incomplete_proof_ir_proof_rule_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+            proof_ir_path = root / "report" / "proof-ir.json"
+            proof_ir = json.loads(proof_ir_path.read_text(encoding="utf-8"))
+            proof_ir["proof_rule_profile"]["status"] = "incomplete"
+            proof_ir["proof_rule_profile"]["checks"]["obligation_rules_known"] = False
+            proof_ir_path.write_text(json.dumps(proof_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertIn(
+            "validation_report_proof_ir_proof_rule_profile_incomplete",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_incomplete_proof_ir_mapping_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+            proof_ir_path = root / "report" / "proof-ir.json"
+            proof_ir = json.loads(proof_ir_path.read_text(encoding="utf-8"))
+            proof_ir["mapping_profile"]["status"] = "incomplete"
+            proof_ir["mapping_profile"]["checks"]["mapping_gaps_closed"] = False
+            proof_ir_path.write_text(json.dumps(proof_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertEqual(binding["facts"]["proof_ir_mapping_profile_status"], "incomplete")
+        self.assertIn(
+            "validation_report_proof_ir_mapping_profile_incomplete",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_incomplete_required_proof_ir_profiles(self):
+        cases = [
+            (
+                "proof_context",
+                "loader_profile_satisfied",
+                "validation_report_proof_ir_context_incomplete",
+                "proof_ir_context_status",
+            ),
+            (
+                "target_profile",
+                "loader_profile_model_matches",
+                "validation_report_proof_ir_target_profile_incomplete",
+                "proof_ir_target_profile_status",
+            ),
+            (
+                "loader_frontend_profile",
+                "original_required_fields_present",
+                "validation_report_proof_ir_loader_frontend_profile_incomplete",
+                "proof_ir_loader_frontend_profile_status",
+            ),
+            (
+                "loader_profile",
+                "layout_compatible",
+                "validation_report_proof_ir_loader_profile_incomplete",
+                "proof_ir_loader_profile_status",
+            ),
+            (
+                "proof_cache_profile",
+                "proof_cache_gaps_closed",
+                "validation_report_proof_ir_proof_cache_profile_incomplete",
+                "proof_ir_proof_cache_profile_status",
+            ),
+            (
+                "instruction_profile",
+                "records_satisfied",
+                "validation_report_proof_ir_instruction_profile_incomplete",
+                "proof_ir_instruction_profile_status",
+            ),
+            (
+                "semantic_profile",
+                "semantic_observable_gaps_closed",
+                "validation_report_proof_ir_semantic_profile_incomplete",
+                "proof_ir_semantic_profile_status",
+            ),
+            (
+                "solver_evidence_profile",
+                "solver_evidence_entries_satisfied",
+                "validation_report_proof_ir_solver_evidence_profile_incomplete",
+                "proof_ir_solver_evidence_profile_status",
+            ),
+            (
+                "solver_backend_profile",
+                "backend_gaps_closed",
+                "validation_report_proof_ir_solver_backend_profile_incomplete",
+                "proof_ir_solver_backend_profile_status",
+            ),
+            (
+                "trusted_boundary_profile",
+                "records_gap_free",
+                "validation_report_proof_ir_trusted_boundary_profile_incomplete",
+                "proof_ir_trusted_boundary_profile_status",
+            ),
+            (
+                "profile_manifest",
+                "profile_manifest_gaps_closed",
+                "validation_report_proof_ir_profile_manifest_incomplete",
+                "proof_ir_profile_manifest_status",
+            ),
+        ]
+        for profile_key, check_key, category, fact_key in cases:
+            with self.subTest(profile_key=profile_key), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                original, candidate, block_map, layout_contract, report = self._validated_identity_report(root)
+                proof_ir_path = report / "proof-ir.json"
+                proof_ir = json.loads(proof_ir_path.read_text(encoding="utf-8"))
+                proof_ir[profile_key]["status"] = "incomplete"
+                proof_ir[profile_key]["checks"][check_key] = False
+                proof_ir_path.write_text(json.dumps(proof_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+                result = stage_a_export_reference_contract(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    validation_report=report,
+                    layout_contract=layout_contract,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "reference-contract.json",
+                )
+
+                binding = result["constraints"]["validation_report_artifact_binding"]
+                self.assertEqual(result["status"], "incomplete")
+                self.assertEqual(binding["status"], "incomplete")
+                self.assertEqual(binding["facts"][fact_key], "incomplete")
+                self.assertIn(category, {issue["category"] for issue in binding["issues"]})
+
+    def test_stage_a_export_reference_contract_rejects_incomplete_proof_ir_cfg_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+            proof_ir_path = root / "report" / "proof-ir.json"
+            proof_ir = json.loads(proof_ir_path.read_text(encoding="utf-8"))
+            proof_ir["cfg_profile"]["status"] = "incomplete"
+            proof_ir["cfg_profile"]["checks"]["cfg_gaps_closed"] = False
+            proof_ir_path.write_text(json.dumps(proof_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertIn(
+            "validation_report_proof_ir_cfg_profile_incomplete",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_incomplete_proof_ir_reachability_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+            proof_ir_path = root / "report" / "proof-ir.json"
+            proof_ir = json.loads(proof_ir_path.read_text(encoding="utf-8"))
+            proof_ir["reachability_profile"]["status"] = "incomplete"
+            proof_ir["reachability_profile"]["checks"]["reachability_gaps_closed"] = False
+            proof_ir_path.write_text(json.dumps(proof_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertIn(
+            "validation_report_proof_ir_reachability_profile_incomplete",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_incomplete_proof_ir_environment_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+            proof_ir_path = root / "report" / "proof-ir.json"
+            proof_ir = json.loads(proof_ir_path.read_text(encoding="utf-8"))
+            proof_ir["environment_profile"]["status"] = "incomplete"
+            proof_ir["environment_profile"]["checks"]["environment_gaps_closed"] = False
+            proof_ir_path.write_text(json.dumps(proof_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertIn(
+            "validation_report_proof_ir_environment_profile_incomplete",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_stage_a_export_reference_contract_rejects_incomplete_proof_ir_abi_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+            original_map = root / "original.map"
+            candidate_map = root / "candidate.map"
+            original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+            block_map = root / "block-map.json"
+            layout_contract = root / "layout-contract.json"
+            stage_a_generate_map(
+                original=original,
+                candidate=candidate,
+                linker_map_original=original_map,
+                linker_map_candidate=candidate_map,
+                out=block_map,
+                layout_contract_out=layout_contract,
+            )
+            with self._mock_lean_checked():
+                stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=block_map,
+                    model=STAGE_A_MODEL_ID,
+                    out=root / "report",
+                    layout_contract=layout_contract,
+                )
+            proof_ir_path = root / "report" / "proof-ir.json"
+            proof_ir = json.loads(proof_ir_path.read_text(encoding="utf-8"))
+            proof_ir["abi_profile"]["status"] = "incomplete"
+            proof_ir["abi_profile"]["checks"]["abi_gaps_closed"] = False
+            proof_ir_path.write_text(json.dumps(proof_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "report",
+                layout_contract=layout_contract,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+        binding = result["constraints"]["validation_report_artifact_binding"]
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(binding["status"], "incomplete")
+        self.assertIn(
+            "validation_report_proof_ir_abi_profile_incomplete",
+            {issue["category"] for issue in binding["issues"]},
+        )
+
+    def test_proof_ir_schema_tracks_loader_and_isa_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            model = stage_a_model_description(
+                STAGE_A_X86_64_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32plus-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[],
+                failures=[],
+                incomplete=[],
+                proof_cache=[],
+                proof_cache_index={"entries": []},
+                solver_evidence={"format": "stage-a-solver-evidence-v1", "counts": {"entries": 0}},
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(proof_ir["schema"]["target_profile"], "stage-a-target-profile-v1")
+        self.assertEqual(proof_ir["schema"]["loader_facts"], "stage-a-loader-pe32plus-facts-v1")
+        self.assertEqual(proof_ir["schema"]["loader_frontend_profile"], "stage-a-loader-frontend-profile-v1")
+        self.assertEqual(proof_ir["schema"]["loader_profile"], "stage-a-loader-profile-v1")
+        self.assertEqual(proof_ir["schema"]["coverage_profile"], "stage-a-executable-coverage-profile-v1")
+        self.assertEqual(proof_ir["schema"]["proof_cache_profile"], "stage-a-proof-cache-profile-v1")
+        self.assertEqual(proof_ir["schema"]["proof_rule_profile"], "stage-a-proof-rule-profile-v1")
+        self.assertEqual(proof_ir["schema"]["mapping_profile"], "stage-a-mapping-profile-v1")
+        self.assertEqual(proof_ir["schema"]["environment_profile"], "stage-a-environment-profile-v1")
+        self.assertEqual(proof_ir["schema"]["abi_profile"], "stage-a-abi-callsite-profile-v1")
+        self.assertEqual(proof_ir["schema"]["block_semantics"], "stage-a-x86_64-block-semantics-v1")
+        self.assertEqual(proof_ir["schema"]["instruction_semantics"], "stage-a-x86_64-instruction-semantics-v1")
+        self.assertEqual(proof_ir["schema"]["instruction_profile"], "stage-a-instruction-semantics-profile-v1")
+        self.assertEqual(proof_ir["schema"]["semantic_observables"], "stage-a-x86_64-semantic-observables-v1")
+        self.assertEqual(proof_ir["schema"]["semantic_profile"], "stage-a-semantic-observable-profile-v1")
+        self.assertEqual(proof_ir["schema"]["proof_composition"], "stage-a-proof-composition-v1")
+        self.assertEqual(proof_ir["schema"]["solver_evidence_profile"], "stage-a-solver-evidence-profile-v1")
+        self.assertEqual(proof_ir["schema"]["solver_backend_profile"], "stage-a-solver-backend-profile-v1")
+        self.assertEqual(proof_ir["schema"]["trusted_boundary_profile"], "stage-a-trusted-boundary-profile-v1")
+        self.assertEqual(proof_ir["schema"]["profile_manifest"], "stage-a-proof-profile-manifest-v1")
+        self.assertEqual(proof_ir["target_profile"]["format"], "stage-a-target-profile-v1")
+        self.assertEqual(proof_ir["target_profile"]["model"]["isa"], "x86_64")
+        self.assertTrue(proof_ir["target_profile"]["checks"]["loader_frontend_profile_schema_matches"])
+        self.assertTrue(proof_ir["target_profile"]["checks"]["solver_backend_profile_schema_matches"])
+        self.assertTrue(proof_ir["target_profile"]["checks"]["trusted_boundary_profile_schema_matches"])
+        self.assertTrue(proof_ir["target_profile"]["checks"]["profile_manifest_schema_matches"])
+        self.assertFalse(proof_ir["target_profile"]["checks"]["loader_facts_loader_matches_model"])
+        self.assertEqual(proof_ir["loader_frontend_profile"]["format"], "stage-a-loader-frontend-profile-v1")
+        self.assertEqual(proof_ir["loader_frontend_profile"]["status"], "incomplete")
+        self.assertFalse(proof_ir["loader_frontend_profile"]["checks"]["original_side_present"])
+
+    def test_proof_ir_abi_profile_accepts_matching_callsite_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+            abi_contract = {
+                "status": "derived",
+                "evidence_kind": "capstone-static-abi-callsites",
+                "scope": "original-candidate-pair",
+                "original": {
+                    "functions": [
+                        {
+                            "name": "_caller",
+                            "blocks": [{"block_id": "caller", "rva_start": 0x1000, "rva_end": 0x1010}],
+                            "stack_delta": {"status": "derived", "net_bytes": 0},
+                            "registers": {"preserved_candidates": ["esi"], "clobbered_candidates": ["eax"]},
+                            "callsites": [
+                                {
+                                    "id": "callsite:caller:1004",
+                                    "block_id": "caller",
+                                    "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "fprintf"},
+                                    "hidden_sret_or_out_param_evidence": {"status": "none"},
+                                    "varargs_evidence": {"status": "candidate"},
+                                    "function_pointer_targets": [],
+                                }
+                            ],
+                        }
+                    ],
+                    "import_prototypes": [{"dll": "msvcrt.dll", "symbol": "fprintf"}],
+                },
+                "candidate": {
+                    "functions": [
+                        {
+                            "name": "_caller",
+                            "blocks": [{"block_id": "caller", "rva_start": 0x1000, "rva_end": 0x1010}],
+                            "stack_delta": {"status": "derived", "net_bytes": 0},
+                            "registers": {"preserved_candidates": ["esi"], "clobbered_candidates": ["eax"]},
+                            "callsites": [
+                                {
+                                    "id": "callsite:caller:1004",
+                                    "block_id": "caller",
+                                    "target": {"kind": "import", "dll": "msvcrt.dll", "symbol": "fprintf"},
+                                    "hidden_sret_or_out_param_evidence": {"status": "none"},
+                                    "varargs_evidence": {"status": "candidate"},
+                                    "function_pointer_targets": [],
+                                }
+                            ],
+                        }
+                    ],
+                    "import_prototypes": [{"dll": "msvcrt.dll", "symbol": "fprintf"}],
+                },
+                "comparison_gaps": {
+                    "counts": {
+                        "missing_functions": 0,
+                        "ambiguous_functions": 0,
+                        "incomplete_callsite_functions": 0,
+                        "missing_callsites": 0,
+                        "function_mismatches": 0,
+                        "callsite_mismatches": 0,
+                    }
+                },
+            }
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[],
+                failures=[],
+                incomplete=[],
+                proof_cache=[],
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": []},
+                solver_evidence={"format": "stage-a-solver-evidence-v1", "counts": {"entries": 0}},
+                mapping_payload={},
+                invariant_payload={},
+                abi_contract=abi_contract,
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+
+        profile = proof_ir["abi_profile"]
+        self.assertEqual(profile["status"], "satisfied")
+        self.assertTrue(profile["checks"]["abi_contract_present"])
+        self.assertTrue(profile["checks"]["callsite_counts_match"])
+        self.assertEqual(profile["counts"]["original_callsites"], 1)
+        self.assertEqual(profile["counts"]["candidate_callsites"], 1)
+        self.assertEqual(profile["counts"]["original_varargs_candidates"], 1)
+        self.assertEqual(profile["counts"]["abi_gaps"], 0)
+
+    def test_proof_ir_abi_profile_rejects_callsite_contract_gaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+            abi_contract = {
+                "status": "incomplete",
+                "evidence_kind": "capstone-static-abi-callsites",
+                "scope": "original-candidate-pair",
+                "original": {
+                    "functions": [
+                        {
+                            "name": "_caller",
+                            "callsites": [
+                                {"id": "callsite:caller:1004", "target": {"kind": "direct", "target_rva": 0x2000}},
+                                {"id": "callsite:caller:1008", "target": {"kind": "import", "symbol": "fprintf"}},
+                            ],
+                        }
+                    ],
+                    "import_prototypes": [],
+                },
+                "candidate": {
+                    "functions": [
+                        {
+                            "name": "_caller",
+                            "callsites": [
+                                {"id": "callsite:caller:1004", "target": {"kind": "direct", "target_rva": 0x2000}},
+                            ],
+                        }
+                    ],
+                    "import_prototypes": [],
+                },
+                "comparison_gaps": {
+                    "incomplete_callsites": [{"name": "_caller", "missing_callsites": 1}],
+                    "counts": {
+                        "missing_functions": 0,
+                        "ambiguous_functions": 0,
+                        "incomplete_callsite_functions": 1,
+                        "missing_callsites": 1,
+                        "function_mismatches": 0,
+                        "callsite_mismatches": 0,
+                    },
+                },
+            }
+
+            summary = write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[],
+                failures=[],
+                incomplete=[],
+                proof_cache=[],
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": []},
+                solver_evidence={"format": "stage-a-solver-evidence-v1", "counts": {"entries": 0}},
+                mapping_payload={},
+                invariant_payload={},
+                abi_contract=abi_contract,
+            )
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+
+        profile = proof_ir["abi_profile"]
+        self.assertEqual(profile["status"], "incomplete")
+        self.assertFalse(profile["checks"]["abi_contract_status_satisfied"])
+        self.assertFalse(profile["checks"]["callsite_counts_match"])
+        self.assertFalse(profile["checks"]["callsites_complete"])
+        self.assertEqual(profile["counts"]["abi_gaps"], 2)
+        self.assertFalse(proof_ir["proof_context"]["checks"]["abi_profile_satisfied"])
+        self.assertFalse(proof_ir["closure_certificate"]["checks"]["abi_profile_satisfied"])
+        self.assertEqual(summary["abi_profile"]["status"], "incomplete")
+
+    def test_proof_ir_loader_profile_rejects_model_and_loader_mismatch(self):
+        def loader_side(machine: str, bitness: int) -> dict[str, object]:
+            return {
+                "sha256": "0" * 64,
+                "size": 1,
+                "machine": machine,
+                "bitness": bitness,
+                "image_base": 0x400000,
+                "entrypoint_rva": 0x1000,
+                "size_of_image": 0x2000,
+                "subsystem": "windows_cui",
+                "sections": [
+                    {
+                        "name": ".text",
+                        "rva_start": 0x1000,
+                        "rva_end": 0x1100,
+                        "permissions": {"execute": True, "read": True, "write": False, "code": True},
+                    }
+                ],
+                "executable_sections": [{"name": ".text", "rva_start": 0x1000, "rva_end": 0x1100, "size": 0x100}],
+                "imports": [],
+                "relocations": {
+                    "status": "empty_directory",
+                    "directory": {"rva": 0, "size": 0},
+                    "blocks": [],
+                    "counts": {"blocks": 0, "entries": 0},
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={
+                    "format": "stage-a-loader-pe32plus-facts-v1",
+                    "loader": "pe32plus",
+                    "original": loader_side("x86_64", 64),
+                    "candidate": loader_side("i386", 32),
+                },
+                layout={
+                    "compatible": False,
+                    "issues": [{"category": "layout_mismatch", "severity": "incomplete"}],
+                },
+                obligations=[],
+                failures=[],
+                incomplete=[],
+                proof_cache=[],
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": []},
+                solver_evidence={
+                    "format": "stage-a-solver-evidence-v1",
+                    "status": "satisfied",
+                    "sha256": "0" * 64,
+                    "index_sha256": "1" * 64,
+                    "counts": {"entries": 0},
+                    "entries": [],
+                },
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+
+        profile = proof_ir["loader_profile"]
+        self.assertEqual(profile["status"], "incomplete")
+        self.assertFalse(profile["checks"]["loader_format_matches_model"])
+        self.assertFalse(profile["checks"]["loader_name_matches_model"])
+        self.assertFalse(profile["checks"]["original_model_matches"])
+        self.assertFalse(profile["checks"]["layout_compatible"])
+        self.assertEqual(profile["counts"]["layout_blocking_issues"], 1)
+        self.assertGreaterEqual(profile["counts"]["binary_signature_mismatches"], 1)
+        self.assertEqual(proof_ir["target_profile"]["status"], "incomplete")
+        self.assertEqual(proof_ir["loader_frontend_profile"]["status"], "incomplete")
+        self.assertTrue(proof_ir["loader_frontend_profile"]["checks"]["original_required_fields_present"])
+        self.assertFalse(proof_ir["loader_frontend_profile"]["checks"]["loader_facts_loader_matches_model"])
+        self.assertTrue(proof_ir["target_profile"]["checks"]["loader_facts_schema_matches_model"])
+        self.assertFalse(proof_ir["target_profile"]["checks"]["loader_facts_loader_matches_model"])
+        self.assertFalse(proof_ir["target_profile"]["checks"]["loader_profile_status_satisfied"])
+        self.assertFalse(proof_ir["proof_context"]["checks"]["target_profile_satisfied"])
+        self.assertFalse(proof_ir["proof_context"]["checks"]["loader_profile_satisfied"])
+        self.assertEqual(proof_ir["proof_context"]["status"], "incomplete")
+
+    def test_proof_ir_proof_rule_profile_rejects_unknown_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+            loader_side = {
+                "sha256": "0" * 64,
+                "size": 8,
+                "machine": "i386",
+                "subsystem": "console",
+                "bitness": 32,
+                "image_base": 0x400000,
+                "entrypoint_rva": 0x1000,
+                "size_of_image": 0x2000,
+                "sections": [
+                    {
+                        "name": ".text",
+                        "virtual_address": 0x1000,
+                        "virtual_size": 0x10,
+                        "raw_size": 0x10,
+                        "permissions": {"execute": True, "read": True, "write": False},
+                    }
+                ],
+                "executable_sections": [{"name": ".text", "start_rva": 0x1000, "end_rva": 0x1010}],
+                "imports": [],
+                "relocations": {"status": "empty_directory", "directory": {}, "counts": {"blocks": 0, "entries": 0}},
+            }
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={
+                    "format": "stage-a-loader-pe32-facts-v1",
+                    "loader": "pe32",
+                    "original": dict(loader_side),
+                    "candidate": dict(loader_side),
+                },
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:unknown-rule",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "target_specific_unapproved_rule_v1",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=[],
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": []},
+                solver_evidence={
+                    "format": "stage-a-solver-evidence-v1",
+                    "status": "satisfied",
+                    "sha256": "0" * 64,
+                    "index_sha256": "1" * 64,
+                    "counts": {"entries": 0},
+                    "entries": [],
+                },
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+
+        profile = proof_ir["proof_rule_profile"]
+        self.assertEqual(profile["status"], "incomplete")
+        self.assertEqual(profile["counts"]["unknown_obligation_rules"], 1)
+        self.assertFalse(profile["checks"]["obligation_rules_known"])
+        self.assertFalse(proof_ir["proof_context"]["checks"]["proof_rule_profile_satisfied"])
+        self.assertEqual(proof_ir["proof_context"]["status"], "incomplete")
+
+    def test_proof_ir_mapping_profile_rejects_mapping_contract_gaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[],
+                failures=[],
+                incomplete=[],
+                proof_cache=[],
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": []},
+                solver_evidence={
+                    "format": "stage-a-solver-evidence-v1",
+                    "status": "satisfied",
+                    "sha256": "0" * 64,
+                    "index_sha256": "1" * 64,
+                    "counts": {"entries": 0},
+                    "entries": [],
+                },
+                mapping_payload={},
+                invariant_payload={},
+                mapping_contract={
+                    "format": "stage-a-mapping-contract-v1",
+                    "status": "incomplete",
+                    "blocks": [
+                        {
+                            "id": "bad-entry",
+                            "kind": "code",
+                            "reachable": True,
+                            "invariant_checked": False,
+                            "original": {"rva_start": 0x1000, "rva_end": 0x1000},
+                            "candidate": {"rva_start": 0x1000, "rva_end": 0x1001},
+                            "root_present": True,
+                            "root_checked": True,
+                            "checked_root_kind": None,
+                            "unknown_checked_root": True,
+                            "proof_rule": "target_specific_map_rule_v1",
+                            "proof_checked": True,
+                        }
+                    ],
+                    "waivers": [
+                        {
+                            "id": "bad-padding",
+                            "binary": "original",
+                            "rva_start": 0x2000,
+                            "rva_end": 0x2000,
+                            "reason": "padding",
+                        }
+                    ],
+                    "issues": [
+                        {
+                            "category": "invalid_mapping",
+                            "status": "incomplete",
+                            "severity": "incomplete",
+                            "obligation_id": "mapping:bad-entry",
+                        }
+                    ],
+                    "counts": {
+                        "code_blocks": 1,
+                        "non_code_blocks": 0,
+                        "reachable_blocks": 1,
+                        "unchecked_invariant_blocks": 1,
+                        "root_entries": 1,
+                        "checked_root_entries": 0,
+                        "unknown_checked_root_entries": 1,
+                        "mapping_proofs": 1,
+                        "checked_mapping_proofs": 1,
+                        "unchecked_mapping_proofs": 0,
+                        "failed_issues": 0,
+                        "incomplete_issues": 1,
+                    },
+                },
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+
+        profile = proof_ir["mapping_profile"]
+        self.assertEqual(profile["status"], "incomplete")
+        self.assertEqual(profile["counts"]["blocks"], 1)
+        self.assertEqual(profile["counts"]["malformed_blocks"], 1)
+        self.assertEqual(profile["counts"]["malformed_waivers"], 1)
+        self.assertEqual(profile["counts"]["unknown_checked_root_entries"], 1)
+        self.assertEqual(profile["counts"]["unknown_mapping_proof_rules"], 1)
+        self.assertEqual(profile["counts"]["mapping_gaps"], 6)
+        self.assertFalse(profile["checks"]["mapping_status_satisfied"])
+        self.assertFalse(profile["checks"]["mapping_issues_closed"])
+        self.assertFalse(profile["checks"]["mapping_ranges_well_formed"])
+        self.assertFalse(profile["checks"]["mapping_invariants_checked"])
+        self.assertFalse(profile["checks"]["checked_roots_known"])
+        self.assertFalse(profile["checks"]["mapping_proof_rules_known"])
+        self.assertFalse(profile["checks"]["waiver_ranges_well_formed"])
+        self.assertFalse(profile["checks"]["mapping_gaps_closed"])
+        self.assertFalse(proof_ir["proof_context"]["checks"]["mapping_profile_satisfied"])
+        self.assertFalse(proof_ir["closure_certificate"]["checks"]["mapping_profile_satisfied"])
+        self.assertEqual(proof_ir["closure_certificate"]["counts"]["mapping_profile_gaps"], 6)
+        self.assertEqual(proof_ir["proof_context"]["status"], "incomplete")
+
+    def test_proof_ir_reachability_profile_rejects_direct_reachability_without_edge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:entry",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "byte_identical_x86_pe32_block",
+                    },
+                    {
+                        "id": "block:target",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "byte_identical_x86_pe32_block",
+                    },
+                    {
+                        "id": "reachability:entry",
+                        "kind": "reachability",
+                        "status": "proved",
+                        "block": "entry",
+                        "proof_rule": "entry_root_reachability_v1",
+                        "proof": {"kind": "entry_root", "root_kind": "pe_entrypoint"},
+                    },
+                    {
+                        "id": "reachability:target",
+                        "kind": "reachability",
+                        "status": "proved",
+                        "block": "target",
+                        "proof_rule": "direct_cfg_reachability_v1",
+                        "proof": {
+                            "kind": "direct_cfg_edge",
+                            "edge_obligation": "edge:entry:fallthrough:target",
+                            "source_block": "entry",
+                            "edge_kind": "fallthrough",
+                        },
+                    },
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=[],
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": []},
+                solver_evidence={
+                    "format": "stage-a-solver-evidence-v1",
+                    "status": "satisfied",
+                    "sha256": "0" * 64,
+                    "index_sha256": "1" * 64,
+                    "counts": {"entries": 0},
+                    "entries": [],
+                },
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+
+        profile = proof_ir["reachability_profile"]
+        self.assertEqual(profile["status"], "incomplete")
+        self.assertEqual(profile["counts"]["direct_cfg_reachability"], 1)
+        self.assertEqual(profile["counts"]["direct_cfg_reachability_with_edge_obligation"], 1)
+        self.assertEqual(profile["counts"]["direct_cfg_reachability_with_proved_edge"], 0)
+        self.assertEqual(profile["counts"]["reachability_gaps"], 1)
+        self.assertIn("direct_cfg_reachability_missing_edge_obligation", {gap["category"] for gap in profile["gaps"]})
+        self.assertFalse(profile["checks"]["direct_cfg_reachability_edges_proved"])
+        self.assertFalse(proof_ir["proof_context"]["checks"]["reachability_profile_satisfied"])
+        self.assertEqual(proof_ir["proof_context"]["status"], "incomplete")
+
+    def test_proof_ir_cfg_profile_rejects_indirect_target_without_signature(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:entry",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "byte_identical_x86_pe32_block",
+                    },
+                    {
+                        "id": "indirect-edge:entry:0000:0",
+                        "kind": "indirect_cfg_target",
+                        "status": "proved",
+                        "proof_rule": "same_source_layout_preserving_build_v1",
+                        "source_block": "entry",
+                        "original": {"instruction": {"mnemonic": "jmp"}},
+                        "candidate": {"instruction": {"mnemonic": "jmp"}},
+                    },
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=[],
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": []},
+                solver_evidence={
+                    "format": "stage-a-solver-evidence-v1",
+                    "status": "satisfied",
+                    "sha256": "0" * 64,
+                    "index_sha256": "1" * 64,
+                    "counts": {"entries": 0},
+                    "entries": [],
+                },
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+
+        profile = proof_ir["cfg_profile"]
+        self.assertEqual(profile["status"], "incomplete")
+        self.assertEqual(profile["counts"]["indirect_cfg_target_obligations"], 1)
+        self.assertEqual(profile["counts"]["proved_indirect_cfg_target_obligations"], 1)
+        self.assertEqual(profile["counts"]["proved_indirect_cfg_targets_with_signature"], 0)
+        self.assertEqual(profile["counts"]["cfg_gaps"], 1)
+        self.assertIn("indirect_cfg_target_missing_signature", {gap["category"] for gap in profile["gaps"]})
+        self.assertFalse(profile["checks"]["indirect_cfg_target_metadata_present"])
+        self.assertFalse(proof_ir["proof_context"]["checks"]["cfg_profile_satisfied"])
+        self.assertEqual(proof_ir["proof_context"]["status"], "incomplete")
+
+    def test_proof_ir_environment_profile_rejects_import_thunk_without_signature_evidence(self):
+        def loader_side() -> dict[str, object]:
+            return {
+                "machine": "i386",
+                "subsystem": "console",
+                "bitness": 32,
+                "image_base": 0x400000,
+                "entrypoint_rva": 0x1000,
+                "size_of_image": 0x3000,
+                "sections": [
+                    {
+                        "name": ".text",
+                        "permissions": {"execute": True, "read": True, "write": False, "code": True},
+                    }
+                ],
+                "executable_sections": [{"name": ".text", "rva_start": 0x1000, "rva_end": 0x1006}],
+                "imports": [{"dll": "kernel32.dll", "symbol": "GetTickCount", "ordinal": None}],
+                "relocations": {"status": "empty_directory", "directory": {}, "counts": {"blocks": 0, "entries": 0}},
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            import_signature = {"dll": "kernel32.dll", "symbol": "GetTickCount", "ordinal": None}
+            base_analysis = {
+                "status": "ok",
+                "machine": "i386",
+                "bitness": 32,
+                "instructions": [{"rva": 0x1000, "size": 6, "mnemonic": "jmp", "op_str": "dword ptr [0x402040]", "bytes": "ff2540204000"}],
+            }
+            original_analysis = {**base_analysis, "import_signature": import_signature}
+            candidate_analysis = dict(base_analysis)
+            payload = {
+                "format": "stage-a-import-thunk-proof-cache-v1",
+                "obligation_id": "block:import-thunk",
+                "proof_rule": "pe_import_thunk_equivalence_v1",
+                "query": {
+                    "kind": "pe_import_thunk_equivalence",
+                    "original_sha256": "0" * 64,
+                    "candidate_sha256": "1" * 64,
+                    "original_import": import_signature,
+                    "candidate_import": import_signature,
+                    "same_import_signature": True,
+                },
+                "original_analysis": original_analysis,
+                "candidate_analysis": candidate_analysis,
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+            proof_cache = [{"path": "proof-cache/import-thunk.json", "status": "proved", "sha256": digest}]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "import-thunk.json").write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            proof_cache_index = {"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}
+            (root / "proof-cache" / "index.json").write_text(json.dumps(proof_cache_index, sort_keys=True), encoding="utf-8")
+            solver_evidence = write_solver_evidence_inventory(root, proof_cache)
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={
+                    "format": "stage-a-loader-pe32-facts-v1",
+                    "loader": "pe32",
+                    "original": loader_side(),
+                    "candidate": loader_side(),
+                },
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:import-thunk",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "pe_import_thunk_equivalence_v1",
+                        "proof_cache": "proof-cache/import-thunk.json",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index=proof_cache_index,
+                solver_evidence=solver_evidence,
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            certificate = proof_ir["closure_certificate"]
+
+        self.assertEqual(proof_ir["environment_profile"]["status"], "incomplete")
+        self.assertEqual(proof_ir["environment_profile"]["counts"]["import_thunk_block_semantics_records"], 1)
+        self.assertEqual(proof_ir["environment_profile"]["counts"]["import_thunk_semantics_with_original_signature"], 1)
+        self.assertEqual(proof_ir["environment_profile"]["counts"]["import_thunk_semantics_with_candidate_signature"], 0)
+        self.assertFalse(proof_ir["environment_profile"]["checks"]["import_thunk_semantics_have_signatures"])
+        self.assertFalse(proof_ir["environment_profile"]["checks"]["import_thunk_claims_have_signature_hashes"])
+        self.assertIn(
+            "candidate_import_thunk_semantics_missing_import_signature",
+            {gap["category"] for gap in proof_ir["environment_profile"]["gaps"]},
+        )
+        self.assertIn(
+            "candidate_import_thunk_claim_missing_import_signature_hash",
+            {gap["category"] for gap in proof_ir["environment_profile"]["gaps"]},
+        )
+        self.assertFalse(proof_ir["proof_context"]["checks"]["environment_profile_satisfied"])
+        self.assertEqual(certificate["status"], "incomplete")
+        self.assertFalse(certificate["checks"]["environment_profile_satisfied"])
+        self.assertEqual(certificate["counts"]["environment_profile_gaps"], 2)
+
+    def test_proof_ir_context_binding_requires_input_hashes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=root / "missing-original.exe",
+                candidate=root / "missing-candidate.exe",
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[],
+                failures=[],
+                incomplete=[],
+                proof_cache=[],
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": []},
+                solver_evidence={
+                    "format": "stage-a-solver-evidence-v1",
+                    "status": "satisfied",
+                    "sha256": "0" * 64,
+                    "index_sha256": "1" * 64,
+                    "counts": {"entries": 0},
+                    "entries": [],
+                },
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            context = proof_ir["proof_context"]
+
+        self.assertEqual(context["status"], "incomplete")
+        self.assertFalse(context["checks"]["model_hash_present"])
+        self.assertFalse(context["checks"]["model_hash_matches_model"])
+        self.assertFalse(context["checks"]["original_input_exists"])
+        self.assertFalse(context["checks"]["candidate_input_exists"])
+        self.assertFalse(context["checks"]["input_hashes_present"])
+
+    def test_proof_ir_closure_certificate_requires_proved_block_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:no-evidence",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "byte_identical_x86_pe32_block",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=[],
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": []},
+                solver_evidence={
+                    "format": "stage-a-solver-evidence-v1",
+                    "status": "satisfied",
+                    "sha256": "0" * 64,
+                    "index_sha256": "1" * 64,
+                    "counts": {"entries": 0},
+                    "entries": [],
+                },
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            certificate = proof_ir["closure_certificate"]
+
+        self.assertEqual(certificate["status"], "incomplete")
+        self.assertFalse(certificate["checks"]["proved_block_obligations_have_proof_cache"])
+        self.assertFalse(certificate["checks"]["proved_block_obligations_have_solver_evidence"])
+        self.assertFalse(certificate["checks"]["proved_block_obligations_have_block_semantics"])
+        self.assertEqual(certificate["proof_backing_gaps"][0]["category"], "missing_proof_cache_reference")
+        self.assertEqual(certificate["block_semantics_gaps"][0]["category"], "missing_block_semantics_record")
+
+    def test_proof_ir_closure_certificate_requires_block_semantics_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            proof_cache = [
+                {
+                    "path": "proof-cache/missing.json",
+                    "status": "proved",
+                    "sha256": "f" * 64,
+                }
+            ]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "index.json").write_text(
+                json.dumps({"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}, sort_keys=True),
+                encoding="utf-8",
+            )
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:missing-semantics",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "byte_identical_x86_pe32_block",
+                        "proof_cache": "proof-cache/missing.json",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": proof_cache},
+                solver_evidence={
+                    "format": "stage-a-solver-evidence-v1",
+                    "status": "satisfied",
+                    "sha256": "0" * 64,
+                    "index_sha256": "1" * 64,
+                    "counts": {"entries": 1},
+                    "entries": [
+                        {
+                            "status": "satisfied",
+                            "proof_cache": "proof-cache/missing.json",
+                            "obligation_id": "block:missing-semantics",
+                        }
+                    ],
+                },
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            certificate = proof_ir["closure_certificate"]
+
+        self.assertEqual(proof_ir["block_semantics"]["status"], "incomplete")
+        self.assertEqual(proof_ir["block_semantics"]["records"][0]["semantics_kind"], "missing_proof_cache")
+        self.assertEqual(certificate["status"], "incomplete")
+        self.assertFalse(certificate["checks"]["block_semantics_satisfied"])
+        self.assertFalse(certificate["checks"]["proved_block_obligations_have_block_semantics"])
+        self.assertEqual(certificate["block_semantics_gaps"][0]["category"], "missing_block_semantics_record")
+
+    def test_proof_ir_instruction_semantics_rejects_decoded_byte_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            analysis = {
+                "status": "ok",
+                "machine": "i386",
+                "bitness": 32,
+                "instructions": [{"rva": 0x1000, "size": 1, "mnemonic": "ret", "op_str": "", "bytes": "c3"}],
+            }
+            payload = {
+                "format": "stage-a-proof-cache-v1",
+                "obligation_id": "block:decoded-byte-mismatch",
+                "proof_rule": "byte_identical_x86_pe32_block",
+                "smt_status": "not_required_for_structural_identity",
+                "query": {
+                    "kind": "byte_identity_implication",
+                    "original_sha256": "0" * 64,
+                    "candidate_sha256": hashlib.sha256(bytes.fromhex("c3")).hexdigest(),
+                    "equal": True,
+                },
+                "original_analysis": analysis,
+                "candidate_analysis": analysis,
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+            proof_cache = [
+                {
+                    "path": "proof-cache/decoded-byte-mismatch.json",
+                    "status": "not_required_for_structural_identity",
+                    "sha256": digest,
+                }
+            ]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "decoded-byte-mismatch.json").write_text(
+                json.dumps(payload, sort_keys=True),
+                encoding="utf-8",
+            )
+            proof_cache_index = {"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}
+            (root / "proof-cache" / "index.json").write_text(json.dumps(proof_cache_index, sort_keys=True), encoding="utf-8")
+            solver_evidence = write_solver_evidence_inventory(root, proof_cache)
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+            loader_side = {
+                "sha256": "0" * 64,
+                "size": 8,
+                "machine": "i386",
+                "subsystem": "console",
+                "bitness": 32,
+                "image_base": 0x400000,
+                "entrypoint_rva": 0x1000,
+                "size_of_image": 0x2000,
+                "sections": [
+                    {
+                        "name": ".text",
+                        "virtual_address": 0x1000,
+                        "virtual_size": 0x10,
+                        "raw_size": 0x10,
+                        "permissions": {"execute": True, "read": True, "write": False},
+                    }
+                ],
+                "executable_sections": [{"name": ".text", "start_rva": 0x1000, "end_rva": 0x1010}],
+                "imports": [],
+                "relocations": {"status": "empty_directory", "directory": {}, "counts": {"blocks": 0, "entries": 0}},
+            }
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={
+                    "format": "stage-a-loader-pe32-facts-v1",
+                    "loader": "pe32",
+                    "original": dict(loader_side),
+                    "candidate": dict(loader_side),
+                },
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:decoded-byte-mismatch",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "byte_identical_x86_pe32_block",
+                        "proof_cache": "proof-cache/decoded-byte-mismatch.json",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index=proof_cache_index,
+                solver_evidence=solver_evidence,
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            certificate = proof_ir["closure_certificate"]
+
+        self.assertEqual(proof_ir["instruction_semantics"]["status"], "incomplete")
+        self.assertEqual(proof_ir["instruction_semantics"]["counts"]["records"], 1)
+        self.assertEqual(
+            proof_ir["instruction_semantics"]["records"][0]["gaps"][0]["category"],
+            "original_decoded_bytes_sha256_mismatch",
+        )
+        self.assertEqual(proof_ir["instruction_profile"]["status"], "incomplete")
+        self.assertEqual(proof_ir["instruction_profile"]["counts"]["instruction_semantics_records"], 1)
+        self.assertEqual(proof_ir["instruction_profile"]["counts"]["incomplete_records"], 1)
+        self.assertEqual(proof_ir["instruction_profile"]["counts"]["instruction_semantics_gaps"], 1)
+        self.assertEqual(proof_ir["instruction_profile"]["counts"]["decoded_byte_hash_mismatches"], 1)
+        self.assertFalse(proof_ir["instruction_profile"]["checks"]["instruction_semantics_gaps_closed"])
+        self.assertFalse(proof_ir["instruction_profile"]["checks"]["decoded_byte_hash_mismatches_closed"])
+        self.assertEqual(certificate["status"], "incomplete")
+        self.assertFalse(certificate["checks"]["instruction_semantics_satisfied"])
+        self.assertFalse(certificate["checks"]["decoded_block_semantics_have_instruction_semantics"])
+        self.assertEqual(certificate["counts"]["instruction_semantics_records"], 1)
+        self.assertEqual(certificate["counts"]["instruction_semantics_gaps"], 2)
+        self.assertEqual(certificate["instruction_semantics_gaps"][0]["category"], "original_decoded_bytes_sha256_mismatch")
+        self.assertEqual(proof_ir["proof_composition"]["status"], "incomplete")
+        self.assertEqual(proof_ir["proof_composition"]["counts"]["records"], 1)
+        self.assertIn(
+            "instruction_semantics",
+            {gap["family"] for gap in proof_ir["proof_composition"]["records"][0]["gaps"]},
+        )
+        self.assertFalse(certificate["checks"]["proof_composition_satisfied"])
+        self.assertFalse(certificate["checks"]["proved_block_obligations_have_composition_records"])
+        self.assertEqual(certificate["counts"]["proof_composition_records"], 1)
+        self.assertGreaterEqual(certificate["counts"]["proof_composition_gaps"], 1)
+
+    def test_proof_ir_closure_certificate_rejects_solver_evidence_obligation_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            payload = {
+                "format": "stage-a-proof-cache-v1",
+                "obligation_id": "block:real",
+                "proof_rule": "byte_identical_x86_pe32_block",
+                "smt_status": "not_required_for_structural_identity",
+                "query": {
+                    "kind": "byte_identity_implication",
+                    "original_sha256": "0" * 64,
+                    "candidate_sha256": "0" * 64,
+                    "equal": True,
+                },
+                "original_analysis": {"status": "supported", "machine": "i386", "bitness": 32, "instructions": []},
+                "candidate_analysis": {"status": "supported", "machine": "i386", "bitness": 32, "instructions": []},
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+            proof_cache = [
+                {
+                    "path": "proof-cache/real.json",
+                    "status": "not_required_for_structural_identity",
+                    "sha256": digest,
+                }
+            ]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "real.json").write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            (root / "proof-cache" / "index.json").write_text(
+                json.dumps({"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}, sort_keys=True),
+                encoding="utf-8",
+            )
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:real",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "byte_identical_x86_pe32_block",
+                        "proof_cache": "proof-cache/real.json",
+                    },
+                    {
+                        "id": "block:other",
+                        "kind": "reachability",
+                        "status": "proved",
+                        "proof_rule": "checked_root_reachability_v1",
+                    },
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": proof_cache},
+                solver_evidence={
+                    "format": "stage-a-solver-evidence-v1",
+                    "status": "satisfied",
+                    "sha256": "0" * 64,
+                    "index_sha256": "1" * 64,
+                    "counts": {"entries": 1},
+                    "entries": [
+                        {
+                            "id": "evidence:0000:block:other",
+                            "status": "satisfied",
+                            "evidence_kind": "structural_byte_identity",
+                            "proof_cache": "proof-cache/real.json",
+                            "obligation_id": "block:other",
+                            "proof_rule": "byte_identical_x86_pe32_block",
+                            "generic_proof_rule": "byte_identical_x86_pe32_block",
+                        }
+                    ],
+                },
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            certificate = proof_ir["closure_certificate"]
+
+        self.assertEqual(certificate["status"], "incomplete")
+        self.assertEqual(proof_ir["proof_artifact_bindings"]["status"], "incomplete")
+        self.assertEqual(proof_ir["proof_artifact_bindings"]["records"][0]["status"], "incomplete")
+        self.assertEqual(
+            proof_ir["proof_artifact_bindings"]["records"][0]["gaps"][0]["category"],
+            "solver_evidence_obligation_id_mismatch",
+        )
+        self.assertTrue(certificate["checks"]["solver_evidence_entries_bind_known_obligations"])
+        self.assertFalse(certificate["checks"]["proof_artifact_bindings_satisfied"])
+        self.assertFalse(certificate["checks"]["proof_artifacts_bind_same_obligations"])
+        self.assertEqual(certificate["counts"]["evidence_binding_gaps"], 1)
+        self.assertEqual(certificate["evidence_binding_gaps"][0]["category"], "solver_evidence_obligation_id_mismatch")
+
+    def test_proof_ir_closure_certificate_rejects_unknown_semantic_observables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            payload = {
+                "format": "stage-a-unknown-proof-cache-v1",
+                "obligation_id": "block:unknown-semantics",
+                "proof_rule": "byte_identical_x86_pe32_block",
+                "query": {
+                    "kind": "unknown_semantics_for_test",
+                    "original_sha256": "0" * 64,
+                    "candidate_sha256": "0" * 64,
+                    "equal": True,
+                },
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+            proof_cache = [
+                {
+                    "path": "proof-cache/unknown.json",
+                    "status": "proved",
+                    "sha256": digest,
+                }
+            ]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "unknown.json").write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            (root / "proof-cache" / "index.json").write_text(
+                json.dumps({"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}, sort_keys=True),
+                encoding="utf-8",
+            )
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:unknown-semantics",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "byte_identical_x86_pe32_block",
+                        "proof_cache": "proof-cache/unknown.json",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index={"format": "stage-a-proof-cache-index-v1", "entries": proof_cache},
+                solver_evidence={
+                    "format": "stage-a-solver-evidence-v1",
+                    "status": "satisfied",
+                    "sha256": "0" * 64,
+                    "index_sha256": "1" * 64,
+                    "counts": {"entries": 1},
+                    "entries": [
+                        {
+                            "id": "evidence:0000:block:unknown-semantics",
+                            "status": "satisfied",
+                            "evidence_kind": "unknown_proof_cache",
+                            "proof_cache": "proof-cache/unknown.json",
+                            "obligation_id": "block:unknown-semantics",
+                            "proof_rule": "byte_identical_x86_pe32_block",
+                            "generic_proof_rule": "byte_identical_x86_pe32_block",
+                        }
+                    ],
+                },
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            certificate = proof_ir["closure_certificate"]
+
+        self.assertEqual(proof_ir["semantic_observables"]["status"], "incomplete")
+        self.assertEqual(proof_ir["semantic_observables"]["records"][0]["claim_kind"], "unknown")
+        self.assertEqual(proof_ir["semantic_profile"]["status"], "incomplete")
+        self.assertEqual(proof_ir["semantic_profile"]["counts"]["semantic_observables"], 1)
+        self.assertEqual(proof_ir["semantic_profile"]["counts"]["unknown_claims"], 1)
+        self.assertEqual(proof_ir["semantic_profile"]["counts"]["missing_trusted_boundaries"], 2)
+        self.assertFalse(proof_ir["semantic_profile"]["checks"]["claim_kinds_known"])
+        self.assertFalse(proof_ir["semantic_profile"]["checks"]["trusted_boundaries_known"])
+        self.assertEqual(proof_ir["solver_evidence_profile"]["status"], "incomplete")
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["unknown_proof_cache_entries"], 1)
+        self.assertFalse(proof_ir["solver_evidence_profile"]["checks"]["no_unknown_proof_cache_entries"])
+        self.assertEqual(
+            proof_ir["semantic_observables"]["records"][0]["gaps"][0]["category"],
+            "unknown_semantics_kind",
+        )
+        self.assertEqual(proof_ir["trusted_boundaries"]["status"], "incomplete")
+        self.assertFalse(proof_ir["trusted_boundaries"]["records"][0]["allowed"])
+        self.assertIn(
+            "missing_trusted_boundary",
+            {gap["category"] for gap in proof_ir["trusted_boundaries"]["records"][0]["gaps"]},
+        )
+        self.assertEqual(certificate["status"], "incomplete")
+        self.assertFalse(certificate["checks"]["semantic_observables_satisfied"])
+        self.assertFalse(certificate["checks"]["proved_block_obligations_have_semantic_observables"])
+        self.assertFalse(certificate["checks"]["trusted_boundaries_satisfied"])
+        self.assertFalse(certificate["checks"]["semantic_claims_use_allowed_trusted_boundaries"])
+        self.assertEqual(certificate["counts"]["semantic_observable_gaps"], 1)
+        self.assertEqual(certificate["counts"]["trusted_boundary_gaps"], 2)
+        self.assertEqual(certificate["semantic_observable_gaps"][0]["category"], "unknown_semantics_kind")
+
+    def test_proof_ir_solver_claims_inventory_accepts_symbolic_z3_unsat_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            payload = {
+                "format": "stage-a-symbolic-proof-cache-v1",
+                "obligation_id": "block:symbolic",
+                "proof_rule": "smt_z3_local_equivalence_v1",
+                "symbolic": {
+                    "status": "proved",
+                    "solver": "z3",
+                    "smt_status": "unsat",
+                    "proof_rule": "smt_z3_local_equivalence_v1",
+                    "solver_backend": dict(TEST_SOLVER_BACKEND),
+                    "smt_query": "(check-sat)",
+                    "invariant": {"entry": "true"},
+                    "original_observables": {"reg:eax": ["const", 1]},
+                    "candidate_observables": {"reg:eax": ["const", 1]},
+                },
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+            proof_cache = [{"path": "proof-cache/symbolic.json", "status": "proved", "sha256": digest}]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "symbolic.json").write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            proof_cache_index = {"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}
+            (root / "proof-cache" / "index.json").write_text(json.dumps(proof_cache_index, sort_keys=True), encoding="utf-8")
+            solver_evidence = write_solver_evidence_inventory(root, proof_cache)
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+            loader_side = {
+                "sha256": "0" * 64,
+                "size": 8,
+                "machine": "i386",
+                "subsystem": "console",
+                "bitness": 32,
+                "image_base": 0x400000,
+                "entrypoint_rva": 0x1000,
+                "size_of_image": 0x2000,
+                "sections": [
+                    {
+                        "name": ".text",
+                        "virtual_address": 0x1000,
+                        "virtual_size": 0x10,
+                        "raw_size": 0x10,
+                        "permissions": {"execute": True, "read": True, "write": False},
+                    }
+                ],
+                "executable_sections": [{"name": ".text", "start_rva": 0x1000, "end_rva": 0x1010}],
+                "imports": [],
+                "relocations": {"status": "empty_directory", "directory": {}, "counts": {"blocks": 0, "entries": 0}},
+            }
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={
+                    "format": "stage-a-loader-pe32-facts-v1",
+                    "loader": "pe32",
+                    "original": dict(loader_side),
+                    "candidate": dict(loader_side),
+                },
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:symbolic",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "smt_z3_local_equivalence_v1",
+                        "proof_cache": "proof-cache/symbolic.json",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index=proof_cache_index,
+                solver_evidence=solver_evidence,
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            certificate = proof_ir["closure_certificate"]
+
+        self.assertEqual(proof_ir["solver_claims"]["status"], "satisfied")
+        self.assertEqual(proof_ir["solver_claims"]["counts"]["records"], 1)
+        self.assertEqual(proof_ir["semantic_profile"]["status"], "satisfied")
+        self.assertEqual(proof_ir["semantic_profile"]["counts"]["symbolic_observable_equivalence"], 1)
+        self.assertEqual(proof_ir["semantic_profile"]["counts"]["z3_unsat_local_equivalence_boundaries"], 1)
+        self.assertEqual(proof_ir["semantic_profile"]["counts"]["solver_claims"], 1)
+        self.assertTrue(proof_ir["semantic_profile"]["checks"]["symbolic_claims_match_solver_claims"])
+        self.assertEqual(proof_ir["solver_evidence_profile"]["status"], "satisfied")
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["trusted_z3_unsat_entries"], 1)
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["trusted_z3_unsat_claims"], 1)
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["solver_claims_with_query_hash"], 1)
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["solver_evidence_query_hash_mismatches"], 0)
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["solver_evidence_file_hash_mismatches"], 0)
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["solver_evidence_index_hash_mismatches"], 0)
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["solver_evidence_entry_hash_mismatches"], 0)
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["solver_evidence_index_entry_hash_mismatches"], 0)
+        self.assertTrue(proof_ir["solver_evidence_profile"]["checks"]["trusted_z3_evidence_matches_claims"])
+        self.assertTrue(proof_ir["solver_evidence_profile"]["checks"]["solver_evidence_file_hashes_match"])
+        self.assertTrue(proof_ir["solver_evidence_profile"]["checks"]["solver_evidence_entry_hashes_match"])
+        self.assertEqual(proof_ir["solver_backend_profile"]["status"], "satisfied")
+        solver_backend_profile_counts = proof_ir["solver_backend_profile"]["counts"]
+        self.assertEqual(solver_backend_profile_counts["solver_backed_evidence_entries"], 1)
+        self.assertEqual(solver_backend_profile_counts["solver_evidence_with_backend"], 1)
+        self.assertEqual(solver_backend_profile_counts["solver_claims_with_backend"], 1)
+        self.assertEqual(solver_backend_profile_counts["backend_hash_mismatches"], 0)
+        self.assertEqual(solver_backend_profile_counts["backend_gaps"], 0)
+        claim = proof_ir["solver_claims"]["records"][0]
+        self.assertEqual(claim["status"], "satisfied")
+        self.assertEqual(claim["trusted_boundary"], "z3_unsat_local_equivalence_oracle_v1")
+        self.assertEqual(claim["solver"], "z3")
+        self.assertEqual(claim["smt_status"], "unsat")
+        self.assertRegex(claim["smt_query_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(claim["solver_backend"], TEST_SOLVER_BACKEND)
+        self.assertRegex(claim["solver_backend_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(claim["semantic_observable_record_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(claim["solver_evidence"]["smt_query_sha256"], claim["smt_query_sha256"])
+        self.assertEqual(claim["solver_evidence"]["solver_backend_sha256"], claim["solver_backend_sha256"])
+        self.assertEqual(certificate["status"], "satisfied")
+        self.assertTrue(certificate["checks"]["solver_claims_satisfied"])
+        self.assertTrue(certificate["checks"]["trusted_solver_claims_have_queries"])
+        self.assertEqual(certificate["counts"]["solver_claims"], 1)
+        self.assertEqual(certificate["counts"]["solver_claim_gaps"], 0)
+        self.assertEqual(proof_ir["proof_composition"]["status"], "satisfied")
+        self.assertIn(
+            "solver_claim",
+            {dependency["family"] for dependency in proof_ir["proof_composition"]["records"][0]["dependencies"]},
+        )
+
+    def test_proof_ir_solver_backend_profile_rejects_z3_unsat_without_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            payload = {
+                "format": "stage-a-symbolic-proof-cache-v1",
+                "obligation_id": "block:symbolic-missing-backend",
+                "proof_rule": "smt_z3_local_equivalence_v1",
+                "symbolic": {
+                    "status": "proved",
+                    "solver": "z3",
+                    "smt_status": "unsat",
+                    "proof_rule": "smt_z3_local_equivalence_v1",
+                    "smt_query": "(check-sat)",
+                    "invariant": {"entry": "true"},
+                    "original_observables": {"reg:eax": ["const", 1]},
+                    "candidate_observables": {"reg:eax": ["const", 1]},
+                },
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+            proof_cache = [{"path": "proof-cache/symbolic-missing-backend.json", "status": "proved", "sha256": digest}]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "symbolic-missing-backend.json").write_text(
+                json.dumps(payload, sort_keys=True),
+                encoding="utf-8",
+            )
+            proof_cache_index = {"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}
+            (root / "proof-cache" / "index.json").write_text(json.dumps(proof_cache_index, sort_keys=True), encoding="utf-8")
+            solver_evidence = write_solver_evidence_inventory(root, proof_cache)
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:symbolic-missing-backend",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "smt_z3_local_equivalence_v1",
+                        "proof_cache": "proof-cache/symbolic-missing-backend.json",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index=proof_cache_index,
+                solver_evidence=solver_evidence,
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            certificate = proof_ir["closure_certificate"]
+
+        self.assertEqual(proof_ir["solver_claims"]["status"], "incomplete")
+        self.assertEqual(proof_ir["solver_claims"]["records"][0]["gaps"][0]["category"], "missing_solver_backend")
+        self.assertEqual(proof_ir["solver_backend_profile"]["status"], "incomplete")
+        self.assertEqual(proof_ir["solver_backend_profile"]["counts"]["missing_backend_entries"], 1)
+        self.assertEqual(proof_ir["solver_backend_profile"]["counts"]["missing_backend_claims"], 1)
+        self.assertGreaterEqual(proof_ir["solver_backend_profile"]["counts"]["backend_gaps"], 2)
+        self.assertFalse(proof_ir["solver_backend_profile"]["checks"]["solver_backed_evidence_has_backend"])
+        self.assertFalse(proof_ir["solver_backend_profile"]["checks"]["solver_claims_have_backend"])
+        self.assertFalse(proof_ir["solver_backend_profile"]["checks"]["trusted_z3_uses_z3_backend"])
+        self.assertFalse(proof_ir["proof_context"]["checks"]["solver_backend_profile_satisfied"])
+        self.assertEqual(certificate["status"], "incomplete")
+        self.assertFalse(certificate["checks"]["solver_backend_profile_satisfied"])
+        self.assertEqual(
+            certificate["counts"]["solver_backend_profile_gaps"],
+            proof_ir["solver_backend_profile"]["counts"]["backend_gaps"],
+        )
+
+    def test_proof_ir_solver_claims_reject_z3_unsat_without_query_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            payload = {
+                "format": "stage-a-symbolic-proof-cache-v1",
+                "obligation_id": "block:symbolic-missing-query",
+                "proof_rule": "smt_z3_local_equivalence_v1",
+                "symbolic": {
+                    "status": "proved",
+                    "solver": "z3",
+                    "smt_status": "unsat",
+                    "proof_rule": "smt_z3_local_equivalence_v1",
+                    "solver_backend": dict(TEST_SOLVER_BACKEND),
+                    "invariant": {"entry": "true"},
+                    "original_observables": {"reg:eax": ["const", 1]},
+                    "candidate_observables": {"reg:eax": ["const", 1]},
+                },
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+            proof_cache = [{"path": "proof-cache/symbolic-missing-query.json", "status": "proved", "sha256": digest}]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "symbolic-missing-query.json").write_text(
+                json.dumps(payload, sort_keys=True),
+                encoding="utf-8",
+            )
+            proof_cache_index = {"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}
+            (root / "proof-cache" / "index.json").write_text(json.dumps(proof_cache_index, sort_keys=True), encoding="utf-8")
+            solver_evidence = write_solver_evidence_inventory(root, proof_cache)
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:symbolic-missing-query",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "smt_z3_local_equivalence_v1",
+                        "proof_cache": "proof-cache/symbolic-missing-query.json",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index=proof_cache_index,
+                solver_evidence=solver_evidence,
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            certificate = proof_ir["closure_certificate"]
+
+        self.assertEqual(proof_ir["solver_claims"]["status"], "incomplete")
+        self.assertEqual(proof_ir["solver_claims"]["counts"]["records"], 1)
+        self.assertEqual(proof_ir["solver_claims"]["counts"]["gaps"], 1)
+        self.assertEqual(proof_ir["solver_claims"]["records"][0]["gaps"][0]["category"], "missing_smt_query_sha256")
+        self.assertEqual(proof_ir["solver_evidence_profile"]["status"], "incomplete")
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["trusted_z3_unsat_entries"], 1)
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["solver_claims_with_query_hash"], 0)
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["solver_evidence_query_hash_gaps"], 1)
+        self.assertFalse(proof_ir["solver_evidence_profile"]["checks"]["solver_claims_have_query_hashes"])
+        self.assertFalse(proof_ir["solver_evidence_profile"]["checks"]["solver_evidence_query_hashes_present"])
+        self.assertEqual(certificate["status"], "incomplete")
+        self.assertFalse(certificate["checks"]["solver_claims_satisfied"])
+        self.assertFalse(certificate["checks"]["trusted_solver_claims_have_queries"])
+        self.assertEqual(certificate["counts"]["solver_claims"], 1)
+        self.assertEqual(certificate["counts"]["solver_claim_gaps"], 1)
+        self.assertEqual(certificate["solver_claim_gaps"][0]["category"], "missing_smt_query_sha256")
+
+    def test_proof_ir_solver_claims_reject_solver_evidence_query_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            payload = {
+                "format": "stage-a-symbolic-proof-cache-v1",
+                "obligation_id": "block:symbolic-tampered-evidence",
+                "proof_rule": "smt_z3_local_equivalence_v1",
+                "symbolic": {
+                    "status": "proved",
+                    "solver": "z3",
+                    "smt_status": "unsat",
+                    "proof_rule": "smt_z3_local_equivalence_v1",
+                    "solver_backend": dict(TEST_SOLVER_BACKEND),
+                    "smt_query": "(check-sat)",
+                    "invariant": {"entry": "true"},
+                    "original_observables": {"reg:eax": ["const", 1]},
+                    "candidate_observables": {"reg:eax": ["const", 1]},
+                },
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+            proof_cache = [{"path": "proof-cache/symbolic-tampered-evidence.json", "status": "proved", "sha256": digest}]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "symbolic-tampered-evidence.json").write_text(
+                json.dumps(payload, sort_keys=True),
+                encoding="utf-8",
+            )
+            proof_cache_index = {"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}
+            (root / "proof-cache" / "index.json").write_text(json.dumps(proof_cache_index, sort_keys=True), encoding="utf-8")
+            solver_evidence = write_solver_evidence_inventory(root, proof_cache)
+            solver_evidence["entries"][0]["smt_query_sha256"] = "f" * 64
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:symbolic-tampered-evidence",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "smt_z3_local_equivalence_v1",
+                        "proof_cache": "proof-cache/symbolic-tampered-evidence.json",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index=proof_cache_index,
+                solver_evidence=solver_evidence,
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+            certificate = proof_ir["closure_certificate"]
+
+        self.assertEqual(proof_ir["solver_claims"]["status"], "incomplete")
+        self.assertEqual(
+            proof_ir["solver_claims"]["records"][0]["gaps"][0]["category"],
+            "solver_evidence_smt_query_sha256_mismatch",
+        )
+        self.assertEqual(proof_ir["solver_evidence_profile"]["status"], "incomplete")
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["solver_claim_gaps"], 1)
+        self.assertEqual(proof_ir["solver_evidence_profile"]["counts"]["solver_evidence_query_hash_mismatches"], 1)
+        self.assertFalse(proof_ir["solver_evidence_profile"]["checks"]["solver_evidence_query_hashes_match"])
+        self.assertFalse(proof_ir["solver_evidence_profile"]["checks"]["solver_claim_gaps_closed"])
+        self.assertFalse(certificate["checks"]["trusted_solver_claims_have_queries"])
+
+    def test_proof_ir_solver_evidence_profile_rejects_tampered_solver_evidence_hashes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            payload = {
+                "format": "stage-a-symbolic-proof-cache-v1",
+                "obligation_id": "block:symbolic-stale-evidence-hash",
+                "proof_rule": "smt_z3_local_equivalence_v1",
+                "symbolic": {
+                    "status": "proved",
+                    "solver": "z3",
+                    "smt_status": "unsat",
+                    "proof_rule": "smt_z3_local_equivalence_v1",
+                    "solver_backend": dict(TEST_SOLVER_BACKEND),
+                    "smt_query": "(check-sat)",
+                    "invariant": {"entry": "true"},
+                    "original_observables": {"reg:eax": ["const", 1]},
+                    "candidate_observables": {"reg:eax": ["const", 1]},
+                },
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+            proof_cache = [{"path": "proof-cache/symbolic-stale-evidence-hash.json", "status": "proved", "sha256": digest}]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "symbolic-stale-evidence-hash.json").write_text(
+                json.dumps(payload, sort_keys=True),
+                encoding="utf-8",
+            )
+            proof_cache_index = {"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}
+            (root / "proof-cache" / "index.json").write_text(json.dumps(proof_cache_index, sort_keys=True), encoding="utf-8")
+            solver_evidence = write_solver_evidence_inventory(root, proof_cache)
+            solver_evidence["sha256"] = "f" * 64
+            solver_evidence["index_sha256"] = "e" * 64
+            solver_evidence["entries"][0]["entry_sha256"] = "d" * 64
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:symbolic-stale-evidence-hash",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "smt_z3_local_equivalence_v1",
+                        "proof_cache": "proof-cache/symbolic-stale-evidence-hash.json",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index=proof_cache_index,
+                solver_evidence=solver_evidence,
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+
+        profile = proof_ir["solver_evidence_profile"]
+        self.assertEqual(profile["status"], "incomplete")
+        self.assertEqual(profile["counts"]["solver_evidence_file_hash_mismatches"], 1)
+        self.assertEqual(profile["counts"]["solver_evidence_index_hash_mismatches"], 1)
+        self.assertEqual(profile["counts"]["solver_evidence_entry_hash_mismatches"], 0)
+        self.assertEqual(profile["counts"]["solver_evidence_index_entry_hash_mismatches"], 1)
+        self.assertFalse(profile["checks"]["solver_evidence_file_hashes_match"])
+        self.assertFalse(profile["checks"]["solver_evidence_entry_hashes_match"])
+
+    def test_proof_ir_proof_cache_profile_rejects_tampered_proof_cache_hashes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(b"original")
+            candidate.write_bytes(b"candidate")
+            payload = {
+                "format": "stage-a-symbolic-proof-cache-v1",
+                "obligation_id": "block:symbolic-stale-proof-cache-hash",
+                "proof_rule": "smt_z3_local_equivalence_v1",
+                "symbolic": {
+                    "status": "proved",
+                    "solver": "z3",
+                    "smt_status": "unsat",
+                    "proof_rule": "smt_z3_local_equivalence_v1",
+                    "solver_backend": dict(TEST_SOLVER_BACKEND),
+                    "smt_query": "(check-sat)",
+                    "invariant": {"entry": "true"},
+                    "original_observables": {"reg:eax": ["const", 1]},
+                    "candidate_observables": {"reg:eax": ["const", 1]},
+                },
+            }
+            proof_cache = [
+                {
+                    "path": "proof-cache/symbolic-stale-proof-cache-hash.json",
+                    "status": "proved",
+                    "sha256": "f" * 64,
+                }
+            ]
+            (root / "proof-cache").mkdir()
+            (root / "proof-cache" / "symbolic-stale-proof-cache-hash.json").write_text(
+                json.dumps(payload, sort_keys=True),
+                encoding="utf-8",
+            )
+            proof_cache_index = {"format": "stage-a-proof-cache-index-v1", "entries": proof_cache}
+            (root / "proof-cache" / "index.json").write_text(json.dumps(proof_cache_index, sort_keys=True), encoding="utf-8")
+            solver_evidence = write_solver_evidence_inventory(root, proof_cache)
+            model = stage_a_model_description(
+                STAGE_A_MODEL_ID,
+                model_specs=STAGE_A_MODEL_SPECS,
+                default_model=STAGE_A_MODEL_ID,
+            )
+
+            write_proof_ir(
+                out=root,
+                original=original,
+                candidate=candidate,
+                model_description=model,
+                model_hash="model-hash",
+                loader_facts={"format": "stage-a-loader-pe32-facts-v1"},
+                layout={"compatible": True, "issues": []},
+                obligations=[
+                    {
+                        "id": "block:symbolic-stale-proof-cache-hash",
+                        "kind": "block_equivalence",
+                        "status": "proved",
+                        "proof_rule": "smt_z3_local_equivalence_v1",
+                        "proof_cache": "proof-cache/symbolic-stale-proof-cache-hash.json",
+                    }
+                ],
+                failures=[],
+                incomplete=[],
+                proof_cache=proof_cache,
+                proof_cache_index=proof_cache_index,
+                solver_evidence=solver_evidence,
+                mapping_payload={},
+                invariant_payload={},
+            )
+
+            proof_ir = json.loads((root / "proof-ir.json").read_text(encoding="utf-8"))
+
+        profile = proof_ir["proof_cache_profile"]
+        self.assertEqual(profile["status"], "incomplete")
+        self.assertEqual(profile["counts"]["proof_cache_payload_hash_mismatches"], 1)
+        self.assertEqual(profile["counts"]["proof_cache_gaps"], 1)
+        self.assertFalse(profile["checks"]["proof_cache_payload_hashes_match"])
+        self.assertFalse(profile["checks"]["proof_cache_gaps_closed"])
+        self.assertFalse(proof_ir["proof_context"]["checks"]["proof_cache_profile_satisfied"])
+        self.assertFalse(proof_ir["closure_certificate"]["checks"]["proof_cache_profile_satisfied"])
+        self.assertEqual(proof_ir["closure_certificate"]["counts"]["proof_cache_profile_gaps"], 1)
 
     def test_stage_a_diff_obligations_reports_resolved_contract_gaps(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5395,7 +8884,24 @@ class StageAValidateTests(unittest.TestCase):
 
             self.assertEqual(result["verdict"], "pass")
             obligation = self._obligation(out, "block:jq-function")
-            self.assertEqual(obligation["proof_rule"], "reproducible_jq_same_source_optimization_pair_v1")
+            self.assertEqual(obligation["proof_rule"], "same_source_layout_preserving_build_v1")
+            self.assertEqual(obligation["proof"]["deprecated_rule_alias"], "reproducible_jq_same_source_optimization_pair_v1")
+            proof_ir = json.loads((out / "proof-ir.json").read_text(encoding="utf-8"))
+            block_ir = next(item for item in proof_ir["obligations"]["items"] if item["id"] == "block:jq-function")
+            self.assertEqual(block_ir["generic_proof_rule"], "same_source_layout_preserving_build_v1")
+            self.assertEqual(proof_ir["proof_rule_profile"]["status"], "satisfied")
+            self.assertEqual(proof_ir["proof_rule_profile"]["counts"]["deprecated_alias_uses"], 0)
+            self.assertEqual(proof_ir["proof_rule_profile"]["counts"]["unnormalized_deprecated_alias_uses"], 0)
+            self.assertEqual(proof_ir["proof_rule_profile"]["counts"]["unknown_obligation_rules"], 0)
+            self.assertTrue(proof_ir["proof_rule_profile"]["checks"]["deprecated_aliases_normalized"])
+            evidence = json.loads((out / "solver-evidence.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(evidence["proof_rule"], "same_source_layout_preserving_build_v1")
+            self.assertEqual(evidence["generic_proof_rule"], "same_source_layout_preserving_build_v1")
+            proof_cache = json.loads((out / evidence["proof_cache"]).read_text(encoding="utf-8"))
+            self.assertEqual(
+                proof_cache["query"]["proof"]["deprecated_rule_alias"],
+                "reproducible_jq_same_source_optimization_pair_v1",
+            )
 
     def test_recovered_cfg_block_root_marker_does_not_prove_reachability(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5460,6 +8966,41 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(result["verdict"], "incomplete")
             blocker = json.loads((out / "incomplete" / "mapping-generated-map.json").read_text(encoding="utf-8"))
             self.assertEqual(blocker["category"], "generated_map_incomplete")
+
+    def _validated_identity_report(
+        self,
+        root: Path,
+        *,
+        lean_inputs: tuple[Path, ...] = (),
+    ) -> tuple[Path, Path, Path, Path, Path]:
+        original = self._write_pe(root / "original.exe", b"\xc3")
+        candidate = self._write_pe(root / "candidate.exe", b"\xc3")
+        original_map = root / "original.map"
+        candidate_map = root / "candidate.map"
+        original_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+        candidate_map.write_text("                0x00401000                tiny\n", encoding="utf-8")
+        block_map = root / "block-map.json"
+        layout_contract = root / "layout-contract.json"
+        stage_a_generate_map(
+            original=original,
+            candidate=candidate,
+            linker_map_original=original_map,
+            linker_map_candidate=candidate_map,
+            out=block_map,
+            layout_contract_out=layout_contract,
+        )
+        report = root / "report"
+        with self._mock_lean_checked():
+            stage_a_validate(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                model=STAGE_A_MODEL_ID,
+                out=report,
+                layout_contract=layout_contract,
+                lean_inputs=lean_inputs,
+            )
+        return original, candidate, block_map, layout_contract, report
 
     def _mock_lean_checked(self):
         return _LeanCheckedMock()
@@ -5576,8 +9117,8 @@ class StageAValidateTests(unittest.TestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
-    def _write_import_pe(self, path: Path, code: bytes, symbol: str, *, iat_offset: int = 0x40) -> Path:
-        path.write_bytes(_pe32_import_image(code, symbol=symbol, iat_offset=iat_offset))
+    def _write_import_pe(self, path: Path, code: bytes, symbol: str, *, dll: str = "KERNEL32.dll", iat_offset: int = 0x40) -> Path:
+        path.write_bytes(_pe32_import_image(code, symbol=symbol, dll=dll, iat_offset=iat_offset))
         return path
 
 
