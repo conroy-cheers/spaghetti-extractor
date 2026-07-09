@@ -4161,6 +4161,16 @@ def _decompiled_c_contract_placeholder(
         if isinstance(reference_contract.get("semantic_region_callee_contracts"), list)
         else []
     )
+    if semantic_callee_contracts and allow_contract_bytecode and _decompiled_c_reference_contract_has_abi_callsites(reference_contract):
+        contract_guided_leaf = _decompiled_c_contract_guided_leaf_impl(
+            function,
+            call_targets=call_targets or {},
+            call_target_profiles=call_target_profiles or {},
+            call_target_spans=call_target_spans or {},
+            branch_target_symbols=branch_target_symbols or {},
+        )
+        if contract_guided_leaf is not None:
+            return contract_guided_leaf
     if semantic_callee_contracts:
         rendered = _decompiled_c_semantic_region_callee_placeholder(function, semantic_callee_contracts)
         if rendered is not None:
@@ -4205,6 +4215,11 @@ def _decompiled_c_contract_placeholder(
         lines.append("  return 0;")
     lines.append("}")
     return "\n".join(lines)
+
+
+def _decompiled_c_reference_contract_has_abi_callsites(reference_contract: dict[str, Any]) -> bool:
+    callsites = reference_contract.get("abi_callsites")
+    return isinstance(callsites, list) and any(isinstance(callsite, dict) for callsite in callsites)
 
 
 def _decompiled_c_contract_guided_leaf_impl(

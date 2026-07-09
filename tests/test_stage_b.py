@@ -4962,6 +4962,185 @@ class StageBTests(unittest.TestCase):
             "generated_checked_semantic_region",
         )
 
+    def test_decompiled_c_checked_semantic_callee_with_callsites_prefers_guided_flow(self):
+        section_gap_name = "stage_b_contract_section_gap__text_0202"
+        reference_contract = {
+            "constraints": {
+                "basic_blocks_and_cfg": {
+                    "basic_blocks": [
+                        {"id": "section-gap--text-0202"},
+                        {"id": "section-gap--text-0498"},
+                    ]
+                },
+                "semantic_region_contracts": {
+                    "format": "stage-a-semantic-region-contracts-v1",
+                    "status": "satisfied",
+                    "regions": [
+                        {
+                            "id": "semantic-region:caller-to-callee",
+                            "status": "checked",
+                            "function": "section-gap--text-0498",
+                            "block_id": "section-gap--text-0498",
+                            "caller": {"function": "section-gap--text-0498", "block_id": "section-gap--text-0498"},
+                            "callee": {
+                                "function": "section-gap--text-0202",
+                                "block_id": "section-gap--text-0202",
+                                "original": {"rva_start": 0x61A0, "rva_end": 0x61BB, "size": 0x1B},
+                            },
+                            "ir": {
+                                "operations": [
+                                    {
+                                        "op": "direct_call",
+                                        "target": "section-gap--text-0202",
+                                        "target_block_id": "section-gap--text-0202",
+                                        "target_rva": 0x61A0,
+                                        "register_arguments": [
+                                            {"register": "eax"},
+                                            {"register": "edx"},
+                                            {"register": "ecx"},
+                                        ],
+                                    }
+                                ]
+                            },
+                            "c_contract": {"status": "checked"},
+                        }
+                    ],
+                },
+                "abi_callsites": {
+                    "original": {
+                        "functions": [
+                            {
+                                "name": "section-gap--text-0202",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0202",
+                                        "rva_start": 0x61A0,
+                                        "rva_end": 0x61BB,
+                                    }
+                                ],
+                                "callsites": [
+                                    {
+                                        "id": "callsite:section-gap--text-0202:61b2",
+                                        "instruction": {
+                                            "rva": 0x61B2,
+                                            "size": 5,
+                                            "bytes": "e8f99a0000",
+                                            "mnemonic": "call",
+                                            "op_str": "0x40c4b0",
+                                        },
+                                        "target": {"kind": "direct", "target_rva": 0xC4B0},
+                                        "argument_inventory": {
+                                            "argument_count": 3,
+                                            "calling_convention": "cdecl_or_stdcall_stack",
+                                            "stack_args": [
+                                                {"index": 0, "source": {"kind": "register", "register": "edi"}},
+                                                {"index": 1, "source": {"kind": "immediate", "value": 0}},
+                                                {"index": 2, "source": {"kind": "register", "register": "eax"}},
+                                            ],
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "name": "section-gap--text-0498",
+                                "blocks": [
+                                    {
+                                        "block_id": "section-gap--text-0498",
+                                        "rva_start": 0x7300,
+                                        "rva_end": 0x7310,
+                                    }
+                                ],
+                                "callsites": [],
+                            },
+                        ]
+                    }
+                },
+            }
+        }
+        reference_sidecars = {
+            "semantic_transfer_contracts": {
+                "by_function": {
+                    "section-gap--text-0202": [
+                        {
+                            "id": "section-gap--text-0202",
+                            "rva_start": 0x61A0,
+                            "rva_end": 0x61BB,
+                            "outcome": {"kind": "return"},
+                            "instructions": [
+                                {"rva": 0x61A0, "size": 3, "bytes": "83ec0c", "mnemonic": "sub", "op_str": "esp, 0xc"},
+                                {
+                                    "rva": 0x61A3,
+                                    "size": 4,
+                                    "bytes": "89442408",
+                                    "mnemonic": "mov",
+                                    "op_str": "dword ptr [esp + 8], eax",
+                                },
+                                {
+                                    "rva": 0x61A7,
+                                    "size": 8,
+                                    "bytes": "c744240400000000",
+                                    "mnemonic": "mov",
+                                    "op_str": "dword ptr [esp + 4], 0",
+                                },
+                                {
+                                    "rva": 0x61AF,
+                                    "size": 3,
+                                    "bytes": "893c24",
+                                    "mnemonic": "mov",
+                                    "op_str": "dword ptr [esp], edi",
+                                },
+                                {
+                                    "rva": 0x61B2,
+                                    "size": 5,
+                                    "bytes": "e8f99a0000",
+                                    "mnemonic": "call",
+                                    "op_str": "0x40c4b0",
+                                },
+                                {"rva": 0x61B7, "size": 3, "bytes": "83c40c", "mnemonic": "add", "op_str": "esp, 0xc"},
+                                {"rva": 0x61BA, "size": 1, "bytes": "c3", "mnemonic": "ret", "op_str": ""},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+        functions = [
+            {
+                "name": "strcmp",
+                "rva_start": 0xC4B0,
+                "rva_end": 0xC4B6,
+                "size": 6,
+                "decompiler": {
+                    "status": "success",
+                    "code": "uintptr_t __cdecl strcmp(uintptr_t param_1, uintptr_t param_2)\n{\n  return param_1 ^ param_2;\n}",
+                },
+            }
+        ]
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            reference_contract_payload=reference_contract,
+            reference_contract_sidecars=reference_sidecars,
+            allow_contract_bytecode=True,
+        )
+
+        self.assertIn(f"uintptr_t __attribute__((regparm(3))) {section_gap_name}", source)
+        self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
+        self.assertIn(f"_{section_gap_name}:\\n", source)
+        self.assertIn('"call _strcmp', source)
+        self.assertNotIn("Stage B register-ABI callee placeholder for checked selected-region target", source)
+        source_map = _skeleton_source_map(
+            source,
+            source_rel=Path("src/jq_stage_b_skeleton.c"),
+            functions=functions,
+            source_language="c",
+            implementation_mode="contract-guided-c",
+            reference_contract_payload=reference_contract,
+        )
+        by_function = {item["function"]: item for item in source_map["functions"]}
+        self.assertEqual(by_function[section_gap_name]["source_kind"], "generated_contract_guided_flow")
+
     def test_decompiled_c_synthesizes_all_linkable_section_gap_placeholders(self):
         section_gap_functions = []
         for index in range(22):
