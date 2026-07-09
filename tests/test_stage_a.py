@@ -2489,6 +2489,8 @@ class StageAValidateTests(unittest.TestCase):
             "iat-register-call",
         )
 
+        self.assertEqual(evidence["memory_reads"][0]["memory_role"], "import_address_table")
+        self.assertEqual(evidence["memory_reads"][0]["import"]["symbol"], "LeaveCriticalSection")
         self.assertEqual(len(evidence["callsites"]), 1)
         callsite = evidence["callsites"][0]
         self.assertEqual(callsite["target"]["kind"], "import")
@@ -2625,6 +2627,94 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual([item["role"] for item in inventory["stack_args"]], ["register", "immediate", "immediate"])
             self.assertEqual(callsite["predecessor_argument_sources"]["source"], "direct_cfg_predecessor_exit")
             self.assertEqual(callsite["predecessor_argument_sources"]["predecessor_edges"][0]["resolved_target_rva"], 0x1019)
+
+    def test_candidate_abi_composes_direct_callee_import_memory_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytearray(b"\x90" * 0x30)
+            code[0x00:0x06] = bytes.fromhex("e80b000000c3")  # call helper; ret
+            code[0x10:0x16] = bytes.fromhex("e80b000000c3")  # call import thunk; ret
+            code[0x20:0x26] = bytes.fromhex("ff2540204000")  # jmp dword ptr [0x402040]
+            binary = stage_a._parse_stage_a_pe(
+                self._write_import_pe(root / "candidate.exe", bytes(code), "ImportedTarget", iat_offset=0x40)
+            )
+
+            result = stage_a._candidate_abi_constraint_from_functions(
+                binary,
+                [
+                    {"name": "caller", "rva_start": 0x1000, "rva_end": 0x1006},
+                    {"name": "helper", "rva_start": 0x1010, "rva_end": 0x1016},
+                    {"name": "import_thunk", "rva_start": 0x1020, "rva_end": 0x1026},
+                ],
+            )
+
+            caller = next(item for item in result["candidate"]["functions"] if item["name"] == "caller")
+            self.assertEqual(caller["memory_effect_summary"]["read_roles"].get("import_address_table"), 1)
+            effects = caller["direct_callee_import_memory_effects"]
+            self.assertEqual(len(effects["reads"]), 1)
+            self.assertEqual(effects["reads"][0]["import"]["symbol"], "ImportedTarget")
+            self.assertEqual(effects["reads"][0]["composition_kind"], "direct_callee_import_memory")
+
+    def test_abi_refptr_direct_jump_is_not_reported_as_switch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytearray(b"\x90" * 0x30)
+            code[0x00:0x06] = bytes.fromhex("ff2510104000")  # jmp dword ptr [0x401010]
+            code[0x10:0x14] = struct.pack("<I", 0x401020)
+            code[0x20] = 0xC3
+            binary = stage_a._parse_stage_a_pe(self._write_pe(root / "candidate.exe", bytes(code)))
+
+            evidence = stage_a._abi_block_evidence(
+                binary,
+                stage_a.BlockSide(rva_start=0x1000, rva_end=0x1006),
+                "refptr-jump",
+            )
+
+            self.assertEqual(evidence["switch_contracts"], [])
+            self.assertEqual(evidence["direct_refptr_transfers"][0]["pointer_rva"], 0x1010)
+            self.assertEqual(evidence["direct_refptr_transfers"][0]["target_rva"], 0x1020)
+            self.assertEqual(evidence["memory_effect_summary"]["reads"], 1)
+
+    def test_contract_candidate_abi_refptr_direct_jump_covers_legacy_switch_and_memory_read(self):
+        reference_function = {
+            "name": "refptr_alias",
+            "memory_effect_summary": {
+                "evidence_status": "derived",
+                "reads": 1,
+                "writes": 0,
+                "read_roles": {"global_writable_pointer_slot": 1},
+                "write_roles": {},
+            },
+            "switch_contracts": [
+                {
+                    "kind": "indirect_jump_table_candidate",
+                    "resolved_target_rva": 0x2000,
+                    "index_expression": {"base": None, "index": None, "disp": 0xD034, "scale": 1},
+                }
+            ],
+        }
+        candidate_function = {
+            "name": "refptr_alias",
+            "memory_effect_summary": {
+                "evidence_status": "derived",
+                "reads": 0,
+                "writes": 0,
+                "read_roles": {},
+                "write_roles": {},
+            },
+            "switch_contracts": [],
+            "direct_control_transfers": [{"kind": "direct_control_transfer", "target_rva": 0x3000}],
+        }
+
+        self.assertIsNone(
+            stage_a._contract_candidate_abi_function_mismatch(
+                "refptr_alias",
+                "refptr_alias",
+                reference_function,
+                candidate_function,
+                None,
+            )
+        )
 
     def test_abi_callsites_bound_known_stdcall_import_arguments(self):
         class FakePE:

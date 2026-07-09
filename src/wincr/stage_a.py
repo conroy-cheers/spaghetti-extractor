@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import platform
@@ -5179,7 +5180,7 @@ def _candidate_abi_constraint_from_functions(
         candidate_rva_anchors=candidate_rva_anchors,
     )
     mappings.extend(reference_section_gap_mappings)
-    functions = _abi_function_evidence(candidate, mappings, side="candidate")
+    functions = _abi_function_evidence(candidate, mappings, side="candidate", compose_direct_callee_import_memory=True)
     return {
         "status": "satisfied" if functions else "incomplete",
         "evidence_kind": "capstone-static-abi-callsites",
@@ -5728,7 +5729,9 @@ def _abi_block_is_import_thunk(block: dict[str, Any]) -> bool:
         return False
     read = next(item for item in reads if isinstance(item, dict))
     section = read.get("memory_section") if isinstance(read.get("memory_section"), dict) else {}
-    if read.get("memory_role") != "global_readonly_pointer_slot" or section.get("name") != ".idata":
+    import_memory = read.get("memory_role") == "import_address_table"
+    legacy_idata_memory = read.get("memory_role") == "global_readonly_pointer_slot" and section.get("name") == ".idata"
+    if not import_memory and not legacy_idata_memory:
         return False
     instruction = read.get("instruction") if isinstance(read.get("instruction"), dict) else {}
     return instruction.get("mnemonic") == "jmp"
@@ -6163,6 +6166,9 @@ def _contract_candidate_abi_function_mismatch(
     ):
         expected_count = _abi_list_count(reference_function.get(key))
         observed_count = _abi_list_count(candidate_function.get(key))
+        if key == "switch_contracts":
+            covered = _contract_candidate_refptr_direct_transfer_coverage_count(reference_function, candidate_function)
+            observed_count += covered
         if expected_count > observed_count:
             issues.append(
                 {
@@ -6200,6 +6206,17 @@ def _contract_candidate_abi_memory_summary_issue(reference_function: dict[str, A
     write_roles = _missing_counted_memory_roles(reference.get("write_roles"), candidate.get("write_roles"))
     if expected_reads <= observed_reads and expected_writes <= observed_writes and not read_roles and not write_roles:
         return None
+    if _contract_candidate_memory_gap_is_refptr_direct_transfer(
+        reference_function,
+        candidate_function,
+        read_roles=read_roles,
+        write_roles=write_roles,
+        expected_reads=expected_reads,
+        observed_reads=observed_reads,
+        expected_writes=expected_writes,
+        observed_writes=observed_writes,
+    ):
+        return None
     return {
         "category": "memory_effect_mismatch",
         "expected": reference,
@@ -6208,6 +6225,69 @@ def _contract_candidate_abi_memory_summary_issue(reference_function: dict[str, A
         "missing_write_roles": write_roles,
         "cause_hint": "candidate memory reads/writes or access classes do not cover the reference contract",
     }
+
+
+def _contract_candidate_memory_gap_is_refptr_direct_transfer(
+    reference_function: dict[str, Any],
+    candidate_function: dict[str, Any],
+    *,
+    read_roles: dict[str, int],
+    write_roles: dict[str, int],
+    expected_reads: int,
+    observed_reads: int,
+    expected_writes: int,
+    observed_writes: int,
+) -> bool:
+    if write_roles or expected_writes > observed_writes:
+        return False
+    if not read_roles:
+        return False
+    if any(role not in {"global_writable_pointer_slot", "global_readonly_pointer_slot"} for role in read_roles):
+        return False
+    missing_reads = max(0, expected_reads - observed_reads)
+    missing_roles = sum(read_roles.values())
+    coverage = _contract_candidate_refptr_direct_transfer_coverage_count(reference_function, candidate_function)
+    return coverage >= max(missing_reads, missing_roles)
+
+
+def _contract_candidate_refptr_direct_transfer_coverage_count(
+    reference_function: dict[str, Any],
+    candidate_function: dict[str, Any],
+) -> int:
+    reference_refptrs = [
+        item
+        for item in reference_function.get("direct_refptr_transfers", [])
+        if isinstance(item, dict)
+    ]
+    if not reference_refptrs:
+        reference_refptrs = [
+            item
+            for item in reference_function.get("switch_contracts", [])
+            if isinstance(item, dict) and _abi_switch_contract_is_resolved_refptr(item)
+        ]
+    if not reference_refptrs:
+        return 0
+    candidate_transfers = [
+        item
+        for item in candidate_function.get("direct_control_transfers", [])
+        if isinstance(item, dict)
+    ] + [
+        item
+        for item in candidate_function.get("direct_refptr_transfers", [])
+        if isinstance(item, dict)
+    ]
+    if not candidate_transfers:
+        return 0
+    return min(len(reference_refptrs), len(candidate_transfers))
+
+
+def _abi_switch_contract_is_resolved_refptr(contract: dict[str, Any]) -> bool:
+    if contract.get("kind") != "indirect_jump_table_candidate":
+        return False
+    if contract.get("resolved_target_rva") in {None, ""}:
+        return False
+    expression = contract.get("index_expression") if isinstance(contract.get("index_expression"), dict) else {}
+    return expression.get("base") is None and expression.get("index") is None
 
 
 def _contract_candidate_abi_callsite_mismatch(
@@ -6689,6 +6769,8 @@ def _memory_role_covering_candidates(role: str) -> list[str]:
         return ["stack_pointer_slot", "stack_argument_slot"]
     if role == "stack_argument_slot":
         return ["stack_argument_slot", "stack_pointer_slot"]
+    if role in {"global_writable_pointer_slot", "global_readonly_pointer_slot"}:
+        return [role, "import_address_table"]
     return [role]
 
 
@@ -7488,7 +7570,13 @@ def _reference_abi_callsites_constraint(
     }
 
 
-def _abi_function_evidence(binary: StageABinary | None, mappings: list[BlockMapping], *, side: str) -> list[dict[str, Any]]:
+def _abi_function_evidence(
+    binary: StageABinary | None,
+    mappings: list[BlockMapping],
+    *,
+    side: str,
+    compose_direct_callee_import_memory: bool = False,
+) -> list[dict[str, Any]]:
     if binary is None:
         return []
     by_name: dict[str, dict[str, Any]] = {}
@@ -7533,6 +7621,8 @@ def _abi_function_evidence(binary: StageABinary | None, mappings: list[BlockMapp
         entry.setdefault("field_accesses", []).extend(block_evidence.get("field_accesses", []))
         entry.setdefault("switch_contracts", []).extend(block_evidence.get("switch_contracts", []))
         entry.setdefault("loop_hints", []).extend(block_evidence.get("loop_hints", []))
+        entry.setdefault("direct_refptr_transfers", []).extend(block_evidence.get("direct_refptr_transfers", []))
+        entry.setdefault("direct_control_transfers", []).extend(block_evidence.get("direct_control_transfers", []))
         entry["memory_effect_summary"] = _abi_memory_effect_summary(entry.get("memory_reads", []), entry.get("memory_writes", []))
     for entry in by_name.values():
         records = entry.pop("_abi_block_records", [])
@@ -7550,7 +7640,131 @@ def _abi_function_evidence(binary: StageABinary | None, mappings: list[BlockMapp
                 if isinstance(callsite, dict)
             ]
         entry["stack_delta"] = _abi_function_stack_delta_summary(entry.get("blocks"), str(entry.get("name") or ""))
+    if compose_direct_callee_import_memory:
+        _abi_apply_direct_callee_import_memory_effects(list(by_name.values()))
     return sorted(by_name.values(), key=lambda item: str(item.get("name") or ""))
+
+
+def _abi_apply_direct_callee_import_memory_effects(functions: list[dict[str, Any]], *, max_depth: int = 2) -> None:
+    ranges: list[tuple[int, int, dict[str, Any]]] = []
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        for block in function.get("blocks", []) if isinstance(function.get("blocks"), list) else []:
+            if not isinstance(block, dict):
+                continue
+            start = _optional_contract_int(block.get("rva_start"))
+            end = _optional_contract_int(block.get("rva_end"))
+            if start is None or end is None or end <= start:
+                continue
+            ranges.append((start, end, function))
+    ranges.sort(key=lambda item: (item[1] - item[0], str(item[2].get("name") or "")))
+
+    def function_for_rva(rva: int) -> dict[str, Any] | None:
+        for start, end, function in ranges:
+            if start <= rva < end:
+                return function
+        return None
+
+    cache: dict[tuple[int, int], tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {}
+
+    def collect(function: dict[str, Any], depth: int, stack: tuple[int, ...]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if depth <= 0:
+            return [], []
+        function_identity = id(function)
+        if function_identity in stack:
+            return [], []
+        key = (function_identity, depth)
+        if key in cache:
+            reads, writes = cache[key]
+            return [copy.deepcopy(item) for item in reads], [copy.deepcopy(item) for item in writes]
+
+        reads = [
+            _abi_composed_direct_callee_memory_access(function, item)
+            for item in function.get("memory_reads", [])
+            if isinstance(item, dict) and _abi_memory_access_is_import_effect(item)
+        ]
+        writes = [
+            _abi_composed_direct_callee_memory_access(function, item)
+            for item in function.get("memory_writes", [])
+            if isinstance(item, dict) and _abi_memory_access_is_import_effect(item)
+        ]
+        for callsite in function.get("callsites", []) if isinstance(function.get("callsites"), list) else []:
+            if not isinstance(callsite, dict):
+                continue
+            target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
+            if target.get("kind") != "direct":
+                continue
+            target_rva = _optional_contract_int(target.get("target_rva"))
+            if target_rva is None:
+                continue
+            callee = function_for_rva(target_rva)
+            if callee is None or callee is function:
+                continue
+            callee_reads, callee_writes = collect(callee, depth - 1, (*stack, function_identity))
+            reads.extend(_abi_reparent_composed_memory_access(callsite, callee, item) for item in callee_reads)
+            writes.extend(_abi_reparent_composed_memory_access(callsite, callee, item) for item in callee_writes)
+
+        cache[key] = ([copy.deepcopy(item) for item in reads], [copy.deepcopy(item) for item in writes])
+        return reads, writes
+
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        composed_reads: list[dict[str, Any]] = []
+        composed_writes: list[dict[str, Any]] = []
+        for callsite in function.get("callsites", []) if isinstance(function.get("callsites"), list) else []:
+            if not isinstance(callsite, dict):
+                continue
+            target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
+            if target.get("kind") != "direct":
+                continue
+            target_rva = _optional_contract_int(target.get("target_rva"))
+            if target_rva is None:
+                continue
+            callee = function_for_rva(target_rva)
+            if callee is None or callee is function:
+                continue
+            callee_reads, callee_writes = collect(callee, max_depth, (id(function),))
+            composed_reads.extend(_abi_reparent_composed_memory_access(callsite, callee, item) for item in callee_reads)
+            composed_writes.extend(_abi_reparent_composed_memory_access(callsite, callee, item) for item in callee_writes)
+        if not composed_reads and not composed_writes:
+            continue
+        function.setdefault("direct_callee_import_memory_effects", {"reads": [], "writes": []})
+        effects = function["direct_callee_import_memory_effects"]
+        if isinstance(effects, dict):
+            effects["reads"] = [*effects.get("reads", []), *composed_reads] if isinstance(effects.get("reads"), list) else composed_reads
+            effects["writes"] = [*effects.get("writes", []), *composed_writes] if isinstance(effects.get("writes"), list) else composed_writes
+        function.setdefault("memory_reads", []).extend(composed_reads)
+        function.setdefault("memory_writes", []).extend(composed_writes)
+        function["memory_effect_summary"] = _abi_memory_effect_summary(
+            function.get("memory_reads", []),
+            function.get("memory_writes", []),
+        )
+
+
+def _abi_memory_access_is_import_effect(access: dict[str, Any]) -> bool:
+    if isinstance(access.get("import"), dict):
+        return True
+    return access.get("memory_role") == "import_address_table"
+
+
+def _abi_composed_direct_callee_memory_access(function: dict[str, Any], access: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **copy.deepcopy(access),
+        "evidence_status": "composed",
+        "composition_kind": "direct_callee_import_memory",
+        "callee_function": function.get("name"),
+    }
+
+
+def _abi_reparent_composed_memory_access(callsite: dict[str, Any], callee: dict[str, Any], access: dict[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(access)
+    result["evidence_status"] = "composed"
+    result["composition_kind"] = "direct_callee_import_memory"
+    result["direct_callsite"] = _abi_callsite_gap_sample(callsite)
+    result["callee_function"] = callee.get("name")
+    return result
 
 
 def _abi_apply_predecessor_argument_sources(binary: StageABinary, records: list[dict[str, Any]]) -> None:
@@ -7890,6 +8104,8 @@ def _abi_block_contract_evidence(block_evidence: dict[str, Any]) -> dict[str, An
         "memory_effect_summary": block_evidence.get("memory_effect_summary", {}),
         "switch_contracts": block_evidence.get("switch_contracts", []),
         "loop_hints": block_evidence.get("loop_hints", []),
+        "direct_refptr_transfers": block_evidence.get("direct_refptr_transfers", []),
+        "direct_control_transfers": block_evidence.get("direct_control_transfers", []),
         "stack_delta": block_evidence.get("stack_delta", {"status": "unknown"}),
     }
 
@@ -7915,6 +8131,8 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
             "memory_effect_summary": {"status": "unknown", "reason": "decode_incomplete"},
             "switch_contracts": [],
             "loop_hints": [],
+            "direct_refptr_transfers": [],
+            "direct_control_transfers": [],
             "stack_delta": {"status": "unknown", "reason": "decode_incomplete"},
         }
     callsites = []
@@ -8006,6 +8224,8 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
         "memory_effect_summary": _abi_memory_effect_summary(memory_reads, memory_writes),
         "switch_contracts": _abi_switch_contracts(binary, block, instructions),
         "loop_hints": _abi_loop_hints(binary, block, instructions),
+        "direct_refptr_transfers": _abi_direct_refptr_transfers(binary, block, instructions),
+        "direct_control_transfers": _abi_direct_control_transfers(binary, block, instructions),
         "stack_delta": {"status": "derived", "net_bytes": stack_delta},
     }
 
@@ -8096,6 +8316,9 @@ def _abi_memory_access_report(
     memory_rva = _abi_absolute_addressing_rva(binary, addressing)
     if memory_rva is not None:
         access["memory_rva"] = memory_rva
+        imported = _import_for_thunk_rva(binary, memory_rva)
+        if imported is not None:
+            access["import"] = _abi_import_report(imported)
         section = _section_for_rva(binary, memory_rva)
         if section is not None:
             access["memory_section"] = _abi_section_report(section)
@@ -8175,6 +8398,8 @@ def _abi_switch_contracts(binary: StageABinary, block: BlockSide, instructions: 
             continue
         target = _resolved_branch_target(binary, insn)
         addressing = _abi_mem_operand_report(insn, insn.operands[0])
+        if _abi_refptr_direct_transfer(binary, block, insn, addressing, target) is not None:
+            continue
         table_contract = _abi_indexed_jump_table_contract(binary, block, instructions, insn, addressing)
         if table_contract is not None:
             contracts.append(table_contract)
@@ -8191,6 +8416,68 @@ def _abi_switch_contracts(binary: StageABinary, block: BlockSide, instructions: 
             }
         )
     return contracts
+
+
+def _abi_direct_refptr_transfers(binary: StageABinary, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
+    transfers: list[dict[str, Any]] = []
+    for insn in instructions:
+        mnemonic = str(insn.mnemonic)
+        if mnemonic not in {"jmp", "ljmp"} or len(insn.operands) != 1 or insn.operands[0].type != X86_OP_MEM:
+            continue
+        addressing = _abi_mem_operand_report(insn, insn.operands[0])
+        transfer = _abi_refptr_direct_transfer(binary, block, insn, addressing, _resolved_branch_target(binary, insn))
+        if transfer is not None:
+            transfers.append(transfer)
+    return transfers
+
+
+def _abi_refptr_direct_transfer(
+    binary: StageABinary,
+    block: BlockSide,
+    insn: Any,
+    addressing: dict[str, Any],
+    target: int | None,
+) -> dict[str, Any] | None:
+    if target is None:
+        return None
+    if addressing.get("base") is not None or addressing.get("index") is not None:
+        return None
+    pointer_rva = _absolute_mem_operand_rva(binary, insn.operands[0])
+    if pointer_rva is None:
+        return None
+    return {
+        "evidence_status": "derived",
+        "kind": "resolved_refptr_direct_transfer",
+        "block": _range_report(block),
+        "instruction": _instruction_report(binary, insn),
+        "pointer_rva": pointer_rva,
+        "pointer_section": _abi_section_report(section) if (section := _section_for_rva(binary, pointer_rva)) is not None else None,
+        "target_rva": target,
+        "target_section": _abi_section_report(section) if (section := _section_for_rva(binary, target)) is not None else None,
+        "normalization": "candidate may cover this with an equivalent direct branch when the refptr target is resolved by Stage A",
+    }
+
+
+def _abi_direct_control_transfers(binary: StageABinary, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
+    transfers: list[dict[str, Any]] = []
+    for insn in instructions:
+        mnemonic = str(insn.mnemonic)
+        if mnemonic not in {"jmp", "ljmp"} or len(insn.operands) != 1:
+            continue
+        target = _direct_branch_target(insn, binary.image_base)
+        if target is None:
+            continue
+        transfers.append(
+            {
+                "evidence_status": "derived",
+                "kind": "direct_control_transfer",
+                "block": _range_report(block),
+                "instruction": _instruction_report(binary, insn),
+                "target_rva": target,
+                "target_section": _abi_section_report(section) if (section := _section_for_rva(binary, target)) is not None else None,
+            }
+        )
+    return transfers
 
 
 def _abi_indexed_jump_table_contract(
