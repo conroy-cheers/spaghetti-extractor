@@ -4364,6 +4364,7 @@ class StageBTests(unittest.TestCase):
         self.assertIn(".globl _stage_b_jq_reference_rdata", source)
         self.assertIn(".byte 0x68, 0x69, 0x00", source)
         self.assertIn(".long _target_func", source)
+        self.assertNotIn("stage_b_layout_keepalive", source)
         self.assertNotIn("stage_b_jq_layout_data_tail", source)
         self.assertNotIn("stage_b_jq_import_anchor", source)
         self.assertNotIn("stage_b_contract_section_gap_anchor", source)

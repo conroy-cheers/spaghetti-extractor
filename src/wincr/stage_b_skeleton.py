@@ -3806,7 +3806,15 @@ def _render_decompiled_c_source(
     direct_import_alias_symbols = _decompiled_c_direct_import_alias_symbol_names(functions)
     runtime_helper_alias_symbols = _decompiled_c_runtime_helper_alias_symbol_names(functions)
     runtime_helper_aliases = _decompiled_c_runtime_helper_alias_lines(functions)
-    runtime_bridge = _decompiled_c_runtime_entry_bridge(functions) if runtime_entry_policy == "bridge" else []
+    layout_keepalive_required = not _decompiled_c_uses_reference_section_materialization(
+        target_name,
+        reference_contract_payload,
+    )
+    runtime_bridge = (
+        _decompiled_c_runtime_entry_bridge(functions, call_layout_keepalive=layout_keepalive_required)
+        if runtime_entry_policy == "bridge"
+        else []
+    )
     runtime_entry_stubs = _decompiled_c_runtime_entry_stubs_by_name(functions) if runtime_bridge else {}
     runtime_bridge_externs = _decompiled_c_runtime_entry_bridge_externs(functions) if runtime_bridge else []
     known_branch_target_symbols = (
@@ -7022,7 +7030,11 @@ def _decompiled_c_runtime_helper_alias_symbol_names(functions: list[dict[str, An
         symbols.append(left)
     return symbols
 
-def _decompiled_c_runtime_entry_bridge(functions: list[dict[str, Any]]) -> list[str]:
+def _decompiled_c_runtime_entry_bridge(
+    functions: list[dict[str, Any]],
+    *,
+    call_layout_keepalive: bool = True,
+) -> list[str]:
     names = {str(function.get("name") or "") for function in functions}
     if "mainCRTStartup" not in names or ("_wmain" not in names and "umain" not in names):
         return []
@@ -7034,11 +7046,12 @@ def _decompiled_c_runtime_entry_bridge(functions: list[dict[str, Any]]) -> list[
         "  wchar_t **wenv = (wchar_t **)0;",
         "  _startupinfo startup_info = {0};",
         "  int rc = 0;",
-        "  stage_b_layout_keepalive();",
         "  if (__wgetmainargs(&argc,(int *)&wargv,(int *)&wenv,0,&startup_info) < 0) {",
         "    exit(8);",
         "  }",
     ]
+    if call_layout_keepalive:
+        lines.insert(7, "  stage_b_layout_keepalive();")
     if "umain" in names:
         lines.extend(
             [
@@ -7134,6 +7147,16 @@ def _decompiled_c_jq_atexit_import_anchor_symbol(functions: list[dict[str, Any]]
     return "atexit"
 
 _DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES = 0x7C
+
+
+def _decompiled_c_uses_reference_section_materialization(
+    target_name: str,
+    reference_contract_payload: dict[str, Any] | None,
+) -> bool:
+    if target_name != "jq" or reference_contract_payload is None:
+        return False
+    sections = _decompiled_c_reference_sections_by_name(reference_contract_payload)
+    return ".data" in sections and ".rdata" in sections
 
 
 def _decompiled_c_jq_reference_section_materialization_lines(
@@ -7573,15 +7596,6 @@ def _decompiled_c_layout_support_lines(
             "extern void *stage_b_jq_imp_SetUnhandledExceptionFilter __asm__(\"__imp__SetUnhandledExceptionFilter@4\");",
             "uintptr_t __cdecl jv_mem_alloc(size_t);",
             *reference_section_lines,
-            "static void stage_b_layout_keepalive(void);",
-            "static void __attribute__((used, noinline, section(\".text$stage_b_layout_keepalive\"))) stage_b_layout_keepalive(void) {",
-            "    __asm__ __volatile__(\"\" : :",
-            "        \"r\"((void *)stage_b_jq_reference_data),",
-            "        \"r\"((void *)stage_b_jq_reference_rdata),",
-            "        \"r\"((void *)stage_b_jq_layout_bss_anchor),",
-            "        \"r\"((void *)stage_b_jq_layout_tls_anchor)",
-            "        : \"memory\");",
-            "}",
         ]
     lines = [
         "static void __cdecl stage_b_jq_layout_text_anchor(void);",
