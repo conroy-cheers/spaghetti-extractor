@@ -7146,7 +7146,7 @@ def _decompiled_c_jq_atexit_import_anchor_symbol(functions: list[dict[str, Any]]
             return original_symbol
     return "atexit"
 
-_DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES = 0x7C
+_DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES = 0x38
 
 
 def _decompiled_c_uses_reference_section_materialization(
@@ -7191,9 +7191,12 @@ def _decompiled_c_jq_reference_section_materialization_lines(
     )
     if data_lines:
         lines.extend(data_lines)
-    rdata_size = max(
-        _decompiled_c_reference_section_required_size(rdata_section, patches, expressions),
-        int(rdata_section["rva_end"]) - int(rdata_section["rva_start"]) - _DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES,
+    rdata_section_size = int(rdata_section["rva_end"]) - int(rdata_section["rva_start"])
+    reserve_crt_suffix = rdata_section_size >= _DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES
+    rdata_size = (
+        rdata_section_size - _DECOMPILED_C_JQ_RDATA_LINKER_SUFFIX_BYTES
+        if reserve_crt_suffix
+        else rdata_section_size
     )
     rdata_lines = _decompiled_c_reference_section_blob_asm(
         section_name=".rdata",
@@ -7209,7 +7212,38 @@ def _decompiled_c_jq_reference_section_materialization_lines(
         if lines:
             lines.append("")
         lines.extend(rdata_lines)
+        if reserve_crt_suffix:
+            lines.append("")
+            lines.extend(_decompiled_c_jq_rdata_crt_suffix_lines())
     return lines
+
+
+def _decompiled_c_jq_rdata_crt_suffix_lines() -> list[str]:
+    return [
+        "__asm__(",
+        "\".section .CRT$XCA,\\\"dr\\\"\\n\"",
+        "\"  .long 0\\n\"",
+        "\".section .CRT$XCZ,\\\"dr\\\"\\n\"",
+        "\"  .long 0\\n\"",
+        "\".section .CRT$XIA,\\\"dr\\\"\\n\"",
+        "\"  .long 0\\n\"",
+        "\".section .CRT$XIZ,\\\"dr\\\"\\n\"",
+        "\"  .long 0\\n\"",
+        "\".section .CRT$XLA,\\\"dr\\\"\\n\"",
+        "\"  .long 0\\n\"",
+        "\".section .CRT$XLC,\\\"dr\\\"\\n\"",
+        "\"  .long ___dyn_tls_init_12\\n\"",
+        "\".section .CRT$XLD,\\\"dr\\\"\\n\"",
+        "\"  .long ___dyn_tls_dtor_12\\n\"",
+        "\".section .CRT$XLZ,\\\"dr\\\"\\n\"",
+        "\"  .long 0\\n\"",
+        "\".section .CRT$XDA,\\\"dr\\\"\\n\"",
+        "\"  .long 0\\n\"",
+        "\".section .CRT$XDZ,\\\"dr\\\"\\n\"",
+        "\"  .long 0\\n\"",
+        "\".text\\n\"",
+        ");",
+    ]
 
 
 def _decompiled_c_reference_sections_by_name(reference_contract_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:

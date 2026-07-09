@@ -52,6 +52,7 @@ link_roots_dir="$build_dir/link-roots"
 import_lib_dir="$build_dir/import-libs"
 strict_map="$build_dir/jq-stage-b-generated-closure-candidate.strict.map"
 strict_exe="$build_dir/jq-stage-b-generated-closure-candidate.strict.exe"
+link_exe="$build_dir/jq.exe"
 candidate_map="$out_dir/jq-stage-b-generated-closure-candidate.map"
 candidate_exe="$out_dir/jq-stage-b-generated-closure-candidate.exe"
 build_report="$out_dir/decompiled-c-generated-closure-link-report.json"
@@ -110,7 +111,7 @@ if [[ ! -f "$skeleton_manifest" || "$(readlink -m "$skeleton_manifest")" == "$(r
   fi
 fi
 
-rm -f "$candidate_exe" "$candidate_map" "$build_report" "$provenance"
+rm -f "$candidate_exe" "$candidate_map" "$build_report" "$provenance" "$strict_exe" "$link_exe"
 if [[ "$(readlink -m "$skeleton_manifest")" != "$(readlink -m "$out_manifest")" ]]; then
   rm -f "$out_manifest"
   cp "$skeleton_manifest" "$out_manifest"
@@ -234,20 +235,22 @@ i686-w64-mingw32-gcc \
   "$object_file" \
   "-L$import_lib_dir" \
   "${lib_args[@]}" \
-  -o "$strict_exe" \
+  -o "$link_exe" \
   >"$build_dir/strict-link.stdout.txt" 2>"$build_dir/strict-link.stderr.txt"
 strict_rc=$?
 set -e
 
 diagnostic_fallback=false
 if [[ "$strict_rc" -eq 0 ]]; then
-  cp "$strict_exe" "$candidate_exe"
+  cp "$link_exe" "$strict_exe"
+  cp "$link_exe" "$candidate_exe"
   cp "$strict_map" "$candidate_map"
   link_stdout="$build_dir/strict-link.stdout.txt"
   link_stderr="$build_dir/strict-link.stderr.txt"
   link_rc=0
 else
   diagnostic_fallback=true
+  rm -f "$link_exe"
   set +e
   i686-w64-mingw32-gcc \
     "${common_flags[@]}" \
@@ -256,10 +259,13 @@ else
     "$object_file" \
     "-L$import_lib_dir" \
     "${lib_args[@]}" \
-    -o "$candidate_exe" \
+    -o "$link_exe" \
     >"$build_dir/link.stdout.txt" 2>"$build_dir/link.stderr.txt"
   link_rc=$?
   set -e
+  if [[ "$link_rc" -eq 0 ]]; then
+    cp "$link_exe" "$candidate_exe"
+  fi
   link_stdout="$build_dir/link.stdout.txt"
   link_stderr="$build_dir/link.stderr.txt"
 fi
