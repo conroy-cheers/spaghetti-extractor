@@ -2529,6 +2529,103 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual([item["index"] for item in inventory["stack_args"]], [0])
             self.assertEqual(inventory["stack_args"][0]["source"]["value"], 1)
 
+    def test_candidate_abi_section_gap_probe_uses_contract_rva_anchor_inside_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytearray(b"\x90" * 0x50)
+            code[0x38:0x3E] = bytes.fromhex("e803000000c3")  # call 0x401040; ret
+            code[0x40] = 0xC3
+            binary = stage_a._parse_stage_a_pe(self._write_pe(root / "candidate.exe", bytes(code)))
+            reference_abi = {
+                "original": {
+                    "functions": [
+                        {
+                            "name": "owner",
+                            "blocks": [{"block_id": "owner-0000", "rva_start": 0x1010, "rva_end": 0x1030}],
+                            "callsites": [],
+                        },
+                        {
+                            "name": "section-gap--text-0001",
+                            "blocks": [
+                                {
+                                    "block_id": "section-gap--text-0001",
+                                    "rva_start": 0x1018,
+                                    "rva_end": 0x101E,
+                                }
+                            ],
+                            "callsites": [
+                                {
+                                    "id": "callsite:section-gap--text-0001:1018",
+                                    "block_id": "section-gap--text-0001",
+                                    "instruction": {"rva": 0x1018, "mnemonic": "call", "op_str": "0x401040"},
+                                    "target": {"kind": "direct", "target_rva": 0x1040},
+                                }
+                            ],
+                        },
+                        {
+                            "name": "target",
+                            "blocks": [{"block_id": "target-0000", "rva_start": 0x1040, "rva_end": 0x1041}],
+                            "callsites": [],
+                        },
+                    ]
+                }
+            }
+            alias_evidence = {
+                "matches_by_reference": {
+                    "owner": {
+                        "reference_name": "owner",
+                        "source_function": "owner",
+                        "source_kind": "generated_contract_guided_flow",
+                        "candidate": {"name": "owner", "rva_start": 0x1000, "rva_end": 0x1050},
+                    }
+                }
+            }
+
+            result = stage_a._candidate_abi_constraint_from_functions(
+                binary,
+                [{"name": "owner", "rva_start": 0x1000, "rva_end": 0x1050}],
+                reference_abi=reference_abi,
+                alias_evidence=alias_evidence,
+                candidate_rva_anchors={0x1010: 0x1030},
+            )
+
+            gap = next(item for item in result["candidate"]["functions"] if item["name"] == "section-gap--text-0001")
+            self.assertEqual(gap["blocks"][0]["rva_start"], 0x1038)
+            self.assertEqual(gap["blocks"][0]["rva_end"], 0x103E)
+            self.assertEqual(len(gap["callsites"]), 1)
+            self.assertEqual(gap["callsites"][0]["instruction"]["rva"], 0x1038)
+            self.assertEqual(gap["callsites"][0]["target"]["target_rva"], 0x1040)
+
+    def test_candidate_abi_predecessor_arguments_follow_skipped_direct_jump_stub(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex(
+                "c744240800000000"  # mov dword ptr [esp + 8], 0
+                "c74424040a000000"  # mov dword ptr [esp + 4], 10
+                "891c24"  # mov dword ptr [esp], ebx
+                "39c0"  # cmp eax, eax
+                "7407"  # je 0x40101e
+                "eb00"  # padding-style jump stub to 0x401019
+                "e802000000"  # call 0x401020
+                "c3"  # ret
+                "90"  # align target at 0x1020
+                "c3"  # callee
+            )
+            binary = stage_a._parse_stage_a_pe(self._write_pe(root / "candidate.exe", code))
+
+            result = stage_a._candidate_abi_constraint_from_functions(
+                binary,
+                [{"name": "caller", "rva_start": 0x1000, "rva_end": 0x1021}],
+            )
+
+            caller = next(item for item in result["candidate"]["functions"] if item["name"] == "caller")
+            callsite = next(item for item in caller["callsites"] if item["instruction"]["rva"] == 0x1019)
+            inventory = callsite["argument_inventory"]
+            self.assertEqual(inventory["argument_count"], 3)
+            self.assertEqual([item["role"] for item in inventory["stack_args"]], ["register", "immediate", "immediate"])
+            self.assertEqual(callsite["predecessor_argument_sources"]["source"], "direct_cfg_predecessor_exit")
+            self.assertEqual(callsite["predecessor_argument_sources"]["predecessor_edges"][0]["resolved_target_rva"], 0x1019)
+
     def test_abi_callsites_bound_known_stdcall_import_arguments(self):
         class FakePE:
             def __init__(self, data: bytes):
@@ -3355,6 +3452,53 @@ class StageAValidateTests(unittest.TestCase):
         self.assertEqual(gaps["function_mismatches"][0]["repair_class"], "hidden_sret_or_out_param")
         self.assertEqual(gaps["callsite_mismatches"][0]["repair_class"], "varargs_or_stdio_bridge")
         self.assertIn("varargs", gaps["callsite_mismatches"][0]["next_action"])
+
+    def test_contract_candidate_abi_memory_summary_accepts_stack_frame_slot_normalization(self):
+        reference_function = {
+            "memory_effect_summary": {
+                "evidence_status": "derived",
+                "reads": 1,
+                "writes": 0,
+                "read_roles": {"stack_pointer_slot": 1},
+                "write_roles": {},
+            }
+        }
+        candidate_function = {
+            "memory_effect_summary": {
+                "evidence_status": "derived",
+                "reads": 1,
+                "writes": 0,
+                "read_roles": {"stack_argument_slot": 1},
+                "write_roles": {},
+            }
+        }
+
+        self.assertIsNone(stage_a._contract_candidate_abi_memory_summary_issue(reference_function, candidate_function))
+
+    def test_contract_candidate_abi_memory_summary_keeps_global_roles_strict(self):
+        reference_function = {
+            "memory_effect_summary": {
+                "evidence_status": "derived",
+                "reads": 2,
+                "writes": 0,
+                "read_roles": {"stack_pointer_slot": 1, "global_writable_pointer_slot": 1},
+                "write_roles": {},
+            }
+        }
+        candidate_function = {
+            "memory_effect_summary": {
+                "evidence_status": "derived",
+                "reads": 2,
+                "writes": 0,
+                "read_roles": {"stack_argument_slot": 2},
+                "write_roles": {},
+            }
+        }
+
+        issue = stage_a._contract_candidate_abi_memory_summary_issue(reference_function, candidate_function)
+
+        self.assertIsNotNone(issue)
+        self.assertEqual(issue["missing_read_roles"], {"global_writable_pointer_slot": 1})
 
     def test_contract_candidate_abi_coverage_gaps_match_callsites_by_signature_before_index(self):
         reference_abi = {

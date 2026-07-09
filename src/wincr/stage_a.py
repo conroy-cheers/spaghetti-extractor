@@ -797,6 +797,7 @@ def stage_a_validate_contract_candidate(
             )
         )
     candidate_functions = _parse_linker_map_functions(linker_map_candidate, candidate_bin)
+    candidate_rva_anchors = _parse_stage_b_contract_rva_anchors(linker_map_candidate, candidate_bin)
     alias_evidence = _empty_contract_candidate_alias_evidence()
     if skeleton_manifest is not None:
         try:
@@ -813,7 +814,13 @@ def stage_a_validate_contract_candidate(
                     details={"skeleton_manifest": str(skeleton_manifest)},
                 )
             )
-    families = _contract_candidate_families(contract, candidate_bin, candidate_functions, alias_evidence=alias_evidence)
+    families = _contract_candidate_families(
+        contract,
+        candidate_bin,
+        candidate_functions,
+        alias_evidence=alias_evidence,
+        candidate_rva_anchors=candidate_rva_anchors,
+    )
     for family in families:
         if family["status"] in {"incomplete", "violated"}:
             issues.append(
@@ -4537,6 +4544,7 @@ def _contract_candidate_families(
     candidate_functions: list[dict[str, Any]],
     *,
     alias_evidence: dict[str, Any] | None = None,
+    candidate_rva_anchors: dict[int, int] | None = None,
 ) -> list[dict[str, Any]]:
     alias_evidence = alias_evidence or _empty_contract_candidate_alias_evidence()
     original = contract.get("original") if isinstance(contract.get("original"), dict) else {}
@@ -4562,6 +4570,7 @@ def _contract_candidate_families(
         candidate_functions,
         reference_abi=abi_contract,
         alias_evidence=alias_evidence,
+        candidate_rva_anchors=candidate_rva_anchors,
     )
     abi_coverage_gaps = _contract_candidate_abi_coverage_gaps(abi_contract, candidate_abi, alias_evidence=alias_evidence)
     original_imports = _contract_import_signature(original)
@@ -5160,12 +5169,14 @@ def _candidate_abi_constraint_from_functions(
     *,
     reference_abi: dict[str, Any] | None = None,
     alias_evidence: dict[str, Any] | None = None,
+    candidate_rva_anchors: dict[int, int] | None = None,
 ) -> dict[str, Any]:
     mappings = _candidate_abi_block_mappings_from_functions(candidate, candidate_functions)
     reference_section_gap_mappings = _candidate_reference_section_gap_abi_mappings(
         candidate,
         reference_abi,
         alias_evidence=alias_evidence,
+        candidate_rva_anchors=candidate_rva_anchors,
     )
     mappings.extend(reference_section_gap_mappings)
     functions = _abi_function_evidence(candidate, mappings, side="candidate")
@@ -5178,6 +5189,7 @@ def _candidate_abi_constraint_from_functions(
             "reference_section_gap_probes": {
                 "kind": "candidate_section_gap_probe",
                 "count": len(reference_section_gap_mappings),
+                "contract_rva_anchors": len(candidate_rva_anchors or {}),
             },
         },
         "counts": {
@@ -5225,6 +5237,7 @@ def _candidate_reference_section_gap_abi_mappings(
     reference_abi: dict[str, Any] | None,
     *,
     alias_evidence: dict[str, Any] | None = None,
+    candidate_rva_anchors: dict[int, int] | None = None,
 ) -> list[BlockMapping]:
     if not isinstance(reference_abi, dict):
         return []
@@ -5252,6 +5265,19 @@ def _candidate_reference_section_gap_abi_mappings(
             if start is None or end is None or end <= start:
                 continue
             block_id = block.get("block_id") if isinstance(block.get("block_id"), str) and block.get("block_id") else f"{name}-{index:04d}"
+            anchor_mapping = _candidate_reference_section_gap_anchor_mapping(
+                candidate,
+                name=name,
+                block_id=block_id,
+                reference_start=start,
+                reference_end=end,
+                owner_ranges=owner_ranges,
+                alias_matches=alias_matches,
+                candidate_rva_anchors=candidate_rva_anchors or {},
+            )
+            if anchor_mapping is not None:
+                mappings.append(anchor_mapping)
+                continue
             owner_mapping = _candidate_reference_section_gap_owner_offset_mapping(
                 candidate,
                 name=name,
@@ -5287,6 +5313,38 @@ def _candidate_reference_section_gap_abi_mappings(
     return mappings
 
 
+def _parse_stage_b_contract_rva_anchors(path: Path, binary: StageABinary) -> dict[int, int]:
+    anchors: dict[int, int] = {}
+    ambiguous: set[int] = set()
+    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        parsed = _parse_linker_map_symbol_line(line, binary)
+        if parsed is None:
+            continue
+        candidate_rva, name = parsed
+        reference_rva = _stage_b_contract_rva_anchor_reference(name)
+        if reference_rva is None:
+            continue
+        section = _section_for_rva(binary, candidate_rva)
+        if section is None or not section.executable:
+            continue
+        previous = anchors.get(reference_rva)
+        if previous is not None and previous != candidate_rva:
+            ambiguous.add(reference_rva)
+            continue
+        anchors[reference_rva] = candidate_rva
+    for reference_rva in ambiguous:
+        anchors.pop(reference_rva, None)
+    return anchors
+
+
+def _stage_b_contract_rva_anchor_reference(name: str) -> int | None:
+    stripped = name.lstrip("_")
+    match = re.fullmatch(r"stage_b_contract_rva_([0-9a-fA-F]{8})", stripped)
+    if match is None:
+        return None
+    return int(match.group(1), 16)
+
+
 def _candidate_reference_section_gap_owner_ranges(functions: list[Any]) -> list[dict[str, Any]]:
     ranges: list[dict[str, Any]] = []
     for function in functions:
@@ -5314,6 +5372,68 @@ def _candidate_reference_section_gap_owner_ranges(functions: list[Any]) -> list[
     return ranges
 
 
+def _candidate_reference_section_gap_anchor_mapping(
+    candidate: StageABinary,
+    *,
+    name: str,
+    block_id: str,
+    reference_start: int,
+    reference_end: int,
+    owner_ranges: list[dict[str, Any]],
+    alias_matches: dict[str, Any],
+    candidate_rva_anchors: dict[int, int],
+) -> BlockMapping | None:
+    if not candidate_rva_anchors:
+        return None
+    owner_context = _candidate_reference_section_gap_owner_context(
+        reference_start=reference_start,
+        reference_end=reference_end,
+        owner_ranges=owner_ranges,
+        alias_matches=alias_matches,
+    )
+    if owner_context is None:
+        return None
+    previous_reference = max((rva for rva in candidate_rva_anchors if rva <= reference_start), default=None)
+    if previous_reference is None:
+        return None
+    next_reference = min((rva for rva in candidate_rva_anchors if rva > previous_reference), default=None)
+    if next_reference is not None and reference_end > next_reference:
+        return None
+    candidate_anchor = candidate_rva_anchors[previous_reference]
+    candidate_start = candidate_anchor + (reference_start - previous_reference)
+    candidate_end = candidate_start + (reference_end - reference_start)
+    candidate_owner_start = int(owner_context["candidate_start"])
+    candidate_owner_end = int(owner_context["candidate_end"])
+    if candidate_start < candidate_owner_start or candidate_end > candidate_owner_end:
+        return None
+    if next_reference is not None:
+        next_candidate = candidate_rva_anchors[next_reference]
+        if candidate_end > next_candidate:
+            return None
+    section = _section_for_rva(candidate, candidate_start)
+    if section is None or not section.executable or candidate_end > section.rva_end:
+        return None
+    return BlockMapping(
+        id=_artifact_name(block_id),
+        kind="code",
+        original=BlockSide(reference_start, reference_end),
+        candidate=BlockSide(candidate_start, candidate_end),
+        reachable=True,
+        invariant_checked=False,
+        source={
+            "source": {
+                "function": name,
+                "kind": "candidate_contract_rva_anchor_section_gap_probe",
+                "reference_block_id": block_id,
+                "owner_function": owner_context["owner_name"],
+                "anchor_reference_rva": previous_reference,
+                "anchor_candidate_rva": candidate_anchor,
+                "anchor_delta": reference_start - previous_reference,
+            }
+        },
+    )
+
+
 def _candidate_reference_section_gap_owner_offset_mapping(
     candidate: StageABinary,
     *,
@@ -5324,29 +5444,18 @@ def _candidate_reference_section_gap_owner_offset_mapping(
     owner_ranges: list[dict[str, Any]],
     alias_matches: dict[str, Any],
 ) -> BlockMapping | None:
-    owner = next(
-        (
-            item
-            for item in owner_ranges
-            if int(item.get("rva_start") or 0) <= reference_start and reference_end <= int(item.get("rva_end") or 0)
-        ),
-        None,
+    owner_context = _candidate_reference_section_gap_owner_context(
+        reference_start=reference_start,
+        reference_end=reference_end,
+        owner_ranges=owner_ranges,
+        alias_matches=alias_matches,
     )
-    if owner is None:
+    if owner_context is None:
         return None
-    owner_name = str(owner.get("name") or "")
-    alias_match = alias_matches.get(owner_name) if isinstance(alias_matches.get(owner_name), dict) else {}
-    if str(alias_match.get("source_kind") or "") not in {
-        "generated_contract_guided_flow",
-        "generated_checked_semantic_region",
-    }:
-        return None
-    candidate_owner = alias_match.get("candidate") if isinstance(alias_match.get("candidate"), dict) else {}
-    candidate_owner_start = _optional_contract_int(candidate_owner.get("rva_start"))
-    candidate_owner_end = _optional_contract_int(candidate_owner.get("rva_end"))
-    owner_start = _optional_contract_int(owner.get("rva_start"))
-    if candidate_owner_start is None or candidate_owner_end is None or owner_start is None:
-        return None
+    owner_name = str(owner_context["owner_name"])
+    owner_start = int(owner_context["reference_start"])
+    candidate_owner_start = int(owner_context["candidate_start"])
+    candidate_owner_end = int(owner_context["candidate_end"])
     candidate_start = candidate_owner_start + (reference_start - owner_start)
     candidate_end = candidate_start + (reference_end - reference_start)
     if candidate_start < candidate_owner_start or candidate_end > candidate_owner_end:
@@ -5373,6 +5482,46 @@ def _candidate_reference_section_gap_owner_offset_mapping(
             }
         },
     )
+
+
+def _candidate_reference_section_gap_owner_context(
+    *,
+    reference_start: int,
+    reference_end: int,
+    owner_ranges: list[dict[str, Any]],
+    alias_matches: dict[str, Any],
+) -> dict[str, Any] | None:
+    owner = next(
+        (
+            item
+            for item in owner_ranges
+            if int(item.get("rva_start") or 0) <= reference_start and reference_end <= int(item.get("rva_end") or 0)
+        ),
+        None,
+    )
+    if owner is None:
+        return None
+    owner_name = str(owner.get("name") or "")
+    alias_match = alias_matches.get(owner_name) if isinstance(alias_matches.get(owner_name), dict) else {}
+    if str(alias_match.get("source_kind") or "") not in {
+        "generated_contract_guided_flow",
+        "generated_checked_semantic_region",
+    }:
+        return None
+    candidate_owner = alias_match.get("candidate") if isinstance(alias_match.get("candidate"), dict) else {}
+    candidate_owner_start = _optional_contract_int(candidate_owner.get("rva_start"))
+    candidate_owner_end = _optional_contract_int(candidate_owner.get("rva_end"))
+    owner_start = _optional_contract_int(owner.get("rva_start"))
+    owner_end = _optional_contract_int(owner.get("rva_end"))
+    if candidate_owner_start is None or candidate_owner_end is None or owner_start is None or owner_end is None:
+        return None
+    return {
+        "owner_name": owner_name,
+        "reference_start": owner_start,
+        "reference_end": owner_end,
+        "candidate_start": candidate_owner_start,
+        "candidate_end": candidate_owner_end,
+    }
 
 
 def _optional_contract_int(value: Any) -> int | None:
@@ -6047,8 +6196,8 @@ def _contract_candidate_abi_memory_summary_issue(reference_function: dict[str, A
     expected_writes = _safe_int(reference.get("writes")) or 0
     observed_reads = _safe_int(candidate.get("reads")) or 0
     observed_writes = _safe_int(candidate.get("writes")) or 0
-    read_roles = _missing_counted_roles(reference.get("read_roles"), candidate.get("read_roles"))
-    write_roles = _missing_counted_roles(reference.get("write_roles"), candidate.get("write_roles"))
+    read_roles = _missing_counted_memory_roles(reference.get("read_roles"), candidate.get("read_roles"))
+    write_roles = _missing_counted_memory_roles(reference.get("write_roles"), candidate.get("write_roles"))
     if expected_reads <= observed_reads and expected_writes <= observed_writes and not read_roles and not write_roles:
         return None
     return {
@@ -6507,6 +6656,40 @@ def _missing_counted_roles(reference: Any, candidate: Any) -> dict[str, int]:
         if expected_count > observed_count:
             missing[str(role)] = expected_count - observed_count
     return missing
+
+
+def _missing_counted_memory_roles(reference: Any, candidate: Any) -> dict[str, int]:
+    if not isinstance(reference, dict):
+        return {}
+    candidate = candidate if isinstance(candidate, dict) else {}
+    remaining_candidate = {
+        str(role): _safe_int(count) or 0
+        for role, count in candidate.items()
+    }
+    missing: dict[str, int] = {}
+    for role, expected_value in sorted(reference.items()):
+        role_name = str(role)
+        remaining = _safe_int(expected_value) or 0
+        for candidate_role in _memory_role_covering_candidates(role_name):
+            available = remaining_candidate.get(candidate_role, 0)
+            if available <= 0:
+                continue
+            used = min(remaining, available)
+            remaining -= used
+            remaining_candidate[candidate_role] = available - used
+            if remaining <= 0:
+                break
+        if remaining > 0:
+            missing[role_name] = remaining
+    return missing
+
+
+def _memory_role_covering_candidates(role: str) -> list[str]:
+    if role == "stack_pointer_slot":
+        return ["stack_pointer_slot", "stack_argument_slot"]
+    if role == "stack_argument_slot":
+        return ["stack_argument_slot", "stack_pointer_slot"]
+    return [role]
 
 
 def _contract_candidate_abi_mismatch_repair_class(issues: list[dict[str, Any]]) -> str:
@@ -7385,12 +7568,16 @@ def _abi_apply_predecessor_argument_sources(binary: StageABinary, records: list[
             if not isinstance(edge, dict) or edge.get("kind") not in {"fallthrough", "taken", "jump"}:
                 continue
             target_rva = _safe_int(edge.get("target_rva"))
-            if target_rva is None or target_rva not in records_by_start:
+            if target_rva is None:
                 continue
-            predecessor_sources.setdefault(target_rva, []).append(
+            resolved_target_rva = _abi_resolve_predecessor_argument_target(binary, target_rva, records_by_start)
+            if resolved_target_rva is None:
+                continue
+            predecessor_sources.setdefault(resolved_target_rva, []).append(
                 {
                     "block_id": record.get("block_id"),
                     "edge": edge,
+                    "resolved_target_rva": resolved_target_rva,
                     "argument_sources": exit_sources,
                 }
             )
@@ -7435,6 +7622,7 @@ def _abi_apply_predecessor_argument_sources(binary: StageABinary, records: list[
                     "kind": item.get("edge", {}).get("kind"),
                     "instruction_rva": item.get("edge", {}).get("instruction_rva"),
                     "target_rva": item.get("edge", {}).get("target_rva"),
+                    "resolved_target_rva": item.get("resolved_target_rva"),
                 }
                 for item in predecessor_items
                 if isinstance(item.get("edge"), dict)
@@ -7442,6 +7630,34 @@ def _abi_apply_predecessor_argument_sources(binary: StageABinary, records: list[
             "argument_source_count": len(sources),
         }
         callsites[0] = _abi_callsite_with_argument_sources(binary, first_callsite, sources, metadata)
+
+
+def _abi_resolve_predecessor_argument_target(
+    binary: StageABinary,
+    target_rva: int,
+    records_by_start: dict[int, dict[str, Any]],
+) -> int | None:
+    if target_rva in records_by_start:
+        return target_rva
+    section = _section_for_rva(binary, target_rva)
+    if section is None or not section.executable:
+        return None
+    size = min(8, section.rva_end - target_rva)
+    if size <= 0:
+        return None
+    data = binary.pe.get_data(target_rva, size)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    instructions = list(dis.disasm(data, binary.image_base + target_rva))
+    if not instructions:
+        return None
+    insn = instructions[0]
+    if int(insn.address - binary.image_base) != target_rva or str(insn.mnemonic) not in {"jmp", "ljmp"}:
+        return None
+    resolved = _resolved_branch_target(binary, insn)
+    if resolved is None or resolved not in records_by_start:
+        return None
+    return resolved
 
 
 def _abi_apply_predecessor_switch_bounds(binary: StageABinary, records: list[dict[str, Any]]) -> None:
