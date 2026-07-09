@@ -3104,6 +3104,7 @@ def _reference_function_contracts(
                     "register_value_provenance": abi.get("register_value_provenance", []),
                     "register_out_param_candidates": abi.get("register_out_param_candidates", []),
                     "switch_contracts": abi.get("switch_contracts", []),
+                    "decision_tree_contracts": abi.get("decision_tree_contracts", []),
                     "loop_hints": abi.get("loop_hints", []),
                 },
                 "memory_effect_summary": abi.get("memory_effect_summary")
@@ -3216,6 +3217,23 @@ def _abi_cluster_contracts(contract: dict[str, Any], contract_ref: dict[str, Any
                     repair_class="switch_or_jump_table_dispatch",
                     next_action="recover switch table bounds, default edge, and case target mapping in generated control flow",
                     evidence={"switch_contract": switch},
+                )
+            )
+        for dispatch in function.get("decision_tree_contracts", []) if isinstance(function.get("decision_tree_contracts"), list) else []:
+            if not isinstance(dispatch, dict):
+                continue
+            first_case = dispatch.get("case_targets", [{}])[0] if isinstance(dispatch.get("case_targets"), list) and dispatch.get("case_targets") else {}
+            instruction = first_case.get("compare_instruction") if isinstance(first_case, dict) and isinstance(first_case.get("compare_instruction"), dict) else {}
+            clusters.append(
+                _cluster_contract(
+                    contract_ref=contract_ref,
+                    cluster_id=f"decision-tree:{function_name}:{instruction.get('rva', 'unknown')}",
+                    cluster_kind="abi_direct_compare_dispatch_candidate",
+                    function=function_name,
+                    block_id=_block_id_for_instruction(function, instruction),
+                    repair_class="switch_or_jump_table_dispatch",
+                    next_action="prove the direct compare/branch decision tree covers the reference switch or jump-table target set",
+                    evidence={"decision_tree_contract": dispatch},
                 )
             )
         for loop in function.get("loop_hints", []) if isinstance(function.get("loop_hints"), list) else []:
@@ -3617,6 +3635,8 @@ def _function_contract_next_action(name: str, abi: dict[str, Any]) -> str:
         return f"repair {name} callsites with an explicit varargs/stdio bridge and re-run candidate-only delta explanation"
     if "sret" in text or "out_param" in text:
         return f"repair {name} hidden sret/out-param handling and re-run candidate-only delta explanation"
+    if "switch_contracts" in text or "decision_tree_contracts" in text:
+        return f"repair {name} switch/jump-table or direct decision-tree dispatch coverage before Stage A validation"
     if "tls" in name.lower():
         return f"repair {name} callback ABI and stack cleanup before Stage A validation"
     return f"implement {name} until its function, block, CFG, ABI, and proof-obligation contracts close"
@@ -4588,6 +4608,8 @@ def _contract_candidate_families(
     alias_ambiguity_count = len(ambiguous_functions)
     function_ranges_status = "satisfied" if not missing_functions and not ambiguous_functions and expected_functions else "incomplete"
     abi_status = _contract_candidate_abi_status(abi_contract, candidate_abi)
+    expected_binary_signature = _contract_binary_signature(original)
+    candidate_binary_signature = _contract_binary_signature(_binary_reference_layout(candidate))
     if alias_ambiguity_count or int(abi_coverage_gaps["counts"].get("missing_functions") or 0) or int(
         abi_coverage_gaps["counts"].get("ambiguous_functions") or 0
     ) or int(
@@ -4601,13 +4623,14 @@ def _contract_candidate_families(
     families = [
         _contract_candidate_family(
             "binary_faithfulness",
-            "satisfied" if _contract_candidate_binary_matches(original, candidate) else "violated",
+            "satisfied" if expected_binary_signature == candidate_binary_signature else "violated",
             "candidate PE layout/import/image-base target does not match the Stage A reference contract",
             "rebuild the candidate with matching PE target layout, imports, subsystem, and image base",
             contract_families.get("binary_faithfulness"),
             evidence={
-                "expected": _contract_binary_signature(original),
-                "candidate": _contract_binary_signature(_binary_reference_layout(candidate)),
+                "expected": expected_binary_signature,
+                "candidate": candidate_binary_signature,
+                "layout_delta": _contract_binary_signature_delta(expected_binary_signature, candidate_binary_signature),
             },
         ),
         _contract_candidate_family(
@@ -5131,6 +5154,63 @@ def _contract_binary_signature(layout: dict[str, Any]) -> dict[str, Any]:
         "sections": _contract_section_signature(layout),
         "imports": _contract_import_signature(layout),
     }
+
+
+def _contract_binary_signature_delta(expected: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    header: dict[str, dict[str, Any]] = {}
+    for key in ("machine", "bitness", "subsystem", "image_base", "entrypoint_rva"):
+        if expected.get(key) != candidate.get(key):
+            header[key] = {"expected": expected.get(key), "observed": candidate.get(key)}
+    return {
+        "header": header,
+        "sections": _contract_section_signature_delta(
+            expected.get("sections") if isinstance(expected.get("sections"), list) else [],
+            candidate.get("sections") if isinstance(candidate.get("sections"), list) else [],
+        ),
+        "imports": _contract_import_signature_delta(
+            expected.get("imports") if isinstance(expected.get("imports"), list) else [],
+            candidate.get("imports") if isinstance(candidate.get("imports"), list) else [],
+        ),
+    }
+
+
+def _contract_section_signature_delta(expected: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    expected_by_name = {str(item.get("name") or ""): item for item in expected if isinstance(item, dict)}
+    candidate_by_name = {str(item.get("name") or ""): item for item in candidate if isinstance(item, dict)}
+    deltas: list[dict[str, Any]] = []
+    for name in sorted(set(expected_by_name) | set(candidate_by_name)):
+        expected_section = expected_by_name.get(name)
+        candidate_section = candidate_by_name.get(name)
+        if expected_section is None:
+            deltas.append({"name": name, "status": "extra", "candidate": candidate_section})
+            continue
+        if candidate_section is None:
+            deltas.append({"name": name, "status": "missing", "expected": expected_section})
+            continue
+        fields: dict[str, dict[str, Any]] = {}
+        for key in ("rva_start", "rva_end", "executable", "readable", "writable"):
+            if expected_section.get(key) != candidate_section.get(key):
+                fields[key] = {"expected": expected_section.get(key), "observed": candidate_section.get(key)}
+        expected_size = (_safe_int(expected_section.get("rva_end")) or 0) - (_safe_int(expected_section.get("rva_start")) or 0)
+        candidate_size = (_safe_int(candidate_section.get("rva_end")) or 0) - (_safe_int(candidate_section.get("rva_start")) or 0)
+        if expected_size != candidate_size:
+            fields["size"] = {"expected": expected_size, "observed": candidate_size, "delta": candidate_size - expected_size}
+        if fields:
+            deltas.append({"name": name, "status": "changed", "delta": fields})
+    return deltas
+
+
+def _contract_import_signature_delta(expected: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    expected_keys = {_contract_import_delta_key(item): item for item in expected if isinstance(item, dict)}
+    candidate_keys = {_contract_import_delta_key(item): item for item in candidate if isinstance(item, dict)}
+    return {
+        "missing": [expected_keys[key] for key in sorted(set(expected_keys) - set(candidate_keys))],
+        "extra": [candidate_keys[key] for key in sorted(set(candidate_keys) - set(expected_keys))],
+    }
+
+
+def _contract_import_delta_key(item: dict[str, Any]) -> tuple[str, str, str]:
+    return (str(item.get("dll") or ""), str(item.get("symbol") or ""), str(item.get("ordinal") or ""))
 
 
 def _contract_section_signature(layout: dict[str, Any]) -> list[dict[str, Any]]:
@@ -6134,8 +6214,12 @@ def _contract_candidate_abi_function_mismatch(
         ("preserved_candidates", "preserved_register_mismatch"),
         ("clobbered_candidates", "clobbered_register_mismatch"),
     ):
-        expected = {str(item) for item in reference_registers.get(key, []) if isinstance(item, str)}
-        observed = {str(item) for item in candidate_registers.get(key, []) if isinstance(item, str)}
+        if key == "preserved_candidates":
+            expected = set(_abi_effective_preserved_registers(reference_function))
+            observed = set(_abi_effective_preserved_registers(candidate_function))
+        else:
+            expected = {str(item) for item in reference_registers.get(key, []) if isinstance(item, str)}
+            observed = {str(item) for item in candidate_registers.get(key, []) if isinstance(item, str)}
         missing = sorted(expected - observed)
         if missing:
             issues.append(
@@ -6164,11 +6248,28 @@ def _contract_candidate_abi_function_mismatch(
             "candidate does not expose all loop backedge hints",
         ),
     ):
-        expected_count = _abi_list_count(reference_function.get(key))
-        observed_count = _abi_list_count(candidate_function.get(key))
+        if key == "loop_hints":
+            expected_count = _abi_function_local_loop_hint_count(reference_function)
+            observed_count = _abi_function_local_loop_hint_count(candidate_function)
+        else:
+            expected_count = _abi_list_count(reference_function.get(key))
+            observed_count = _abi_list_count(candidate_function.get(key))
+        if key == "register_out_param_candidates":
+            observed_count += _contract_candidate_argument_pointer_out_param_coverage_count(
+                reference_function,
+                candidate_function,
+                expected_count=expected_count,
+                observed_count=observed_count,
+            )
         if key == "switch_contracts":
             covered = _contract_candidate_refptr_direct_transfer_coverage_count(reference_function, candidate_function)
             observed_count += covered
+            observed_count += _contract_candidate_decision_tree_switch_coverage_count(
+                reference_function,
+                candidate_function,
+                expected_count=expected_count,
+                observed_count=observed_count,
+            )
         if expected_count > observed_count:
             issues.append(
                 {
@@ -6193,6 +6294,120 @@ def _contract_candidate_abi_function_mismatch(
         "repair_class": _contract_candidate_abi_mismatch_repair_class(issues),
         "next_action": _contract_candidate_abi_mismatch_next_action(name, issues),
     }
+
+
+def _abi_effective_preserved_registers(function: dict[str, Any]) -> list[str]:
+    registers = function.get("registers") if isinstance(function.get("registers"), dict) else {}
+    preserved = {str(item) for item in registers.get("preserved_candidates", []) if isinstance(item, str)}
+    return sorted(reg for reg in preserved if not _abi_preserved_candidate_is_legacy_noop(function, reg))
+
+
+def _abi_preserved_candidate_is_legacy_noop(function: dict[str, Any], register: str) -> bool:
+    provenance = [
+        item
+        for item in function.get("register_value_provenance", [])
+        if isinstance(item, dict) and _abi_x86_register_family(str(item.get("register") or "")) == register
+    ]
+    if not provenance:
+        return False
+    return all(_abi_register_definition_is_identity_noop(register, item.get("definition")) for item in provenance)
+
+
+def _abi_register_definition_is_identity_noop(register: str, definition: Any) -> bool:
+    if not isinstance(definition, dict):
+        return False
+    instruction = definition.get("instruction") if isinstance(definition.get("instruction"), dict) else {}
+    mnemonic = str(instruction.get("mnemonic") or "")
+    if mnemonic == "lea" and definition.get("kind") == "address":
+        addressing = definition.get("addressing") if isinstance(definition.get("addressing"), dict) else {}
+        base = _abi_x86_register_family(str(addressing.get("base") or ""))
+        index = _abi_x86_register_family(str(addressing.get("index") or ""))
+        disp = _safe_int(addressing.get("disp")) or 0
+        return base == _abi_x86_register_family(register) and not index and disp == 0
+    if mnemonic == "mov" and definition.get("kind") == "register":
+        return _abi_x86_register_family(str(definition.get("register") or "")) == _abi_x86_register_family(register)
+    return False
+
+
+def _contract_candidate_decision_tree_switch_coverage_count(
+    reference_function: dict[str, Any],
+    candidate_function: dict[str, Any],
+    *,
+    expected_count: int,
+    observed_count: int,
+) -> int:
+    if expected_count <= observed_count:
+        return 0
+    reference_switches = [
+        item
+        for item in reference_function.get("switch_contracts", [])
+        if isinstance(item, dict)
+    ]
+    if not reference_switches:
+        return 0
+    candidate_dispatches = [
+        item
+        for item in candidate_function.get("decision_tree_contracts", [])
+        if isinstance(item, dict) and item.get("kind") == "direct_compare_dispatch_candidate"
+    ]
+    if not candidate_dispatches:
+        return 0
+    return min(max(0, expected_count - observed_count), len(candidate_dispatches))
+
+
+def _contract_candidate_argument_pointer_out_param_coverage_count(
+    reference_function: dict[str, Any],
+    candidate_function: dict[str, Any],
+    *,
+    expected_count: int,
+    observed_count: int,
+) -> int:
+    if expected_count <= observed_count:
+        return 0
+    if not _abi_list_count(reference_function.get("register_out_param_candidates")):
+        return 0
+    candidate_writes = [
+        item
+        for item in candidate_function.get("memory_writes", [])
+        if isinstance(item, dict)
+    ]
+    has_argument_pointer_write = any(item.get("memory_role") == "argument_pointer_deref" for item in candidate_writes)
+    if not has_argument_pointer_write:
+        return 0
+    covering_writes = [
+        item
+        for item in candidate_writes
+        if item.get("memory_role") in {"argument_pointer_deref", "computed_pointer_deref"}
+    ]
+    return min(max(0, expected_count - observed_count), len(covering_writes))
+
+
+def _abi_function_local_loop_hint_count(function: dict[str, Any]) -> int:
+    return len(_abi_function_local_loop_hints(function))
+
+
+def _abi_function_local_loop_hints(function: dict[str, Any]) -> list[dict[str, Any]]:
+    hints = function.get("loop_hints") if isinstance(function.get("loop_hints"), list) else []
+    return [hint for hint in hints if isinstance(hint, dict) and _abi_loop_hint_is_function_local(function, hint)]
+
+
+def _abi_loop_hint_is_function_local(function: dict[str, Any], hint: dict[str, Any]) -> bool:
+    target = _safe_int(hint.get("target_rva"))
+    if target is None:
+        return False
+    for block in function.get("blocks", []) if isinstance(function.get("blocks"), list) else []:
+        if not isinstance(block, dict):
+            continue
+        start = _safe_int(block.get("rva_start"))
+        end = _safe_int(block.get("rva_end"))
+        if start is not None and end is not None and start <= target < end:
+            return True
+    return False
+
+
+def _abi_loop_hint_key(hint: dict[str, Any]) -> tuple[int, int]:
+    instruction = hint.get("instruction") if isinstance(hint.get("instruction"), dict) else {}
+    return (_safe_int(instruction.get("rva")) or -1, _safe_int(hint.get("target_rva")) or -1)
 
 
 def _contract_candidate_abi_memory_summary_issue(reference_function: dict[str, Any], candidate_function: dict[str, Any]) -> dict[str, Any] | None:
@@ -6769,6 +6984,10 @@ def _memory_role_covering_candidates(role: str) -> list[str]:
         return ["stack_pointer_slot", "stack_argument_slot"]
     if role == "stack_argument_slot":
         return ["stack_argument_slot", "stack_pointer_slot"]
+    if role == "computed_pointer_deref":
+        return ["computed_pointer_deref", "argument_pointer_deref"]
+    if role == "computed_memory":
+        return ["computed_memory", "computed_pointer_deref", "argument_pointer_deref"]
     if role in {"global_writable_pointer_slot", "global_readonly_pointer_slot"}:
         return [role, "import_address_table"]
     return [role]
@@ -7639,10 +7858,108 @@ def _abi_function_evidence(
                 )
                 if isinstance(callsite, dict)
             ]
+            entry["decision_tree_contracts"] = _abi_direct_compare_dispatch_contracts(binary, records)
+        _abi_filter_function_local_loop_hints(entry)
         entry["stack_delta"] = _abi_function_stack_delta_summary(entry.get("blocks"), str(entry.get("name") or ""))
     if compose_direct_callee_import_memory:
         _abi_apply_direct_callee_import_memory_effects(list(by_name.values()))
     return sorted(by_name.values(), key=lambda item: str(item.get("name") or ""))
+
+
+def _abi_filter_function_local_loop_hints(function: dict[str, Any]) -> None:
+    local_hints = _abi_function_local_loop_hints(function)
+    local_keys = {_abi_loop_hint_key(item) for item in local_hints}
+    function["loop_hints"] = local_hints
+    for block in function.get("blocks", []) if isinstance(function.get("blocks"), list) else []:
+        if not isinstance(block, dict) or not isinstance(block.get("abi"), dict):
+            continue
+        block["abi"]["loop_hints"] = [
+            hint
+            for hint in block["abi"].get("loop_hints", [])
+            if isinstance(hint, dict) and _abi_loop_hint_key(hint) in local_keys
+        ]
+
+
+def _abi_direct_compare_dispatch_contracts(binary: StageABinary, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cases_by_register: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("block"), BlockSide):
+            continue
+        block = record["block"]
+        instructions = _abi_decode_block_instructions(binary, block)
+        for index, insn in enumerate(instructions):
+            selector = _abi_compare_immediate_selector(insn)
+            if selector is None:
+                continue
+            branch = _abi_next_conditional_branch(instructions, index + 1)
+            if branch is None:
+                continue
+            target = _resolved_branch_target(binary, branch)
+            if target is None:
+                continue
+            cases_by_register.setdefault(selector["register"], []).append(
+                {
+                    "value": selector["value"],
+                    "target_rva": target,
+                    "block": _range_report(block),
+                    "compare_instruction": _instruction_report(binary, insn),
+                    "branch_instruction": _instruction_report(binary, branch),
+                }
+            )
+    contracts: list[dict[str, Any]] = []
+    for register, cases in sorted(cases_by_register.items()):
+        unique_values = sorted({_safe_int(case.get("value")) for case in cases if _safe_int(case.get("value")) is not None})
+        unique_targets = sorted({_safe_int(case.get("target_rva")) for case in cases if _safe_int(case.get("target_rva")) is not None})
+        if len(unique_values) < 4 or len(unique_targets) < 2:
+            continue
+        contracts.append(
+            {
+                "evidence_status": "derived",
+                "kind": "direct_compare_dispatch_candidate",
+                "selector_register": register,
+                "case_count": len(unique_values),
+                "target_count": len(unique_targets),
+                "case_values": unique_values,
+                "case_targets": sorted(cases, key=lambda item: (_safe_int(item.get("value")) or -1, _safe_int(item.get("target_rva")) or -1)),
+                "next_action": "prove this direct compare/branch decision tree covers the reference switch or jump-table target set",
+            }
+        )
+    return contracts
+
+
+def _abi_decode_block_instructions(binary: StageABinary, block: BlockSide) -> list[Any]:
+    data = binary.pe.get_data(block.rva_start, block.size)
+    dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
+    dis.detail = True
+    instructions = list(dis.disasm(data, binary.image_base + block.rva_start))
+    if sum(int(insn.size) for insn in instructions) != len(data):
+        return []
+    return instructions
+
+
+def _abi_compare_immediate_selector(insn: Any) -> dict[str, int | str] | None:
+    if str(insn.mnemonic) != "cmp" or len(insn.operands) != 2:
+        return None
+    left, right = insn.operands[0], insn.operands[1]
+    if left.type == X86_OP_REG and right.type == X86_OP_IMM:
+        register = _abi_operand_register_name(insn, left)
+        if register:
+            return {"register": register, "value": int(right.imm)}
+    if left.type == X86_OP_IMM and right.type == X86_OP_REG:
+        register = _abi_operand_register_name(insn, right)
+        if register:
+            return {"register": register, "value": int(left.imm)}
+    return None
+
+
+def _abi_next_conditional_branch(instructions: list[Any], start_index: int) -> Any | None:
+    for insn in instructions[start_index : start_index + 3]:
+        if _abi_instruction_is_semantic_noop(insn):
+            continue
+        if _is_conditional_jump(str(insn.mnemonic)):
+            return insn
+        return None
+    return None
 
 
 def _abi_apply_direct_callee_import_memory_effects(functions: list[dict[str, Any]], *, max_depth: int = 2) -> None:
@@ -8147,6 +8464,8 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
     field_accesses: list[dict[str, Any]] = []
     stack_delta = 0
     for insn in instructions:
+        if _abi_instruction_is_semantic_noop(insn):
+            continue
         reads, writes = _instruction_register_access(insn)
         register_reads.update(reads)
         register_writes.update(writes)
@@ -8228,6 +8547,32 @@ def _abi_block_evidence(binary: StageABinary, block: BlockSide, block_id: str) -
         "direct_control_transfers": _abi_direct_control_transfers(binary, block, instructions),
         "stack_delta": {"status": "derived", "net_bytes": stack_delta},
     }
+
+
+def _abi_instruction_is_semantic_noop(insn: Any) -> bool:
+    mnemonic = str(insn.mnemonic)
+    if mnemonic == "nop":
+        return True
+    if mnemonic == "xchg" and len(insn.operands) == 2:
+        left = _abi_operand_register_name(insn, insn.operands[0])
+        right = _abi_operand_register_name(insn, insn.operands[1])
+        return bool(left and right and left == right)
+    if mnemonic != "lea" or len(insn.operands) != 2:
+        return False
+    destination = _abi_operand_register_name(insn, insn.operands[0])
+    source = insn.operands[1]
+    if not destination or source.type != X86_OP_MEM:
+        return False
+    base = _abi_x86_register_family(insn.reg_name(source.mem.base) if source.mem.base else None)
+    index = _abi_x86_register_family(insn.reg_name(source.mem.index) if source.mem.index else None)
+    destination = _abi_x86_register_family(destination)
+    return base == destination and not index and int(source.mem.disp) == 0
+
+
+def _abi_operand_register_name(insn: Any, operand: Any) -> str | None:
+    if operand.type != X86_OP_REG:
+        return None
+    return _abi_x86_register_family(insn.reg_name(operand.reg))
 
 
 def _instruction_register_access(insn: Any) -> tuple[set[str], set[str]]:

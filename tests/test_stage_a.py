@@ -2243,6 +2243,36 @@ class StageAValidateTests(unittest.TestCase):
             self.assertIn("indirect-jump contract", switch_cluster["next_action"])
             self.assertIn("low-level CFG backedges", loop_cluster["next_action"])
 
+    def test_reference_contract_does_not_report_nonlocal_tail_jump_as_loop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = b"\xc3" + (b"\x90" * 15) + bytes.fromhex("e9ebffffff")  # jmp from 0x1010 to 0x1000
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            target = self._mapping_entry(rva=0x1000, size=1, block_id="target")
+            target["source"] = {"function": "target"}
+            tail = self._mapping_entry(rva=0x1010, size=5, block_id="entry-tail")
+            tail["source"] = {"function": "entry_tail"}
+            mapping = root / "block-map.json"
+            mapping.write_text(json.dumps({"blocks": [target, tail]}), encoding="utf-8")
+
+            result = stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=root / "reference-contract.json",
+            )
+
+            functions = {
+                function["name"]: function
+                for function in result["constraints"]["abi_callsites"]["original"]["functions"]
+            }
+            tail_function = functions["entry_tail"]
+            self.assertEqual(tail_function["loop_hints"], [])
+            self.assertEqual(tail_function["blocks"][0]["abi"]["loop_hints"], [])
+            self.assertEqual(tail_function["direct_control_transfers"][0]["target_rva"], 0x1000)
+
     def test_reference_contract_resolves_bounded_pe32_jump_table_targets(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2675,6 +2705,50 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(evidence["direct_refptr_transfers"][0]["target_rva"], 0x1020)
             self.assertEqual(evidence["memory_effect_summary"]["reads"], 1)
 
+    def test_abi_identity_lea_alignment_does_not_create_preserved_register(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = stage_a._parse_stage_a_pe(
+                self._write_pe(root / "candidate.exe", bytes.fromhex("8db600000000c3"))
+            )
+
+            evidence = stage_a._abi_block_evidence(
+                binary,
+                stage_a.BlockSide(rva_start=0x1000, rva_end=0x1007),
+                "alignment-lea",
+            )
+
+            self.assertNotIn("esi", evidence["preserved_candidates"])
+            self.assertNotIn("esi", evidence["register_reads"])
+            self.assertNotIn("esi", evidence["register_writes"])
+
+    def test_candidate_abi_reports_direct_compare_dispatch_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = bytes.fromhex(
+                "83f9007410"  # cmp ecx, 0; je case0
+                "83f901740c"  # cmp ecx, 1; je case1
+                "83f9027408"  # cmp ecx, 2; je case2
+                "83f9037404"  # cmp ecx, 3; je case3
+                "c3"  # default
+                "c3"  # case0
+                "c3"  # case1
+                "c3"  # case2
+                "c3"  # case3
+            )
+            binary = stage_a._parse_stage_a_pe(self._write_pe(root / "candidate.exe", code))
+
+            result = stage_a._candidate_abi_constraint_from_functions(
+                binary,
+                [{"name": "dispatch", "rva_start": 0x1000, "rva_end": 0x1000 + len(code)}],
+            )
+
+            function = next(item for item in result["candidate"]["functions"] if item["name"] == "dispatch")
+            dispatch = function["decision_tree_contracts"][0]
+            self.assertEqual(dispatch["kind"], "direct_compare_dispatch_candidate")
+            self.assertEqual(dispatch["selector_register"], "ecx")
+            self.assertEqual(dispatch["case_count"], 4)
+
     def test_contract_candidate_abi_refptr_direct_jump_covers_legacy_switch_and_memory_read(self):
         reference_function = {
             "name": "refptr_alias",
@@ -2715,6 +2789,117 @@ class StageAValidateTests(unittest.TestCase):
                 None,
             )
         )
+
+    def test_contract_candidate_abi_direct_compare_dispatch_covers_switch_contract(self):
+        reference_function = {
+            "name": "dispatch",
+            "switch_contracts": [{"kind": "indirect_jump_table_candidate"}],
+        }
+        candidate_function = {
+            "name": "dispatch",
+            "switch_contracts": [],
+            "decision_tree_contracts": [{"kind": "direct_compare_dispatch_candidate", "case_count": 4}],
+        }
+
+        self.assertIsNone(
+            stage_a._contract_candidate_abi_function_mismatch(
+                "dispatch",
+                "dispatch",
+                reference_function,
+                candidate_function,
+                None,
+            )
+        )
+
+        candidate_function["decision_tree_contracts"] = []
+        mismatch = stage_a._contract_candidate_abi_function_mismatch(
+            "dispatch",
+            "dispatch",
+            reference_function,
+            candidate_function,
+            None,
+        )
+        self.assertEqual(mismatch["issues"][0]["category"], "switch_or_jump_table_contract_missing")
+
+    def test_contract_candidate_abi_loop_mismatch_ignores_nonlocal_tail_jump_hints(self):
+        reference_function = {
+            "name": "entry_stub",
+            "blocks": [{"rva_start": 0x1010, "rva_end": 0x1015}],
+            "loop_hints": [
+                {
+                    "instruction": {"rva": 0x1010},
+                    "target_rva": 0x1000,
+                    "kind": "backedge_candidate",
+                }
+            ],
+        }
+        candidate_function = {
+            "name": "entry_stub",
+            "blocks": [{"rva_start": 0x2010, "rva_end": 0x2015}],
+            "loop_hints": [],
+            "direct_control_transfers": [{"target_rva": 0x2000}],
+        }
+
+        self.assertIsNone(
+            stage_a._contract_candidate_abi_function_mismatch(
+                "entry_stub",
+                "entry_stub",
+                reference_function,
+                candidate_function,
+                None,
+            )
+        )
+
+        reference_function["loop_hints"][0]["target_rva"] = 0x1010
+        mismatch = stage_a._contract_candidate_abi_function_mismatch(
+            "entry_stub",
+            "entry_stub",
+            reference_function,
+            candidate_function,
+            None,
+        )
+        self.assertEqual(mismatch["issues"][0]["category"], "loop_backedge_contract_missing")
+
+    def test_contract_candidate_abi_preserved_register_ignores_legacy_identity_lea(self):
+        reference_function = {
+            "name": "alignment_sensitive",
+            "registers": {"preserved_candidates": ["esi"]},
+            "register_value_provenance": [
+                {
+                    "register": "esi",
+                    "definition": {
+                        "kind": "address",
+                        "address_class": "computed_address",
+                        "addressing": {"base": "esi", "index": None, "disp": 0, "scale": 1},
+                        "instruction": {"mnemonic": "lea", "op_str": "esi, [esi]"},
+                    },
+                }
+            ],
+        }
+        candidate_function = {
+            "name": "alignment_sensitive",
+            "registers": {"preserved_candidates": []},
+        }
+
+        self.assertIsNone(
+            stage_a._contract_candidate_abi_function_mismatch(
+                "alignment_sensitive",
+                "alignment_sensitive",
+                reference_function,
+                candidate_function,
+                None,
+            )
+        )
+
+        reference_function["register_value_provenance"][0]["definition"]["addressing"]["disp"] = 4
+        mismatch = stage_a._contract_candidate_abi_function_mismatch(
+            "alignment_sensitive",
+            "alignment_sensitive",
+            reference_function,
+            candidate_function,
+            None,
+        )
+        self.assertEqual(mismatch["issues"][0]["category"], "preserved_register_mismatch")
 
     def test_abi_callsites_bound_known_stdcall_import_arguments(self):
         class FakePE:
@@ -3565,6 +3750,70 @@ class StageAValidateTests(unittest.TestCase):
 
         self.assertIsNone(stage_a._contract_candidate_abi_memory_summary_issue(reference_function, candidate_function))
 
+    def test_contract_candidate_abi_memory_summary_accepts_argument_pointer_refinement(self):
+        reference_function = {
+            "memory_effect_summary": {
+                "reads": 1,
+                "writes": 2,
+                "read_roles": {"computed_pointer_deref": 1},
+                "write_roles": {"computed_memory": 2},
+            }
+        }
+        candidate_function = {
+            "memory_effect_summary": {
+                "reads": 1,
+                "writes": 2,
+                "read_roles": {"argument_pointer_deref": 1},
+                "write_roles": {"argument_pointer_deref": 1, "computed_pointer_deref": 1},
+            }
+        }
+
+        self.assertIsNone(stage_a._contract_candidate_abi_memory_summary_issue(reference_function, candidate_function))
+
+    def test_contract_candidate_abi_register_out_param_accepts_argument_pointer_writes(self):
+        reference_function = {
+            "register_out_param_candidates": [{"register": "eax"}, {"register": "eax"}],
+            "memory_effect_summary": {
+                "reads": 0,
+                "writes": 2,
+                "read_roles": {},
+                "write_roles": {"computed_memory": 2},
+            },
+        }
+        candidate_function = {
+            "register_out_param_candidates": [],
+            "memory_writes": [
+                {"memory_role": "argument_pointer_deref"},
+                {"memory_role": "computed_pointer_deref"},
+            ],
+            "memory_effect_summary": {
+                "reads": 0,
+                "writes": 2,
+                "read_roles": {},
+                "write_roles": {"argument_pointer_deref": 1, "computed_pointer_deref": 1},
+            },
+        }
+
+        self.assertIsNone(
+            stage_a._contract_candidate_abi_function_mismatch(
+                "arg_pointer_out",
+                "arg_pointer_out",
+                reference_function,
+                candidate_function,
+                None,
+            )
+        )
+
+        candidate_function["memory_writes"] = [{"memory_role": "computed_pointer_deref"}]
+        mismatch = stage_a._contract_candidate_abi_function_mismatch(
+            "arg_pointer_out",
+            "arg_pointer_out",
+            reference_function,
+            candidate_function,
+            None,
+        )
+        self.assertEqual(mismatch["issues"][0]["category"], "register_carried_out_param_missing")
+
     def test_contract_candidate_abi_memory_summary_keeps_global_roles_strict(self):
         reference_function = {
             "memory_effect_summary": {
@@ -3589,6 +3838,40 @@ class StageAValidateTests(unittest.TestCase):
 
         self.assertIsNotNone(issue)
         self.assertEqual(issue["missing_read_roles"], {"global_writable_pointer_slot": 1})
+
+    def test_contract_candidate_binary_signature_delta_names_header_sections_and_imports(self):
+        expected = {
+            "machine": "i386",
+            "bitness": 32,
+            "subsystem": "windows_cui",
+            "image_base": 0x400000,
+            "entrypoint_rva": 0x1420,
+            "sections": [
+                {"name": ".text", "rva_start": 0x1000, "rva_end": 0x2000, "executable": True, "readable": True, "writable": False},
+                {"name": ".idata", "rva_start": 0x3000, "rva_end": 0x3400, "executable": False, "readable": True, "writable": False},
+            ],
+            "imports": [{"dll": "kernel32.dll", "symbol": "Sleep", "ordinal": None}],
+        }
+        candidate = {
+            **expected,
+            "image_base": 0x410000,
+            "entrypoint_rva": 0x1500,
+            "sections": [
+                {"name": ".text", "rva_start": 0x1000, "rva_end": 0x2100, "executable": True, "readable": True, "writable": False},
+                {"name": ".reloc", "rva_start": 0x4000, "rva_end": 0x4200, "executable": False, "readable": True, "writable": False},
+            ],
+            "imports": [{"dll": "user32.dll", "symbol": "MessageBoxA", "ordinal": None}],
+        }
+
+        delta = stage_a._contract_binary_signature_delta(expected, candidate)
+
+        self.assertEqual(delta["header"]["image_base"], {"expected": 0x400000, "observed": 0x410000})
+        self.assertEqual(delta["header"]["entrypoint_rva"], {"expected": 0x1420, "observed": 0x1500})
+        text_delta = next(item for item in delta["sections"] if item["name"] == ".text")
+        self.assertEqual(text_delta["delta"]["size"]["delta"], 0x100)
+        self.assertEqual({item["status"] for item in delta["sections"] if item["name"] in {".idata", ".reloc"}}, {"missing", "extra"})
+        self.assertEqual(delta["imports"]["missing"][0]["symbol"], "Sleep")
+        self.assertEqual(delta["imports"]["extra"][0]["symbol"], "MessageBoxA")
 
     def test_contract_candidate_abi_coverage_gaps_match_callsites_by_signature_before_index(self):
         reference_abi = {
