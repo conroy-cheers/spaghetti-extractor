@@ -2136,6 +2136,8 @@ def _nix_installable(flake: str, attr: str) -> str:
 
 
 def _link_or_copy(source: Path, dest: Path) -> None:
+    if source.absolute() == dest.absolute():
+        return
     if dest.exists() or dest.is_symlink():
         if dest.is_dir() and not dest.is_symlink():
             shutil.rmtree(dest)

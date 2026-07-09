@@ -483,6 +483,18 @@ class SliceLoopTests(unittest.TestCase):
             self.assertTrue(dest.stat().st_mode & 0o200)
             self.assertTrue((dest / "slice.c").stat().st_mode & 0o200)
 
+    def test_link_or_copy_same_path_is_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            contract = root / "reference_contract.json"
+            contract.write_text('{"format":"stage-a-reference-contract-v1"}\n', encoding="utf-8")
+
+            slice_loop._link_or_copy(contract, contract)
+
+            self.assertTrue(contract.is_file())
+            self.assertFalse(contract.is_symlink())
+            self.assertEqual(contract.read_text(encoding="utf-8"), '{"format":"stage-a-reference-contract-v1"}\n')
+
     def _run_main(self, argv):
         with contextlib.redirect_stdout(io.StringIO()):
             return slice_loop.main(argv)

@@ -833,9 +833,66 @@ class StageBTests(unittest.TestCase):
             self.assertIn('".Lstageb_flow_func_1000:\\n\\t"', source)
             self.assertIn('"call _callee\\n\\t"', source)
             self.assertIn('"je .Lstageb_flow_func_100e\\n\\t"', source)
-            self.assertIn('"jmp .Lstageb_flow_func_100e\\n\\t"', source)
+            self.assertNotIn('"jmp .Lstageb_flow_func_100e\\n\\t"', source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
             self.assertEqual(by_function["flow_func"]["source_kind"], "generated_contract_guided_flow")
+
+    def test_contract_guided_c_keeps_explicit_nonfallthrough_false_edge(self):
+        functions = [
+            {
+                "name": "flow_func",
+                "rva_start": 0x1000,
+                "rva_end": 0x1006,
+                "size": 6,
+                "reference_contract": {
+                    "semantic_transfer_bytecode": {
+                        "transfers": [
+                            {
+                                "function": "flow_func",
+                                "block_id": "flow_func-0000",
+                                "rva_start": 0x1000,
+                                "rva_end": 0x1004,
+                                "outcome": {
+                                    "kind": "branch",
+                                    "true_target_rva": 0x1004,
+                                    "false_target_rva": 0x1005,
+                                },
+                                "instructions": [
+                                    {"bytes": "85c0", "mnemonic": "test", "op_str": "eax, eax", "rva": 0x1000, "size": 2},
+                                    {"bytes": "7400", "mnemonic": "je", "op_str": "0x401004", "rva": 0x1002, "size": 2},
+                                ],
+                            },
+                            {
+                                "function": "flow_func",
+                                "block_id": "flow_func-0001",
+                                "rva_start": 0x1004,
+                                "rva_end": 0x1005,
+                                "outcome": {"kind": "return"},
+                                "instructions": [{"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x1004, "size": 1}],
+                            },
+                            {
+                                "function": "flow_func",
+                                "block_id": "flow_func-0002",
+                                "rva_start": 0x1005,
+                                "rva_end": 0x1006,
+                                "outcome": {"kind": "return"},
+                                "instructions": [{"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x1005, "size": 1}],
+                            },
+                        ]
+                    }
+                },
+            }
+        ]
+
+        source = _render_skeleton_decompiled_c_source(
+            target_name="jq",
+            functions=functions,
+            allow_contract_bytecode=True,
+        )
+
+        self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
+        self.assertIn('"je .Lstageb_flow_func_1004\\n\\t"', source)
+        self.assertIn('"jmp .Lstageb_flow_func_1005\\n\\t"', source)
 
     def test_contract_guided_c_lowers_direct_import_thunk_flow_symbolically(self):
         functions = [
@@ -1076,7 +1133,7 @@ class StageBTests(unittest.TestCase):
             source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
             self.assertIn('"je .Lstageb_flow_pad_1006\\n\\t"', source)
-            self.assertIn('"jmp .Lstageb_flow_pad_1004\\n\\t"', source)
+            self.assertNotIn('"jmp .Lstageb_flow_pad_1004\\n\\t"', source)
             self.assertIn('".Lstageb_flow_pad_1004:\\n\\t"', source)
             self.assertIn('".byte 0x66, 0x90\\n\\t"', source)
             self.assertIn('"call _callee\\n\\t"', source)
@@ -1446,32 +1503,27 @@ class StageBTests(unittest.TestCase):
     def test_contract_guided_c_lowers_resolved_jump_table_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            table_rva = 0x1010
+            table_rva = 0x3000
             table_va = 0x400000 + table_rva
             dispatch = bytes.fromhex("83e101") + b"\xff\x24\x8d" + struct.pack("<I", table_va)
-            body = (
-                dispatch
-                + b"\xc3"
-                + b"\xc3"
-                + (b"\0" * (table_rva - 0x1000 - len(dispatch) - 2))
-                + struct.pack("<II", 0x40100A, 0x40100B)
-            )
+            body = dispatch + b"\xc3" + b"\xc3"
             original = self._write_pe(root / "jq.exe", body)
             switch_contract = {
                 "evidence_status": "derived",
                 "kind": "indirect_jump_table_candidate",
                 "instruction": {
-                    "bytes": "ff248d10104000",
+                    "bytes": "ff248d00304000",
                     "mnemonic": "jmp",
-                    "op_str": "dword ptr [ecx*4 + 0x401010]",
+                    "op_str": "dword ptr [ecx*4 + 0x403000]",
                     "rva": 0x1003,
                     "size": 7,
                 },
                 "index_expression": {"base": None, "index": "ecx", "scale": 4, "disp": table_va},
+                "table": {"rva_start": table_rva, "va_start": table_va, "entry_width": 4, "entries": 2},
                 "table_bounds": {"lower": 0, "upper": 1, "entries": 2, "source": "and_immediate_mask"},
                 "case_targets": [
-                    {"index": 0, "target_rva": 0x100A, "target_va": 0x40100A},
-                    {"index": 1, "target_rva": 0x100B, "target_va": 0x40100B},
+                    {"entry_rva": table_rva, "entry_va": table_va, "index": 0, "target_rva": 0x100A, "target_va": 0x40100A},
+                    {"entry_rva": table_rva + 4, "entry_va": table_va + 4, "index": 1, "target_rva": 0x100B, "target_va": 0x40100B},
                 ],
                 "default_target_rva": None,
             }
@@ -1489,9 +1541,9 @@ class StageBTests(unittest.TestCase):
                     "instructions": [
                         {"bytes": "83e101", "mnemonic": "and", "op_str": "ecx, 1", "rva": 0x1000, "size": 3},
                         {
-                            "bytes": "ff248d10104000",
+                            "bytes": "ff248d00304000",
                             "mnemonic": "jmp",
-                            "op_str": "dword ptr [ecx*4 + 0x401010]",
+                            "op_str": "dword ptr [ecx*4 + 0x403000]",
                             "rva": 0x1003,
                             "size": 7,
                         },
@@ -1524,7 +1576,15 @@ class StageBTests(unittest.TestCase):
                 "format": "stage-a-reference-contract-v1",
                 "status": "pass",
                 "model": "x86-pe32-env-v1",
-                "original": {"sha256": sha256_file(original)},
+                "original": {
+                    "image_base": 0x400000,
+                    "sha256": sha256_file(original),
+                    "sections": [
+                        {"name": ".text", "rva_start": 0x1000, "rva_end": 0x100C},
+                        {"name": ".data", "rva_start": 0x2000, "rva_end": 0x2000},
+                        {"name": ".rdata", "rva_start": table_rva, "rva_end": table_rva + 0x20},
+                    ],
+                },
                 "constraints": {
                     "function_ranges": {
                         "status": "satisfied",
@@ -1575,11 +1635,12 @@ class StageBTests(unittest.TestCase):
 
             source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
             self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
-            self.assertIn('"cmpl $0x0, %ecx\\n\\t"', source)
-            self.assertIn('"je .Lstageb_dispatch_100a\\n\\t"', source)
-            self.assertIn('"cmpl $0x1, %ecx\\n\\t"', source)
-            self.assertIn('"je .Lstageb_dispatch_100b\\n\\t"', source)
-            self.assertIn('"ud2\\n\\t"', source)
+            self.assertIn('"jmp *0x403000(,%ecx,4)\\n\\t"', source)
+            self.assertIn('".section .rdata$000_stage_b_reference_rdata,\\"dr\\"\\n"', source)
+            self.assertIn('"  .long .Lstageb_dispatch_100a\\n"', source)
+            self.assertIn('"  .long .Lstageb_dispatch_100b\\n"', source)
+            self.assertNotIn(".rdata$stage_b_jump_tables", source)
+            self.assertNotIn('"cmpl $0x0, %ecx\\n\\t"', source)
             by_function = {item["function"]: item for item in result["source_map"]["functions"]}
             self.assertEqual(by_function["dispatch"]["source_kind"], "generated_contract_guided_flow")
 

@@ -5518,6 +5518,7 @@ def _decompiled_c_contract_guided_flow_impl(
                 branch_lines = _decompiled_c_contract_flow_branch_lines(
                     instruction,
                     outcome=outcome,
+                    block_end=block_end,
                     labels=labels,
                     call_targets=call_targets,
                     branch_target_symbols=branch_target_symbols,
@@ -5868,6 +5869,7 @@ def _decompiled_c_contract_flow_branch_lines(
     instruction: dict[str, Any],
     *,
     outcome: dict[str, Any],
+    block_end: int,
     labels: dict[int, str],
     call_targets: dict[int, str],
     branch_target_symbols: dict[int, str],
@@ -5919,6 +5921,9 @@ def _decompiled_c_contract_flow_branch_lines(
     )
     if true_target is None or false_target is None:
         return None
+    false_target_rva = _optional_int(outcome.get("false_target_rva"))
+    if false_target_rva == block_end:
+        return [f"{mnemonic} {true_target}"]
     return [f"{mnemonic} {true_target}", f"jmp {false_target}"]
 
 
@@ -5961,6 +5966,14 @@ def _decompiled_c_contract_flow_jump_table_lines(
         cases.append((index, target))
     if not cases:
         return None
+    compact_lines = _decompiled_c_contract_flow_indexed_jump_table_lines(
+        instruction,
+        switch=switch,
+        index_register=index_register,
+        cases=cases,
+    )
+    if compact_lines is not None:
+        return compact_lines
     lines: list[str] = []
     for index, target in sorted(cases):
         lines.append(f"cmpl $0x{index:x}, %{index_register}")
@@ -5976,6 +5989,42 @@ def _decompiled_c_contract_flow_jump_table_lines(
     else:
         lines.append("ud2")
     return lines
+
+
+def _decompiled_c_contract_flow_indexed_jump_table_lines(
+    instruction: dict[str, Any],
+    *,
+    switch: dict[str, Any],
+    index_register: str,
+    cases: list[tuple[int, str]],
+) -> list[str] | None:
+    if index_register == "esp":
+        return None
+    instruction_rva = _optional_int(instruction.get("rva"))
+    if instruction_rva is None:
+        return None
+    if _optional_int(switch.get("default_target_rva")) is not None:
+        return None
+    bounds = switch.get("table_bounds") if isinstance(switch.get("table_bounds"), dict) else {}
+    lower = _optional_int(bounds.get("lower"))
+    upper = _optional_int(bounds.get("upper"))
+    entries = _optional_int(bounds.get("entries"))
+    if lower != 0 or upper is None:
+        return None
+    expected_entries = upper + 1
+    if entries is not None and entries != expected_entries:
+        return None
+    sorted_cases = sorted(cases)
+    if [index for index, _target in sorted_cases] != list(range(expected_entries)):
+        return None
+    index_expression = switch.get("index_expression") if isinstance(switch.get("index_expression"), dict) else {}
+    if _optional_int(index_expression.get("scale")) not in {None, 4}:
+        return None
+    table = switch.get("table") if isinstance(switch.get("table"), dict) else {}
+    table_va = _optional_int(index_expression.get("disp")) or _optional_int(table.get("va_start"))
+    if table_va is None:
+        return None
+    return [f"jmp *0x{table_va:x}(,%{index_register},4)"]
 
 
 def _decompiled_c_i686_asm_register(register: str) -> str | None:
@@ -7240,7 +7289,45 @@ def _decompiled_c_reference_section_expression_patches(
                     target_rva=direct_targets[0],
                     target_symbols=target_symbols,
                 )
+    _decompiled_c_add_reference_switch_table_expressions(
+        patches,
+        functions=functions,
+        target_symbols=target_symbols,
+    )
     return patches
+
+
+def _decompiled_c_add_reference_switch_table_expressions(
+    patches: dict[int, str],
+    *,
+    functions: list[dict[str, Any]],
+    target_symbols: dict[int, str],
+) -> None:
+    for function in functions:
+        reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+        switches = reference_contract.get("switch_contracts") if isinstance(reference_contract.get("switch_contracts"), list) else []
+        for switch in switches:
+            if not isinstance(switch, dict) or switch.get("evidence_status") != "derived":
+                continue
+            table = switch.get("table") if isinstance(switch.get("table"), dict) else {}
+            entry_width = _optional_int(table.get("entry_width"))
+            if entry_width not in {None, 4}:
+                continue
+            table_rva = _optional_int(table.get("rva_start"))
+            case_targets = switch.get("case_targets") if isinstance(switch.get("case_targets"), list) else []
+            for case in case_targets:
+                if not isinstance(case, dict):
+                    continue
+                entry_rva = _optional_int(case.get("entry_rva"))
+                index = _optional_int(case.get("index"))
+                if entry_rva is None and table_rva is not None and index is not None:
+                    entry_rva = table_rva + (index * 4)
+                _decompiled_c_add_reference_pointer_expression(
+                    patches,
+                    memory_rva=entry_rva,
+                    target_rva=_optional_int(case.get("target_rva")),
+                    target_symbols=target_symbols,
+                )
 
 
 def _decompiled_c_add_reference_pointer_expression(
@@ -7287,12 +7374,26 @@ def _decompiled_c_reference_target_symbols(
         symbol = _decompiled_c_emitted_function_name(function, runtime_entry_policy=runtime_entry_policy)
         if symbol:
             result[rva_start] = symbol if _is_c_identifier(symbol) else _c_identifier_from_name(symbol)
+            reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+            bytecode = (
+                reference_contract.get("semantic_transfer_bytecode")
+                if isinstance(reference_contract.get("semantic_transfer_bytecode"), dict)
+                else {}
+            )
+            transfers = bytecode.get("transfers") if isinstance(bytecode.get("transfers"), list) else []
+            for transfer in transfers:
+                if not isinstance(transfer, dict):
+                    continue
+                block_rva = _optional_int(transfer.get("rva_start"))
+                if block_rva is not None:
+                    result.setdefault(block_rva, _decompiled_c_flow_local_label(symbol, block_rva))
     return result
 
 
 def _decompiled_c_reference_target_symbol_for_rva(target_rva: int, target_symbols: dict[int, str]) -> str | None:
     if target_rva in target_symbols:
-        return _decompiled_c_i686_c_asm_symbol(target_symbols[target_rva])
+        symbol = target_symbols[target_rva]
+        return symbol if symbol.startswith(".") else _decompiled_c_i686_c_asm_symbol(symbol)
     return None
 
 
