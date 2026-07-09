@@ -184,6 +184,152 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(by_function["arg_echo"]["source_kind"], "generated_contract_guided_bytecode")
             self.assertIn("stage-a-unit-contract-sidecars", result["source_policy"]["allowed_inputs"])
 
+    def test_contract_guided_c_embeds_internal_section_gap_transfers_in_owner_flow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            body = bytes.fromhex("e8 1b 00 00 00 eb 00 c3") + (b"\0" * 0x18) + b"\xc3"
+            original = self._write_pe(root / "jq.exe", body)
+            transfers = [
+                {
+                    "format": "stage-a-semantic-transfer-contract-v1",
+                    "id": "semantic-transfer:parent-0000",
+                    "function": "parent",
+                    "block_id": "parent-0000",
+                    "original": {"rva_start": 0x1000, "rva_end": 0x1007, "size": 7},
+                    "outcome": {"kind": "jump", "target_rva": 0x1007},
+                    "instructions": [
+                        {"bytes": "e81b000000", "mnemonic": "call", "op_str": "0x401020", "rva": 0x1000, "size": 5},
+                        {"bytes": "eb00", "mnemonic": "jmp", "op_str": "0x401007", "rva": 0x1005, "size": 2},
+                    ],
+                },
+                {
+                    "format": "stage-a-semantic-transfer-contract-v1",
+                    "id": "semantic-transfer:section-gap--text-0001",
+                    "function": "section-gap--text-0001",
+                    "block_id": "section-gap--text-0001",
+                    "original": {"rva_start": 0x1007, "rva_end": 0x1008, "size": 1},
+                    "outcome": {"kind": "return"},
+                    "instructions": [{"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x1007, "size": 1}],
+                },
+                {
+                    "format": "stage-a-semantic-transfer-contract-v1",
+                    "id": "semantic-transfer:callee-0000",
+                    "function": "callee",
+                    "block_id": "callee-0000",
+                    "original": {"rva_start": 0x1020, "rva_end": 0x1021, "size": 1},
+                    "outcome": {"kind": "return"},
+                    "instructions": [{"bytes": "c3", "mnemonic": "ret", "op_str": "", "rva": 0x1020, "size": 1}],
+                },
+            ]
+            (root / "semantic-transfer-contracts.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in transfers),
+                encoding="utf-8",
+            )
+            reference_contract = {
+                "format": "stage-a-reference-contract-v1",
+                "status": "pass",
+                "model": "x86-pe32-env-v1",
+                "original": {"sha256": sha256_file(original)},
+                "constraints": {
+                    "function_ranges": {
+                        "status": "satisfied",
+                        "functions": [
+                            {
+                                "name": "parent",
+                                "original": {"rva_start": 0x1000, "rva_end": 0x1008, "size": 8},
+                                "candidate": {"rva_start": 0x1000, "rva_end": 0x1008, "size": 8},
+                                "block_ids": ["parent-0000", "section-gap--text-0001"],
+                            },
+                            {
+                                "name": "callee",
+                                "original": {"rva_start": 0x1020, "rva_end": 0x1021, "size": 1},
+                                "candidate": {"rva_start": 0x1020, "rva_end": 0x1021, "size": 1},
+                                "block_ids": ["callee-0000"],
+                            },
+                        ],
+                    },
+                    "abi_callsites": {
+                        "original": {
+                            "functions": [
+                                {
+                                    "name": "parent",
+                                    "blocks": [{"block_id": "parent-0000", "rva_start": 0x1000, "rva_end": 0x1007}],
+                                    "callsites": [
+                                        {
+                                            "id": "callsite:parent-0000:1000",
+                                            "instruction": {
+                                                "rva": 0x1000,
+                                                "size": 5,
+                                                "bytes": "e81b000000",
+                                                "mnemonic": "call",
+                                                "op_str": "0x401020",
+                                            },
+                                            "target": {"kind": "direct", "target_rva": 0x1020},
+                                            "argument_inventory": {
+                                                "argument_count": 0,
+                                                "calling_convention": "cdecl_or_stdcall_stack",
+                                                "stack_args": [],
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "name": "section-gap--text-0001",
+                                    "blocks": [
+                                        {
+                                            "block_id": "section-gap--text-0001",
+                                            "rva_start": 0x1007,
+                                            "rva_end": 0x1008,
+                                        }
+                                    ],
+                                    "callsites": [],
+                                },
+                                {
+                                    "name": "callee",
+                                    "blocks": [{"block_id": "callee-0000", "rva_start": 0x1020, "rva_end": 0x1021}],
+                                    "callsites": [],
+                                },
+                            ]
+                        }
+                    },
+                },
+                "sidecars": {
+                    "unit_contracts": {
+                        "directory": ".",
+                        "semantic_transfer_contracts": {"path": "semantic-transfer-contracts.jsonl"},
+                    }
+                },
+            }
+            reference_path = root / "reference_contract.json"
+            reference_path.write_text(json.dumps(reference_contract), encoding="utf-8")
+
+            result = stage_b_generate_skeleton(
+                original=original,
+                reference_contract=reference_path,
+                target_name="jq",
+                source_language="c",
+                implementation_mode="contract-guided-c",
+                out_dir=root / "skeleton",
+            )
+
+            source = (root / "skeleton" / "src" / "jq_stage_b_skeleton.c").read_text(encoding="utf-8")
+            self.assertIn("Stage B contract-guided flow: semantic-transfer CFG", source)
+            self.assertIn("Stage B embedded section-gap label: stage_b_contract_section_gap__text_0001", source)
+            self.assertIn(".Lstageb_parent_1007:", source)
+            self.assertNotIn(".globl _stage_b_contract_section_gap__text_0001", source)
+            self.assertNotIn("_stage_b_contract_section_gap__text_0001:", source)
+            self.assertNotIn(
+                "/* original RVA 0x1007, size 1, name stage_b_contract_section_gap__text_0001 */",
+                source,
+            )
+            self.assertEqual(source.count("Stage B embedded section-gap label: stage_b_contract_section_gap__text_0001"), 1)
+            by_function = {item["function"]: item for item in result["source_map"]["functions"]}
+            self.assertEqual(by_function["parent"]["source_kind"], "generated_contract_guided_flow")
+            self.assertEqual(
+                by_function["stage_b_contract_section_gap__text_0001"]["source_kind"],
+                "generated_contract_guided_flow",
+            )
+
     def test_contract_guided_bytecode_fills_verified_stage_a_padding_gaps(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

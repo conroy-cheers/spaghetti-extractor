@@ -1075,6 +1075,7 @@ def _semantic_transfer_bytecode_summary(row: dict[str, Any]) -> dict[str, Any]:
     ]
     return {
         "id": row.get("id"),
+        "function": row.get("function"),
         "block_id": row.get("block_id"),
         "rva_start": _optional_int(original.get("rva_start")),
         "rva_end": _optional_int(original.get("rva_end")),
@@ -1094,6 +1095,14 @@ def _attach_reference_contract_sidecar_evidence(function: dict[str, Any], sideca
         return
     transfers: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+
+    def add_transfer(item: dict[str, Any]) -> None:
+        item_id = str(item.get("id") or f"{item.get('rva_start')}:{item.get('rva_end')}")
+        if item_id in seen_ids:
+            return
+        seen_ids.add(item_id)
+        transfers.append(item)
+
     for name in _reference_contract_sidecar_lookup_names(function):
         items = by_function.get(name)
         if not isinstance(items, list):
@@ -1101,11 +1110,9 @@ def _attach_reference_contract_sidecar_evidence(function: dict[str, Any], sideca
         for item in items:
             if not isinstance(item, dict):
                 continue
-            item_id = str(item.get("id") or f"{item.get('rva_start')}:{item.get('rva_end')}")
-            if item_id in seen_ids:
-                continue
-            seen_ids.add(item_id)
-            transfers.append(item)
+            add_transfer(item)
+    for item in _reference_contract_sidecar_embedded_section_gap_transfers(function, by_function):
+        add_transfer(item)
     if not transfers:
         return
     reference_contract = function.get("reference_contract")
@@ -1174,6 +1181,39 @@ def _reference_contract_sidecar_lookup_names(function: dict[str, Any]) -> list[s
     if isinstance(aliases, list):
         names.extend(alias for alias in aliases if isinstance(alias, str) and alias)
     return _dedupe_strings(names)
+
+
+def _reference_contract_sidecar_embedded_section_gap_transfers(
+    function: dict[str, Any],
+    by_function: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if isinstance(function.get("reference_section_gap"), dict):
+        return []
+    rva_start = _optional_int(function.get("rva_start"))
+    rva_end = _optional_int(function.get("rva_end"))
+    if rva_start is None or rva_end is None or rva_end <= rva_start:
+        return []
+    embedded: list[dict[str, Any]] = []
+    for name, items in by_function.items():
+        if not isinstance(name, str) or not _reference_contract_sidecar_name_is_section_gap(name):
+            continue
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            start = _optional_int(item.get("rva_start"))
+            end = _optional_int(item.get("rva_end"))
+            if start is None or end is None or end <= start:
+                continue
+            if rva_start <= start and end <= rva_end:
+                embedded.append(item)
+    embedded.sort(key=lambda item: int(item.get("rva_start") or 0))
+    return embedded
+
+
+def _reference_contract_sidecar_name_is_section_gap(name: str) -> bool:
+    return name.startswith(("section-gap--", "stage_b_contract_section_gap__"))
 
 
 def _contract_padding_ranges_for_function(function: dict[str, Any], padding_bytes: list[Any]) -> list[dict[str, Any]]:
@@ -2959,6 +2999,8 @@ def _skeleton_section_gap_placeholder_source_anchors(
         )
         if synthetic_line is None and _is_c_identifier(synthetic_symbol):
             synthetic_line = _source_exact_function_definition_line(lines, synthetic_symbol)
+        if synthetic_line is None and _is_c_identifier(synthetic_symbol):
+            synthetic_line = _source_embedded_section_gap_label_line(lines, synthetic_symbol)
         if synthetic_line is not None:
             symbol = synthetic_symbol
             source_kind = _section_gap_source_anchor_kind(
@@ -3024,7 +3066,39 @@ def _section_gap_source_anchor_kind(lines: list[str], *, line: int, default: str
         return "generated_contract_guided_callback"
     if "Stage B contract-guided indirect-call slice:" in window:
         return "generated_contract_guided_indirect"
+    enclosing = _stage_b_enclosing_asm_contract_source_kind(lines, line=line)
+    if enclosing is not None:
+        return enclosing
     return default
+
+
+def _stage_b_enclosing_asm_contract_source_kind(lines: list[str], *, line: int) -> str | None:
+    for index in range(min(max(line - 1, 0), len(lines) - 1), -1, -1):
+        text = lines[index]
+        kind = _stage_b_contract_marker_source_kind(text)
+        if kind is not None:
+            return kind
+        if "__asm__(" in text:
+            return None
+    return None
+
+
+def _stage_b_contract_marker_source_kind(text: str) -> str | None:
+    if "Stage B contract-guided bytecode:" in text:
+        return "generated_contract_guided_bytecode"
+    if "Stage B contract-guided raw flow:" in text:
+        return "generated_contract_guided_raw_flow"
+    if "Stage B contract-guided branch:" in text:
+        return "generated_contract_guided_branch"
+    if "Stage B contract-guided flow:" in text:
+        return "generated_contract_guided_flow"
+    if "Stage B contract-guided leaf:" in text:
+        return "generated_contract_guided_leaf"
+    if "Stage B contract-guided callback:" in text:
+        return "generated_contract_guided_callback"
+    if "Stage B contract-guided indirect-call slice:" in text:
+        return "generated_contract_guided_indirect"
+    return None
 
 
 def _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -3194,8 +3268,18 @@ def _source_inline_asm_label_line(lines: list[str], name: str) -> int | None:
     labels = _dedupe_strings([name, _decompiled_c_i686_c_asm_symbol(name)])
     for index, line in enumerate(lines, start=1):
         for label in labels:
-            if f'"{label}:\\n"' in line:
+            if f'"{label}:\\n' in line:
                 return index
+    return None
+
+
+def _source_embedded_section_gap_label_line(lines: list[str], name: str) -> int | None:
+    if not name:
+        return None
+    marker = f"Stage B embedded section-gap label: {name}"
+    for index, line in enumerate(lines, start=1):
+        if marker in line:
+            return index
     return None
 
 
@@ -3753,6 +3837,7 @@ def _render_decompiled_c_source(
         if reference_contract_payload is not None
         else set()
     )
+    embedded_section_gap_rvas = _decompiled_c_embedded_section_gap_rvas(implemented_functions)
     synthetic_section_gap_placeholders = _decompiled_c_contract_synthetic_section_gap_placeholders(
         implemented_functions,
         reference_contract_payload=reference_contract_payload,
@@ -3761,6 +3846,7 @@ def _render_decompiled_c_source(
         external_function_names=external_function_names or (),
         additional_linkable_symbols=import_thunk_symbols,
         runtime_linked_call_targets=runtime_linked_call_targets,
+        embedded_section_gap_rvas=embedded_section_gap_rvas,
     )
     section_gap_alias_anchor_symbols = _decompiled_c_contract_section_gap_alias_anchor_symbols(
         implemented_functions,
@@ -3769,6 +3855,11 @@ def _render_decompiled_c_source(
     )
     emitted_section_gap_targets = [
         *section_gap_alias_anchor_symbols,
+        *_decompiled_c_embedded_section_gap_symbols(
+            reference_contract_payload,
+            embedded_section_gap_rvas=embedded_section_gap_rvas,
+            known_symbols=known_branch_target_symbols,
+        ),
         *[
             str(function.get("name") or "")
             for function in synthetic_section_gap_placeholders
@@ -4059,6 +4150,51 @@ def _decompiled_c_ordered_body_items(
     for order, function in enumerate(synthetic_section_gap_placeholders):
         items.append((_decompiled_c_function_sort_rva(function), base_order + order * 2 + 1, "synthetic_section_gap", function))
     return [(kind, function) for _, _, kind, function in sorted(items, key=lambda item: (item[0], item[1]))]
+
+
+def _decompiled_c_embedded_section_gap_rvas(functions: list[dict[str, Any]]) -> set[int]:
+    embedded: set[int] = set()
+    for function in functions:
+        if isinstance(function.get("reference_section_gap"), dict):
+            continue
+        reference_contract = function.get("reference_contract") if isinstance(function.get("reference_contract"), dict) else {}
+        bytecode = reference_contract.get("semantic_transfer_bytecode") if isinstance(reference_contract.get("semantic_transfer_bytecode"), dict) else {}
+        transfers = bytecode.get("transfers") if isinstance(bytecode.get("transfers"), list) else []
+        for transfer in transfers:
+            if not isinstance(transfer, dict):
+                continue
+            name = transfer.get("function")
+            block_id = transfer.get("block_id")
+            if not any(
+                isinstance(value, str) and _reference_contract_sidecar_name_is_section_gap(value)
+                for value in (name, block_id)
+            ):
+                continue
+            start = _optional_int(transfer.get("rva_start"))
+            if start is not None:
+                embedded.add(start)
+    return embedded
+
+
+def _decompiled_c_embedded_section_gap_symbols(
+    reference_contract_payload: dict[str, Any] | None,
+    *,
+    embedded_section_gap_rvas: set[int],
+    known_symbols: set[str],
+) -> list[str]:
+    if reference_contract_payload is None or not embedded_section_gap_rvas:
+        return []
+    symbols: list[str] = []
+    for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
+        rva_start = _optional_int(entry.get("rva_start"))
+        if rva_start is None or rva_start not in embedded_section_gap_rvas:
+            continue
+        symbol = _decompiled_c_section_gap_known_symbol_alias(entry, known_symbols=known_symbols)
+        if symbol is None:
+            symbol = _decompiled_c_synthetic_section_gap_name(entry)
+        if _is_c_identifier(symbol):
+            symbols.append(symbol)
+    return _dedupe_strings(symbols)
 
 
 def _decompiled_c_render_synthetic_section_gap_placeholder(
@@ -5332,6 +5468,7 @@ def _decompiled_c_contract_guided_flow_impl(
             asm_lines,
             labels[block_start],
             branch_target_symbols.get(block_start),
+            global_label_is_linkable=not _decompiled_c_semantic_transfer_is_section_gap(transfer),
         )
         cursor = block_start
         instructions = transfer.get("instructions") if isinstance(transfer.get("instructions"), list) else []
@@ -5588,12 +5725,24 @@ def _decompiled_c_contract_flow_append_label(
     asm_lines: list[str],
     local_label: str,
     global_label: str | None = None,
+    *,
+    global_label_is_linkable: bool = True,
 ) -> None:
     if global_label and _is_c_identifier(global_label):
-        asm_name = _decompiled_c_i686_c_asm_symbol(global_label)
-        asm_lines.append(f".globl {asm_name}")
-        asm_lines.append(f"{asm_name}:")
+        if global_label_is_linkable:
+            asm_name = _decompiled_c_i686_c_asm_symbol(global_label)
+            asm_lines.append(f".globl {asm_name}")
+            asm_lines.append(f"{asm_name}:")
+        else:
+            asm_lines.append(f"# Stage B embedded section-gap label: {global_label}")
     asm_lines.append(f"{local_label}:")
+
+
+def _decompiled_c_semantic_transfer_is_section_gap(transfer: dict[str, Any]) -> bool:
+    for value in (transfer.get("function"), transfer.get("block_id"), transfer.get("id")):
+        if isinstance(value, str) and _reference_contract_sidecar_name_is_section_gap(value):
+            return True
+    return False
 
 
 def _decompiled_c_contract_flow_call_lines(
@@ -7478,6 +7627,7 @@ def _decompiled_c_contract_synthetic_section_gap_placeholders(
     reference_contract_sidecars: dict[str, Any] | None = None,
     additional_linkable_symbols: list[str] | tuple[str, ...] = (),
     runtime_linked_call_targets: set[str] | None = None,
+    embedded_section_gap_rvas: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     if reference_contract_payload is None:
         return []
@@ -7504,6 +7654,7 @@ def _decompiled_c_contract_synthetic_section_gap_placeholders(
         linkable_symbols=linkable_symbols,
         reference_contract_sidecars=reference_contract_sidecars,
         branch_target_symbols=branch_target_symbols,
+        embedded_section_gap_rvas=embedded_section_gap_rvas or set(),
     )
 
 
@@ -8327,6 +8478,7 @@ def _decompiled_c_synthetic_section_gap_placeholders(
     linkable_symbols: set[str],
     reference_contract_sidecars: dict[str, Any] | None = None,
     branch_target_symbols: dict[int, str] | None = None,
+    embedded_section_gap_rvas: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     functions: list[dict[str, Any]] = []
     for entry in _reference_contract_abi_section_gap_entries_by_start(reference_contract_payload).values():
@@ -8337,6 +8489,7 @@ def _decompiled_c_synthetic_section_gap_placeholders(
             linkable_symbols=linkable_symbols,
             reference_contract_sidecars=reference_contract_sidecars,
             branch_target_symbols=branch_target_symbols,
+            embedded_section_gap_rvas=embedded_section_gap_rvas or set(),
         )
         if function is not None:
             functions.append(function)
@@ -8351,7 +8504,11 @@ def _decompiled_c_synthetic_section_gap_placeholder(
     linkable_symbols: set[str],
     reference_contract_sidecars: dict[str, Any] | None = None,
     branch_target_symbols: dict[int, str] | None = None,
+    embedded_section_gap_rvas: set[int] | None = None,
 ) -> dict[str, Any] | None:
+    rva_start = _optional_int(entry.get("rva_start"))
+    if rva_start is not None and rva_start in (embedded_section_gap_rvas or set()):
+        return None
     if _decompiled_c_section_gap_known_symbol_alias(entry, known_symbols=known_symbols) is not None:
         return None
     callsites = entry.get("abi_callsites") if isinstance(entry.get("abi_callsites"), list) else []

@@ -4557,7 +4557,12 @@ def _contract_candidate_families(
     )
     ambiguous_functions = sorted(str(item["name"]) for item in expected_functions if str(item["name"]) in alias_ambiguities)
     abi_contract = constraints.get("abi_callsites") if isinstance(constraints.get("abi_callsites"), dict) else {}
-    candidate_abi = _candidate_abi_constraint_from_functions(candidate, candidate_functions, reference_abi=abi_contract)
+    candidate_abi = _candidate_abi_constraint_from_functions(
+        candidate,
+        candidate_functions,
+        reference_abi=abi_contract,
+        alias_evidence=alias_evidence,
+    )
     abi_coverage_gaps = _contract_candidate_abi_coverage_gaps(abi_contract, candidate_abi, alias_evidence=alias_evidence)
     original_imports = _contract_import_signature(original)
     candidate_imports = _contract_import_signature(_binary_reference_layout(candidate))
@@ -5154,9 +5159,14 @@ def _candidate_abi_constraint_from_functions(
     candidate_functions: list[dict[str, Any]],
     *,
     reference_abi: dict[str, Any] | None = None,
+    alias_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mappings = _candidate_abi_block_mappings_from_functions(candidate, candidate_functions)
-    reference_section_gap_mappings = _candidate_reference_section_gap_abi_mappings(candidate, reference_abi)
+    reference_section_gap_mappings = _candidate_reference_section_gap_abi_mappings(
+        candidate,
+        reference_abi,
+        alias_evidence=alias_evidence,
+    )
     mappings.extend(reference_section_gap_mappings)
     functions = _abi_function_evidence(candidate, mappings, side="candidate")
     return {
@@ -5166,7 +5176,7 @@ def _candidate_abi_constraint_from_functions(
             "functions": functions,
             "import_prototypes": _abi_import_prototypes(candidate),
             "reference_section_gap_probes": {
-                "kind": "candidate_same_rva_section_gap_probe",
+                "kind": "candidate_section_gap_probe",
                 "count": len(reference_section_gap_mappings),
             },
         },
@@ -5213,11 +5223,19 @@ def _candidate_abi_block_mappings_from_functions(
 def _candidate_reference_section_gap_abi_mappings(
     candidate: StageABinary,
     reference_abi: dict[str, Any] | None,
+    *,
+    alias_evidence: dict[str, Any] | None = None,
 ) -> list[BlockMapping]:
     if not isinstance(reference_abi, dict):
         return []
     reference = reference_abi.get("original") if isinstance(reference_abi.get("original"), dict) else {}
     functions = reference.get("functions") if isinstance(reference.get("functions"), list) else []
+    owner_ranges = _candidate_reference_section_gap_owner_ranges(functions)
+    alias_matches = (
+        alias_evidence.get("matches_by_reference")
+        if isinstance(alias_evidence, dict) and isinstance(alias_evidence.get("matches_by_reference"), dict)
+        else {}
+    )
     mappings: list[BlockMapping] = []
     for function in functions:
         if not isinstance(function, dict):
@@ -5233,10 +5251,22 @@ def _candidate_reference_section_gap_abi_mappings(
             end = _optional_contract_int(block.get("rva_end"))
             if start is None or end is None or end <= start:
                 continue
+            block_id = block.get("block_id") if isinstance(block.get("block_id"), str) and block.get("block_id") else f"{name}-{index:04d}"
+            owner_mapping = _candidate_reference_section_gap_owner_offset_mapping(
+                candidate,
+                name=name,
+                block_id=block_id,
+                reference_start=start,
+                reference_end=end,
+                owner_ranges=owner_ranges,
+                alias_matches=alias_matches,
+            )
+            if owner_mapping is not None:
+                mappings.append(owner_mapping)
+                continue
             section = _section_for_rva(candidate, start)
             if section is None or not section.executable or end > section.rva_end:
                 continue
-            block_id = block.get("block_id") if isinstance(block.get("block_id"), str) and block.get("block_id") else f"{name}-{index:04d}"
             mappings.append(
                 BlockMapping(
                     id=_artifact_name(block_id),
@@ -5255,6 +5285,94 @@ def _candidate_reference_section_gap_abi_mappings(
                 )
             )
     return mappings
+
+
+def _candidate_reference_section_gap_owner_ranges(functions: list[Any]) -> list[dict[str, Any]]:
+    ranges: list[dict[str, Any]] = []
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or not name or name.startswith("section-gap-"):
+            continue
+        blocks = function.get("blocks") if isinstance(function.get("blocks"), list) else []
+        starts: list[int] = []
+        ends: list[int] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            start = _optional_contract_int(block.get("rva_start"))
+            end = _optional_contract_int(block.get("rva_end"))
+            if start is None or end is None or end <= start:
+                continue
+            starts.append(start)
+            ends.append(end)
+        if not starts:
+            continue
+        ranges.append({"name": name, "rva_start": min(starts), "rva_end": max(ends)})
+    ranges.sort(key=lambda item: (int(item["rva_end"]) - int(item["rva_start"]), str(item["name"])))
+    return ranges
+
+
+def _candidate_reference_section_gap_owner_offset_mapping(
+    candidate: StageABinary,
+    *,
+    name: str,
+    block_id: str,
+    reference_start: int,
+    reference_end: int,
+    owner_ranges: list[dict[str, Any]],
+    alias_matches: dict[str, Any],
+) -> BlockMapping | None:
+    owner = next(
+        (
+            item
+            for item in owner_ranges
+            if int(item.get("rva_start") or 0) <= reference_start and reference_end <= int(item.get("rva_end") or 0)
+        ),
+        None,
+    )
+    if owner is None:
+        return None
+    owner_name = str(owner.get("name") or "")
+    alias_match = alias_matches.get(owner_name) if isinstance(alias_matches.get(owner_name), dict) else {}
+    if str(alias_match.get("source_kind") or "") not in {
+        "generated_contract_guided_flow",
+        "generated_checked_semantic_region",
+    }:
+        return None
+    candidate_owner = alias_match.get("candidate") if isinstance(alias_match.get("candidate"), dict) else {}
+    candidate_owner_start = _optional_contract_int(candidate_owner.get("rva_start"))
+    candidate_owner_end = _optional_contract_int(candidate_owner.get("rva_end"))
+    owner_start = _optional_contract_int(owner.get("rva_start"))
+    if candidate_owner_start is None or candidate_owner_end is None or owner_start is None:
+        return None
+    candidate_start = candidate_owner_start + (reference_start - owner_start)
+    candidate_end = candidate_start + (reference_end - reference_start)
+    if candidate_start < candidate_owner_start or candidate_end > candidate_owner_end:
+        return None
+    section = _section_for_rva(candidate, candidate_start)
+    if section is None or not section.executable or candidate_end > section.rva_end:
+        return None
+    return BlockMapping(
+        id=_artifact_name(block_id),
+        kind="code",
+        original=BlockSide(reference_start, reference_end),
+        candidate=BlockSide(candidate_start, candidate_end),
+        reachable=True,
+        invariant_checked=False,
+        source={
+            "source": {
+                "function": name,
+                "kind": "candidate_owner_offset_section_gap_probe",
+                "reference_block_id": block_id,
+                "owner_function": owner_name,
+                "owner_reference_rva_start": owner_start,
+                "owner_candidate_rva_start": candidate_owner_start,
+                "owner_offset": reference_start - owner_start,
+            }
+        },
+    )
 
 
 def _optional_contract_int(value: Any) -> int | None:
