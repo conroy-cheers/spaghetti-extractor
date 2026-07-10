@@ -9,6 +9,7 @@ from typing import Any
 from .stage_a import (
     STAGE_A_MODEL_ID,
     StageAInputError,
+    stage_a_check_proof,
     stage_a_audit_contract_shortfalls,
     stage_a_diff_obligations,
     stage_a_explain_obligations,
@@ -72,6 +73,31 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     validate.add_argument("--layout-contract", type=Path)
     validate.add_argument("--lean-input", action="append", default=[], type=Path)
     validate.set_defaults(func=_cmd_stage_a_validate)
+
+    prove = subcommands.add_parser("stage-a-prove", help="generate and check an exact-byte Stage A refinement proof")
+    prove.add_argument("--original", type=Path, required=True)
+    prove.add_argument("--candidate", type=Path, required=True)
+    prove.add_argument("--mapping", type=Path, required=True)
+    prove.add_argument("--model", default=STAGE_A_MODEL_ID)
+    prove.add_argument("--out", type=Path, required=True)
+    prove.add_argument("--invariants", type=Path)
+    prove.add_argument("--layout-contract", type=Path)
+    prove.add_argument("--lean-input", action="append", default=[], type=Path)
+    prove.set_defaults(func=_cmd_stage_a_validate)
+
+    check_proof = subcommands.add_parser("stage-a-check-proof", help="independently rebuild and check a Stage A formal proof bundle")
+    check_proof.add_argument("--report", type=Path, required=True)
+    check_proof.add_argument("--original", type=Path)
+    check_proof.add_argument("--candidate", type=Path)
+    check_proof.add_argument("--out", type=Path)
+    check_proof.set_defaults(
+        func=lambda args: stage_a_check_proof(
+            report=args.report,
+            original=args.original,
+            candidate=args.candidate,
+            out=args.out,
+        )
+    )
 
     suite = subcommands.add_parser("stage-a-validate-suite", help="run a Stage A validation suite manifest")
     suite.add_argument("--suite", type=Path, required=True)

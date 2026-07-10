@@ -8556,7 +8556,7 @@ class StageBTests(unittest.TestCase):
             self.assertIn("stage_b_fn_same_name(void)", source)
             self.assertIn("stage_b_fn_same_name_at_1002(void)", source)
 
-    def test_stage_a_validates_byte_identical_pe32plus_pair(self):
+    def test_stage_a_reports_pe32plus_pair_outside_first_formal_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             original = self._write_pe32plus(root / "original.exe", b"\xc3")
@@ -8588,7 +8588,8 @@ class StageBTests(unittest.TestCase):
                     out=root / "report",
                 )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(result["proof"]["assurance"], "incomplete")
             obligation = self._obligation(root / "report", "block:entry")
             self.assertEqual(obligation["proof_rule"], "byte_identical_x86_64_pe32plus_block")
 

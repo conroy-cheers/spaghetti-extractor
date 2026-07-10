@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
@@ -54,7 +55,17 @@ CHECKED_GENERATED_MAPPING_PROOF_RULES = {
 CHECKED_GENERATED_MAPPING_GENERIC_PROOF_RULES = {
     generic_proof_rule(rule) for rule in CHECKED_GENERATED_MAPPING_PROOF_RULES
 }
-LEAN_GENERATED_SOURCE_PATHS = ("StageA/Model.lean", "StageA/ProofIR.lean", "StageA/Obligations.lean")
+STAGE_A_FORMAL_PROFILE_ID = "x86-pe32-lean-refinement-v1"
+STAGE_A_FORMAL_APPROVED_AXIOMS = {"propext", "Quot.sound"}
+STAGE_A_FORMAL_DIAGNOSTIC_LIMIT = 200
+STAGE_A_LEAN_CACHE_FORMAT = "stage-a-lean-cache-v1"
+LEAN_GENERATED_SOURCE_PATHS = (
+    "StageA/Model.lean",
+    "StageA/ProofIR.lean",
+    "StageA/Formal.lean",
+    "StageA/FormalBundle.lean",
+    "StageA/Obligations.lean",
+)
 CHECKED_GENERATED_CFG_SOURCE_KINDS = {
     "linker_map_capstone_block_match_v1",
     "paired_executable_section_gap_v1",
@@ -264,7 +275,15 @@ def stage_a_validate(
     for mapped in mappings:
         if f"block:{mapped.id}" in mapped_block_ids:
             continue
-        obligation = _prove_mapped_block(original_bin, candidate_bin, mapped, out, proof_cache, invariant_payload)
+        obligation = _prove_mapped_block(
+            original_bin,
+            candidate_bin,
+            mapped,
+            mappings,
+            out,
+            proof_cache,
+            invariant_payload,
+        )
         obligations.append(obligation)
         status = obligation["status"]
         if status == "failed":
@@ -400,6 +419,172 @@ def stage_a_validate_suite(
         },
     }
     write_json(out / "suite.json", result)
+    return result
+
+
+def stage_a_check_proof(
+    *,
+    report: Path,
+    original: Path | None = None,
+    candidate: Path | None = None,
+    out: Path | None = None,
+) -> dict[str, Any]:
+    report = Path(report)
+    verdict = _load_json(report / "verdict.json")
+    proof = verdict.get("proof") if isinstance(verdict.get("proof"), dict) else {}
+    lean_summary = proof.get("lean") if isinstance(proof.get("lean"), dict) else {}
+    formal = proof.get("formal") if isinstance(proof.get("formal"), dict) else {}
+    source_artifacts = lean_summary.get("source_artifacts") if isinstance(lean_summary.get("source_artifacts"), dict) else {}
+    source_status = _validation_report_lean_source_artifact_status(report, source_artifacts)
+    supplemental = lean_summary.get("supplemental_inputs") if isinstance(lean_summary.get("supplemental_inputs"), dict) else {}
+    supplemental_paths = supplemental.get("relative_paths") if isinstance(supplemental.get("relative_paths"), list) else []
+    unchecked_markers = _lean_unchecked_markers(report / "lean")
+    try:
+        proof_ir = _load_json(report / "proof-ir.json")
+    except StageAInputError:
+        proof_ir = None
+
+    canonical_kernel = Path(__file__).with_name("lean") / "StageA" / "Formal.lean"
+    report_kernel = report / "lean" / "StageA" / "Formal.lean"
+    kernel_matches = bool(
+        canonical_kernel.is_file()
+        and report_kernel.is_file()
+        and sha256_file(canonical_kernel) == sha256_file(report_kernel)
+    )
+
+    def artifact_status(side: str, supplied: Path | None) -> dict[str, Any]:
+        relative = str(formal.get(f"{side}_artifact") or f"artifacts/{side}.pe")
+        bundled = report / "lean" / relative
+        expected = formal.get(f"{side}_sha256")
+        selected = Path(supplied) if supplied is not None else bundled
+        exists = selected.is_file()
+        actual = sha256_file(selected) if exists else None
+        bundled_actual = sha256_file(bundled) if bundled.is_file() else None
+        return {
+            "path": str(selected),
+            "bundled_path": str(bundled),
+            "expected_sha256": expected,
+            "actual_sha256": actual,
+            "bundled_sha256": bundled_actual,
+            "match": bool(
+                exists
+                and _is_sha256_hex(expected)
+                and actual == expected
+                and bundled_actual == expected
+            ),
+        }
+
+    original_status = artifact_status("original", original)
+    candidate_status = artifact_status("candidate", candidate)
+    reproduced: dict[str, Any] = {
+        "proof_ir_loaded": isinstance(proof_ir, dict),
+        "kernel_matches": False,
+        "bundle_matches": False,
+        "metadata_matches": False,
+    }
+    expected_metadata: dict[str, Any] | None = None
+    if isinstance(proof_ir, dict):
+        bundled_original = Path(original_status["bundled_path"])
+        bundled_candidate = Path(candidate_status["bundled_path"])
+        expected_kernel, expected_bundle, _, _, expected_metadata = _build_formal_lean_bundle(
+            str(verdict.get("verdict") or "incomplete"),
+            bundled_original,
+            bundled_candidate,
+            proof_ir,
+        )
+        actual_bundle_path = report / "lean" / "StageA" / "FormalBundle.lean"
+        try:
+            actual_bundle = actual_bundle_path.read_text(encoding="utf-8")
+        except OSError:
+            actual_bundle = None
+        reproduced["kernel_matches"] = bool(report_kernel.is_file() and report_kernel.read_text(encoding="utf-8") == expected_kernel)
+        reproduced["bundle_matches"] = actual_bundle == expected_bundle
+        metadata_fields = (
+            "format",
+            "profile",
+            "requested",
+            "kernel_source",
+            "bundle_source",
+            "theorem",
+            "claim",
+            "original_sha256",
+            "candidate_sha256",
+            "original_artifact",
+            "candidate_artifact",
+            "diagnostics",
+            "counts",
+            "error",
+            "kernel_sha256",
+            "bundle_sha256",
+        )
+        reproduced["metadata_matches"] = all(formal.get(field) == expected_metadata.get(field) for field in metadata_fields)
+        reproduced["expected"] = {
+            "kernel_sha256": expected_metadata.get("kernel_sha256"),
+            "bundle_sha256": expected_metadata.get("bundle_sha256"),
+            "original_sha256": expected_metadata.get("original_sha256"),
+            "candidate_sha256": expected_metadata.get("candidate_sha256"),
+            "requested": expected_metadata.get("requested"),
+        }
+    preflight_checks = {
+        "report_verdict_pass": verdict.get("verdict") == "pass",
+        "formal_assurance_declared": proof.get("assurance") == "lean_kernel_checked_strong_refinement",
+        "formal_profile_matches": formal.get("profile") == STAGE_A_FORMAL_PROFILE_ID,
+        "formal_theorem_named": formal.get("theorem") == "StageA.Generated.candidateRefinesOriginal",
+        "source_artifacts_match": source_status.get("match") is True,
+        "canonical_kernel_matches": kernel_matches,
+        "proof_ir_loaded": reproduced["proof_ir_loaded"],
+        "formal_kernel_reproduced": reproduced["kernel_matches"],
+        "formal_bundle_reproduced": reproduced["bundle_matches"],
+        "formal_metadata_reproduced": reproduced["metadata_matches"],
+        "original_artifact_matches": original_status["match"],
+        "candidate_artifact_matches": candidate_status["match"],
+        "no_unchecked_markers": not unchecked_markers,
+    }
+    if all(preflight_checks.values()):
+        lean_check = _run_lean_check(report / "lean", supplemental_paths, use_cache=False)
+    else:
+        lean_check = {
+            "status": "skipped_preflight",
+            "command": [],
+            "returncode": None,
+            "stdout": "",
+            "stderr": "",
+            "cache": {
+                "format": STAGE_A_LEAN_CACHE_FORMAT,
+                "enabled": False,
+                "root": None,
+                "hits": 0,
+                "misses": 0,
+                "entries": [],
+            },
+        }
+    formal_check = _formal_proof_report({**formal, "requested": True}, lean_check)
+    checks = {
+        **preflight_checks,
+        "lean_kernel_check_passed": lean_check.get("status") == "checked",
+        "formal_theorem_checked": formal_check.get("status") == "checked",
+    }
+    status = "pass" if all(checks.values()) else "incomplete"
+    result = {
+        "format": "stage-a-formal-proof-check-v1",
+        "status": status,
+        "profile": STAGE_A_FORMAL_PROFILE_ID,
+        "report": str(report),
+        "theorem": formal.get("theorem"),
+        "checks": checks,
+        "artifacts": {"original": original_status, "candidate": candidate_status},
+        "source_artifacts": source_status,
+        "reproduction": reproduced,
+        "formal_proof": formal_check,
+        "lean_check": lean_check,
+        "unchecked_markers": unchecked_markers,
+        "blocker": None if status == "pass" else "formal proof bundle did not independently recheck",
+        "next_action": None
+        if status == "pass"
+        else "inspect failed checks, restore exact binaries, proof IR, and reproducibly generated sources, then rerun stage-a-check-proof",
+    }
+    if out is not None:
+        write_json(Path(out), result)
     return result
 
 
@@ -13763,6 +13948,7 @@ def _prove_mapped_block(
     original: StageABinary,
     candidate: StageABinary,
     mapped: BlockMapping,
+    mappings: list[BlockMapping],
     out: Path,
     proof_cache: list[dict[str, Any]],
     invariant_payload: Any,
@@ -13849,7 +14035,15 @@ def _prove_mapped_block(
             "proof_cache": cache_entry["path"],
         }
 
-    symbolic = _prove_symbolic_equivalence(original, candidate, mapped, original_bytes, candidate_bytes, invariant_payload)
+    symbolic = _prove_symbolic_equivalence(
+        original,
+        candidate,
+        mapped,
+        mappings,
+        original_bytes,
+        candidate_bytes,
+        invariant_payload,
+    )
     symbolic_cache_entry = _write_symbolic_proof_cache(out, mapped, symbolic)
     proof_cache.append(symbolic_cache_entry)
 
@@ -14456,6 +14650,7 @@ def _prove_symbolic_equivalence(
     original: StageABinary,
     candidate: StageABinary,
     mapped: BlockMapping,
+    mappings: list[BlockMapping],
     original_bytes: bytes,
     candidate_bytes: bytes,
     invariant_payload: Any,
@@ -14469,8 +14664,14 @@ def _prove_symbolic_equivalence(
 
     original_observables = original_sem["observables"]
     candidate_observables = candidate_sem["observables"]
+    original_comparison_observables = _normalize_cfg_observables(original_observables, mappings, "original")
+    candidate_comparison_observables = _normalize_cfg_observables(candidate_observables, mappings, "candidate")
     invariant = _invariant_report(mapped, invariant_payload)
-    smt = _run_z3_equivalence(original_observables, candidate_observables, invariant["constraints"])
+    smt = _run_z3_equivalence(
+        original_comparison_observables,
+        candidate_comparison_observables,
+        invariant["constraints"],
+    )
     if smt["status"] == "proved":
         return {
             "status": "proved",
@@ -14482,6 +14683,8 @@ def _prove_symbolic_equivalence(
             "invariant": invariant,
             "original_observables": _observables_json(original_observables),
             "candidate_observables": _observables_json(candidate_observables),
+            "normalized_original_observables": _observables_json(original_comparison_observables),
+            "normalized_candidate_observables": _observables_json(candidate_comparison_observables),
         }
     if smt["status"] == "failed":
         return {
@@ -14498,6 +14701,8 @@ def _prove_symbolic_equivalence(
             "invariant": invariant,
             "original_observables": _observables_json(original_observables),
             "candidate_observables": _observables_json(candidate_observables),
+            "normalized_original_observables": _observables_json(original_comparison_observables),
+            "normalized_candidate_observables": _observables_json(candidate_comparison_observables),
         }
     return {
         "status": "incomplete",
@@ -14507,11 +14712,49 @@ def _prove_symbolic_equivalence(
         "solver": smt.get("solver", "z3"),
         "smt_status": smt.get("smt_status", "unavailable"),
         "solver_backend": smt.get("solver_backend"),
-        "smt_query": smt.get("smt_query", _smt_query_for_observables(original_observables, candidate_observables, invariant["constraints"])),
+        "smt_query": smt.get(
+            "smt_query",
+            _smt_query_for_observables(
+                original_comparison_observables,
+                candidate_comparison_observables,
+                invariant["constraints"],
+            ),
+        ),
         "invariant": invariant,
         "original_observables": _observables_json(original_observables),
         "candidate_observables": _observables_json(candidate_observables),
+        "normalized_original_observables": _observables_json(original_comparison_observables),
+        "normalized_candidate_observables": _observables_json(candidate_comparison_observables),
     }
+
+
+def _normalize_cfg_observables(
+    observables: dict[str, Any],
+    mappings: list[BlockMapping],
+    side: str,
+) -> dict[str, Any]:
+    normalized = dict(observables)
+    outcome = observables.get("outcome")
+    if not isinstance(outcome, tuple) or not outcome:
+        return normalized
+
+    def target(value: Any) -> Any:
+        if not isinstance(value, int):
+            return value
+        for block in mappings:
+            block_side = block.original if side == "original" else block.candidate
+            if block_side.rva_start == value:
+                return ("mapped_block", block.id)
+        return ("unmapped_rva", value)
+
+    kind = outcome[0]
+    if kind in {"fallthrough", "jump"} and len(outcome) == 2:
+        normalized["outcome"] = (kind, target(outcome[1]))
+    elif kind == "branch" and len(outcome) == 4:
+        normalized["outcome"] = (kind, outcome[1], target(outcome[2]), target(outcome[3]))
+    elif kind == "direct_call" and len(outcome) == 3:
+        normalized["outcome"] = (kind, target(outcome[1]), target(outcome[2]))
+    return normalized
 
 
 def _symbolic_execute(
@@ -17281,6 +17524,8 @@ def _write_report(
     lean_summary = _lean_summary(
         out,
         verdict,
+        original,
+        candidate,
         obligations,
         incomplete,
         proof_cache,
@@ -17291,10 +17536,18 @@ def _write_report(
         solver_evidence=solver_evidence,
     )
     if verdict == "pass" and not lean_summary["final_pass_allowed"]:
+        formal_semantics_incomplete = lean_summary.get("blocker") == "exact-byte Stage A strong-refinement theorem did not check"
+        failed_pass_attempt = {
+            "blocker": lean_summary.get("blocker"),
+            "next_action": lean_summary.get("next_action"),
+            "formal_proof": lean_summary.get("formal_proof"),
+            "lean_check": lean_summary.get("lean_check"),
+            "unchecked_markers": lean_summary.get("unchecked_markers"),
+        }
         incomplete.append(
             _incomplete_record(
-                category="lean_global_summary_unchecked",
-                obligation_id="lean:global-summary",
+                category="formal_semantic_proof_incomplete" if formal_semantics_incomplete else "lean_global_summary_unchecked",
+                obligation_id="formal:strong-refinement" if formal_semantics_incomplete else "lean:global-summary",
                 blocker=lean_summary["blocker"],
                 next_action=lean_summary["next_action"],
                 details=lean_summary,
@@ -17326,6 +17579,8 @@ def _write_report(
         lean_summary = _lean_summary(
             out,
             verdict,
+            original,
+            candidate,
             obligations,
             incomplete,
             proof_cache,
@@ -17335,6 +17590,8 @@ def _write_report(
             proof_ir=proof_ir,
             solver_evidence=solver_evidence,
         )
+        lean_summary["failed_formal_pass_attempt"] = failed_pass_attempt
+        write_json(out / "lean" / "summary.json", lean_summary)
 
     for failure in failures:
         _write_failure_artifacts(out, failure)
@@ -17354,8 +17611,10 @@ def _write_report(
         "counts": counts,
         "tool_versions": _tool_versions(),
         "proof": {
+            "assurance": "lean_kernel_checked_strong_refinement" if lean_summary.get("final_pass_allowed") else "incomplete",
+            "formal": lean_summary.get("formal_proof"),
             "local_engine": "stage-a-local-symbolic-x86-v1",
-            "smt": "z3_optional_fail_closed",
+            "smt": "z3_untrusted_automation_only",
             "lean": lean_summary,
             "proof_ir": proof_ir,
             "solver_evidence": solver_evidence,
@@ -17385,6 +17644,8 @@ def _obligation_counts(
 def _lean_summary(
     out: Path,
     verdict: str,
+    original: Path,
+    candidate: Path,
     obligations: list[dict[str, Any]],
     incomplete: list[dict[str, Any]],
     proof_cache: list[dict[str, Any]],
@@ -17431,9 +17692,11 @@ def _lean_summary(
         if item.get("category") in {"missing_invariant", "unchecked_assumption", "lean_global_summary_unchecked"}
     ]
     lean_input_summary = _copy_lean_inputs(out / "lean", lean_inputs)
-    _write_lean_files(
+    formal_bundle = _write_lean_files(
         out,
         verdict,
+        original,
+        candidate,
         closed,
         not unchecked_blockers,
         obligations,
@@ -17465,6 +17728,8 @@ def _lean_summary(
         proof_evidence_binding_closed=proof_evidence_binding_closed,
     )
     lean_check = _run_lean_check(out / "lean", lean_input_summary["relative_paths"])
+    formal_proof = _formal_proof_report(formal_bundle, lean_check)
+    formal_proof_checked = formal_proof.get("status") == "checked"
     unchecked_markers = _lean_unchecked_markers(out / "lean")
     lean_input_errors = lean_input_summary["errors"]
     lean_source_artifacts = _lean_source_artifacts_manifest(out / "lean", lean_input_summary)
@@ -17499,6 +17764,7 @@ def _lean_summary(
         and not lean_input_errors
         and lean_source_artifacts_closed
         and lean_check["status"] == "checked"
+        and formal_proof_checked
         and not unchecked_markers
     )
     if final_pass_allowed:
@@ -17507,9 +17773,15 @@ def _lean_summary(
     elif not lean_available:
         blocker = "Lean executable is not available for the final pass proof check"
         next_action = "run stage-a-validate in the flake dev/test shell or install Lean 4"
+    elif lean_check["status"] != "checked" and _lean_failed_formal_bundle(lean_check):
+        blocker = "exact-byte Stage A strong-refinement theorem did not check"
+        next_action = "inspect lean/StageA/FormalBundle.lean and the Lean error; unsupported PE or x86 semantics must remain incomplete"
     elif lean_check["status"] != "checked":
         blocker = "generated Lean proof summary did not check"
         next_action = "inspect report/lean/summary.json and fix the generated proof obligations"
+    elif not formal_proof_checked:
+        blocker = "exact-byte Stage A strong-refinement theorem did not check"
+        next_action = "inspect lean/StageA/FormalBundle.lean and formal_proof diagnostics; unsupported PE or x86 semantics must remain incomplete"
     elif lean_input_errors:
         blocker = "supplemental Lean input files could not be copied into the proof report"
         next_action = "fix or remove missing supplemental Lean input paths"
@@ -17613,6 +17885,8 @@ def _lean_summary(
         "final_pass_has_unchecked_lean_assumptions": verdict == "pass" and not final_pass_allowed,
         "unchecked_blockers": unchecked_blockers,
         "unchecked_markers": unchecked_markers,
+        "formal_proof": formal_proof,
+        "formal_strong_refinement_checked": formal_proof_checked,
         "proof_ir": proof_ir,
         "solver_evidence": solver_evidence,
         "input_artifact": lean_inputs_artifact,
@@ -17690,9 +17964,335 @@ def _lean_source_artifact_entries(lean_dir: Path, relative_paths: Iterable[str])
     return entries
 
 
+def _lean_byte_list_literal(data: bytes, *, values_per_line: int = 32) -> str:
+    if not data:
+        return "[]"
+    rows = [
+        ", ".join(str(value) for value in data[offset : offset + values_per_line])
+        for offset in range(0, len(data), values_per_line)
+    ]
+    return "[\n    " + ",\n    ".join(rows) + "\n  ]"
+
+
+def _formal_v1_supported_instruction(insn: Any) -> bool:
+    encoded = bytes(insn.bytes)
+    return bool(
+        encoded
+        in {
+            b"\x90",
+            b"\xc3",
+            b"\x89\xd8",
+            b"\x8d\x03",
+            b"\x89\xda",
+            b"\x8d\x13",
+            b"\x83\xc0\x00",
+            b"\x83\xe8\x00",
+            b"\x50",
+            b"\xff\xf0",
+            b"\x5b",
+            b"\x8f\xc3",
+            b"\x8d\x57\x04",
+            b"\x8b\x06",
+            b"\x8b\x46\x00",
+            b"\x8b\x03",
+            b"\x8b\x43\x00",
+            b"\x8b\x0b",
+            b"\x8b\x4b\x00",
+            b"\x89\x02",
+            b"\x89\x47\x04",
+            b"\x89\x03",
+            b"\x89\x43\x00",
+            b"\x29\xc0",
+            b"\x31\xc0",
+        }
+        or (len(encoded) == 5 and encoded[0] == 0xB8)
+        or (len(encoded) == 5 and encoded[0] == 0x3D)
+        or (len(encoded) == 3 and encoded[:2] == b"\x83\xf8")
+        or (len(encoded) == 2 and encoded[0] in {0x74, 0x75, 0xEB})
+    )
+
+
+def _formal_profile_side_diagnostics(side: str, path: Path, mapping_contract: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        binary = _parse_stage_a_pe(path)
+    except StageAInputError as exc:
+        return [{"side": side, "category": "formal_pe_parse_failed", "blocker": str(exc)}]
+    issues: list[dict[str, Any]] = []
+    executable = [section for section in binary.sections if section.executable]
+    if binary.bitness != 32:
+        issues.append({"side": side, "category": "formal_profile_bitness", "observed": binary.bitness, "expected": 32})
+    if len(executable) != 1:
+        issues.append({"side": side, "category": "formal_executable_section_count", "observed": len(executable), "expected": 1})
+        return issues
+    section = executable[0]
+    if binary.entrypoint_rva != section.rva_start:
+        issues.append(
+            {
+                "side": side,
+                "category": "formal_entrypoint_not_section_start",
+                "entrypoint_rva": binary.entrypoint_rva,
+                "section_rva": section.rva_start,
+            }
+        )
+    import_directory = binary.pe.OPTIONAL_HEADER.DATA_DIRECTORY[1]
+    if int(import_directory.VirtualAddress) != 0 or int(import_directory.Size) != 0:
+        issues.append(
+            {
+                "side": side,
+                "category": "formal_import_directory_unsupported",
+                "rva": int(import_directory.VirtualAddress),
+                "size": int(import_directory.Size),
+            }
+        )
+    if binary.imports:
+        issues.append({"side": side, "category": "formal_imports_unsupported", "count": len(binary.imports)})
+    relocation_directory = binary.pe.OPTIONAL_HEADER.DATA_DIRECTORY[5]
+    if int(relocation_directory.VirtualAddress) != 0 or int(relocation_directory.Size) != 0:
+        issues.append(
+            {
+                "side": side,
+                "category": "formal_relocations_unsupported",
+                "rva": int(relocation_directory.VirtualAddress),
+                "size": int(relocation_directory.Size),
+            }
+        )
+    dis = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    dis.detail = True
+    blocks = [item for item in mapping_contract.get("blocks", []) if isinstance(item, dict) and item.get("kind") == "code"]
+    if not blocks:
+        issues.append({"side": side, "category": "formal_regions_missing"})
+    for block in blocks:
+        block_side = block.get(side) if isinstance(block.get(side), dict) else {}
+        start = int(block_side.get("rva_start") or 0)
+        stop = int(block_side.get("rva_end") or start)
+        data = binary.pe.get_data(start, max(0, stop - start))
+        decoded = list(dis.disasm(data, binary.image_base + start))
+        if not decoded or sum(int(insn.size) for insn in decoded) != len(data):
+            issues.append(
+                {
+                    "side": side,
+                    "category": "formal_instruction_decode_failed",
+                    "block": block.get("id"),
+                    "rva": start,
+                    "bytes": data[:16].hex(),
+                }
+            )
+            continue
+        for insn in decoded:
+            if not _formal_v1_supported_instruction(insn):
+                issues.append(
+                    {
+                        "side": side,
+                        "category": "formal_instruction_unsupported",
+                        "block": block.get("id"),
+                        "rva": int(insn.address - binary.image_base),
+                        "mnemonic": insn.mnemonic,
+                        "op_str": insn.op_str,
+                        "bytes": bytes(insn.bytes).hex(),
+                    }
+                )
+                if len(issues) >= STAGE_A_FORMAL_DIAGNOSTIC_LIMIT:
+                    return issues
+        if decoded[-1].mnemonic not in {"ret", "je", "jne", "jmp"}:
+            issues.append(
+                {
+                    "side": side,
+                    "category": "formal_region_does_not_terminate",
+                    "block": block.get("id"),
+                    "rva": start,
+                }
+            )
+    return issues
+
+
+def _formal_profile_diagnostics(original: Path, candidate: Path, proof_ir: dict[str, Any]) -> dict[str, Any]:
+    mapping_contract = proof_ir.get("mapping_contract") if isinstance(proof_ir.get("mapping_contract"), dict) else {}
+    issues = _formal_profile_side_diagnostics("original", original, mapping_contract) + _formal_profile_side_diagnostics(
+        "candidate", candidate, mapping_contract
+    )
+    return {
+        "format": "stage-a-formal-profile-diagnostics-v1",
+        "profile": STAGE_A_FORMAL_PROFILE_ID,
+        "status": "supported" if not issues else "incomplete",
+        "issues": issues,
+        "counts": {"issues": len(issues)},
+    }
+
+
+def _lean_formal_span_literal(value: dict[str, Any]) -> str:
+    start = int(value.get("rva_start") or 0)
+    stop = int(value.get("rva_end") or start)
+    return f"StageA.Formal.Span.mk {start} {max(0, stop - start)}"
+
+
+def _lean_formal_bundle_literal(
+    proof_ir: dict[str, Any],
+    original: Path,
+    candidate: Path,
+) -> tuple[str, dict[str, Any]]:
+    mapping_contract = proof_ir.get("mapping_contract") if isinstance(proof_ir.get("mapping_contract"), dict) else {}
+    blocks = [item for item in mapping_contract.get("blocks", []) if isinstance(item, dict) and item.get("kind") == "code"]
+    waivers = [item for item in mapping_contract.get("waivers", []) if isinstance(item, dict)]
+    try:
+        original_entrypoint = _parse_stage_a_pe(original).entrypoint_rva
+        candidate_entrypoint = _parse_stage_a_pe(candidate).entrypoint_rva
+    except StageAInputError:
+        original_entrypoint = -1
+        candidate_entrypoint = -1
+    region_rows: list[str] = []
+    for block in blocks:
+        original_side = block.get("original") if isinstance(block.get("original"), dict) else {}
+        candidate_side = block.get("candidate") if isinstance(block.get("candidate"), dict) else {}
+        root = bool(
+            block.get("root_checked") is True
+            or (
+                int(original_side.get("rva_start") or -1) == original_entrypoint
+                and int(candidate_side.get("rva_start") or -1) == candidate_entrypoint
+            )
+        )
+        region_rows.append(
+            "StageA.Formal.RegionPair.mk ("
+            + _lean_formal_span_literal(original_side)
+            + ") ("
+            + _lean_formal_span_literal(candidate_side)
+            + f") {'true' if root else 'false'}"
+        )
+    original_padding = [
+        _lean_formal_span_literal(item) for item in waivers if item.get("binary") in {"original", "both"}
+    ]
+    candidate_padding = [
+        _lean_formal_span_literal(item) for item in waivers if item.get("binary") in {"candidate", "both"}
+    ]
+
+    def lean_list(rows: list[str]) -> str:
+        return "[]" if not rows else "[\n    " + ",\n    ".join(rows) + "\n  ]"
+
+    literal = (
+        "StageA.Formal.ProofBundle.mk originalBytes candidateBytes\n"
+        f"  {lean_list(region_rows)}\n"
+        f"  {lean_list(original_padding)}\n"
+        f"  {lean_list(candidate_padding)}"
+    )
+    return literal, {
+        "regions": len(region_rows),
+        "original_padding_spans": len(original_padding),
+        "candidate_padding_spans": len(candidate_padding),
+    }
+
+
+def _build_formal_lean_bundle(
+    verdict: str,
+    original: Path,
+    candidate: Path,
+    proof_ir: dict[str, Any],
+) -> tuple[str, str, bytes, bytes, dict[str, Any]]:
+    formal_source = Path(__file__).with_name("lean") / "StageA" / "Formal.lean"
+    try:
+        kernel_text = formal_source.read_text(encoding="utf-8")
+        original_bytes = Path(original).read_bytes()
+        candidate_bytes = Path(candidate).read_bytes()
+    except OSError as exc:
+        kernel_text = "import Std\n\nnamespace StageA.Formal\n\nend StageA.Formal\n"
+        original_bytes = b""
+        candidate_bytes = b""
+        error = str(exc)
+    else:
+        error = None
+    proof_bundle_literal, proof_bundle_counts = _lean_formal_bundle_literal(proof_ir, original, candidate)
+    diagnostics = _formal_profile_diagnostics(original, candidate, proof_ir) if error is None else {
+        "format": "stage-a-formal-profile-diagnostics-v1",
+        "profile": STAGE_A_FORMAL_PROFILE_ID,
+        "status": "incomplete",
+        "issues": [{"category": "formal_artifact_read_failed", "blocker": error}],
+        "counts": {"issues": 1},
+    }
+    proof_requested = verdict == "pass" and error is None and diagnostics.get("status") == "supported"
+    theorem = ""
+    if proof_requested:
+        theorem = (
+            "theorem generatedBundleChecked :\n"
+            "    StageA.Formal.checkProofBundle proofBundle = true := by decide\n\n"
+            "theorem candidateRefinesOriginal :\n"
+            "    StageA.Formal.ExactImageStrongRefinement proofBundle :=\n"
+            "  StageA.Formal.checkProofBundle_guarantee proofBundle generatedBundleChecked\n\n"
+            "#print axioms candidateRefinesOriginal\n"
+        )
+    bundle_text = (
+        "-- Generated exact-byte Stage A formal proof bundle.\n"
+        "import StageA.Formal\n\n"
+        "namespace StageA.Generated\n\n"
+        "set_option maxRecDepth 100000\n"
+        "set_option maxHeartbeats 0\n\n"
+        f'def formalProfileId : String := {_lean_string_literal(STAGE_A_FORMAL_PROFILE_ID)}\n'
+        f"def formalProofRequested : Bool := {'true' if proof_requested else 'false'}\n"
+        f"def originalBytes : StageA.Formal.Bytes := {_lean_byte_list_literal(original_bytes if proof_requested else b'')}\n"
+        f"def candidateBytes : StageA.Formal.Bytes := {_lean_byte_list_literal(candidate_bytes if proof_requested else b'')}\n\n"
+        f"def proofBundle : StageA.Formal.ProofBundle := {proof_bundle_literal}\n\n"
+        f"{theorem}"
+        "end StageA.Generated\n"
+    )
+    metadata = {
+        "format": "stage-a-formal-proof-bundle-v1",
+        "profile": STAGE_A_FORMAL_PROFILE_ID,
+        "requested": proof_requested,
+        "kernel_source": "StageA/Formal.lean",
+        "bundle_source": "StageA/FormalBundle.lean",
+        "theorem": "StageA.Generated.candidateRefinesOriginal" if proof_requested else None,
+        "claim": {
+            "kind": "termination_sensitive_strong_trace_refinement",
+            "quantification": "all_initial_register_and_memory_states",
+            "roots": "every_mapped_region_entry_including_the_pe_entrypoint",
+            "observables": ["registers", "memory", "return_target", "logical_cfg_outcome"],
+            "executable_coverage_checked": True,
+            "direct_cfg_composition_checked": True,
+            "external_environment": "not_applicable_no_imports_v1",
+            "flags": "volatile_at_region_boundaries_and_internal_branch_conditions_checked_in_region",
+        },
+        "original_sha256": sha256_bytes(original_bytes) if error is None else None,
+        "candidate_sha256": sha256_bytes(candidate_bytes) if error is None else None,
+        "original_artifact": "artifacts/original.pe",
+        "candidate_artifact": "artifacts/candidate.pe",
+        "diagnostics": diagnostics,
+        "counts": proof_bundle_counts,
+        "error": error,
+    }
+    metadata["kernel_sha256"] = sha256_bytes(kernel_text.encode("utf-8"))
+    metadata["bundle_sha256"] = sha256_bytes(bundle_text.encode("utf-8"))
+    return kernel_text, bundle_text, original_bytes, candidate_bytes, metadata
+
+
+def _write_formal_lean_files(
+    out: Path,
+    verdict: str,
+    original: Path,
+    candidate: Path,
+    proof_ir: dict[str, Any],
+) -> dict[str, Any]:
+    lean_dir = out / "lean"
+    try:
+        proof_ir_payload = _load_json(out / "proof-ir.json")
+    except StageAInputError:
+        proof_ir_payload = proof_ir
+    kernel_text, bundle_text, original_bytes, candidate_bytes, metadata = _build_formal_lean_bundle(
+        verdict,
+        original,
+        candidate,
+        proof_ir_payload,
+    )
+    (lean_dir / "StageA" / "Formal.lean").write_text(kernel_text, encoding="utf-8")
+    (lean_dir / "StageA" / "FormalBundle.lean").write_text(bundle_text, encoding="utf-8")
+    artifact_dir = lean_dir / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "original.pe").write_bytes(original_bytes)
+    (artifact_dir / "candidate.pe").write_bytes(candidate_bytes)
+    return metadata
+
+
 def _write_lean_files(
     out: Path,
     verdict: str,
+    original: Path,
+    candidate: Path,
     closed: bool,
     no_unchecked_assumptions: bool,
     obligations: list[dict[str, Any]],
@@ -17723,8 +18323,9 @@ def _write_lean_files(
     proof_ir_profile_manifest_closed: bool,
     solver_evidence_closed: bool,
     proof_evidence_binding_closed: bool,
-) -> None:
+) -> dict[str, Any]:
     (out / "lean" / "StageA").mkdir(parents=True, exist_ok=True)
+    formal_bundle = _write_formal_lean_files(out, verdict, original, candidate, proof_ir)
     (out / "lean" / "StageA" / "Model.lean").write_text(
         "-- Generated Stage A model summary.\n"
         "namespace StageA\n\n"
@@ -19884,64 +20485,70 @@ def _write_lean_files(
         else "false"
     )
     proof_evidence_binding_literal = "true" if proof_evidence_binding_closed else "false"
-    if verdict == "pass":
+    if verdict == "pass" and formal_bundle.get("requested") is True:
         theorem = (
-            "theorem generatedClosedChecked : generatedSummary.closed = true := by native_decide\n"
-            "theorem generatedNoUncheckedAssumptionsChecked : generatedSummary.noUncheckedAssumptions = true := by native_decide\n"
-            "theorem generatedObligationStatusesClosed : generatedObligationsClosedByStatus = true := by native_decide\n"
-            "theorem generatedObligationStatusCountsAccountedChecked : generatedObligationStatusCountsAccounted = true := by native_decide\n"
-            "theorem generatedProofIrPresentChecked : generatedSummary.proofIrPresent = true := by native_decide\n"
-            "theorem generatedProofIrModelHashBoundChecked : generatedSummary.proofIrModelHashBound = true := by native_decide\n"
-            "theorem generatedProofIrContextBindingChecked : generatedProofIrContextBindingClosed = true := by native_decide\n"
-            "theorem generatedProofIrTargetProfileClosedChecked : generatedSummary.proofIrTargetProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrLoaderFrontendProfileClosedChecked : generatedSummary.proofIrLoaderFrontendProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrClosureCertificateClosedChecked : generatedSummary.proofIrClosureCertificateClosed = true := by native_decide\n"
-            "theorem generatedProofIrLoaderProfileClosedChecked : generatedSummary.proofIrLoaderProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrCoverageProfileClosedChecked : generatedSummary.proofIrCoverageProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrProofCacheProfileClosedChecked : generatedSummary.proofIrProofCacheProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrProofRuleProfileClosedChecked : generatedSummary.proofIrProofRuleProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrMappingProfileClosedChecked : generatedSummary.proofIrMappingProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrCfgProfileClosedChecked : generatedSummary.proofIrCfgProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrReachabilityProfileClosedChecked : generatedSummary.proofIrReachabilityProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrAbiProfileClosedChecked : generatedSummary.proofIrAbiProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrEnvironmentProfileClosedChecked : generatedSummary.proofIrEnvironmentProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrInstructionProfileClosedChecked : generatedSummary.proofIrInstructionProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrSemanticProfileClosedChecked : generatedSummary.proofIrSemanticProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrSolverEvidenceProfileClosedChecked : generatedSummary.proofIrSolverEvidenceProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrSolverBackendProfileClosedChecked : generatedSummary.proofIrSolverBackendProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrTrustedBoundaryProfileClosedChecked : generatedSummary.proofIrTrustedBoundaryProfileClosed = true := by native_decide\n"
-            "theorem generatedProofIrProfileManifestClosedChecked : generatedSummary.proofIrProfileManifestClosed = true := by native_decide\n"
-            "theorem generatedProofIrClosureCertificateStatusChecked : generatedClosureCertificateStatusSatisfied = true := by native_decide\n"
-            "theorem generatedProofIrClosureCertificateCountsChecked : generatedClosureCertificateCountsClosed = true := by native_decide\n"
-            "theorem generatedProofIrClosureCertificateChecksClosedChecked : generatedClosureCertificateChecksClosed = true := by native_decide\n"
-            "theorem generatedTargetProfileChecked : generatedTargetProfileClosed = true := by native_decide\n"
-            "theorem generatedLoaderProfileChecked : generatedLoaderProfileClosed = true := by native_decide\n"
-            "theorem generatedCoverageProfileChecked : generatedCoverageProfileClosed = true := by native_decide\n"
-            "theorem generatedProofCacheProfileChecked : generatedProofCacheProfileClosed = true := by native_decide\n"
-            "theorem generatedProofRuleProfileChecked : generatedProofRuleProfileClosed = true := by native_decide\n"
-            "theorem generatedMappingProfileChecked : generatedMappingProfileClosed = true := by native_decide\n"
-            "theorem generatedCfgProfileChecked : generatedCfgProfileClosed = true := by native_decide\n"
-            "theorem generatedReachabilityProfileChecked : generatedReachabilityProfileClosed = true := by native_decide\n"
-            "theorem generatedAbiProfileChecked : generatedAbiProfileClosed = true := by native_decide\n"
-            "theorem generatedEnvironmentProfileChecked : generatedEnvironmentProfileClosed = true := by native_decide\n"
-            "theorem generatedInstructionSemanticsProfileChecked : generatedInstructionSemanticsProfileClosed = true := by native_decide\n"
-            "theorem generatedSemanticObservableProfileChecked : generatedSemanticObservableProfileClosed = true := by native_decide\n"
-            "theorem generatedSolverEvidenceProfileChecked : generatedSolverEvidenceProfileClosed = true := by native_decide\n"
-            "theorem generatedSolverBackendProfileChecked : generatedSolverBackendProfileClosed = true := by native_decide\n"
-            "theorem generatedTrustedBoundaryProfileChecked : generatedTrustedBoundaryProfileClosed = true := by native_decide\n"
-            "theorem generatedProfileManifestChecked : generatedProfileManifestClosed = true := by native_decide\n"
-            "theorem generatedSolverEvidenceClosedChecked : generatedSummary.solverEvidenceClosed = true := by native_decide\n"
-            "theorem generatedProofIrCountsAccountedChecked : generatedProofIrCountsAccounted = true := by native_decide\n"
-            "theorem generatedProofEvidenceHashesPresentChecked : generatedProofEvidenceHashesPresent = true := by native_decide\n"
-            "theorem generatedProofEvidenceBindingClosedChecked : generatedSummary.proofEvidenceBindingClosed = true := by native_decide\n"
+            "theorem generatedFormalStrongRefinementChecked :\n"
+            "    Formal.ExactImageStrongRefinement Generated.proofBundle :=\n"
+            "  Generated.candidateRefinesOriginal\n"
+            "theorem generatedClosedChecked : generatedSummary.closed = true := by decide\n"
+            "theorem generatedNoUncheckedAssumptionsChecked : generatedSummary.noUncheckedAssumptions = true := by decide\n"
+            "theorem generatedObligationStatusesClosed : generatedObligationsClosedByStatus = true := by decide\n"
+            "theorem generatedObligationStatusCountsAccountedChecked : generatedObligationStatusCountsAccounted = true := by decide\n"
+            "theorem generatedProofIrPresentChecked : generatedSummary.proofIrPresent = true := by decide\n"
+            "theorem generatedProofIrModelHashBoundChecked : generatedSummary.proofIrModelHashBound = true := by decide\n"
+            "theorem generatedProofIrContextBindingChecked : generatedProofIrContextBindingClosed = true := by decide\n"
+            "theorem generatedProofIrTargetProfileClosedChecked : generatedSummary.proofIrTargetProfileClosed = true := by decide\n"
+            "theorem generatedProofIrLoaderFrontendProfileClosedChecked : generatedSummary.proofIrLoaderFrontendProfileClosed = true := by decide\n"
+            "theorem generatedProofIrClosureCertificateClosedChecked : generatedSummary.proofIrClosureCertificateClosed = true := by decide\n"
+            "theorem generatedProofIrLoaderProfileClosedChecked : generatedSummary.proofIrLoaderProfileClosed = true := by decide\n"
+            "theorem generatedProofIrCoverageProfileClosedChecked : generatedSummary.proofIrCoverageProfileClosed = true := by decide\n"
+            "theorem generatedProofIrProofCacheProfileClosedChecked : generatedSummary.proofIrProofCacheProfileClosed = true := by decide\n"
+            "theorem generatedProofIrProofRuleProfileClosedChecked : generatedSummary.proofIrProofRuleProfileClosed = true := by decide\n"
+            "theorem generatedProofIrMappingProfileClosedChecked : generatedSummary.proofIrMappingProfileClosed = true := by decide\n"
+            "theorem generatedProofIrCfgProfileClosedChecked : generatedSummary.proofIrCfgProfileClosed = true := by decide\n"
+            "theorem generatedProofIrReachabilityProfileClosedChecked : generatedSummary.proofIrReachabilityProfileClosed = true := by decide\n"
+            "theorem generatedProofIrAbiProfileClosedChecked : generatedSummary.proofIrAbiProfileClosed = true := by decide\n"
+            "theorem generatedProofIrEnvironmentProfileClosedChecked : generatedSummary.proofIrEnvironmentProfileClosed = true := by decide\n"
+            "theorem generatedProofIrInstructionProfileClosedChecked : generatedSummary.proofIrInstructionProfileClosed = true := by decide\n"
+            "theorem generatedProofIrSemanticProfileClosedChecked : generatedSummary.proofIrSemanticProfileClosed = true := by decide\n"
+            "theorem generatedProofIrSolverEvidenceProfileClosedChecked : generatedSummary.proofIrSolverEvidenceProfileClosed = true := by decide\n"
+            "theorem generatedProofIrSolverBackendProfileClosedChecked : generatedSummary.proofIrSolverBackendProfileClosed = true := by decide\n"
+            "theorem generatedProofIrTrustedBoundaryProfileClosedChecked : generatedSummary.proofIrTrustedBoundaryProfileClosed = true := by decide\n"
+            "theorem generatedProofIrProfileManifestClosedChecked : generatedSummary.proofIrProfileManifestClosed = true := by decide\n"
+            "theorem generatedProofIrClosureCertificateStatusChecked : generatedClosureCertificateStatusSatisfied = true := by decide\n"
+            "theorem generatedProofIrClosureCertificateCountsChecked : generatedClosureCertificateCountsClosed = true := by decide\n"
+            "theorem generatedProofIrClosureCertificateChecksClosedChecked : generatedClosureCertificateChecksClosed = true := by decide\n"
+            "theorem generatedTargetProfileChecked : generatedTargetProfileClosed = true := by decide\n"
+            "theorem generatedLoaderProfileChecked : generatedLoaderProfileClosed = true := by decide\n"
+            "theorem generatedCoverageProfileChecked : generatedCoverageProfileClosed = true := by decide\n"
+            "theorem generatedProofCacheProfileChecked : generatedProofCacheProfileClosed = true := by decide\n"
+            "theorem generatedProofRuleProfileChecked : generatedProofRuleProfileClosed = true := by decide\n"
+            "theorem generatedMappingProfileChecked : generatedMappingProfileClosed = true := by decide\n"
+            "theorem generatedCfgProfileChecked : generatedCfgProfileClosed = true := by decide\n"
+            "theorem generatedReachabilityProfileChecked : generatedReachabilityProfileClosed = true := by decide\n"
+            "theorem generatedAbiProfileChecked : generatedAbiProfileClosed = true := by decide\n"
+            "theorem generatedEnvironmentProfileChecked : generatedEnvironmentProfileClosed = true := by decide\n"
+            "theorem generatedInstructionSemanticsProfileChecked : generatedInstructionSemanticsProfileClosed = true := by decide\n"
+            "theorem generatedSemanticObservableProfileChecked : generatedSemanticObservableProfileClosed = true := by decide\n"
+            "theorem generatedSolverEvidenceProfileChecked : generatedSolverEvidenceProfileClosed = true := by decide\n"
+            "theorem generatedSolverBackendProfileChecked : generatedSolverBackendProfileClosed = true := by decide\n"
+            "theorem generatedTrustedBoundaryProfileChecked : generatedTrustedBoundaryProfileClosed = true := by decide\n"
+            "theorem generatedProfileManifestChecked : generatedProfileManifestClosed = true := by decide\n"
+            "theorem generatedSolverEvidenceClosedChecked : generatedSummary.solverEvidenceClosed = true := by decide\n"
+            "theorem generatedProofIrCountsAccountedChecked : generatedProofIrCountsAccounted = true := by decide\n"
+            "theorem generatedProofEvidenceHashesPresentChecked : generatedProofEvidenceHashesPresent = true := by decide\n"
+            "theorem generatedProofEvidenceBindingClosedChecked : generatedSummary.proofEvidenceBindingClosed = true := by decide\n"
         )
+    elif verdict == "pass":
+        theorem = "theorem generatedFormalProofUnavailable : Generated.formalProofRequested = false := by decide\n"
     else:
-        theorem = "theorem generatedVerdictNotPass : generatedVerdictIsPass = false := by native_decide\n"
+        theorem = "theorem generatedVerdictNotPass : generatedVerdictIsPass = false := by decide\n"
     extra_imports = "".join(f"import {module}\n" for module in lean_input_modules)
     (out / "lean" / "StageA" / "Obligations.lean").write_text(
         "-- Generated Stage A checked obligation summary.\n"
         "import StageA.Model\n"
         "import StageA.ProofIR\n"
+        "import StageA.FormalBundle\n"
         f"{extra_imports}\nnamespace StageA\n\n"
         f"def generatedVerdict : Verdict := Verdict.{lean_verdict}\n"
         f"def generatedVerdictIsPass : Bool := generatedVerdict == Verdict.pass\n"
@@ -20692,6 +21299,7 @@ def _write_lean_files(
         "end StageA\n",
         encoding="utf-8",
     )
+    return formal_bundle
 
 
 def _proof_evidence_binding_closed(
@@ -21032,21 +21640,126 @@ def _lean_module_stem(source: Path, index: int, used_names: set[str]) -> str:
     return stem
 
 
-def _run_lean_check(lean_dir: Path, extra_files: Iterable[str] = ()) -> dict[str, Any]:
+def _lean_cache_root() -> Path | None:
+    configured = os.environ.get("WINCR_STAGE_A_LEAN_CACHE")
+    if configured is not None and configured.strip().lower() in {"", "0", "false", "off", "none"}:
+        return None
+    if configured is not None:
+        root = Path(configured).expanduser()
+    else:
+        root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "wincr" / STAGE_A_LEAN_CACHE_FORMAT
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return root
+
+
+def _lean_compiler_identity(lean: str) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            [lean, "--version"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+        version = (completed.stdout or completed.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired):
+        version = "unknown"
+    return {"path": str(Path(lean).resolve()), "version": version}
+
+
+def _lean_module_cache_key(
+    lean_dir: Path,
+    source_path: str,
+    dependencies: Iterable[str],
+    compiler: dict[str, Any],
+) -> str:
+    sources = [source_path, *dependencies]
+    payload = {
+        "format": STAGE_A_LEAN_CACHE_FORMAT,
+        "compiler": compiler,
+        "sources": [
+            {"path": path, "sha256": sha256_file(lean_dir / path)}
+            for path in sources
+        ],
+    }
+    return _canonical_json_sha256(payload)
+
+
+def _store_lean_cache_artifact(source: Path, destination: Path) -> bool:
+    temporary: Path | None = None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+        os.close(descriptor)
+        temporary = Path(name)
+        shutil.copyfile(source, temporary)
+        os.replace(temporary, destination)
+        return True
+    except OSError:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        return False
+
+
+def _run_lean_check(
+    lean_dir: Path,
+    extra_files: Iterable[str] = (),
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
     lean = shutil.which("lean")
     if lean is None:
         return {"status": "unavailable", "command": ["lean", "StageA/Obligations.lean"], "returncode": None}
     commands = [
         [lean, "-o", "StageA/Model.olean", "StageA/Model.lean"],
         [lean, "-o", "StageA/ProofIR.olean", "StageA/ProofIR.lean"],
+        [lean, "-o", "StageA/Formal.olean", "StageA/Formal.lean"],
+        [lean, "-o", "StageA/FormalBundle.olean", "StageA/FormalBundle.lean"],
         *[[lean, "-o", str(Path(path).with_suffix(".olean")), path] for path in extra_files],
         [lean, "StageA/Obligations.lean"],
     ]
     env = {**dict(), **{"LEAN_PATH": "."}}
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
+    cache_root = _lean_cache_root() if use_cache else None
+    compiler = _lean_compiler_identity(lean) if cache_root is not None else {}
+    cache_dependencies = {
+        "StageA/Model.lean": (),
+        "StageA/ProofIR.lean": ("StageA/Model.lean",),
+    }
+    cache_entries: list[dict[str, Any]] = []
     try:
         for command in commands:
+            cache_entry: dict[str, Any] | None = None
+            if cache_root is not None and len(command) == 4 and command[1] == "-o" and command[3] in cache_dependencies:
+                source_path = command[3]
+                output_path = lean_dir / command[2]
+                cache_key = _lean_module_cache_key(
+                    lean_dir,
+                    source_path,
+                    cache_dependencies[source_path],
+                    compiler,
+                )
+                cache_path = cache_root / source_path.replace("/", "-").replace(".lean", "") / f"{cache_key}.olean"
+                cache_entry = {
+                    "module": source_path,
+                    "key": cache_key,
+                    "artifact": str(cache_path),
+                    "status": "miss",
+                }
+                try:
+                    if cache_path.is_file():
+                        shutil.copyfile(cache_path, output_path)
+                        cache_entry["status"] = "hit"
+                        cache_entry["artifact_sha256"] = sha256_file(cache_path)
+                        cache_entries.append(cache_entry)
+                        continue
+                except OSError as exc:
+                    cache_entry["error"] = str(exc)
             completed = subprocess.run(
                 command,
                 cwd=lean_dir,
@@ -21054,7 +21767,7 @@ def _run_lean_check(lean_dir: Path, extra_files: Iterable[str] = ()) -> dict[str
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=30,
+                timeout=120,
                 check=False,
             )
             stdout_parts.append(completed.stdout)
@@ -21067,7 +21780,19 @@ def _run_lean_check(lean_dir: Path, extra_files: Iterable[str] = ()) -> dict[str
                     "returncode": completed.returncode,
                     "stdout": "".join(stdout_parts),
                     "stderr": "".join(stderr_parts),
+                    "cache": {
+                        "format": STAGE_A_LEAN_CACHE_FORMAT,
+                        "enabled": cache_root is not None,
+                        "entries": cache_entries,
+                    },
                 }
+            if cache_entry is not None:
+                output_path = lean_dir / command[2]
+                cache_path = Path(cache_entry["artifact"])
+                cache_entry["stored"] = output_path.is_file() and _store_lean_cache_artifact(output_path, cache_path)
+                if output_path.is_file():
+                    cache_entry["artifact_sha256"] = sha256_file(output_path)
+                cache_entries.append(cache_entry)
     except subprocess.TimeoutExpired as exc:
         return {
             "status": "timeout",
@@ -21075,6 +21800,11 @@ def _run_lean_check(lean_dir: Path, extra_files: Iterable[str] = ()) -> dict[str
             "returncode": None,
             "stdout": exc.stdout or "",
             "stderr": exc.stderr or "",
+            "cache": {
+                "format": STAGE_A_LEAN_CACHE_FORMAT,
+                "enabled": cache_root is not None,
+                "entries": cache_entries,
+            },
         }
     return {
         "status": "checked",
@@ -21082,7 +21812,56 @@ def _run_lean_check(lean_dir: Path, extra_files: Iterable[str] = ()) -> dict[str
         "returncode": 0,
         "stdout": "".join(stdout_parts),
         "stderr": "".join(stderr_parts),
+        "cache": {
+            "format": STAGE_A_LEAN_CACHE_FORMAT,
+            "enabled": cache_root is not None,
+            "root": str(cache_root) if cache_root is not None else None,
+            "hits": sum(1 for item in cache_entries if item.get("status") == "hit"),
+            "misses": sum(1 for item in cache_entries if item.get("status") == "miss"),
+            "entries": cache_entries,
+        },
     }
+
+
+def _formal_proof_report(bundle: dict[str, Any], lean_check: dict[str, Any]) -> dict[str, Any]:
+    requested = bundle.get("requested") is True
+    report = {
+        **bundle,
+        "logical_trusted_base": ["lean_kernel", "reviewed_x86_pe32_formal_specification"],
+        "untrusted_producers": ["python_analysis", "capstone", "pefile", "z3"],
+        "approved_axioms": sorted(STAGE_A_FORMAL_APPROVED_AXIOMS),
+    }
+    if not requested:
+        report.update({"status": "not_requested", "kernel_checked": False, "theorem_axioms": []})
+        return report
+    stdout = str(lean_check.get("stdout") or "")
+    match = re.search(r"candidateRefinesOriginal' depends on axioms: \[([^\]]*)\]", stdout)
+    theorem_axioms = []
+    if match is not None:
+        theorem_axioms = [item.strip() for item in match.group(1).split(",") if item.strip()]
+    unexpected_axioms = sorted(set(theorem_axioms) - STAGE_A_FORMAL_APPROVED_AXIOMS)
+    kernel_checked = lean_check.get("status") == "checked" and match is not None and not unexpected_axioms
+    report.update(
+        {
+            "status": "checked" if kernel_checked else "incomplete",
+            "kernel_checked": kernel_checked,
+            "theorem_axioms": theorem_axioms,
+            "unexpected_axioms": unexpected_axioms,
+            "blocker": None
+            if kernel_checked
+            else (
+                "formal theorem depends on an unapproved axiom"
+                if unexpected_axioms
+                else "Lean did not emit a checked axiom inventory for the formal theorem"
+            ),
+        }
+    )
+    return report
+
+
+def _lean_failed_formal_bundle(lean_check: dict[str, Any]) -> bool:
+    failed = lean_check.get("failed_command")
+    return isinstance(failed, list) and any(str(item).endswith("StageA/FormalBundle.lean") for item in failed)
 
 
 def _lean_unchecked_markers(lean_dir: Path) -> list[dict[str, Any]]:

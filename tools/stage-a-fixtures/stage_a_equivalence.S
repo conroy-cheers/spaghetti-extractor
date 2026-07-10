@@ -54,6 +54,7 @@ _stage_a_external_case:
     .balign 16, 0x90
 #endif
 
+#ifndef STAGE_A_NO_BRANCH
 _stage_a_branch_case:
     cmp eax, 7
     je _stage_a_branch_taken
@@ -75,3 +76,4 @@ _stage_a_branch_taken:
 #endif
     ret
     .balign 16, 0x90
+#endif

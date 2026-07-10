@@ -2,12 +2,13 @@
 
 ## Completion Goal
 
-Stage A is complete when `wincr stage-a-validate` can reproducibly classify a
+Stage A is complete when `wincr stage-a-prove` can reproducibly classify a
 generic x86 32-bit PE candidate binary against an original PE binary as exactly
-one of `pass`, `fail`, or `incomplete`, using report artifacts that justify the
-verdict from the explicit block mapping, same-layout model, generated
-obligations, SMT proof cache, Lean proof summaries, and any counterexamples or
-incompleteness blockers.
+one of `pass`, `fail`, or `incomplete`. A `pass` must be justified by a
+Lean-kernel-checked theorem over the exact input bytes, not by obligation status
+closure or an unchecked solver result. Reports retain the mapping, layout,
+obligation, SMT, counterexample, and incompleteness artifacts as untrusted proof
+witnesses and diagnostics.
 
 The first accepted implementation must prove `pass` for nontrivial equivalent
 PE32 fixtures, prove `fail` with actionable counterexamples for deliberate
@@ -36,10 +37,57 @@ need to know what Win32 APIs do internally, but must prove both binaries perform
 the same ordered external interaction with equal symbolic arguments and consume
 equal symbolic responses and effects.
 
+## First Formal Profile
+
+The first accepted profile is `x86-pe32-lean-refinement-v1`. A final `pass`
+requires the generated theorem
+`StageA.Generated.candidateRefinesOriginal :
+StageA.Formal.ExactImageStrongRefinement proofBundle` to check in Lean. The
+proof bundle embeds the exact original and candidate PE bytes and the mapped
+region and non-code spans derived from `proof-ir.json`.
+
+`StageA.Formal.checkProofBundle` independently parses those bytes and checks:
+
+- PE32/i386 signatures and the selected loader fields;
+- matching image base, entrypoint, alignments, image size, and section layout;
+- successful no-import/no-relocation loader profiles on both sides;
+- exact decoding of every mapped region by the reviewed formal instruction
+  semantics;
+- equal normalized region semantics, including direct CFG targets;
+- complete executable-span classification and syntactically valid non-code
+  padding;
+- an entrypoint region and termination-sensitive trace equality from every
+  mapped region for every initial modeled state and every execution fuel.
+
+Capstone, pefile, Python analysis, block-map generation, and Z3 are not logical
+proof authorities for this profile. They propose mappings, diagnostics, and
+local facts. Lean re-parses the exact images and checks the semantic proposition
+without importing their verdicts as axioms. The logical trusted base is the Lean
+kernel plus the reviewed `src/wincr/lean/StageA/Formal.lean` specification.
+
+This first profile is deliberately narrow and fails closed outside its model:
+
+- one executable section whose start is the PE entrypoint;
+- no import or base-relocation directory;
+- only the instruction encodings implemented in `StageA.Formal.executeCode`;
+- direct branches and jumps only; calls and indirect control flow are not yet
+  accepted;
+- `ret` is a terminal environment return event rather than an internal call-stack
+  transition;
+- flags are volatile at region boundaries; the zero-condition needed by an
+  in-region `je` or `jne` is checked;
+- both sides start with the same abstract data memory. Executable image bytes are
+  instruction input, not data-observable memory in this profile.
+
+These are theorem-model boundaries, not waivers. A PE or block outside them must
+produce `incomplete`. In particular, full `jq.exe` remains an expected
+`incomplete` breadth case until imports, calls, general x86 semantics, image
+memory, and the remaining CFG forms are added to the checked model.
+
 ## Command Surface
 
 ```sh
-wincr stage-a-validate \
+wincr stage-a-prove \
   --original original.exe \
   --candidate candidate.exe \
   --mapping block-map.json \
@@ -47,6 +95,21 @@ wincr stage-a-validate \
   --lean-input checked-invariant.lean \
   --out report/
 ```
+
+The resulting proof can be independently reproduced and freshly checked:
+
+```sh
+wincr stage-a-check-proof --report report/
+```
+
+The checker first verifies binary hashes and regenerates the formal kernel and
+bundle byte-for-byte from the bundled binaries and `proof-ir.json`. It runs Lean
+only after that smoke gate succeeds, and it does not use the validation cache.
+Normal validation caches source-hash-keyed generated status modules under
+`$WINCR_STAGE_A_LEAN_CACHE` or the platform cache directory; set
+`WINCR_STAGE_A_LEAN_CACHE=off` to disable it. The exact-byte bundle is still
+elaborated for each changed candidate, and the permanent formal semantic kernel
+is freshly compiled rather than loaded from this cache.
 
 Required inputs:
 
@@ -465,12 +528,13 @@ claim/boundary/evidence counts keep the proof IR incomplete.
 
 ## Lean Integration
 
-Implement proof in two layers:
+The implementation has two layers:
 
-- SMT/Z3 discharges local bitvector/memory equivalence and produces
-  query/result artifacts.
-- Lean defines the high-level soundness theorem, invariant framework,
-  environment abstraction, and proof obligations.
+- Capstone/Python/Z3 automate mapping, decode diagnostics, candidate local
+  equivalence queries, and actionable counterexamples.
+- Lean parses the exact bytes, executes the supported formal instruction
+  semantics, checks normalized local behavior, coverage, loader constraints,
+  roots, and direct-CFG composition, then derives the final refinement theorem.
 
 Lean artifacts must include:
 
@@ -481,7 +545,8 @@ Lean artifacts must include:
 - a generated `StageA/Obligations.lean` summary that instantiates the
   reusable proof-IR checker from the concrete validation report instead of
   inlining every closure predicate as an isolated Boolean;
-- theorem stubs for unresolved invariants;
+- an exact-byte `StageA/FormalBundle.lean` and the permanent reviewed
+  `StageA/Formal.lean` kernel;
 - checked summaries for closed invariant/equivalence obligations;
 - checked proof-IR presence, proof-cache counts, solver-evidence closure, and
   hash-bound evidence predicates for `proof-ir.json`, `proof-cache/index.json`,
@@ -506,14 +571,16 @@ Lean artifacts must include:
   direct-CFG reachability that lacks a proved edge, missing SMT query hashes,
   incomplete proof-composition records, stale
   proof-cache binding, or incomplete proof-context binding;
-- no `sorry` or unchecked assumption allowed in a final `pass`.
+- no `sorry`, `axiom`, `admit`, or `unsafe` marker allowed in a final `pass`;
+- a checked axiom inventory limited to the standard `propext` and `Quot.sound`
+  dependencies emitted by this decidable proof.
 
-Initial implementation may use SMT-trusted local equivalence, but the complete
-Stage A `pass` must be backed by Lean-checked global soundness over the
-generated obligation statuses, canonical proof IR, and hash-bound local evidence
-inventory. Z3 remains a trusted local oracle in v1, but every solver result is
-made explicit in the report as a `solver_claims` record and tied to the proof
-cache, semantic-observable record, SMT query, and proof IR by hash.
+The generated status and proof-IR summaries remain additional fail-closed gates,
+but they cannot establish semantic equivalence. Z3 `unsat` results are untrusted
+automation records in this profile: a local claim contributes to `pass` only
+when the exact-byte Lean semantics independently checks the corresponding
+region. A solver bug can therefore cause a false failure or incompleteness, but
+cannot create a formal `pass`.
 
 ## Diagnostics And Witness Tests
 

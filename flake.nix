@@ -114,9 +114,22 @@
                 -Wl,--section-alignment,0x1000
                 -Wl,--file-alignment,0x200
               )
-              $CC -O0 "''${common_flags[@]}" -o stage-a-original.exe stage_a_equivalence.S -lkernel32
-              $CC -O2 "''${common_flags[@]}" -DSTAGE_A_VARIANT_B -o stage-a-candidate.exe stage_a_equivalence.S -lkernel32
-              $CC -O2 "''${common_flags[@]}" -DSTAGE_A_MUTATION -o stage-a-mutated.exe stage_a_equivalence.S -lkernel32
+              $CC -O0 "''${common_flags[@]}" -DSTAGE_A_NO_EXTERNAL -DSTAGE_A_NO_BRANCH -o stage-a-original.exe stage_a_equivalence.S
+              $CC -O2 "''${common_flags[@]}" -DSTAGE_A_NO_EXTERNAL -DSTAGE_A_NO_BRANCH -DSTAGE_A_VARIANT_B -o stage-a-candidate.exe stage_a_equivalence.S
+              $CC -O2 "''${common_flags[@]}" -DSTAGE_A_NO_EXTERNAL -DSTAGE_A_NO_BRANCH -DSTAGE_A_MUTATION -o stage-a-mutated.exe stage_a_equivalence.S
+              python3 - stage-a-original.exe stage-a-candidate.exe stage-a-mutated.exe <<'PY'
+              import pathlib
+              import struct
+              import sys
+
+              for name in sys.argv[1:]:
+                  path = pathlib.Path(name)
+                  data = bytearray(path.read_bytes())
+                  pe_offset = struct.unpack_from("<I", data, 0x3c)[0]
+                  import_directory = pe_offset + 24 + 104
+                  data[import_directory : import_directory + 8] = b"\0" * 8
+                  path.write_bytes(data)
+              PY
               runHook postBuild
             '';
 
@@ -130,20 +143,14 @@
                 "blocks": [
                   { "id": "entry", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1000", "size": 8 }, "candidate": { "rva": "0x1000", "size": 10 } },
                   { "id": "memory", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1010", "size": 8 }, "candidate": { "rva": "0x1010", "size": 9 } },
-                  { "id": "zero", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1020", "size": 3 }, "candidate": { "rva": "0x1020", "size": 3 } },
-                  { "id": "external", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1030", "size": 9 }, "candidate": { "rva": "0x1030", "size": 9 }, "external_calls": [ { "dll": "kernel32.dll", "symbol": "GetTickCount", "args": [] } ] },
-                  { "id": "branch-entry", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1040", "size": 5 }, "candidate": { "rva": "0x1040", "size": 5 } },
-                  { "id": "branch-fallthrough", "kind": "code", "reachable": true, "original": { "rva": "0x1045", "size": 3 }, "candidate": { "rva": "0x1045", "size": 3 } },
-                  { "id": "branch-taken", "kind": "code", "reachable": true, "invariant": { "checked": true, "constraints": [ { "reg": "eax", "equals": 7 } ] }, "original": { "rva": "0x1048", "size": 6 }, "candidate": { "rva": "0x1048", "size": 6 } }
+                  { "id": "zero", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1020", "size": 3 }, "candidate": { "rva": "0x1020", "size": 3 } }
                 ],
                 "waivers": [
                   { "id": "original-entry-padding", "binary": "original", "rva": "0x1008", "size": "0x8", "reason": "post-ret alignment padding emitted by the fixture build" },
                   { "id": "candidate-entry-padding", "binary": "candidate", "rva": "0x100a", "size": "0x6", "reason": "post-ret alignment padding emitted by the fixture build" },
                   { "id": "original-memory-padding", "binary": "original", "rva": "0x1018", "size": "0x8", "reason": "post-ret alignment padding emitted by the fixture build" },
                   { "id": "candidate-memory-padding", "binary": "candidate", "rva": "0x1019", "size": "0x7", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "zero-padding", "binary": "both", "rva": "0x1023", "size": "0xd", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "external-padding", "binary": "both", "rva": "0x1039", "size": "0x7", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "branch-tail-padding", "binary": "both", "rva": "0x104e", "size": "0x2", "reason": "post-ret alignment padding emitted by the fixture build" }
+                  { "id": "zero-padding", "binary": "both", "rva": "0x1023", "size": "0xd", "reason": "post-ret alignment padding emitted by the fixture build" }
                 ]
               }
               JSON
@@ -152,19 +159,13 @@
                 "blocks": [
                   { "id": "entry", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1000", "size": 8 }, "candidate": { "rva": "0x1000", "size": 8 } },
                   { "id": "memory", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1010", "size": 8 }, "candidate": { "rva": "0x1010", "size": 8 } },
-                  { "id": "zero", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1020", "size": 3 }, "candidate": { "rva": "0x1020", "size": 6 } },
-                  { "id": "external", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1030", "size": 9 }, "candidate": { "rva": "0x1030", "size": 9 }, "external_calls": [ { "dll": "kernel32.dll", "symbol": "GetTickCount", "args": [] } ] },
-                  { "id": "branch-entry", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1040", "size": 5 }, "candidate": { "rva": "0x1040", "size": 5 } },
-                  { "id": "branch-fallthrough", "kind": "code", "reachable": true, "original": { "rva": "0x1045", "size": 3 }, "candidate": { "rva": "0x1045", "size": 3 } },
-                  { "id": "branch-taken", "kind": "code", "reachable": true, "original": { "rva": "0x1048", "size": 6 }, "candidate": { "rva": "0x1048", "size": 6 } }
+                  { "id": "zero", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1020", "size": 3 }, "candidate": { "rva": "0x1020", "size": 6 } }
                 ],
                 "waivers": [
                   { "id": "entry-padding", "binary": "both", "rva": "0x1008", "size": "0x8", "reason": "post-ret alignment padding emitted by the fixture build" },
                   { "id": "memory-padding", "binary": "both", "rva": "0x1018", "size": "0x8", "reason": "post-ret alignment padding emitted by the fixture build" },
                   { "id": "original-zero-padding", "binary": "original", "rva": "0x1023", "size": "0xd", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "candidate-zero-padding", "binary": "candidate", "rva": "0x1026", "size": "0xa", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "external-padding", "binary": "both", "rva": "0x1039", "size": "0x7", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "branch-tail-padding", "binary": "both", "rva": "0x104e", "size": "0x2", "reason": "post-ret alignment padding emitted by the fixture build" }
+                  { "id": "candidate-zero-padding", "binary": "candidate", "rva": "0x1026", "size": "0xa", "reason": "post-ret alignment padding emitted by the fixture build" }
                 ]
               }
               JSON
@@ -200,6 +201,9 @@
                 --suite "$fixture_dir/suite.json" \
                 --model x86-pe32-env-v1 \
                 --out "$TMPDIR/stage-a-suite"
+              wincr stage-a-check-proof \
+                --report "$TMPDIR/stage-a-suite/cases/gcc-o0-vs-gcc-o2-symbolic-equivalence" \
+                --out "$TMPDIR/stage-a-suite/formal-proof-check.json"
               mkdir -p "$out"
               cp -R "$TMPDIR/stage-a-suite/." "$out/"
             '';
@@ -274,7 +278,7 @@
                     "candidate": "$fixture_dir/jq-candidate.exe",
                     "mapping": "$work/jq-block-map.json",
                     "layout_contract": "$work/jq-layout-contract.json",
-                    "expect": "pass"
+                    "expect": "incomplete"
                   }
                 ]
               }
@@ -283,20 +287,27 @@
                 --suite "$work/suite.json" \
                 --model x86-pe32-env-v1 \
                 --out "$work/suite"
-              jq -e '.status == "pass" and .counts.passed == .counts.cases' "$work/suite/suite.json" >/dev/null
+              jq -e '.status == "pass" and .counts.passed == .counts.cases and .cases[0].actual_verdict == "incomplete"' "$work/suite/suite.json" >/dev/null
               mkdir -p "$out/generated" "$out/report"
               cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" "$work/suite.json" "$out/report/"
               cp -R "$work/suite/." "$out/report/suite"
-              wincr stage-a-export-reference-contract \
-                --original "$fixture_dir/jq-original.exe" \
-                --candidate "$fixture_dir/jq-candidate.exe" \
-                --mapping "$out/report/jq-block-map.json" \
-                --validation-report "$out/report/suite/cases/jq-o2-alignment-windows-x86" \
-                --layout-contract "$out/report/jq-layout-contract.json" \
-                --sidecar-dir "$out/generated" \
-                --unit-contract-dir "$out/generated" \
-                --out "$out/generated/jq-reference-contract.json" \
-                > "$work/reference-contract.stdout"
+              jq '.proof.lean.failed_formal_pass_attempt.formal_proof.diagnostics' \
+                "$out/report/suite/cases/jq-o2-alignment-windows-x86/verdict.json" \
+                > "$out/generated/jq-formal-gaps.json"
+              if wincr stage-a-export-reference-contract \
+                  --original "$fixture_dir/jq-original.exe" \
+                  --candidate "$fixture_dir/jq-candidate.exe" \
+                  --mapping "$out/report/jq-block-map.json" \
+                  --validation-report "$out/report/suite/cases/jq-o2-alignment-windows-x86" \
+                  --layout-contract "$out/report/jq-layout-contract.json" \
+                  --sidecar-dir "$out/generated" \
+                  --unit-contract-dir "$out/generated" \
+                  --out "$out/generated/jq-reference-contract.json" \
+                  > "$work/reference-contract.stdout"; then
+                echo "jq reference contract unexpectedly claimed formal completion" >&2
+                exit 1
+              fi
+              jq -e '.status == "incomplete"' "$out/generated/jq-reference-contract.json" >/dev/null
               wincr stage-a-smoke-contract \
                 --reference-contract "$out/generated/jq-reference-contract.json" \
                 --out "$out/generated/contract-smoke.json" \

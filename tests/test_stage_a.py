@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import os
 import struct
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from wincr.stage_a import (
     STAGE_A_MODEL_ID,
     STAGE_A_MODEL_SPECS,
     STAGE_A_X86_64_MODEL_ID,
+    stage_a_check_proof,
     stage_a_diff_obligations,
     stage_a_explain_obligations,
     stage_a_extract_work_items,
@@ -612,6 +614,273 @@ class StageAValidateTests(unittest.TestCase):
             summary = json.loads((out / "lean" / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["lean_check"]["status"], "checked")
             self.assertTrue(summary["global_soundness_checked"])
+
+    @unittest.skipUnless(stage_a.shutil.which("lean") is not None, "requires Lean")
+    def test_real_lean_cache_reuses_only_generated_status_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "lean-cache"
+
+            def validate(label: str) -> dict:
+                case = root / label
+                case.mkdir()
+                original = self._write_pe(case / "original.exe", b"\xb8\x2a\x00\x00\x00\xc3")
+                candidate = self._write_pe(case / "candidate.exe", b"\xb8\x2a\x00\x00\x00\xc3")
+                mapping = self._write_mapping(case / "block-map.json", size=6)
+                return stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=mapping,
+                    model=STAGE_A_MODEL_ID,
+                    out=case / "report",
+                )
+
+            with mock.patch.dict(os.environ, {"WINCR_STAGE_A_LEAN_CACHE": str(cache)}):
+                first = validate("first")
+                second = validate("second")
+
+            self.assertEqual(first["verdict"], "pass")
+            self.assertEqual(second["verdict"], "pass")
+            first_cache = first["proof"]["lean"]["lean_check"]["cache"]
+            second_cache = second["proof"]["lean"]["lean_check"]["cache"]
+            self.assertEqual(first_cache["misses"], 2)
+            self.assertEqual(second_cache["hits"], 2)
+            self.assertEqual(
+                {entry["module"] for entry in second_cache["entries"]},
+                {"StageA/Model.lean", "StageA/ProofIR.lean"},
+            )
+
+    @unittest.skipUnless(stage_a.shutil.which("lean") is not None, "requires Lean")
+    def test_real_lean_formal_profile_proves_nonidentical_mov_lea_rewrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\x89\xd8\x90\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\x8d\x03\x90\xc3")
+            mapping = self._write_mapping(root / "block-map.json", size=4)
+            out = root / "report"
+
+            result = stage_a_validate(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=out,
+            )
+
+            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["proof"]["assurance"], "lean_kernel_checked_strong_refinement")
+            formal = result["proof"]["formal"]
+            self.assertEqual(formal["profile"], stage_a.STAGE_A_FORMAL_PROFILE_ID)
+            self.assertEqual(formal["status"], "checked")
+            self.assertTrue(formal["kernel_checked"])
+            self.assertEqual(formal["theorem"], "StageA.Generated.candidateRefinesOriginal")
+            self.assertEqual(formal["original_sha256"], hashlib.sha256(original.read_bytes()).hexdigest())
+            self.assertEqual(formal["candidate_sha256"], hashlib.sha256(candidate.read_bytes()).hexdigest())
+            self.assertEqual(formal["unexpected_axioms"], [])
+            self.assertEqual(set(formal["theorem_axioms"]), {"propext", "Quot.sound"})
+            bundle = (out / "lean" / "StageA" / "FormalBundle.lean").read_text(encoding="utf-8")
+            self.assertIn("theorem candidateRefinesOriginal", bundle)
+            self.assertIn("StageA.Formal.checkProofBundle_guarantee", bundle)
+            self.assertNotIn("native_decide", bundle)
+            independent = stage_a_check_proof(report=out)
+            self.assertEqual(independent["status"], "pass")
+            self.assertTrue(all(independent["checks"].values()))
+            self.assertTrue(independent["checks"]["formal_bundle_reproduced"])
+            bundle_path = out / "lean" / "StageA" / "FormalBundle.lean"
+            bundle_path.write_text(bundle + "\n-- local modification\n", encoding="utf-8")
+            modified_check = stage_a_check_proof(report=out)
+            self.assertEqual(modified_check["status"], "incomplete")
+            self.assertFalse(modified_check["checks"]["formal_bundle_reproduced"])
+            self.assertEqual(modified_check["lean_check"]["status"], "skipped_preflight")
+            bundle_path.write_text(bundle, encoding="utf-8")
+            changed_candidate = self._write_pe(root / "changed-candidate.exe", b"\xb8\x01\x00\x00\x00\xc3")
+            changed_check = stage_a_check_proof(report=out, candidate=changed_candidate)
+            self.assertEqual(changed_check["status"], "incomplete")
+            self.assertFalse(changed_check["checks"]["candidate_artifact_matches"])
+            self.assertEqual(changed_check["lean_check"]["status"], "skipped_preflight")
+
+    def test_formal_profile_rejects_paired_unsupported_import_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_import_pe(root / "original.exe", b"\xc3", "GetTickCount")
+            candidate = self._write_import_pe(root / "candidate.exe", b"\xc3", "GetTickCount")
+            mapping = self._write_mapping(root / "block-map.json", size=1)
+            out = root / "report"
+
+            with self._mock_lean_checked():
+                result = stage_a_validate(
+                    original=original,
+                    candidate=candidate,
+                    mapping=mapping,
+                    model=STAGE_A_MODEL_ID,
+                    out=out,
+                )
+
+            self.assertEqual(result["verdict"], "incomplete")
+            formal_attempt = result["proof"]["lean"]["failed_formal_pass_attempt"]["formal_proof"]
+            categories = {item["category"] for item in formal_attempt["diagnostics"]["issues"]}
+            self.assertIn("formal_import_directory_unsupported", categories)
+            self.assertIn("formal_imports_unsupported", categories)
+
+    @unittest.skipUnless(stage_a.shutil.which("lean") is not None, "requires Lean")
+    def test_z3_equivalence_outside_formal_decoder_is_incomplete_not_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(root / "original.exe", b"\x89\xd1\x90\xc3")
+            candidate = self._write_pe(root / "candidate.exe", b"\x8d\x0a\x90\xc3")
+            mapping = self._write_mapping(root / "block-map.json", size=4)
+            out = root / "report"
+
+            result = stage_a_validate(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=out,
+            )
+
+            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(result["proof"]["assurance"], "incomplete")
+            failed_attempt = result["proof"]["lean"]["failed_formal_pass_attempt"]
+            self.assertEqual(failed_attempt["blocker"], "exact-byte Stage A strong-refinement theorem did not check")
+            diagnostics = failed_attempt["formal_proof"]["diagnostics"]
+            self.assertEqual(diagnostics["status"], "incomplete")
+            self.assertEqual(
+                {item["bytes"] for item in diagnostics["issues"] if item["category"] == "formal_instruction_unsupported"},
+                {"89d1", "8d0a"},
+            )
+            blocker = json.loads((out / "incomplete" / "formal-strong-refinement.json").read_text(encoding="utf-8"))
+            self.assertEqual(blocker["category"], "formal_semantic_proof_incomplete")
+
+    @unittest.skipUnless(stage_a.shutil.which("lean") is not None, "requires Lean")
+    def test_formal_profile_composes_direct_branch_cfg_regions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(
+                root / "original.exe",
+                b"\x83\xf8\x00\x74\x03\x89\xda\xc3\x8d\x13\xc3",
+            )
+            candidate = self._write_pe(
+                root / "candidate.exe",
+                b"\x83\xf8\x00\x74\x03\x8d\x13\xc3\x89\xda\xc3",
+            )
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                "id": "branch",
+                                "kind": "code",
+                                "reachable": True,
+                                "root": {"kind": "fixture_function", "checked": True},
+                                "original": {"rva": 0x1000, "size": 5},
+                                "candidate": {"rva": 0x1000, "size": 5},
+                            },
+                            {
+                                "id": "fallthrough",
+                                "kind": "code",
+                                "reachable": True,
+                                "original": {"rva": 0x1005, "size": 3},
+                                "candidate": {"rva": 0x1005, "size": 3},
+                            },
+                            {
+                                "id": "taken",
+                                "kind": "code",
+                                "reachable": True,
+                                "original": {"rva": 0x1008, "size": 3},
+                                "candidate": {"rva": 0x1008, "size": 3},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = root / "report"
+
+            result = stage_a_validate(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=out,
+            )
+
+            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["proof"]["formal"]["counts"]["regions"], 3)
+            self.assertTrue(result["proof"]["lean"]["formal_strong_refinement_checked"])
+            obligations = json.loads((out / "obligations.json").read_text(encoding="utf-8"))["obligations"]
+            self.assertEqual(
+                len([item for item in obligations if item.get("kind") == "cfg_edge" and item.get("status") == "proved"]),
+                2,
+            )
+
+    @unittest.skipUnless(stage_a.shutil.which("lean") is not None, "requires Lean")
+    def test_formal_profile_proves_sign_extended_cmp_across_encodings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self._write_pe(
+                root / "original.exe",
+                b"\x83\xf8\xff\x74\x03\x89\xda\xc3\x89\xda\xc3\x90\x90",
+            )
+            candidate = self._write_pe(
+                root / "candidate.exe",
+                b"\x3d\xff\xff\xff\xff\x74\x03\x8d\x13\xc3\x8d\x13\xc3",
+            )
+            mapping = root / "block-map.json"
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                "id": "branch",
+                                "kind": "code",
+                                "reachable": True,
+                                "root": {"kind": "fixture_function", "checked": True},
+                                "original": {"rva": 0x1000, "size": 5},
+                                "candidate": {"rva": 0x1000, "size": 7},
+                            },
+                            {
+                                "id": "fallthrough",
+                                "kind": "code",
+                                "reachable": True,
+                                "original": {"rva": 0x1005, "size": 3},
+                                "candidate": {"rva": 0x1007, "size": 3},
+                            },
+                            {
+                                "id": "taken",
+                                "kind": "code",
+                                "reachable": True,
+                                "original": {"rva": 0x1008, "size": 3},
+                                "candidate": {"rva": 0x100A, "size": 3},
+                            },
+                        ],
+                        "waivers": [
+                            {
+                                "id": "original-tail-padding",
+                                "binary": "original",
+                                "rva": 0x100B,
+                                "size": 2,
+                                "reason": "unreachable post-return alignment padding",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = root / "report"
+
+            result = stage_a_validate(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                model=STAGE_A_MODEL_ID,
+                out=out,
+            )
+
+            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["proof"]["formal"]["status"], "checked")
+            self.assertEqual(result["proof"]["formal"]["counts"]["regions"], 3)
 
     @unittest.skipUnless(stage_a._import_z3() is not None, "requires Python Z3 bindings")
     def test_reachable_byte_mutation_fails_with_z3_counterexample_and_witness(self):
@@ -1241,7 +1510,8 @@ class StageAValidateTests(unittest.TestCase):
                     out=out,
                 )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(result["proof"]["assurance"], "incomplete")
             obligation = json.loads((out / "obligations.json").read_text(encoding="utf-8"))["obligations"][0]
             self.assertEqual(obligation["proof_rule"], "smt_z3_local_equivalence_v1")
             self.assertEqual(obligation["symbolic"]["smt_status"], "unsat")
@@ -1315,7 +1585,8 @@ class StageAValidateTests(unittest.TestCase):
                     out=out,
                 )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(result["proof"]["assurance"], "incomplete")
             obligation = self._obligation(out, "block:entry")
             self.assertEqual(obligation["proof_rule"], "smt_z3_local_equivalence_v1")
             self.assertEqual(obligation["symbolic"]["smt_status"], "unsat")
@@ -1355,7 +1626,8 @@ class StageAValidateTests(unittest.TestCase):
                     out=out,
                 )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(result["proof"]["assurance"], "incomplete")
             obligation = self._obligation(out, "block:entry")
             self.assertEqual(obligation["proof_rule"], "pe_import_thunk_equivalence_v1")
             self.assertEqual(obligation["original"]["import_signature"], obligation["candidate"]["import_signature"])
@@ -1874,7 +2146,8 @@ class StageAValidateTests(unittest.TestCase):
                     out=root / "report",
                 )
 
-            self.assertEqual(validation["verdict"], "pass")
+            self.assertEqual(validation["verdict"], "incomplete")
+            self.assertEqual(validation["proof"]["assurance"], "incomplete")
             self.assertEqual(self._obligation(root / "report", f"block:{block['id']}")["proof_rule"], "pe_import_thunk_equivalence_v1")
 
     def test_stage_a_generate_map_rejects_ambiguous_import_thunk_signature_matches(self):
@@ -8837,7 +9110,7 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(result["status"], "incomplete")
             self.assertIn("layout_mismatch", {issue["category"] for issue in result["issues"]})
 
-    def test_checked_generated_jq_mapping_rule_can_close_unsupported_local_semantics(self):
+    def test_checked_generated_jq_mapping_rule_cannot_close_unsupported_formal_semantics(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             original = self._write_pe(root / "original.exe", b"\x0f\x0b\xc3")
@@ -8882,7 +9155,11 @@ class StageAValidateTests(unittest.TestCase):
                     out=out,
                 )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
+            self.assertEqual(result["proof"]["assurance"], "incomplete")
+            formal_attempt = result["proof"]["lean"]["failed_formal_pass_attempt"]["formal_proof"]
+            self.assertEqual(formal_attempt["diagnostics"]["status"], "incomplete")
+            self.assertIn("0f0b", {item.get("bytes") for item in formal_attempt["diagnostics"]["issues"]})
             obligation = self._obligation(out, "block:jq-function")
             self.assertEqual(obligation["proof_rule"], "same_source_layout_preserving_build_v1")
             self.assertEqual(obligation["proof"]["deprecated_rule_alias"], "reproducible_jq_same_source_optimization_pair_v1")
@@ -9313,7 +9590,7 @@ class _LeanCheckedMock:
                 "status": "checked",
                 "command": ["/nix/store/lean/bin/lean", "StageA/Obligations.lean"],
                 "returncode": 0,
-                "stdout": "",
+                "stdout": "'StageA.Generated.candidateRefinesOriginal' depends on axioms: [propext, Quot.sound]\n",
                 "stderr": "",
             },
         )
