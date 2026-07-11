@@ -14,6 +14,7 @@ from threading import Event
 from typing import Any
 
 import capstone
+import z3
 
 from .stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from .util import sha256_bytes, sha256_file, utc_now, write_json
@@ -620,6 +621,18 @@ def stage_a_prove_relational(
             certificates=[],
             blocker="Lean could not decode every relational region from the exact PE bytes",
         )
+    normalized = _refine_contract_bounds(normalized, behaviors)
+    write_json(out / "relation-contract.json", normalized)
+    proof_ir = _proof_ir(original_bin, candidate_bin, normalized)
+    write_json(out / "relational-proof-ir.json", proof_ir)
+    write_json(
+        out / "relational-semantic-ir.json",
+        _relational_semantic_ir(original_bin, candidate_bin, normalized, behaviors),
+    )
+    invariant_synthesis = _synthesize_relational_invariants(normalized, behaviors)
+    write_json(out / "relational-invariants.json", invariant_synthesis)
+    proof_ir = _attach_invariant_synthesis(proof_ir, invariant_synthesis)
+    write_json(out / "relational-proof-ir.json", proof_ir)
     bundle_path = out / "lean" / "StageA" / "RelationalBundle.lean"
     shard_threshold = max(
         1,
@@ -630,7 +643,7 @@ def stage_a_prove_relational(
         shard_modules, _ = _write_sharded_relational_proof(
             out / "lean", original_bin, candidate_bin,
             original_artifact.read_bytes(), candidate_artifact.read_bytes(),
-            normalized, behaviors, replay=False,
+            normalized, behaviors, invariant_synthesis=invariant_synthesis, replay=False,
         )
         if _prepare_only:
             graph = _write_relational_module_graph(
@@ -650,6 +663,8 @@ def stage_a_prove_relational(
                 "candidate_sha256": candidate_bin.sha256,
                 "relation_contract_sha256": sha256_file(out / "relation-contract.json"),
                 "proof_ir_sha256": sha256_file(out / "relational-proof-ir.json"),
+                "semantic_ir_sha256": sha256_file(out / "relational-semantic-ir.json"),
+                "invariants_sha256": sha256_file(out / "relational-invariants.json"),
                 "module_graph_sha256": sha256_file(out / "module-graph.json"),
                 "expected_final_theorem": graph["expected_final_theorem"],
                 "approved_axioms": graph["approved_axioms"],
@@ -740,7 +755,8 @@ def stage_a_prove_relational(
         shard_modules, _ = _write_sharded_relational_proof(
             out / "lean", original_bin, candidate_bin,
             original_artifact.read_bytes(), candidate_artifact.read_bytes(),
-            normalized, behaviors, replay=True, certificates=certificates,
+            normalized, behaviors, invariant_synthesis=invariant_synthesis,
+            replay=True, certificates=certificates,
         )
         replay = _run_sharded_relational(out / "lean", shard_modules)
     else:
@@ -937,7 +953,8 @@ def stage_a_build_relational(
     out.mkdir(parents=True)
     for name in (
         "prepared-proof.json", "module-graph.json", "relation-contract.json",
-        "relational-proof-ir.json", "trusted-base.json", "semantic-gaps.json",
+        "relational-proof-ir.json", "relational-semantic-ir.json",
+        "relational-invariants.json", "trusted-base.json", "semantic-gaps.json",
     ):
         source = prepared / name
         if source.is_file():
@@ -986,9 +1003,43 @@ def _finalize_nix_proof_ir(
     theorem: str,
     result_path: Path,
 ) -> dict[str, Any]:
+    evidence = {
+        "kind": "lean_trust_zero_nix_graph",
+        "theorem": theorem,
+        "lean_trust": 0,
+        "nix_result_path": str(result_path),
+    }
+    invariant_evidence = {
+        **evidence,
+        "kind": "lean_checked_inductive_invariant_family",
+    }
+    finalized_obligations = []
+    for obligation in proof_ir["obligations"]:
+        if obligation["kind"] == "relational_region_equivalence":
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved" if theorem_checked else "incomplete",
+                "evidence": evidence if theorem_checked else None,
+            })
+        elif (
+            theorem_checked
+            and obligation["kind"] in {
+                "cfg_bound_invariant", "cfg_address_separation_invariant",
+            }
+            and obligation.get("analysis", {}).get("status")
+                == "candidate_requires_lean_replay"
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "evidence": invariant_evidence,
+            })
+        else:
+            finalized_obligations.append(obligation)
     assumption_obligations = [
-        obligation for obligation in proof_ir["obligations"]
+        obligation for obligation in finalized_obligations
         if obligation["kind"] != "relational_region_equivalence"
+        and obligation.get("status") != "proved"
     ]
     finalized = dict(proof_ir)
     finalized["status"] = (
@@ -1025,22 +1076,7 @@ def _finalize_nix_proof_ir(
         },
         {"family": "adversarial_environment", "status": "satisfied"},
     ]
-    evidence = {
-        "kind": "lean_trust_zero_nix_graph",
-        "theorem": theorem,
-        "lean_trust": 0,
-        "nix_result_path": str(result_path),
-    }
-    finalized["obligations"] = [
-        {
-            **obligation,
-            "status": "proved" if theorem_checked else "incomplete",
-            "evidence": evidence if theorem_checked else None,
-        }
-        if obligation["kind"] == "relational_region_equivalence"
-        else obligation
-        for obligation in proof_ir["obligations"]
-    ]
+    finalized["obligations"] = finalized_obligations
     return finalized
 
 
@@ -1396,6 +1432,8 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
     expected_hashes = {
         "relation_contract_sha256": prepared / "relation-contract.json",
         "proof_ir_sha256": prepared / "relational-proof-ir.json",
+        "semantic_ir_sha256": prepared / "relational-semantic-ir.json",
+        "invariants_sha256": prepared / "relational-invariants.json",
         "module_graph_sha256": prepared / "module-graph.json",
     }
     for field, path in expected_hashes.items():
@@ -1607,6 +1645,26 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
                 "candidate": str(bound["candidate"]),
                 "unsigned_lt": upper,
             })
+            normalized_bound = bounds[-1]
+            expressions_present = [
+                f"{side}_expression" in bound for side in ("original", "candidate")
+            ]
+            if any(expressions_present):
+                if not all(expressions_present) or not all(
+                    _semantic_expr_is_pure(bound.get(f"{side}_expression"))
+                    for side in ("original", "candidate")
+                ):
+                    issues.append({
+                        "category": "malformed_region_bound_expression",
+                        "id": region_id,
+                        "bound": bound,
+                    })
+                else:
+                    normalized_bound["original_expression"] = bound["original_expression"]
+                    normalized_bound["candidate_expression"] = bound["candidate_expression"]
+                    normalized_bound["expression_source"] = str(
+                        bound.get("expression_source") or "contract"
+                    )
         if not region_id or region_id in region_ids or original_span is None or candidate_span is None:
             issues.append({"category": "malformed_region", "index": index, "id": region_id})
             continue
@@ -2178,6 +2236,9 @@ def _proof_ir(original: StageABinary, candidate: StageABinary, contract: dict[st
             "region_id": region["id"],
             "original_register": bound["original"],
             "candidate_register": bound["candidate"],
+            "original_expression": bound.get("original_expression"),
+            "candidate_expression": bound.get("candidate_expression"),
+            "expression_source": bound.get("expression_source", "entry_register"),
             "unsigned_upper_exclusive": bound["unsigned_lt"],
             "blocker": "bound is a local region precondition and has not been proved inductive on incoming CFG edges",
             "next_action": "prove the bound at roots and preserve it across every reachable predecessor edge",
@@ -2419,18 +2480,22 @@ def _extract_relational_behaviors(
     contract: dict[str, Any],
     *,
     use_cache: bool,
-) -> tuple[list[dict[str, str]] | None, dict[str, Any]]:
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
     cache_dir = _relational_cache_dir() if use_cache else None
-    values: dict[tuple[str, int], str] = {}
+    values: dict[tuple[str, int], dict[str, Any]] = {}
     cache_keys: dict[tuple[str, int], str] = {}
     binaries = {"original": original_bin, "candidate": candidate_bin}
     lean_root = Path(__file__).with_name("lean") / "StageA"
     formal_sha256 = sha256_file(lean_root / "Formal.lean")
+    relational_sha256 = sha256_file(lean_root / "Relational.lean")
     for index, region in enumerate(contract["regions"]):
         for side in ("original", "candidate"):
             key = _behavior_cache_key(
                 binaries[side], region[side],
+                side=side,
+                targets=region.get("code_targets", []),
                 formal_sha256=formal_sha256,
+                relational_sha256=relational_sha256,
             )
             cache_keys[(side, index)] = key
             if cache_dir is not None:
@@ -2453,7 +2518,8 @@ def _extract_relational_behaviors(
             "stderr": "",
         }
     pattern = re.compile(
-        r"STAGE_A_BEHAVIOR_BEGIN (original|candidate) (\d+)\n(.*?)\nSTAGE_A_BEHAVIOR_END",
+        r"STAGE_A_BEHAVIOR_BEGIN (original|candidate) (\d+)\n"
+        r"(.*?)\nSTAGE_A_BEHAVIOR_IR\n(.*?)\nSTAGE_A_BEHAVIOR_END",
         re.DOTALL,
     )
     batch_size = max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_EXTRACTION_BATCH", "128")))
@@ -2499,7 +2565,7 @@ def _extract_relational_behaviors(
                     "batch_size": len(batch),
                 }
             found: set[tuple[str, int]] = set()
-            for side, index_text, value in pattern.findall(result.get("stdout", "")):
+            for side, index_text, value, semantic_text in pattern.findall(result.get("stdout", "")):
                 location = (side, int(index_text))
                 if location not in batch:
                     continue
@@ -2508,7 +2574,30 @@ def _extract_relational_behaviors(
                     for pending in futures:
                         pending.cancel()
                     return None, {**result, "status": "unsupported", "stderr": result.get("stderr", "") + f"\n{side} region {index_text} did not decode"}
-                values[location] = value[len("some ") :]
+                try:
+                    semantic = json.loads(semantic_text)
+                except json.JSONDecodeError as exc:
+                    for pending in futures:
+                        pending.cancel()
+                    return None, {
+                        **result,
+                        "status": "malformed_output",
+                        "stderr": result.get("stderr", "")
+                        + f"\ninvalid semantic IR for {side} region {index_text}: {exc}",
+                    }
+                if not isinstance(semantic, dict) or semantic.get("format") != "stage-a-normalized-behavior-v1":
+                    for pending in futures:
+                        pending.cancel()
+                    return None, {
+                        **result,
+                        "status": "malformed_output",
+                        "stderr": result.get("stderr", "")
+                        + f"\nunsupported semantic IR for {side} region {index_text}",
+                    }
+                values[location] = {
+                    "behavior": value[len("some ") :],
+                    "semantic_ir": semantic,
+                }
                 found.add(location)
             if found != batch:
                 for pending in futures:
@@ -2522,7 +2611,10 @@ def _extract_relational_behaviors(
                 for location in batch:
                     write_json(
                         cache_dir / f"{cache_keys[location]}.json",
-                        {"format": "stage-a-relational-behavior-cache-v1", "behavior": values[location]},
+                        {
+                            "format": "stage-a-relational-behavior-cache-v2",
+                            **values[location],
+                        },
                     )
     behaviors = _behavior_rows(values, len(contract["regions"]))
     if any(not row["original"] or not row["candidate"] for row in behaviors):
@@ -2540,11 +2632,777 @@ def _extract_relational_behaviors(
     }
 
 
-def _behavior_rows(values: dict[tuple[str, int], str], count: int) -> list[dict[str, str]]:
+def _behavior_rows(
+    values: dict[tuple[str, int], dict[str, Any]], count: int
+) -> list[dict[str, Any]]:
     return [
-        {"original": values.get(("original", index), ""), "candidate": values.get(("candidate", index), "")}
+        {
+            "original": values.get(("original", index), {}).get("behavior", ""),
+            "candidate": values.get(("candidate", index), {}).get("behavior", ""),
+            "original_ir": values.get(("original", index), {}).get("semantic_ir"),
+            "candidate_ir": values.get(("candidate", index), {}).get("semantic_ir"),
+        }
         for index in range(count)
     ]
+
+
+def _relational_semantic_ir(
+    original: StageABinary,
+    candidate: StageABinary,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    regions = []
+    for index, (region, behavior) in enumerate(
+        zip(contract["regions"], behaviors, strict=True)
+    ):
+        original_ir = behavior["original_ir"]
+        candidate_ir = behavior["candidate_ir"]
+        regions.append({
+            "index": index,
+            "id": region["id"],
+            "numeric_id": region["numeric_id"],
+            "root": region["root"],
+            "original_span": region["original"],
+            "candidate_span": region["candidate"],
+            "original": original_ir,
+            "candidate": candidate_ir,
+            "original_sha256": sha256_bytes(
+                json.dumps(original_ir, sort_keys=True, separators=(",", ":")).encode()
+            ),
+            "candidate_sha256": sha256_bytes(
+                json.dumps(candidate_ir, sort_keys=True, separators=(",", ":")).encode()
+            ),
+        })
+    return {
+        "format": "stage-a-relational-semantic-ir-v1",
+        "status": "extracted_untrusted_checked_by_generated_lean_proofs",
+        "model": STAGE_A_RELATIONAL_MODEL_ID,
+        "original_sha256": original.sha256,
+        "candidate_sha256": candidate.sha256,
+        "relation_contract_sha256": sha256_bytes(
+            json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
+        ),
+        "trust": {
+            "role": "analysis_and_proof_proposal_only",
+            "acceptance_rule": (
+                "every decoded behavior, invariant, edge, and composition claim must be "
+                "reconstructed from exact PE bytes and checked by Lean"
+            ),
+        },
+        "regions": regions,
+    }
+
+
+_PURE_SEMANTIC_EXPR_OPERATIONS = {
+    "input_reg", "constant", "add", "sub", "bit_and", "bit_xor", "bit_not",
+    "extract_byte", "shift_left", "shift_right", "shift_left_by", "shift_right_by",
+    "shift_arithmetic_right_by", "bit_or", "if_equal", "unsigned_less_value",
+    "bit_value", "multiply", "multiply_high_unsigned", "multiply_high_signed",
+    "divide_quotient", "divide_remainder", "division_valid_value", "lowest_set_bit",
+    "highest_set_bit",
+}
+
+
+def _semantic_expr_is_pure(expression: Any) -> bool:
+    if not isinstance(expression, dict) or expression.get("op") not in _PURE_SEMANTIC_EXPR_OPERATIONS:
+        return False
+    for key, value in expression.items():
+        if key == "op":
+            continue
+        if isinstance(value, dict) and "op" in value and not _semantic_expr_is_pure(value):
+            return False
+        if isinstance(value, list) and any(
+            isinstance(item, dict) and "op" in item and not _semantic_expr_is_pure(item)
+            for item in value
+        ):
+            return False
+    return True
+
+
+def _semantic_expr_registers(expression: dict[str, Any]) -> set[str]:
+    result: set[str] = set()
+    if expression.get("op") == "input_reg":
+        result.add(str(expression["reg"]))
+    for key, value in expression.items():
+        if key == "op":
+            continue
+        if isinstance(value, dict) and "op" in value:
+            result.update(_semantic_expr_registers(value))
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict) and "op" in item:
+                    result.update(_semantic_expr_registers(item))
+    return result
+
+
+def _semantic_index_from_address(
+    address: dict[str, Any], base: int, element_size: int
+) -> dict[str, Any] | None:
+    if address.get("op") != "add":
+        return None
+    for constant_side, scaled_side in (("left", "right"), ("right", "left")):
+        constant = address.get(constant_side)
+        scaled = address.get(scaled_side)
+        if not isinstance(constant, dict) or constant.get("op") != "constant":
+            continue
+        offset = (int(constant["value"]) - base) & 0xFFFFFFFF
+        if offset >= element_size or not isinstance(scaled, dict):
+            continue
+        if element_size == 1:
+            return scaled
+        if element_size & (element_size - 1) == 0:
+            shift = element_size.bit_length() - 1
+            if scaled.get("op") == "shift_left" and int(scaled.get("amount", -1)) == shift:
+                return scaled.get("value")
+        if scaled.get("op") == "multiply":
+            for factor, value in ((scaled.get("left"), scaled.get("right")),
+                                  (scaled.get("right"), scaled.get("left"))):
+                if (
+                    isinstance(factor, dict)
+                    and factor.get("op") == "constant"
+                    and int(factor["value"]) == element_size
+                    and isinstance(value, dict)
+                ):
+                    return value
+    return None
+
+
+def _semantic_read_addresses(value: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        if value.get("op") in {"read8", "read32"} and isinstance(value.get("address"), dict):
+            result.append(value["address"])
+        for key, child in value.items():
+            if key != "op":
+                result.extend(_semantic_read_addresses(child))
+    elif isinstance(value, list):
+        for child in value:
+            result.extend(_semantic_read_addresses(child))
+    return result
+
+
+def _exact_index_expression(
+    region: dict[str, Any], behavior: dict[str, Any], bound: dict[str, Any], side: str
+) -> dict[str, Any] | None:
+    upper = int(bound["unsigned_lt"])
+    register = str(bound[side])
+    matches: dict[str, dict[str, Any]] = {}
+    for target in region.get("values", []):
+        mapped_size = int(target.get("mapped_size", 0))
+        if upper <= 0 or mapped_size <= 0 or mapped_size % upper != 0:
+            continue
+        element_size = mapped_size // upper
+        if element_size not in {1, 2, 4, 8}:
+            continue
+        base = int(target[f"{side}_value"])
+        for address in _semantic_read_addresses(behavior):
+            expression = _semantic_index_from_address(address, base, element_size)
+            if (
+                expression is not None
+                and register in _semantic_expr_registers(expression)
+                and _semantic_expr_is_pure(expression)
+            ):
+                matches[_semantic_hash(expression)] = expression
+    if len(matches) != 1:
+        return None
+    return next(iter(matches.values()))
+
+
+def _refine_contract_bounds(
+    contract: dict[str, Any], behaviors: list[dict[str, Any]]
+) -> dict[str, Any]:
+    refined = json.loads(json.dumps(contract))
+    for region, behavior_pair in zip(refined["regions"], behaviors, strict=True):
+        for bound in region.get("bounds", []):
+            found = True
+            for side in ("original", "candidate"):
+                expression = _exact_index_expression(
+                    region, behavior_pair[f"{side}_ir"], bound, side
+                )
+                if expression is None:
+                    found = False
+                    break
+                bound[f"{side}_expression"] = expression
+            if found:
+                bound["expression_source"] = "lean_exact_effective_address"
+            else:
+                bound.pop("original_expression", None)
+                bound.pop("candidate_expression", None)
+                bound.pop("expression_source", None)
+    return refined
+
+
+_SEMANTIC_FLAG_FIELDS = {
+    0: "carry",
+    2: "parity",
+    6: "zero",
+    7: "sign",
+    11: "overflow",
+}
+
+
+def _semantic_constant(value: int) -> dict[str, Any]:
+    return {"op": "constant", "value": value & 0xFFFFFFFF}
+
+
+def _semantic_input_register(register: str) -> dict[str, Any]:
+    return {"op": "input_reg", "reg": register}
+
+
+def _semantic_input_flag(index: int) -> dict[str, Any]:
+    return {"op": "input_flag", "index": index}
+
+
+def _semantic_unsigned_less(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    return {"op": "unsigned_less", "left": left, "right": right}
+
+
+def _semantic_equal(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    return {"op": "equal", "left": left, "right": right}
+
+
+def _semantic_not(value: dict[str, Any]) -> dict[str, Any]:
+    if value.get("op") == "bool_constant":
+        return {"op": "bool_constant", "value": not value["value"]}
+    if value.get("op") == "not":
+        return value["value"]
+    return {"op": "not", "value": value}
+
+
+def _semantic_or(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    if left.get("op") == "bool_constant":
+        return left if left["value"] else right
+    if right.get("op") == "bool_constant":
+        return right if right["value"] else left
+    return {"op": "or", "left": left, "right": right}
+
+
+def _semantic_add(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    return {"op": "add", "left": left, "right": right}
+
+
+def _semantic_node_count(value: Any) -> int:
+    if isinstance(value, dict):
+        return 1 + sum(_semantic_node_count(item) for key, item in value.items() if key != "op")
+    if isinstance(value, list):
+        return sum(_semantic_node_count(item) for item in value)
+    return 0
+
+
+def _semantic_hash(value: dict[str, Any]) -> str:
+    return sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _substitute_semantic_expr(
+    expression: dict[str, Any],
+    registers: dict[str, dict[str, Any]],
+    flags: dict[str, Any] | None,
+) -> dict[str, Any]:
+    operation = expression.get("op")
+    if operation == "input_reg":
+        return registers[expression["reg"]]
+    if operation == "input_flag_value":
+        condition = _substitute_semantic_flag(int(expression["bit"]), flags)
+        return {"op": "bool_to_word", "value": condition}
+    result: dict[str, Any] = {"op": operation}
+    for key, value in expression.items():
+        if key == "op":
+            continue
+        if isinstance(value, dict) and "op" in value:
+            if _semantic_is_boolean(value):
+                result[key] = _substitute_semantic_bool(value, registers, flags)
+            else:
+                result[key] = _substitute_semantic_expr(value, registers, flags)
+        elif isinstance(value, list):
+            result[key] = [
+                _substitute_semantic_expr(item, registers, flags)
+                if isinstance(item, dict) and "op" in item
+                else item
+                for item in value
+            ]
+        else:
+            result[key] = value
+    return result
+
+
+def _semantic_is_boolean(expression: dict[str, Any]) -> bool:
+    return expression.get("op") in {
+        "bool_constant", "equal", "not", "and", "or", "xor", "unsigned_less",
+        "msb", "bit", "input_flag", "division_valid",
+    }
+
+
+def _substitute_semantic_flag(index: int, flags: dict[str, Any] | None) -> dict[str, Any]:
+    field = _SEMANTIC_FLAG_FIELDS.get(index)
+    if field is None or flags is None or flags.get(field) is None:
+        return _semantic_input_flag(index)
+    return flags[field]
+
+
+def _substitute_semantic_bool(
+    expression: dict[str, Any],
+    registers: dict[str, dict[str, Any]],
+    flags: dict[str, Any] | None,
+) -> dict[str, Any]:
+    operation = expression.get("op")
+    if operation == "input_flag":
+        return _substitute_semantic_flag(int(expression["index"]), flags)
+    if operation == "bool_constant":
+        return expression
+    result: dict[str, Any] = {"op": operation}
+    for key, value in expression.items():
+        if key == "op":
+            continue
+        if isinstance(value, dict) and "op" in value:
+            result[key] = (
+                _substitute_semantic_bool(value, registers, flags)
+                if _semantic_is_boolean(value)
+                else _substitute_semantic_expr(value, registers, flags)
+            )
+        else:
+            result[key] = value
+    return result
+
+
+class _SemanticZ3Context:
+    def __init__(self) -> None:
+        self.registers = {
+            register: z3.BitVec(f"reg_{register}", 32) for register in sorted(REGISTERS)
+        }
+        self.flags = {bit: z3.Bool(f"flag_{bit}") for bit in FLAG_BITS}
+        self.memory = z3.Array("memory", z3.BitVecSort(32), z3.BitVecSort(8))
+        self.fs_base = z3.BitVec("fs_base", 32)
+        self.x87_control = z3.BitVec("x87_control", 32)
+        self.x87_status = z3.BitVec("x87_status", 32)
+        self.undefined: dict[int, Any] = {}
+
+    def expr(self, expression: dict[str, Any]) -> Any | None:
+        operation = expression.get("op")
+        if operation == "input_reg":
+            return self.registers[expression["reg"]]
+        if operation == "input_flag_value":
+            return z3.If(self.flags[int(expression["bit"])], z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        if operation == "bool_to_word":
+            value = self.boolean(expression["value"])
+            return None if value is None else z3.If(value, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        if operation == "input_fs_base":
+            return self.fs_base
+        if operation == "input_x87_control":
+            return self.x87_control
+        if operation == "input_x87_status":
+            return self.x87_status
+        if operation == "constant":
+            return z3.BitVecVal(int(expression["value"]) & 0xFFFFFFFF, 32)
+        if operation == "undefined":
+            slot = int(expression["slot"])
+            return self.undefined.setdefault(slot, z3.BitVec(f"undefined_{slot}", 32))
+        if operation in {
+            "add", "sub", "bit_and", "bit_xor", "bit_or", "multiply",
+            "shift_left_by", "shift_right_by", "shift_arithmetic_right_by",
+        }:
+            left = self.expr(expression["left"])
+            right = self.expr(expression["right"])
+            if left is None or right is None:
+                return None
+            return {
+                "add": lambda: left + right,
+                "sub": lambda: left - right,
+                "bit_and": lambda: left & right,
+                "bit_xor": lambda: left ^ right,
+                "bit_or": lambda: left | right,
+                "multiply": lambda: left * right,
+                "shift_left_by": lambda: left << (right & z3.BitVecVal(31, 32)),
+                "shift_right_by": lambda: z3.LShR(left, right & z3.BitVecVal(31, 32)),
+                "shift_arithmetic_right_by": lambda: left >> (right & z3.BitVecVal(31, 32)),
+            }[operation]()
+        if operation == "bit_not":
+            value = self.expr(expression["value"])
+            return None if value is None else ~value
+        if operation in {"shift_left", "shift_right"}:
+            value = self.expr(expression["value"])
+            if value is None:
+                return None
+            amount = int(expression["amount"])
+            return value << amount if operation == "shift_left" else z3.LShR(value, amount)
+        if operation == "extract_byte":
+            value = self.expr(expression["value"])
+            if value is None:
+                return None
+            index = int(expression["index"])
+            return z3.ZeroExt(24, z3.Extract(index * 8 + 7, index * 8, value))
+        if operation == "bit_value":
+            value = self.expr(expression["value"])
+            if value is None:
+                return None
+            index = int(expression["index"])
+            return z3.If(
+                z3.Extract(index, index, value) == z3.BitVecVal(1, 1),
+                z3.BitVecVal(1, 32), z3.BitVecVal(0, 32),
+            )
+        if operation == "if_equal":
+            left = self.expr(expression["left"])
+            right = self.expr(expression["right"])
+            then_value = self.expr(expression["then"])
+            else_value = self.expr(expression["else"])
+            if any(value is None for value in (left, right, then_value, else_value)):
+                return None
+            return z3.If(left == right, then_value, else_value)
+        if operation == "unsigned_less_value":
+            left = self.expr(expression["left"])
+            right = self.expr(expression["right"])
+            if left is None or right is None:
+                return None
+            return z3.If(z3.ULT(left, right), z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        if operation == "read8":
+            address = self.expr(expression["address"])
+            return None if address is None else z3.ZeroExt(24, z3.Select(self.memory, address))
+        if operation == "read32":
+            address = self.expr(expression["address"])
+            if address is None:
+                return None
+            bytes_ = [z3.Select(self.memory, address + z3.BitVecVal(offset, 32)) for offset in range(4)]
+            return z3.Concat(bytes_[3], bytes_[2], bytes_[1], bytes_[0])
+        return None
+
+    def boolean(self, expression: dict[str, Any]) -> Any | None:
+        operation = expression.get("op")
+        if operation == "bool_constant":
+            return z3.BoolVal(bool(expression["value"]))
+        if operation == "input_flag":
+            return self.flags.setdefault(int(expression["index"]), z3.Bool(f"flag_{expression['index']}"))
+        if operation == "not":
+            value = self.boolean(expression["value"])
+            return None if value is None else z3.Not(value)
+        if operation in {"and", "or", "xor"}:
+            left = self.boolean(expression["left"])
+            right = self.boolean(expression["right"])
+            if left is None or right is None:
+                return None
+            return {
+                "and": lambda: z3.And(left, right),
+                "or": lambda: z3.Or(left, right),
+                "xor": lambda: z3.Xor(left, right),
+            }[operation]()
+        if operation in {"equal", "unsigned_less"}:
+            left = self.expr(expression["left"])
+            right = self.expr(expression["right"])
+            if left is None or right is None:
+                return None
+            return left == right if operation == "equal" else z3.ULT(left, right)
+        if operation in {"msb", "bit"}:
+            value = self.expr(expression["value"])
+            if value is None:
+                return None
+            index = 31 if operation == "msb" else int(expression["index"])
+            return z3.Extract(index, index, value) == z3.BitVecVal(1, 1)
+        return None
+
+
+def _semantic_tautology(expression: dict[str, Any]) -> tuple[bool, str]:
+    context = _SemanticZ3Context()
+    translated = context.boolean(expression)
+    if translated is None:
+        return False, "unsupported_expression"
+    solver = z3.Solver()
+    solver.add(z3.Not(translated))
+    result = solver.check()
+    if result == z3.unsat:
+        return True, "z3_unsat_candidate_requires_lean_replay"
+    if result == z3.sat:
+        return False, "counterexample_exists"
+    return False, f"solver_unknown:{solver.reason_unknown()}"
+
+
+def _semantic_edges(behavior: dict[str, Any]) -> list[dict[str, Any]]:
+    outcome = behavior["outcome"]
+    operation = outcome.get("op")
+    truth = {"op": "bool_constant", "value": True}
+    if operation in {"jump", "call"}:
+        return [{"target": int(outcome["target"]), "guard": truth, "kind": operation}]
+    if operation == "branch":
+        return [
+            {"target": int(outcome["taken"]), "guard": outcome["condition"], "kind": "branch_taken"},
+            {"target": int(outcome["fallthrough"]), "guard": _semantic_not(outcome["condition"]), "kind": "branch_fallthrough"},
+        ]
+    if operation in {"bulk_copy", "atomic_compare_exchange"}:
+        return [{"target": int(outcome["continuation"]), "guard": truth, "kind": operation}]
+    if operation == "checked_continue":
+        return [{"target": int(outcome["continuation"]), "guard": outcome["valid"], "kind": operation}]
+    if operation == "external_call":
+        return [{
+            "target": int(outcome["continuation"]),
+            "guard": truth,
+            "kind": operation,
+            "environment_barrier": True,
+        }]
+    return []
+
+
+def _local_invariant_seeds(region: dict[str, Any]) -> list[dict[str, Any]]:
+    seeds = []
+    for bound_index, bound in enumerate(region.get("bounds", [])):
+        for side in ("original", "candidate"):
+            seeds.append({
+                "id": f"invariant:{region['id']}:{bound_index}:{side}",
+                "obligation_id": f"invariant:{region['id']}:{bound_index}",
+                "side": side,
+                "predicate": _semantic_unsigned_less(
+                    bound.get(f"{side}_expression")
+                    or _semantic_input_register(bound[side]),
+                    _semantic_constant(int(bound["unsigned_lt"])),
+                ),
+                "kind": "cfg_bound_invariant",
+            })
+    seen_separations: set[tuple[str, str]] = set()
+    for separation_index, separation in enumerate(region.get("address_separations", [])):
+        for side in ("original", "candidate"):
+            predicate = _semantic_not(_semantic_equal(
+                _semantic_add(
+                    _semantic_input_register(separation[f"{side}_register"]),
+                    _semantic_constant(int(separation[f"{side}_offset"])),
+                ),
+                _semantic_constant(int(separation[f"{side}_address"])),
+            ))
+            key = (side, _semantic_hash(predicate))
+            if key in seen_separations:
+                continue
+            seen_separations.add(key)
+            seeds.append({
+                "id": f"address-separation:{region['id']}:{separation_index}:{side}",
+                "obligation_id": f"address-separation:{region['id']}",
+                "side": side,
+                "predicate": predicate,
+                "kind": "cfg_address_separation_invariant",
+            })
+    return seeds
+
+
+def _synthesize_relational_invariants(
+    contract: dict[str, Any], behaviors: list[dict[str, Any]]
+) -> dict[str, Any]:
+    index_by_id = {
+        int(region["numeric_id"]): index for index, region in enumerate(contract["regions"])
+    }
+    incoming: dict[str, dict[int, list[dict[str, Any]]]] = {
+        "original": {}, "candidate": {},
+    }
+    for source_index, behavior_pair in enumerate(behaviors):
+        for side in ("original", "candidate"):
+            for edge in _semantic_edges(behavior_pair[f"{side}_ir"]):
+                target_index = index_by_id.get(edge["target"])
+                if target_index is None:
+                    continue
+                incoming[side].setdefault(target_index, []).append({
+                    **edge,
+                    "source_index": source_index,
+                    "target_index": target_index,
+                })
+
+    requirements: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
+    queue: list[dict[str, Any]] = []
+    seeds: list[dict[str, Any]] = []
+    for region_index, region in enumerate(contract["regions"]):
+        for seed in _local_invariant_seeds(region):
+            record = {**seed, "region_index": region_index, "path": [region_index]}
+            predicate_hash = _semantic_hash(seed["predicate"])
+            requirements.setdefault((seed["side"], region_index), {})[predicate_hash] = record
+            queue.append(record)
+            seeds.append(record)
+
+    edge_obligations: list[dict[str, Any]] = []
+    barriers: list[dict[str, Any]] = []
+    cursor = 0
+    while cursor < len(queue):
+        requirement = queue[cursor]
+        cursor += 1
+        side = requirement["side"]
+        target_index = requirement["region_index"]
+        target_region = contract["regions"][target_index]
+        predecessors = incoming[side].get(target_index, [])
+        if not predecessors:
+            barriers.append({
+                "kind": (
+                    "loader_entry_assumption_required"
+                    if target_region.get("root")
+                    else "no_static_predecessor"
+                ),
+                "side": side,
+                "region_index": target_index,
+                "region_id": target_region["id"],
+                "requirement_id": requirement["id"],
+            })
+        for edge in predecessors:
+            source_index = edge["source_index"]
+            source_region = contract["regions"][source_index]
+            if edge.get("environment_barrier"):
+                barriers.append({
+                    "kind": "adversarial_environment_transition",
+                    "side": side,
+                    "source_index": source_index,
+                    "source_id": source_region["id"],
+                    "target_index": target_index,
+                    "target_id": target_region["id"],
+                    "requirement_id": requirement["id"],
+                })
+                continue
+            source_behavior = behaviors[source_index][f"{side}_ir"]
+            postcondition = _substitute_semantic_bool(
+                requirement["predicate"],
+                source_behavior["registers"],
+                source_behavior.get("flags"),
+            )
+            precondition = _semantic_or(_semantic_not(edge["guard"]), postcondition)
+            tautology, solver_status = _semantic_tautology(precondition)
+            edge_id = (
+                f"edge:{side}:{source_region['numeric_id']}:{target_region['numeric_id']}:"
+                f"{_semantic_hash(requirement['predicate'])[:16]}"
+            )
+            edge_obligations.append({
+                "id": edge_id,
+                "side": side,
+                "source_index": source_index,
+                "source_id": source_region["id"],
+                "target_index": target_index,
+                "target_id": target_region["id"],
+                "edge_kind": edge["kind"],
+                "requirement_id": requirement["id"],
+                "precondition": precondition,
+                "precondition_sha256": _semantic_hash(precondition),
+                "nodes": _semantic_node_count(precondition),
+                "analysis_status": "candidate_tautology" if tautology else "requires_predecessor_invariant",
+                "solver_status": solver_status,
+                "lean_status": "pending",
+            })
+            if tautology:
+                continue
+            derived_hash = _semantic_hash(precondition)
+            bucket = requirements.setdefault((side, source_index), {})
+            if derived_hash in bucket:
+                continue
+            if source_index in requirement["path"]:
+                barriers.append({
+                    "kind": "loop_invariant_fixpoint_required",
+                    "side": side,
+                    "source_index": source_index,
+                    "source_id": source_region["id"],
+                    "target_index": target_index,
+                    "target_id": target_region["id"],
+                    "requirement_id": requirement["id"],
+                    "precondition": precondition,
+                })
+                continue
+            derived = {
+                "id": f"derived:{side}:{source_region['numeric_id']}:{derived_hash[:16]}",
+                "obligation_id": requirement["obligation_id"],
+                "side": side,
+                "predicate": precondition,
+                "kind": requirement["kind"],
+                "region_index": source_index,
+                "path": requirement["path"] + [source_index],
+                "derived_from": requirement["id"],
+            }
+            bucket[derived_hash] = derived
+            queue.append(derived)
+
+    obligations: dict[str, dict[str, Any]] = {}
+    for seed in seeds:
+        item = obligations.setdefault(seed["obligation_id"], {
+            "id": seed["obligation_id"],
+            "kind": seed["kind"],
+            "seed_count": 0,
+            "candidate_tautology_edges": 0,
+            "open_predecessor_edges": 0,
+            "barriers": [],
+            "status": "candidate_requires_lean_replay",
+        })
+        item["seed_count"] += 1
+    requirement_by_id = {
+        requirement["id"]: requirement
+        for bucket in requirements.values()
+        for requirement in bucket.values()
+    }
+    for edge in edge_obligations:
+        requirement = requirement_by_id[edge["requirement_id"]]
+        item = obligations[requirement["obligation_id"]]
+        if edge["analysis_status"] == "candidate_tautology":
+            item["candidate_tautology_edges"] += 1
+        else:
+            item["open_predecessor_edges"] += 1
+    for barrier in barriers:
+        requirement = requirement_by_id.get(barrier["requirement_id"])
+        if requirement is not None:
+            obligations[requirement["obligation_id"]]["barriers"].append(barrier["kind"])
+    for item in obligations.values():
+        item["barriers"] = sorted(set(item["barriers"]))
+        if item["barriers"]:
+            item["status"] = "incomplete"
+
+    region_invariants = []
+    for (side, region_index), bucket in sorted(requirements.items()):
+        region_invariants.append({
+            "side": side,
+            "region_index": region_index,
+            "region_id": contract["regions"][region_index]["id"],
+            "predicates": [
+                {
+                    "id": requirement["id"],
+                    "obligation_id": requirement["obligation_id"],
+                    "predicate": requirement["predicate"],
+                    "predicate_sha256": _semantic_hash(requirement["predicate"]),
+                    "nodes": _semantic_node_count(requirement["predicate"]),
+                }
+                for requirement in sorted(bucket.values(), key=lambda item: item["id"])
+            ],
+        })
+    return {
+        "format": "stage-a-relational-invariants-v1",
+        "status": "analysis_candidates_only",
+        "trust": {
+            "z3": "untrusted_candidate_generator",
+            "acceptance": "all candidate tautologies and edge preservation claims require Lean replay",
+        },
+        "counts": {
+            "seeds": len(seeds),
+            "region_invariants": sum(len(item["predicates"]) for item in region_invariants),
+            "edge_obligations": len(edge_obligations),
+            "candidate_tautology_edges": sum(
+                edge["analysis_status"] == "candidate_tautology" for edge in edge_obligations
+            ),
+            "barriers": len(barriers),
+        },
+        "obligations": sorted(obligations.values(), key=lambda item: item["id"]),
+        "region_invariants": region_invariants,
+        "edge_obligations": edge_obligations,
+        "barriers": barriers,
+    }
+
+
+def _attach_invariant_synthesis(
+    proof_ir: dict[str, Any], synthesis: dict[str, Any]
+) -> dict[str, Any]:
+    by_id = {item["id"]: item for item in synthesis["obligations"]}
+    updated = dict(proof_ir)
+    updated["obligations"] = [
+        {
+            **obligation,
+            "analysis": by_id[obligation["id"]],
+            "blocker": (
+                "generic weakest-precondition candidates were found but their edge "
+                "preservation theorems have not yet been replayed by Lean"
+                if by_id[obligation["id"]]["status"] != "incomplete"
+                else "generic invariant synthesis reached an explicit control/environment boundary"
+            ),
+            "next_action": (
+                "emit and check the candidate edge-preservation theorems in Lean"
+                if by_id[obligation["id"]]["status"] != "incomplete"
+                else "supply a checked loop, loader-entry, call-summary, or environment invariant"
+            ),
+        }
+        if obligation["id"] in by_id else obligation
+        for obligation in proof_ir["obligations"]
+    ]
+    return updated
 
 
 def _relational_cache_dir() -> Path | None:
@@ -2561,27 +3419,41 @@ def _behavior_cache_key(
     binary: StageABinary,
     span: dict[str, Any],
     *,
+    side: str,
+    targets: list[dict[str, Any]],
     formal_sha256: str | None = None,
+    relational_sha256: str | None = None,
 ) -> str:
     lean_root = Path(__file__).with_name("lean") / "StageA"
     payload = {
-        "format": "stage-a-relational-behavior-cache-key-v2",
+        "format": "stage-a-relational-behavior-cache-key-v3",
         "binary_sha256": binary.sha256,
         "span": {"rva_start": span["rva_start"], "size": span["size"]},
+        "side": side,
+        "targets": targets,
         "formal_sha256": formal_sha256 or sha256_file(lean_root / "Formal.lean"),
+        "relational_sha256": relational_sha256 or sha256_file(lean_root / "Relational.lean"),
     }
     return sha256_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
 
 
-def _read_behavior_cache(path: Path) -> str | None:
+def _read_behavior_cache(path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if payload.get("format") != "stage-a-relational-behavior-cache-v1":
+    if payload.get("format") != "stage-a-relational-behavior-cache-v2":
         return None
     behavior = payload.get("behavior")
-    return behavior if isinstance(behavior, str) and behavior else None
+    semantic_ir = payload.get("semantic_ir")
+    if (
+        not isinstance(behavior, str)
+        or not behavior
+        or not isinstance(semantic_ir, dict)
+        or semantic_ir.get("format") != "stage-a-normalized-behavior-v1"
+    ):
+        return None
+    return {"behavior": behavior, "semantic_ir": semantic_ir}
 
 
 def _lean_extraction_source(
@@ -2594,24 +3466,36 @@ def _lean_extraction_source(
     requests: set[tuple[str, int]],
 ) -> str:
     evaluations: list[str] = []
+    definitions: list[str] = []
     for index, region in enumerate(contract["regions"]):
         if not any((side, index) in requests for side in ("original", "candidate")):
             continue
+        definitions.append(_lean_region_definition(index, region))
         for side in ("original", "candidate"):
             if (side, index) not in requests:
                 continue
             span = region[side]
             span_literal = f"{{ start := {span['rva_start']}, size := {span['size']} }}"
-            evaluations.append(
+            candidate_literal = "true" if side == "candidate" else "false"
+            evaluations.extend((
+                f"  let some {side}Behavior{index} := "
+                f"regionBehaviorWithImports {side}Pe {side}Imports {span_literal} | "
+                f'throw (IO.userError "{side} region {index} did not decode")',
+                f"  let some {side}Normalized{index} := normalizeSymbolicBehavior "
+                f"{candidate_literal} region{index}.targets {side}Behavior{index} | "
+                f'throw (IO.userError "{side} region {index} did not normalize")',
                 f'  IO.println ("STAGE_A_BEHAVIOR_BEGIN {side} {index}\\n" ++ '
-                f'reprStr (regionBehaviorWithImports {side}Pe {side}Imports {span_literal}) ++ '
-                '"\\nSTAGE_A_BEHAVIOR_END")'
-            )
+                f'reprStr (some {side}Behavior{index}) ++ "\\nSTAGE_A_BEHAVIOR_IR\\n" ++ '
+                f'SemanticIR.normalizedBehaviorString {side}Normalized{index} ++ '
+                '"\\nSTAGE_A_BEHAVIOR_END")',
+            ))
     return (
         "import StageA.Relational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
         "set_option linter.unusedSimpArgs false\n\n"
+        + "\n\n".join(definitions)
+        + "\n\n"
         "def main : IO Unit := do\n"
         "  let originalData ← IO.FS.readBinFile \"../artifacts/original.pe\"\n"
         "  let candidateData ← IO.FS.readBinFile \"../artifacts/candidate.pe\"\n"
@@ -2816,11 +3700,134 @@ def _lean_targets_definition(targets: list[dict[str, Any]]) -> str:
     return f"def allTargets : List CodeTargetPair := [{target_rows}]"
 
 
+def _lean_semantic_expr(expression: dict[str, Any]) -> str:
+    operation = expression["op"]
+    unary = {
+        "bit_not": "bitNot",
+        "lowest_set_bit": "lowestSetBit",
+        "highest_set_bit": "highestSetBit",
+    }
+    binary = {
+        "add": "add",
+        "sub": "sub",
+        "bit_and": "bitAnd",
+        "bit_xor": "bitXor",
+        "shift_left_by": "shiftLeftBy",
+        "shift_right_by": "shiftRightBy",
+        "shift_arithmetic_right_by": "shiftArithmeticRightBy",
+        "bit_or": "bitOr",
+        "unsigned_less_value": "unsignedLessValue",
+        "multiply": "multiply",
+        "multiply_high_unsigned": "multiplyHighUnsigned",
+        "multiply_high_signed": "multiplyHighSigned",
+    }
+    if operation == "input_reg":
+        return f"StageA.Formal.Expr.inputReg (StageA.Formal.Reg.{expression['reg']})"
+    if operation == "constant":
+        return f"StageA.Formal.Expr.constant {int(expression['value'])}"
+    if operation in unary:
+        return f"StageA.Formal.Expr.{unary[operation]} ({_lean_semantic_expr(expression['value'])})"
+    if operation in binary:
+        return (
+            f"StageA.Formal.Expr.{binary[operation]} "
+            f"({_lean_semantic_expr(expression['left'])}) "
+            f"({_lean_semantic_expr(expression['right'])})"
+        )
+    if operation in {"shift_left", "shift_right"}:
+        constructor = "shiftLeft" if operation == "shift_left" else "shiftRight"
+        return (
+            f"StageA.Formal.Expr.{constructor} "
+            f"({_lean_semantic_expr(expression['value'])}) {int(expression['amount'])}"
+        )
+    if operation in {"extract_byte", "bit_value"}:
+        constructor = "extractByte" if operation == "extract_byte" else "bitValue"
+        return (
+            f"StageA.Formal.Expr.{constructor} "
+            f"({_lean_semantic_expr(expression['value'])}) {int(expression['index'])}"
+        )
+    if operation == "if_equal":
+        return (
+            "StageA.Formal.Expr.ifEqual "
+            f"({_lean_semantic_expr(expression['left'])}) "
+            f"({_lean_semantic_expr(expression['right'])}) "
+            f"({_lean_semantic_expr(expression['then'])}) "
+            f"({_lean_semantic_expr(expression['else'])})"
+        )
+    if operation in {"divide_quotient", "divide_remainder", "division_valid_value"}:
+        constructor = {
+            "divide_quotient": "divideQuotient",
+            "divide_remainder": "divideRemainder",
+            "division_valid_value": "divisionValidValue",
+        }[operation]
+        return (
+            f"StageA.Formal.Expr.{constructor} "
+            f"({_lean_semantic_expr(expression['high'])}) "
+            f"({_lean_semantic_expr(expression['low'])}) "
+            f"({_lean_semantic_expr(expression['divisor'])})"
+        )
+    raise StageAInputError(f"unsupported pure bound expression operation {operation!r}")
+
+
+def _lean_semantic_bool_expr(expression: dict[str, Any]) -> str:
+    operation = expression["op"]
+    if operation == "bool_constant":
+        constant = "0" if expression["value"] else "1"
+        return (
+            "StageA.Formal.BoolExpr.equal "
+            "(StageA.Formal.Expr.constant 0) "
+            f"(StageA.Formal.Expr.constant {constant})"
+        )
+    if operation == "input_flag":
+        return f"StageA.Formal.BoolExpr.inputFlag {int(expression['index'])}"
+    if operation == "not":
+        return (
+            "StageA.Formal.BoolExpr.not "
+            f"({_lean_semantic_bool_expr(expression['value'])})"
+        )
+    if operation in {"and", "or", "xor"}:
+        return (
+            f"StageA.Formal.BoolExpr.{operation} "
+            f"({_lean_semantic_bool_expr(expression['left'])}) "
+            f"({_lean_semantic_bool_expr(expression['right'])})"
+        )
+    if operation in {"equal", "unsigned_less"}:
+        constructor = "equal" if operation == "equal" else "unsignedLess"
+        return (
+            f"StageA.Formal.BoolExpr.{constructor} "
+            f"({_lean_semantic_expr(expression['left'])}) "
+            f"({_lean_semantic_expr(expression['right'])})"
+        )
+    if operation in {"msb", "bit"}:
+        suffix = "" if operation == "msb" else f" {int(expression['index'])}"
+        return (
+            f"StageA.Formal.BoolExpr.{operation} "
+            f"({_lean_semantic_expr(expression['value'])}){suffix}"
+        )
+    if operation == "division_valid":
+        return (
+            "StageA.Formal.BoolExpr.divisionValid "
+            f"({_lean_semantic_expr(expression['high'])}) "
+            f"({_lean_semantic_expr(expression['low'])}) "
+            f"({_lean_semantic_expr(expression['divisor'])})"
+        )
+    raise StageAInputError(f"unsupported invariant predicate operation {operation!r}")
+
+
 def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
     input_rows = ", ".join(_lean_register_pair(pair) for pair in region["inputs"])
     output_rows = ", ".join(_lean_register_pair(pair) for pair in region["outputs"])
     bound_rows = ", ".join(
-        f"{{ original := .{bound['original']}, candidate := .{bound['candidate']}, upperExclusive := {bound['unsigned_lt']} }}"
+        f"{{ original := .{bound['original']}, candidate := .{bound['candidate']}, "
+        + (
+            "originalExpression := some ("
+            + _lean_semantic_expr(bound["original_expression"])
+            + "), candidateExpression := some ("
+            + _lean_semantic_expr(bound["candidate_expression"])
+            + "), "
+            if "original_expression" in bound and "candidate_expression" in bound
+            else ""
+        )
+        + f"upperExclusive := {bound['unsigned_lt']} }}"
         for bound in region.get("bounds", [])
     )
     target_rows = ", ".join(
@@ -3100,10 +4107,16 @@ def _lean_region_bound_setup(
             if bound["unsigned_lt"] == upper
         )
         hypothesis = "boundsSatisfied" if len(bounds) == 1 else f"boundSatisfied{bound_index}"
-        register = bounds[bound_index]["original"]
+        bound = bounds[bound_index]
+        index_value = _lean_bound_index_value(bound, "original", "o")
         rows.append(
             f"  have region{index}MappedIndexedAddressFact{spec_index} := "
-            f"region{index}MappedIndexedAddress{spec_index} o{register} {hypothesis}"
+            f"region{index}MappedIndexedAddress{spec_index} {index_value} "
+            f"(by simpa [boundValue, evalExprPure, StageA.Formal.Registers.get] using {hypothesis})"
+        )
+        rows.append(
+            f"  simp [evalExprPure, StageA.Formal.Registers.get] at "
+            f"region{index}MappedIndexedAddressFact{spec_index}"
         )
     for mask_index, (register, mask, upper) in enumerate(
         _lean_region_index_masks(region, behaviors)
@@ -3128,12 +4141,29 @@ def _lean_region_bound_setup(
     return "\n".join(rows) + "\n"
 
 
+def _lean_bound_index_value(bound: dict[str, Any], side: str, prefix: str) -> str:
+    expression = bound.get(f"{side}_expression")
+    if expression is None:
+        return f"{prefix}{bound[side]}"
+    registers = ", ".join(
+        f"{register} := {prefix}{register}"
+        for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+    )
+    return (
+        "((evalExprPure "
+        f"({{ {registers} }} : PureState) "
+        f"({_lean_semantic_expr(expression)})).get (by simp [evalExprPure]))"
+    )
+
+
 def _lean_region_index_masks(
     region: dict[str, Any],
     behaviors: dict[str, str],
 ) -> list[tuple[str, int, int]]:
     masks: set[tuple[str, int, int]] = set()
     for bound in region.get("bounds", []):
+        if "original_expression" in bound or "candidate_expression" in bound:
+            continue
         register = bound["original"]
         upper = bound["unsigned_lt"]
         pattern = re.compile(
@@ -3265,14 +4295,16 @@ def _lean_region_relocation_memory_setup(
         )
         bound = bounds[bound_index]
         hypothesis = "boundsSatisfied" if len(bounds) == 1 else f"boundSatisfied{bound_index}"
-        register = f"o{bound['original']}"
+        register = _lean_bound_index_value(bound, "original", "o")
         scaled = register if shift == 0 else f"({register} <<< {shift})"
         fact = f"{name}RelocationWordRelatedIndexed{relocation_index}"
         zero_fact = f"{name}RelocationWordZeroIndexed{relocation_index}"
         rows.extend((
             f"  have {fact} := relocationWordsRelated "
             f"({scaled} + BitVec.ofNat 32 {target['candidate_value'] + offset}) "
-            f"({name}RelocationWordStartIndexed{relocation_index} {register} {hypothesis})",
+            f"({name}RelocationWordStartIndexed{relocation_index} {register} "
+            f"(by simpa [boundValue, evalExprPure, StageA.Formal.Registers.get] using {hypothesis}))",
+            f"  simp [evalExprPure, StageA.Formal.Registers.get] at {fact}",
             f"  rw [{name}MappedIndexedAddressFact{address_index}] at {fact}",
             f"  simp only [{name}] at {fact}",
         ))
@@ -3745,7 +4777,7 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
             "  simp [registersRelated, StageA.Formal.Registers.get, " + name + "] at related\n"
             + relation_destructure
             + substitutions
-            + "  simp [StageA.Relational.boundsRelated, StageA.Formal.Registers.get, " + name + "] at boundsSatisfied\n"
+            + "  simp [StageA.Relational.boundsRelated, StageA.Relational.boundValue, evalExprPure, StageA.Formal.Registers.get, " + name + "] at boundsSatisfied\n"
             + bound_setup
             + relocation_memory_setup
             + separation_setup
@@ -3824,6 +4856,151 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
     )
 
 
+def _write_relational_invariant_modules(
+    lean_dir: Path,
+    contract: dict[str, Any],
+    synthesis: dict[str, Any],
+    definition_modules: list[str],
+    shard_groups: list[list[int]],
+) -> list[dict[str, str]]:
+    definition_by_region = {
+        region_index: definition_modules[shard_index]
+        for shard_index, indices in enumerate(shard_groups)
+        for region_index in indices
+    }
+    requirement_to_obligation = {
+        predicate["id"]: predicate["obligation_id"]
+        for region in synthesis["region_invariants"]
+        for predicate in region["predicates"]
+    }
+    predicates_by_location: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for region in synthesis["region_invariants"]:
+        for predicate in region["predicates"]:
+            predicates_by_location.setdefault(
+                (predicate["obligation_id"], region["side"], region["region_index"]), []
+            ).append(predicate["predicate"])
+
+    modules: list[dict[str, str]] = []
+    closed = [
+        obligation for obligation in synthesis["obligations"]
+        if obligation["status"] == "candidate_requires_lean_replay"
+    ]
+    for obligation_index, obligation in enumerate(closed):
+        obligation_id = obligation["id"]
+        edges = [
+            edge for edge in synthesis["edge_obligations"]
+            if requirement_to_obligation.get(edge["requirement_id"]) == obligation_id
+        ]
+        if not edges:
+            continue
+        source_indices = sorted({edge["source_index"] for edge in edges})
+        imports = "\n".join(
+            f"import StageA.{module}"
+            for module in sorted({definition_by_region[index] for index in source_indices})
+        )
+        module = f"RelationalInvariantFamily{obligation_index}"
+        normalized_names: dict[tuple[str, int], str] = {}
+        definitions: list[str] = []
+        for side, source_index in sorted({
+            (edge["side"], edge["source_index"]) for edge in edges
+        }):
+            name = f"invariant{side.capitalize()}Behavior{source_index}"
+            normalized_names[(side, source_index)] = name
+            candidate = "true" if side == "candidate" else "false"
+            definitions.append(
+                f"def {name} : NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior {candidate} region{source_index}.targets "
+                f"{side}Behavior{source_index}).get (by decide)"
+            )
+        list_names: dict[tuple[str, int], str] = {}
+        locations = sorted({
+            (edge["side"], edge["source_index"]) for edge in edges
+        } | {
+            (edge["side"], edge["target_index"]) for edge in edges
+        })
+        for side, region_index in locations:
+            name = f"invariant{obligation_index}{side.capitalize()}Region{region_index}"
+            list_names[(side, region_index)] = name
+            predicates = predicates_by_location.get((obligation_id, side, region_index), [])
+            literal = ", ".join(_lean_semantic_bool_expr(predicate) for predicate in predicates)
+            definitions.append(f"def {name} : List BoolExpr := [{literal}]")
+
+        theorem_names: list[str] = []
+        claims: list[str] = []
+        for edge_index, edge in enumerate(edges):
+            side = edge["side"]
+            source_index = edge["source_index"]
+            target_index = edge["target_index"]
+            behavior_name = normalized_names[(side, source_index)]
+            source_name = list_names[(side, source_index)]
+            target_name = list_names[(side, target_index)]
+            theorem_name = f"invariantFamily{obligation_index}Edge{edge_index}Checked"
+            theorem_names.append(theorem_name)
+            claim = (
+                f"NormalizedInvariantEdgeClosed {behavior_name} {source_name} "
+                f"{target_name} {contract['regions'][target_index]['numeric_id']}"
+            )
+            claims.append(claim)
+            definitions.append(
+                f"theorem {theorem_name} : {claim} := by\n"
+                "  intro state sourceInvariant selectedTarget\n"
+                "  rcases state with \u27e8registers, memory, undefinedValue, x87, eflags, fsBase\u27e9\n"
+                "  rcases registers with \u27e8eax, ebx, ecx, edx, esi, edi, ebp, esp\u27e9\n"
+                "  simp [NormalizedInvariantEdgeClosed, stateInvariantsHold,\n"
+                f"    {behavior_name}, {source_name}, {target_name}, "
+                f"region{source_index}, {side}Behavior{source_index},\n"
+                "    normalizeSymbolicBehavior, normalizeOutcomeExpr, normalizeCodeTarget,\n"
+                "    NormalizedSymbolicBehavior.eval, NormalizedOutcomeExpr.eval,\n"
+                "    evalNormalizedRegisters, evalNormalizedX87, evalNormalizedWrites,\n"
+                "    evalNormalizedFlags, evalNormalizedFlags_some, evalNormalizedFlags_none,\n"
+                "    RelationalBehavior.nextMachineState, applyConcreteWrites,\n"
+                "    PureOutcome.nextLogicalTarget, StageA.Formal.BoolExpr.eval,\n"
+                "    StageA.Formal.Expr.eval,\n"
+                "    StageA.Formal.FlagsExpr.eval_extract_cf,\n"
+                "    StageA.Formal.FlagsExpr.eval_extract_pf,\n"
+                "    StageA.Formal.FlagsExpr.eval_extract_zf,\n"
+                "    StageA.Formal.FlagsExpr.eval_extract_sf,\n"
+                "    StageA.Formal.FlagsExpr.eval_extract_df,\n"
+                "    StageA.Formal.FlagsExpr.eval_extract_of,\n"
+                "    StageA.Formal.Registers.get, StageA.Formal.evalFlagBit,\n"
+                "    BitVec.sub_eq_iff_eq_add] "
+                "at sourceInvariant selectedTarget \u22a2\n"
+                "  all_goals try bv_normalize\n"
+                "  all_goals simp [BitVec.ult_eq_decide_lt, BitVec.lt_def, "
+                "\u2190 BitVec.toNat_inj] at *\n"
+                "  all_goals omega"
+            )
+        claims_name = f"invariantFamily{obligation_index}Claims"
+        checked_name = f"invariantFamily{obligation_index}Checked"
+        definitions.append(f"def {claims_name} : List Prop := [{', '.join(claims)}]")
+        all_proof = (
+            "".join(f"And.intro {theorem_name} (" for theorem_name in theorem_names)
+            + "True.intro"
+            + ")" * len(theorem_names)
+        )
+        definitions.append(
+            f"theorem {checked_name} : AllInvariantClaims {claims_name} := by\n"
+            f"  exact {all_proof}"
+        )
+        source = (
+            imports
+            + "\n\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+            "set_option linter.unusedSimpArgs false\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+        modules.append({
+            "module": module,
+            "obligation_id": obligation_id,
+            "claims": claims_name,
+            "theorem": checked_name,
+        })
+    return modules
+
+
 def _write_sharded_relational_proof(
     lean_dir: Path,
     original_bin: StageABinary,
@@ -3833,6 +5010,7 @@ def _write_sharded_relational_proof(
     contract: dict[str, Any],
     behaviors: list[dict[str, str]],
     *,
+    invariant_synthesis: dict[str, Any],
     replay: bool,
     certificates: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], int]:
@@ -3945,6 +5123,14 @@ def _write_sharded_relational_proof(
             + "\n\nend StageA.GeneratedRelational\n"
         )
         _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", proof_source)
+
+    invariant_modules = _write_relational_invariant_modules(
+        lean_dir,
+        contract,
+        invariant_synthesis,
+        definition_modules,
+        shard_groups,
+    )
 
     decode_chunk_count = min(
         len(shard_groups),
@@ -4338,9 +5524,19 @@ def _write_sharded_relational_proof(
         region_chunk_names,
         [f"directRegionChunk{index}Checked" for index in range(len(region_chunk_names))],
     )
+    invariant_certificate_type = " ∧ ".join(
+        [f"AllInvariantClaims {item['claims']}" for item in invariant_modules] + ["True"]
+    )
+    invariant_certificate_proof = (
+        "".join(f"And.intro {item['theorem']} (" for item in invariant_modules)
+        + "True.intro"
+        + ")" * len(invariant_modules)
+    )
     final = (
         "import StageA.RelationalProofClosureBase\n"
         + "\n".join(f"import StageA.{module}" for module in direct_modules)
+        + ("\n" if direct_modules and invariant_modules else "")
+        + "\n".join(f"import StageA.{item['module']}" for item in invariant_modules)
         + "\n\nnamespace StageA.GeneratedRelational\n\nopen StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
         "set_option linter.unusedSimpArgs false\n\n"
@@ -4350,12 +5546,18 @@ def _write_sharded_relational_proof(
         "theorem allRegionsChecked : allRegionGoals proofBundle proofBundle.regions := by\n"
         "  apply allRegionGoals_of_direct proofBundle originalPe candidatePe originalParsed candidateParsed\n"
         "  exact allDirectRegionsChecked\n\n"
-        "theorem candidateRelationalCertificate : RelationalImageCertificate proofBundle :=\n"
+        "theorem regionalRelationalCertificate : RelationalImageCertificate proofBundle :=\n"
         "  relationalImageCertificate_intro proofBundle structuralChecked importsChecked allRegionsChecked\n\n"
+        f"def GeneratedInvariantCertificate : Prop := {invariant_certificate_type}\n\n"
+        "theorem generatedInvariantCertificateChecked : GeneratedInvariantCertificate := by\n"
+        f"  exact {invariant_certificate_proof}\n\n"
+        "theorem candidateRelationalCertificate :\n"
+        "    RelationalImageCertificate proofBundle ∧ GeneratedInvariantCertificate :=\n"
+        "  ⟨regionalRelationalCertificate, generatedInvariantCertificateChecked⟩\n\n"
         "#print axioms candidateRelationalCertificate\n\nend StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(lean_dir / "StageA" / "RelationalBundle.lean", final)
-    return shard_modules, shard_size
+    return shard_modules + [item["module"] for item in invariant_modules], shard_size
 
 
 def _lean_pe_side_source(side: str, binary: StageABinary, data: bytes) -> str:
@@ -4448,7 +5650,7 @@ def _lean_normalized_component_setup(
         f"  simp [registersRelated, StageA.Formal.Registers.get, {name}] at related\n"
         + relation_destructure
         + substitutions
-        + f"  simp [StageA.Relational.boundsRelated, StageA.Formal.Registers.get, {name}] at boundsSatisfied\n"
+        + f"  simp [StageA.Relational.boundsRelated, StageA.Relational.boundValue, evalExprPure, StageA.Formal.Registers.get, {name}] at boundsSatisfied\n"
         f"  simp [addressSeparationsRelated, StageA.Formal.Registers.get, {name}] at separationsSatisfied\n",
         flag_hypotheses,
     )
@@ -4900,7 +6102,7 @@ def _lean_region_theorem_source(
         f"  simp [registersRelated, StageA.Formal.Registers.get, {name}] at related\n"
         + relation_destructure
         + substitutions
-        + f"  simp [StageA.Relational.boundsRelated, StageA.Formal.Registers.get, {name}] at boundsSatisfied\n"
+        + f"  simp [StageA.Relational.boundsRelated, StageA.Relational.boundValue, evalExprPure, StageA.Formal.Registers.get, {name}] at boundsSatisfied\n"
     )
     direct_setup_base_without_memory = direct_state_setup + direct_state_equalities
     direct_setup_base = (
@@ -6006,9 +7208,43 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         else "failed" if verdict == "fail"
         else "incomplete"
     )
+    finalized_obligations = []
+    for obligation in proof_ir["obligations"]:
+        if obligation["kind"] == "relational_region_equivalence":
+            finalized_obligations.append({
+                **obligation,
+                "status": obligation_status,
+                "evidence": next(
+                    (
+                        entry for entry in certificates
+                        if entry.get("region_id")
+                        == obligation["id"].removeprefix("relational:")
+                    ),
+                    None,
+                ),
+            })
+        elif (
+            lean.get("status") == "checked"
+            and obligation["kind"] in {
+                "cfg_bound_invariant", "cfg_address_separation_invariant",
+            }
+            and obligation.get("analysis", {}).get("status")
+                == "candidate_requires_lean_replay"
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "evidence": {
+                    "kind": "lean_checked_inductive_invariant_family",
+                    "theorem": "StageA.GeneratedRelational.candidateRelationalCertificate",
+                },
+            })
+        else:
+            finalized_obligations.append(obligation)
     assumption_obligations = [
-        obligation for obligation in proof_ir["obligations"]
+        obligation for obligation in finalized_obligations
         if obligation["kind"] != "relational_region_equivalence"
+        and obligation.get("status") != "proved"
     ]
     finalized_ir = dict(proof_ir)
     finalized_ir["status"] = (
@@ -6053,17 +7289,7 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         },
         {"family": "adversarial_environment", "status": "satisfied"},
     ]
-    finalized_ir["obligations"] = [
-        ({
-            **obligation,
-            "status": obligation_status,
-            "evidence": next(
-                (entry for entry in certificates if entry.get("region_id") == obligation["id"].removeprefix("relational:")),
-                None,
-            ),
-        } if obligation["kind"] == "relational_region_equivalence" else obligation)
-        for obligation in proof_ir["obligations"]
-    ]
+    finalized_ir["obligations"] = finalized_obligations
     write_json(out / "relational-proof-ir.json", finalized_ir)
     diagnostic = _lean_diagnostic(lean)
     write_json(
@@ -6091,6 +7317,16 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         "candidate": {"path": str(candidate.path), "sha256": candidate.sha256},
         "relation_contract_sha256": sha256_file(out / "relation-contract.json"),
         "proof_ir_sha256": sha256_file(out / "relational-proof-ir.json"),
+        "semantic_ir_sha256": (
+            sha256_file(out / "relational-semantic-ir.json")
+            if (out / "relational-semantic-ir.json").is_file()
+            else None
+        ),
+        "invariants_sha256": (
+            sha256_file(out / "relational-invariants.json")
+            if (out / "relational-invariants.json").is_file()
+            else None
+        ),
         "trusted_base_sha256": sha256_file(out / "trusted-base.json"),
         "counts": {
             "regions": len(contract["regions"]),

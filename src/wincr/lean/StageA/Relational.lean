@@ -1,4 +1,5 @@
 import StageA.Formal
+import Lean.Data.Json
 import Std.Tactic.BVDecide
 
 namespace StageA.Relational
@@ -174,6 +175,241 @@ structure NormalizedSymbolicBehavior where
   flags : Option FlagsExpr
   outcome : NormalizedOutcomeExpr
 deriving Repr, DecidableEq
+
+namespace SemanticIR
+
+open Lean
+
+def tagged (operation : String) (fields : List (String × Json) := []) : Json :=
+  Json.mkObj (("op", operation) :: fields)
+
+def array (values : List Json) : Json := .arr values.toArray
+
+def optional (encode : α → Json) : Option α → Json
+  | none => .null
+  | some value => encode value
+
+def bytes (value : Bytes) : Json := array (value.map fun byte => toJson byte)
+
+def reg : Reg → Json
+  | .eax => "eax"
+  | .ebx => "ebx"
+  | .ecx => "ecx"
+  | .edx => "edx"
+  | .esi => "esi"
+  | .edi => "edi"
+  | .ebp => "ebp"
+  | .esp => "esp"
+
+def x87LoadFormat : X87LoadFormat → Json
+  | .float32 => "float32"
+  | .float64 => "float64"
+  | .float80 => "float80"
+  | .int32 => "int32"
+
+def x87StoreFormat : X87StoreFormat → Json
+  | .float32 => "float32"
+  | .float64 => "float64"
+  | .float80 => "float80"
+  | .int32 => "int32"
+
+def x87UnaryOperation : X87UnaryOperation → Json
+  | .negate => "negate"
+
+def x87BinaryOperation : X87BinaryOperation → Json
+  | .add => "add"
+  | .multiply => "multiply"
+  | .subtract => "subtract"
+  | .reverseSubtract => "reverse_subtract"
+  | .divide => "divide"
+  | .reverseDivide => "reverse_divide"
+
+mutual
+  def expr : Expr → Json
+    | .inputReg register => tagged "input_reg" [("reg", reg register)]
+    | .inputFlagValue bit => tagged "input_flag_value" [("bit", toJson bit)]
+    | .inputFsBase => tagged "input_fs_base"
+    | .inputX87Control => tagged "input_x87_control"
+    | .inputX87Status => tagged "input_x87_status"
+    | .constant value => tagged "constant" [("value", toJson value)]
+    | .add left right => tagged "add" [("left", expr left), ("right", expr right)]
+    | .sub left right => tagged "sub" [("left", expr left), ("right", expr right)]
+    | .bitAnd left right =>
+        tagged "bit_and" [("left", expr left), ("right", expr right)]
+    | .bitXor left right =>
+        tagged "bit_xor" [("left", expr left), ("right", expr right)]
+    | .bitNot value => tagged "bit_not" [("value", expr value)]
+    | .read8 address => tagged "read8" [("address", expr address)]
+    | .read32 address => tagged "read32" [("address", expr address)]
+    | .read8AfterWrite address writeAddress writeValue prior =>
+        tagged "read8_after_write" [
+          ("address", expr address), ("write_address", expr writeAddress),
+          ("write_value", expr writeValue), ("prior", expr prior)]
+    | .extractByte value index =>
+        tagged "extract_byte" [("value", expr value), ("index", toJson index)]
+    | .shiftLeft value amount =>
+        tagged "shift_left" [("value", expr value), ("amount", toJson amount)]
+    | .shiftRight value amount =>
+        tagged "shift_right" [("value", expr value), ("amount", toJson amount)]
+    | .shiftLeftBy value amount =>
+        tagged "shift_left_by" [("left", expr value), ("right", expr amount)]
+    | .shiftRightBy value amount =>
+        tagged "shift_right_by" [("left", expr value), ("right", expr amount)]
+    | .shiftArithmeticRightBy value amount =>
+        tagged "shift_arithmetic_right_by" [("left", expr value), ("right", expr amount)]
+    | .bitOr left right =>
+        tagged "bit_or" [("left", expr left), ("right", expr right)]
+    | .ifEqual left right thenValue elseValue =>
+        tagged "if_equal" [
+          ("left", expr left), ("right", expr right),
+          ("then", expr thenValue), ("else", expr elseValue)]
+    | .unsignedLessValue left right =>
+        tagged "unsigned_less_value" [("left", expr left), ("right", expr right)]
+    | .bitValue value index =>
+        tagged "bit_value" [("value", expr value), ("index", toJson index)]
+    | .multiply left right =>
+        tagged "multiply" [("left", expr left), ("right", expr right)]
+    | .multiplyHighUnsigned left right =>
+        tagged "multiply_high_unsigned" [("left", expr left), ("right", expr right)]
+    | .multiplyHighSigned left right =>
+        tagged "multiply_high_signed" [("left", expr left), ("right", expr right)]
+    | .divideQuotient high low divisor =>
+        tagged "divide_quotient" [
+          ("high", expr high), ("low", expr low), ("divisor", expr divisor)]
+    | .divideRemainder high low divisor =>
+        tagged "divide_remainder" [
+          ("high", expr high), ("low", expr low), ("divisor", expr divisor)]
+    | .divisionValidValue high low divisor =>
+        tagged "division_valid_value" [
+          ("high", expr high), ("low", expr low), ("divisor", expr divisor)]
+    | .lowestSetBit value => tagged "lowest_set_bit" [("value", expr value)]
+    | .highestSetBit value => tagged "highest_set_bit" [("value", expr value)]
+    | .undefined slot => tagged "undefined" [("slot", toJson slot)]
+    | .x87Part value part =>
+        tagged "x87_part" [("value", x87Expr value), ("part", toJson part)]
+    | .x87CompareBit left right control bit =>
+        tagged "x87_compare_bit" [
+          ("left", x87Expr left), ("right", x87Expr right),
+          ("control", expr control), ("bit", toJson bit)]
+    | .x87ExamineStatus value status =>
+        tagged "x87_examine_status" [("value", x87Expr value), ("status", expr status)]
+
+  def x87Expr : X87Expr → Json
+    | .inputStack index => tagged "input_stack" [("index", toJson index)]
+    | .load format address control =>
+        tagged "load" [
+          ("format", x87LoadFormat format), ("address", expr address),
+          ("control", expr control)]
+    | .imageLoad format raw control =>
+        tagged "image_load" [
+          ("format", x87LoadFormat format), ("raw", toJson raw),
+          ("control", expr control)]
+    | .constant value => tagged "constant" [("value", toJson value)]
+    | .unary operation value control =>
+        tagged "unary" [
+          ("operation", x87UnaryOperation operation), ("value", x87Expr value),
+          ("control", expr control)]
+    | .binary operation left right control =>
+        tagged "binary" [
+          ("operation", x87BinaryOperation operation), ("left", x87Expr left),
+          ("right", x87Expr right), ("control", expr control)]
+    | .store format value control =>
+        tagged "store" [
+          ("format", x87StoreFormat format), ("value", x87Expr value),
+          ("control", expr control)]
+
+end
+
+def boolExpr : BoolExpr → Json
+  | .equal left right => tagged "equal" [("left", expr left), ("right", expr right)]
+  | .not value => tagged "not" [("value", boolExpr value)]
+  | .and left right =>
+      tagged "and" [("left", boolExpr left), ("right", boolExpr right)]
+  | .or left right =>
+      tagged "or" [("left", boolExpr left), ("right", boolExpr right)]
+  | .xor left right =>
+      tagged "xor" [("left", boolExpr left), ("right", boolExpr right)]
+  | .unsignedLess left right =>
+      tagged "unsigned_less" [("left", expr left), ("right", expr right)]
+  | .msb value => tagged "msb" [("value", expr value)]
+  | .bit value index => tagged "bit" [("value", expr value), ("index", toJson index)]
+  | .inputFlag index => tagged "input_flag" [("index", toJson index)]
+  | .divisionValid high low divisor =>
+      tagged "division_valid" [
+        ("high", expr high), ("low", expr low), ("divisor", expr divisor)]
+
+def flags (value : FlagsExpr) : Json := Json.mkObj [
+  ("zero", optional boolExpr value.zero),
+  ("carry", optional boolExpr value.carry),
+  ("sign", optional boolExpr value.sign),
+  ("overflow", optional boolExpr value.overflow),
+  ("parity", optional boolExpr value.parity)]
+
+def importName : ImportName → Json
+  | .symbol name => tagged "symbol" [("bytes", bytes name)]
+  | .ordinal value => tagged "ordinal" [("value", toJson value)]
+
+def externalTarget (target : ExternalTarget) : Json := Json.mkObj [
+  ("dll", bytes target.dll), ("name", importName target.name)]
+
+def normalizedOutcome : NormalizedOutcomeExpr → Json
+  | .returned target => tagged "returned" [("target", expr target)]
+  | .jump target => tagged "jump" [("target", toJson target)]
+  | .branch condition taken fallthrough =>
+      tagged "branch" [
+        ("condition", boolExpr condition), ("taken", toJson taken),
+        ("fallthrough", toJson fallthrough)]
+  | .call target continuation =>
+      tagged "call" [("target", toJson target), ("continuation", toJson continuation)]
+  | .externalCall imported arguments continuation =>
+      tagged "external_call" [
+        ("import", externalTarget imported), ("arguments", array (arguments.map expr)),
+        ("continuation", toJson continuation)]
+  | .externalJump imported arguments =>
+      tagged "external_jump" [
+        ("import", externalTarget imported), ("arguments", array (arguments.map expr))]
+  | .bulkCopy destination source count direction continuation =>
+      tagged "bulk_copy" [
+        ("destination", expr destination), ("source", expr source),
+        ("count", expr count), ("direction", boolExpr direction),
+        ("continuation", toJson continuation)]
+  | .indirectCall target continuation =>
+      tagged "indirect_call" [
+        ("target", expr target), ("continuation", toJson continuation)]
+  | .indirectJump target => tagged "indirect_jump" [("target", expr target)]
+  | .checkedContinue valid continuation =>
+      tagged "checked_continue" [
+        ("valid", boolExpr valid), ("continuation", toJson continuation)]
+  | .atomicCompareExchange address expected replacement continuation =>
+      tagged "atomic_compare_exchange" [
+        ("address", expr address), ("expected", expr expected),
+        ("replacement", expr replacement), ("continuation", toJson continuation)]
+
+def registers (value : Registers Expr) : Json := Json.mkObj [
+  ("eax", expr value.eax), ("ebx", expr value.ebx),
+  ("ecx", expr value.ecx), ("edx", expr value.edx),
+  ("esi", expr value.esi), ("edi", expr value.edi),
+  ("ebp", expr value.ebp), ("esp", expr value.esp)]
+
+def x87 (value : SymbolicX87State) : Json := Json.mkObj [
+  ("stack", array (value.stack.map x87Expr)),
+  ("control", expr value.control), ("status", expr value.status)]
+
+def write (value : Expr × Expr) : Json := Json.mkObj [
+  ("address", expr value.1), ("value", expr value.2)]
+
+def normalizedBehavior (value : NormalizedSymbolicBehavior) : Json := Json.mkObj [
+  ("format", "stage-a-normalized-behavior-v1"),
+  ("registers", registers value.registers),
+  ("x87", x87 value.x87),
+  ("writes", array (value.writes.map write)),
+  ("flags", optional flags value.flags),
+  ("outcome", normalizedOutcome value.outcome)]
+
+def normalizedBehaviorString (value : NormalizedSymbolicBehavior) : String :=
+  normalizedBehavior value |>.compress
+
+end SemanticIR
 
 def normalizeOutcomeExpr (candidate : Bool) (targets : List CodeTargetPair) :
     OutcomeExpr -> Option NormalizedOutcomeExpr
@@ -692,6 +928,8 @@ deriving Repr, DecidableEq
 structure RegisterBoundPair where
   original : Reg
   candidate : Reg
+  originalExpression : Option Expr := none
+  candidateExpression : Option Expr := none
   upperExclusive : Nat
 deriving Repr, DecidableEq
 
@@ -707,10 +945,18 @@ deriving Repr, DecidableEq
 def registersRelated (pairs : List RegisterPair) (original candidate : PureState) : Bool :=
   pairs.all fun pair => original.get pair.original == candidate.get pair.candidate
 
+def boundValue (state : PureState) (register : Reg) : Option Expr → Option Word
+  | none => some (state.get register)
+  | some expression => evalExprPure state expression
+
 def boundsRelated (bounds : List RegisterBoundPair) (original candidate : PureState) : Bool :=
   bounds.all fun bound =>
-    decide (original.get bound.original < BitVec.ofNat 32 bound.upperExclusive) &&
-      decide (candidate.get bound.candidate < BitVec.ofNat 32 bound.upperExclusive)
+    match boundValue original bound.original bound.originalExpression,
+        boundValue candidate bound.candidate bound.candidateExpression with
+    | some originalValue, some candidateValue =>
+        decide (originalValue < BitVec.ofNat 32 bound.upperExclusive) &&
+          decide (candidateValue < BitVec.ofNat 32 bound.upperExclusive)
+    | _, _ => false
 
 def addressSeparationsRelated (separations : List AddressSeparationPair)
     (original candidate : PureState) : Bool :=
@@ -1132,6 +1378,188 @@ def PureOutcome.nextLogicalTarget : PureOutcome -> Option Nat
   | .checkedContinue true continuation => some continuation
   | .atomicCompareExchange _ _ _ continuation => some continuation
   | _ => none
+
+def stateInvariantsHold (predicates : List BoolExpr) (state : MachineState) : Bool :=
+  predicates.all fun predicate => predicate.eval state
+
+def NormalizedInvariantEdgeClosed
+    (behavior : NormalizedSymbolicBehavior)
+    (sourceInvariant targetInvariant : List BoolExpr) (target : Nat) : Prop :=
+  ∀ state,
+    stateInvariantsHold sourceInvariant state = true →
+    (behavior.eval state).outcome.nextLogicalTarget = some target →
+    stateInvariantsHold targetInvariant
+      ((behavior.eval state).nextMachineState state) = true
+
+def AllInvariantClaims : List Prop → Prop
+  | [] => True
+  | claim :: claims => claim ∧ AllInvariantClaims claims
+
+namespace InvariantWP
+
+def trueExpr : BoolExpr := .equal (.constant 0) (.constant 0)
+
+def _root_.StageA.Formal.Expr.pureInvariant : Expr → Bool
+  | .inputReg _ | .inputFsBase | .constant _ | .undefined _ => true
+  | .add left right | .sub left right | .bitAnd left right | .bitXor left right |
+      .shiftLeftBy left right | .shiftRightBy left right |
+      .shiftArithmeticRightBy left right | .bitOr left right |
+      .unsignedLessValue left right | .multiply left right |
+      .multiplyHighUnsigned left right | .multiplyHighSigned left right =>
+      left.pureInvariant && right.pureInvariant
+  | .bitNot value | .extractByte value _ | .shiftLeft value _ | .shiftRight value _ |
+      .bitValue value _ | .lowestSetBit value | .highestSetBit value =>
+      value.pureInvariant
+  | .ifEqual left right thenValue elseValue =>
+      left.pureInvariant && right.pureInvariant && thenValue.pureInvariant &&
+        elseValue.pureInvariant
+  | .divideQuotient high low divisor | .divideRemainder high low divisor |
+      .divisionValidValue high low divisor =>
+      high.pureInvariant && low.pureInvariant && divisor.pureInvariant
+  | .inputFlagValue _ | .inputX87Control | .inputX87Status | .read8 _ | .read32 _ |
+      .read8AfterWrite _ _ _ _ | .x87Part _ _ | .x87CompareBit _ _ _ _ |
+      .x87ExamineStatus _ _ => false
+
+def _root_.StageA.Formal.BoolExpr.pureInvariant : BoolExpr → Bool
+  | .equal left right | .unsignedLess left right =>
+      left.pureInvariant && right.pureInvariant
+  | .not value => value.pureInvariant
+  | .and left right | .or left right | .xor left right =>
+      left.pureInvariant && right.pureInvariant
+  | .msb value | .bit value _ => value.pureInvariant
+  | .inputFlag index => [0, 2, 6, 7, 10, 11].contains index
+  | .divisionValid high low divisor =>
+      high.pureInvariant && low.pureInvariant && divisor.pureInvariant
+
+def _root_.StageA.Formal.Expr.substituteRegisters (registers : Registers Expr) : Expr → Expr
+  | .inputReg register => registers.get register
+  | .inputFlagValue bit => .inputFlagValue bit
+  | .inputFsBase => .inputFsBase
+  | .inputX87Control => .inputX87Control
+  | .inputX87Status => .inputX87Status
+  | .constant value => .constant value
+  | .add left right => .add (left.substituteRegisters registers) (right.substituteRegisters registers)
+  | .sub left right => .sub (left.substituteRegisters registers) (right.substituteRegisters registers)
+  | .bitAnd left right =>
+      .bitAnd (left.substituteRegisters registers) (right.substituteRegisters registers)
+  | .bitXor left right =>
+      .bitXor (left.substituteRegisters registers) (right.substituteRegisters registers)
+  | .bitNot value => .bitNot (value.substituteRegisters registers)
+  | .read8 address => .read8 (address.substituteRegisters registers)
+  | .read32 address => .read32 (address.substituteRegisters registers)
+  | .read8AfterWrite address writeAddress writeValue prior =>
+      .read8AfterWrite (address.substituteRegisters registers)
+        (writeAddress.substituteRegisters registers) (writeValue.substituteRegisters registers)
+        (prior.substituteRegisters registers)
+  | .extractByte value index => .extractByte (value.substituteRegisters registers) index
+  | .shiftLeft value amount => .shiftLeft (value.substituteRegisters registers) amount
+  | .shiftRight value amount => .shiftRight (value.substituteRegisters registers) amount
+  | .shiftLeftBy value amount =>
+      .shiftLeftBy (value.substituteRegisters registers) (amount.substituteRegisters registers)
+  | .shiftRightBy value amount =>
+      .shiftRightBy (value.substituteRegisters registers) (amount.substituteRegisters registers)
+  | .shiftArithmeticRightBy value amount =>
+      .shiftArithmeticRightBy (value.substituteRegisters registers)
+        (amount.substituteRegisters registers)
+  | .bitOr left right => .bitOr (left.substituteRegisters registers) (right.substituteRegisters registers)
+  | .ifEqual left right thenValue elseValue =>
+      .ifEqual (left.substituteRegisters registers) (right.substituteRegisters registers)
+        (thenValue.substituteRegisters registers) (elseValue.substituteRegisters registers)
+  | .unsignedLessValue left right =>
+      .unsignedLessValue (left.substituteRegisters registers) (right.substituteRegisters registers)
+  | .bitValue value index => .bitValue (value.substituteRegisters registers) index
+  | .multiply left right =>
+      .multiply (left.substituteRegisters registers) (right.substituteRegisters registers)
+  | .multiplyHighUnsigned left right =>
+      .multiplyHighUnsigned (left.substituteRegisters registers)
+        (right.substituteRegisters registers)
+  | .multiplyHighSigned left right =>
+      .multiplyHighSigned (left.substituteRegisters registers)
+        (right.substituteRegisters registers)
+  | .divideQuotient high low divisor =>
+      .divideQuotient (high.substituteRegisters registers) (low.substituteRegisters registers)
+        (divisor.substituteRegisters registers)
+  | .divideRemainder high low divisor =>
+      .divideRemainder (high.substituteRegisters registers) (low.substituteRegisters registers)
+        (divisor.substituteRegisters registers)
+  | .divisionValidValue high low divisor =>
+      .divisionValidValue (high.substituteRegisters registers) (low.substituteRegisters registers)
+        (divisor.substituteRegisters registers)
+  | .lowestSetBit value => .lowestSetBit (value.substituteRegisters registers)
+  | .highestSetBit value => .highestSetBit (value.substituteRegisters registers)
+  | .undefined slot => .undefined slot
+  | .x87Part value part => .x87Part value part
+  | .x87CompareBit left right control bit =>
+      .x87CompareBit left right (control.substituteRegisters registers) bit
+  | .x87ExamineStatus value status =>
+      .x87ExamineStatus value (status.substituteRegisters registers)
+
+def outputFlag (flags : Option FlagsExpr) (index : Nat) : BoolExpr :=
+  match flags with
+  | none => .inputFlag index
+  | some value =>
+      match index with
+      | 0 => value.carry.getD (.inputFlag 0)
+      | 2 => value.parity.getD (.inputFlag 2)
+      | 6 => value.zero.getD (.inputFlag 6)
+      | 7 => value.sign.getD (.inputFlag 7)
+      | 11 => value.overflow.getD (.inputFlag 11)
+      | other => .inputFlag other
+
+def _root_.StageA.Formal.BoolExpr.substitute (registers : Registers Expr) (flags : Option FlagsExpr) :
+    BoolExpr → BoolExpr
+  | .equal left right =>
+      .equal (left.substituteRegisters registers) (right.substituteRegisters registers)
+  | .not value => .not (value.substitute registers flags)
+  | .and left right => .and (left.substitute registers flags) (right.substitute registers flags)
+  | .or left right => .or (left.substitute registers flags) (right.substitute registers flags)
+  | .xor left right => .xor (left.substitute registers flags) (right.substitute registers flags)
+  | .unsignedLess left right =>
+      .unsignedLess (left.substituteRegisters registers) (right.substituteRegisters registers)
+  | .msb value => .msb (value.substituteRegisters registers)
+  | .bit value index => .bit (value.substituteRegisters registers) index
+  | .inputFlag index => outputFlag flags index
+  | .divisionValid high low divisor =>
+      .divisionValid (high.substituteRegisters registers) (low.substituteRegisters registers)
+        (divisor.substituteRegisters registers)
+
+-- The mutual Expr/X87Expr soundness proof is required before this kernel enters closure.
+
+def _root_.StageA.Relational.NormalizedOutcomeExpr.edgeGuard
+    (outcome : NormalizedOutcomeExpr)
+    (target : Nat) : Option BoolExpr :=
+  match outcome with
+  | .jump destination | .call destination _ =>
+      if destination == target then some trueExpr else none
+  | .branch condition taken fallthrough =>
+      if taken == target && fallthrough == target then some trueExpr
+      else if taken == target then some condition
+      else if fallthrough == target then some (.not condition)
+      else none
+  | .bulkCopy _ _ _ _ continuation | .atomicCompareExchange _ _ _ continuation =>
+      if continuation == target then some trueExpr else none
+  | .checkedContinue valid continuation =>
+      if continuation == target then some valid else none
+  | _ => none
+
+def edgeWeakestPrecondition (behavior : NormalizedSymbolicBehavior)
+    (target : Nat) (predicate : BoolExpr) : Option BoolExpr := do
+  let guard ← behavior.outcome.edgeGuard target
+  pure (.or (.not guard) (predicate.substitute behavior.registers behavior.flags))
+
+
+
+def NormalizedInvariantPredicateEdgeClosed
+    (behavior : NormalizedSymbolicBehavior) (sourceInvariant : List BoolExpr)
+    (targetPredicate : BoolExpr) (target : Nat) : Prop :=
+  ∀ state,
+    stateInvariantsHold sourceInvariant state = true →
+    (behavior.eval state).outcome.nextLogicalTarget = some target →
+    targetPredicate.eval ((behavior.eval state).nextMachineState state) = true
+
+
+
+end InvariantWP
 
 def PureOutcome.relationalObservation : PureOutcome -> Option RelationalObservable
   | .externalCall imported arguments _ => some (.external imported arguments)

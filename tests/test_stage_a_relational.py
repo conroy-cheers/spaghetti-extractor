@@ -19,6 +19,7 @@ from wincr.stage_a_relational import (
     _normalized_behavior_fast_path,
     _partition_proof_shards,
     _run_lean_relational,
+    _synthesize_relational_invariants,
     _validate_prepared_relational,
     stage_a_build_relational,
     stage_a_check_relational_proof,
@@ -30,6 +31,188 @@ from wincr.stage_binary import StageAInputError, _parse_stage_a_pe
 
 
 class StageARelationalTests(unittest.TestCase):
+    def test_weakest_precondition_synthesizes_compare_branch_bound_invariant(self):
+        registers = {
+            register: {"op": "input_reg", "reg": register}
+            for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+        }
+        truth_flags = {
+            "zero": None,
+            "carry": None,
+            "sign": None,
+            "overflow": None,
+            "parity": None,
+        }
+        compare_flags = {
+            **truth_flags,
+            "zero": {
+                "op": "equal",
+                "left": {"op": "input_reg", "reg": "ecx"},
+                "right": {"op": "constant", "value": 90},
+            },
+            "carry": {
+                "op": "unsigned_less",
+                "left": {"op": "input_reg", "reg": "ecx"},
+                "right": {"op": "constant", "value": 90},
+            },
+        }
+        branch = {
+            "op": "and",
+            "left": {"op": "not", "value": {"op": "input_flag", "index": 0}},
+            "right": {"op": "not", "value": {"op": "input_flag", "index": 6}},
+        }
+
+        def behavior(outcome, flags=truth_flags):
+            return {
+                "format": "stage-a-normalized-behavior-v1",
+                "registers": registers,
+                "x87": {},
+                "writes": [],
+                "flags": flags,
+                "outcome": outcome,
+            }
+
+        regions = [
+            {"id": "compare", "numeric_id": 0, "root": True, "bounds": [], "address_separations": []},
+            {"id": "branch", "numeric_id": 1, "root": False, "bounds": [], "address_separations": []},
+            {
+                "id": "table",
+                "numeric_id": 2,
+                "root": False,
+                "bounds": [{"original": "ecx", "candidate": "ecx", "unsigned_lt": 91}],
+                "address_separations": [],
+            },
+        ]
+        compare = behavior({"op": "jump", "target": 1}, compare_flags)
+        choose = behavior({
+            "op": "branch", "condition": branch, "taken": 99, "fallthrough": 2,
+        })
+        table = behavior({"op": "jump", "target": 99})
+        synthesis = _synthesize_relational_invariants(
+            {"regions": regions},
+            [
+                {"original_ir": compare, "candidate_ir": compare},
+                {"original_ir": choose, "candidate_ir": choose},
+                {"original_ir": table, "candidate_ir": table},
+            ],
+        )
+
+        self.assertEqual(synthesis["counts"]["seeds"], 2)
+        self.assertEqual(synthesis["counts"]["region_invariants"], 4)
+        self.assertEqual(synthesis["counts"]["edge_obligations"], 4)
+        self.assertEqual(synthesis["counts"]["candidate_tautology_edges"], 2)
+        self.assertEqual(synthesis["counts"]["barriers"], 0)
+        self.assertEqual(
+            synthesis["obligations"][0]["status"],
+            "candidate_requires_lean_replay",
+        )
+        proved_edges = [
+            edge for edge in synthesis["edge_obligations"]
+            if edge["analysis_status"] == "candidate_tautology"
+        ]
+        self.assertEqual({edge["source_id"] for edge in proved_edges}, {"compare"})
+        self.assertTrue(all(edge["lean_status"] == "pending" for edge in proved_edges))
+
+        missing_compare = behavior({"op": "jump", "target": 1})
+        incomplete = _synthesize_relational_invariants(
+            {"regions": regions},
+            [
+                {"original_ir": missing_compare, "candidate_ir": missing_compare},
+                {"original_ir": choose, "candidate_ir": choose},
+                {"original_ir": table, "candidate_ir": table},
+            ],
+        )
+        self.assertIn(
+            "loader_entry_assumption_required",
+            {barrier["kind"] for barrier in incomplete["barriers"]},
+        )
+        self.assertTrue(all(
+            obligation["status"] == "incomplete"
+            for obligation in incomplete["obligations"]
+        ))
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for invariant replay")
+    def test_compare_branch_bound_invariant_is_replayed_by_lean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code = bytes.fromhex("83f95aeb007702ebfeebfe")
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+            ]
+            spans = [(0x1000, 5), (0x1005, 2), (0x1007, 2), (0x1009, 2)]
+            payload = {
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": index, "original_rva": rva, "candidate_rva": rva}
+                    for index, (rva, _) in enumerate(spans)
+                ],
+                "regions": [
+                    {
+                        "id": f"region-{index}",
+                        "root": index == 0,
+                        "original": {"rva": rva, "size": size},
+                        "candidate": {"rva": rva, "size": size},
+                        "inputs": pairs,
+                        "outputs": pairs,
+                        **({
+                            "bounds": [{
+                                "original": "ecx", "candidate": "ecx", "unsigned_lt": 91,
+                            }],
+                        } if index == 2 else {}),
+                    }
+                    for index, (rva, size) in enumerate(spans)
+                ],
+                "padding": [],
+                "memory_relation": {"mode": "identity"},
+            }
+            contract = root / "relation.json"
+            contract.write_text(json.dumps(payload), encoding="utf-8")
+
+            with patch.dict(os.environ, {"WINCR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}):
+                result = stage_a_prove_relational(
+                    original=original,
+                    candidate=candidate,
+                    relation_contract=contract,
+                    out=root / "report",
+                )
+
+            self.assertEqual(result["proof"]["lean"]["status"], "checked", result)
+            synthesis = json.loads(
+                (root / "report" / "relational-invariants.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(synthesis["counts"]["barriers"], 0)
+            self.assertEqual(
+                synthesis["obligations"][0]["status"],
+                "candidate_requires_lean_replay",
+            )
+            invariant_module = root / "report" / "lean" / "StageA" / "RelationalInvariantFamily0.lean"
+            self.assertTrue(invariant_module.is_file())
+            source = invariant_module.read_text(encoding="utf-8")
+            self.assertIn("NormalizedInvariantEdgeClosed", source)
+            self.assertIn("invariantFamily0Checked", source)
+            bundle = (root / "report" / "lean" / "StageA" / "RelationalBundle.lean").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("GeneratedInvariantCertificate", bundle)
+            self.assertIn("invariantFamily0Checked", bundle)
+            proof_ir = json.loads(
+                (root / "report" / "relational-proof-ir.json").read_text(encoding="utf-8")
+            )
+            bound = next(
+                obligation for obligation in proof_ir["obligations"]
+                if obligation["kind"] == "cfg_bound_invariant"
+            )
+            self.assertEqual(bound["status"], "proved")
+            self.assertEqual(
+                bound["evidence"]["kind"],
+                "lean_checked_inductive_invariant_family",
+            )
+
     def test_mapped_relocation_offsets_reject_duplicate_loader_entries(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -222,6 +405,17 @@ class StageARelationalTests(unittest.TestCase):
             self.assertTrue(any(node["id"].startswith("definitions-pack-") for node in graph["nodes"]))
             proof_pack = next(node for node in graph["nodes"] if node["id"].startswith("local-proof-pack-"))
             self.assertEqual(proof_pack["resource_class"], "medium")
+            semantic_ir = json.loads(
+                (prepared / "relational-semantic-ir.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(semantic_ir["format"], "stage-a-relational-semantic-ir-v1")
+            self.assertEqual(semantic_ir["trust"]["role"], "analysis_and_proof_proposal_only")
+            self.assertEqual(len(semantic_ir["regions"]), 1)
+            extracted = semantic_ir["regions"][0]
+            self.assertEqual(extracted["original"]["format"], "stage-a-normalized-behavior-v1")
+            self.assertEqual(extracted["original"]["registers"]["eax"]["op"], "input_reg")
+            self.assertEqual(extracted["original"]["outcome"]["op"], "jump")
+            self.assertEqual(extracted["original"]["outcome"]["target"], 0)
 
             second = root / "prepared-second"
             stage_a_prepare_relational(
@@ -237,6 +431,10 @@ class StageARelationalTests(unittest.TestCase):
             self.assertEqual(
                 (prepared / "prepared-proof.json").read_bytes(),
                 (second / "prepared-proof.json").read_bytes(),
+            )
+            self.assertEqual(
+                (prepared / "relational-semantic-ir.json").read_bytes(),
+                (second / "relational-semantic-ir.json").read_bytes(),
             )
 
             source = prepared / "lean" / "StageA" / "RelationalBundle.lean"
@@ -979,7 +1177,8 @@ end StageA.FlagsCompose
                 encoding="utf-8"
             )
             self.assertIn("MappedIndexedAddress", bundle)
-            self.assertIn("IndexMaskFact", bundle)
+            self.assertIn("originalExpression := some", bundle)
+            self.assertIn("Expr.bitAnd", bundle)
             self.assertIn("boundsSatisfied", bundle)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for address-separation proofs")
