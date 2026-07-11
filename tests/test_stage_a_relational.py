@@ -193,8 +193,21 @@ class StageARelationalTests(unittest.TestCase):
             invariant_module = root / "report" / "lean" / "StageA" / "RelationalInvariantFamily0.lean"
             self.assertTrue(invariant_module.is_file())
             source = invariant_module.read_text(encoding="utf-8")
-            self.assertIn("NormalizedInvariantEdgeClosed", source)
+            self.assertIn("NormalizedInvariantPredicateEdgeClosed", source)
+            self.assertIn("invariantPredicateEdgeClosed_of_wp", source)
+            self.assertIn("successorRangePredicate", source)
+            self.assertNotIn("evalNormalizedX87", source)
             self.assertIn("invariantFamily0Checked", source)
+            inventory_modules = sorted(
+                (root / "report" / "lean" / "StageA").glob(
+                    "RelationalInvariantFamily0Inventory*.lean"
+                )
+            )
+            self.assertEqual(len(inventory_modules), 2)
+            self.assertTrue(all(
+                "invariantEdgeInventoryClosed" in path.read_text(encoding="utf-8")
+                for path in inventory_modules
+            ))
             bundle = (root / "report" / "lean" / "StageA" / "RelationalBundle.lean").read_text(
                 encoding="utf-8"
             )
@@ -212,6 +225,26 @@ class StageARelationalTests(unittest.TestCase):
                 bound["evidence"]["kind"],
                 "lean_checked_inductive_invariant_family",
             )
+
+            inventory_with_edge = next(
+                path for path in inventory_modules
+                if "ClaimedEdges : List InvariantEdgeSpec := [{"
+                in path.read_text(encoding="utf-8")
+            )
+            inventory_lines = inventory_with_edge.read_text(encoding="utf-8").splitlines()
+            for index, line in enumerate(inventory_lines):
+                if "ClaimedEdges : List InvariantEdgeSpec := [{" in line:
+                    inventory_lines[index] = line.split(":=", 1)[0] + ":= []"
+                    break
+            inventory_with_edge.write_text(
+                "\n".join(inventory_lines) + "\n", encoding="utf-8"
+            )
+            inventory_with_edge.with_suffix(".olean").unlink(missing_ok=True)
+            rejected = _run_lean_relational(
+                root / "report" / "lean", bundle=inventory_with_edge.stem,
+            )
+            self.assertEqual(rejected["status"], "failed")
+            self.assertIn("proved that the proposition", rejected["stdout"])
 
     def test_mapped_relocation_offsets_reject_duplicate_loader_entries(self):
         with tempfile.TemporaryDirectory() as temporary:

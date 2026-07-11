@@ -1395,9 +1395,56 @@ def AllInvariantClaims : List Prop → Prop
   | [] => True
   | claim :: claims => claim ∧ AllInvariantClaims claims
 
+structure InvariantTargetSpec where
+  target : Nat
+  predicate : BoolExpr
+deriving Repr, DecidableEq
+
+structure InvariantEdgeSpec where
+  sourceIndex : Nat
+  target : Nat
+  predicate : BoolExpr
+deriving Repr, DecidableEq
+
+def NormalizedOutcomeExpr.staticTargets : NormalizedOutcomeExpr → List Nat
+  | .jump target | .call target _ => [target]
+  | .branch _ taken fallthrough =>
+      if taken == fallthrough then [taken] else [taken, fallthrough]
+  | .externalCall _ _ continuation | .bulkCopy _ _ _ _ continuation |
+      .checkedContinue _ continuation | .atomicCompareExchange _ _ _ continuation =>
+      [continuation]
+  | .returned _ | .externalJump _ _ | .indirectCall _ _ | .indirectJump _ => []
+
+def expectedInvariantEdgesForSource (sourceIndex : Nat)
+    (outcome : NormalizedOutcomeExpr) (targets : List InvariantTargetSpec) :
+    List InvariantEdgeSpec :=
+  targets.filterMap fun target =>
+    if outcome.staticTargets.contains target.target then
+      some { sourceIndex, target := target.target, predicate := target.predicate }
+    else
+      none
+
+def expectedInvariantEdges (sources : List (Nat × NormalizedOutcomeExpr))
+    (targets : List InvariantTargetSpec) : List InvariantEdgeSpec :=
+  sources.flatMap fun source => expectedInvariantEdgesForSource source.1 source.2 targets
+
+def invariantEdgeInventoryClosed (sources : List (Nat × NormalizedOutcomeExpr))
+    (targets : List InvariantTargetSpec) (claimed : List InvariantEdgeSpec) : Bool :=
+  let expected := expectedInvariantEdges sources targets
+  expected.all claimed.contains && claimed.all expected.contains
+
 namespace InvariantWP
 
 def trueExpr : BoolExpr := .equal (.constant 0) (.constant 0)
+
+def _root_.StageA.Formal.BoolExpr.negateNormalized : BoolExpr → BoolExpr
+  | .not value => value
+  | value => .not value
+
+@[simp] theorem BoolExpr.eval_negateNormalized (state : MachineState)
+    (predicate : BoolExpr) :
+    predicate.negateNormalized.eval state = !predicate.eval state := by
+  cases predicate <;> simp [BoolExpr.negateNormalized, BoolExpr.eval]
 
 def _root_.StageA.Formal.Expr.pureInvariant : Expr → Bool
   | .inputReg _ | .inputFsBase | .constant _ | .undefined _ => true
@@ -1523,7 +1570,59 @@ def _root_.StageA.Formal.BoolExpr.substitute (registers : Registers Expr) (flags
       .divisionValid (high.substituteRegisters registers) (low.substituteRegisters registers)
         (divisor.substituteRegisters registers)
 
--- The mutual Expr/X87Expr soundness proof is required before this kernel enters closure.
+@[simp] theorem evalNormalizedRegisters_get (state : MachineState)
+    (registers : Registers Expr) (register : Reg) :
+    (evalNormalizedRegisters state registers).get register =
+      (registers.get register).eval state := by
+  cases register <;> rfl
+
+theorem Expr.eval_substituteRegisters (behavior : NormalizedSymbolicBehavior)
+    (state : MachineState) (expression : Expr)
+    (safe : expression.pureInvariant = true) :
+    (expression.substituteRegisters behavior.registers).eval state =
+      expression.eval ((behavior.eval state).nextMachineState state) := by
+  induction expression using Expr.rec (motive_2 := fun _ => True) <;>
+    simp_all [Expr.pureInvariant, Expr.substituteRegisters, Expr.eval,
+      RelationalBehavior.nextMachineState, evalNormalizedRegisters_get]
+
+theorem outputFlag_eval (behavior : NormalizedSymbolicBehavior) (state : MachineState)
+    (index : Nat) (safe : [0, 2, 6, 7, 10, 11].contains index = true) :
+    (outputFlag behavior.flags index).eval state =
+      BoolExpr.eval ((behavior.eval state).nextMachineState state) (.inputFlag index) := by
+  simp only [BoolExpr.eval, RelationalBehavior.nextMachineState,
+    NormalizedSymbolicBehavior.eval_eflags]
+  rcases behavior with ⟨registers, x87, writes, flags, outcome⟩
+  cases flags with
+  | none => simp [outputFlag, evalNormalizedFlags, BoolExpr.eval]
+  | some flags =>
+      simp at safe
+      rcases safe with safe | safe | safe | safe | safe | safe <;> subst index <;>
+        simp [outputFlag, BoolExpr.eval, evalNormalizedFlags,
+          StageA.Formal.FlagsExpr.eval_extract_cf,
+          StageA.Formal.FlagsExpr.eval_extract_pf,
+          StageA.Formal.FlagsExpr.eval_extract_zf,
+          StageA.Formal.FlagsExpr.eval_extract_sf,
+          StageA.Formal.FlagsExpr.eval_extract_df,
+          StageA.Formal.FlagsExpr.eval_extract_of,
+          StageA.Formal.evalFlagBit]
+      all_goals split <;> simp_all [BoolExpr.eval]
+      all_goals split <;> simp_all
+
+theorem BoolExpr.eval_substitute (behavior : NormalizedSymbolicBehavior)
+    (state : MachineState) (predicate : BoolExpr)
+    (safe : predicate.pureInvariant = true) :
+    (predicate.substitute behavior.registers behavior.flags).eval state =
+      predicate.eval ((behavior.eval state).nextMachineState state) := by
+  induction predicate <;>
+    simp_all [BoolExpr.pureInvariant, BoolExpr.substitute, BoolExpr.eval,
+      Expr.eval_substituteRegisters behavior state]
+  case inputFlag index =>
+    exact outputFlag_eval behavior state index (by simpa using safe)
+  case divisionValid high low divisor =>
+    have h := Expr.eval_substituteRegisters behavior state
+      (.divisionValidValue high low divisor) (by simp_all [Expr.pureInvariant])
+    simpa [Expr.substituteRegisters, Expr.eval] using
+      congrArg (fun value => value == (1 : Word)) h
 
 def _root_.StageA.Relational.NormalizedOutcomeExpr.edgeGuard
     (outcome : NormalizedOutcomeExpr)
@@ -1534,7 +1633,7 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.edgeGuard
   | .branch condition taken fallthrough =>
       if taken == target && fallthrough == target then some trueExpr
       else if taken == target then some condition
-      else if fallthrough == target then some (.not condition)
+      else if fallthrough == target then some condition.negateNormalized
       else none
   | .bulkCopy _ _ _ _ continuation | .atomicCompareExchange _ _ _ continuation =>
       if continuation == target then some trueExpr else none
@@ -1545,7 +1644,89 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.edgeGuard
 def edgeWeakestPrecondition (behavior : NormalizedSymbolicBehavior)
     (target : Nat) (predicate : BoolExpr) : Option BoolExpr := do
   let guard ← behavior.outcome.edgeGuard target
-  pure (.or (.not guard) (predicate.substitute behavior.registers behavior.flags))
+  let substituted := predicate.substitute behavior.registers behavior.flags
+  pure (if guard == trueExpr then substituted else .or guard.negateNormalized substituted)
+
+theorem edgeGuard_eval_of_selected (outcome : NormalizedOutcomeExpr)
+    (state : MachineState) (target : Nat) (guard : BoolExpr)
+    (found : outcome.edgeGuard target = some guard)
+    (selected : (outcome.eval state).nextLogicalTarget = some target) :
+    guard.eval state = true := by
+  cases outcome with
+  | branch condition taken fallthrough =>
+      simp only [NormalizedOutcomeExpr.edgeGuard] at found
+      split at found
+      case isTrue both =>
+        simp at found
+        subst guard
+        simp [trueExpr, BoolExpr.eval]
+      case isFalse notBoth =>
+        split at found
+        case isTrue takenTarget =>
+          simp at found
+          subst guard
+          simp_all [NormalizedOutcomeExpr.eval, PureOutcome.nextLogicalTarget]
+        case isFalse notTaken =>
+          split at found
+          case isTrue fallthroughTarget =>
+            simp at found
+            subst guard
+            rw [BoolExpr.eval_negateNormalized]
+            cases conditionEval : condition.eval state with
+            | false => rfl
+            | true =>
+                simp [NormalizedOutcomeExpr.eval, PureOutcome.nextLogicalTarget,
+                  conditionEval] at selected
+                simp [selected] at notTaken
+          case isFalse notFallthrough => simp at found
+  | checkedContinue valid continuation =>
+      simp [NormalizedOutcomeExpr.edgeGuard] at found
+      rcases found with ⟨_, rfl⟩
+      cases h : valid.eval state <;>
+        simp_all [NormalizedOutcomeExpr.eval, PureOutcome.nextLogicalTarget]
+  | jump destination =>
+      simp [NormalizedOutcomeExpr.edgeGuard] at found
+      rcases found with ⟨_, rfl⟩
+      simp [trueExpr, BoolExpr.eval]
+  | call destination continuation =>
+      simp [NormalizedOutcomeExpr.edgeGuard] at found
+      rcases found with ⟨_, rfl⟩
+      simp [trueExpr, BoolExpr.eval]
+  | bulkCopy destination source count direction continuation =>
+      simp [NormalizedOutcomeExpr.edgeGuard] at found
+      rcases found with ⟨_, rfl⟩
+      simp [trueExpr, BoolExpr.eval]
+  | atomicCompareExchange address expected replacement continuation =>
+      simp [NormalizedOutcomeExpr.edgeGuard] at found
+      rcases found with ⟨_, rfl⟩
+      simp [trueExpr, BoolExpr.eval]
+  | returned | externalCall | externalJump | indirectCall | indirectJump =>
+      simp [NormalizedOutcomeExpr.edgeGuard] at found
+
+theorem edgeWeakestPrecondition_sound (behavior : NormalizedSymbolicBehavior)
+    (state : MachineState) (target : Nat) (predicate precondition : BoolExpr)
+    (safe : predicate.pureInvariant = true)
+    (computed : edgeWeakestPrecondition behavior target predicate = some precondition)
+    (holds : precondition.eval state = true)
+    (selected : (behavior.eval state).outcome.nextLogicalTarget = some target) :
+    predicate.eval ((behavior.eval state).nextMachineState state) = true := by
+  unfold edgeWeakestPrecondition at computed
+  cases guardFound : behavior.outcome.edgeGuard target with
+  | none => simp [guardFound] at computed
+  | some guard =>
+      simp [guardFound] at computed
+      split at computed
+      case isTrue always =>
+        subst precondition
+        rw [← BoolExpr.eval_substitute behavior state predicate safe]
+        exact holds
+      case isFalse conditional =>
+        subst precondition
+        have guardTrue := edgeGuard_eval_of_selected behavior.outcome state target guard
+          guardFound (by simpa using selected)
+        simp [BoolExpr.eval, guardTrue] at holds
+        rw [← BoolExpr.eval_substitute behavior state predicate safe]
+        exact holds
 
 
 
@@ -1557,6 +1738,134 @@ def NormalizedInvariantPredicateEdgeClosed
     (behavior.eval state).outcome.nextLogicalTarget = some target →
     targetPredicate.eval ((behavior.eval state).nextMachineState state) = true
 
+theorem stateInvariantsHold_member (predicates : List BoolExpr)
+    (predicate : BoolExpr) (state : MachineState)
+    (member : predicate ∈ predicates)
+    (holds : stateInvariantsHold predicates state = true) :
+    predicate.eval state = true := by
+  simp [stateInvariantsHold] at holds
+  exact holds predicate member
+
+theorem invariantPredicateEdgeClosed_of_wp
+    (behavior : NormalizedSymbolicBehavior) (sourceInvariant : List BoolExpr)
+    (targetPredicate precondition : BoolExpr) (target : Nat)
+    (safe : targetPredicate.pureInvariant = true)
+    (computed : edgeWeakestPrecondition behavior target targetPredicate = some precondition)
+    (available : ∀ state, stateInvariantsHold sourceInvariant state = true →
+      precondition.eval state = true) :
+    NormalizedInvariantPredicateEdgeClosed behavior sourceInvariant targetPredicate target := by
+  intro state source selected
+  exact edgeWeakestPrecondition_sound behavior state target targetPredicate precondition safe
+    computed (available state source) selected
+
+theorem maskedSuccessorRangeTautology
+    (value : Word) (mask limit threshold : Nat)
+    (maskFits : mask < 2 ^ 32)
+    (thresholdFits : threshold + 1 < 2 ^ 32)
+    (bounded : value.toNat < limit)
+    (preserves : ∀ input, input < limit → input &&& mask = input) :
+    decide (value < BitVec.ofNat 32 threshold) = false ∧
+        ¬(value - BitVec.ofNat 32 threshold) &&& BitVec.ofNat 32 mask = 0#32 ∨
+      value < BitVec.ofNat 32 (threshold + 1) := by
+  by_cases below : value.toNat < threshold + 1
+  · right
+    simpa [BitVec.lt_def, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt thresholdFits] using below
+  · left
+    constructor
+    · simp [BitVec.lt_def, BitVec.toNat_ofNat,
+        Nat.mod_eq_of_lt (by omega : threshold < 2 ^ 32)]
+      omega
+    · intro equalZero
+      have asNat := congrArg BitVec.toNat equalZero
+      simp [BitVec.toNat_and, BitVec.toNat_sub, BitVec.toNat_ofNat,
+        Nat.mod_eq_of_lt maskFits,
+        Nat.mod_eq_of_lt (by omega : threshold < 2 ^ 32)] at asNat
+      have reduced :
+          (2 ^ 32 - threshold + value.toNat) % 2 ^ 32 =
+            value.toNat - threshold := by
+        omega
+      rw [reduced] at asNat
+      have differenceBound : value.toNat - threshold < limit := by omega
+      rw [preserves _ differenceBound] at asNat
+      omega
+
+def maskedSuccessorPredicate (base : Expr) (bits threshold : Nat) : BoolExpr :=
+  let mask := 2 ^ bits - 1
+  let masked := .bitAnd base (.constant mask)
+  .or
+    (.and
+      (.not (.unsignedLess (.bitAnd masked (.constant mask))
+        (.bitAnd (.constant threshold) (.constant mask))))
+      (.not (.equal
+        (.bitAnd (.bitAnd (.sub masked (.constant threshold)) (.constant mask))
+          (.constant mask))
+        (.constant 0))))
+    (.unsignedLess masked (.constant (threshold + 1)))
+
+theorem maskedSuccessorPredicate_eval (base : Expr) (bits threshold : Nat)
+    (state : MachineState) (bitsAtMost : bits ≤ 32)
+    (thresholdBound : threshold + 1 < 2 ^ bits) :
+    (maskedSuccessorPredicate base bits threshold).eval state = true := by
+  let mask := 2 ^ bits - 1
+  let value : Word := base.eval state &&& BitVec.ofNat 32 mask
+  have powerBound : 2 ^ bits ≤ 2 ^ 32 :=
+    Nat.pow_le_pow_right (by omega) bitsAtMost
+  have maskFits : mask < 2 ^ 32 := by unfold mask; omega
+  have thresholdFits : threshold + 1 < 2 ^ 32 := by omega
+  have valueBound : value.toNat < 2 ^ bits := by
+    unfold value mask
+    rw [BitVec.toNat_and, BitVec.toNat_ofNat]
+    rw [Nat.mod_eq_of_lt (by omega : 2 ^ bits - 1 < 2 ^ 32)]
+    exact Nat.and_lt_two_pow _ (by omega)
+  have preserves : ∀ input, input < 2 ^ bits → input &&& mask = input := by
+    intro input inputBound
+    unfold mask
+    exact Nat.and_two_pow_sub_one_of_lt_two_pow inputBound
+  have thresholdMask :
+      BitVec.ofNat 32 threshold &&& BitVec.ofNat 32 mask =
+        BitVec.ofNat 32 threshold := by
+    apply BitVec.eq_of_toNat_eq
+    simp [BitVec.toNat_and, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt maskFits,
+      Nat.mod_eq_of_lt (by omega : threshold < 2 ^ 32),
+      preserves threshold (by omega)]
+  have range := maskedSuccessorRangeTautology value mask (2 ^ bits) threshold
+    maskFits thresholdFits valueBound preserves
+  simpa [maskedSuccessorPredicate, BoolExpr.eval, Expr.eval, value, mask,
+    BitVec.and_assoc, thresholdMask] using range
+
+def successorRangePredicate (base : Expr) (threshold : Nat) : BoolExpr :=
+  .or
+    (.and
+      (.not (.unsignedLess base (.constant threshold)))
+      (.not (.equal (.sub base (.constant threshold)) (.constant 0))))
+    (.unsignedLess base (.constant (threshold + 1)))
+
+theorem successorRangePredicate_eval (base : Expr) (threshold : Nat)
+    (state : MachineState) (thresholdFits : threshold + 1 < 2 ^ 32) :
+    (successorRangePredicate base threshold).eval state = true := by
+  simp [successorRangePredicate, BoolExpr.eval, Expr.eval,
+    BitVec.lt_def, BitVec.toNat_ofNat,
+    Nat.mod_eq_of_lt thresholdFits,
+    Nat.mod_eq_of_lt (by omega : threshold < 2 ^ 32)]
+  let value := base.eval state
+  by_cases below : value.toNat < threshold + 1
+  · right
+    simpa [value] using below
+  · left
+    simp [value] at below
+    constructor
+    · omega
+    · intro equalZero
+      have asNat := congrArg BitVec.toNat equalZero
+      simp [BitVec.toNat_sub, BitVec.toNat_ofNat,
+        Nat.mod_eq_of_lt (by omega : threshold < 2 ^ 32)] at asNat
+      have reduced :
+          (2 ^ 32 - threshold + (base.eval state).toNat) % 2 ^ 32 =
+            (base.eval state).toNat - threshold := by omega
+      rw [reduced] at asNat
+      omega
 
 
 end InvariantWP

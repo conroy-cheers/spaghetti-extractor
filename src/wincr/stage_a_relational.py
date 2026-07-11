@@ -3121,6 +3121,12 @@ def _semantic_edges(behavior: dict[str, Any]) -> list[dict[str, Any]]:
     if operation in {"jump", "call"}:
         return [{"target": int(outcome["target"]), "guard": truth, "kind": operation}]
     if operation == "branch":
+        if int(outcome["taken"]) == int(outcome["fallthrough"]):
+            return [{
+                "target": int(outcome["taken"]),
+                "guard": truth,
+                "kind": "branch_converged",
+            }]
         return [
             {"target": int(outcome["taken"]), "guard": outcome["condition"], "kind": "branch_taken"},
             {"target": int(outcome["fallthrough"]), "guard": _semantic_not(outcome["condition"]), "kind": "branch_fallthrough"},
@@ -3723,8 +3729,18 @@ def _lean_semantic_expr(expression: dict[str, Any]) -> str:
     }
     if operation == "input_reg":
         return f"StageA.Formal.Expr.inputReg (StageA.Formal.Reg.{expression['reg']})"
+    if operation == "input_flag_value":
+        return f"StageA.Formal.Expr.inputFlagValue {int(expression['bit'])}"
+    if operation == "input_fs_base":
+        return "StageA.Formal.Expr.inputFsBase"
+    if operation == "input_x87_control":
+        return "StageA.Formal.Expr.inputX87Control"
+    if operation == "input_x87_status":
+        return "StageA.Formal.Expr.inputX87Status"
     if operation == "constant":
         return f"StageA.Formal.Expr.constant {int(expression['value'])}"
+    if operation == "undefined":
+        return f"StageA.Formal.Expr.undefined {int(expression['slot'])}"
     if operation in unary:
         return f"StageA.Formal.Expr.{unary[operation]} ({_lean_semantic_expr(expression['value'])})"
     if operation in binary:
@@ -3744,6 +3760,19 @@ def _lean_semantic_expr(expression: dict[str, Any]) -> str:
         return (
             f"StageA.Formal.Expr.{constructor} "
             f"({_lean_semantic_expr(expression['value'])}) {int(expression['index'])}"
+        )
+    if operation in {"read8", "read32"}:
+        return (
+            f"StageA.Formal.Expr.{operation} "
+            f"({_lean_semantic_expr(expression['address'])})"
+        )
+    if operation == "read8_after_write":
+        return (
+            "StageA.Formal.Expr.read8AfterWrite "
+            f"({_lean_semantic_expr(expression['address'])}) "
+            f"({_lean_semantic_expr(expression['write_address'])}) "
+            f"({_lean_semantic_expr(expression['write_value'])}) "
+            f"({_lean_semantic_expr(expression['prior'])})"
         )
     if operation == "if_equal":
         return (
@@ -3765,7 +3794,251 @@ def _lean_semantic_expr(expression: dict[str, Any]) -> str:
             f"({_lean_semantic_expr(expression['low'])}) "
             f"({_lean_semantic_expr(expression['divisor'])})"
         )
-    raise StageAInputError(f"unsupported pure bound expression operation {operation!r}")
+    if operation == "x87_part":
+        return (
+            "StageA.Formal.Expr.x87Part "
+            f"({_lean_semantic_x87_expr(expression['value'])}) {int(expression['part'])}"
+        )
+    if operation == "x87_compare_bit":
+        return (
+            "StageA.Formal.Expr.x87CompareBit "
+            f"({_lean_semantic_x87_expr(expression['left'])}) "
+            f"({_lean_semantic_x87_expr(expression['right'])}) "
+            f"({_lean_semantic_expr(expression['control'])}) {int(expression['bit'])}"
+        )
+    if operation == "x87_examine_status":
+        return (
+            "StageA.Formal.Expr.x87ExamineStatus "
+            f"({_lean_semantic_x87_expr(expression['value'])}) "
+            f"({_lean_semantic_expr(expression['status'])})"
+        )
+    raise StageAInputError(f"unsupported semantic expression operation {operation!r}")
+
+
+def _lean_semantic_x87_expr(expression: dict[str, Any]) -> str:
+    operation = expression["op"]
+    if operation == "input_stack":
+        return f"StageA.Formal.X87Expr.inputStack {int(expression['index'])}"
+    if operation == "constant":
+        return f"StageA.Formal.X87Expr.constant {int(expression['value'])}"
+    if operation == "load":
+        return (
+            f"StageA.Formal.X87Expr.load .{expression['format']} "
+            f"({_lean_semantic_expr(expression['address'])}) "
+            f"({_lean_semantic_expr(expression['control'])})"
+        )
+    if operation == "image_load":
+        return (
+            f"StageA.Formal.X87Expr.imageLoad .{expression['format']} "
+            f"{int(expression['raw'])} ({_lean_semantic_expr(expression['control'])})"
+        )
+    if operation == "unary":
+        return (
+            f"StageA.Formal.X87Expr.unary .{expression['operation']} "
+            f"({_lean_semantic_x87_expr(expression['value'])}) "
+            f"({_lean_semantic_expr(expression['control'])})"
+        )
+    if operation == "binary":
+        operation_name = {
+            "add": "add", "multiply": "multiply", "subtract": "subtract",
+            "reverse_subtract": "reverseSubtract", "divide": "divide",
+            "reverse_divide": "reverseDivide",
+        }[expression["operation"]]
+        return (
+            f"StageA.Formal.X87Expr.binary .{operation_name} "
+            f"({_lean_semantic_x87_expr(expression['left'])}) "
+            f"({_lean_semantic_x87_expr(expression['right'])}) "
+            f"({_lean_semantic_expr(expression['control'])})"
+        )
+    if operation == "store":
+        return (
+            f"StageA.Formal.X87Expr.store .{expression['format']} "
+            f"({_lean_semantic_x87_expr(expression['value'])}) "
+            f"({_lean_semantic_expr(expression['control'])})"
+        )
+    raise StageAInputError(f"unsupported x87 invariant expression operation {operation!r}")
+
+
+def _semantic_masked_successor_shape(
+    predicate: dict[str, Any],
+) -> dict[str, Any] | None:
+    if predicate.get("op") != "or" or predicate.get("left", {}).get("op") != "and":
+        return None
+    conjunction = predicate["left"]
+    right = predicate.get("right", {})
+    if right.get("op") != "unsigned_less":
+        return None
+    first = conjunction.get("left", {})
+    second = conjunction.get("right", {})
+    if first.get("op") != "not" or second.get("op") != "not":
+        return None
+    lower_test = first.get("value", {})
+    nonzero_test = second.get("value", {})
+    if lower_test.get("op") != "unsigned_less" or nonzero_test.get("op") != "equal":
+        return None
+    upper_constant = right.get("right", {})
+    if upper_constant.get("op") != "constant":
+        return None
+    masked_value = right.get("left", {})
+    if masked_value.get("op") != "bit_and":
+        return None
+    mask_constant = masked_value.get("right", {})
+    if mask_constant.get("op") != "constant":
+        return None
+    mask = int(mask_constant["value"])
+    limit = mask + 1
+    if limit <= 1 or limit & (limit - 1) or limit > 2 ** 32:
+        return None
+    bits = limit.bit_length() - 1
+
+    def masked_constant(value: dict[str, Any]) -> int | None:
+        if value.get("op") == "constant":
+            return int(value["value"])
+        if value.get("op") != "bit_and":
+            return None
+        left = value.get("left", {})
+        right_value = value.get("right", {})
+        if left.get("op") != "constant" or right_value.get("op") != "constant":
+            return None
+        if int(right_value["value"]) != mask:
+            return None
+        return int(left["value"]) & mask
+
+    threshold = masked_constant(lower_test.get("right", {}))
+    if threshold is None or int(upper_constant["value"]) != threshold + 1:
+        return None
+
+    def collapse_repeated_mask(value: dict[str, Any]) -> dict[str, Any]:
+        current = value
+        while (
+            current.get("op") == "bit_and"
+            and current.get("right", {}).get("op") == "constant"
+            and int(current["right"]["value"]) == mask
+            and current.get("left", {}).get("op") == "bit_and"
+            and current["left"].get("right", {}).get("op") == "constant"
+            and int(current["left"]["right"]["value"]) == mask
+        ):
+            current = current["left"]
+        return current
+
+    if _semantic_hash(collapse_repeated_mask(lower_test["left"])) != _semantic_hash(masked_value):
+        return None
+    zero_side = None
+    for value, zero in (
+        (nonzero_test.get("left", {}), nonzero_test.get("right", {})),
+        (nonzero_test.get("right", {}), nonzero_test.get("left", {})),
+    ):
+        if zero.get("op") == "constant" and int(zero["value"]) == 0:
+            zero_side = value
+            break
+    if zero_side is None:
+        return None
+    masked_difference = collapse_repeated_mask(zero_side)
+    if (
+        masked_difference.get("op") != "bit_and"
+        or masked_difference.get("right", {}).get("op") != "constant"
+        or int(masked_difference["right"]["value"]) != mask
+    ):
+        return None
+    difference = masked_difference.get("left", {})
+    if (
+        difference.get("op") != "sub"
+        or _semantic_hash(difference.get("left", {})) != _semantic_hash(masked_value)
+        or masked_constant(difference.get("right", {})) != threshold
+    ):
+        return None
+    return {
+        "masked_value": masked_value,
+        "lower_expression": lower_test["left"],
+        "difference_expression": zero_side,
+        "upper_expression": right["left"],
+        "mask": mask,
+        "limit": limit,
+        "bits": bits,
+        "threshold": threshold,
+    }
+
+
+def _lean_masked_successor_tautology_proof(
+    precondition_name: str, predicate: dict[str, Any],
+) -> list[str] | None:
+    shape = _semantic_masked_successor_shape(predicate)
+    if shape is None:
+        return None
+    bits = shape["bits"]
+    threshold = shape["threshold"]
+    base = _lean_semantic_expr(shape["masked_value"]["left"])
+    return [
+        f"    have shape : {precondition_name} =",
+        f"        InvariantWP.maskedSuccessorPredicate ({base}) {bits} "
+        f"{threshold} := by decide",
+        "    rw [shape]",
+        f"    exact InvariantWP.maskedSuccessorPredicate_eval ({base}) {bits} "
+        f"{threshold} state (by decide) (by decide)",
+    ]
+
+
+def _semantic_successor_shape(predicate: dict[str, Any]) -> dict[str, Any] | None:
+    if predicate.get("op") != "or" or predicate.get("left", {}).get("op") != "and":
+        return None
+    conjunction = predicate["left"]
+    upper_test = predicate.get("right", {})
+    first = conjunction.get("left", {})
+    second = conjunction.get("right", {})
+    if (
+        upper_test.get("op") != "unsigned_less"
+        or first.get("op") != "not"
+        or second.get("op") != "not"
+    ):
+        return None
+    lower_test = first.get("value", {})
+    nonzero_test = second.get("value", {})
+    if lower_test.get("op") != "unsigned_less" or nonzero_test.get("op") != "equal":
+        return None
+    lower = lower_test.get("right", {})
+    upper = upper_test.get("right", {})
+    if lower.get("op") != "constant" or upper.get("op") != "constant":
+        return None
+    threshold = int(lower["value"])
+    if int(upper["value"]) != threshold + 1:
+        return None
+    base = upper_test.get("left", {})
+    if _semantic_hash(lower_test.get("left", {})) != _semantic_hash(base):
+        return None
+    difference = None
+    for value, zero in (
+        (nonzero_test.get("left", {}), nonzero_test.get("right", {})),
+        (nonzero_test.get("right", {}), nonzero_test.get("left", {})),
+    ):
+        if zero.get("op") == "constant" and int(zero["value"]) == 0:
+            difference = value
+            break
+    if (
+        difference is None
+        or difference.get("op") != "sub"
+        or _semantic_hash(difference.get("left", {})) != _semantic_hash(base)
+        or difference.get("right", {}).get("op") != "constant"
+        or int(difference["right"]["value"]) != threshold
+    ):
+        return None
+    return {"base": base, "threshold": threshold}
+
+
+def _lean_successor_tautology_proof(
+    precondition_name: str, predicate: dict[str, Any],
+) -> list[str] | None:
+    shape = _semantic_successor_shape(predicate)
+    if shape is None:
+        return None
+    base = _lean_semantic_expr(shape["base"])
+    threshold = shape["threshold"]
+    return [
+        f"    have shape : {precondition_name} =",
+        f"        InvariantWP.successorRangePredicate ({base}) {threshold} := by decide",
+        "    rw [shape]",
+        f"    exact InvariantWP.successorRangePredicate_eval ({base}) {threshold} "
+        "state (by decide)",
+    ]
 
 
 def _lean_semantic_bool_expr(expression: dict[str, Any]) -> str:
@@ -4873,6 +5146,11 @@ def _write_relational_invariant_modules(
         for region in synthesis["region_invariants"]
         for predicate in region["predicates"]
     }
+    requirement_by_id = {
+        predicate["id"]: predicate
+        for region in synthesis["region_invariants"]
+        for predicate in region["predicates"]
+    }
     predicates_by_location: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for region in synthesis["region_invariants"]:
         for predicate in region["predicates"]:
@@ -4901,6 +5179,16 @@ def _write_relational_invariant_modules(
         module = f"RelationalInvariantFamily{obligation_index}"
         normalized_names: dict[tuple[str, int], str] = {}
         definitions: list[str] = []
+        target_specs_by_side: dict[str, list[tuple[int, dict[str, Any]]]] = {
+            "original": [], "candidate": [],
+        }
+        for region in synthesis["region_invariants"]:
+            for predicate in region["predicates"]:
+                if predicate["obligation_id"] == obligation_id:
+                    target_specs_by_side[region["side"]].append((
+                        int(contract["regions"][region["region_index"]]["numeric_id"]),
+                        predicate["predicate"],
+                    ))
         for side, source_index in sorted({
             (edge["side"], edge["source_index"]) for edge in edges
         }):
@@ -4933,43 +5221,64 @@ def _write_relational_invariant_modules(
             target_index = edge["target_index"]
             behavior_name = normalized_names[(side, source_index)]
             source_name = list_names[(side, source_index)]
-            target_name = list_names[(side, target_index)]
+            target_predicate_name = (
+                f"invariantFamily{obligation_index}Edge{edge_index}TargetPredicate"
+            )
+            precondition_name = (
+                f"invariantFamily{obligation_index}Edge{edge_index}Precondition"
+            )
+            target_predicate = requirement_by_id[edge["requirement_id"]]["predicate"]
+            definitions.append(
+                f"def {target_predicate_name} : BoolExpr := "
+                f"{_lean_semantic_bool_expr(target_predicate)}"
+            )
+            definitions.append(
+                f"def {precondition_name} : BoolExpr := "
+                f"{_lean_semantic_bool_expr(edge['precondition'])}"
+            )
             theorem_name = f"invariantFamily{obligation_index}Edge{edge_index}Checked"
             theorem_names.append(theorem_name)
             claim = (
-                f"NormalizedInvariantEdgeClosed {behavior_name} {source_name} "
-                f"{target_name} {contract['regions'][target_index]['numeric_id']}"
+                f"InvariantWP.NormalizedInvariantPredicateEdgeClosed {behavior_name} "
+                f"{source_name} {target_predicate_name} "
+                f"{contract['regions'][target_index]['numeric_id']}"
             )
             claims.append(claim)
-            definitions.append(
-                f"theorem {theorem_name} : {claim} := by\n"
-                "  intro state sourceInvariant selectedTarget\n"
-                "  rcases state with \u27e8registers, memory, undefinedValue, x87, eflags, fsBase\u27e9\n"
-                "  rcases registers with \u27e8eax, ebx, ecx, edx, esi, edi, ebp, esp\u27e9\n"
-                "  simp [NormalizedInvariantEdgeClosed, stateInvariantsHold,\n"
-                f"    {behavior_name}, {source_name}, {target_name}, "
-                f"region{source_index}, {side}Behavior{source_index},\n"
-                "    normalizeSymbolicBehavior, normalizeOutcomeExpr, normalizeCodeTarget,\n"
-                "    NormalizedSymbolicBehavior.eval, NormalizedOutcomeExpr.eval,\n"
-                "    evalNormalizedRegisters, evalNormalizedX87, evalNormalizedWrites,\n"
-                "    evalNormalizedFlags, evalNormalizedFlags_some, evalNormalizedFlags_none,\n"
-                "    RelationalBehavior.nextMachineState, applyConcreteWrites,\n"
-                "    PureOutcome.nextLogicalTarget, StageA.Formal.BoolExpr.eval,\n"
-                "    StageA.Formal.Expr.eval,\n"
-                "    StageA.Formal.FlagsExpr.eval_extract_cf,\n"
-                "    StageA.Formal.FlagsExpr.eval_extract_pf,\n"
-                "    StageA.Formal.FlagsExpr.eval_extract_zf,\n"
-                "    StageA.Formal.FlagsExpr.eval_extract_sf,\n"
-                "    StageA.Formal.FlagsExpr.eval_extract_df,\n"
-                "    StageA.Formal.FlagsExpr.eval_extract_of,\n"
-                "    StageA.Formal.Registers.get, StageA.Formal.evalFlagBit,\n"
-                "    BitVec.sub_eq_iff_eq_add] "
-                "at sourceInvariant selectedTarget \u22a2\n"
-                "  all_goals try bv_normalize\n"
-                "  all_goals simp [BitVec.ult_eq_decide_lt, BitVec.lt_def, "
-                "\u2190 BitVec.toNat_inj] at *\n"
-                "  all_goals omega"
-            )
+            proof = [
+                f"theorem {theorem_name} : {claim} := by",
+                "  apply InvariantWP.invariantPredicateEdgeClosed_of_wp "
+                f"{behavior_name} {source_name} {target_predicate_name} "
+                f"{precondition_name} "
+                f"{contract['regions'][target_index]['numeric_id']}",
+                "  · decide",
+                "  · decide",
+                "  · intro state sourceInvariant",
+            ]
+            if edge["analysis_status"] == "requires_predecessor_invariant":
+                proof.extend([
+                    f"    exact InvariantWP.stateInvariantsHold_member {source_name}",
+                    f"      {precondition_name} state (by decide) sourceInvariant",
+                ])
+            else:
+                specialized = _lean_masked_successor_tautology_proof(
+                    precondition_name, edge["precondition"]
+                )
+                if specialized is None:
+                    specialized = _lean_successor_tautology_proof(
+                        precondition_name, edge["precondition"]
+                    )
+                if specialized is not None:
+                    proof.extend(specialized)
+                else:
+                    proof.extend([
+                        "    rcases state with "
+                        "⟨⟨eax, ebx, ecx, edx, esi, edi, ebp, esp⟩, memory, "
+                        "undefinedValue, x87, eflags, fsBase⟩",
+                        f"    simp [{precondition_name}, StageA.Formal.BoolExpr.eval,",
+                        "      StageA.Formal.Expr.eval, StageA.Formal.Registers.get]",
+                        "    all_goals bv_decide",
+                    ])
+            definitions.append("\n".join(proof))
         claims_name = f"invariantFamily{obligation_index}Claims"
         checked_name = f"invariantFamily{obligation_index}Checked"
         definitions.append(f"def {claims_name} : List Prop := [{', '.join(claims)}]")
@@ -4998,6 +5307,123 @@ def _write_relational_invariant_modules(
             "claims": claims_name,
             "theorem": checked_name,
         })
+        inventory_pack_count = min(
+            len(shard_groups),
+            max(1, int(os.environ.get(
+                "WINCR_STAGE_A_RELATIONAL_INVARIANT_INVENTORY_PACKS", "64"
+            ))),
+        )
+        shards_per_inventory_pack = (
+            len(shard_groups) + inventory_pack_count - 1
+        ) // inventory_pack_count
+        for pack_index, shard_offset in enumerate(
+            range(0, len(shard_groups), shards_per_inventory_pack)
+        ):
+            shard_indices = range(
+                shard_offset,
+                min(len(shard_groups), shard_offset + shards_per_inventory_pack),
+            )
+            inventory_region_indices = [
+                region_index
+                for shard_index in shard_indices
+                for region_index in shard_groups[shard_index]
+            ]
+            inventory_module = (
+                f"RelationalInvariantFamily{obligation_index}Inventory{pack_index}"
+            )
+            inventory_imports = "\n".join(
+                f"import StageA.{definition_modules[shard_index]}"
+                for shard_index in range(
+                    shard_offset,
+                    min(len(shard_groups), shard_offset + shards_per_inventory_pack),
+                )
+            )
+            inventory_definitions: list[str] = []
+            inventory_theorems: list[str] = []
+            inventory_claims: list[str] = []
+            for side in ("original", "candidate"):
+                side_name = side.capitalize()
+                candidate = "true" if side == "candidate" else "false"
+                prefix = f"invariantFamily{obligation_index}Inventory{pack_index}{side_name}"
+                target_rows = ", ".join(
+                    "{ target := "
+                    f"{target}, predicate := {_lean_semantic_bool_expr(predicate)} }}"
+                    for target, predicate in target_specs_by_side[side]
+                )
+                inventory_definitions.append(
+                    f"def {prefix}Targets : List InvariantTargetSpec := [{target_rows}]"
+                )
+                source_rows = ", ".join(
+                    f"({index}, ((normalizeSymbolicBehavior {candidate} "
+                    f"region{index}.targets {side}Behavior{index}).get "
+                    "(by decide)).outcome)"
+                    for index in inventory_region_indices
+                )
+                inventory_definitions.append(
+                    f"def {prefix}Sources : List (Nat × NormalizedOutcomeExpr) := "
+                    f"[{source_rows}]"
+                )
+                inventory_region_set = set(inventory_region_indices)
+                claimed_rows = ", ".join(
+                    "{ sourceIndex := "
+                    f"{edge['source_index']}, target := "
+                    f"{contract['regions'][edge['target_index']]['numeric_id']}, "
+                    "predicate := "
+                    f"{_lean_semantic_bool_expr(requirement_by_id[edge['requirement_id']]['predicate'])} }}"
+                    for edge in edges
+                    if edge["side"] == side
+                    and edge["source_index"] in inventory_region_set
+                )
+                inventory_definitions.append(
+                    f"def {prefix}ClaimedEdges : List InvariantEdgeSpec := [{claimed_rows}]"
+                )
+                theorem_name = f"{prefix}Checked"
+                claim = (
+                    f"invariantEdgeInventoryClosed {prefix}Sources {prefix}Targets "
+                    f"{prefix}ClaimedEdges = true"
+                )
+                inventory_theorems.append(theorem_name)
+                inventory_claims.append(claim)
+                inventory_definitions.append(
+                    f"theorem {theorem_name} : {claim} := by decide"
+                )
+            inventory_claims_name = (
+                f"invariantFamily{obligation_index}Inventory{pack_index}Claims"
+            )
+            inventory_checked_name = (
+                f"invariantFamily{obligation_index}Inventory{pack_index}Checked"
+            )
+            inventory_definitions.append(
+                f"def {inventory_claims_name} : List Prop := "
+                f"[{', '.join(inventory_claims)}]"
+            )
+            inventory_all_proof = (
+                "".join(f"And.intro {name} (" for name in inventory_theorems)
+                + "True.intro"
+                + ")" * len(inventory_theorems)
+            )
+            inventory_definitions.append(
+                f"theorem {inventory_checked_name} : "
+                f"AllInvariantClaims {inventory_claims_name} := by\n"
+                f"  exact {inventory_all_proof}"
+            )
+            inventory_source = (
+                inventory_imports
+                + "\n\nnamespace StageA.GeneratedRelational\n\n"
+                "open StageA.Formal StageA.Relational\n\n"
+                "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+                + "\n\n".join(inventory_definitions)
+                + "\n\nend StageA.GeneratedRelational\n"
+            )
+            _write_text_if_changed(
+                lean_dir / "StageA" / f"{inventory_module}.lean", inventory_source
+            )
+            modules.append({
+                "module": inventory_module,
+                "obligation_id": obligation_id,
+                "claims": inventory_claims_name,
+                "theorem": inventory_checked_name,
+            })
     return modules
 
 
