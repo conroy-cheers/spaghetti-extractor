@@ -3332,6 +3332,55 @@ def _normalized_behavior_fast_path(
     )
 
 
+def _lean_behavior_field(source: str, field: str, next_field: str) -> str | None:
+    end_marker = f", {next_field} := "
+    for start_marker in (f", {field} := ", f"{{ {field} := "):
+        try:
+            return source.split(start_marker, 1)[1].split(end_marker, 1)[0]
+        except (AttributeError, IndexError):
+            continue
+    return None
+
+
+def _lean_behavior_fields_memory_free(
+    behaviors: dict[str, str], field: str, next_field: str
+) -> bool:
+    values = [
+        _lean_behavior_field(behaviors.get(side, ""), field, next_field)
+        for side in ("original", "candidate")
+    ]
+    if any(value is None for value in values):
+        return False
+    memory_dependencies = (
+        "StageA.Formal.X87Expr.load ",
+        "StageA.Formal.Expr.read8 ",
+        "StageA.Formal.Expr.read32 ",
+        "StageA.Formal.Expr.read8AfterWrite ",
+    )
+    return all(
+        not any(marker in value for marker in memory_dependencies)
+        for value in values if value is not None
+    )
+
+
+def _lean_x87_state_only_pair(behaviors: dict[str, str]) -> bool:
+    original = _lean_behavior_field(behaviors.get("original", ""), "x87", "writes")
+    candidate = _lean_behavior_field(behaviors.get("candidate", ""), "x87", "writes")
+    if original is None or original != candidate:
+        return False
+    external_dependencies = (
+        "StageA.Formal.X87Expr.load ",
+        "StageA.Formal.Expr.inputReg ",
+        "StageA.Formal.Expr.inputFlagValue ",
+        "StageA.Formal.Expr.inputFsBase",
+        "StageA.Formal.Expr.read8 ",
+        "StageA.Formal.Expr.read32 ",
+        "StageA.Formal.Expr.read8AfterWrite ",
+        "StageA.Formal.Expr.undefinedValue ",
+    )
+    return not any(marker in original for marker in external_dependencies)
+
+
 def _lean_normalized_static_outcome(
     region: dict[str, Any],
     behaviors: dict[str, str],
@@ -4537,6 +4586,15 @@ def _lean_region_theorem_source(
             tactic = "fail_if_success trivial"
     else:
         tactic = "bv_decide? (config := { timeout := 120, trimProofs := false })"
+    relocation_bridge_tactics = "".join(
+        f" | (rw [← {name}RelocationOriginalRead32Static{relocation_index}, "
+        f"← {name}RelocationCandidateRead32Static{relocation_index}] at "
+        f"{name}RelocationWordRelatedStatic{relocation_index}; exact "
+        f"{name}RelocationWordRelatedStatic{relocation_index})"
+        for relocation_index, _ in enumerate(
+            _lean_region_static_relocation_word_specs(region, behaviors)
+        )
+    )
     input_hypotheses = [f"inputRelated{pair_index}" for pair_index in range(len(region["inputs"]))]
     relation_destructure = (
         "  rcases related with ⟨" + ", ".join(input_hypotheses) + "⟩\n"
@@ -4570,7 +4628,7 @@ def _lean_region_theorem_source(
             "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval, "
             f"{flag_eval_simplifiers},\n"
             f"    {memory_read_simplifiers}, StageA.Formal.MachineState.readX87Word,\n"
-            "    StageA.Formal.read8AfterWriteValue,\n"
+            "    StageA.Formal.read8AfterWriteValue, BitVec.add_assoc,\n"
             "    StageA.Formal.X87LoadFormat.byteWidth, registersRelated, registersRelatedValues,\n"
             "    StageA.Formal.Registers.get, StageA.Formal.Registers.set, normalizeCodeTarget, normalizeImport,\n"
             f"    writesRelated, wordsRelated, outcomesRelated, "
@@ -4582,18 +4640,17 @@ def _lean_region_theorem_source(
             + flag_lemma_line
             + f"    originalBehavior{index}, candidateBehavior{index}, {name}]\n"
             + indexed_memory_rewrite
-            + f"  all_goals first | rfl | {tactic}\n"
+            + f"  all_goals first | rfl{relocation_bridge_tactics} | {tactic}\n"
         )
     )
-    direct_setup_base = (
+    direct_state_setup = (
         "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
         "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
         "  unfold statesRelated at related\n"
         "  rcases related with ⟨related, boundsSatisfied, separationsSatisfied, memoryRelated, undefinedRelated, x87Related, flagsRelated, fsBaseRelated⟩\n"
-        + _lean_region_memory_setup(
-            index, region, str(original_image_base), str(candidate_image_base),
-        )
-        + "  change originalUndefined = candidateUndefined at undefinedRelated\n  subst candidateUndefined\n"
+    )
+    direct_state_equalities = (
+        "  change originalUndefined = candidateUndefined at undefinedRelated\n  subst candidateUndefined\n"
         "  change originalX87 = candidateX87 at x87Related\n  subst candidateX87\n"
         + flag_setup
         + "  change originalFsBase = candidateFsBase at fsBaseRelated\n  subst candidateFsBase\n"
@@ -4601,6 +4658,14 @@ def _lean_region_theorem_source(
         + relation_destructure
         + substitutions
         + f"  simp [StageA.Relational.boundsRelated, StageA.Formal.Registers.get, {name}] at boundsSatisfied\n"
+    )
+    direct_setup_base_without_memory = direct_state_setup + direct_state_equalities
+    direct_setup_base = (
+        direct_state_setup
+        + _lean_region_memory_setup(
+            index, region, str(original_image_base), str(candidate_image_base),
+        )
+        + direct_state_equalities
     )
     direct_setup = (
         direct_setup_base
@@ -4620,16 +4685,87 @@ def _lean_region_theorem_source(
         for omitted in (memory_lemma_line, separation_lemma_line, indexed_memory_rewrite):
             if omitted:
                 x87_proof_steps = x87_proof_steps.replace(omitted, "")
-        component_theorems = "".join(
-            f"theorem {name}{label}DirectComponent : {predicate} {original_image_base} {candidate_image_base} "
-            f"originalBehavior{index} candidateBehavior{index} {name} := by\n"
-            f"  unfold {predicate}\n"
-            "  intro originalState candidateState related\n"
-            + (direct_setup_base if label == "X87" else direct_setup)
-            + (x87_proof_steps if label == "X87" else proof_steps)
-            + "\n"
-            for label, predicate in components
-        )
+        x87_state_only = _lean_x87_state_only_pair(behaviors)
+        memory_free_fields = {
+            "Registers": ("registers", "x87"),
+            "Writes": ("writes", "comparison"),
+            "Flags": ("flags", "outcome"),
+        }
+        memory_free_component_proofs = {
+            "Registers": (
+                "  simp [evalNormalizedRegisters, StageA.Formal.Expr.eval, "
+                "registersRelatedValues, StageA.Formal.Registers.get, "
+                "wordRelated, codePointerRelated, codeAddressMatches, "
+                "mappedValueRelated, normalizeDataAddress, valueTargetContainsCandidate,\n"
+                + flag_lemma_line
+                + f"    originalBehavior{index}, candidateBehavior{index}, {name}]\n"
+                f"  all_goals first | rfl | {tactic}\n"
+            ),
+            "Writes": (
+                "  simp [evalNormalizedWrites, StageA.Formal.Expr.eval, "
+                "writesRelated, wordsRelated, StageA.Formal.Registers.get, "
+                "wordRelated, codePointerRelated, codeAddressMatches, "
+                "mappedValueRelated, normalizeDataAddress, valueTargetContainsCandidate,\n"
+                + flag_lemma_line
+                + f"    originalBehavior{index}, candidateBehavior{index}, {name}]\n"
+                f"  all_goals first | rfl | {tactic}\n"
+            ),
+            "Flags": (
+                "  simp [evalNormalizedFlags, StageA.Formal.Expr.eval, "
+                "StageA.Formal.BoolExpr.eval, "
+                f"{flag_eval_simplifiers}, StageA.Relational.flagsRelated, "
+                "StageA.Formal.Registers.get,\n"
+                + flag_lemma_line
+                + f"    originalBehavior{index}, candidateBehavior{index}, {name}]\n"
+                f"  all_goals first | rfl | {tactic}\n"
+            ),
+        }
+        component_sources: list[str] = []
+        for label, predicate in components:
+            source = (
+                f"theorem {name}{label}DirectComponent : {predicate} "
+                f"{original_image_base} {candidate_image_base} "
+                f"originalBehavior{index} candidateBehavior{index} {name} := by\n"
+                f"  unfold {predicate}\n"
+                "  intro originalState candidateState related\n"
+            )
+            if label == "X87" and x87_state_only:
+                source += (
+                    "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, "
+                    "oebp, oesp⟩, originalMemory, "
+                    "originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
+                    "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, "
+                    "cebp, cesp⟩, candidateMemory, "
+                    "candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
+                    "  unfold statesRelated at related\n"
+                    "  rcases related with ⟨registersRelated, boundsRelated, "
+                    "separationsRelated, memoryRelated, undefinedRelated, x87Related, "
+                    "flagsRelated, fsBaseRelated⟩\n"
+                    "  change originalX87 = candidateX87 at x87Related\n"
+                    "  subst candidateX87\n"
+                    f"  simp [originalBehavior{index}, candidateBehavior{index}, "
+                    "evalNormalizedX87, StageA.Formal.X87Expr.eval, "
+                    "StageA.Formal.Expr.eval]\n"
+                )
+            else:
+                field_spec = memory_free_fields.get(label)
+                memory_free = bool(
+                    field_spec
+                    and _lean_behavior_fields_memory_free(
+                        behaviors, field_spec[0], field_spec[1]
+                    )
+                )
+                component_setup = (
+                    direct_setup_base_without_memory + bound_setup
+                    if memory_free else
+                    (direct_setup_base if label == "X87" else direct_setup)
+                )
+                component_proof = x87_proof_steps if label == "X87" else proof_steps
+                if memory_free:
+                    component_proof = memory_free_component_proofs[label]
+                source += component_setup + component_proof
+            component_sources.append(source + "\n")
+        component_theorems = "".join(component_sources)
         return (
             component_theorems
             + f"theorem {theorem_name}DirectBehavior : behaviorsEquivalent {original_image_base} {candidate_image_base} "
