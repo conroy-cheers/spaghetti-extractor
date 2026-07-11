@@ -227,6 +227,20 @@
               wincr stage-a-check-proof \
                 --report "$TMPDIR/stage-a-suite/cases/mingw-import-relocation-call-composition" \
                 --out "$TMPDIR/stage-a-suite/formal-proof-check-calls.json"
+              wincr stage-a-generate-relation-contract \
+                --original "$fixture_dir/stage-a-original.exe" \
+                --candidate "$fixture_dir/stage-a-candidate.exe" \
+                --mapping "$fixture_dir/block-map.json" \
+                --out "$TMPDIR/stage-a-suite/relational-contract.json"
+              WINCR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/stage-a-relational-cache" \
+                wincr stage-a-prove-relational \
+                  --original "$fixture_dir/stage-a-original.exe" \
+                  --candidate "$fixture_dir/stage-a-candidate.exe" \
+                  --relation-contract "$TMPDIR/stage-a-suite/relational-contract.json" \
+                  --out "$TMPDIR/stage-a-suite/relational-v3"
+              wincr stage-a-check-relational-proof \
+                --report "$TMPDIR/stage-a-suite/relational-v3" \
+                --out "$TMPDIR/stage-a-suite/relational-v3-check.json"
               mkdir -p "$out"
               cp -R "$TMPDIR/stage-a-suite/." "$out/"
             '';
@@ -291,6 +305,29 @@
                 --out "$work/jq-block-map.json" \
                 --layout-contract-out "$work/jq-layout-contract.json" \
                 > "$work/generate-map.stdout"
+              wincr stage-a-generate-relation-contract \
+                --original "$fixture_dir/jq-original.exe" \
+                --candidate "$fixture_dir/jq-candidate.exe" \
+                --mapping "$work/jq-block-map.json" \
+                --out "$work/jq-relation-contract.json" \
+                > "$work/generate-relation.stdout"
+              if WINCR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
+                  wincr stage-a-prove-relational \
+                    --original "$fixture_dir/jq-original.exe" \
+                    --candidate "$fixture_dir/jq-candidate.exe" \
+                    --relation-contract "$work/jq-relation-contract.json" \
+                    --out "$work/relational-v3" \
+                    > "$work/relational-v3.stdout"; then
+                echo "jq relational v3 unexpectedly claimed completion" >&2
+                exit 1
+              fi
+              jq -e '
+                .verdict == "incomplete" and
+                .claim_scope.acceptance_eligible == false and
+                .diagnostic.category == "semantic_preflight_incomplete"
+              ' "$work/relational-v3/verdict.json" >/dev/null
+              jq -e '.status == "incomplete" and .counts.issues > 0' \
+                "$work/relational-v3/semantic-gaps.json" >/dev/null
               cat > "$work/suite.json" <<JSON
               {
                 "model": "x86-pe32-env-v1",
@@ -312,8 +349,9 @@
                 --out "$work/suite"
               jq -e '.status == "pass" and .counts.passed == .counts.cases and .cases[0].actual_verdict == "incomplete"' "$work/suite/suite.json" >/dev/null
               mkdir -p "$out/generated" "$out/report"
-              cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" "$work/suite.json" "$out/report/"
+              cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" "$work/jq-relation-contract.json" "$work/suite.json" "$out/report/"
               cp -R "$work/suite/." "$out/report/suite"
+              cp -R "$work/relational-v3" "$out/report/relational-v3"
               jq '.proof.lean.failed_formal_pass_attempt.formal_proof.diagnostics' \
                 "$out/report/suite/cases/jq-o2-alignment-windows-x86/verdict.json" \
                 > "$out/generated/jq-formal-gaps.json"

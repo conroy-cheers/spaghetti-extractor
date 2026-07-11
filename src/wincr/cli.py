@@ -23,6 +23,14 @@ from .stage_a import (
     stage_a_validate_suite,
     stage_a_validate_unit,
 )
+from .stage_a_relational import (
+    STAGE_A_RELATIONAL_MODEL_ID,
+    stage_a_build_relational,
+    stage_a_check_relational_proof,
+    stage_a_generate_relation_contract,
+    stage_a_prepare_relational,
+    stage_a_prove_relational,
+)
 from .stage_b import (
     stage_b_diff_delta,
     stage_b_explain_delta,
@@ -77,13 +85,70 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     prove = subcommands.add_parser("stage-a-prove", help="generate and check an exact-byte Stage A refinement proof")
     prove.add_argument("--original", type=Path, required=True)
     prove.add_argument("--candidate", type=Path, required=True)
-    prove.add_argument("--mapping", type=Path, required=True)
+    prove.add_argument("--mapping", type=Path)
+    prove.add_argument("--relation-contract", type=Path)
     prove.add_argument("--model", default=STAGE_A_MODEL_ID)
     prove.add_argument("--out", type=Path, required=True)
     prove.add_argument("--invariants", type=Path)
     prove.add_argument("--layout-contract", type=Path)
     prove.add_argument("--lean-input", action="append", default=[], type=Path)
-    prove.set_defaults(func=_cmd_stage_a_validate)
+    prove.set_defaults(func=_cmd_stage_a_prove)
+
+    prove_relational = subcommands.add_parser(
+        "stage-a-prove-relational",
+        help="generate and replay a v3 relational exact-byte proof",
+    )
+    prove_relational.add_argument("--original", type=Path, required=True)
+    prove_relational.add_argument("--candidate", type=Path, required=True)
+    prove_relational.add_argument("--relation-contract", type=Path, required=True)
+    prove_relational.add_argument("--out", type=Path, required=True)
+    prove_relational.set_defaults(
+        func=lambda args: stage_a_prove_relational(
+            original=args.original,
+            candidate=args.candidate,
+            relation_contract=args.relation_contract,
+            out=args.out,
+        )
+    )
+
+    prepare_relational = subcommands.add_parser(
+        "stage-a-prepare-relational",
+        help="extract a deterministic v3 Lean proof graph without compiling it",
+    )
+    prepare_relational.add_argument("--original", type=Path, required=True)
+    prepare_relational.add_argument("--candidate", type=Path, required=True)
+    prepare_relational.add_argument("--relation-contract", type=Path, required=True)
+    prepare_relational.add_argument("--out", type=Path, required=True)
+    prepare_relational.set_defaults(
+        func=lambda args: stage_a_prepare_relational(
+            original=args.original,
+            candidate=args.candidate,
+            relation_contract=args.relation_contract,
+            out=args.out,
+        )
+    )
+
+    build_relational = subcommands.add_parser(
+        "stage-a-build-relational",
+        help="build and trust-0 audit a prepared v3 Lean proof graph",
+    )
+    build_relational.add_argument("--prepared", type=Path, required=True)
+    build_relational.add_argument("--executor", choices=["nix"], default="nix")
+    build_relational.add_argument("--flake", type=Path)
+    build_relational.add_argument(
+        "--builders-file", type=Path,
+        help="optional Nix machines file; normal Nix builder configuration is used otherwise",
+    )
+    build_relational.add_argument("--out", type=Path, required=True)
+    build_relational.set_defaults(
+        func=lambda args: stage_a_build_relational(
+            prepared=args.prepared,
+            executor=args.executor,
+            flake=args.flake,
+            builders_file=args.builders_file,
+            out=args.out,
+        )
+    )
 
     check_proof = subcommands.add_parser("stage-a-check-proof", help="independently rebuild and check a Stage A formal proof bundle")
     check_proof.add_argument("--report", type=Path, required=True)
@@ -91,10 +156,32 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     check_proof.add_argument("--candidate", type=Path)
     check_proof.add_argument("--out", type=Path)
     check_proof.set_defaults(
-        func=lambda args: stage_a_check_proof(
-            report=args.report,
+        func=_cmd_stage_a_check_proof,
+    )
+
+    check_relational = subcommands.add_parser(
+        "stage-a-check-relational-proof",
+        help="independently replay a v3 relational proof bundle",
+    )
+    check_relational.add_argument("--report", type=Path, required=True)
+    check_relational.add_argument("--out", type=Path)
+    check_relational.set_defaults(
+        func=lambda args: stage_a_check_relational_proof(report=args.report, out=args.out)
+    )
+
+    generate_relation = subcommands.add_parser(
+        "stage-a-generate-relation-contract",
+        help="project a block map into an explicit v3 relation contract",
+    )
+    generate_relation.add_argument("--original", type=Path, required=True)
+    generate_relation.add_argument("--candidate", type=Path, required=True)
+    generate_relation.add_argument("--mapping", type=Path, required=True)
+    generate_relation.add_argument("--out", type=Path, required=True)
+    generate_relation.set_defaults(
+        func=lambda args: stage_a_generate_relation_contract(
             original=args.original,
             candidate=args.candidate,
+            mapping=args.mapping,
             out=args.out,
         )
     )
@@ -327,6 +414,41 @@ def _cmd_stage_a_validate(args: Any) -> dict[str, Any]:
         invariants=args.invariants,
         layout_contract=args.layout_contract,
         lean_inputs=args.lean_input,
+    )
+
+
+def _cmd_stage_a_prove(args: Any) -> dict[str, Any]:
+    if args.model == STAGE_A_RELATIONAL_MODEL_ID or args.relation_contract is not None:
+        if args.relation_contract is None:
+            raise StageAInputError("--relation-contract is required for the relational v3 model")
+        if args.mapping is not None:
+            raise StageAInputError("--mapping and --relation-contract select different proof profiles")
+        return stage_a_prove_relational(
+            original=args.original,
+            candidate=args.candidate,
+            relation_contract=args.relation_contract,
+            out=args.out,
+        )
+    if args.mapping is None:
+        raise StageAInputError("--mapping is required for the refinement v2 model")
+    return _cmd_stage_a_validate(args)
+
+
+def _cmd_stage_a_check_proof(args: Any) -> dict[str, Any]:
+    verdict_path = args.report / "verdict.json"
+    try:
+        verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StageAInputError(f"cannot read {verdict_path}: {exc}") from exc
+    if verdict.get("profile") == "x86-pe32-lean-relational-v3":
+        if args.original is not None or args.candidate is not None:
+            raise StageAInputError("relational v3 replay uses the binaries embedded in the report")
+        return stage_a_check_relational_proof(report=args.report, out=args.out)
+    return stage_a_check_proof(
+        report=args.report,
+        original=args.original,
+        candidate=args.candidate,
+        out=args.out,
     )
 
 
@@ -587,7 +709,7 @@ def _candidate_modules(values: list[str]) -> list[dict[str, Any]] | None:
 def _exit_status(result: dict[str, Any]) -> int:
     status = result.get("status", result.get("verdict"))
     verdict = result.get("verdict", status)
-    if status in {"pass", "passed", "generated", "complete", "detected"}:
+    if status in {"pass", "passed", "generated", "prepared", "complete", "detected"}:
         return 0
     if verdict == "pass":
         return 0

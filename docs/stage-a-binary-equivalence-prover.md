@@ -92,6 +92,13 @@ produce `incomplete`. Full `jq.exe` remains an expected `incomplete` breadth
 case while indirect calls, x87 state, partial-register and operand-size forms,
 and the remaining integer instruction families are added to the checked model.
 
+The separate `x86-pe32-relational-v3` profile is under active implementation
+for flexible code layouts and explicit state relations. Its command surface,
+contract, replay evidence, and current theorem boundary are documented in
+[stage-a-relational-v3.md](stage-a-relational-v3.md). It does not replace or
+weaken v2, and its current relational-region certificate is not yet a
+whole-program acceptance theorem.
+
 ## Command Surface
 
 ```sh
