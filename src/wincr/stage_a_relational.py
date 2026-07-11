@@ -1502,7 +1502,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
     normalized_regions: list[dict[str, Any]] = []
     region_ids: set[str] = set()
     target_by_id = {target["id"]: target for target in normalized_targets}
-    normalized_value_targets: list[dict[str, int]] = []
+    normalized_value_targets: list[dict[str, Any]] = []
     value_target_ids: set[int] = set()
     for index, item in enumerate(value_targets):
         if not isinstance(item, dict):
@@ -1520,7 +1520,11 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             issues.append({"category": "malformed_value_target", "index": index})
             continue
         value_target_ids.add(fields["id"])
-        normalized_value_targets.append({field: int(value) for field, value in fields.items()})
+        normalized_target = {field: int(value) for field, value in fields.items()}
+        normalized_target["relocation_offsets"] = _mapped_relocation_offsets(
+            original, candidate, normalized_target, issues,
+        )
+        normalized_value_targets.append(normalized_target)
     value_target_by_id = {target["id"]: target for target in normalized_value_targets}
     for index, item in enumerate(regions):
         if not isinstance(item, dict):
@@ -1833,6 +1837,52 @@ def _register_pairs(value: Any, issues: list[dict[str, Any]], region: str, famil
         candidate_seen.add(candidate_register)
         result.append({"original": original_register, "candidate": candidate_register})
     return result
+
+
+def _mapped_relocation_offsets(
+    original: StageABinary,
+    candidate: StageABinary,
+    target: dict[str, int],
+    issues: list[dict[str, Any]],
+) -> list[int]:
+    mapped_size = target["mapped_size"]
+    if mapped_size == 0:
+        return []
+
+    def offsets(binary: StageABinary, absolute: int) -> set[int]:
+        base_rva = absolute - binary.image_base
+        return {
+            int(entry.rva) - base_rva
+            for block in getattr(binary.pe, "DIRECTORY_ENTRY_BASERELOC", []) or []
+            for entry in block.entries
+            if int(entry.type) == 3
+            and base_rva <= int(entry.rva)
+            and int(entry.rva) + 4 <= base_rva + mapped_size
+        }
+
+    original_offsets = offsets(original, target["original_value"])
+    candidate_offsets = offsets(candidate, target["candidate_value"])
+    if original_offsets != candidate_offsets:
+        issues.append({
+            "category": "mapped_object_relocation_shape_mismatch",
+            "severity": "hard",
+            "value_target_id": target["id"],
+            "original_offsets": sorted(original_offsets),
+            "candidate_offsets": sorted(candidate_offsets),
+            "next_action": "map objects with identical internal relocation-word structure",
+        })
+        return []
+    ordered = sorted(original_offsets)
+    if any(offset % 4 != 0 for offset in ordered):
+        issues.append({
+            "category": "mapped_object_relocation_unaligned",
+            "severity": "hard",
+            "value_target_id": target["id"],
+            "offsets": ordered,
+            "next_action": "use non-overlapping aligned PE32 HIGHLOW relocation cells",
+        })
+        return []
+    return ordered
 
 
 def _normalize_padding(value: list[Any], original: StageABinary, candidate: StageABinary, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3005,7 +3055,8 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
             if normalized_fast_path else (
                 "  simp [evalBehavior, normalizeSymbolicBehavior, normalizeOutcomeExpr, "
                 "NormalizedSymbolicBehavior.eval, NormalizedOutcomeExpr.eval, "
-                "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval,\n"
+                "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval, "
+                "StageA.Formal.FlagsExpr.eval, StageA.Formal.updateFlag,\n"
                 "    StageA.Formal.MachineState.read32, StageA.Formal.MachineState.readX87Word,\n"
                 "    StageA.Formal.read8AfterWriteValue,\n"
                 "    StageA.Formal.X87LoadFormat.byteWidth, registersRelated, registersRelatedValues,\n"
@@ -3762,7 +3813,8 @@ def _lean_region_theorem_source(
         if normalized_fast_path else (
             "  simp [evalBehavior, normalizeSymbolicBehavior, normalizeOutcomeExpr, "
             "NormalizedSymbolicBehavior.eval, NormalizedOutcomeExpr.eval, "
-            "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval,\n"
+            "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval, "
+            "StageA.Formal.FlagsExpr.eval, StageA.Formal.updateFlag,\n"
             "    StageA.Formal.MachineState.read32, StageA.Formal.MachineState.readX87Word,\n"
             "    StageA.Formal.read8AfterWriteValue,\n"
             "    StageA.Formal.X87LoadFormat.byteWidth, registersRelated, registersRelatedValues,\n"

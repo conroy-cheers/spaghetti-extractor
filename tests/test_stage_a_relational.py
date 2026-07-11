@@ -512,6 +512,86 @@ class StageARelationalTests(unittest.TestCase):
             self.assertEqual(result["verdict"], "pass")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
 
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for cross-region flag execution")
+    def test_logical_execution_carries_computed_flags_into_the_next_region(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lean_dir = Path(temporary)
+            stage_a = lean_dir / "StageA"
+            stage_a.mkdir()
+            source_root = Path(__file__).parents[1] / "src" / "wincr" / "lean" / "StageA"
+            for name in ("Formal.lean", "Relational.lean"):
+                shutil.copyfile(source_root / name, stage_a / name)
+            (stage_a / "FlagsCompose.lean").write_text(
+                """import StageA.Formal
+
+namespace StageA.FlagsCompose
+
+open StageA.Formal
+
+def inputRegisters : Registers Expr := {
+  eax := .inputReg .eax
+  ebx := .inputReg .ebx
+  ecx := .inputReg .ecx
+  edx := .inputReg .edx
+  esi := .inputReg .esi
+  edi := .inputReg .edi
+  ebp := .inputReg .ebp
+  esp := .inputReg .esp
+}
+
+def concreteRegisters (ecx : Nat) : Registers Word := {
+  eax := BitVec.ofNat 32 0
+  ebx := BitVec.ofNat 32 0
+  ecx := BitVec.ofNat 32 ecx
+  edx := BitVec.ofNat 32 0
+  esi := BitVec.ofNat 32 0
+  edi := BitVec.ofNat 32 0
+  ebp := BitVec.ofNat 32 0
+  esp := BitVec.ofNat 32 0
+}
+
+def compare : LogicalBehavior := {
+  registers := inputRegisters
+  x87 := initialSymbolicX87
+  writes := []
+  flags := some (subtractionFlags (.inputReg .ecx) (.constant 0) (.inputReg .ecx))
+  outcome := .jump 1
+}
+
+def branch : LogicalBehavior := {
+  registers := inputRegisters
+  x87 := initialSymbolicX87
+  writes := []
+  flags := none
+  outcome := .branch (.inputFlag 6) 2 3
+}
+
+def environment : Environment := { result := fun _ event => event.state }
+
+def initial (ecx : Nat) : MachineState := {
+  registers := concreteRegisters ecx
+  memory := fun _ => BitVec.ofNat 8 0
+  eflags := BitVec.ofNat 32 0
+}
+
+def selectedRegion (ecx : Nat) : Nat :=
+  let behaviors := [some compare, some branch, none, none]
+  let first := stepExecution environment behaviors (.running 0 (initial ecx) [] 0 [])
+  match stepExecution environment behaviors first with
+  | .running region _ _ _ _ => region
+  | _ => 99
+
+example : selectedRegion 0 = 2 := by decide
+example : selectedRegion 1 = 3 := by decide
+
+end StageA.FlagsCompose
+""",
+                encoding="utf-8",
+            )
+
+            result = _run_lean_relational(lean_dir, bundle="FlagsCompose")
+            self.assertEqual(result["status"], "checked", result)
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for bit-scan relational proofs")
     def test_bsr_and_tzcnt_have_checked_partial_flag_and_undefined_value_semantics(self):
         with tempfile.TemporaryDirectory() as temporary:

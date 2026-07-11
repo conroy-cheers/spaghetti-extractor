@@ -847,6 +847,18 @@ structure FlagsExpr where
   parity : Option BoolExpr
 deriving Repr, DecidableEq
 
+def updateFlag (word : Word) (index : Nat) : Option Bool -> Word
+  | none => word
+  | some true => word ||| BitVec.ofNat 32 (2 ^ index)
+  | some false => word &&& ~~~(BitVec.ofNat 32 (2 ^ index))
+
+def FlagsExpr.eval (state : MachineState) (flags : FlagsExpr) : Word :=
+  let carry := updateFlag state.eflags 0 (flags.carry.map (BoolExpr.eval state))
+  let parity := updateFlag carry 2 (flags.parity.map (BoolExpr.eval state))
+  let zero := updateFlag parity 6 (flags.zero.map (BoolExpr.eval state))
+  let sign := updateFlag zero 7 (flags.sign.map (BoolExpr.eval state))
+  updateFlag sign 11 (flags.overflow.map (BoolExpr.eval state))
+
 structure SymbolicX87State where
   stack : List X87Expr
   control : Expr
@@ -1014,6 +1026,7 @@ structure ConcreteBehavior where
   registers : Registers Word
   x87 : ConcreteX87State
   memory : Memory
+  eflags : Word
   outcome : Option ConcreteOutcome
 
 def initialSymbolic : SymbolicBehavior := {
@@ -1105,6 +1118,7 @@ def SymbolicBehavior.eval (behavior : SymbolicBehavior) (state : MachineState) :
     status := (behavior.x87.status.eval state).extractLsb' 0 16
   },
   memory := applyWrites state behavior.writes,
+  eflags := behavior.flags.map (FlagsExpr.eval state) |>.getD state.eflags
   outcome := behavior.outcome.map (fun outcome =>
     match outcome with
     | .returned target => .returned (target.eval state)
@@ -2941,7 +2955,9 @@ deriving Repr, DecidableEq
 
 structure LogicalBehavior where
   registers : Registers Expr
+  x87 : SymbolicX87State
   writes : List (Expr × Expr)
+  flags : Option FlagsExpr
   outcome : LogicalOutcomeExpr
 deriving Repr, DecidableEq
 
@@ -2955,7 +2971,9 @@ inductive LogicalConcreteOutcome where
 
 structure LogicalConcreteBehavior where
   registers : Registers Word
+  x87 : ConcreteX87State
   memory : Memory
+  eflags : Word
   outcome : LogicalConcreteOutcome
 
 def findRegionIndex (candidate : Bool) (targetRva : Nat) : List RegionPair -> Nat -> Option Nat
@@ -2991,7 +3009,13 @@ def normalizeOutcome (regions : List RegionPair) (candidate : Bool) : OutcomeExp
 def normalizeBehavior (regions : List RegionPair) (candidate : Bool) (behavior : SymbolicBehavior) : Option LogicalBehavior := do
   let outcomeExpr <- behavior.outcome
   let outcome <- normalizeOutcome regions candidate outcomeExpr
-  pure { registers := behavior.registers, writes := behavior.writes, outcome }
+  pure {
+    registers := behavior.registers
+    x87 := behavior.x87
+    writes := behavior.writes
+    flags := behavior.flags
+    outcome
+  }
 
 def originalRegionBehaviors (pe : PE32) (regions : List RegionPair) : List (Option LogicalBehavior) :=
   regions.map (fun region => (regionBehavior pe region.original).bind (normalizeBehavior regions false))
@@ -3010,7 +3034,13 @@ def LogicalBehavior.eval (behavior : LogicalBehavior) (state : MachineState) : L
     ebp := behavior.registers.ebp.eval state,
     esp := behavior.registers.esp.eval state,
   },
+  x87 := {
+    stack := behavior.x87.stack.map (X87Expr.eval state)
+    control := (behavior.x87.control.eval state).extractLsb' 0 16
+    status := (behavior.x87.status.eval state).extractLsb' 0 16
+  }
   memory := applyWrites state behavior.writes,
+  eflags := behavior.flags.map (FlagsExpr.eval state) |>.getD state.eflags
   outcome := match behavior.outcome with
     | .returned target => .returned (target.eval state)
     | .jump targetRegion => .jump targetRegion
@@ -3150,8 +3180,13 @@ def stepExecution (environment : Environment) (behaviors : List (Option LogicalB
             registers := concrete.registers
             memory := concrete.memory
             undefinedValue := state.undefinedValue
-            x87 := state.x87
-            eflags := state.eflags
+            x87 := {
+              stack := fun index =>
+                (concrete.x87.stack.drop index).head?.getD (BitVec.ofNat 80 0)
+              control := concrete.x87.control
+              status := concrete.x87.status
+            }
+            eflags := concrete.eflags
             fsBase := state.fsBase
           }
           match concrete.outcome with

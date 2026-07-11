@@ -129,6 +129,7 @@ structure RelationalBehavior where
   registers : PureState
   x87 : ConcreteX87State
   writes : List (Word × Word)
+  eflags : Word
   outcome : PureOutcome
 deriving Repr, DecidableEq
 
@@ -150,6 +151,7 @@ structure NormalizedSymbolicBehavior where
   registers : Registers Expr
   x87 : SymbolicX87State
   writes : List (Expr × Expr)
+  flags : Option FlagsExpr
   outcome : NormalizedOutcomeExpr
 deriving Repr, DecidableEq
 
@@ -187,6 +189,7 @@ def normalizeSymbolicBehavior (candidate : Bool) (targets : List CodeTargetPair)
     registers := behavior.registers
     x87 := behavior.x87
     writes := behavior.writes
+    flags := behavior.flags
     outcome := ← normalizeOutcomeExpr candidate targets outcomeExpr
   }
 
@@ -225,6 +228,7 @@ def NormalizedSymbolicBehavior.eval (state : MachineState)
     status := (behavior.x87.status.eval state).extractLsb' 0 16
   }
   writes := behavior.writes.map fun write => (write.1.eval state, write.2.eval state)
+  eflags := behavior.flags.map (FlagsExpr.eval state) |>.getD state.eflags
   outcome := behavior.outcome.eval state
 }
 
@@ -546,6 +550,7 @@ def regionEquivalent (originalPe candidatePe : PE32) (region : RegionRelation) :
         originalBehavior.x87 = candidateBehavior.x87 ∧
         writesRelated originalPe.imageBase candidatePe.imageBase region.targets region.values
           originalBehavior.writes candidateBehavior.writes = true ∧
+        originalBehavior.eflags = candidateBehavior.eflags ∧
         outcomesRelated originalPe.imageBase candidatePe.imageBase region.targets region.values
           originalBehavior.outcome candidateBehavior.outcome = true
     | _, _ => False
@@ -564,6 +569,7 @@ def regionEquivalentWithImports (originalPe candidatePe : PE32)
         originalBehavior.x87 = candidateBehavior.x87 ∧
         writesRelated originalPe.imageBase candidatePe.imageBase region.targets region.values
           originalBehavior.writes candidateBehavior.writes = true ∧
+        originalBehavior.eflags = candidateBehavior.eflags ∧
         outcomesRelated originalPe.imageBase candidatePe.imageBase region.targets region.values
           originalBehavior.outcome candidateBehavior.outcome = true
     | _, _ => False
@@ -581,6 +587,7 @@ def behaviorsEquivalent (originalImageBase candidateImageBase : Nat)
         originalResult.x87 = candidateResult.x87 ∧
         writesRelated originalImageBase candidateImageBase region.targets region.values
           originalResult.writes candidateResult.writes = true ∧
+        originalResult.eflags = candidateResult.eflags ∧
         outcomesRelated originalImageBase candidateImageBase region.targets region.values
           originalResult.outcome candidateResult.outcome = true
     | _, _ => False
