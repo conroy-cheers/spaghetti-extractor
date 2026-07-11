@@ -641,6 +641,43 @@ inductive X87Expr where
 deriving Repr, DecidableEq
 end
 
+mutual
+def Expr.flagsWithin (allowed : List Nat) : Expr -> Bool
+  | .inputReg _ | .inputFsBase | .inputX87Control | .inputX87Status | .constant _ |
+      .undefined _ => true
+  | .inputFlagValue bit => allowed.contains bit
+  | .add left right | .sub left right | .bitAnd left right | .bitXor left right |
+      .shiftLeftBy left right | .shiftRightBy left right |
+      .shiftArithmeticRightBy left right | .bitOr left right |
+      .unsignedLessValue left right | .multiply left right |
+      .multiplyHighUnsigned left right | .multiplyHighSigned left right =>
+      left.flagsWithin allowed && right.flagsWithin allowed
+  | .bitNot value | .read8 value | .read32 value | .extractByte value _ |
+      .shiftLeft value _ | .shiftRight value _ | .bitValue value _ |
+      .lowestSetBit value | .highestSetBit value => value.flagsWithin allowed
+  | .read8AfterWrite address writeAddress writeValue prior |
+      .ifEqual address writeAddress writeValue prior =>
+      address.flagsWithin allowed && writeAddress.flagsWithin allowed &&
+        writeValue.flagsWithin allowed && prior.flagsWithin allowed
+  | .divideQuotient high low divisor | .divideRemainder high low divisor |
+      .divisionValidValue high low divisor =>
+      high.flagsWithin allowed && low.flagsWithin allowed && divisor.flagsWithin allowed
+  | .x87Part value _ => value.flagsWithin allowed
+  | .x87CompareBit left right control _ =>
+      left.flagsWithin allowed && right.flagsWithin allowed && control.flagsWithin allowed
+  | .x87ExamineStatus value status =>
+      value.flagsWithin allowed && status.flagsWithin allowed
+
+def X87Expr.flagsWithin (allowed : List Nat) : X87Expr -> Bool
+  | .inputStack _ | .constant _ => true
+  | .load _ address control => address.flagsWithin allowed && control.flagsWithin allowed
+  | .imageLoad _ _ control => control.flagsWithin allowed
+  | .unary _ value control | .store _ value control =>
+      value.flagsWithin allowed && control.flagsWithin allowed
+  | .binary _ left right control =>
+      left.flagsWithin allowed && right.flagsWithin allowed && control.flagsWithin allowed
+end
+
 def Expr.addNormalized (left right : Expr) : Expr :=
   match left, right with
   | expression, .constant 0 => expression
@@ -675,6 +712,16 @@ structure MachineState where
   x87 : X87MachineState := {}
   eflags : Word := BitVec.ofNat 32 0
   fsBase : Word := BitVec.ofNat 32 0
+
+structure MachineStateAgreement (allowedFlags : List Nat)
+    (original candidate : MachineState) : Prop where
+  registers : original.registers = candidate.registers
+  memory : original.memory = candidate.memory
+  undefinedValue : original.undefinedValue = candidate.undefinedValue
+  x87 : original.x87 = candidate.x87
+  fsBase : original.fsBase = candidate.fsBase
+  flags : ∀ bit, allowedFlags.contains bit = true →
+    original.eflags.extractLsb' bit 1 = candidate.eflags.extractLsb' bit 1
 
 def MachineState.read32 (state : MachineState) (address : Word) : Word :=
   let b0 := BitVec.zeroExtend 32 (state.memory address)
@@ -804,6 +851,42 @@ def X87Expr.eval (state : MachineState) : X87Expr -> X87Word
       state.x87.semantics.store format (value.eval state) ((control.eval state).extractLsb' 0 16)
 end
 
+theorem Expr.eval_eq_of_flagsWithin (allowed : List Nat)
+    (original candidate : MachineState) (expression : Expr)
+    (within : expression.flagsWithin allowed = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    expression.eval original = expression.eval candidate := by
+  rcases agreement with ⟨registers, memory, undefinedValue, x87, fsBase, flags⟩
+  have evalAll : ∀ value : Expr, value.flagsWithin allowed = true →
+      value.eval original = value.eval candidate := by
+    intro value
+    apply Expr.rec
+      (motive_1 := fun item => item.flagsWithin allowed = true →
+        item.eval original = item.eval candidate)
+      (motive_2 := fun item => item.flagsWithin allowed = true →
+        item.eval original = item.eval candidate) <;>
+      simp_all [Expr.flagsWithin, X87Expr.flagsWithin, Expr.eval, X87Expr.eval,
+        MachineState.read32, MachineState.readX87Word]
+  exact evalAll expression within
+
+theorem X87Expr.eval_eq_of_flagsWithin (allowed : List Nat)
+    (original candidate : MachineState) (expression : X87Expr)
+    (within : expression.flagsWithin allowed = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    expression.eval original = expression.eval candidate := by
+  rcases agreement with ⟨registers, memory, undefinedValue, x87, fsBase, flags⟩
+  have evalAll : ∀ value : X87Expr, value.flagsWithin allowed = true →
+      value.eval original = value.eval candidate := by
+    intro value
+    apply X87Expr.rec
+      (motive_1 := fun item => item.flagsWithin allowed = true →
+        item.eval original = item.eval candidate)
+      (motive_2 := fun item => item.flagsWithin allowed = true →
+        item.eval original = item.eval candidate) <;>
+      simp_all [Expr.flagsWithin, X87Expr.flagsWithin, Expr.eval, X87Expr.eval,
+        MachineState.read32, MachineState.readX87Word]
+  exact evalAll expression within
+
 inductive BoolExpr where
   | equal (left right : Expr)
   | not (value : BoolExpr)
@@ -816,6 +899,18 @@ inductive BoolExpr where
   | inputFlag (index : Nat)
   | divisionValid (high low divisor : Expr)
 deriving Repr, DecidableEq
+
+def BoolExpr.flagsWithin (allowed : List Nat) : BoolExpr -> Bool
+  | .equal left right | .unsignedLess left right =>
+      left.flagsWithin allowed && right.flagsWithin allowed
+  | .not value => value.flagsWithin allowed
+  | .and left right | .or left right | .xor left right =>
+      left.flagsWithin allowed && right.flagsWithin allowed
+  | .msb value => value.flagsWithin allowed
+  | .bit value _ => value.flagsWithin allowed
+  | .inputFlag index => allowed.contains index
+  | .divisionValid high low divisor =>
+      high.flagsWithin allowed && low.flagsWithin allowed && divisor.flagsWithin allowed
 
 def BoolExpr.toWord : BoolExpr -> Expr
   | .equal left right => .ifEqual left right (.constant 1) (.constant 0)
@@ -843,6 +938,21 @@ def BoolExpr.eval (state : MachineState) : BoolExpr -> Bool
   | .divisionValid high low divisor =>
       (Expr.divisionValidValue high low divisor).eval state == BitVec.ofNat 32 1
 
+theorem BoolExpr.eval_eq_of_flagsWithin (allowed : List Nat)
+    (original candidate : MachineState) (expression : BoolExpr)
+    (within : expression.flagsWithin allowed = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    expression.eval original = expression.eval candidate := by
+  have evalExpr := fun value safe =>
+    Expr.eval_eq_of_flagsWithin allowed original candidate value safe agreement
+  have evalFlag := agreement.flags
+  induction expression <;>
+    simp_all [BoolExpr.flagsWithin, BoolExpr.eval]
+  case divisionValid high low divisor =>
+    have evaluated := evalExpr (.divisionValidValue high low divisor) (by
+      simp [Expr.flagsWithin, *])
+    exact congrArg (fun value => value == BitVec.ofNat 32 1) evaluated
+
 structure FlagsExpr where
   zero : Option BoolExpr
   carry : Option BoolExpr
@@ -866,99 +976,180 @@ def FlagsExpr.eval (state : MachineState) (flags : FlagsExpr) : Word :=
   let sign := updateFlag zero 7 (flags.sign.map (BoolExpr.eval state))
   updateFlag sign 11 (flags.overflow.map (BoolExpr.eval state))
 
-@[simp] theorem updateFlag_extract_df_0 (word : Word) (value : Option Bool) :
-    (updateFlag word 0 value).extractLsb' 10 1 = word.extractLsb' 10 1 := by
+theorem updateFlag_extract_preserved (word : Word) (updated observed : Nat)
+    (value : Option Bool)
+    (setMask : (BitVec.ofNat 32 (2 ^ updated)).extractLsb' observed 1 = 0#1)
+    (clearMask : (~~~(BitVec.ofNat 32 (2 ^ updated))).extractLsb' observed 1 =
+      BitVec.allOnes 1) :
+    (updateFlag word updated value).extractLsb' observed 1 =
+      word.extractLsb' observed 1 := by
   cases value with
   | none => rfl
   | some value =>
       cases value with
       | false =>
-          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ 0))).extractLsb' 10 1 = _
-          rw [BitVec.extractLsb'_and]
-          have mask : (~~~(BitVec.ofNat 32 (2 ^ 0))).extractLsb' 10 1 =
-              BitVec.allOnes 1 := by decide
-          rw [mask, BitVec.and_allOnes]
+          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ updated))).extractLsb' observed 1 = _
+          rw [BitVec.extractLsb'_and, clearMask, BitVec.and_allOnes]
       | true =>
-          change (word ||| BitVec.ofNat 32 (2 ^ 0)).extractLsb' 10 1 = _
-          rw [BitVec.extractLsb'_or]
-          have mask : (BitVec.ofNat 32 (2 ^ 0)).extractLsb' 10 1 = 0#1 := by decide
-          rw [mask, BitVec.or_zero]
+          change (word ||| BitVec.ofNat 32 (2 ^ updated)).extractLsb' observed 1 = _
+          rw [BitVec.extractLsb'_or, setMask, BitVec.or_zero]
 
-@[simp] theorem updateFlag_extract_df_2 (word : Word) (value : Option Bool) :
-    (updateFlag word 2 value).extractLsb' 10 1 = word.extractLsb' 10 1 := by
+theorem updateFlag_extract_assigned (word : Word) (index : Nat) (value : Option Bool)
+    (setMask : (BitVec.ofNat 32 (2 ^ index)).extractLsb' index 1 = BitVec.allOnes 1)
+    (clearMask : (~~~(BitVec.ofNat 32 (2 ^ index))).extractLsb' index 1 = 0#1) :
+    (updateFlag word index value).extractLsb' index 1 =
+      match value with
+      | none => word.extractLsb' index 1
+      | some false => 0#1
+      | some true => BitVec.allOnes 1 := by
   cases value with
   | none => rfl
   | some value =>
       cases value with
       | false =>
-          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ 2))).extractLsb' 10 1 = _
-          rw [BitVec.extractLsb'_and]
-          have mask : (~~~(BitVec.ofNat 32 (2 ^ 2))).extractLsb' 10 1 =
-              BitVec.allOnes 1 := by decide
-          rw [mask, BitVec.and_allOnes]
+          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ index))).extractLsb' index 1 = 0#1
+          rw [BitVec.extractLsb'_and, clearMask, BitVec.and_zero]
       | true =>
-          change (word ||| BitVec.ofNat 32 (2 ^ 2)).extractLsb' 10 1 = _
-          rw [BitVec.extractLsb'_or]
-          have mask : (BitVec.ofNat 32 (2 ^ 2)).extractLsb' 10 1 = 0#1 := by decide
-          rw [mask, BitVec.or_zero]
+          change (word ||| BitVec.ofNat 32 (2 ^ index)).extractLsb' index 1 =
+            BitVec.allOnes 1
+          rw [BitVec.extractLsb'_or, setMask, BitVec.or_allOnes]
 
-@[simp] theorem updateFlag_extract_df_6 (word : Word) (value : Option Bool) :
-    (updateFlag word 6 value).extractLsb' 10 1 = word.extractLsb' 10 1 := by
-  cases value with
-  | none => rfl
-  | some value =>
-      cases value with
-      | false =>
-          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ 6))).extractLsb' 10 1 = _
-          rw [BitVec.extractLsb'_and]
-          have mask : (~~~(BitVec.ofNat 32 (2 ^ 6))).extractLsb' 10 1 =
-              BitVec.allOnes 1 := by decide
-          rw [mask, BitVec.and_allOnes]
-      | true =>
-          change (word ||| BitVec.ofNat 32 (2 ^ 6)).extractLsb' 10 1 = _
-          rw [BitVec.extractLsb'_or]
-          have mask : (BitVec.ofNat 32 (2 ^ 6)).extractLsb' 10 1 = 0#1 := by decide
-          rw [mask, BitVec.or_zero]
+def evalFlagBit (state : MachineState) (index : Nat) : Option BoolExpr -> BitVec 1
+  | none => state.eflags.extractLsb' index 1
+  | some value => if value.eval state then BitVec.allOnes 1 else 0#1
 
-@[simp] theorem updateFlag_extract_df_7 (word : Word) (value : Option Bool) :
-    (updateFlag word 7 value).extractLsb' 10 1 = word.extractLsb' 10 1 := by
-  cases value with
-  | none => rfl
-  | some value =>
-      cases value with
-      | false =>
-          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ 7))).extractLsb' 10 1 = _
-          rw [BitVec.extractLsb'_and]
-          have mask : (~~~(BitVec.ofNat 32 (2 ^ 7))).extractLsb' 10 1 =
-              BitVec.allOnes 1 := by decide
-          rw [mask, BitVec.and_allOnes]
-      | true =>
-          change (word ||| BitVec.ofNat 32 (2 ^ 7)).extractLsb' 10 1 = _
-          rw [BitVec.extractLsb'_or]
-          have mask : (BitVec.ofNat 32 (2 ^ 7)).extractLsb' 10 1 = 0#1 := by decide
-          rw [mask, BitVec.or_zero]
+def flagValueWithin (allowed : List Nat) (index : Nat) : Option BoolExpr -> Bool
+  | none => allowed.contains index
+  | some value => value.flagsWithin allowed
 
-@[simp] theorem updateFlag_extract_df_11 (word : Word) (value : Option Bool) :
-    (updateFlag word 11 value).extractLsb' 10 1 = word.extractLsb' 10 1 := by
+theorem evalFlagBit_eq_of_flagsWithin (allowed : List Nat) (index : Nat)
+    (original candidate : MachineState) (value : Option BoolExpr)
+    (within : flagValueWithin allowed index value = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    evalFlagBit original index value = evalFlagBit candidate index value := by
   cases value with
+  | none =>
+      simpa [flagValueWithin, evalFlagBit] using agreement.flags index within
+  | some expression =>
+      have evaluated := BoolExpr.eval_eq_of_flagsWithin allowed original candidate
+        expression within agreement
+      simp [evalFlagBit, evaluated]
+
+@[simp] theorem FlagsExpr.eval_extract_cf (state : MachineState) (flags : FlagsExpr) :
+    (flags.eval state).extractLsb' 0 1 = evalFlagBit state 0 flags.carry := by
+  unfold FlagsExpr.eval
+  rw [updateFlag_extract_preserved _ 11 0 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 7 0 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 6 0 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 2 0 _ (by decide) (by decide)]
+  rw [updateFlag_extract_assigned _ 0 _ (by decide) (by decide)]
+  cases carry : flags.carry with
   | none => rfl
-  | some value =>
-      cases value with
-      | false =>
-          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ 11))).extractLsb' 10 1 = _
-          rw [BitVec.extractLsb'_and]
-          have mask : (~~~(BitVec.ofNat 32 (2 ^ 11))).extractLsb' 10 1 =
-              BitVec.allOnes 1 := by decide
-          rw [mask, BitVec.and_allOnes]
-      | true =>
-          change (word ||| BitVec.ofNat 32 (2 ^ 11)).extractLsb' 10 1 = _
-          rw [BitVec.extractLsb'_or]
-          have mask : (BitVec.ofNat 32 (2 ^ 11)).extractLsb' 10 1 = 0#1 := by decide
-          rw [mask, BitVec.or_zero]
+  | some value => cases evaluated : value.eval state <;> simp [evalFlagBit, evaluated]
+
+@[simp] theorem FlagsExpr.eval_extract_pf (state : MachineState) (flags : FlagsExpr) :
+    (flags.eval state).extractLsb' 2 1 = evalFlagBit state 2 flags.parity := by
+  unfold FlagsExpr.eval
+  rw [updateFlag_extract_preserved _ 11 2 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 7 2 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 6 2 _ (by decide) (by decide)]
+  rw [updateFlag_extract_assigned _ 2 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 0 2 _ (by decide) (by decide)]
+  cases parity : flags.parity with
+  | none => rfl
+  | some value => cases evaluated : value.eval state <;> simp [evalFlagBit, evaluated]
+
+@[simp] theorem FlagsExpr.eval_extract_zf (state : MachineState) (flags : FlagsExpr) :
+    (flags.eval state).extractLsb' 6 1 = evalFlagBit state 6 flags.zero := by
+  unfold FlagsExpr.eval
+  rw [updateFlag_extract_preserved _ 11 6 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 7 6 _ (by decide) (by decide)]
+  rw [updateFlag_extract_assigned _ 6 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 2 6 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 0 6 _ (by decide) (by decide)]
+  cases zero : flags.zero with
+  | none => rfl
+  | some value => cases evaluated : value.eval state <;> simp [evalFlagBit, evaluated]
+
+@[simp] theorem FlagsExpr.eval_extract_sf (state : MachineState) (flags : FlagsExpr) :
+    (flags.eval state).extractLsb' 7 1 = evalFlagBit state 7 flags.sign := by
+  unfold FlagsExpr.eval
+  rw [updateFlag_extract_preserved _ 11 7 _ (by decide) (by decide)]
+  rw [updateFlag_extract_assigned _ 7 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 6 7 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 2 7 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 0 7 _ (by decide) (by decide)]
+  cases sign : flags.sign with
+  | none => rfl
+  | some value => cases evaluated : value.eval state <;> simp [evalFlagBit, evaluated]
 
 @[simp] theorem FlagsExpr.eval_extract_df (state : MachineState) (flags : FlagsExpr) :
     (flags.eval state).extractLsb' 10 1 = state.eflags.extractLsb' 10 1 := by
-  simp [FlagsExpr.eval]
+  unfold FlagsExpr.eval
+  rw [updateFlag_extract_preserved _ 11 10 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 7 10 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 6 10 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 2 10 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 0 10 _ (by decide) (by decide)]
+
+@[simp] theorem FlagsExpr.eval_extract_of (state : MachineState) (flags : FlagsExpr) :
+    (flags.eval state).extractLsb' 11 1 = evalFlagBit state 11 flags.overflow := by
+  unfold FlagsExpr.eval
+  rw [updateFlag_extract_assigned _ 11 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 7 11 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 6 11 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 2 11 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 0 11 _ (by decide) (by decide)]
+  cases overflow : flags.overflow with
+  | none => rfl
+  | some value => cases evaluated : value.eval state <;> simp [evalFlagBit, evaluated]
+
+theorem FlagsExpr.eval_cf_eq_of_flagsWithin (allowed : List Nat)
+    (original candidate : MachineState) (flags : FlagsExpr)
+    (within : flagValueWithin allowed 0 flags.carry = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    (flags.eval original).extractLsb' 0 1 = (flags.eval candidate).extractLsb' 0 1 := by
+  simpa only [FlagsExpr.eval_extract_cf] using
+    evalFlagBit_eq_of_flagsWithin allowed 0 original candidate flags.carry within agreement
+
+theorem FlagsExpr.eval_pf_eq_of_flagsWithin (allowed : List Nat)
+    (original candidate : MachineState) (flags : FlagsExpr)
+    (within : flagValueWithin allowed 2 flags.parity = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    (flags.eval original).extractLsb' 2 1 = (flags.eval candidate).extractLsb' 2 1 := by
+  simpa only [FlagsExpr.eval_extract_pf] using
+    evalFlagBit_eq_of_flagsWithin allowed 2 original candidate flags.parity within agreement
+
+theorem FlagsExpr.eval_zf_eq_of_flagsWithin (allowed : List Nat)
+    (original candidate : MachineState) (flags : FlagsExpr)
+    (within : flagValueWithin allowed 6 flags.zero = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    (flags.eval original).extractLsb' 6 1 = (flags.eval candidate).extractLsb' 6 1 := by
+  simpa only [FlagsExpr.eval_extract_zf] using
+    evalFlagBit_eq_of_flagsWithin allowed 6 original candidate flags.zero within agreement
+
+theorem FlagsExpr.eval_sf_eq_of_flagsWithin (allowed : List Nat)
+    (original candidate : MachineState) (flags : FlagsExpr)
+    (within : flagValueWithin allowed 7 flags.sign = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    (flags.eval original).extractLsb' 7 1 = (flags.eval candidate).extractLsb' 7 1 := by
+  simpa only [FlagsExpr.eval_extract_sf] using
+    evalFlagBit_eq_of_flagsWithin allowed 7 original candidate flags.sign within agreement
+
+theorem FlagsExpr.eval_df_eq_of_flagsWithin (allowed : List Nat)
+    (original candidate : MachineState) (flags : FlagsExpr)
+    (within : allowed.contains 10 = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    (flags.eval original).extractLsb' 10 1 = (flags.eval candidate).extractLsb' 10 1 := by
+  simpa only [FlagsExpr.eval_extract_df] using agreement.flags 10 within
+
+theorem FlagsExpr.eval_of_eq_of_flagsWithin (allowed : List Nat)
+    (original candidate : MachineState) (flags : FlagsExpr)
+    (within : flagValueWithin allowed 11 flags.overflow = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    (flags.eval original).extractLsb' 11 1 = (flags.eval candidate).extractLsb' 11 1 := by
+  simpa only [FlagsExpr.eval_extract_of] using
+    evalFlagBit_eq_of_flagsWithin allowed 11 original candidate flags.overflow within agreement
 
 structure SymbolicX87State where
   stack : List X87Expr

@@ -194,6 +194,24 @@ def normalizeSymbolicBehavior (candidate : Bool) (targets : List CodeTargetPair)
     outcome := ← normalizeOutcomeExpr candidate targets outcomeExpr
   }
 
+theorem normalizeSymbolicBehavior_fields
+    (candidate : Bool) (targets : List CodeTargetPair) (behavior : SymbolicBehavior)
+    (normalized : NormalizedSymbolicBehavior)
+    (result : normalizeSymbolicBehavior candidate targets behavior = some normalized) :
+    normalized.registers = behavior.registers ∧
+      normalized.x87 = behavior.x87 ∧
+      normalized.writes = behavior.writes ∧
+      normalized.flags = behavior.flags := by
+  cases behaviorOutcome : behavior.outcome with
+  | none => simp [normalizeSymbolicBehavior, behaviorOutcome] at result
+  | some outcome =>
+    cases outcomeNormalized : normalizeOutcomeExpr candidate targets outcome with
+    | none => simp [normalizeSymbolicBehavior, behaviorOutcome, outcomeNormalized] at result
+    | some normalizedOutcome =>
+      simp [normalizeSymbolicBehavior, behaviorOutcome, outcomeNormalized] at result
+      subst normalized
+      exact ⟨rfl, rfl, rfl, rfl⟩
+
 def NormalizedOutcomeExpr.eval (state : MachineState) : NormalizedOutcomeExpr -> PureOutcome
   | .returned target => .returned (target.eval state)
   | .jump target => .jump target
@@ -211,27 +229,75 @@ def NormalizedOutcomeExpr.eval (state : MachineState) : NormalizedOutcomeExpr ->
   | .atomicCompareExchange address expected replacement continuation =>
       .atomicCompareExchange (address.eval state) (expected.eval state) (replacement.eval state) continuation
 
+def evalNormalizedRegisters (state : MachineState) (registers : Registers Expr) : PureState := {
+  eax := registers.eax.eval state
+  ebx := registers.ebx.eval state
+  ecx := registers.ecx.eval state
+  edx := registers.edx.eval state
+  esi := registers.esi.eval state
+  edi := registers.edi.eval state
+  ebp := registers.ebp.eval state
+  esp := registers.esp.eval state
+}
+
+def evalNormalizedX87 (state : MachineState) (x87 : SymbolicX87State) : ConcreteX87State := {
+  stack := x87.stack.map fun value => value.eval state
+  control := (x87.control.eval state).extractLsb' 0 16
+  status := (x87.status.eval state).extractLsb' 0 16
+}
+
+def evalNormalizedWrites (state : MachineState) (writes : List (Expr × Expr)) :
+    List (Word × Word) :=
+  writes.map fun write => (write.1.eval state, write.2.eval state)
+
+def evalNormalizedFlags (state : MachineState) (flags : Option FlagsExpr) : Word :=
+  flags.map (FlagsExpr.eval state) |>.getD state.eflags
+
+@[simp] theorem evalNormalizedFlags_some (state : MachineState) (flags : FlagsExpr) :
+    evalNormalizedFlags state (some flags) = flags.eval state := rfl
+
+@[simp] theorem evalNormalizedFlags_none (state : MachineState) :
+    evalNormalizedFlags state none = state.eflags := rfl
+
 def NormalizedSymbolicBehavior.eval (state : MachineState)
     (behavior : NormalizedSymbolicBehavior) : RelationalBehavior := {
-  registers := {
-    eax := behavior.registers.eax.eval state
-    ebx := behavior.registers.ebx.eval state
-    ecx := behavior.registers.ecx.eval state
-    edx := behavior.registers.edx.eval state
-    esi := behavior.registers.esi.eval state
-    edi := behavior.registers.edi.eval state
-    ebp := behavior.registers.ebp.eval state
-    esp := behavior.registers.esp.eval state
-  }
-  x87 := {
-    stack := behavior.x87.stack.map fun value => value.eval state
-    control := (behavior.x87.control.eval state).extractLsb' 0 16
-    status := (behavior.x87.status.eval state).extractLsb' 0 16
-  }
-  writes := behavior.writes.map fun write => (write.1.eval state, write.2.eval state)
-  eflags := behavior.flags.map (FlagsExpr.eval state) |>.getD state.eflags
+  registers := evalNormalizedRegisters state behavior.registers
+  x87 := evalNormalizedX87 state behavior.x87
+  writes := evalNormalizedWrites state behavior.writes
+  eflags := evalNormalizedFlags state behavior.flags
   outcome := behavior.outcome.eval state
 }
+
+@[simp] theorem NormalizedSymbolicBehavior.eval_registers (state : MachineState)
+    (behavior : NormalizedSymbolicBehavior) :
+    (behavior.eval state).registers = evalNormalizedRegisters state behavior.registers := rfl
+
+@[simp] theorem NormalizedSymbolicBehavior.eval_x87 (state : MachineState)
+    (behavior : NormalizedSymbolicBehavior) :
+    (behavior.eval state).x87 = evalNormalizedX87 state behavior.x87 := rfl
+
+@[simp] theorem NormalizedSymbolicBehavior.eval_writes (state : MachineState)
+    (behavior : NormalizedSymbolicBehavior) :
+    (behavior.eval state).writes = evalNormalizedWrites state behavior.writes := rfl
+
+@[simp] theorem NormalizedSymbolicBehavior.eval_eflags (state : MachineState)
+    (behavior : NormalizedSymbolicBehavior) :
+    (behavior.eval state).eflags = evalNormalizedFlags state behavior.flags := rfl
+
+@[simp] theorem NormalizedSymbolicBehavior.eval_outcome (state : MachineState)
+    (behavior : NormalizedSymbolicBehavior) :
+    (behavior.eval state).outcome = behavior.outcome.eval state := rfl
+
+theorem NormalizedSymbolicBehavior.eval_flag_eq_of_some
+    (behavior : NormalizedSymbolicBehavior) (flags : FlagsExpr)
+    (original candidate : MachineState) (bit : Nat)
+    (field : behavior.flags = some flags)
+    (related : (flags.eval original).extractLsb' bit 1 =
+      (flags.eval candidate).extractLsb' bit 1) :
+    (behavior.eval original).eflags.extractLsb' bit 1 =
+      (behavior.eval candidate).eflags.extractLsb' bit 1 := by
+  simpa only [NormalizedSymbolicBehavior.eval_eflags, field, evalNormalizedFlags_some]
+    using related
 
 def codeAddressMatches (imageBase primaryRva : Nat) (aliases : List CodeAlias) (value : Word) : Bool :=
   value == BitVec.ofNat 32 (imageBase + primaryRva) ||
@@ -555,6 +621,31 @@ def evalBehavior (candidate : Bool) (targets : List CodeTargetPair)
     (state : MachineState) (behavior : SymbolicBehavior) : Option RelationalBehavior := do
   return (← normalizeSymbolicBehavior candidate targets behavior).eval state
 
+def evalBehaviorRegisters (candidate : Bool) (targets : List CodeTargetPair)
+    (state : MachineState) (behavior : SymbolicBehavior) : Option PureState := do
+  let normalized ← normalizeSymbolicBehavior candidate targets behavior
+  return evalNormalizedRegisters state normalized.registers
+
+def evalBehaviorX87 (candidate : Bool) (targets : List CodeTargetPair)
+    (state : MachineState) (behavior : SymbolicBehavior) : Option ConcreteX87State := do
+  let normalized ← normalizeSymbolicBehavior candidate targets behavior
+  return evalNormalizedX87 state normalized.x87
+
+def evalBehaviorWrites (candidate : Bool) (targets : List CodeTargetPair)
+    (state : MachineState) (behavior : SymbolicBehavior) : Option (List (Word × Word)) := do
+  let normalized ← normalizeSymbolicBehavior candidate targets behavior
+  return evalNormalizedWrites state normalized.writes
+
+def evalBehaviorFlags (candidate : Bool) (targets : List CodeTargetPair)
+    (state : MachineState) (behavior : SymbolicBehavior) : Option Word := do
+  let normalized ← normalizeSymbolicBehavior candidate targets behavior
+  return evalNormalizedFlags state normalized.flags
+
+def evalBehaviorOutcome (candidate : Bool) (targets : List CodeTargetPair)
+    (state : MachineState) (behavior : SymbolicBehavior) : Option PureOutcome := do
+  let normalized ← normalizeSymbolicBehavior candidate targets behavior
+  return normalized.outcome.eval state
+
 def pureRegionBehavior (pe : PE32) (span : Span) (candidate : Bool)
     (targets : List CodeTargetPair) (state : PureState) : Option PureBehavior := do
   let behavior ← regionBehavior pe span
@@ -604,6 +695,22 @@ def flagsRelated (bits : List Nat) (original candidate : Word) : Bool :=
 
 @[simp] theorem flagsRelated_nil (original candidate : Word) :
     flagsRelated [] original candidate = true := rfl
+
+theorem flagsRelated_cons_of_eq (bit : Nat) (bits : List Nat)
+    (original candidate : Word)
+    (head : original.extractLsb' bit 1 = candidate.extractLsb' bit 1)
+    (tail : flagsRelated bits original candidate = true) :
+    flagsRelated (bit :: bits) original candidate = true := by
+  unfold flagsRelated at tail ⊢
+  rw [List.all_cons, Bool.and_eq_true]
+  exact ⟨beq_iff_eq.mpr head, tail⟩
+
+theorem flagsRelated_of_contains (bits : List Nat) (original candidate : Word)
+    (related : flagsRelated bits original candidate = true)
+    (contains : bits.contains bit = true) :
+    original.extractLsb' bit 1 = candidate.extractLsb' bit 1 := by
+  simp [flagsRelated] at related
+  exact related bit (by simpa using contains)
 
 def registersRelatedValues (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair) (values : List ValueTargetPair)
@@ -700,6 +807,144 @@ def behaviorsEquivalent (originalImageBase candidateImageBase : Nat)
         outcomesRelated originalImageBase candidateImageBase region.targets region.values
           originalResult.outcome candidateResult.outcome = true
     | _, _ => False
+
+def behaviorRegistersEquivalent (originalImageBase candidateImageBase : Nat)
+    (originalBehavior candidateBehavior : SymbolicBehavior) (region : RegionRelation) : Prop :=
+  ∀ originalState candidateState,
+    statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+      region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
+    registersRelatedValues originalImageBase candidateImageBase region.targets region.values
+      region.outputs (evalNormalizedRegisters originalState originalBehavior.registers)
+      (evalNormalizedRegisters candidateState candidateBehavior.registers) = true
+
+def behaviorX87Equivalent (originalImageBase candidateImageBase : Nat)
+    (originalBehavior candidateBehavior : SymbolicBehavior) (region : RegionRelation) : Prop :=
+  ∀ originalState candidateState,
+    statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+      region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
+    evalNormalizedX87 originalState originalBehavior.x87 =
+      evalNormalizedX87 candidateState candidateBehavior.x87
+
+def behaviorWritesEquivalent (originalImageBase candidateImageBase : Nat)
+    (originalBehavior candidateBehavior : SymbolicBehavior) (region : RegionRelation) : Prop :=
+  ∀ originalState candidateState,
+    statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+      region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
+    writesRelated originalImageBase candidateImageBase region.targets region.values
+      (evalNormalizedWrites originalState originalBehavior.writes)
+      (evalNormalizedWrites candidateState candidateBehavior.writes) = true
+
+def behaviorFlagsEquivalent (originalImageBase candidateImageBase : Nat)
+    (originalBehavior candidateBehavior : SymbolicBehavior) (region : RegionRelation) : Prop :=
+  ∀ originalState candidateState,
+    statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+      region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
+    flagsRelated region.flagOutputs
+      (evalNormalizedFlags originalState originalBehavior.flags)
+      (evalNormalizedFlags candidateState candidateBehavior.flags) = true
+
+def behaviorOutcomeEquivalent (originalImageBase candidateImageBase : Nat)
+    (originalBehavior candidateBehavior : SymbolicBehavior) (region : RegionRelation) : Prop :=
+  ∀ originalState candidateState,
+    statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+      region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
+    match evalBehaviorOutcome false region.targets originalState originalBehavior,
+        evalBehaviorOutcome true region.targets candidateState candidateBehavior with
+    | some originalResult, some candidateResult =>
+      outcomesRelated originalImageBase candidateImageBase region.targets region.values
+          originalResult candidateResult = true
+    | _, _ => False
+
+theorem behaviorsEquivalent_of_components
+    (originalImageBase candidateImageBase : Nat)
+    (originalBehavior candidateBehavior : SymbolicBehavior) (region : RegionRelation)
+    (registers : behaviorRegistersEquivalent originalImageBase candidateImageBase
+      originalBehavior candidateBehavior region)
+    (x87 : behaviorX87Equivalent originalImageBase candidateImageBase
+      originalBehavior candidateBehavior region)
+    (writes : behaviorWritesEquivalent originalImageBase candidateImageBase
+      originalBehavior candidateBehavior region)
+    (flags : behaviorFlagsEquivalent originalImageBase candidateImageBase
+      originalBehavior candidateBehavior region)
+    (outcome : behaviorOutcomeEquivalent originalImageBase candidateImageBase
+      originalBehavior candidateBehavior region) :
+    behaviorsEquivalent originalImageBase candidateImageBase originalBehavior candidateBehavior region := by
+  intro originalState candidateState related
+  have registers := registers originalState candidateState related
+  have x87 := x87 originalState candidateState related
+  have writes := writes originalState candidateState related
+  have flags := flags originalState candidateState related
+  have outcome := outcome originalState candidateState related
+  cases originalNormalized : normalizeSymbolicBehavior false region.targets originalBehavior with
+  | none => simp [evalBehaviorOutcome, originalNormalized] at outcome
+  | some original =>
+    cases candidateNormalized : normalizeSymbolicBehavior true region.targets candidateBehavior with
+    | none => simp [evalBehaviorOutcome, candidateNormalized] at outcome
+    | some candidate =>
+      have originalFields := normalizeSymbolicBehavior_fields false region.targets originalBehavior
+        original originalNormalized
+      have candidateFields := normalizeSymbolicBehavior_fields true region.targets candidateBehavior
+        candidate candidateNormalized
+      unfold evalBehavior
+      rw [originalNormalized, candidateNormalized]
+      exact ⟨by simpa [originalFields.1, candidateFields.1] using registers,
+        by simpa [originalFields.2.1, candidateFields.2.1] using x87,
+        by simpa [originalFields.2.2.1, candidateFields.2.2.1] using writes,
+        by simpa [originalFields.2.2.2, candidateFields.2.2.2] using flags,
+        by simpa [behaviorOutcomeEquivalent, evalBehaviorOutcome, originalNormalized,
+          candidateNormalized] using outcome⟩
+
+theorem behaviorsEquivalent_of_normalized_components
+    (originalImageBase candidateImageBase : Nat)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (normalizedBehavior : NormalizedSymbolicBehavior) (region : RegionRelation)
+    (originalNormalized : normalizeSymbolicBehavior false region.targets originalBehavior =
+      some normalizedBehavior)
+    (candidateNormalized : normalizeSymbolicBehavior true region.targets candidateBehavior =
+      some normalizedBehavior)
+    (registers : ∀ originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+        region.bounds region.addressSeparations region.values region.inputs
+        originalState candidateState →
+      registersRelatedValues originalImageBase candidateImageBase region.targets region.values
+        region.outputs (normalizedBehavior.eval originalState).registers
+        (normalizedBehavior.eval candidateState).registers = true)
+    (x87 : ∀ originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+        region.bounds region.addressSeparations region.values region.inputs
+        originalState candidateState →
+      (normalizedBehavior.eval originalState).x87 =
+        (normalizedBehavior.eval candidateState).x87)
+    (writes : ∀ originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+        region.bounds region.addressSeparations region.values region.inputs
+        originalState candidateState →
+      writesRelated originalImageBase candidateImageBase region.targets region.values
+        (normalizedBehavior.eval originalState).writes
+        (normalizedBehavior.eval candidateState).writes = true)
+    (flags : ∀ originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+        region.bounds region.addressSeparations region.values region.inputs
+        originalState candidateState →
+      StageA.Relational.flagsRelated region.flagOutputs
+        (normalizedBehavior.eval originalState).eflags
+        (normalizedBehavior.eval candidateState).eflags = true)
+    (outcome : ∀ originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+        region.bounds region.addressSeparations region.values region.inputs
+        originalState candidateState →
+      outcomesRelated originalImageBase candidateImageBase region.targets region.values
+        (normalizedBehavior.eval originalState).outcome
+        (normalizedBehavior.eval candidateState).outcome = true) :
+    behaviorsEquivalent originalImageBase candidateImageBase originalBehavior candidateBehavior region := by
+  intro originalState candidateState related
+  unfold evalBehavior
+  rw [originalNormalized, candidateNormalized]
+  exact ⟨registers originalState candidateState related,
+    x87 originalState candidateState related,
+    writes originalState candidateState related,
+    flags originalState candidateState related,
+    outcome originalState candidateState related⟩
 
 theorem regionEquivalentWithImports_of_decoded (originalPe candidatePe : PE32)
     (originalImports candidateImports : List PEImport) (region : RegionRelation)

@@ -3226,16 +3226,10 @@ def _lean_region_relocation_memory_setup(
     return "\n".join(rows) + ("\n" if rows else "")
 
 
-def _normalized_behavior_fast_path(
+def _normalized_behavior_structure_matches(
     region: dict[str, Any],
     behaviors: dict[str, str],
 ) -> bool:
-    all_flag_bits = list(FLAG_BITS)
-    if (
-        region.get("flag_inputs", all_flag_bits) != all_flag_bits
-        or region.get("flag_outputs", all_flag_bits) != all_flag_bits
-    ):
-        return False
     registers = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
     for field in ("inputs", "outputs"):
         pairs = region.get(field, [])
@@ -3326,6 +3320,70 @@ def _normalized_behavior_fast_path(
     return original_key is not None and original_key == candidate_key
 
 
+def _normalized_behavior_fast_path(
+    region: dict[str, Any],
+    behaviors: dict[str, str],
+) -> bool:
+    all_flag_bits = list(FLAG_BITS)
+    return (
+        region.get("flag_inputs", all_flag_bits) == all_flag_bits
+        and region.get("flag_outputs", all_flag_bits) == all_flag_bits
+        and _normalized_behavior_structure_matches(region, behaviors)
+    )
+
+
+def _lean_normalized_static_outcome(
+    region: dict[str, Any],
+    behaviors: dict[str, str],
+) -> str | None:
+    try:
+        outcome = behaviors["original"].rsplit(", outcome := ", 1)[1]
+    except (KeyError, ValueError):
+        return None
+
+    def target_id(rva: int) -> int | None:
+        for target in region.get("code_targets", []):
+            if rva == target["original_rva"] or rva in target.get("original_aliases", []):
+                return int(target["id"])
+        return None
+
+    jump = re.fullmatch(r"some \(StageA\.Formal\.OutcomeExpr\.jump (\d+)\) \}", outcome)
+    if jump is not None:
+        target = target_id(int(jump.group(1)))
+        return (
+            f"StageA.Relational.NormalizedOutcomeExpr.jump {target}"
+            if target is not None else None
+        )
+
+    branch = re.fullmatch(
+        r"some \(StageA\.Formal\.OutcomeExpr\.branch (.*) (\d+) (\d+)\) \}",
+        outcome,
+    )
+    if branch is not None:
+        taken = target_id(int(branch.group(2)))
+        fallthrough = target_id(int(branch.group(3)))
+        if taken is not None and fallthrough is not None:
+            return (
+                "StageA.Relational.NormalizedOutcomeExpr.branch "
+                f"({branch.group(1)}) {taken} {fallthrough}"
+            )
+        return None
+
+    call = re.fullmatch(
+        r"some \(StageA\.Formal\.OutcomeExpr\.call (\d+) (\d+) \d+\) \}",
+        outcome,
+    )
+    if call is not None:
+        target = target_id(int(call.group(1)))
+        continuation = target_id(int(call.group(2)))
+        if target is not None and continuation is not None:
+            return (
+                "StageA.Relational.NormalizedOutcomeExpr.call "
+                f"{target} {continuation}"
+            )
+    return None
+
+
 def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary, original: bytes, candidate: bytes, contract: dict[str, Any], behaviors: list[dict[str, str]], *, replay: bool, certificates: list[dict[str, Any]] | None = None) -> str:
     certificate_by_region = {entry.get("region_id"): entry for entry in certificates or []}
     region_defs: list[str] = []
@@ -3384,9 +3442,12 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
             "StageA.Formal.MachineState.read32, Memory.read32"
         )
         flag_eval_simplifiers = (
-            "StageA.Formal.FlagsExpr.eval_extract_df"
-            if region.get("flag_outputs") == [10] else
-            "StageA.Formal.FlagsExpr.eval, StageA.Formal.updateFlag"
+            "StageA.Formal.FlagsExpr.eval_extract_cf, "
+            "StageA.Formal.FlagsExpr.eval_extract_pf, "
+            "StageA.Formal.FlagsExpr.eval_extract_zf, "
+            "StageA.Formal.FlagsExpr.eval_extract_sf, "
+            "StageA.Formal.FlagsExpr.eval_extract_df, "
+            "StageA.Formal.FlagsExpr.eval_extract_of, StageA.Formal.evalFlagBit"
         )
         theorem_names.append(theorem_name)
         region_defs.append(_lean_region_definition(index, region))
@@ -3431,8 +3492,10 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
             f"StageA.Relational.flagsRelated, "
             f"wordRelated{normalized_flag_simplifiers}, {name}]\n"
             if normalized_fast_path else (
-                "  simp [evalBehavior, normalizeSymbolicBehavior, normalizeOutcomeExpr, "
+                "  simp [evalBehavior, evalBehaviorRegisters, evalBehaviorX87, evalBehaviorWrites, "
+                "evalBehaviorFlags, evalBehaviorOutcome, normalizeSymbolicBehavior, normalizeOutcomeExpr, "
                 "NormalizedSymbolicBehavior.eval, NormalizedOutcomeExpr.eval, "
+                "evalNormalizedRegisters, evalNormalizedX87, evalNormalizedWrites, evalNormalizedFlags, "
                 "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval, "
                 f"{flag_eval_simplifiers},\n"
                 f"    {memory_read_simplifiers}, StageA.Formal.MachineState.readX87Word,\n"
@@ -4133,6 +4196,260 @@ def _partition_proof_shards(
     return groups
 
 
+def _lean_normalized_component_setup(
+    index: int,
+    region: dict[str, Any],
+    *,
+    original_image_base: int,
+    candidate_image_base: int,
+    preserve_flags: bool = False,
+    preserve_states: bool = False,
+) -> tuple[str, str]:
+    name = f"region{index}"
+    input_hypotheses = [f"inputRelated{pair_index}" for pair_index in range(len(region["inputs"]))]
+    relation_destructure = (
+        "  rcases related with ⟨" + ", ".join(input_hypotheses) + "⟩\n"
+        if len(input_hypotheses) > 1 else ""
+    )
+    substitutions = "".join(
+        f"  subst c{pair['candidate']}\n" for pair in region["inputs"]
+    )
+    flag_setup, flag_hypotheses = _lean_region_flag_setup(index, region)
+    aliases = (
+        "  let originalInput := originalState\n"
+        "  let candidateInput := candidateState\n"
+        if preserve_states else ""
+    )
+    flags_copy = "  have flagsRelatedAll := flagsRelated\n" if preserve_flags else ""
+    return (
+        aliases
+        + "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
+        "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
+        "  unfold statesRelated at related\n"
+        "  rcases related with ⟨related, boundsSatisfied, separationsSatisfied, memoryRelated, undefinedRelated, x87Related, flagsRelated, fsBaseRelated⟩\n"
+        f"  have exactMemory := memoryRelated_without_relocations {original_image_base} {candidate_image_base} "
+        f"{name}.targets {name}.values originalMemory candidateMemory (by decide) memoryRelated\n"
+        f"  change candidateMemory = fun address => originalMemory (normalizeDataAddress {name}.values address) at exactMemory\n"
+        "  subst candidateMemory\n"
+        "  change originalUndefined = candidateUndefined at undefinedRelated\n"
+        "  subst candidateUndefined\n"
+        "  change originalX87 = candidateX87 at x87Related\n"
+        "  subst candidateX87\n"
+        + flags_copy
+        + flag_setup
+        + "  change originalFsBase = candidateFsBase at fsBaseRelated\n"
+        "  subst candidateFsBase\n"
+        f"  simp [registersRelated, StageA.Formal.Registers.get, {name}] at related\n"
+        + relation_destructure
+        + substitutions
+        + f"  simp [StageA.Relational.boundsRelated, StageA.Formal.Registers.get, {name}] at boundsSatisfied\n"
+        f"  simp [addressSeparationsRelated, StageA.Formal.Registers.get, {name}] at separationsSatisfied\n",
+        flag_hypotheses,
+    )
+
+
+def _lean_compositional_normalized_theorem_source(
+    index: int,
+    region: dict[str, Any],
+    behaviors: dict[str, str],
+    *,
+    original_image_base: int,
+    candidate_image_base: int,
+) -> str | None:
+    outcome = _lean_normalized_static_outcome(region, behaviors)
+    if outcome is None or "flags := some" not in behaviors["original"]:
+        return None
+
+    name = f"region{index}"
+    theorem_name = f"{name}Checked"
+    state_relation = (
+        f"statesRelated {original_image_base} {candidate_image_base} {name}.targets {name}.flagInputs "
+        f"{name}.bounds {name}.addressSeparations {name}.values {name}.inputs "
+        "originalState candidateState"
+    )
+    setup, flag_hypotheses = _lean_normalized_component_setup(
+        index,
+        region,
+        original_image_base=original_image_base,
+        candidate_image_base=candidate_image_base,
+    )
+    flag_lemma_line = f"    {flag_hypotheses},\n" if flag_hypotheses else ""
+    common_simplifiers = (
+        "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval, "
+        "StageA.Formal.MachineState.read32, Memory.read32, "
+        "StageA.Formal.MachineState.readX87Word, StageA.Formal.read8AfterWriteValue, "
+        "StageA.Formal.X87LoadFormat.byteWidth, StageA.Formal.Registers.get, "
+        "normalizeCodeTarget, normalizeImport, wordsRelated, wordRelated, "
+        "codePointerRelated, codeAddressMatches, mappedValueRelated"
+    )
+
+    definitions = (
+        f"def {name}NormalizedBehavior : NormalizedSymbolicBehavior :=\n"
+        f"  (normalizeSymbolicBehavior false {name}.targets originalBehavior{index}).get (by decide)\n\n"
+        f"theorem {name}NormalizedRegisters : {name}NormalizedBehavior.registers = originalBehavior{index}.registers := by decide\n\n"
+        f"theorem {name}NormalizedX87 : {name}NormalizedBehavior.x87 = originalBehavior{index}.x87 := by decide\n\n"
+        f"theorem {name}NormalizedWrites : {name}NormalizedBehavior.writes = originalBehavior{index}.writes := by decide\n\n"
+        f"def {name}CommonFlags : FlagsExpr := originalBehavior{index}.flags.get (by decide)\n\n"
+        f"theorem {name}NormalizedFlags : {name}NormalizedBehavior.flags = some {name}CommonFlags := by decide\n\n"
+        f"theorem {name}NormalizedOutcome : {name}NormalizedBehavior.outcome = {outcome} := by decide\n\n"
+        f"theorem {name}OriginalNormalized : normalizeSymbolicBehavior false {name}.targets originalBehavior{index} = some {name}NormalizedBehavior := by decide\n\n"
+        f"theorem {name}CandidateNormalized : normalizeSymbolicBehavior true {name}.targets candidateBehavior{index} = some {name}NormalizedBehavior := by decide\n\n"
+    )
+
+    component_specs = (
+        (
+            "Registers",
+            f"registersRelatedValues {original_image_base} {candidate_image_base} {name}.targets {name}.values "
+            f"{name}.outputs ({name}NormalizedBehavior.eval originalState).registers "
+            f"({name}NormalizedBehavior.eval candidateState).registers = true",
+            f"  simp only [NormalizedSymbolicBehavior.eval_registers, {name}NormalizedRegisters]\n"
+            f"  simp [evalNormalizedRegisters, registersRelatedValues, {common_simplifiers},\n"
+            + flag_lemma_line
+            + f"    originalBehavior{index}, {name}]\n"
+            "  all_goals first | rfl | bv_normalize\n",
+        ),
+        (
+            "X87",
+            f"({name}NormalizedBehavior.eval originalState).x87 = "
+            f"({name}NormalizedBehavior.eval candidateState).x87",
+            f"  simp only [NormalizedSymbolicBehavior.eval_x87, {name}NormalizedX87]\n"
+            f"  simp [evalNormalizedX87, {common_simplifiers},\n"
+            + flag_lemma_line
+            + f"    originalBehavior{index}, {name}]\n"
+            "  all_goals first | rfl | bv_normalize\n",
+        ),
+        (
+            "Writes",
+            f"writesRelated {original_image_base} {candidate_image_base} {name}.targets {name}.values "
+            f"({name}NormalizedBehavior.eval originalState).writes "
+            f"({name}NormalizedBehavior.eval candidateState).writes = true",
+            f"  simp only [NormalizedSymbolicBehavior.eval_writes, {name}NormalizedWrites]\n"
+            f"  simp [evalNormalizedWrites, writesRelated, {common_simplifiers},\n"
+            + flag_lemma_line
+            + f"    originalBehavior{index}, {name}]\n"
+            "  all_goals first | rfl | bv_normalize\n",
+        ),
+        (
+            "Outcome",
+            f"outcomesRelated {original_image_base} {candidate_image_base} {name}.targets {name}.values "
+            f"({name}NormalizedBehavior.eval originalState).outcome "
+            f"({name}NormalizedBehavior.eval candidateState).outcome = true",
+            f"  simp only [NormalizedSymbolicBehavior.eval_outcome, {name}NormalizedOutcome]\n"
+            f"  simp [NormalizedOutcomeExpr.eval, outcomesRelated, {common_simplifiers},\n"
+            + flag_lemma_line
+            + f"    {name}]\n"
+            "  all_goals first | rfl | bv_normalize\n",
+        ),
+    )
+    component_theorems: list[str] = []
+    for label, goal, proof in component_specs:
+        component_theorems.append(
+            f"theorem {name}{label}Component (originalState candidateState : MachineState)\n"
+            f"    (related : {state_relation}) :\n    {goal} := by\n"
+            + setup
+            + proof
+        )
+
+    bit_metadata = {
+        0: ("carry", "cf"),
+        2: ("parity", "pf"),
+        6: ("zero", "zf"),
+        7: ("sign", "sf"),
+        10: (None, "df"),
+        11: ("overflow", "of"),
+    }
+    bit_facts: list[str] = []
+    bit_components: list[str] = []
+    for bit in region.get("flag_outputs", []):
+        field, suffix = bit_metadata[bit]
+        within_goal = (
+            f"{name}.flagInputs.contains 10 = true"
+            if field is None else
+            f"flagValueWithin {name}.flagInputs {bit} {name}CommonFlags.{field} = true"
+        )
+        bit_facts.append(
+            f"theorem {name}Flag{bit}Within : {within_goal} := by decide\n\n"
+            f"theorem {name}CommonFlag{bit}Agreement (original candidate : MachineState)\n"
+            f"    (agreement : MachineStateAgreement {name}.flagInputs original candidate) :\n"
+            f"    ({name}CommonFlags.eval original).extractLsb' {bit} 1 =\n"
+            f"      ({name}CommonFlags.eval candidate).extractLsb' {bit} 1 :=\n"
+            f"  FlagsExpr.eval_{suffix}_eq_of_flagsWithin {name}.flagInputs original candidate\n"
+            f"    {name}CommonFlags {name}Flag{bit}Within agreement\n\n"
+            f"theorem {name}NormalizedFlag{bit}Agreement (original candidate : MachineState)\n"
+            f"    (agreement : MachineStateAgreement {name}.flagInputs original candidate) :\n"
+            f"    ({name}NormalizedBehavior.eval original).eflags.extractLsb' {bit} 1 =\n"
+            f"      ({name}NormalizedBehavior.eval candidate).eflags.extractLsb' {bit} 1 :=\n"
+            f"  NormalizedSymbolicBehavior.eval_flag_eq_of_some {name}NormalizedBehavior {name}CommonFlags\n"
+            f"    original candidate {bit} {name}NormalizedFlags\n"
+            f"    ({name}CommonFlag{bit}Agreement original candidate agreement)\n\n"
+        )
+        bit_setup, _ = _lean_normalized_component_setup(
+            index,
+            region,
+            original_image_base=original_image_base,
+            candidate_image_base=candidate_image_base,
+            preserve_flags=True,
+            preserve_states=True,
+        )
+        bit_components.append(
+            f"theorem {name}Flag{bit}Component (originalState candidateState : MachineState)\n"
+            f"    (related : {state_relation}) :\n"
+            f"    ({name}NormalizedBehavior.eval originalState).eflags.extractLsb' {bit} 1 =\n"
+            f"      ({name}NormalizedBehavior.eval candidateState).eflags.extractLsb' {bit} 1 := by\n"
+            + bit_setup
+            + f"  have stateAgreement : MachineStateAgreement {name}.flagInputs originalInput candidateInput := by\n"
+            "    constructor\n"
+            "    · rfl\n    · rfl\n    · rfl\n    · rfl\n    · rfl\n"
+            "    · intro bit contains\n"
+            f"      exact flagsRelated_of_contains {name}.flagInputs originalFlags candidateFlags flagsRelatedAll contains\n"
+            f"  exact {name}NormalizedFlag{bit}Agreement originalInput candidateInput stateAgreement\n\n"
+        )
+
+    bit_component_names = [
+        f"{name}Flag{bit}Component originalState candidateState related"
+        for bit in region.get("flag_outputs", [])
+    ]
+    output_bits = list(region.get("flag_outputs", []))
+    original_flags = f"({name}NormalizedBehavior.eval originalState).eflags"
+    candidate_flags = f"({name}NormalizedBehavior.eval candidateState).eflags"
+    flags_proof = f"flagsRelated_nil {original_flags} {candidate_flags}"
+    for bit_index in range(len(output_bits) - 1, -1, -1):
+        bit = output_bits[bit_index]
+        tail = ", ".join(str(value) for value in output_bits[bit_index + 1:])
+        flags_proof = (
+            f"flagsRelated_cons_of_eq {bit} [{tail}] {original_flags} {candidate_flags} "
+            f"({bit_component_names[bit_index]}) ({flags_proof})"
+        )
+    flags_component = (
+        f"theorem {name}FlagsComponent (originalState candidateState : MachineState)\n"
+        f"    (related : {state_relation}) :\n"
+        f"    StageA.Relational.flagsRelated {name}.flagOutputs\n"
+        f"      ({name}NormalizedBehavior.eval originalState).eflags\n"
+        f"      ({name}NormalizedBehavior.eval candidateState).eflags = true := by\n"
+        f"  change StageA.Relational.flagsRelated [{', '.join(str(bit) for bit in output_bits)}] "
+        f"{original_flags} {candidate_flags} = true\n"
+        f"  exact {flags_proof}\n\n"
+    )
+
+    direct = (
+        f"theorem {theorem_name}DirectBehavior : behaviorsEquivalent {original_image_base} {candidate_image_base} "
+        f"originalBehavior{index} candidateBehavior{index} {name} :=\n"
+        f"  behaviorsEquivalent_of_normalized_components {original_image_base} {candidate_image_base} "
+        f"originalBehavior{index} candidateBehavior{index} {name}NormalizedBehavior {name}\n"
+        f"    {name}OriginalNormalized {name}CandidateNormalized {name}RegistersComponent\n"
+        f"    {name}X87Component {name}WritesComponent {name}FlagsComponent {name}OutcomeComponent\n"
+    )
+    return (
+        definitions
+        + "".join(bit_facts)
+        + "\n".join(component_theorems)
+        + "\n"
+        + "".join(bit_components)
+        + flags_component
+        + direct
+    )
+
+
 def _lean_region_theorem_source(
     index: int,
     region: dict[str, Any],
@@ -4145,6 +4462,16 @@ def _lean_region_theorem_source(
 ) -> str:
     name = f"region{index}"
     theorem_name = f"{name}Checked"
+    if _normalized_behavior_structure_matches(region, behaviors):
+        compositional = _lean_compositional_normalized_theorem_source(
+            index,
+            region,
+            behaviors,
+            original_image_base=original_image_base,
+            candidate_image_base=candidate_image_base,
+        )
+        if compositional is not None:
+            return compositional
     memory_lemmas = ", ".join(
         _lean_region_memory_lemma_names(index, region, behaviors)
     )
@@ -4194,9 +4521,12 @@ def _lean_region_theorem_source(
         "StageA.Formal.MachineState.read32, Memory.read32"
     )
     flag_eval_simplifiers = (
-        "StageA.Formal.FlagsExpr.eval_extract_df"
-        if region.get("flag_outputs") == [10] else
-        "StageA.Formal.FlagsExpr.eval, StageA.Formal.updateFlag"
+        "StageA.Formal.FlagsExpr.eval_extract_cf, "
+        "StageA.Formal.FlagsExpr.eval_extract_pf, "
+        "StageA.Formal.FlagsExpr.eval_extract_zf, "
+        "StageA.Formal.FlagsExpr.eval_extract_sf, "
+        "StageA.Formal.FlagsExpr.eval_extract_df, "
+        "StageA.Formal.FlagsExpr.eval_extract_of, StageA.Formal.evalFlagBit"
     )
     if replay:
         if certificate and certificate.get("kind") == "lrat":
@@ -4233,8 +4563,10 @@ def _lean_region_theorem_source(
         f"StageA.Relational.flagsRelated, "
         f"wordRelated{normalized_flag_simplifiers}, {name}]\n"
         if normalized_fast_path else (
-            "  simp [evalBehavior, normalizeSymbolicBehavior, normalizeOutcomeExpr, "
+            "  simp [evalBehavior, evalBehaviorRegisters, evalBehaviorX87, evalBehaviorWrites, "
+            "evalBehaviorFlags, evalBehaviorOutcome, normalizeSymbolicBehavior, normalizeOutcomeExpr, "
             "NormalizedSymbolicBehavior.eval, NormalizedOutcomeExpr.eval, "
+            "evalNormalizedRegisters, evalNormalizedX87, evalNormalizedWrites, evalNormalizedFlags, "
             "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval, "
             f"{flag_eval_simplifiers},\n"
             f"    {memory_read_simplifiers}, StageA.Formal.MachineState.readX87Word,\n"
@@ -4253,11 +4585,7 @@ def _lean_region_theorem_source(
             + f"  all_goals first | rfl | {tactic}\n"
         )
     )
-    return (
-        normalized_theorem
-        + f"theorem {theorem_name}DirectBehavior : behaviorsEquivalent {original_image_base} {candidate_image_base} originalBehavior{index} candidateBehavior{index} {name} := by\n"
-        "  unfold behaviorsEquivalent\n"
-        "  intro originalState candidateState related\n"
+    direct_setup_base = (
         "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
         "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
         "  unfold statesRelated at related\n"
@@ -4273,9 +4601,50 @@ def _lean_region_theorem_source(
         + relation_destructure
         + substitutions
         + f"  simp [StageA.Relational.boundsRelated, StageA.Formal.Registers.get, {name}] at boundsSatisfied\n"
+    )
+    direct_setup = (
+        direct_setup_base
         + bound_setup
         + relocation_memory_setup
         + separation_setup
+    )
+    if not normalized_fast_path and not replay:
+        components = (
+            ("Registers", "behaviorRegistersEquivalent"),
+            ("X87", "behaviorX87Equivalent"),
+            ("Writes", "behaviorWritesEquivalent"),
+            ("Flags", "behaviorFlagsEquivalent"),
+            ("Outcome", "behaviorOutcomeEquivalent"),
+        )
+        x87_proof_steps = proof_steps
+        for omitted in (memory_lemma_line, separation_lemma_line, indexed_memory_rewrite):
+            if omitted:
+                x87_proof_steps = x87_proof_steps.replace(omitted, "")
+        component_theorems = "".join(
+            f"theorem {name}{label}DirectComponent : {predicate} {original_image_base} {candidate_image_base} "
+            f"originalBehavior{index} candidateBehavior{index} {name} := by\n"
+            f"  unfold {predicate}\n"
+            "  intro originalState candidateState related\n"
+            + (direct_setup_base if label == "X87" else direct_setup)
+            + (x87_proof_steps if label == "X87" else proof_steps)
+            + "\n"
+            for label, predicate in components
+        )
+        return (
+            component_theorems
+            + f"theorem {theorem_name}DirectBehavior : behaviorsEquivalent {original_image_base} {candidate_image_base} "
+            f"originalBehavior{index} candidateBehavior{index} {name} :=\n"
+            f"  behaviorsEquivalent_of_components {original_image_base} {candidate_image_base} "
+            f"originalBehavior{index} candidateBehavior{index} {name}\n"
+            f"    {name}RegistersDirectComponent {name}X87DirectComponent {name}WritesDirectComponent\n"
+            f"    {name}FlagsDirectComponent {name}OutcomeDirectComponent\n"
+        )
+    return (
+        normalized_theorem
+        + f"theorem {theorem_name}DirectBehavior : behaviorsEquivalent {original_image_base} {candidate_image_base} originalBehavior{index} candidateBehavior{index} {name} := by\n"
+        "  unfold behaviorsEquivalent\n"
+        "  intro originalState candidateState related\n"
+        + direct_setup
         + proof_steps
     )
 
