@@ -24,9 +24,43 @@ STAGE_A_RELATIONAL_PROFILE_ID = "x86-pe32-lean-relational-v3"
 RELATION_CONTRACT_FORMAT = "stage-a-relation-contract-v1"
 RELATIONAL_PROOF_IR_FORMAT = "stage-a-relational-proof-ir-v1"
 REGISTERS = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
+FLAG_BITS = {
+    0: "CF",
+    2: "PF",
+    6: "ZF",
+    7: "SF",
+    10: "DF",
+    11: "OF",
+}
 RELATIONAL_APPROVED_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
 RELATIONAL_ENVIRONMENT_ID = "adversarial-pe32-external-v1"
 RELATIONAL_OBSERVATIONS = ["external_call", "external_jump", "return", "fault"]
+
+
+def _raw_base_relocations(binary: StageABinary) -> list[dict[str, int]]:
+    directory = binary.pe.OPTIONAL_HEADER.DATA_DIRECTORY[5]
+    cursor = int(directory.VirtualAddress)
+    stop = cursor + int(directory.Size)
+    relocations: list[dict[str, int]] = []
+    while cursor < stop:
+        header = binary.pe.get_data(cursor, 8)
+        if len(header) != 8:
+            raise StageAInputError("truncated PE base-relocation block header")
+        page_rva = int.from_bytes(header[0:4], "little")
+        block_size = int.from_bytes(header[4:8], "little")
+        if block_size < 8 or block_size % 2 != 0 or cursor + block_size > stop:
+            raise StageAInputError("malformed PE base-relocation block size")
+        entries = binary.pe.get_data(cursor + 8, block_size - 8)
+        if len(entries) != block_size - 8:
+            raise StageAInputError("truncated PE base-relocation entries")
+        for offset in range(0, len(entries), 2):
+            encoded = int.from_bytes(entries[offset:offset + 2], "little")
+            relocations.append({
+                "rva": page_rva + (encoded & 0x0FFF),
+                "type": encoded >> 12,
+            })
+        cursor += block_size
+    return relocations
 
 
 def _semantic_cutpoint_spans(
@@ -143,12 +177,11 @@ def _assign_region_targets(
     }
     relocations = {}
     for side, binary in (("original", original), ("candidate", candidate)):
-        relocation_rvas: set[int] = set()
-        for block in getattr(binary.pe, "DIRECTORY_ENTRY_BASERELOC", []) or []:
-            for entry in block.entries:
-                if int(entry.type) == 3:
-                    relocation_rvas.add(int(entry.rva))
-        relocations[side] = relocation_rvas
+        relocations[side] = {
+            relocation["rva"]
+            for relocation in _raw_base_relocations(binary)
+            if relocation["type"] == 3
+        }
 
     def immutable_equal_span(original_value: int, candidate_value: int, size: int) -> bool:
         spans: list[bytes] = []
@@ -1686,6 +1719,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             })
         else:
             target["region_index"] = region_index
+    _annotate_flag_liveness(original, candidate, normalized_regions, issues)
     return {
         "format": RELATION_CONTRACT_FORMAT,
         "model": STAGE_A_RELATIONAL_MODEL_ID,
@@ -1701,6 +1735,118 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         "observations": observations,
         "memory_relation": memory_relation,
     }, issues
+
+
+def _annotate_flag_liveness(
+    original: StageABinary,
+    candidate: StageABinary,
+    regions: list[dict[str, Any]],
+    issues: list[dict[str, Any]],
+) -> None:
+    from capstone import x86_const
+
+    read_masks = {
+        bit: (
+            getattr(x86_const, f"X86_EFLAGS_TEST_{name}")
+            | getattr(x86_const, f"X86_EFLAGS_PRIOR_{name}")
+        )
+        for bit, name in FLAG_BITS.items()
+    }
+    write_masks = {
+        bit: sum(
+            getattr(x86_const, f"X86_EFLAGS_{kind}_{name}", 0)
+            for kind in ("MODIFY", "RESET", "SET", "UNDEFINED")
+        )
+        for bit, name in FLAG_BITS.items()
+    }
+
+    def local(
+        binary: StageABinary,
+        span: dict[str, int],
+        *,
+        region_id: str,
+        side: str,
+    ) -> tuple[set[int], set[int]]:
+        data = binary.pe.get_data(span["rva_start"], span["size"])
+        disassembler = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+        disassembler.detail = True
+        used_before_definition: set[int] = set()
+        defined: set[int] = set()
+        decoded_size = 0
+        for instruction in disassembler.disasm(
+            data, binary.image_base + span["rva_start"]
+        ):
+            decoded_size += int(instruction.size)
+            eflags = (
+                0 if (
+                    instruction.group(capstone.x86.X86_GRP_FPU)
+                    or instruction.mnemonic.startswith("f")
+                )
+                else int(instruction.eflags)
+            )
+            unmodeled_reads = [
+                name for name in ("AF", "IF", "TF", "NT", "RF")
+                if eflags & (
+                    getattr(x86_const, f"X86_EFLAGS_TEST_{name}", 0)
+                    | getattr(x86_const, f"X86_EFLAGS_PRIOR_{name}", 0)
+                )
+            ]
+            if unmodeled_reads:
+                issues.append({
+                    "category": "unmodeled_live_eflag",
+                    "severity": "hard",
+                    "region_id": region_id,
+                    "side": side,
+                    "instruction_rva": int(instruction.address) - binary.image_base,
+                    "flags": unmodeled_reads,
+                    "next_action": "extend the formal flag model before proving this instruction",
+                })
+            used_before_definition.update(
+                bit for bit, mask in read_masks.items()
+                if eflags & mask and bit not in defined
+            )
+            defined.update(
+                bit for bit, mask in write_masks.items() if eflags & mask
+            )
+        if decoded_size != len(data):
+            raise StageAInputError("flag-liveness analysis did not decode a region exactly")
+        return used_before_definition, defined
+
+    uses: list[set[int]] = []
+    definitions: list[set[int]] = []
+    successors: list[set[int]] = []
+    for region in regions:
+        original_uses, original_defs = local(
+            original, region["original"], region_id=region["id"], side="original"
+        )
+        candidate_uses, candidate_defs = local(
+            candidate, region["candidate"], region_id=region["id"], side="candidate"
+        )
+        uses.append(original_uses | candidate_uses)
+        definitions.append(original_defs & candidate_defs)
+        successors.append({
+            int(target["region_index"])
+            for target in region.get("code_targets", [])
+            if "region_index" in target
+        })
+
+    live_in = [set(region_uses) for region_uses in uses]
+    live_out = [set() for _ in regions]
+    changed = True
+    while changed:
+        changed = False
+        for index in range(len(regions) - 1, -1, -1):
+            output = set().union(*(live_in[target] for target in successors[index])) \
+                if successors[index] else set()
+            entry = uses[index] | (output - definitions[index])
+            if output != live_out[index] or entry != live_in[index]:
+                live_out[index] = output
+                live_in[index] = entry
+                changed = True
+
+    for index, region in enumerate(regions):
+        region["flag_inputs"] = sorted(live_in[index])
+        region["flag_outputs"] = sorted(live_out[index])
 
 
 def _infer_region_address_separations(
@@ -1849,30 +1995,44 @@ def _mapped_relocation_offsets(
     if mapped_size == 0:
         return []
 
-    def offsets(binary: StageABinary, absolute: int) -> set[int]:
+    def offsets(binary: StageABinary, absolute: int) -> list[int]:
         base_rva = absolute - binary.image_base
-        return {
-            int(entry.rva) - base_rva
-            for block in getattr(binary.pe, "DIRECTORY_ENTRY_BASERELOC", []) or []
-            for entry in block.entries
-            if int(entry.type) == 3
-            and base_rva <= int(entry.rva)
-            and int(entry.rva) + 4 <= base_rva + mapped_size
-        }
+        return [
+            relocation["rva"] - base_rva
+            for relocation in _raw_base_relocations(binary)
+            if relocation["type"] == 3
+            and base_rva <= relocation["rva"]
+            and relocation["rva"] + 4 <= base_rva + mapped_size
+        ]
 
     original_offsets = offsets(original, target["original_value"])
     candidate_offsets = offsets(candidate, target["candidate_value"])
+    duplicate_offsets = {
+        "original": sorted({offset for offset in original_offsets if original_offsets.count(offset) > 1}),
+        "candidate": sorted({offset for offset in candidate_offsets if candidate_offsets.count(offset) > 1}),
+    }
+    if duplicate_offsets["original"] or duplicate_offsets["candidate"]:
+        issues.append({
+            "category": "mapped_object_relocation_duplicate",
+            "severity": "hard",
+            "value_target_id": target["id"],
+            "duplicates": duplicate_offsets,
+            "next_action": "remove duplicate PE32 HIGHLOW entries; each relocation cell must be applied once",
+        })
+        return []
+    original_offsets = sorted(original_offsets)
+    candidate_offsets = sorted(candidate_offsets)
     if original_offsets != candidate_offsets:
         issues.append({
             "category": "mapped_object_relocation_shape_mismatch",
             "severity": "hard",
             "value_target_id": target["id"],
-            "original_offsets": sorted(original_offsets),
-            "candidate_offsets": sorted(candidate_offsets),
+            "original_offsets": original_offsets,
+            "candidate_offsets": candidate_offsets,
             "next_action": "map objects with identical internal relocation-word structure",
         })
         return []
-    ordered = sorted(original_offsets)
+    ordered = original_offsets
     if any(offset % 4 != 0 for offset in ordered):
         issues.append({
             "category": "mapped_object_relocation_unaligned",
@@ -2047,10 +2207,9 @@ def _mapped_relocation_memory_obligations(
     relocation_rvas: dict[str, set[int]] = {}
     for side, binary in (("original", original), ("candidate", candidate)):
         relocation_rvas[side] = {
-            int(entry.rva)
-            for block in getattr(binary.pe, "DIRECTORY_ENTRY_BASERELOC", []) or []
-            for entry in block.entries
-            if int(entry.type) == 3
+            relocation["rva"]
+            for relocation in _raw_base_relocations(binary)
+            if relocation["type"] == 3
         }
     obligations: list[dict[str, Any]] = []
     for region in contract["regions"]:
@@ -2161,11 +2320,10 @@ def _relational_semantic_preflight(original: Path, candidate: Path, contract: di
 
 
 def _relational_loader_facts(binary: StageABinary) -> dict[str, Any]:
-    relocations: list[dict[str, int]] = []
-    for block in getattr(binary.pe, "DIRECTORY_ENTRY_BASERELOC", []) or []:
-        for entry in block.entries:
-            if int(entry.type) != 0:
-                relocations.append({"rva": int(entry.rva), "type": int(entry.type)})
+    relocations = [
+        relocation for relocation in _raw_base_relocations(binary)
+        if relocation["type"] != 0
+    ]
     return {
         "sha256": binary.sha256,
         "bytes": binary.size,
@@ -2613,6 +2771,8 @@ def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
         for target in region.get("code_targets", [])
     )
     value_rows = _lean_region_value_targets(region)
+    flag_inputs = ", ".join(str(bit) for bit in region.get("flag_inputs", []))
+    flag_outputs = ", ".join(str(bit) for bit in region.get("flag_outputs", []))
     separation_rows = ", ".join(
         "{ originalRegister := ." + separation["original_register"]
         + ", candidateRegister := ." + separation["candidate_register"]
@@ -2628,19 +2788,29 @@ def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
         f"original := {{ start := {region['original']['rva_start']}, size := {region['original']['size']} }}, "
         f"candidate := {{ start := {region['candidate']['rva_start']}, size := {region['candidate']['size']} }}, "
         f"inputs := [{input_rows}], outputs := [{output_rows}], bounds := [{bound_rows}], "
+        f"flagInputs := [{flag_inputs}], flagOutputs := [{flag_outputs}], "
         f"addressSeparations := [{separation_rows}], "
         f"targets := [{target_rows}], values := [{value_rows}] }}"
     )
 
 
-def _lean_region_value_targets(region: dict[str, Any]) -> str:
-    return ", ".join(
+def _lean_value_target(target: dict[str, Any]) -> str:
+    return (
         "{ id := " + str(target["id"])
         + ", originalValue := " + str(target["original_value"])
         + ", candidateValue := " + str(target["candidate_value"])
         + ", originalRelocationRva := " + str(target["original_relocation_rva"])
         + ", candidateRelocationRva := " + str(target["candidate_relocation_rva"])
-        + ", mappedSize := " + str(target["mapped_size"]) + " }"
+        + ", mappedSize := " + str(target["mapped_size"])
+        + ", relocationOffsets := ["
+        + ", ".join(str(offset) for offset in target.get("relocation_offsets", []))
+        + "] }"
+    )
+
+
+def _lean_region_value_targets(region: dict[str, Any]) -> str:
+    return ", ".join(
+        _lean_value_target(target)
         for target in region.get("values", [])
     )
 
@@ -2656,11 +2826,11 @@ def _lean_region_memory_lemmas(
         return ""
     rows: list[str] = []
     lemma_index = 0
-    value_targets = _lean_region_value_targets(region)
     for target, offset in _lean_region_static_memory_lemma_specs(region, behaviors):
         rows.append(
             f"theorem {name}MappedAddress{lemma_index} : "
-            f"normalizeDataAddress [{value_targets}] (BitVec.ofNat 32 {target['candidate_value'] + offset}) = "
+            f"normalizeDataAddress {name}.values "
+            f"(BitVec.ofNat 32 {target['candidate_value'] + offset}) = "
             f"BitVec.ofNat 32 {target['original_value'] + offset} := by decide"
         )
         lemma_index += 1
@@ -2683,20 +2853,20 @@ def _lean_region_memory_lemmas(
         )
         candidate_address = target["candidate_value"] + offset
         original_address = target["original_value"] + offset
-        target_literal = (
-            "{ id := " + str(target["id"])
-            + ", originalValue := " + str(target["original_value"])
-            + ", candidateValue := " + str(target["candidate_value"])
-            + ", originalRelocationRva := " + str(target["original_relocation_rva"])
-            + ", candidateRelocationRva := " + str(target["candidate_relocation_rva"])
-            + ", mappedSize := " + str(target["mapped_size"]) + " }"
+        zero_prefix_rewrites = "".join(
+            "  simp only [normalizeDataAddress_cons_zero (target := "
+            + _lean_value_target(zero_target)
+            + ") (zero := rfl)]\n"
+            for zero_target in region.get("values", [])[:-1]
         )
         rows.append(
             f"theorem {name}MappedIndexedAddress{indexed_index} (index : Word) "
             f"(bounded : index < BitVec.ofNat 32 {upper}) :\n"
-            f"    normalizeDataAddress [{target_literal}] "
+            f"    normalizeDataAddress {name}.values "
             f"({scaled} + BitVec.ofNat 32 {candidate_address}) =\n"
             f"      {scaled} + BitVec.ofNat 32 {original_address} := by\n"
+            + f"  unfold {name}\n"
+            + zero_prefix_rewrites
             + f"  rw [normalizeDataAddress_singleton_of_contains]\n"
             + shift_rewrite
             + f"change BitVec.ofNat 32 {target['original_value']} + "
@@ -2706,6 +2876,26 @@ def _lean_region_memory_lemmas(
             f"    bv_normalize\n"
             f"  · simp [valueTargetContainsCandidate]\n"
             f"    bv_omega"
+        )
+    for relocation_index, (target, offset, _) in enumerate(
+        _lean_region_static_relocation_word_specs(region, behaviors)
+    ):
+        rows.append(
+            f"theorem {name}RelocationWordStartStatic{relocation_index} : "
+            f"relocationWordStartCandidate {name}.values "
+            f"(BitVec.ofNat 32 {target['candidate_value'] + offset}) = true := by decide"
+        )
+    for relocation_index, (target, upper, shift, offset, _) in enumerate(
+        _lean_region_indexed_relocation_word_specs(region)
+    ):
+        scaled = "index" if shift == 0 else f"(index <<< {shift})"
+        rows.append(
+            f"theorem {name}RelocationWordStartIndexed{relocation_index} "
+            f"(index : Word) (bounded : index < BitVec.ofNat 32 {upper}) :\n"
+            f"    relocationWordStartCandidate {name}.values "
+            f"({scaled} + BitVec.ofNat 32 {target['candidate_value'] + offset}) = true := by\n"
+            f"  simp [relocationWordStartCandidate, valueRelocationWordStartCandidate, {name}]\n"
+            f"  bv_omega"
         )
     return "\n\n".join(rows)
 
@@ -2755,6 +2945,43 @@ def _lean_region_indexed_memory_lemma_specs(
     return specs
 
 
+def _lean_region_static_relocation_word_specs(
+    region: dict[str, Any],
+    behaviors: dict[str, str],
+) -> list[tuple[dict[str, Any], int, int]]:
+    return [
+        (target, offset, address_index)
+        for address_index, (target, offset) in enumerate(
+            _lean_region_static_memory_lemma_specs(region, behaviors)
+        )
+        if offset in target.get("relocation_offsets", [])
+    ]
+
+
+def _lean_region_indexed_relocation_word_specs(
+    region: dict[str, Any],
+) -> list[tuple[dict[str, Any], int, int, int, int]]:
+    address_specs = _lean_region_indexed_memory_lemma_specs(region)
+    result: list[tuple[dict[str, Any], int, int, int, int]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    for target, upper, shift, _ in address_specs:
+        element_size = 1 << shift
+        for word_offset in range(0, element_size - 3, 4):
+            key = (target["id"], upper, shift, word_offset)
+            required = {
+                index * element_size + word_offset for index in range(upper)
+            }
+            if key in seen or not required.issubset(set(target.get("relocation_offsets", []))):
+                continue
+            seen.add(key)
+            address_index = next(
+                index for index, spec in enumerate(address_specs)
+                if spec == (target, upper, shift, word_offset)
+            )
+            result.append((target, upper, shift, word_offset, address_index))
+    return result
+
+
 def _lean_region_memory_lemma_names(
     index: int,
     region: dict[str, Any],
@@ -2768,7 +2995,25 @@ def _lean_region_memory_lemma_names(
         f"region{index}MappedIndexedAddressFact{offset}"
         for offset in range(len(_lean_region_indexed_memory_lemma_specs(region)))
     ]
-    return static + indexed
+    static_relocations = [
+        name
+        for offset in range(len(_lean_region_static_relocation_word_specs(region, behaviors)))
+        for name in (
+            f"region{index}RelocationWordRelatedStatic{offset}",
+            f"region{index}RelocationWordZeroStatic{offset}",
+            f"region{index}RelocationOriginalRead32Static{offset}",
+            f"region{index}RelocationCandidateRead32Static{offset}",
+        )
+    ]
+    indexed_relocations = [
+        name
+        for offset in range(len(_lean_region_indexed_relocation_word_specs(region)))
+        for name in (
+            f"region{index}RelocationWordRelatedIndexed{offset}",
+            f"region{index}RelocationWordZeroIndexed{offset}",
+        )
+    ]
+    return static + indexed + static_relocations + indexed_relocations
 
 
 def _lean_region_indexed_memory_fact_names(index: int, region: dict[str, Any]) -> list[str]:
@@ -2883,10 +3128,114 @@ def _lean_region_separation_setup(index: int, region: dict[str, Any]) -> tuple[s
     return setup, ", ".join(hypotheses)
 
 
+def _lean_region_flag_setup(index: int, region: dict[str, Any]) -> tuple[str, str]:
+    bits = region.get("flag_inputs", [])
+    setup = (
+        f"  simp [StageA.Relational.flagsRelated, region{index}] at flagsRelated\n"
+    )
+    if not bits:
+        return setup, ""
+    if len(bits) == 1:
+        hypothesis = f"flagInputRelated{bits[0]}"
+        return setup + f"  have {hypothesis} := flagsRelated\n", hypothesis
+    hypotheses = [f"flagInputRelated{bit}" for bit in bits]
+    setup += "  rcases flagsRelated with \u27e8" + ", ".join(hypotheses) + "\u27e9\n"
+    return setup, ", ".join(hypotheses)
+
+
+def _lean_region_memory_setup(
+    index: int,
+    region: dict[str, Any],
+    original_image_base: str,
+    candidate_image_base: str,
+) -> str:
+    name = f"region{index}"
+    has_relocations = any(
+        target.get("relocation_offsets") for target in region.get("values", [])
+    )
+    if has_relocations:
+        return (
+            "  have relocatedMemory := memoryRelated_with_relocations "
+            f"{original_image_base} {candidate_image_base} {name}.targets {name}.values "
+            "originalMemory candidateMemory (by decide) memoryRelated\n"
+            "  rcases relocatedMemory with "
+            "\u27e8ordinaryMemoryRelated, relocationWordsRelated\u27e9\n"
+        )
+    return (
+        "  have exactMemory := memoryRelated_without_relocations "
+        f"{original_image_base} {candidate_image_base} {name}.targets {name}.values "
+        "originalMemory candidateMemory (by decide) memoryRelated\n"
+        f"  change candidateMemory = fun address => originalMemory "
+        f"(normalizeDataAddress {name}.values address) at exactMemory\n"
+        "  subst candidateMemory\n"
+    )
+
+
+def _lean_region_relocation_memory_setup(
+    index: int,
+    region: dict[str, Any],
+    behaviors: dict[str, str],
+) -> str:
+    name = f"region{index}"
+    rows: list[str] = []
+    for relocation_index, (target, offset, address_index) in enumerate(
+        _lean_region_static_relocation_word_specs(region, behaviors)
+    ):
+        fact = f"{name}RelocationWordRelatedStatic{relocation_index}"
+        original_read = f"{name}RelocationOriginalRead32Static{relocation_index}"
+        candidate_read = f"{name}RelocationCandidateRead32Static{relocation_index}"
+        zero_fact = f"{name}RelocationWordZeroStatic{relocation_index}"
+        rows.extend((
+            f"  have {original_read} := assembledMemoryRead32OfNat_eq "
+            f"originalMemory {target['original_value'] + offset}",
+            f"  have {candidate_read} := assembledMemoryRead32OfNat_eq "
+            f"candidateMemory {target['candidate_value'] + offset}",
+            f"  have {fact} := relocationWordsRelated "
+            f"(BitVec.ofNat 32 {target['candidate_value'] + offset}) "
+            f"{name}RelocationWordStartStatic{relocation_index}",
+            f"  rw [{name}MappedAddress{address_index}] at {fact}",
+            f"  simp only [{name}] at {fact}",
+            f"  have {zero_fact} := wordRelated_zero_equal {fact}",
+        ))
+    bounds = region.get("bounds", [])
+    for relocation_index, (target, upper, shift, offset, address_index) in enumerate(
+        _lean_region_indexed_relocation_word_specs(region)
+    ):
+        bound_index = next(
+            bound_index for bound_index, bound in enumerate(bounds)
+            if bound["unsigned_lt"] == upper
+        )
+        bound = bounds[bound_index]
+        hypothesis = "boundsSatisfied" if len(bounds) == 1 else f"boundSatisfied{bound_index}"
+        register = f"o{bound['original']}"
+        scaled = register if shift == 0 else f"({register} <<< {shift})"
+        fact = f"{name}RelocationWordRelatedIndexed{relocation_index}"
+        zero_fact = f"{name}RelocationWordZeroIndexed{relocation_index}"
+        rows.extend((
+            f"  have {fact} := relocationWordsRelated "
+            f"({scaled} + BitVec.ofNat 32 {target['candidate_value'] + offset}) "
+            f"({name}RelocationWordStartIndexed{relocation_index} {register} {hypothesis})",
+            f"  rw [{name}MappedIndexedAddressFact{address_index}] at {fact}",
+            f"  simp only [{name}] at {fact}",
+        ))
+        if shift > 0:
+            rows.append(
+                f"  rw [BitVec.shiftLeft_eq_concat_of_lt (by decide)] at {fact}"
+            )
+        rows.append(f"  have {zero_fact} := wordRelated_zero_equal {fact}")
+    return "\n".join(rows) + ("\n" if rows else "")
+
+
 def _normalized_behavior_fast_path(
     region: dict[str, Any],
     behaviors: dict[str, str],
 ) -> bool:
+    all_flag_bits = list(FLAG_BITS)
+    if (
+        region.get("flag_inputs", all_flag_bits) != all_flag_bits
+        or region.get("flag_outputs", all_flag_bits) != all_flag_bits
+    ):
+        return False
     registers = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
     for field in ("inputs", "outputs"):
         pairs = region.get(field, [])
@@ -2991,9 +3340,15 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
         memory_lemma_line = f"    {memory_lemmas},\n" if memory_lemmas else ""
         memory_normalizer_line = (
             "    normalizeDataAddress, valueTargetContainsCandidate,\n"
-            if region.get("bounds") and not _lean_region_indexed_memory_lemma_specs(region) else ""
+            if region.get("values") and not _lean_region_indexed_memory_lemma_specs(region) else ""
         )
         bound_setup = _lean_region_bound_setup(index, region, behaviors[index])
+        flag_setup, flag_hypotheses = _lean_region_flag_setup(index, region)
+        flag_lemma_line = f"    {flag_hypotheses},\n" if flag_hypotheses else ""
+        normalized_flag_simplifiers = f", {flag_hypotheses}" if flag_hypotheses else ""
+        relocation_memory_setup = _lean_region_relocation_memory_setup(
+            index, region, behaviors[index]
+        )
         separation_setup, separation_hypotheses = _lean_region_separation_setup(index, region)
         separation_lemma_line = (
             f"    {separation_hypotheses},\n" if separation_hypotheses else ""
@@ -3005,12 +3360,33 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
         ]
         indexed_memory_rewrite = (
             (
-                f"  all_goals simp only [{', '.join(index_mask_facts)}]\n"
+                f"  all_goals try simp only [{', '.join(index_mask_facts)}]\n"
                 if index_mask_facts else ""
             )
-            + f"  all_goals simp only [{', '.join(indexed_memory_facts)}]\n"
-            + "  all_goals simp\n"
+            + f"  all_goals try simp only [{', '.join(indexed_memory_facts)}]\n"
+            + "  all_goals try simp\n"
             if indexed_memory_facts else ""
+        )
+        has_relocation_word_facts = bool(
+            _lean_region_static_relocation_word_specs(region, behaviors[index])
+            or _lean_region_indexed_relocation_word_specs(region)
+        )
+        word_relation_simplifiers = (
+            "wordRelated_self"
+            if has_relocation_word_facts else
+            "wordRelated, codePointerRelated, codeAddressMatches, mappedValueRelated"
+        )
+        image_simplifiers = "" if has_relocation_word_facts else "originalPe, candidatePe, "
+        memory_read_simplifiers = (
+            "machineStateRead32_eq_memoryRead32, assembledMemoryRead32_eq, "
+            "assembledMemoryRead32OfNat_eq"
+            if has_relocation_word_facts else
+            "StageA.Formal.MachineState.read32, Memory.read32"
+        )
+        flag_eval_simplifiers = (
+            "StageA.Formal.FlagsExpr.eval_extract_df"
+            if region.get("flag_outputs") == [10] else
+            "StageA.Formal.FlagsExpr.eval, StageA.Formal.updateFlag"
         )
         theorem_names.append(theorem_name)
         region_defs.append(_lean_region_definition(index, region))
@@ -3051,20 +3427,26 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
             f"  | none => simpa [normalized] using {name}NormalizedBehaviorExists\n"
             "  | some behavior =>\n"
             f"    simp [normalized, NormalizedSymbolicBehavior.eval, NormalizedOutcomeExpr.eval, "
-            f"registersRelatedValues, writesRelated_self, outcomesRelated_self, wordRelated, {name}]\n"
+            f"registersRelatedValues, writesRelated_self, outcomesRelated_self, "
+            f"StageA.Relational.flagsRelated, "
+            f"wordRelated{normalized_flag_simplifiers}, {name}]\n"
             if normalized_fast_path else (
                 "  simp [evalBehavior, normalizeSymbolicBehavior, normalizeOutcomeExpr, "
                 "NormalizedSymbolicBehavior.eval, NormalizedOutcomeExpr.eval, "
                 "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval, "
-                "StageA.Formal.FlagsExpr.eval, StageA.Formal.updateFlag,\n"
-                "    StageA.Formal.MachineState.read32, StageA.Formal.MachineState.readX87Word,\n"
+                f"{flag_eval_simplifiers},\n"
+                f"    {memory_read_simplifiers}, StageA.Formal.MachineState.readX87Word,\n"
                 "    StageA.Formal.read8AfterWriteValue,\n"
                 "    StageA.Formal.X87LoadFormat.byteWidth, registersRelated, registersRelatedValues,\n"
                 "    StageA.Formal.Registers.get, StageA.Formal.Registers.set, normalizeCodeTarget, normalizeImport,\n"
-                "    writesRelated, wordsRelated, outcomesRelated, wordRelated, codePointerRelated, codeAddressMatches, mappedValueRelated, originalPe, candidatePe,\n"
+                f"    writesRelated, wordsRelated, outcomesRelated, "
+                f"StageA.Relational.flagsRelated, "
+                f"{word_relation_simplifiers}, "
+                f"{image_simplifiers}\n"
                 + memory_normalizer_line
                 + memory_lemma_line
                 + separation_lemma_line
+                + flag_lemma_line
                 + f"    originalBehavior{index}, candidateBehavior{index}, {name}]\n"
                 + indexed_memory_rewrite
                 + f"  all_goals first | rfl | {tactic}\n"
@@ -3081,21 +3463,22 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
             "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
             "  unfold statesRelated at related\n"
             "  rcases related with ⟨related, boundsSatisfied, separationsSatisfied, memoryRelated, undefinedRelated, x87Related, flagsRelated, fsBaseRelated⟩\n"
-            "  change candidateMemory = fun address => originalMemory (normalizeDataAddress " + name + ".values address) at memoryRelated\n"
-            "  subst candidateMemory\n"
-            "  change originalUndefined = candidateUndefined at undefinedRelated\n"
+            + _lean_region_memory_setup(
+                index, region, "originalPe.imageBase", "candidatePe.imageBase",
+            )
+            + "  change originalUndefined = candidateUndefined at undefinedRelated\n"
             "  subst candidateUndefined\n"
             "  change originalX87 = candidateX87 at x87Related\n"
             "  subst candidateX87\n"
-            "  change originalFlags = candidateFlags at flagsRelated\n"
-            "  subst candidateFlags\n"
-            "  change originalFsBase = candidateFsBase at fsBaseRelated\n"
+            + flag_setup
+            + "  change originalFsBase = candidateFsBase at fsBaseRelated\n"
             "  subst candidateFsBase\n"
             "  simp [registersRelated, StageA.Formal.Registers.get, " + name + "] at related\n"
             + relation_destructure
             + substitutions
             + "  simp [StageA.Relational.boundsRelated, StageA.Formal.Registers.get, " + name + "] at boundsSatisfied\n"
             + bound_setup
+            + relocation_memory_setup
             + separation_setup
             + proof_steps
             + f"\ntheorem {theorem_name}Direct : regionEquivalentWithImports originalPe candidatePe originalImports candidateImports {name} :=\n"
@@ -3511,6 +3894,9 @@ def _write_sharded_relational_proof(
             f"    valueRegionsClosed originalPe candidatePe originalRelocations candidateRelocations {chunk_name} = true := by decide\n\n"
             f"theorem relationOutputsChunk{chunk_index}Checked :\n"
             f"    {chunk_name}.all (fun source => requiredInputsCertificate.all source.outputs.contains) = true := by decide\n\n"
+            f"theorem flagRelationChunk{chunk_index}Checked :\n"
+            f"    {chunk_name}.all (fun source => source.targets.all "
+            f"(targetFlagRelationClosed allRegionIndex source)) = true := by decide\n\n"
             f"theorem requiredInputsChunk{chunk_index}Checked :\n"
             f"    requiredInputPairsFrom requiredInputsState{chunk_index} {chunk_name} = "
             f"requiredInputsState{chunk_index + 1} := by decide\n\n"
@@ -3586,6 +3972,11 @@ def _write_sharded_relational_proof(
         region_chunk_names,
         [f"relationOutputsChunk{index}Checked" for index in range(len(region_chunk_names))],
     )
+    flag_relation_proof = _lean_all_append_proof(
+        "fun source => source.targets.all (targetFlagRelationClosed allRegionIndex source)",
+        region_chunk_names,
+        [f"flagRelationChunk{index}Checked" for index in range(len(region_chunk_names))],
+    )
     padding_proofs = {
         side: _lean_all_append_proof(
             f"paddingSpanValid {side}Pe",
@@ -3635,6 +4026,9 @@ def _write_sharded_relational_proof(
         "  rfl\n\n"
         "theorem relationCompositionChecked : relationCompositionClosed allRegions = true :=\n"
         "  relationCompositionClosed_of_certificate allRegions requiredInputsCertificate requiredInputsChecked relationOutputsChecked\n\n"
+        "theorem flagRelationCompositionChecked : flagRelationCompositionClosed allRegionIndex allRegions = true := by\n"
+        "  unfold flagRelationCompositionClosed allRegions\n"
+        f"  exact {flag_relation_proof}\n\n"
         "theorem originalPaddingChecked : paddingBytesClosed originalPe originalPadding = true := by\n"
         "  unfold paddingBytesClosed originalPadding\n"
         f"  exact {padding_proofs['original']}\n\n"
@@ -3659,7 +4053,7 @@ def _write_sharded_relational_proof(
         "    imagesChecked indexChecked regionStructureChecked originalCoverageChecked candidateCoverageChecked\n"
         "    originalPaddingChecked candidatePaddingChecked entryChecked targetsChecked\n"
         "    originalAliasCoverageChecked candidateAliasCoverageChecked targetAliasesChecked\n"
-        "    valuesChecked relationCompositionChecked\n\n"
+        "    valuesChecked relationCompositionChecked flagRelationCompositionChecked\n\n"
         "theorem importsChecked : importTablesCertified proofBundle := by\n"
         "  unfold importTablesCertified parsedImages proofBundle\n"
         "  rw [originalParsed, candidateParsed]\n"
@@ -3757,9 +4151,15 @@ def _lean_region_theorem_source(
     memory_lemma_line = f"    {memory_lemmas},\n" if memory_lemmas else ""
     memory_normalizer_line = (
         "    normalizeDataAddress, valueTargetContainsCandidate,\n"
-        if region.get("bounds") and not _lean_region_indexed_memory_lemma_specs(region) else ""
+        if region.get("values") and not _lean_region_indexed_memory_lemma_specs(region) else ""
     )
     bound_setup = _lean_region_bound_setup(index, region, behaviors)
+    flag_setup, flag_hypotheses = _lean_region_flag_setup(index, region)
+    flag_lemma_line = f"    {flag_hypotheses},\n" if flag_hypotheses else ""
+    normalized_flag_simplifiers = f", {flag_hypotheses}" if flag_hypotheses else ""
+    relocation_memory_setup = _lean_region_relocation_memory_setup(
+        index, region, behaviors
+    )
     separation_setup, separation_hypotheses = _lean_region_separation_setup(index, region)
     separation_lemma_line = (
         f"    {separation_hypotheses},\n" if separation_hypotheses else ""
@@ -3771,12 +4171,32 @@ def _lean_region_theorem_source(
     ]
     indexed_memory_rewrite = (
         (
-            f"  all_goals simp only [{', '.join(index_mask_facts)}]\n"
+            f"  all_goals try simp only [{', '.join(index_mask_facts)}]\n"
             if index_mask_facts else ""
         )
-        + f"  all_goals simp only [{', '.join(indexed_memory_facts)}]\n"
-        + "  all_goals simp\n"
+        + f"  all_goals try simp only [{', '.join(indexed_memory_facts)}]\n"
+        + "  all_goals try simp\n"
         if indexed_memory_facts else ""
+    )
+    has_relocation_word_facts = bool(
+        _lean_region_static_relocation_word_specs(region, behaviors)
+        or _lean_region_indexed_relocation_word_specs(region)
+    )
+    word_relation_simplifiers = (
+        "wordRelated_self"
+        if has_relocation_word_facts else
+        "wordRelated, codePointerRelated, codeAddressMatches, mappedValueRelated"
+    )
+    memory_read_simplifiers = (
+        "machineStateRead32_eq_memoryRead32, assembledMemoryRead32_eq, "
+        "assembledMemoryRead32OfNat_eq"
+        if has_relocation_word_facts else
+        "StageA.Formal.MachineState.read32, Memory.read32"
+    )
+    flag_eval_simplifiers = (
+        "StageA.Formal.FlagsExpr.eval_extract_df"
+        if region.get("flag_outputs") == [10] else
+        "StageA.Formal.FlagsExpr.eval, StageA.Formal.updateFlag"
     )
     if replay:
         if certificate and certificate.get("kind") == "lrat":
@@ -3809,20 +4229,25 @@ def _lean_region_theorem_source(
         f"  | none => simpa [normalized] using {name}NormalizedBehaviorExists\n"
         "  | some behavior =>\n"
         "    simp [normalized, NormalizedSymbolicBehavior.eval, NormalizedOutcomeExpr.eval, "
-        f"registersRelatedValues, writesRelated_self, outcomesRelated_self, wordRelated, {name}]\n"
+        f"registersRelatedValues, writesRelated_self, outcomesRelated_self, "
+        f"StageA.Relational.flagsRelated, "
+        f"wordRelated{normalized_flag_simplifiers}, {name}]\n"
         if normalized_fast_path else (
             "  simp [evalBehavior, normalizeSymbolicBehavior, normalizeOutcomeExpr, "
             "NormalizedSymbolicBehavior.eval, NormalizedOutcomeExpr.eval, "
             "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval, "
-            "StageA.Formal.FlagsExpr.eval, StageA.Formal.updateFlag,\n"
-            "    StageA.Formal.MachineState.read32, StageA.Formal.MachineState.readX87Word,\n"
+            f"{flag_eval_simplifiers},\n"
+            f"    {memory_read_simplifiers}, StageA.Formal.MachineState.readX87Word,\n"
             "    StageA.Formal.read8AfterWriteValue,\n"
             "    StageA.Formal.X87LoadFormat.byteWidth, registersRelated, registersRelatedValues,\n"
             "    StageA.Formal.Registers.get, StageA.Formal.Registers.set, normalizeCodeTarget, normalizeImport,\n"
-            "    writesRelated, wordsRelated, outcomesRelated, wordRelated, codePointerRelated, codeAddressMatches, mappedValueRelated,\n"
+            f"    writesRelated, wordsRelated, outcomesRelated, "
+            f"StageA.Relational.flagsRelated, "
+            f"{word_relation_simplifiers},\n"
             + memory_normalizer_line
             + memory_lemma_line
             + separation_lemma_line
+            + flag_lemma_line
             + f"    originalBehavior{index}, candidateBehavior{index}, {name}]\n"
             + indexed_memory_rewrite
             + f"  all_goals first | rfl | {tactic}\n"
@@ -3837,16 +4262,19 @@ def _lean_region_theorem_source(
         "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
         "  unfold statesRelated at related\n"
         "  rcases related with ⟨related, boundsSatisfied, separationsSatisfied, memoryRelated, undefinedRelated, x87Related, flagsRelated, fsBaseRelated⟩\n"
-        f"  change candidateMemory = fun address => originalMemory (normalizeDataAddress {name}.values address) at memoryRelated\n  subst candidateMemory\n"
-        "  change originalUndefined = candidateUndefined at undefinedRelated\n  subst candidateUndefined\n"
+        + _lean_region_memory_setup(
+            index, region, str(original_image_base), str(candidate_image_base),
+        )
+        + "  change originalUndefined = candidateUndefined at undefinedRelated\n  subst candidateUndefined\n"
         "  change originalX87 = candidateX87 at x87Related\n  subst candidateX87\n"
-        "  change originalFlags = candidateFlags at flagsRelated\n  subst candidateFlags\n"
-        "  change originalFsBase = candidateFsBase at fsBaseRelated\n  subst candidateFsBase\n"
+        + flag_setup
+        + "  change originalFsBase = candidateFsBase at fsBaseRelated\n  subst candidateFsBase\n"
         f"  simp [registersRelated, StageA.Formal.Registers.get, {name}] at related\n"
         + relation_destructure
         + substitutions
         + f"  simp [StageA.Relational.boundsRelated, StageA.Formal.Registers.get, {name}] at boundsSatisfied\n"
         + bound_setup
+        + relocation_memory_setup
         + separation_setup
         + proof_steps
     )
@@ -4593,10 +5021,9 @@ def _lean_import_certificate(binary: StageABinary) -> str:
 
 def _lean_relocations(binary: StageABinary) -> str:
     relocations = [
-        f"{{ rva := {int(entry.rva)}, kind := 3 }}"
-        for block in getattr(binary.pe, "DIRECTORY_ENTRY_BASERELOC", [])
-        for entry in block.entries
-        if int(entry.type) == 3
+        f"{{ rva := {relocation['rva']}, kind := 3 }}"
+        for relocation in _raw_base_relocations(binary)
+        if relocation["type"] == 3
     ]
     return "[" + ", ".join(relocations) + "]"
 

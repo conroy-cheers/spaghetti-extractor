@@ -714,7 +714,10 @@ mutual
 def Expr.eval (state : MachineState) : Expr -> Word
   | .inputReg reg => state.registers.get reg
   | .inputFlagValue bit =>
-      if Nat.testBit state.eflags.toNat bit then BitVec.ofNat 32 1 else BitVec.ofNat 32 0
+      if state.eflags.extractLsb' bit 1 == BitVec.ofNat 1 1 then
+        BitVec.ofNat 32 1
+      else
+        BitVec.ofNat 32 0
   | .inputFsBase => state.fsBase
   | .inputX87Control => BitVec.zeroExtend 32 state.x87.control
   | .inputX87Status => BitVec.zeroExtend 32 state.x87.status
@@ -835,7 +838,8 @@ def BoolExpr.eval (state : MachineState) : BoolExpr -> Bool
   | .unsignedLess left right => decide (left.eval state < right.eval state)
   | .msb value => Nat.testBit (value.eval state).toNat 31
   | .bit value index => Nat.testBit (value.eval state).toNat index
-  | .inputFlag flagIndex => Nat.testBit state.eflags.toNat flagIndex
+  | .inputFlag flagIndex =>
+      state.eflags.extractLsb' flagIndex 1 == BitVec.ofNat 1 1
   | .divisionValid high low divisor =>
       (Expr.divisionValidValue high low divisor).eval state == BitVec.ofNat 32 1
 
@@ -849,8 +853,11 @@ deriving Repr, DecidableEq
 
 def updateFlag (word : Word) (index : Nat) : Option Bool -> Word
   | none => word
-  | some true => word ||| BitVec.ofNat 32 (2 ^ index)
-  | some false => word &&& ~~~(BitVec.ofNat 32 (2 ^ index))
+  | some value =>
+      if value then
+        word ||| BitVec.ofNat 32 (2 ^ index)
+      else
+        word &&& ~~~(BitVec.ofNat 32 (2 ^ index))
 
 def FlagsExpr.eval (state : MachineState) (flags : FlagsExpr) : Word :=
   let carry := updateFlag state.eflags 0 (flags.carry.map (BoolExpr.eval state))
@@ -858,6 +865,100 @@ def FlagsExpr.eval (state : MachineState) (flags : FlagsExpr) : Word :=
   let zero := updateFlag parity 6 (flags.zero.map (BoolExpr.eval state))
   let sign := updateFlag zero 7 (flags.sign.map (BoolExpr.eval state))
   updateFlag sign 11 (flags.overflow.map (BoolExpr.eval state))
+
+@[simp] theorem updateFlag_extract_df_0 (word : Word) (value : Option Bool) :
+    (updateFlag word 0 value).extractLsb' 10 1 = word.extractLsb' 10 1 := by
+  cases value with
+  | none => rfl
+  | some value =>
+      cases value with
+      | false =>
+          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ 0))).extractLsb' 10 1 = _
+          rw [BitVec.extractLsb'_and]
+          have mask : (~~~(BitVec.ofNat 32 (2 ^ 0))).extractLsb' 10 1 =
+              BitVec.allOnes 1 := by decide
+          rw [mask, BitVec.and_allOnes]
+      | true =>
+          change (word ||| BitVec.ofNat 32 (2 ^ 0)).extractLsb' 10 1 = _
+          rw [BitVec.extractLsb'_or]
+          have mask : (BitVec.ofNat 32 (2 ^ 0)).extractLsb' 10 1 = 0#1 := by decide
+          rw [mask, BitVec.or_zero]
+
+@[simp] theorem updateFlag_extract_df_2 (word : Word) (value : Option Bool) :
+    (updateFlag word 2 value).extractLsb' 10 1 = word.extractLsb' 10 1 := by
+  cases value with
+  | none => rfl
+  | some value =>
+      cases value with
+      | false =>
+          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ 2))).extractLsb' 10 1 = _
+          rw [BitVec.extractLsb'_and]
+          have mask : (~~~(BitVec.ofNat 32 (2 ^ 2))).extractLsb' 10 1 =
+              BitVec.allOnes 1 := by decide
+          rw [mask, BitVec.and_allOnes]
+      | true =>
+          change (word ||| BitVec.ofNat 32 (2 ^ 2)).extractLsb' 10 1 = _
+          rw [BitVec.extractLsb'_or]
+          have mask : (BitVec.ofNat 32 (2 ^ 2)).extractLsb' 10 1 = 0#1 := by decide
+          rw [mask, BitVec.or_zero]
+
+@[simp] theorem updateFlag_extract_df_6 (word : Word) (value : Option Bool) :
+    (updateFlag word 6 value).extractLsb' 10 1 = word.extractLsb' 10 1 := by
+  cases value with
+  | none => rfl
+  | some value =>
+      cases value with
+      | false =>
+          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ 6))).extractLsb' 10 1 = _
+          rw [BitVec.extractLsb'_and]
+          have mask : (~~~(BitVec.ofNat 32 (2 ^ 6))).extractLsb' 10 1 =
+              BitVec.allOnes 1 := by decide
+          rw [mask, BitVec.and_allOnes]
+      | true =>
+          change (word ||| BitVec.ofNat 32 (2 ^ 6)).extractLsb' 10 1 = _
+          rw [BitVec.extractLsb'_or]
+          have mask : (BitVec.ofNat 32 (2 ^ 6)).extractLsb' 10 1 = 0#1 := by decide
+          rw [mask, BitVec.or_zero]
+
+@[simp] theorem updateFlag_extract_df_7 (word : Word) (value : Option Bool) :
+    (updateFlag word 7 value).extractLsb' 10 1 = word.extractLsb' 10 1 := by
+  cases value with
+  | none => rfl
+  | some value =>
+      cases value with
+      | false =>
+          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ 7))).extractLsb' 10 1 = _
+          rw [BitVec.extractLsb'_and]
+          have mask : (~~~(BitVec.ofNat 32 (2 ^ 7))).extractLsb' 10 1 =
+              BitVec.allOnes 1 := by decide
+          rw [mask, BitVec.and_allOnes]
+      | true =>
+          change (word ||| BitVec.ofNat 32 (2 ^ 7)).extractLsb' 10 1 = _
+          rw [BitVec.extractLsb'_or]
+          have mask : (BitVec.ofNat 32 (2 ^ 7)).extractLsb' 10 1 = 0#1 := by decide
+          rw [mask, BitVec.or_zero]
+
+@[simp] theorem updateFlag_extract_df_11 (word : Word) (value : Option Bool) :
+    (updateFlag word 11 value).extractLsb' 10 1 = word.extractLsb' 10 1 := by
+  cases value with
+  | none => rfl
+  | some value =>
+      cases value with
+      | false =>
+          change (word &&& ~~~(BitVec.ofNat 32 (2 ^ 11))).extractLsb' 10 1 = _
+          rw [BitVec.extractLsb'_and]
+          have mask : (~~~(BitVec.ofNat 32 (2 ^ 11))).extractLsb' 10 1 =
+              BitVec.allOnes 1 := by decide
+          rw [mask, BitVec.and_allOnes]
+      | true =>
+          change (word ||| BitVec.ofNat 32 (2 ^ 11)).extractLsb' 10 1 = _
+          rw [BitVec.extractLsb'_or]
+          have mask : (BitVec.ofNat 32 (2 ^ 11)).extractLsb' 10 1 = 0#1 := by decide
+          rw [mask, BitVec.or_zero]
+
+@[simp] theorem FlagsExpr.eval_extract_df (state : MachineState) (flags : FlagsExpr) :
+    (flags.eval state).extractLsb' 10 1 = state.eflags.extractLsb' 10 1 := by
+  simp [FlagsExpr.eval]
 
 structure SymbolicX87State where
   stack : List X87Expr
@@ -1087,11 +1188,14 @@ def symbolicRead8 (behavior : SymbolicBehavior) (address : Expr) : Expr :=
         else .read8AfterWrite address write.1 write.2 current) (.read8 address)
 
 def symbolicRead32 (behavior : SymbolicBehavior) (address : Expr) : Expr :=
-  let b0 := symbolicRead8 behavior address
-  let b1 := .shiftLeft (symbolicRead8 behavior (address.offset 1)) 8
-  let b2 := .shiftLeft (symbolicRead8 behavior (address.offset 2)) 16
-  let b3 := .shiftLeft (symbolicRead8 behavior (address.offset 3)) 24
-  .bitOr (.bitOr b0 b1) (.bitOr b2 b3)
+  if behavior.writes.isEmpty then
+    .read32 address
+  else
+    let b0 := symbolicRead8 behavior address
+    let b1 := .shiftLeft (symbolicRead8 behavior (address.offset 1)) 8
+    let b2 := .shiftLeft (symbolicRead8 behavior (address.offset 2)) 16
+    let b3 := .shiftLeft (symbolicRead8 behavior (address.offset 3)) 24
+    .bitOr (.bitOr b0 b1) (.bitOr b2 b3)
 
 def symbolicRead16 (behavior : SymbolicBehavior) (address : Expr) : Expr :=
   let b0 := symbolicRead8 behavior address

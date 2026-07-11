@@ -12,6 +12,7 @@ from unittest.mock import patch
 from wincr.stage_a_relational import (
     RELATIONAL_ENVIRONMENT_ID,
     RELATIONAL_OBSERVATIONS,
+    _mapped_relocation_offsets,
     _normalize_contract,
     _normalized_behavior_fast_path,
     _partition_proof_shards,
@@ -27,6 +28,33 @@ from wincr.stage_binary import StageAInputError, _parse_stage_a_pe
 
 
 class StageARelationalTests(unittest.TestCase):
+    def test_mapped_relocation_offsets_reject_duplicate_loader_entries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_image_with_relocation_pointer_table(0x2000))
+            candidate.write_bytes(
+                _pe32_image_with_relocation_pointer_table(0x3000, duplicate_data_entry=True)
+            )
+            issues = []
+
+            offsets = _mapped_relocation_offsets(
+                _parse_stage_a_pe(original),
+                _parse_stage_a_pe(candidate),
+                {
+                    "id": 7,
+                    "original_value": 0x402000,
+                    "candidate_value": 0x403000,
+                    "mapped_size": 8,
+                },
+                issues,
+            )
+
+            self.assertEqual(offsets, [])
+            self.assertEqual(issues[0]["category"], "mapped_object_relocation_duplicate")
+            self.assertEqual(issues[0]["duplicates"]["candidate"], [0])
+
     def test_normalized_fast_path_accepts_only_mapped_control_flow_differences(self):
         pairs = [
             {"original": register, "candidate": register}
@@ -807,6 +835,15 @@ end StageA.FlagsCompose
             self.assertEqual(len(mapped), 1)
             self.assertEqual(mapped[0]["mapped_size"], 8)
 
+            original_bin = _parse_stage_a_pe(original)
+            candidate_bin = _parse_stage_a_pe(candidate)
+            normalized, issues = _normalize_contract(payload, original_bin, candidate_bin)
+            self.assertEqual(issues, [])
+            normalized_mapped = [
+                target for target in normalized["value_targets"] if target["mapped_size"] > 0
+            ]
+            self.assertEqual(normalized_mapped[0]["relocation_offsets"], [0, 4])
+
             result = stage_a_prove_relational(
                 original=original, candidate=candidate,
                 relation_contract=contract, out=root / "report",
@@ -985,7 +1022,12 @@ def _pe32_image_with_relocated_data(data_rva: int, *, writable: bool = True) -> 
     return headers + code.ljust(0x200, b"\0") + data.ljust(0x200, b"\0") + relocations.ljust(0x200, b"\0")
 
 
-def _pe32_image_with_relocation_pointer_table(data_rva: int, *, mask_index: bool = False) -> bytes:
+def _pe32_image_with_relocation_pointer_table(
+    data_rva: int,
+    *,
+    mask_index: bool = False,
+    duplicate_data_entry: bool = False,
+) -> bytes:
     file_alignment = 0x200
     section_alignment = 0x1000
     headers_size = 0x200
@@ -1013,7 +1055,10 @@ def _pe32_image_with_relocation_pointer_table(data_rva: int, *, mask_index: bool
         size = 8 + 2 * len(entries)
         return struct.pack("<II", page_rva, size) + struct.pack("<" + "H" * len(entries), *entries)
 
-    relocations = relocation_block(text_rva, [relocation_offset]) + relocation_block(data_rva, [0, 4])
+    data_relocations = [0, 0, 4] if duplicate_data_entry else [0, 4]
+    relocations = relocation_block(text_rva, [relocation_offset]) + relocation_block(
+        data_rva, data_relocations
+    )
     dos = bytearray(0x80)
     dos[0:2] = b"MZ"
     struct.pack_into("<I", dos, 0x3C, 0x80)

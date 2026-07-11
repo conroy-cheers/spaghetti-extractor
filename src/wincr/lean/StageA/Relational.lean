@@ -89,6 +89,7 @@ structure ValueTargetPair where
   originalRelocationRva : Nat
   candidateRelocationRva : Nat
   mappedSize : Nat := 0
+  relocationOffsets : List Nat := []
 deriving Repr, DecidableEq
 
 def normalizeCodeTarget (candidate : Bool) (targets : List CodeTargetPair) (rva : Nat) : Option Nat :=
@@ -279,15 +280,108 @@ def mappedValueRelated (targets : List ValueTargetPair) (original candidate : Wo
         original == BitVec.ofNat 32 target.originalValue +
           (candidate - BitVec.ofNat 32 target.candidateValue)
 
-def memoryRelated (targets : List ValueTargetPair) (original candidate : Memory) : Prop :=
-  candidate = fun address => original (normalizeDataAddress targets address)
-
 def wordRelated (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair) (values : List ValueTargetPair)
     (original candidate : Word) : Bool :=
-  original == candidate ||
-    codePointerRelated originalImageBase candidateImageBase targets original candidate ||
-    mappedValueRelated values original candidate
+  ((original == BitVec.ofNat 32 0) == (candidate == BitVec.ofNat 32 0)) &&
+    (original == candidate ||
+      codePointerRelated originalImageBase candidateImageBase targets original candidate ||
+      mappedValueRelated values original candidate)
+
+@[simp] theorem wordRelated_self (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair) (word : Word) :
+    wordRelated originalImageBase candidateImageBase targets values word word = true := by
+  simp [wordRelated]
+
+theorem wordRelated_zero_equal {originalImageBase candidateImageBase : Nat}
+    {targets : List CodeTargetPair} {values : List ValueTargetPair}
+    {original candidate : Word}
+    (related : wordRelated originalImageBase candidateImageBase targets values
+      original candidate = true) :
+    (original == BitVec.ofNat 32 0) = (candidate == BitVec.ofNat 32 0) := by
+  simp [wordRelated] at related
+  exact related.1
+
+def Memory.read32 (memory : Memory) (address : Word) : Word :=
+  let b0 := BitVec.zeroExtend 32 (memory address)
+  let b1 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 1))).shiftLeft 8
+  let b2 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 2))).shiftLeft 16
+  let b3 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 3))).shiftLeft 24
+  b0 ||| b1 ||| b2 ||| b3
+
+@[simp] theorem assembledMemoryRead32_eq (memory : Memory) (address : Word) :
+    (BitVec.zeroExtend 32 (memory address) |||
+        (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 1))).shiftLeft 8) |||
+      ((BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 2))).shiftLeft 16 |||
+        (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 3))).shiftLeft 24) =
+      Memory.read32 memory address := by
+  unfold Memory.read32
+  symm
+  apply BitVec.or_assoc
+
+@[simp] theorem assembledMemoryRead32OfNat_eq (memory : Memory) (address : Nat) :
+    (BitVec.zeroExtend 32 (memory (BitVec.ofNat 32 address)) |||
+        (BitVec.zeroExtend 32 (memory (BitVec.ofNat 32 (address + 1)))).shiftLeft 8) |||
+      ((BitVec.zeroExtend 32 (memory (BitVec.ofNat 32 (address + 2)))).shiftLeft 16 |||
+        (BitVec.zeroExtend 32 (memory (BitVec.ofNat 32 (address + 3)))).shiftLeft 24) =
+      Memory.read32 memory (BitVec.ofNat 32 address) := by
+  simpa only [BitVec.ofNat_add] using
+    assembledMemoryRead32_eq memory (BitVec.ofNat 32 address)
+
+@[simp] theorem machineStateRead32_eq_memoryRead32 (state : MachineState) (address : Word) :
+    state.read32 address = Memory.read32 state.memory address := rfl
+
+def valueRelocationWordStartCandidate (target : ValueTargetPair) (address : Word) : Bool :=
+  target.relocationOffsets.any fun offset =>
+    address == BitVec.ofNat 32 (target.candidateValue + offset)
+
+def relocationWordStartCandidate (targets : List ValueTargetPair) (address : Word) : Bool :=
+  targets.any fun target => valueRelocationWordStartCandidate target address
+
+def valueRelocationByteCoveredCandidate (target : ValueTargetPair) (address : Word) : Bool :=
+  target.relocationOffsets.any fun offset =>
+    (List.range 4).any fun byteOffset =>
+      address == BitVec.ofNat 32 (target.candidateValue + offset + byteOffset)
+
+def relocationByteCoveredCandidate (targets : List ValueTargetPair) (address : Word) : Bool :=
+  targets.any fun target => valueRelocationByteCoveredCandidate target address
+
+def hasRelocationWords (targets : List ValueTargetPair) : Bool :=
+  targets.any fun target => !target.relocationOffsets.isEmpty
+
+def relocatedMemoryRelated (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (original candidate : Memory) : Prop :=
+  (∀ address,
+      relocationByteCoveredCandidate values address = false →
+        candidate address = original (normalizeDataAddress values address)) ∧
+    (∀ address,
+      relocationWordStartCandidate values address = true →
+        wordRelated originalImageBase candidateImageBase targets values
+          (Memory.read32 original (normalizeDataAddress values address))
+          (Memory.read32 candidate address) = true)
+
+def memoryRelated (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (original candidate : Memory) : Prop :=
+  if hasRelocationWords values then
+    relocatedMemoryRelated originalImageBase candidateImageBase targets values original candidate
+  else
+    candidate = fun address => original (normalizeDataAddress values address)
+
+theorem memoryRelated_without_relocations (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (original candidate : Memory) (none : hasRelocationWords values = false)
+    (related : memoryRelated originalImageBase candidateImageBase targets values original candidate) :
+    candidate = fun address => original (normalizeDataAddress values address) := by
+  simpa [memoryRelated, none] using related
+
+theorem memoryRelated_with_relocations (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (original candidate : Memory) (some : hasRelocationWords values = true)
+    (related : memoryRelated originalImageBase candidateImageBase targets values original candidate) :
+    relocatedMemoryRelated originalImageBase candidateImageBase targets values original candidate := by
+  simpa [memoryRelated, some] using related
 
 def writesRelated (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair) (values : List ValueTargetPair) :
@@ -505,23 +599,33 @@ def addressSeparationsRelated (separations : List AddressSeparationPair)
         BitVec.ofNat 32 separation.candidateAddress
     )
 
+def flagsRelated (bits : List Nat) (original candidate : Word) : Bool :=
+  bits.all fun bit => original.extractLsb' bit 1 == candidate.extractLsb' bit 1
+
+@[simp] theorem flagsRelated_nil (original candidate : Word) :
+    flagsRelated [] original candidate = true := rfl
+
 def registersRelatedValues (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair) (values : List ValueTargetPair)
     (pairs : List RegisterPair) (original candidate : PureState) : Bool :=
   pairs.all fun pair => wordRelated originalImageBase candidateImageBase targets values
     (original.get pair.original) (candidate.get pair.candidate)
 
-def statesRelated (bounds : List RegisterBoundPair) (separations : List AddressSeparationPair)
+def statesRelated (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair)
+    (flagInputs : List Nat)
+    (bounds : List RegisterBoundPair) (separations : List AddressSeparationPair)
     (values : List ValueTargetPair)
     (pairs : List RegisterPair)
     (original candidate : MachineState) : Prop :=
   registersRelated pairs original.registers candidate.registers = true ∧
     boundsRelated bounds original.registers candidate.registers = true ∧
     addressSeparationsRelated separations original.registers candidate.registers = true ∧
-    memoryRelated values original.memory candidate.memory ∧
+    memoryRelated originalImageBase candidateImageBase targets values
+      original.memory candidate.memory ∧
     original.undefinedValue = candidate.undefinedValue ∧
     original.x87 = candidate.x87 ∧
-    original.eflags = candidate.eflags ∧
+    flagsRelated flagInputs original.eflags candidate.eflags = true ∧
     original.fsBase = candidate.fsBase
 
 structure RegionRelation where
@@ -535,11 +639,14 @@ structure RegionRelation where
   addressSeparations : List AddressSeparationPair := []
   targets : List CodeTargetPair
   values : List ValueTargetPair := []
+  flagInputs : List Nat := [0, 2, 6, 7, 10, 11]
+  flagOutputs : List Nat := [0, 2, 6, 7, 10, 11]
 deriving Repr, DecidableEq
 
 def regionEquivalent (originalPe candidatePe : PE32) (region : RegionRelation) : Prop :=
   ∀ originalState candidateState,
-    statesRelated region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
+    statesRelated originalPe.imageBase candidatePe.imageBase region.targets region.flagInputs
+      region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
     match (regionBehavior originalPe region.original).bind
           (evalBehavior false region.targets originalState),
         (regionBehavior candidatePe region.candidate).bind
@@ -550,7 +657,7 @@ def regionEquivalent (originalPe candidatePe : PE32) (region : RegionRelation) :
         originalBehavior.x87 = candidateBehavior.x87 ∧
         writesRelated originalPe.imageBase candidatePe.imageBase region.targets region.values
           originalBehavior.writes candidateBehavior.writes = true ∧
-        originalBehavior.eflags = candidateBehavior.eflags ∧
+        flagsRelated region.flagOutputs originalBehavior.eflags candidateBehavior.eflags = true ∧
         outcomesRelated originalPe.imageBase candidatePe.imageBase region.targets region.values
           originalBehavior.outcome candidateBehavior.outcome = true
     | _, _ => False
@@ -558,7 +665,8 @@ def regionEquivalent (originalPe candidatePe : PE32) (region : RegionRelation) :
 def regionEquivalentWithImports (originalPe candidatePe : PE32)
     (originalImports candidateImports : List PEImport) (region : RegionRelation) : Prop :=
   ∀ originalState candidateState,
-    statesRelated region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
+    statesRelated originalPe.imageBase candidatePe.imageBase region.targets region.flagInputs
+      region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
     match (regionBehaviorWithImports originalPe originalImports region.original).bind
           (evalBehavior false region.targets originalState),
         (regionBehaviorWithImports candidatePe candidateImports region.candidate).bind
@@ -569,7 +677,7 @@ def regionEquivalentWithImports (originalPe candidatePe : PE32)
         originalBehavior.x87 = candidateBehavior.x87 ∧
         writesRelated originalPe.imageBase candidatePe.imageBase region.targets region.values
           originalBehavior.writes candidateBehavior.writes = true ∧
-        originalBehavior.eflags = candidateBehavior.eflags ∧
+        flagsRelated region.flagOutputs originalBehavior.eflags candidateBehavior.eflags = true ∧
         outcomesRelated originalPe.imageBase candidatePe.imageBase region.targets region.values
           originalBehavior.outcome candidateBehavior.outcome = true
     | _, _ => False
@@ -578,7 +686,8 @@ def behaviorsEquivalent (originalImageBase candidateImageBase : Nat)
     (originalBehavior candidateBehavior : SymbolicBehavior)
     (region : RegionRelation) : Prop :=
   ∀ originalState candidateState,
-    statesRelated region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
+    statesRelated originalImageBase candidateImageBase region.targets region.flagInputs
+      region.bounds region.addressSeparations region.values region.inputs originalState candidateState →
     match evalBehavior false region.targets originalState originalBehavior,
         evalBehavior true region.targets candidateState candidateBehavior with
     | some originalResult, some candidateResult =>
@@ -587,7 +696,7 @@ def behaviorsEquivalent (originalImageBase candidateImageBase : Nat)
         originalResult.x87 = candidateResult.x87 ∧
         writesRelated originalImageBase candidateImageBase region.targets region.values
           originalResult.writes candidateResult.writes = true ∧
-        originalResult.eflags = candidateResult.eflags ∧
+        flagsRelated region.flagOutputs originalResult.eflags candidateResult.eflags = true ∧
         outcomesRelated originalImageBase candidateImageBase region.targets region.values
           originalResult.outcome candidateResult.outcome = true
     | _, _ => False
@@ -805,6 +914,18 @@ def targetAliasesClosed (regions : List RegionRelation)
 def relocationContains (relocations : List BaseRelocation) (rva : Nat) : Bool :=
   relocations.any fun relocation => relocation.rva == rva && relocation.kind == 3
 
+def relocationCount (relocations : List BaseRelocation) (rva : Nat) : Nat :=
+  (relocations.filter fun relocation => relocation.rva == rva && relocation.kind == 3).length
+
+def relocationOffsetsStrictlyIncreasing : List Nat -> Bool
+  | [] | [_] => true
+  | left :: right :: tail => left < right && relocationOffsetsStrictlyIncreasing (right :: tail)
+
+def relocationOffsetsValid (object : ValueTargetPair) : Bool :=
+  relocationOffsetsStrictlyIncreasing object.relocationOffsets &&
+    object.relocationOffsets.all fun offset =>
+      offset % 4 == 0 && offset + 4 <= object.mappedSize
+
 def mappedObjectContentValidAux (originalPe candidatePe : PE32)
     (originalRelocations candidateRelocations : List BaseRelocation)
     (targets : List CodeTargetPair) (values : List ValueTargetPair)
@@ -816,10 +937,11 @@ def mappedObjectContentValidAux (originalPe candidatePe : PE32)
       else
         let originalRva := object.originalValue - originalPe.imageBase + offset
         let candidateRva := object.candidateValue - candidatePe.imageBase + offset
-        let originalRelocated := relocationContains originalRelocations originalRva
-        let candidateRelocated := relocationContains candidateRelocations candidateRva
-        if originalRelocated != candidateRelocated then false
-        else if originalRelocated then
+        let declaredRelocated := object.relocationOffsets.contains offset
+        let declaredCount := if declaredRelocated then 1 else 0
+        if relocationCount originalRelocations originalRva != declaredCount ||
+            relocationCount candidateRelocations candidateRva != declaredCount then false
+        else if declaredRelocated then
           object.mappedSize - offset >= 4 &&
             match readRvaU32 originalPe originalRva, readRvaU32 candidatePe candidateRva with
             | some original, some candidate =>
@@ -837,8 +959,9 @@ def mappedObjectContentValid (originalPe candidatePe : PE32)
     (originalRelocations candidateRelocations : List BaseRelocation)
     (targets : List CodeTargetPair) (values : List ValueTargetPair)
     (object : ValueTargetPair) : Bool :=
-  object.mappedSize == 0 || mappedObjectContentValidAux originalPe candidatePe
-    originalRelocations candidateRelocations targets values object 0 (object.mappedSize + 1)
+  relocationOffsetsValid object &&
+    (object.mappedSize == 0 || mappedObjectContentValidAux originalPe candidatePe
+      originalRelocations candidateRelocations targets values object 0 (object.mappedSize + 1))
 
 def valueTargetValid (originalPe candidatePe : PE32)
     (originalRelocations candidateRelocations : List BaseRelocation)
@@ -922,6 +1045,16 @@ def relationCompositionClosed (regions : List RegionRelation) : Bool :=
   let required := requiredInputPairs regions
   regions.all fun source => required.all source.outputs.contains
 
+def targetFlagRelationClosed (regions : IndexTree RegionRelation)
+    (source : RegionRelation) (target : CodeTargetPair) : Bool :=
+  match regions.get? target.regionIndex with
+  | some destination => destination.flagInputs.all source.flagOutputs.contains
+  | none => false
+
+def flagRelationCompositionClosed (index : IndexTree RegionRelation)
+    (regions : List RegionRelation) : Bool :=
+  regions.all fun source => source.targets.all (targetFlagRelationClosed index source)
+
 theorem relationCompositionClosed_of_certificate
     (regions : List RegionRelation) (required : List RegisterPair)
     (requiredChecked : requiredInputPairs regions = required)
@@ -983,7 +1116,8 @@ def structuralEligible (bundle : ProofBundle) : Bool :=
       targetAliasesCertified bundle.regions bundle.originalAliasCoverage
         bundle.candidateAliasCoverage &&
       valueTargetsClosed originalPe candidatePe bundle.regions &&
-      relationCompositionClosed bundle.regions
+      relationCompositionClosed bundle.regions &&
+      flagRelationCompositionClosed bundle.regionIndex bundle.regions
 
 theorem structuralEligible_of_checks (bundle : ProofBundle)
     (originalPe candidatePe : PE32)
@@ -1009,7 +1143,9 @@ theorem structuralEligible_of_checks (bundle : ProofBundle)
     (targetAliasesChecked : targetAliasesCertified bundle.regions
       bundle.originalAliasCoverage bundle.candidateAliasCoverage = true)
     (valuesChecked : valueTargetsClosed originalPe candidatePe bundle.regions = true)
-    (compositionChecked : relationCompositionClosed bundle.regions = true) :
+    (compositionChecked : relationCompositionClosed bundle.regions = true)
+    (flagCompositionChecked :
+      flagRelationCompositionClosed bundle.regionIndex bundle.regions = true) :
     structuralEligible bundle = true := by
   unfold structuralEligible parsedImages
   rw [originalParsed, candidateParsed]
@@ -1017,7 +1153,7 @@ theorem structuralEligible_of_checks (bundle : ProofBundle)
     candidateCoverageChecked, originalPaddingChecked, candidatePaddingChecked,
     entryChecked, targetsChecked, originalAliasCoverageChecked,
     candidateAliasCoverageChecked, targetAliasesChecked, valuesChecked,
-    compositionChecked]
+    compositionChecked, flagCompositionChecked]
 
 def regionGoal (bundle : ProofBundle) (region : RegionRelation) : Prop :=
   match parsedImages bundle with
