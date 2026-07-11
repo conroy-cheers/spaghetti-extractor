@@ -718,6 +718,21 @@ def registersRelatedValues (originalImageBase candidateImageBase : Nat)
   pairs.all fun pair => wordRelated originalImageBase candidateImageBase targets values
     (original.get pair.original) (candidate.get pair.candidate)
 
+theorem registersRelatedValues_self_of_identity
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (pairs : List RegisterPair) (state : PureState)
+    (identity : pairs.all (fun pair => pair.original == pair.candidate) = true) :
+    registersRelatedValues originalImageBase candidateImageBase targets values
+      pairs state state = true := by
+  unfold registersRelatedValues at ⊢
+  simp only [List.all_eq_true] at identity ⊢
+  intro pair member
+  have sameRegister := identity pair member
+  simp only [beq_iff_eq] at sameRegister
+  rw [sameRegister]
+  apply wordRelated_self
+
 def statesRelated (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair)
     (flagInputs : List Nat)
@@ -842,6 +857,31 @@ def behaviorFlagsEquivalent (originalImageBase candidateImageBase : Nat)
     flagsRelated region.flagOutputs
       (evalNormalizedFlags originalState originalBehavior.flags)
       (evalNormalizedFlags candidateState candidateBehavior.flags) = true
+
+theorem evalNormalizedFlags_extract_df (state : MachineState)
+    (flags : Option FlagsExpr) :
+    (evalNormalizedFlags state flags).extractLsb' 10 1 =
+      state.eflags.extractLsb' 10 1 := by
+  cases flags <;> simp [evalNormalizedFlags]
+
+theorem behaviorFlagsEquivalent_df
+    (originalImageBase candidateImageBase : Nat)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (region : RegionRelation)
+    (outputs : region.flagOutputs = [10])
+    (input : region.flagInputs.contains 10 = true) :
+    behaviorFlagsEquivalent originalImageBase candidateImageBase
+      originalBehavior candidateBehavior region := by
+  unfold behaviorFlagsEquivalent
+  intro originalState candidateState related
+  unfold statesRelated at related
+  rcases related with ⟨_, _, _, _, _, _, flagsRelatedAll, _⟩
+  rw [outputs]
+  apply flagsRelated_cons_of_eq
+  · rw [evalNormalizedFlags_extract_df, evalNormalizedFlags_extract_df]
+    exact flagsRelated_of_contains region.flagInputs originalState.eflags
+      candidateState.eflags flagsRelatedAll input
+  · apply flagsRelated_nil
 
 def behaviorOutcomeEquivalent (originalImageBase candidateImageBase : Nat)
     (originalBehavior candidateBehavior : SymbolicBehavior) (region : RegionRelation) : Prop :=

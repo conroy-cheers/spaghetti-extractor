@@ -1181,7 +1181,7 @@ def _write_relational_module_graph(
         )
 
     pack_size = max(
-        1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_NIX_PACK_MODULES", "8"))
+        1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_NIX_PACK_MODULES", "16"))
     )
     packed: set[str] = set()
     raw_nodes: list[dict[str, Any]] = []
@@ -3363,6 +3363,95 @@ def _lean_behavior_fields_memory_free(
     )
 
 
+def _lean_identical_state_only_write_registers(
+    region: dict[str, Any], behaviors: dict[str, str]
+) -> list[str] | None:
+    original = _lean_behavior_field(behaviors.get("original", ""), "writes", "comparison")
+    candidate = _lean_behavior_field(behaviors.get("candidate", ""), "writes", "comparison")
+    if original is None or original != candidate:
+        return None
+    non_register_state_dependencies = (
+        "StageA.Formal.Expr.inputFlagValue ",
+        "StageA.Formal.Expr.inputFsBase",
+        "StageA.Formal.Expr.inputX87Control",
+        "StageA.Formal.Expr.inputX87Status",
+        "StageA.Formal.Expr.read8 ",
+        "StageA.Formal.Expr.read32 ",
+        "StageA.Formal.Expr.read8AfterWrite ",
+        "StageA.Formal.Expr.undefinedValue ",
+    )
+    if any(marker in original for marker in non_register_state_dependencies):
+        return None
+    registers = sorted(set(re.findall(
+        r"StageA\.Formal\.Expr\.inputReg \(StageA\.Formal\.Reg\.([a-z0-9]+)\)",
+        original,
+    )))
+    same_register_inputs = {
+        pair["original"]
+        for pair in region.get("inputs", [])
+        if pair.get("original") == pair.get("candidate")
+    }
+    if not set(registers).issubset(same_register_inputs):
+        return None
+    return registers
+
+
+def _lean_identical_state_only_writes_component(
+    index: int,
+    region: dict[str, Any],
+    behaviors: dict[str, str],
+) -> str | None:
+    registers = _lean_identical_state_only_write_registers(region, behaviors)
+    if registers is None:
+        return None
+    name = f"region{index}"
+    inputs = region.get("inputs", [])
+    input_hypotheses = [f"inputRelated{pair_index}" for pair_index in range(len(inputs))]
+    rows: list[str] = []
+    register_equalities: list[str] = []
+    if registers:
+        rows.extend((
+            "  unfold statesRelated at related",
+            "  have registerInputs := related.1",
+            f"  simp [registersRelated, StageA.Formal.Registers.get, {name}] at registerInputs",
+        ))
+        if len(inputs) == 1:
+            rows.append(f"  have {input_hypotheses[0]} := registerInputs")
+        else:
+            rows.append(
+                "  rcases registerInputs with ⟨"
+                + ", ".join(input_hypotheses)
+                + "⟩"
+            )
+        for register in registers:
+            pair_index = next(
+                pair_index for pair_index, pair in enumerate(inputs)
+                if pair.get("original") == register
+                and pair.get("candidate") == register
+            )
+            equality = f"{register}GetRelated"
+            rows.extend((
+                f"  have {equality} : originalState.registers.get Reg.{register} =",
+                f"      candidateState.registers.get Reg.{register} := by",
+                "    simpa [StageA.Formal.Registers.get] using "
+                f"{input_hypotheses[pair_index]}",
+            ))
+            register_equalities.append(equality)
+    simplifiers = ", ".join(register_equalities)
+    if simplifiers:
+        simplifiers = ", " + simplifiers
+    rows.extend((
+        "  have writesEqual :",
+        f"      evalNormalizedWrites originalState originalBehavior{index}.writes =",
+        f"        evalNormalizedWrites candidateState candidateBehavior{index}.writes := by",
+        "    simp [evalNormalizedWrites, StageA.Formal.Expr.eval, "
+        f"originalBehavior{index}, candidateBehavior{index}{simplifiers}]",
+        "  rw [writesEqual]",
+        "  apply writesRelated_self",
+    ))
+    return "\n".join(rows) + "\n"
+
+
 def _lean_x87_state_only_pair(behaviors: dict[str, str]) -> bool:
     original = _lean_behavior_field(behaviors.get("original", ""), "x87", "writes")
     candidate = _lean_behavior_field(behaviors.get("candidate", ""), "x87", "writes")
@@ -3723,10 +3812,10 @@ def _write_sharded_relational_proof(
     )
     _write_text_if_changed(lean_dir / "StageA" / "RelationalProofBase.lean", base)
 
-    shard_size = max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_PROOF_SHARD", "8")))
+    shard_size = max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_PROOF_SHARD", "4")))
     shard_byte_target = max(
         1,
-        int(os.environ.get("WINCR_STAGE_A_RELATIONAL_PROOF_SHARD_BYTES", "500000")),
+        int(os.environ.get("WINCR_STAGE_A_RELATIONAL_PROOF_SHARD_BYTES", "49152")),
     )
     estimated_region_bytes: list[int] = []
     for index, region in enumerate(contract["regions"]):
@@ -4322,14 +4411,49 @@ def _lean_compositional_normalized_theorem_source(
         original_image_base=original_image_base,
         candidate_image_base=candidate_image_base,
     )
+    state_preserving_setup, _ = _lean_normalized_component_setup(
+        index,
+        region,
+        original_image_base=original_image_base,
+        candidate_image_base=candidate_image_base,
+        preserve_states=True,
+    )
     flag_lemma_line = f"    {flag_hypotheses},\n" if flag_hypotheses else ""
     common_simplifiers = (
         "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval, "
         "StageA.Formal.MachineState.read32, Memory.read32, "
         "StageA.Formal.MachineState.readX87Word, StageA.Formal.read8AfterWriteValue, "
         "StageA.Formal.X87LoadFormat.byteWidth, StageA.Formal.Registers.get, "
-        "normalizeCodeTarget, normalizeImport, wordsRelated, wordRelated, "
+        "normalizeDataAddress, normalizeCodeTarget, normalizeImport, wordsRelated, wordRelated_self, "
         "codePointerRelated, codeAddressMatches, mappedValueRelated"
+    )
+    empty_writes = all(
+        _lean_behavior_field(behaviors.get(side, ""), "writes", "comparison") == "[]"
+        for side in ("original", "candidate")
+    )
+    empty_writes_fact = (
+        f"theorem {name}OriginalWritesEmpty : "
+        f"originalBehavior{index}.writes = [] := by rfl\n\n"
+        if empty_writes else ""
+    )
+    writes_component_proof = (
+        f"  simp only [NormalizedSymbolicBehavior.eval_writes, {name}NormalizedWrites]\n"
+        f"  rw [{name}OriginalWritesEmpty]\n"
+        "  rfl\n"
+        if empty_writes else
+        (
+            f"  have writesEqual : ({name}NormalizedBehavior.eval originalInput).writes =\n"
+            f"      ({name}NormalizedBehavior.eval candidateInput).writes := by\n"
+            f"    simp only [NormalizedSymbolicBehavior.eval_writes, {name}NormalizedWrites]\n"
+            "    first\n"
+            "    | rfl\n"
+            f"    | simp [evalNormalizedWrites, {common_simplifiers},\n"
+            + flag_lemma_line
+            + f"        originalInput, candidateInput, originalBehavior{index}, {name}]\n"
+            "      all_goals first | rfl | bv_normalize\n"
+            "  rw [writesEqual]\n"
+            "  apply writesRelated_self\n"
+        )
     )
 
     definitions = (
@@ -4343,6 +4467,7 @@ def _lean_compositional_normalized_theorem_source(
         f"theorem {name}NormalizedOutcome : {name}NormalizedBehavior.outcome = {outcome} := by decide\n\n"
         f"theorem {name}OriginalNormalized : normalizeSymbolicBehavior false {name}.targets originalBehavior{index} = some {name}NormalizedBehavior := by decide\n\n"
         f"theorem {name}CandidateNormalized : normalizeSymbolicBehavior true {name}.targets candidateBehavior{index} = some {name}NormalizedBehavior := by decide\n\n"
+        + empty_writes_fact
     )
 
     component_specs = (
@@ -4351,11 +4476,18 @@ def _lean_compositional_normalized_theorem_source(
             f"registersRelatedValues {original_image_base} {candidate_image_base} {name}.targets {name}.values "
             f"{name}.outputs ({name}NormalizedBehavior.eval originalState).registers "
             f"({name}NormalizedBehavior.eval candidateState).registers = true",
-            f"  simp only [NormalizedSymbolicBehavior.eval_registers, {name}NormalizedRegisters]\n"
-            f"  simp [evalNormalizedRegisters, registersRelatedValues, {common_simplifiers},\n"
+            f"  have registersEqual : ({name}NormalizedBehavior.eval originalInput).registers =\n"
+            f"      ({name}NormalizedBehavior.eval candidateInput).registers := by\n"
+            f"    simp only [NormalizedSymbolicBehavior.eval_registers, {name}NormalizedRegisters]\n"
+            "    first\n"
+            "    | rfl\n"
+            f"    | simp [evalNormalizedRegisters, {common_simplifiers},\n"
             + flag_lemma_line
-            + f"    originalBehavior{index}, {name}]\n"
-            "  all_goals first | rfl | bv_normalize\n",
+            + f"        originalInput, candidateInput, originalBehavior{index}, {name}]\n"
+            "      all_goals first | rfl | bv_normalize\n"
+            "  rw [registersEqual]\n"
+            "  apply registersRelatedValues_self_of_identity\n"
+            "  decide\n",
         ),
         (
             "X87",
@@ -4372,11 +4504,7 @@ def _lean_compositional_normalized_theorem_source(
             f"writesRelated {original_image_base} {candidate_image_base} {name}.targets {name}.values "
             f"({name}NormalizedBehavior.eval originalState).writes "
             f"({name}NormalizedBehavior.eval candidateState).writes = true",
-            f"  simp only [NormalizedSymbolicBehavior.eval_writes, {name}NormalizedWrites]\n"
-            f"  simp [evalNormalizedWrites, writesRelated, {common_simplifiers},\n"
-            + flag_lemma_line
-            + f"    originalBehavior{index}, {name}]\n"
-            "  all_goals first | rfl | bv_normalize\n",
+            writes_component_proof,
         ),
         (
             "Outcome",
@@ -4395,7 +4523,11 @@ def _lean_compositional_normalized_theorem_source(
         component_theorems.append(
             f"theorem {name}{label}Component (originalState candidateState : MachineState)\n"
             f"    (related : {state_relation}) :\n    {goal} := by\n"
-            + setup
+            + (
+                "" if label == "Writes" and empty_writes else
+                state_preserving_setup if label in {"Registers", "Writes"} else
+                setup
+            )
             + proof
         )
 
@@ -4640,7 +4772,8 @@ def _lean_region_theorem_source(
             + flag_lemma_line
             + f"    originalBehavior{index}, candidateBehavior{index}, {name}]\n"
             + indexed_memory_rewrite
-            + f"  all_goals first | rfl{relocation_bridge_tactics} | {tactic}\n"
+            + f"  all_goals first | rfl{relocation_bridge_tactics} "
+            f"| (split <;> simp_all) | {tactic}\n"
         )
     )
     direct_state_setup = (
@@ -4699,7 +4832,7 @@ def _lean_region_theorem_source(
                 "mappedValueRelated, normalizeDataAddress, valueTargetContainsCandidate,\n"
                 + flag_lemma_line
                 + f"    originalBehavior{index}, candidateBehavior{index}, {name}]\n"
-                f"  all_goals first | rfl | {tactic}\n"
+                f"  all_goals first | rfl | (split <;> simp_all) | {tactic}\n"
             ),
             "Writes": (
                 "  simp [evalNormalizedWrites, StageA.Formal.Expr.eval, "
@@ -4708,7 +4841,7 @@ def _lean_region_theorem_source(
                 "mappedValueRelated, normalizeDataAddress, valueTargetContainsCandidate,\n"
                 + flag_lemma_line
                 + f"    originalBehavior{index}, candidateBehavior{index}, {name}]\n"
-                f"  all_goals first | rfl | {tactic}\n"
+                f"  all_goals first | rfl | (split <;> simp_all) | {tactic}\n"
             ),
             "Flags": (
                 "  simp [evalNormalizedFlags, StageA.Formal.Expr.eval, "
@@ -4717,11 +4850,28 @@ def _lean_region_theorem_source(
                 "StageA.Formal.Registers.get,\n"
                 + flag_lemma_line
                 + f"    originalBehavior{index}, candidateBehavior{index}, {name}]\n"
-                f"  all_goals first | rfl | {tactic}\n"
+                f"  all_goals first | rfl | (split <;> simp_all) | {tactic}\n"
             ),
         }
+        identical_writes_component = _lean_identical_state_only_writes_component(
+            index, region, behaviors
+        )
         component_sources: list[str] = []
         for label, predicate in components:
+            if (
+                label == "Flags"
+                and region.get("flag_outputs") == [10]
+                and 10 in region.get("flag_inputs", [])
+            ):
+                component_sources.append(
+                    f"theorem {name}{label}DirectComponent : {predicate} "
+                    f"{original_image_base} {candidate_image_base} "
+                    f"originalBehavior{index} candidateBehavior{index} {name} :=\n"
+                    f"  behaviorFlagsEquivalent_df {original_image_base} "
+                    f"{candidate_image_base} originalBehavior{index} "
+                    f"candidateBehavior{index} {name} (by decide) (by decide)\n\n"
+                )
+                continue
             source = (
                 f"theorem {name}{label}DirectComponent : {predicate} "
                 f"{original_image_base} {candidate_image_base} "
@@ -4747,6 +4897,8 @@ def _lean_region_theorem_source(
                     "evalNormalizedX87, StageA.Formal.X87Expr.eval, "
                     "StageA.Formal.Expr.eval]\n"
                 )
+            elif label == "Writes" and identical_writes_component is not None:
+                source += identical_writes_component
             else:
                 field_spec = memory_free_fields.get(label)
                 memory_free = bool(

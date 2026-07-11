@@ -12,6 +12,8 @@ from unittest.mock import patch
 from wincr.stage_a_relational import (
     RELATIONAL_ENVIRONMENT_ID,
     RELATIONAL_OBSERVATIONS,
+    _lean_identical_state_only_write_registers,
+    _lean_identical_state_only_writes_component,
     _mapped_relocation_offsets,
     _normalize_contract,
     _normalized_behavior_fast_path,
@@ -79,6 +81,50 @@ class StageARelationalTests(unittest.TestCase):
 
         behaviors["candidate"] = core + ", outcome := some (StageA.Formal.OutcomeExpr.branch condition 8192 8225) }"
         self.assertFalse(_normalized_behavior_fast_path(region, behaviors))
+
+    def test_identical_state_only_writes_use_compositional_checked_proof(self):
+        write = (
+            "[(StageA.Formal.Expr.add (StageA.Formal.Expr.inputReg "
+            "(StageA.Formal.Reg.esp)) (StageA.Formal.Expr.constant 4), "
+            "StageA.Formal.Expr.constant 7)]"
+        )
+        behavior = "{ registers := shared, writes := " + write + ", comparison := none }"
+        behaviors = {"original": behavior, "candidate": behavior}
+        region = {
+            "inputs": [
+                {"original": "eax", "candidate": "eax"},
+                {"original": "esp", "candidate": "esp"},
+            ],
+        }
+
+        self.assertEqual(
+            _lean_identical_state_only_write_registers(region, behaviors),
+            ["esp"],
+        )
+        source = _lean_identical_state_only_writes_component(7, region, behaviors)
+        self.assertIsNotNone(source)
+        assert source is not None
+        self.assertIn("espGetRelated", source)
+        self.assertIn("apply writesRelated_self", source)
+        self.assertNotIn("memoryRelated", source)
+        self.assertNotIn("addressSeparationsRelated", source)
+
+        memory_behavior = behavior.replace(
+            "StageA.Formal.Expr.constant 7",
+            "StageA.Formal.Expr.read32 (StageA.Formal.Expr.constant 7)",
+        )
+        self.assertIsNone(_lean_identical_state_only_write_registers(
+            region,
+            {"original": memory_behavior, "candidate": memory_behavior},
+        ))
+        self.assertIsNone(_lean_identical_state_only_write_registers(
+            region,
+            {"original": behavior, "candidate": behavior.replace("constant 7", "constant 8")},
+        ))
+        self.assertIsNone(_lean_identical_state_only_write_registers(
+            {"inputs": [{"original": "esp", "candidate": "ebp"}]},
+            behaviors,
+        ))
 
     def test_proof_shards_are_bounded_by_region_count_and_estimated_source_size(self):
         self.assertEqual(
@@ -539,6 +585,58 @@ class StageARelationalTests(unittest.TestCase):
 
             self.assertEqual(result["verdict"], "pass")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
+
+    def test_normalized_register_reflexivity_bridge_is_emitted_for_cmov_expression(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code = bytes.fromhex("eb0039fa89d00f4cc783c01bebf4")
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            contract = self._write_contract(
+                root / "relation.json",
+                region_size=len(code),
+            )
+            payload = json.loads(contract.read_text(encoding="utf-8"))
+            pairs = payload["regions"][0]["inputs"]
+            payload["code_targets"] = [
+                {"id": 0, "original_rva": 0x1002, "candidate_rva": 0x1002},
+            ]
+            payload["regions"] = [
+                {
+                    "id": "entry",
+                    "root": True,
+                    "original": {"rva": 0x1000, "size": 2},
+                    "candidate": {"rva": 0x1000, "size": 2},
+                    "inputs": pairs,
+                    "outputs": pairs,
+                },
+                {
+                    "id": "cmov-loop",
+                    "root": False,
+                    "original": {"rva": 0x1002, "size": len(code) - 2},
+                    "candidate": {"rva": 0x1002, "size": len(code) - 2},
+                    "inputs": pairs,
+                    "outputs": pairs,
+                },
+            ]
+            contract.write_text(json.dumps(payload), encoding="utf-8")
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=root / "report",
+            )
+
+            self.assertEqual(result["status"], "prepared", result)
+            proof = next(
+                (root / "report" / "lean" / "StageA").glob(
+                    "RelationalProofShard*.lean"
+                )
+            ).read_text(encoding="utf-8")
+            self.assertIn("registersRelatedValues_self_of_identity", proof)
+            self.assertIn("OriginalWritesEmpty", proof)
+            self.assertIn("writes = [] := by rfl", proof)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for cross-region flag execution")
     def test_logical_execution_carries_computed_flags_into_the_next_region(self):
