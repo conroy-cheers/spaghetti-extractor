@@ -153,7 +153,7 @@ class StageARelationalTests(unittest.TestCase):
                     out=report,
                 )
 
-            self.assertEqual(result["verdict"], "pass", result)
+            self.assertEqual(result["verdict"], "incomplete", result)
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
             shard = (report / "lean" / "StageA" / "RelationalProofShard0.lean").read_text(
                 encoding="utf-8"
@@ -268,7 +268,7 @@ class StageARelationalTests(unittest.TestCase):
                 flake=Path(__file__).parents[1],
             )
 
-            self.assertEqual(result["status"], "pass", result)
+            self.assertEqual(result["status"], "incomplete", result)
             self.assertTrue(result["checks"]["lean_trust_zero"])
             self.assertEqual(result["lean_audit"]["unexpected_axioms"], [])
             self.assertGreater(result["provenance"]["node_derivations"], 1)
@@ -382,7 +382,7 @@ class StageARelationalTests(unittest.TestCase):
                 relation_contract=contract,
                 out=root / "report",
             )
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
 
     def test_contract_rejects_executable_coverage_gap_before_lean(self):
@@ -477,10 +477,10 @@ class StageARelationalTests(unittest.TestCase):
                 out=report,
             )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
             self.assertFalse(result["claim_scope"]["acceptance_eligible"])
             replay = stage_a_check_relational_proof(report=report)
-            self.assertEqual(replay["status"], "pass")
+            self.assertEqual(replay["status"], "incomplete")
             proof_ir = json.loads((report / "relational-proof-ir.json").read_text(encoding="utf-8"))
             self.assertEqual(proof_ir["obligations"][0]["status"], "proved")
             self.assertEqual(proof_ir["obligations"][0]["evidence"]["kind"], "lean_normalization")
@@ -561,7 +561,7 @@ class StageARelationalTests(unittest.TestCase):
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for condition-code relational proofs")
@@ -583,13 +583,13 @@ class StageARelationalTests(unittest.TestCase):
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
 
     def test_normalized_register_reflexivity_bridge_is_emitted_for_cmov_expression(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            code = bytes.fromhex("eb0039fa89d00f4cc783c01bebf4")
+            code = bytes.fromhex("eb0039fa89d00f4cc783c01b7cf4c3")
             original = self._write_pe(root / "original.exe", code)
             candidate = self._write_pe(root / "candidate.exe", code)
             contract = self._write_contract(
@@ -600,6 +600,7 @@ class StageARelationalTests(unittest.TestCase):
             pairs = payload["regions"][0]["inputs"]
             payload["code_targets"] = [
                 {"id": 0, "original_rva": 0x1002, "candidate_rva": 0x1002},
+                {"id": 1, "original_rva": 0x100E, "candidate_rva": 0x100E},
             ]
             payload["regions"] = [
                 {
@@ -613,8 +614,16 @@ class StageARelationalTests(unittest.TestCase):
                 {
                     "id": "cmov-loop",
                     "root": False,
-                    "original": {"rva": 0x1002, "size": len(code) - 2},
-                    "candidate": {"rva": 0x1002, "size": len(code) - 2},
+                    "original": {"rva": 0x1002, "size": len(code) - 3},
+                    "candidate": {"rva": 0x1002, "size": len(code) - 3},
+                    "inputs": pairs,
+                    "outputs": pairs,
+                },
+                {
+                    "id": "fallthrough",
+                    "root": False,
+                    "original": {"rva": 0x100E, "size": 1},
+                    "candidate": {"rva": 0x100E, "size": 1},
                     "inputs": pairs,
                     "outputs": pairs,
                 },
@@ -629,14 +638,17 @@ class StageARelationalTests(unittest.TestCase):
             )
 
             self.assertEqual(result["status"], "prepared", result)
-            proof = next(
-                (root / "report" / "lean" / "StageA").glob(
+            proof = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted((root / "report" / "lean" / "StageA").glob(
                     "RelationalProofShard*.lean"
-                )
-            ).read_text(encoding="utf-8")
+                ))
+            )
             self.assertIn("registersRelatedValues_self_of_identity", proof)
             self.assertIn("OriginalWritesEmpty", proof)
             self.assertIn("writes = [] := by rfl", proof)
+            self.assertIn("OutcomeConditionWithin", proof)
+            self.assertIn("outcomesRelated_normalized_branch_of_agreement", proof)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for cross-region flag execution")
     def test_logical_execution_carries_computed_flags_into_the_next_region(self):
@@ -763,7 +775,7 @@ end StageA.FlagsCompose
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
             bundle = (root / "report" / "lean" / "StageA" / "RelationalBundle.lean").read_text(
                 encoding="utf-8"
@@ -787,7 +799,7 @@ end StageA.FlagsCompose
                 original=original, candidate=candidate,
                 relation_contract=contract, out=root / "report",
             )
-            self.assertEqual(result["verdict"], "pass", result)
+            self.assertEqual(result["verdict"], "incomplete", result)
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
             bundle = (root / "report" / "lean" / "StageA" / "RelationalBundle.lean").read_text(
                 encoding="utf-8"
@@ -811,7 +823,7 @@ end StageA.FlagsCompose
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for x87 memory proofs")
@@ -830,7 +842,7 @@ end StageA.FlagsCompose
                 out=root / "report",
             )
 
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for mapped static-data proofs")
@@ -870,7 +882,7 @@ end StageA.FlagsCompose
                 relation_contract=contract,
                 out=root / "report",
             )
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for immutable image-data proofs")
@@ -901,7 +913,7 @@ end StageA.FlagsCompose
                 original=original, candidate=candidate,
                 relation_contract=contract, out=root / "report",
             )
-            self.assertEqual(result["verdict"], "pass")
+            self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for indexed mapped-memory proofs")
@@ -946,7 +958,7 @@ end StageA.FlagsCompose
                 original=original, candidate=candidate,
                 relation_contract=contract, out=root / "report",
             )
-            self.assertEqual(result["verdict"], "pass", result)
+            self.assertEqual(result["verdict"], "incomplete", result)
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
             proof_ir = json.loads(
                 (root / "report" / "relational-proof-ir.json").read_text(encoding="utf-8")
@@ -959,9 +971,10 @@ end StageA.FlagsCompose
             self.assertEqual(assumption_kinds, {
                 "cfg_bound_invariant": "incomplete",
                 "relocation_aware_memory_relation": "incomplete",
+                "whole_program_bisimulation": "incomplete",
             })
             self.assertEqual(proof_ir["status"], "incomplete")
-            self.assertEqual(result["counts"]["incomplete_assumptions"], 2)
+            self.assertEqual(result["counts"]["incomplete_assumptions"], 3)
             bundle = (root / "report" / "lean" / "StageA" / "RelationalBundle.lean").read_text(
                 encoding="utf-8"
             )
@@ -1002,7 +1015,7 @@ end StageA.FlagsCompose
                 original=original, candidate=candidate,
                 relation_contract=contract, out=report,
             )
-            self.assertEqual(result["verdict"], "pass", result)
+            self.assertEqual(result["verdict"], "incomplete", result)
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
             proof_ir = json.loads((report / "relational-proof-ir.json").read_text(encoding="utf-8"))
             assumption_kinds = {
@@ -1010,7 +1023,10 @@ end StageA.FlagsCompose
                 for obligation in proof_ir["obligations"]
                 if obligation["kind"] != "relational_region_equivalence"
             }
-            self.assertEqual(assumption_kinds, {"cfg_address_separation_invariant"})
+            self.assertEqual(assumption_kinds, {
+                "cfg_address_separation_invariant",
+                "whole_program_bisimulation",
+            })
             self.assertEqual(proof_ir["status"], "incomplete")
 
             replay = stage_a_check_relational_proof(report=report)

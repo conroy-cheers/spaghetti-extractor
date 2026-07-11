@@ -756,7 +756,14 @@ def stage_a_prove_relational(
         )
         bundle_path.write_text(replay_source, encoding="utf-8")
         replay = _run_lean_relational(out / "lean")
-    verdict = "pass" if replay["status"] == "checked" else "incomplete"
+    assumption_obligations = [
+        obligation for obligation in proof_ir["obligations"]
+        if obligation["kind"] != "relational_region_equivalence"
+    ]
+    verdict = (
+        "pass" if replay["status"] == "checked" and not assumption_obligations
+        else "incomplete"
+    )
     return _write_relational_verdict(
         out,
         started_at,
@@ -768,7 +775,12 @@ def stage_a_prove_relational(
         verdict,
         replay,
         certificates=certificates,
-        blocker=None if verdict == "pass" else "independent LRAT replay did not check",
+        blocker=(
+            None if verdict == "pass"
+            else "whole-program relational obligations remain open"
+            if replay["status"] == "checked"
+            else "independent LRAT replay did not check"
+        ),
     )
 
 
@@ -988,6 +1000,13 @@ def _finalize_nix_proof_ir(
         {"family": "executable_coverage", "status": "satisfied" if theorem_checked else "incomplete"},
         {"family": "roots_and_targets", "status": "satisfied" if theorem_checked else "incomplete"},
         {"family": "relational_regions", "status": "satisfied" if theorem_checked else "incomplete"},
+        {
+            "family": "whole_program_composition",
+            "status": "incomplete" if any(
+                obligation["kind"] == "whole_program_bisimulation"
+                for obligation in assumption_obligations
+            ) else "satisfied",
+        },
         {
             "family": "cfg_invariants",
             "status": "incomplete" if any(
@@ -2180,8 +2199,41 @@ def _proof_ir(original: StageABinary, candidate: StageABinary, contract: dict[st
         if region.get("address_separations")
     )
     obligations.extend(_mapped_relocation_memory_obligations(original, candidate, contract))
+    obligations.append({
+        "id": "composition:whole-image-weak-bisimulation",
+        "kind": "whole_program_bisimulation",
+        "status": "incomplete",
+        "blocker": (
+            "the checked regional certificate has not yet been composed into the concrete "
+            "PE execution weak-bisimulation theorem"
+        ),
+        "next_action": (
+            "prove every region preserves the composable successor-state relation, prove "
+            "entry and environment compatibility, and emit WholeProgramObservationalEquivalence"
+        ),
+    })
+    families = [
+        {"family": "exact_pe_decode", "status": "incomplete"},
+        {"family": "x86_semantics", "status": "incomplete"},
+        {"family": "executable_coverage", "status": "incomplete"},
+        {"family": "roots_and_targets", "status": "incomplete"},
+        {"family": "relational_regions", "status": "incomplete"},
+        {"family": "whole_program_composition", "status": "incomplete"},
+        {
+            "family": "cfg_invariants",
+            "status": "incomplete" if any(
+                obligation["kind"] in {
+                    "cfg_bound_invariant", "cfg_address_separation_invariant",
+                }
+                for obligation in obligations
+            ) else "not_applicable",
+        },
+        {"family": "memory_relation", "status": "incomplete"},
+        {"family": "adversarial_environment", "status": "incomplete"},
+    ]
     return {
         "format": RELATIONAL_PROOF_IR_FORMAT,
+        "status": "incomplete",
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "profile": STAGE_A_RELATIONAL_PROFILE_ID,
         "claim_scope": {
@@ -2195,6 +2247,7 @@ def _proof_ir(original: StageABinary, candidate: StageABinary, contract: dict[st
         "memory_relation": contract["memory_relation"],
         "relation_contract_sha256": sha256_bytes(json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()),
         "counts": {"regions": len(contract["regions"]), "code_targets": len(contract["code_targets"]), "padding": len(contract["padding"])},
+        "families": families,
         "obligations": obligations,
     }
 
@@ -2620,8 +2673,6 @@ def _check_relational_counterexample(
     production: dict[str, Any],
 ) -> dict[str, Any] | None:
     output = str(production.get("stderr") or "") + "\n" + str(production.get("stdout") or "")
-    if "abstracted the following unsupported expressions" in output:
-        return None
     assignment = _counterexample_assignment(output)
     if not assignment:
         return None
@@ -2710,7 +2761,10 @@ def _lean_counterexample_source(
         + f"def candidateState : MachineState := {{ registers := {registers('c')}, memory := fun _ => BitVec.ofNat 8 0 }}\n\n"
         + f"theorem originalBehaviorCachedDecoded : regionBehaviorWithImports originalPe originalImports region{index}.original = some originalBehavior := by decide\n\n"
         + f"theorem candidateBehaviorCachedDecoded : regionBehaviorWithImports candidatePe candidateImports region{index}.candidate = some candidateBehavior := by decide\n\n"
-        + f"theorem inputsRelated : statesRelated region{index}.bounds region{index}.addressSeparations region{index}.values region{index}.inputs originalState candidateState := by\n"
+        + f"theorem inputsRelated : statesRelated originalPe.imageBase candidatePe.imageBase "
+        + f"region{index}.targets region{index}.flagInputs region{index}.bounds "
+        + f"region{index}.addressSeparations region{index}.values region{index}.inputs "
+        + "originalState candidateState := by\n"
         + "  constructor\n  · decide\n  · constructor\n    · decide\n    · constructor\n      · decide\n      · exact ⟨rfl, rfl, rfl, rfl, rfl⟩\n\n"
         + "def outputsMatch : Bool :=\n"
         + f"  match evalBehavior false region{index}.targets originalState originalBehavior,\n"
@@ -2719,6 +2773,7 @@ def _lean_counterexample_source(
         + f"      registersRelatedValues originalPe.imageBase candidatePe.imageBase region{index}.targets region{index}.values region{index}.outputs originalResult.registers candidateResult.registers &&\n"
         + "      decide (originalResult.x87 = candidateResult.x87) &&\n"
         + f"      writesRelated originalPe.imageBase candidatePe.imageBase region{index}.targets region{index}.values originalResult.writes candidateResult.writes &&\n"
+        + f"      flagsRelated region{index}.flagOutputs originalResult.eflags candidateResult.eflags &&\n"
         + f"      outcomesRelated originalPe.imageBase candidatePe.imageBase region{index}.targets region{index}.values originalResult.outcome candidateResult.outcome\n"
         + "  | _, _ => false\n\n"
         + "theorem outputsMismatch : outputsMatch = false := by decide\n\n"
@@ -2729,7 +2784,10 @@ def _lean_counterexample_source(
         + "    importTableValid candidatePe candidateImportCertificate = true ∧\n"
         + f"    regionBehaviorWithImports originalPe originalImports region{index}.original = some originalBehavior ∧\n"
         + f"    regionBehaviorWithImports candidatePe candidateImports region{index}.candidate = some candidateBehavior ∧\n"
-        + f"    statesRelated region{index}.bounds region{index}.addressSeparations region{index}.values region{index}.inputs originalState candidateState ∧ outputsMatch = false :=\n"
+        + f"    statesRelated originalPe.imageBase candidatePe.imageBase region{index}.targets "
+        + f"region{index}.flagInputs region{index}.bounds region{index}.addressSeparations "
+        + f"region{index}.values region{index}.inputs originalState candidateState ∧ "
+        + "outputsMatch = false :=\n"
         + "  ⟨originalParsed, candidateParsed, originalImportsChecked, candidateImportsChecked, originalBehaviorCachedDecoded, candidateBehaviorCachedDecoded, inputsRelated, outputsMismatch⟩\n\n"
         + "#print axioms exactCounterexample\n\nend StageA.GeneratedRelationalCounterexample\n"
     )
@@ -3520,6 +3578,16 @@ def _lean_normalized_static_outcome(
                 f"{target} {continuation}"
             )
     return None
+
+
+def _lean_normalized_branch_parts(outcome: str) -> tuple[str, int, int] | None:
+    branch = re.fullmatch(
+        r"StageA\.Relational\.NormalizedOutcomeExpr\.branch \((.*)\) (\d+) (\d+)",
+        outcome,
+    )
+    if branch is None:
+        return None
+    return branch.group(1), int(branch.group(2)), int(branch.group(3))
 
 
 def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary, original: bytes, candidate: bytes, contract: dict[str, Any], behaviors: list[dict[str, str]], *, replay: bool, certificates: list[dict[str, Any]] | None = None) -> str:
@@ -4418,6 +4486,14 @@ def _lean_compositional_normalized_theorem_source(
         candidate_image_base=candidate_image_base,
         preserve_states=True,
     )
+    agreement_setup, _ = _lean_normalized_component_setup(
+        index,
+        region,
+        original_image_base=original_image_base,
+        candidate_image_base=candidate_image_base,
+        preserve_flags=True,
+        preserve_states=True,
+    )
     flag_lemma_line = f"    {flag_hypotheses},\n" if flag_hypotheses else ""
     common_simplifiers = (
         "StageA.Formal.Expr.eval, StageA.Formal.X87Expr.eval, StageA.Formal.BoolExpr.eval, "
@@ -4455,6 +4531,42 @@ def _lean_compositional_normalized_theorem_source(
             "  apply writesRelated_self\n"
         )
     )
+    branch_parts = _lean_normalized_branch_parts(outcome)
+    if branch_parts is None:
+        normalized_outcome = outcome
+        outcome_facts = ""
+        outcome_component_setup = ""
+        outcome_component_proof = (
+            f"  simp [NormalizedSymbolicBehavior.eval_outcome, {name}NormalizedOutcome,\n"
+            "    NormalizedOutcomeExpr.eval, outcomesRelated]\n"
+        )
+    else:
+        condition, taken, fallthrough = branch_parts
+        normalized_outcome = (
+            f"StageA.Relational.NormalizedOutcomeExpr.branch "
+            f"{name}OutcomeCondition {taken} {fallthrough}"
+        )
+        outcome_facts = (
+            f"def {name}OutcomeCondition : BoolExpr := {condition}\n\n"
+            f"theorem {name}OutcomeConditionWithin :\n"
+            f"    {name}OutcomeCondition.flagsWithin {name}.flagInputs = true := by decide\n\n"
+        )
+        outcome_component_setup = agreement_setup
+        outcome_component_proof = (
+            f"  have stateAgreement : MachineStateAgreement {name}.flagInputs "
+            "originalInput candidateInput := by\n"
+            "    constructor\n"
+            "    · rfl\n    · rfl\n    · rfl\n    · rfl\n    · rfl\n"
+            "    · intro bit contains\n"
+            f"      exact flagsRelated_of_contains {name}.flagInputs originalFlags "
+            "candidateFlags flagsRelatedAll contains\n"
+            f"  have outcomeRelated := outcomesRelated_normalized_branch_of_agreement\n"
+            f"    {original_image_base} {candidate_image_base} {name}.targets {name}.values\n"
+            f"    {name}.flagInputs {name}OutcomeCondition {taken} {fallthrough}\n"
+            f"    originalInput candidateInput {name}OutcomeConditionWithin stateAgreement\n"
+            f"  simpa only [NormalizedSymbolicBehavior.eval_outcome, "
+            f"{name}NormalizedOutcome] using outcomeRelated\n"
+        )
 
     definitions = (
         f"def {name}NormalizedBehavior : NormalizedSymbolicBehavior :=\n"
@@ -4464,7 +4576,8 @@ def _lean_compositional_normalized_theorem_source(
         f"theorem {name}NormalizedWrites : {name}NormalizedBehavior.writes = originalBehavior{index}.writes := by decide\n\n"
         f"def {name}CommonFlags : FlagsExpr := originalBehavior{index}.flags.get (by decide)\n\n"
         f"theorem {name}NormalizedFlags : {name}NormalizedBehavior.flags = some {name}CommonFlags := by decide\n\n"
-        f"theorem {name}NormalizedOutcome : {name}NormalizedBehavior.outcome = {outcome} := by decide\n\n"
+        + outcome_facts
+        + f"theorem {name}NormalizedOutcome : {name}NormalizedBehavior.outcome = {normalized_outcome} := by decide\n\n"
         f"theorem {name}OriginalNormalized : normalizeSymbolicBehavior false {name}.targets originalBehavior{index} = some {name}NormalizedBehavior := by decide\n\n"
         f"theorem {name}CandidateNormalized : normalizeSymbolicBehavior true {name}.targets candidateBehavior{index} = some {name}NormalizedBehavior := by decide\n\n"
         + empty_writes_fact
@@ -4511,11 +4624,7 @@ def _lean_compositional_normalized_theorem_source(
             f"outcomesRelated {original_image_base} {candidate_image_base} {name}.targets {name}.values "
             f"({name}NormalizedBehavior.eval originalState).outcome "
             f"({name}NormalizedBehavior.eval candidateState).outcome = true",
-            f"  simp only [NormalizedSymbolicBehavior.eval_outcome, {name}NormalizedOutcome]\n"
-            f"  simp [NormalizedOutcomeExpr.eval, outcomesRelated, {common_simplifiers},\n"
-            + flag_lemma_line
-            + f"    {name}]\n"
-            "  all_goals first | rfl | bv_normalize\n",
+            outcome_component_proof,
         ),
     )
     component_theorems: list[str] = []
@@ -4525,6 +4634,7 @@ def _lean_compositional_normalized_theorem_source(
             f"    (related : {state_relation}) :\n    {goal} := by\n"
             + (
                 "" if label == "Writes" and empty_writes else
+                outcome_component_setup if label == "Outcome" else
                 state_preserving_setup if label in {"Registers", "Writes"} else
                 setup
             )
@@ -5891,7 +6001,11 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         "counts": {"certificates": len(certificates), "regions": len(contract["regions"])},
     }
     write_json(out / "certificates" / "index.json", certificate_index)
-    obligation_status = "proved" if verdict == "pass" else "failed" if verdict == "fail" else "incomplete"
+    obligation_status = (
+        "proved" if lean.get("status") == "checked"
+        else "failed" if verdict == "fail"
+        else "incomplete"
+    )
     assumption_obligations = [
         obligation for obligation in proof_ir["obligations"]
         if obligation["kind"] != "relational_region_equivalence"
@@ -5904,10 +6018,22 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
     )
     finalized_ir["families"] = [
         {"family": "exact_pe_decode", "status": "satisfied" if lean.get("status") == "checked" else "incomplete"},
-        {"family": "x86_semantics", "status": "satisfied" if verdict in {"pass", "fail"} else "incomplete"},
+        {"family": "x86_semantics", "status": "satisfied" if lean.get("status") == "checked" else "incomplete"},
         {"family": "executable_coverage", "status": "satisfied"},
         {"family": "roots_and_targets", "status": "satisfied"},
-        {"family": "relational_regions", "status": "satisfied" if verdict == "pass" else "violated" if verdict == "fail" else "incomplete"},
+        {
+            "family": "relational_regions",
+            "status": "satisfied" if lean.get("status") == "checked"
+            else "violated" if verdict == "fail"
+            else "incomplete",
+        },
+        {
+            "family": "whole_program_composition",
+            "status": "incomplete" if any(
+                obligation["kind"] == "whole_program_bisimulation"
+                for obligation in assumption_obligations
+            ) else "satisfied",
+        },
         {
             "family": "cfg_invariants",
             "status": "incomplete" if any(
