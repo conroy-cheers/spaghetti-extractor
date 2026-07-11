@@ -37,9 +37,9 @@ need to know what Win32 APIs do internally, but must prove both binaries perform
 the same ordered external interaction with equal symbolic arguments and consume
 equal symbolic responses and effects.
 
-## First Formal Profile
+## Checked Formal Profile
 
-The first accepted profile is `x86-pe32-lean-refinement-v1`. A final `pass`
+The current profile is `x86-pe32-lean-refinement-v2`. A final `pass`
 requires the generated theorem
 `StageA.Generated.candidateRefinesOriginal :
 StageA.Formal.ExactImageStrongRefinement proofBundle` to check in Lean. The
@@ -50,14 +50,18 @@ region and non-code spans derived from `proof-ir.json`.
 
 - PE32/i386 signatures and the selected loader fields;
 - matching image base, entrypoint, alignments, image size, and section layout;
-- successful no-import/no-relocation loader profiles on both sides;
+- exact matching import signatures, IAT RVAs, and i386 `HIGHLOW` base-relocation
+  inventories;
+- an entrypoint contained in exactly one executable section;
 - exact decoding of every mapped region by the reviewed formal instruction
   semantics;
-- equal normalized region semantics, including direct CFG targets;
+- equal normalized region semantics, including direct CFG targets, internal
+  calls and returns, and imported calls or tail jumps;
 - complete executable-span classification and syntactically valid non-code
   padding;
 - an entrypoint region and termination-sensitive trace equality from every
-  mapped region for every initial modeled state and every execution fuel.
+  mapped region for every initial modeled state, every execution fuel, and
+  every response from the ordered external environment.
 
 Capstone, pefile, Python analysis, block-map generation, and Z3 are not logical
 proof authorities for this profile. They propose mappings, diagnostics, and
@@ -65,24 +69,28 @@ local facts. Lean re-parses the exact images and checks the semantic proposition
 without importing their verdicts as axioms. The logical trusted base is the Lean
 kernel plus the reviewed `src/wincr/lean/StageA/Formal.lean` specification.
 
-This first profile is deliberately narrow and fails closed outside its model:
+The v2 profile remains deliberately bounded and fails closed outside its model:
 
-- one executable section whose start is the PE entrypoint;
-- no import or base-relocation directory;
-- only the instruction encodings implemented in `StageA.Formal.executeCode`;
-- direct branches and jumps only; calls and indirect control flow are not yet
-  accepted;
-- `ret` is a terminal environment return event rather than an internal call-stack
-  transition;
-- flags are volatile at region boundaries; the zero-condition needed by an
-  in-region `je` or `jne` is checked;
+- only PE32/i386 images and instruction encodings implemented by the normalized
+  decoder are accepted;
+- direct internal calls compose through a checked logical call stack; arbitrary
+  indirect internal calls still require a future checked target-set model;
+- imported calls and tail jumps use an uninterpreted environment over the full
+  pre-call and post-call machine state, so Stage A does not trust guessed C ABI
+  prototypes or argument counts;
+- relocation entries are checked exactly, but the theorem currently executes
+  at the preferred image base rather than quantifying over every ASLR delta;
+- flags are volatile at mapped-region boundaries. Integer flag producers and
+  their supported in-region branch predicates are modeled explicitly. Shift
+  results are modeled, but shift flags are invalidated; a later flag consumer
+  is accepted only after another modeled instruction establishes flags;
 - both sides start with the same abstract data memory. Executable image bytes are
   instruction input, not data-observable memory in this profile.
 
 These are theorem-model boundaries, not waivers. A PE or block outside them must
-produce `incomplete`. In particular, full `jq.exe` remains an expected
-`incomplete` breadth case until imports, calls, general x86 semantics, image
-memory, and the remaining CFG forms are added to the checked model.
+produce `incomplete`. Full `jq.exe` remains an expected `incomplete` breadth
+case while indirect calls, x87 state, partial-register and operand-size forms,
+and the remaining integer instruction families are added to the checked model.
 
 ## Command Surface
 

@@ -117,6 +117,8 @@
               $CC -O0 "''${common_flags[@]}" -DSTAGE_A_NO_EXTERNAL -DSTAGE_A_NO_BRANCH -o stage-a-original.exe stage_a_equivalence.S
               $CC -O2 "''${common_flags[@]}" -DSTAGE_A_NO_EXTERNAL -DSTAGE_A_NO_BRANCH -DSTAGE_A_VARIANT_B -o stage-a-candidate.exe stage_a_equivalence.S
               $CC -O2 "''${common_flags[@]}" -DSTAGE_A_NO_EXTERNAL -DSTAGE_A_NO_BRANCH -DSTAGE_A_MUTATION -o stage-a-mutated.exe stage_a_equivalence.S
+              $CC -O0 "''${common_flags[@]}" -o stage-a-calls-original.exe stage_a_calls.S -lkernel32
+              $CC -O2 "''${common_flags[@]}" -DSTAGE_A_VARIANT_B -o stage-a-calls-candidate.exe stage_a_calls.S -lkernel32
               python3 - stage-a-original.exe stage-a-candidate.exe stage-a-mutated.exe <<'PY'
               import pathlib
               import struct
@@ -137,7 +139,8 @@
               runHook preInstall
               fixture_dir="$out/share/wincr/stage-a-fixtures/symbolic-equivalence"
               mkdir -p "$fixture_dir"
-              cp stage-a-original.exe stage-a-candidate.exe stage-a-mutated.exe "$fixture_dir/"
+              cp stage-a-original.exe stage-a-candidate.exe stage-a-mutated.exe \
+                stage-a-calls-original.exe stage-a-calls-candidate.exe "$fixture_dir/"
               cat > "$fixture_dir/block-map.json" <<'JSON'
               {
                 "blocks": [
@@ -169,6 +172,22 @@
                 ]
               }
               JSON
+              cat > "$fixture_dir/block-map-calls.json" <<'JSON'
+              {
+                "blocks": [
+                  { "id": "import-call", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1000", "size": 6 }, "candidate": { "rva": "0x1000", "size": 6 } },
+                  { "id": "import-continuation", "kind": "code", "reachable": true, "original": { "rva": "0x1006", "size": 1 }, "candidate": { "rva": "0x1006", "size": 1 } },
+                  { "id": "internal-caller", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1010", "size": 5 }, "candidate": { "rva": "0x1010", "size": 5 } },
+                  { "id": "internal-continuation", "kind": "code", "reachable": true, "original": { "rva": "0x1015", "size": 1 }, "candidate": { "rva": "0x1015", "size": 1 } },
+                  { "id": "internal-callee", "kind": "code", "reachable": true, "original": { "rva": "0x1020", "size": 3 }, "candidate": { "rva": "0x1020", "size": 3 } }
+                ],
+                "waivers": [
+                  { "id": "import-call-padding", "binary": "both", "rva": "0x1007", "size": "0x9", "reason": "post-return alignment padding emitted by the fixture build" },
+                  { "id": "internal-caller-padding", "binary": "both", "rva": "0x1016", "size": "0xa", "reason": "post-return alignment padding emitted by the fixture build" },
+                  { "id": "internal-callee-padding", "binary": "both", "rva": "0x1023", "size": "0xd", "reason": "post-return alignment padding emitted by the fixture build" }
+                ]
+              }
+              JSON
               cat > "$fixture_dir/stage-a-fixture-lemmas.lean" <<'LEAN'
               namespace StageAFixture
 
@@ -181,7 +200,8 @@
                 "model": "x86-pe32-env-v1",
                 "cases": [
                   { "id": "gcc-o0-vs-gcc-o2-symbolic-equivalence", "original": "stage-a-original.exe", "candidate": "stage-a-candidate.exe", "mapping": "block-map.json", "lean_inputs": [ "stage-a-fixture-lemmas.lean" ], "expect": "pass" },
-                  { "id": "gcc-o0-vs-mutated-candidate", "original": "stage-a-original.exe", "candidate": "stage-a-mutated.exe", "mapping": "block-map-mutated.json", "lean_inputs": [ "stage-a-fixture-lemmas.lean" ], "expect": "fail" }
+                  { "id": "gcc-o0-vs-mutated-candidate", "original": "stage-a-original.exe", "candidate": "stage-a-mutated.exe", "mapping": "block-map-mutated.json", "lean_inputs": [ "stage-a-fixture-lemmas.lean" ], "expect": "fail" },
+                  { "id": "mingw-import-relocation-call-composition", "original": "stage-a-calls-original.exe", "candidate": "stage-a-calls-candidate.exe", "mapping": "block-map-calls.json", "expect": "pass" }
                 ]
               }
               JSON
@@ -204,6 +224,9 @@
               wincr stage-a-check-proof \
                 --report "$TMPDIR/stage-a-suite/cases/gcc-o0-vs-gcc-o2-symbolic-equivalence" \
                 --out "$TMPDIR/stage-a-suite/formal-proof-check.json"
+              wincr stage-a-check-proof \
+                --report "$TMPDIR/stage-a-suite/cases/mingw-import-relocation-call-composition" \
+                --out "$TMPDIR/stage-a-suite/formal-proof-check-calls.json"
               mkdir -p "$out"
               cp -R "$TMPDIR/stage-a-suite/." "$out/"
             '';

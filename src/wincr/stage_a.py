@@ -55,7 +55,7 @@ CHECKED_GENERATED_MAPPING_PROOF_RULES = {
 CHECKED_GENERATED_MAPPING_GENERIC_PROOF_RULES = {
     generic_proof_rule(rule) for rule in CHECKED_GENERATED_MAPPING_PROOF_RULES
 }
-STAGE_A_FORMAL_PROFILE_ID = "x86-pe32-lean-refinement-v1"
+STAGE_A_FORMAL_PROFILE_ID = "x86-pe32-lean-refinement-v2"
 STAGE_A_FORMAL_APPROVED_AXIOMS = {"propext", "Quot.sound"}
 STAGE_A_FORMAL_DIAGNOSTIC_LIMIT = 200
 STAGE_A_LEAN_CACHE_FORMAT = "stage-a-lean-cache-v1"
@@ -88,6 +88,7 @@ ABI_FIXED_STDCALL_IMPORT_STACK_ARG_COUNTS = {
     "entercriticalsection": 1,
     "getconsolemode": 2,
     "getlasterror": 0,
+    "gettickcount": 0,
     "getmodulehandlea": 1,
     "getprocaddress": 2,
     "getstdhandle": 1,
@@ -12636,7 +12637,7 @@ def _recover_basic_blocks(binary: StageABinary, rva_start: int, rva_end: int) ->
             target = _resolved_branch_target(binary, insn)
             if target is not None and rva_start <= target < rva_end:
                 starts.add(target)
-            if _is_noreturn_import_call(binary, insn) and next_rva < rva_end:
+            if next_rva < rva_end:
                 starts.add(next_rva)
 
     ordered_starts = [start for start in sorted(starts) if start in insn_by_rva]
@@ -13828,6 +13829,17 @@ def _block_structure_analysis(binary: StageABinary, side: BlockSide, binary_name
         mnemonic = insn.mnemonic
         report = instruction_reports[index]
         if _is_structural_import_call(binary, insn):
+            if not _is_noreturn_import_call(binary, insn):
+                edges.append(
+                    {
+                        "kind": "fallthrough",
+                        "target_rva": rva + int(insn.size),
+                        "instruction_rva": rva,
+                        "mnemonic": mnemonic,
+                    }
+                )
+            if index != last_index:
+                blockers.append(_unsplit_block_blocker(block_id, binary_name, report))
             continue
         if _is_conditional_jump(mnemonic):
             target = _resolved_branch_target(binary, insn)
@@ -13862,6 +13874,16 @@ def _block_structure_analysis(binary: StageABinary, side: BlockSide, binary_name
                 blockers.append(_unknown_target_blocker(block_id, binary_name, report))
             else:
                 edges.append({"kind": "call", "target_rva": target, "instruction_rva": rva, "mnemonic": mnemonic})
+            edges.append(
+                {
+                    "kind": "fallthrough",
+                    "target_rva": rva + int(insn.size),
+                    "instruction_rva": rva,
+                    "mnemonic": mnemonic,
+                }
+            )
+            if index != last_index:
+                blockers.append(_unsplit_block_blocker(block_id, binary_name, report))
             continue
         if mnemonic == "ret":
             if index != last_index:
@@ -13891,7 +13913,7 @@ def _is_structural_import_call(binary: StageABinary, insn: Any) -> bool:
 
 def _instruction_ends_basic_block(insn: Any) -> bool:
     mnemonic = insn.mnemonic
-    return mnemonic == "ret" or mnemonic in {"jmp", "ljmp"} or _is_conditional_jump(mnemonic)
+    return mnemonic in {"call", "ret", "jmp", "ljmp"} or _is_conditional_jump(mnemonic)
 
 
 def _unknown_target_blocker(block_id: str, binary_name: str, instruction: dict[str, Any]) -> dict[str, Any]:
@@ -13937,8 +13959,15 @@ def _direct_cfg_edges(binary: StageABinary, side: BlockSide) -> list[dict[str, A
         target = _resolved_branch_target(binary, last)
         return [] if target is None else [{"kind": "jump", "target_rva": target, "instruction_rva": last_rva, "mnemonic": mnemonic}]
     if mnemonic == "call":
+        if _external_import_call(binary, last) is not None:
+            return [] if _is_noreturn_import_call(binary, last) else [
+                {"kind": "fallthrough", "target_rva": fallthrough_rva, "instruction_rva": last_rva, "mnemonic": mnemonic}
+            ]
         target = _resolved_branch_target(binary, last)
-        return [] if target is None else [{"kind": "call", "target_rva": target, "instruction_rva": last_rva, "mnemonic": mnemonic}]
+        edges = [{"kind": "fallthrough", "target_rva": fallthrough_rva, "instruction_rva": last_rva, "mnemonic": mnemonic}]
+        if target is not None:
+            edges.insert(0, {"kind": "call", "target_rva": target, "instruction_rva": last_rva, "mnemonic": mnemonic})
+        return edges
     if mnemonic == "ret":
         return []
     return [{"kind": "fallthrough", "target_rva": side.rva_end, "instruction_rva": last_rva, "mnemonic": mnemonic}]
@@ -17974,8 +18003,17 @@ def _lean_byte_list_literal(data: bytes, *, values_per_line: int = 32) -> str:
     return "[\n    " + ",\n    ".join(rows) + "\n  ]"
 
 
-def _formal_v1_supported_instruction(insn: Any) -> bool:
+def _formal_supported_instruction(insn: Any) -> bool:
     encoded = bytes(insn.bytes)
+    opcode = encoded[0] if encoded else -1
+    modrm_group = ((encoded[1] >> 3) & 7) if len(encoded) >= 2 else -1
+    normalized_nops = {
+        b"\x66\x90",
+        b"\x2e\x8d\x74\x26\x00",
+        b"\x2e\x8d\xb4\x26\x00\x00\x00\x00",
+        b"\x8d\xb6\x00\x00\x00\x00",
+        b"\x8d\xb4\x26\x00\x00\x00\x00",
+    }
     return bool(
         encoded
         in {
@@ -18005,10 +18043,25 @@ def _formal_v1_supported_instruction(insn: Any) -> bool:
             b"\x29\xc0",
             b"\x31\xc0",
         }
+        or encoded in normalized_nops
         or (len(encoded) == 5 and encoded[0] == 0xB8)
+        or (len(encoded) == 5 and 0xB8 <= encoded[0] <= 0xBF)
+        or (len(encoded) == 5 and encoded[0] in {0x05, 0x0D, 0x25, 0x2D, 0x35, 0xA1, 0xA3})
         or (len(encoded) == 5 and encoded[0] == 0x3D)
+        or (len(encoded) == 5 and encoded[0] in {0xE8, 0xE9})
+        or (len(encoded) == 6 and encoded[:2] in {b"\xff\x15", b"\xff\x25"})
+        or (len(encoded) == 6 and encoded[:2] in {b"\x0f\x82", b"\x0f\x83", b"\x0f\x84", b"\x0f\x85", b"\x0f\x87", b"\x0f\x8e", b"\x0f\x8f"})
+        or (len(encoded) >= 3 and encoded[:2] in {b"\x0f\xb6", b"\x0f\xb7"})
         or (len(encoded) == 3 and encoded[:2] == b"\x83\xf8")
+        or (len(encoded) == 3 and opcode == 0xC2)
         or (len(encoded) == 2 and encoded[0] in {0x74, 0x75, 0xEB})
+        or opcode in {0x01, 0x03, 0x09, 0x0B, 0x21, 0x23, 0x29, 0x2B, 0x31, 0x33, 0x39, 0x3B, 0x85, 0x89, 0x8B, 0x8D}
+        or (opcode in {0x81, 0x83} and modrm_group in {0, 1, 4, 5, 6, 7})
+        or (opcode == 0xC7 and modrm_group == 0)
+        or (opcode in {0xC1, 0xD1, 0xD3} and modrm_group in {4, 5, 7})
+        or (opcode == 0xF7 and modrm_group in {2, 3})
+        or 0x50 <= opcode <= 0x5F
+        or opcode in {0x72, 0x73, 0x77, 0x7E, 0x7F}
     )
 
 
@@ -18021,39 +18074,35 @@ def _formal_profile_side_diagnostics(side: str, path: Path, mapping_contract: di
     executable = [section for section in binary.sections if section.executable]
     if binary.bitness != 32:
         issues.append({"side": side, "category": "formal_profile_bitness", "observed": binary.bitness, "expected": 32})
-    if len(executable) != 1:
-        issues.append({"side": side, "category": "formal_executable_section_count", "observed": len(executable), "expected": 1})
+    entry_sections = [
+        section
+        for section in executable
+        if section.rva_start <= binary.entrypoint_rva < section.rva_end
+    ]
+    if len(entry_sections) != 1:
+        issues.append(
+            {
+                "side": side,
+                "category": "formal_entrypoint_executable_section_count",
+                "observed": len(entry_sections),
+                "expected": 1,
+            }
+        )
         return issues
-    section = executable[0]
-    if binary.entrypoint_rva != section.rva_start:
+    unsupported_relocations = sorted(
+        {
+            int(entry.type)
+            for block in getattr(binary.pe, "DIRECTORY_ENTRY_BASERELOC", []) or []
+            for entry in block.entries
+            if int(entry.type) not in {0, 3}
+        }
+    )
+    if unsupported_relocations:
         issues.append(
             {
                 "side": side,
-                "category": "formal_entrypoint_not_section_start",
-                "entrypoint_rva": binary.entrypoint_rva,
-                "section_rva": section.rva_start,
-            }
-        )
-    import_directory = binary.pe.OPTIONAL_HEADER.DATA_DIRECTORY[1]
-    if int(import_directory.VirtualAddress) != 0 or int(import_directory.Size) != 0:
-        issues.append(
-            {
-                "side": side,
-                "category": "formal_import_directory_unsupported",
-                "rva": int(import_directory.VirtualAddress),
-                "size": int(import_directory.Size),
-            }
-        )
-    if binary.imports:
-        issues.append({"side": side, "category": "formal_imports_unsupported", "count": len(binary.imports)})
-    relocation_directory = binary.pe.OPTIONAL_HEADER.DATA_DIRECTORY[5]
-    if int(relocation_directory.VirtualAddress) != 0 or int(relocation_directory.Size) != 0:
-        issues.append(
-            {
-                "side": side,
-                "category": "formal_relocations_unsupported",
-                "rva": int(relocation_directory.VirtualAddress),
-                "size": int(relocation_directory.Size),
+                "category": "formal_relocation_kind_unsupported",
+                "kinds": unsupported_relocations,
             }
         )
     dis = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
@@ -18079,7 +18128,7 @@ def _formal_profile_side_diagnostics(side: str, path: Path, mapping_contract: di
             )
             continue
         for insn in decoded:
-            if not _formal_v1_supported_instruction(insn):
+            if not _formal_supported_instruction(insn):
                 issues.append(
                     {
                         "side": side,
@@ -18093,7 +18142,7 @@ def _formal_profile_side_diagnostics(side: str, path: Path, mapping_contract: di
                 )
                 if len(issues) >= STAGE_A_FORMAL_DIAGNOSTIC_LIMIT:
                     return issues
-        if decoded[-1].mnemonic not in {"ret", "je", "jne", "jmp"}:
+        if decoded[-1].mnemonic not in {"ret", "jmp", "call"} and not _is_conditional_jump(decoded[-1].mnemonic):
             issues.append(
                 {
                     "side": side,
@@ -18245,7 +18294,9 @@ def _build_formal_lean_bundle(
             "observables": ["registers", "memory", "return_target", "logical_cfg_outcome"],
             "executable_coverage_checked": True,
             "direct_cfg_composition_checked": True,
-            "external_environment": "not_applicable_no_imports_v1",
+            "internal_call_return_composition_checked": True,
+            "external_environment": "ordered_uninterpreted_import_environment_v2",
+            "relocations": "exact_matching_i386_highlow_inventory_at_preferred_image_base",
             "flags": "volatile_at_region_boundaries_and_internal_branch_conditions_checked_in_region",
         },
         "original_sha256": sha256_bytes(original_bytes) if error is None else None,
