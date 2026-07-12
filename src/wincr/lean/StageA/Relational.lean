@@ -630,6 +630,66 @@ def Memory.read32 (memory : Memory) (address : Word) : Word :=
   let b3 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 3))).shiftLeft 24
   b0 ||| b1 ||| b2 ||| b3
 
+theorem read8AfterWriteValue_eq_write32 (memory : Memory)
+    (address writeAddress value : Word) :
+    read8AfterWriteValue address writeAddress value
+      (BitVec.zeroExtend 32 (memory address)) =
+      BitVec.zeroExtend 32 ((memory.write32 writeAddress value) address) := by
+  unfold read8AfterWriteValue Memory.write32
+  by_cases h0 : address = writeAddress
+  · simp [h0]
+  · by_cases h1 : address = writeAddress + BitVec.ofNat 32 1
+    · simp [h1]
+    · by_cases h2 : address = writeAddress + BitVec.ofNat 32 2
+      · simp [h2]
+      · by_cases h3 : address = writeAddress + BitVec.ofNat 32 3
+        · simp [h3]
+        · simp [h0, h1, h2, h3]
+
+def _root_.StageA.Formal.Expr.read8AfterWritesFrom (address prior : Expr) :
+    List (Expr × Expr) → Expr
+  | [] => prior
+  | write :: tail =>
+      read8AfterWritesFrom address
+        (.read8AfterWrite address write.1 write.2 prior) tail
+
+def _root_.StageA.Formal.Expr.read8AfterWrites
+    (address : Expr) (writes : List (Expr × Expr)) : Expr :=
+  address.read8AfterWritesFrom (.read8 address) writes
+
+theorem _root_.StageA.Formal.Expr.eval_read8AfterWritesFrom (state : MachineState)
+    (address prior : Expr) (writes : List (Expr × Expr)) (memory : Memory)
+    (priorRead : prior.eval state =
+      BitVec.zeroExtend 32 (memory (address.eval state))) :
+    (address.read8AfterWritesFrom prior writes).eval state =
+      BitVec.zeroExtend 32
+        ((applyConcreteWrites memory (evalNormalizedWrites state writes))
+          (address.eval state)) := by
+  induction writes generalizing prior memory with
+  | nil => simpa [Expr.read8AfterWritesFrom, applyConcreteWrites, evalNormalizedWrites]
+  | cons write tail ih =>
+      apply ih
+      simpa [Expr.eval, priorRead] using
+        read8AfterWriteValue_eq_write32 memory (address.eval state)
+          (write.1.eval state) (write.2.eval state)
+
+theorem _root_.StageA.Formal.Expr.eval_read8AfterWrites (state : MachineState)
+    (address : Expr) (writes : List (Expr × Expr)) :
+    (address.read8AfterWrites writes).eval state =
+      BitVec.zeroExtend 32
+        ((applyConcreteWrites state.memory (evalNormalizedWrites state writes))
+          (address.eval state)) := by
+  apply Expr.eval_read8AfterWritesFrom
+  rfl
+
+def _root_.StageA.Formal.Expr.read32AfterWrites
+    (address : Expr) (writes : List (Expr × Expr)) : Expr :=
+  let b0 := address.read8AfterWrites writes
+  let b1 := .shiftLeft ((Expr.add address (Expr.constant 1)).read8AfterWrites writes) 8
+  let b2 := .shiftLeft ((Expr.add address (Expr.constant 2)).read8AfterWrites writes) 16
+  let b3 := .shiftLeft ((Expr.add address (Expr.constant 3)).read8AfterWrites writes) 24
+  .bitOr (.bitOr b0 b1) (.bitOr b2 b3)
+
 @[simp] theorem assembledMemoryRead32_eq (memory : Memory) (address : Word) :
     (BitVec.zeroExtend 32 (memory address) |||
         (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 1))).shiftLeft 8) |||
@@ -639,6 +699,17 @@ def Memory.read32 (memory : Memory) (address : Word) : Word :=
   unfold Memory.read32
   symm
   apply BitVec.or_assoc
+
+theorem _root_.StageA.Formal.Expr.eval_read32AfterWrites
+    (state : MachineState) (address : Expr) (writes : List (Expr × Expr)) :
+    (address.read32AfterWrites writes).eval state =
+      Memory.read32
+        (applyConcreteWrites state.memory (evalNormalizedWrites state writes))
+        (address.eval state) := by
+  simpa [Expr.read32AfterWrites, Expr.eval, Expr.eval_read8AfterWrites] using
+    assembledMemoryRead32_eq
+      (applyConcreteWrites state.memory (evalNormalizedWrites state writes))
+      (address.eval state)
 
 @[simp] theorem assembledMemoryRead32OfNat_eq (memory : Memory) (address : Nat) :
     (BitVec.zeroExtend 32 (memory (BitVec.ofNat 32 address)) |||
@@ -704,6 +775,31 @@ theorem memoryRelated_with_relocations (originalImageBase candidateImageBase : N
     relocatedMemoryRelated originalImageBase candidateImageBase targets values original candidate := by
   simpa [memoryRelated, some] using related
 
+theorem memoryRelated_after_no_writes (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (original candidate : Memory)
+    (related : memoryRelated originalImageBase candidateImageBase targets values
+      original candidate) :
+    memoryRelated originalImageBase candidateImageBase targets values
+      (applyConcreteWrites original []) (applyConcreteWrites candidate []) := by
+  simpa [applyConcreteWrites] using related
+
+theorem memoryRelated_without_values_after_identical_writes
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (original candidate : Memory)
+    (writes : List (Word × Word))
+    (related : memoryRelated originalImageBase candidateImageBase targets []
+      original candidate) :
+    memoryRelated originalImageBase candidateImageBase targets []
+      (applyConcreteWrites original writes) (applyConcreteWrites candidate writes) := by
+  have memoryEqual : candidate = original := by
+    have exactMemory := memoryRelated_without_relocations originalImageBase
+      candidateImageBase targets [] original candidate (by rfl) related
+    funext address
+    simpa using congrFun exactMemory address
+  subst candidate
+  simp [memoryRelated, hasRelocationWords]
+
 def writesRelated (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair) (values : List ValueTargetPair) :
     List (Word × Word) -> List (Word × Word) -> Bool
@@ -722,6 +818,66 @@ theorem writesRelated_self (originalImageBase candidateImageBase : Nat)
   | nil => rfl
   | cons write tail ih =>
       simp [writesRelated, wordRelated, ih]
+
+inductive MemoryObservationRelation where
+  | exact
+  | relatedWord
+deriving Repr, DecidableEq
+
+structure MemoryObservationRequirement where
+  id : Nat
+  relation : MemoryObservationRelation
+  original : Expr
+  candidate : Expr
+deriving Repr, DecidableEq
+
+def MemoryObservationRequirement.holds
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (requirement : MemoryObservationRequirement)
+    (originalState candidateState : MachineState) : Bool :=
+  let originalValue := requirement.original.eval originalState
+  let candidateValue := requirement.candidate.eval candidateState
+  match requirement.relation with
+  | .exact => originalValue == candidateValue
+  | .relatedWord =>
+      wordRelated originalImageBase candidateImageBase targets values
+        originalValue candidateValue
+
+def memoryObservationContractHolds
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (requirements : List MemoryObservationRequirement)
+    (originalState candidateState : MachineState) : Bool :=
+  requirements.all fun requirement => requirement.holds originalImageBase
+    candidateImageBase targets values originalState candidateState
+
+@[simp] theorem memoryObservationContractHolds_nil
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (originalState candidateState : MachineState) :
+    memoryObservationContractHolds originalImageBase candidateImageBase targets values []
+      originalState candidateState = true := rfl
+
+structure X87MemoryObservationRequirement where
+  id : Nat
+  original : X87Expr
+  candidate : X87Expr
+deriving Repr, DecidableEq
+
+def X87MemoryObservationRequirement.holds
+    (requirement : X87MemoryObservationRequirement)
+    (originalState candidateState : MachineState) : Bool :=
+  requirement.original.eval originalState == requirement.candidate.eval candidateState
+
+def x87MemoryObservationContractHolds
+    (requirements : List X87MemoryObservationRequirement)
+    (originalState candidateState : MachineState) : Bool :=
+  requirements.all fun requirement => requirement.holds originalState candidateState
+
+@[simp] theorem x87MemoryObservationContractHolds_nil
+    (originalState candidateState : MachineState) :
+    x87MemoryObservationContractHolds [] originalState candidateState = true := rfl
 
 def wordsRelated (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair) (values : List ValueTargetPair) :
@@ -1100,6 +1256,26 @@ def allCodeTargets (regions : List RegionRelation) : List CodeTargetPair :=
 
 def allValueTargets (regions : List RegionRelation) : List ValueTargetPair :=
   regions.flatMap (·.values)
+
+def MemoryObservationTransitionClosed
+    (originalImageBase candidateImageBase : Nat)
+    (source : RegionRelation)
+    (observationTargets : List CodeTargetPair)
+    (observationValues : List ValueTargetPair)
+    (requirements : List MemoryObservationRequirement)
+    (x87Requirements : List X87MemoryObservationRequirement)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Prop :=
+  ∀ originalState candidateState,
+    composableStatesRelated originalImageBase candidateImageBase source.targets
+      source.flagInputs source.bounds source.addressSeparations source.values source.inputs
+      originalState candidateState →
+    memoryObservationContractHolds originalImageBase candidateImageBase observationTargets
+      observationValues requirements
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState) = true ∧
+    x87MemoryObservationContractHolds x87Requirements
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState) = true
 
 def resolveMappedCodeTarget (candidate : Bool) (imageBase : Nat)
     (targets : List CodeTargetPair) (address : Word) : Option Nat :=
@@ -1584,6 +1760,37 @@ theorem Expr.eval_substituteRegisters (behavior : NormalizedSymbolicBehavior)
   induction expression using Expr.rec (motive_2 := fun _ => True) <;>
     simp_all [Expr.pureInvariant, Expr.substituteRegisters, Expr.eval,
       RelationalBehavior.nextMachineState, evalNormalizedRegisters_get]
+
+def _root_.StageA.Formal.Expr.pullbackMemoryRead
+    (behavior : NormalizedSymbolicBehavior) : Expr → Option Expr
+  | .read8 address =>
+      if address.pureInvariant then
+        some ((address.substituteRegisters behavior.registers).read8AfterWrites behavior.writes)
+      else none
+  | .read32 address =>
+      if address.pureInvariant then
+        some ((address.substituteRegisters behavior.registers).read32AfterWrites behavior.writes)
+      else none
+  | _ => none
+
+theorem _root_.StageA.Formal.Expr.eval_pullbackMemoryRead
+    (behavior : NormalizedSymbolicBehavior) (state : MachineState)
+    (expression pulled : Expr)
+    (checked : expression.pullbackMemoryRead behavior = some pulled) :
+    pulled.eval state = expression.eval ((behavior.eval state).nextMachineState state) := by
+  cases expression <;> simp [Expr.pullbackMemoryRead] at checked
+  case read8 address =>
+    rcases checked with ⟨safe, equal⟩
+    subst pulled
+    rw [Expr.eval_read8AfterWrites,
+      Expr.eval_substituteRegisters behavior state address safe]
+    rfl
+  case read32 address =>
+    rcases checked with ⟨safe, equal⟩
+    subst pulled
+    rw [Expr.eval_read32AfterWrites,
+      Expr.eval_substituteRegisters behavior state address safe]
+    rfl
 
 theorem outputFlag_eval (behavior : NormalizedSymbolicBehavior) (state : MachineState)
     (index : Nat) (safe : [0, 2, 6, 7, 10, 11].contains index = true) :
@@ -2597,6 +2804,33 @@ def valueRegionsClosed (originalPe candidatePe : PE32)
     (originalRelocations candidateRelocations : List BaseRelocation)
     (regions : List RegionRelation) : Bool :=
   regions.all (valueRegionClosed originalPe candidatePe originalRelocations candidateRelocations)
+
+def AllMappedRelocationImageRelations (originalPe candidatePe : PE32)
+    (originalRelocations candidateRelocations : List BaseRelocation)
+    (regions : List RegionRelation) : Prop :=
+  ∀ region, region ∈ regions →
+    ∀ object, object ∈ region.values →
+      object.mappedSize > 0 → object.relocationOffsets ≠ [] →
+        valueTargetValid originalPe candidatePe originalRelocations candidateRelocations
+          region.targets region.values object = true
+
+theorem allMappedRelocationImageRelations_of_valueRegionsClosed
+    (originalPe candidatePe : PE32)
+    (originalRelocations candidateRelocations : List BaseRelocation)
+    (regions : List RegionRelation)
+    (checked : valueRegionsClosed originalPe candidatePe originalRelocations
+      candidateRelocations regions = true) :
+    AllMappedRelocationImageRelations originalPe candidatePe originalRelocations
+      candidateRelocations regions := by
+  intro region regionMember object objectMember _ _
+  unfold valueRegionsClosed at checked
+  simp only [List.all_eq_true] at checked
+  have regionChecked := checked region regionMember
+  unfold valueRegionClosed at regionChecked
+  simp only [Bool.and_eq_true] at regionChecked
+  have objectsChecked := regionChecked.2
+  simp only [List.all_eq_true] at objectsChecked
+  exact objectsChecked object objectMember
 
 def valueTargetsClosed (originalPe candidatePe : PE32) (regions : List RegionRelation) : Bool :=
   match parseRelocations originalPe, parseRelocations candidatePe with

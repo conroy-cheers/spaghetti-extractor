@@ -449,6 +449,14 @@ class StageARelationalTests(unittest.TestCase):
             self.assertEqual(extracted["original"]["registers"]["eax"]["op"], "input_reg")
             self.assertEqual(extracted["original"]["outcome"]["op"], "jump")
             self.assertEqual(extracted["original"]["outcome"]["target"], 0)
+            memory_contracts = json.loads(
+                (prepared / "relational-memory-contracts.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                memory_contracts["format"], "stage-a-relational-memory-contracts-v1"
+            )
+            self.assertEqual(memory_contracts["counts"]["regions"], 1)
+            self.assertEqual(memory_contracts["counts"]["read_observations"], 0)
 
             second = root / "prepared-second"
             stage_a_prepare_relational(
@@ -469,6 +477,19 @@ class StageARelationalTests(unittest.TestCase):
                 (prepared / "relational-semantic-ir.json").read_bytes(),
                 (second / "relational-semantic-ir.json").read_bytes(),
             )
+            self.assertEqual(
+                (prepared / "relational-memory-contracts.json").read_bytes(),
+                (second / "relational-memory-contracts.json").read_bytes(),
+            )
+
+            memory_contract_path = prepared / "relational-memory-contracts.json"
+            memory_contract_bytes = memory_contract_path.read_bytes()
+            memory_contract_path.write_bytes(memory_contract_bytes + b"\n")
+            with self.assertRaisesRegex(
+                StageAInputError, "relational-memory-contracts.json"
+            ):
+                _validate_prepared_relational(prepared)
+            memory_contract_path.write_bytes(memory_contract_bytes)
 
             source = prepared / "lean" / "StageA" / "RelationalBundle.lean"
             source.write_text(source.read_text(encoding="utf-8") + "\n", encoding="utf-8")
@@ -1201,14 +1222,23 @@ end StageA.FlagsCompose
             }
             self.assertEqual(assumption_kinds, {
                 "cfg_bound_invariant": "incomplete",
-                "relocation_aware_memory_relation": "incomplete",
+                "mapped_relocation_image_relation": "proved",
                 "whole_program_bisimulation": "incomplete",
             })
             self.assertEqual(proof_ir["status"], "incomplete")
-            self.assertEqual(result["counts"]["incomplete_assumptions"], 3)
+            self.assertEqual(result["counts"]["incomplete_assumptions"], 2)
+            relocation = next(
+                obligation for obligation in proof_ir["obligations"]
+                if obligation["kind"] == "mapped_relocation_image_relation"
+            )
+            self.assertEqual(
+                relocation["evidence"]["kind"],
+                "lean_checked_mapped_relocation_image_relation",
+            )
             bundle = (root / "report" / "lean" / "StageA" / "RelationalBundle.lean").read_text(
                 encoding="utf-8"
             )
+            self.assertIn("GeneratedMappedRelocationImageCertificate", bundle)
             self.assertIn("MappedIndexedAddress", bundle)
             self.assertIn("originalExpression := some", bundle)
             self.assertIn("Expr.bitAnd", bundle)
@@ -1257,8 +1287,23 @@ end StageA.FlagsCompose
             }
             self.assertEqual(assumption_kinds, {
                 "cfg_address_separation_invariant",
+                "memory_transition_preservation",
                 "whole_program_bisimulation",
             })
+            transition = next(
+                obligation for obligation in proof_ir["obligations"]
+                if obligation["kind"] == "memory_transition_preservation"
+            )
+            self.assertEqual(
+                transition["id"],
+                "memory-transition:stack-write-relocated-read-loop",
+            )
+            self.assertEqual(
+                transition["repair_class"], "identical_symbolic_write_pullback"
+            )
+            self.assertEqual(
+                proof_ir["memory_transition_summary"]["transition_obligations"], 1
+            )
             self.assertEqual(proof_ir["status"], "incomplete")
 
             replay = stage_a_check_relational_proof(report=report)

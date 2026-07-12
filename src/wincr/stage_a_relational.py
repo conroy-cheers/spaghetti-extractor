@@ -561,7 +561,8 @@ def stage_a_prove_relational(
             "pe32_i386_only",
             "identity_address_memory_relation",
             "explicit_register_and_code_target_relations",
-            "translated_memory_objects_require_future_checked_lowering",
+            "mapped_object_images_are_checked_at_relocation_word_granularity",
+            "dynamic_memory_transition_preservation_requires_separate_closure",
         ],
     }
     write_json(out / "trusted-base.json", trusted_base)
@@ -625,13 +626,20 @@ def stage_a_prove_relational(
     write_json(out / "relation-contract.json", normalized)
     proof_ir = _proof_ir(original_bin, candidate_bin, normalized)
     write_json(out / "relational-proof-ir.json", proof_ir)
-    write_json(
-        out / "relational-semantic-ir.json",
-        _relational_semantic_ir(original_bin, candidate_bin, normalized, behaviors),
+    semantic_ir = _relational_semantic_ir(
+        original_bin, candidate_bin, normalized, behaviors
     )
+    write_json(out / "relational-semantic-ir.json", semantic_ir)
+    memory_contracts = _relational_memory_contracts(
+        original_bin, candidate_bin, normalized, behaviors
+    )
+    write_json(out / "relational-memory-contracts.json", memory_contracts)
     invariant_synthesis = _synthesize_relational_invariants(normalized, behaviors)
     write_json(out / "relational-invariants.json", invariant_synthesis)
     proof_ir = _attach_invariant_synthesis(proof_ir, invariant_synthesis)
+    proof_ir = _attach_memory_transition_analysis(
+        proof_ir, normalized, behaviors, memory_contracts
+    )
     write_json(out / "relational-proof-ir.json", proof_ir)
     bundle_path = out / "lean" / "StageA" / "RelationalBundle.lean"
     shard_threshold = max(
@@ -664,6 +672,9 @@ def stage_a_prove_relational(
                 "relation_contract_sha256": sha256_file(out / "relation-contract.json"),
                 "proof_ir_sha256": sha256_file(out / "relational-proof-ir.json"),
                 "semantic_ir_sha256": sha256_file(out / "relational-semantic-ir.json"),
+                "memory_contracts_sha256": sha256_file(
+                    out / "relational-memory-contracts.json"
+                ),
                 "invariants_sha256": sha256_file(out / "relational-invariants.json"),
                 "module_graph_sha256": sha256_file(out / "module-graph.json"),
                 "expected_final_theorem": graph["expected_final_theorem"],
@@ -954,7 +965,8 @@ def stage_a_build_relational(
     for name in (
         "prepared-proof.json", "module-graph.json", "relation-contract.json",
         "relational-proof-ir.json", "relational-semantic-ir.json",
-        "relational-invariants.json", "trusted-base.json", "semantic-gaps.json",
+        "relational-memory-contracts.json", "relational-invariants.json",
+        "trusted-base.json", "semantic-gaps.json",
     ):
         source = prepared / name
         if source.is_file():
@@ -1034,6 +1046,19 @@ def _finalize_nix_proof_ir(
                 "status": "proved",
                 "evidence": invariant_evidence,
             })
+        elif theorem_checked and obligation["kind"] == "mapped_relocation_image_relation":
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "evidence": {
+                    **evidence,
+                    "kind": "lean_checked_mapped_relocation_image_relation",
+                    "lemma": (
+                        "StageA.Relational."
+                        "allMappedRelocationImageRelations_of_valueRegionsClosed"
+                    ),
+                },
+            })
         else:
             finalized_obligations.append(obligation)
     assumption_obligations = [
@@ -1070,7 +1095,10 @@ def _finalize_nix_proof_ir(
         {
             "family": "memory_relation",
             "status": "incomplete" if any(
-                obligation["kind"] == "relocation_aware_memory_relation"
+                obligation["kind"] in {
+                    "mapped_relocation_image_relation",
+                    "memory_transition_preservation",
+                }
                 for obligation in assumption_obligations
             ) else "satisfied",
         },
@@ -1433,6 +1461,7 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         "relation_contract_sha256": prepared / "relation-contract.json",
         "proof_ir_sha256": prepared / "relational-proof-ir.json",
         "semantic_ir_sha256": prepared / "relational-semantic-ir.json",
+        "memory_contracts_sha256": prepared / "relational-memory-contracts.json",
         "invariants_sha256": prepared / "relational-invariants.json",
         "module_graph_sha256": prepared / "module-graph.json",
     }
@@ -2259,7 +2288,7 @@ def _proof_ir(original: StageABinary, candidate: StageABinary, contract: dict[st
         for region in contract["regions"]
         if region.get("address_separations")
     )
-    obligations.extend(_mapped_relocation_memory_obligations(original, candidate, contract))
+    obligations.extend(_mapped_relocation_image_obligations(original, candidate, contract))
     obligations.append({
         "id": "composition:whole-image-weak-bisimulation",
         "kind": "whole_program_bisimulation",
@@ -2313,7 +2342,7 @@ def _proof_ir(original: StageABinary, candidate: StageABinary, contract: dict[st
     }
 
 
-def _mapped_relocation_memory_obligations(
+def _mapped_relocation_image_obligations(
     original: StageABinary,
     candidate: StageABinary,
     contract: dict[str, Any],
@@ -2355,15 +2384,150 @@ def _mapped_relocation_memory_obligations(
                 continue
             obligations.append({
                 "id": f"memory:{region['id']}:{target['id']}",
-                "kind": "relocation_aware_memory_relation",
-                "status": "incomplete",
+                "kind": "mapped_relocation_image_relation",
+                "status": "pending_lean",
                 "region_id": region["id"],
                 "value_target_id": target["id"],
                 "differing_relocation_cells": differing_cells,
-                "blocker": "bytewise mapped-memory pullback cannot represent related but non-identical relocation words",
-                "next_action": "use a checked relocation-word memory relation and prove its initialization and transition preservation",
+                "claim": (
+                    "the exact original and candidate PE section images have matching HIGHLOW "
+                    "relocation cells whose dword contents satisfy wordRelated"
+                ),
+                "next_action": (
+                    "check valueTargetValid from both exact PE images and expose the result as "
+                    "AllMappedRelocationImageRelations"
+                ),
             })
     return obligations
+
+
+def _attach_memory_transition_analysis(
+    proof_ir: dict[str, Any],
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    memory_contracts: dict[str, Any],
+) -> dict[str, Any]:
+    regions_with_writes = 0
+    write_pairs = 0
+    identical_write_regions = 0
+    differing_write_regions = 0
+    bulk_copy_regions = 0
+    atomic_compare_exchange_regions = 0
+    transition_obligations: list[dict[str, Any]] = []
+    for region_index, (region, behavior) in enumerate(
+        zip(contract["regions"], behaviors, strict=True)
+    ):
+        original = behavior.get("original_ir") or {}
+        candidate = behavior.get("candidate_ir") or {}
+        original_writes = original.get("writes") or []
+        candidate_writes = candidate.get("writes") or []
+        has_writes = bool(original_writes or candidate_writes)
+        if has_writes:
+            regions_with_writes += 1
+            write_pairs += max(len(original_writes), len(candidate_writes))
+            if original_writes == candidate_writes:
+                identical_write_regions += 1
+            else:
+                differing_write_regions += 1
+        original_outcome = original.get("outcome") or {}
+        candidate_outcome = candidate.get("outcome") or {}
+        has_bulk_copy = (
+            original_outcome.get("op") == "bulk_copy"
+            or candidate_outcome.get("op") == "bulk_copy"
+        )
+        has_atomic_compare_exchange = (
+            original_outcome.get("op") == "atomic_compare_exchange"
+            or candidate_outcome.get("op") == "atomic_compare_exchange"
+        )
+        if has_bulk_copy:
+            bulk_copy_regions += 1
+        if has_atomic_compare_exchange:
+            atomic_compare_exchange_regions += 1
+
+        if not (has_writes or has_bulk_copy or has_atomic_compare_exchange):
+            continue
+        if has_atomic_compare_exchange:
+            repair_class = "atomic_read_modify_write_relation"
+            next_action = (
+                "prove the compared words and replacement words are related, both sides take the "
+                "same success branch, and the conditional paired write preserves successor reads"
+            )
+        elif has_bulk_copy:
+            repair_class = "bulk_copy_range_relation"
+            next_action = (
+                "prove count and direction agree, source ranges satisfy the required read relation, "
+                "destination ranges correspond, and overlap semantics preserve successor reads"
+            )
+        elif original_writes == candidate_writes:
+            repair_class = "identical_symbolic_write_pullback"
+            next_action = (
+                "evaluate the shared write expressions under the entry relation and pull each "
+                "successor memory-read predicate backward through Memory.write32"
+            )
+        else:
+            repair_class = "related_word_write_pullback"
+            next_action = (
+                "pair write addresses, prove written code/data pointers with wordRelated, and add "
+                "the resulting dword cells to the successor memory-relation witness"
+            )
+        transition_obligations.append({
+            "id": f"memory-transition:{region['id']}",
+            "kind": "memory_transition_preservation",
+            "status": "incomplete",
+            "region_id": region["id"],
+            "region_index": region_index,
+            "semantic_ir_region_index": region_index,
+            "memory_contract_region_index": region_index,
+            "repair_class": repair_class,
+            "analysis": {
+                "original_writes": len(original_writes),
+                "candidate_writes": len(candidate_writes),
+                "symbolic_writes_identical": original_writes == candidate_writes,
+                "bulk_copy": has_bulk_copy,
+                "atomic_compare_exchange": has_atomic_compare_exchange,
+                "mapped_value_targets": len(region.get("values", [])),
+                "available_lean_lemma": (
+                    "StageA.Relational.memoryRelated_without_values_after_identical_writes"
+                    if (
+                        has_writes
+                        and not has_bulk_copy
+                        and not has_atomic_compare_exchange
+                        and original_writes == candidate_writes
+                        and not region.get("values")
+                    ) else None
+                ),
+                "entry_read_observations": len(
+                    memory_contracts["regions"][region_index]["reads"]
+                ),
+                "successor_read_requirements": memory_contracts["regions"][region_index][
+                    "successor_read_requirements"
+                ],
+            },
+            "blocker": (
+                "the region's mutation has not been proved to preserve the live memory observations "
+                "required at each reachable successor"
+            ),
+            "next_action": next_action,
+        })
+
+    if not (regions_with_writes or bulk_copy_regions or atomic_compare_exchange_regions):
+        return proof_ir
+
+    summary = {
+        "regions": len(contract["regions"]),
+        "regions_with_writes": regions_with_writes,
+        "write_pairs": write_pairs,
+        "syntactically_identical_write_regions": identical_write_regions,
+        "relational_write_regions": differing_write_regions,
+        "bulk_copy_regions": bulk_copy_regions,
+        "atomic_compare_exchange_regions": atomic_compare_exchange_regions,
+        "transition_obligations": len(transition_obligations),
+    }
+    return {
+        **proof_ir,
+        "memory_transition_summary": summary,
+        "obligations": [*proof_ir["obligations"], *transition_obligations],
+    }
 
 
 def _relational_semantic_preflight(original: Path, candidate: Path, contract: dict[str, Any]) -> dict[str, Any]:
@@ -2691,6 +2855,191 @@ def _relational_semantic_ir(
             ),
         },
         "regions": regions,
+    }
+
+
+def _semantic_memory_reads(value: Any, path: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    reads: list[dict[str, Any]] = []
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            reads.extend(_semantic_memory_reads(item, (*path, str(index))))
+        return reads
+    if not isinstance(value, dict):
+        return reads
+
+    operation = value.get("op")
+    if operation in {"read8", "read32", "read8_after_write", "load"}:
+        if operation == "read8":
+            width = 1
+            relation = "exact_byte"
+        elif operation == "read32":
+            width = 4
+            relation = "word_related_or_exact_dword"
+        elif operation == "read8_after_write":
+            width = 1
+            relation = "exact_byte_after_local_write_pullback"
+        else:
+            width = {
+                "float32": 4,
+                "float64": 8,
+                "float80": 10,
+                "int32": 4,
+            }.get(value.get("format"))
+            relation = "exact_x87_load_bytes"
+        address = value.get("address")
+        reads.append({
+            "path": list(path),
+            "operation": operation,
+            "width": width,
+            "required_relation": relation,
+            "address_sha256": sha256_bytes(
+                json.dumps(address, sort_keys=True, separators=(",", ":")).encode()
+            ),
+        })
+
+    for key in sorted(value):
+        if key in {"op", "prior"} and operation == "read8_after_write":
+            continue
+        if key == "op":
+            continue
+        reads.extend(_semantic_memory_reads(value[key], (*path, key)))
+    return reads
+
+
+def _semantic_successors(outcome: dict[str, Any]) -> dict[str, Any]:
+    operation = outcome.get("op")
+    if operation == "jump":
+        direct = [outcome.get("target")]
+    elif operation == "branch":
+        direct = [outcome.get("taken"), outcome.get("fallthrough")]
+    elif operation == "call":
+        direct = [outcome.get("target")]
+    elif operation in {
+        "external_call", "bulk_copy", "checked_continue", "atomic_compare_exchange",
+    }:
+        direct = [outcome.get("continuation")]
+    else:
+        direct = []
+    return {
+        "outcome": operation,
+        "direct": [target for target in direct if isinstance(target, int)],
+        "continuation": (
+            outcome.get("continuation")
+            if isinstance(outcome.get("continuation"), int) else None
+        ),
+        "dynamic_target": operation in {"indirect_call", "indirect_jump", "returned"},
+    }
+
+
+def _relational_memory_contracts(
+    original: StageABinary,
+    candidate: StageABinary,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    region_rows: list[dict[str, Any]] = []
+    reads_by_id: dict[int, dict[str, int]] = {}
+    for index, (region, behavior) in enumerate(
+        zip(contract["regions"], behaviors, strict=True)
+    ):
+        side_reads: dict[str, list[dict[str, Any]]] = {}
+        for side in ("original", "candidate"):
+            semantic = behavior.get(f"{side}_ir") or {}
+            side_reads[side] = _semantic_memory_reads(semantic)
+        paired = []
+        reads_by_path = {
+            side: {tuple(read["path"]): read for read in side_reads[side]}
+            for side in ("original", "candidate")
+        }
+        read_paths = sorted(
+            set(reads_by_path["original"]) | set(reads_by_path["candidate"])
+        )
+        for read_index, read_path in enumerate(read_paths):
+            original_read = reads_by_path["original"].get(read_path)
+            candidate_read = reads_by_path["candidate"].get(read_path)
+            same_shape = bool(
+                original_read is not None
+                and candidate_read is not None
+                and original_read["operation"] == candidate_read["operation"]
+                and original_read["width"] == candidate_read["width"]
+            )
+            paired.append({
+                "id": f"memory-read:{region['id']}:{read_index}",
+                "status": "paired_shape" if same_shape else "unpaired_shape",
+                "original": original_read,
+                "candidate": candidate_read,
+            })
+        original_semantic = behavior.get("original_ir") or {}
+        candidate_semantic = behavior.get("candidate_ir") or {}
+        original_writes = original_semantic.get("writes") or []
+        candidate_writes = candidate_semantic.get("writes") or []
+        successor = _semantic_successors(original_semantic.get("outcome") or {})
+        row = {
+            "index": index,
+            "id": region["id"],
+            "numeric_id": region["numeric_id"],
+            "reads": paired,
+            "writes": {
+                "original_count": len(original_writes),
+                "candidate_count": len(candidate_writes),
+                "symbolically_identical": original_writes == candidate_writes,
+            },
+            "successors": successor,
+        }
+        region_rows.append(row)
+        reads_by_id[region["numeric_id"]] = {
+            "paired": sum(read["status"] == "paired_shape" for read in paired),
+            "unpaired": sum(read["status"] != "paired_shape" for read in paired),
+        }
+
+    for row in region_rows:
+        row["successor_read_requirements"] = [
+            {"numeric_id": target, **reads_by_id[target]}
+            for target in row["successors"]["direct"]
+            if target in reads_by_id
+        ]
+
+    all_reads = [read for row in region_rows for read in row["reads"]]
+    operation_counts = {
+        operation: sum(
+            read.get("original", {}).get("operation") == operation
+            for read in all_reads
+            if read.get("original") is not None
+        )
+        for operation in sorted({
+            read["original"]["operation"]
+            for read in all_reads
+            if read.get("original") is not None
+        })
+    }
+    return {
+        "format": "stage-a-relational-memory-contracts-v1",
+        "status": "analysis_requires_lean_pullback_replay",
+        "model": STAGE_A_RELATIONAL_MODEL_ID,
+        "original_sha256": original.sha256,
+        "candidate_sha256": candidate.sha256,
+        "relation_contract_sha256": sha256_bytes(
+            json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
+        ),
+        "trust": {
+            "role": "proof_obligation_generation_only",
+            "acceptance_rule": (
+                "read inventories, successor edges, and write pullbacks must be reconstructed "
+                "from exact decoded behaviors and checked by Lean"
+            ),
+        },
+        "counts": {
+            "regions": len(region_rows),
+            "read_observations": len(all_reads),
+            "paired_read_shapes": sum(
+                read["status"] == "paired_shape" for read in all_reads
+            ),
+            "unpaired_read_shapes": sum(
+                read["status"] != "paired_shape" for read in all_reads
+            ),
+            "read_operations": operation_counts,
+        },
+        "regions": region_rows,
     }
 
 
@@ -5106,6 +5455,8 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
         f"def candidateImportCertificate : ImportTableCertificate := {_lean_import_certificate(candidate_bin)}\n\n"
         "def originalImports : List PEImport := originalImportCertificate.imports\n\n"
         "def candidateImports : List PEImport := candidateImportCertificate.imports\n\n"
+        f"def originalRelocations : List BaseRelocation := {_lean_relocations(original_bin)}\n\n"
+        f"def candidateRelocations : List BaseRelocation := {_lean_relocations(candidate_bin)}\n\n"
         + "\n\n"
         "theorem originalMetadataParsed : parsePEMetadataTree originalBytes = some originalPe.metadata := by decide\n\n"
         "theorem candidateMetadataParsed : parsePEMetadataTree candidateBytes = some candidatePe.metadata := by decide\n\n"
@@ -5113,18 +5464,32 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
         "theorem candidateParsed : parsePE32Tree candidateBytes = some candidatePe := by\n  simp [parsePE32Tree, candidateMetadataParsed, PE32.metadata, PEMetadata.toPE32, candidatePe]\n\n"
         "theorem originalImportsChecked : importTableValid originalPe originalImportCertificate = true := by decide\n\n"
         "theorem candidateImportsChecked : importTableValid candidatePe candidateImportCertificate = true := by decide\n\n"
+        "theorem originalRelocationsParsed : parseRelocations originalPe = some originalRelocations := by decide\n\n"
+        "theorem candidateRelocationsParsed : parseRelocations candidatePe = some candidateRelocations := by decide\n\n"
         + "\n\n".join(region_defs)
         + f"\n\ndef allRegionIndex : IndexTree RegionRelation := {region_index_literal}\n\n"
         + f"def proofBundle : StageA.Relational.ProofBundle := {{ originalBytes, candidateBytes, originalImports := originalImportCertificate, candidateImports := candidateImportCertificate, regions := allRegionIndex.toList, regionIndex := allRegionIndex, originalPadding := [{original_padding}], candidatePadding := [{candidate_padding}], originalCoverage := {original_coverage}, candidateCoverage := {candidate_coverage}, originalAliasCoverage := {original_alias_coverage}, candidateAliasCoverage := {candidate_alias_coverage} }}\n\n"
         + "\n".join(theorem_defs)
         + "\ntheorem structuralChecked : structuralEligible proofBundle = true := by decide\n\n"
+        + "theorem valueRegionsChecked : valueRegionsClosed originalPe candidatePe "
+        "originalRelocations candidateRelocations proofBundle.regions = true := by decide\n\n"
+        + "def GeneratedMappedRelocationImageCertificate : Prop :=\n"
+        "  AllMappedRelocationImageRelations originalPe candidatePe originalRelocations "
+        "candidateRelocations proofBundle.regions\n\n"
+        + "theorem generatedMappedRelocationImageCertificateChecked :\n"
+        "    GeneratedMappedRelocationImageCertificate :=\n"
+        "  allMappedRelocationImageRelations_of_valueRegionsClosed originalPe candidatePe "
+        "originalRelocations candidateRelocations proofBundle.regions valueRegionsChecked\n\n"
         + "theorem importsChecked : importTablesCertified proofBundle := by\n  unfold importTablesCertified parsedImages proofBundle\n  rw [originalParsed, candidateParsed]\n  exact ⟨originalImportsChecked, candidateImportsChecked⟩\n\n"
         + "theorem allRegionsChecked : allRegionGoals proofBundle proofBundle.regions := by\n  change "
         + " ∧ ".join([f"regionGoal proofBundle region{index}" for index in range(len(contract["regions"]))] + ["True"])
         + "\n  exact "
         + all_proof
-        + "\n\ntheorem candidateRelationalCertificate : RelationalImageCertificate proofBundle :=\n"
+        + "\n\ntheorem regionalRelationalCertificate : RelationalImageCertificate proofBundle :=\n"
         "  relationalImageCertificate_intro proofBundle structuralChecked importsChecked allRegionsChecked\n\n"
+        "theorem candidateRelationalCertificate :\n"
+        "    RelationalImageCertificate proofBundle ∧ GeneratedMappedRelocationImageCertificate :=\n"
+        "  ⟨regionalRelationalCertificate, generatedMappedRelocationImageCertificateChecked⟩\n\n"
         "#print axioms candidateRelationalCertificate\n\nend StageA.GeneratedRelational\n"
     )
 
@@ -5896,6 +6261,11 @@ def _write_sharded_relational_proof(
         f"  exact {value_regions_proof}\n\n"
         "theorem valuesChecked : valueTargetsClosed originalPe candidatePe allRegions = true :=\n"
         "  valueTargetsClosed_of_parsed originalPe candidatePe originalRelocations candidateRelocations allRegions originalRelocationsParsed candidateRelocationsParsed valueRegionsChecked\n\n"
+        "theorem mappedRelocationImageRelationsChecked :\n"
+        "    AllMappedRelocationImageRelations originalPe candidatePe originalRelocations "
+        "candidateRelocations allRegions :=\n"
+        "  allMappedRelocationImageRelations_of_valueRegionsClosed originalPe candidatePe "
+        "originalRelocations candidateRelocations allRegions valueRegionsChecked\n\n"
         "theorem relationOutputsChecked : allRegions.all (fun source => requiredInputsCertificate.all source.outputs.contains) = true := by\n"
         "  unfold allRegions\n"
         f"  exact {relation_outputs_proof}\n\n"
@@ -5977,9 +6347,17 @@ def _write_sharded_relational_proof(
         f"def GeneratedInvariantCertificate : Prop := {invariant_certificate_type}\n\n"
         "theorem generatedInvariantCertificateChecked : GeneratedInvariantCertificate := by\n"
         f"  exact {invariant_certificate_proof}\n\n"
+        "def GeneratedMappedRelocationImageCertificate : Prop :=\n"
+        "  AllMappedRelocationImageRelations originalPe candidatePe originalRelocations "
+        "candidateRelocations allRegions\n\n"
+        "theorem generatedMappedRelocationImageCertificateChecked :\n"
+        "    GeneratedMappedRelocationImageCertificate :=\n"
+        "  mappedRelocationImageRelationsChecked\n\n"
         "theorem candidateRelationalCertificate :\n"
-        "    RelationalImageCertificate proofBundle ∧ GeneratedInvariantCertificate :=\n"
-        "  ⟨regionalRelationalCertificate, generatedInvariantCertificateChecked⟩\n\n"
+        "    RelationalImageCertificate proofBundle ∧ GeneratedInvariantCertificate ∧\n"
+        "      GeneratedMappedRelocationImageCertificate :=\n"
+        "  ⟨regionalRelationalCertificate, generatedInvariantCertificateChecked,\n"
+        "    generatedMappedRelocationImageCertificateChecked⟩\n\n"
         "#print axioms candidateRelationalCertificate\n\nend StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(lean_dir / "StageA" / "RelationalBundle.lean", final)
@@ -7665,6 +8043,22 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
                     "theorem": "StageA.GeneratedRelational.candidateRelationalCertificate",
                 },
             })
+        elif (
+            lean.get("status") == "checked"
+            and obligation["kind"] == "mapped_relocation_image_relation"
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "evidence": {
+                    "kind": "lean_checked_mapped_relocation_image_relation",
+                    "theorem": "StageA.GeneratedRelational.candidateRelationalCertificate",
+                    "lemma": (
+                        "StageA.Relational."
+                        "allMappedRelocationImageRelations_of_valueRegionsClosed"
+                    ),
+                },
+            })
         else:
             finalized_obligations.append(obligation)
     assumption_obligations = [
@@ -7709,7 +8103,10 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         {
             "family": "memory_relation",
             "status": "incomplete" if any(
-                obligation["kind"] == "relocation_aware_memory_relation"
+                obligation["kind"] in {
+                    "mapped_relocation_image_relation",
+                    "memory_transition_preservation",
+                }
                 for obligation in assumption_obligations
             ) else "satisfied",
         },
@@ -7746,6 +8143,11 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         "semantic_ir_sha256": (
             sha256_file(out / "relational-semantic-ir.json")
             if (out / "relational-semantic-ir.json").is_file()
+            else None
+        ),
+        "memory_contracts_sha256": (
+            sha256_file(out / "relational-memory-contracts.json")
+            if (out / "relational-memory-contracts.json").is_file()
             else None
         ),
         "invariants_sha256": (
