@@ -651,7 +651,8 @@ def stage_a_prove_relational(
         shard_modules, _ = _write_sharded_relational_proof(
             out / "lean", original_bin, candidate_bin,
             original_artifact.read_bytes(), candidate_artifact.read_bytes(),
-            normalized, behaviors, invariant_synthesis=invariant_synthesis, replay=False,
+            normalized, behaviors, invariant_synthesis=invariant_synthesis,
+            memory_contracts=memory_contracts, replay=False,
         )
         if _prepare_only:
             graph = _write_relational_module_graph(
@@ -767,6 +768,7 @@ def stage_a_prove_relational(
             out / "lean", original_bin, candidate_bin,
             original_artifact.read_bytes(), candidate_artifact.read_bytes(),
             normalized, behaviors, invariant_synthesis=invariant_synthesis,
+            memory_contracts=memory_contracts,
             replay=True, certificates=certificates,
         )
         replay = _run_sharded_relational(out / "lean", shard_modules)
@@ -901,16 +903,48 @@ def stage_a_build_relational(
     except (json.JSONDecodeError, IndexError, KeyError, TypeError) as exc:
         raise StageAInputError("Nix returned a malformed relational graph result") from exc
     audit = _read_json(result_path / "audit.json")
-    node_paths_payload = _read_json(result_path / "node-store-paths.json")
-    node_paths = node_paths_payload.get("nodes")
-    if not isinstance(node_paths, list) or not all(
-        isinstance(node, dict) and isinstance(node.get("out_path"), str)
-        for node in node_paths
+    dependency_pack = _read_json(result_path / "dependency-pack.json")
+    if (
+        dependency_pack.get("format") != "stage-a-lean-root-dependency-pack-v1"
+        or dependency_pack.get("node_count") != len(graph["nodes"]) - 1
+        or not isinstance(dependency_pack.get("archive_bytes"), int)
+        or dependency_pack["archive_bytes"] <= 0
+        or not isinstance(dependency_pack.get("archive_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", dependency_pack["archive_sha256"])
     ):
-        raise StageAInputError("Nix relational graph omitted node store provenance")
-    store_paths = [str(result_path), *(node["out_path"] for node in node_paths)]
+        raise StageAInputError("Nix relational graph emitted invalid dependency-pack provenance")
+    node_provenance_payload = _read_json(result_path / "node-provenance.json")
+    node_provenance = node_provenance_payload.get("nodes")
+    if (
+        node_provenance_payload.get("format") != "stage-a-lean-node-provenance-v1"
+        or not isinstance(node_provenance, list)
+        or not all(isinstance(node, dict) for node in node_provenance)
+    ):
+        raise StageAInputError("Nix relational graph omitted node content provenance")
+    expected_nodes = {node["id"]: node for node in graph["nodes"]}
+    observed_nodes = {node.get("id"): node for node in node_provenance}
+    if set(observed_nodes) != set(expected_nodes) or len(observed_nodes) != len(node_provenance):
+        raise StageAInputError("Nix relational node provenance does not match the prepared graph")
+    for node_id, expected_node in expected_nodes.items():
+        observed_node = observed_nodes[node_id]
+        if observed_node.get("source_sha256") != expected_node["source_sha256"]:
+            raise StageAInputError(f"Nix node source provenance mismatch for {node_id}")
+        outputs = observed_node.get("outputs")
+        if not isinstance(outputs, list) or {
+            output.get("module") for output in outputs if isinstance(output, dict)
+        } != set(expected_node["modules"]):
+            raise StageAInputError(f"Nix node output inventory mismatch for {node_id}")
+        if not all(
+            isinstance(output, dict)
+            and isinstance(output.get("olean_bytes"), int)
+            and output["olean_bytes"] > 0
+            and isinstance(output.get("olean_sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", output["olean_sha256"])
+            for output in outputs
+        ):
+            raise StageAInputError(f"Nix node output hash is invalid for {node_id}")
     path_info_process = subprocess.run(
-        ["nix", "path-info", "--json", *store_paths],
+        ["nix", "path-info", "--json", str(result_path)],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -974,6 +1008,7 @@ def stage_a_build_relational(
     shutil.copyfile(result_path / "audit.json", out / "lean-audit.json")
     shutil.copyfile(result_path / "lean.stdout", out / "lean.stdout")
     shutil.copyfile(result_path / "lean.stderr", out / "lean.stderr")
+    shutil.copyfile(result_path / "dependency-pack.json", out / "dependency-pack.json")
     write_json(out / "relational-proof-ir.json", proof_ir)
     provenance = {
         "format": "stage-a-relational-nix-provenance-v1",
@@ -983,7 +1018,8 @@ def stage_a_build_relational(
         "flake_lock_sha256": sha256_file(flake_root / "flake.lock"),
         "evaluator_sha256": sha256_file(evaluator),
         "result_path": str(result_path),
-        "nodes": node_paths,
+        "nodes": node_provenance,
+        "dependency_pack": dependency_pack,
         "nix_path_info": path_info,
         "elapsed_seconds": elapsed,
     }
@@ -1001,7 +1037,8 @@ def stage_a_build_relational(
         "provenance": {
             "result_path": str(result_path),
             "nix_paths": len(path_info),
-            "node_derivations": len(node_paths),
+            "node_derivations": len(node_provenance),
+            "dependency_pack_bytes": dependency_pack["archive_bytes"],
         },
     }
     write_json(out / "verdict.json", result)
@@ -2470,6 +2507,13 @@ def _attach_memory_transition_analysis(
                 "pair write addresses, prove written code/data pointers with wordRelated, and add "
                 "the resulting dword cells to the successor memory-relation witness"
             )
+        successor_requirements = memory_contracts["regions"][region_index][
+            "successor_read_requirements"
+        ]
+        supported_successor_pullbacks = sum(
+            requirement["ordinary_pullback_pair_supported"]
+            for requirement in successor_requirements
+        )
         transition_obligations.append({
             "id": f"memory-transition:{region['id']}",
             "kind": "memory_transition_preservation",
@@ -2499,9 +2543,15 @@ def _attach_memory_transition_analysis(
                 "entry_read_observations": len(
                     memory_contracts["regions"][region_index]["reads"]
                 ),
-                "successor_read_requirements": memory_contracts["regions"][region_index][
-                    "successor_read_requirements"
-                ],
+                "successor_read_requirements": successor_requirements,
+                "ordinary_pullback_pair_supported_edges": (
+                    supported_successor_pullbacks
+                ),
+                "ordinary_pullback_pair_total_edges": len(successor_requirements),
+                "checked_pullback_claim": (
+                    "StageA.Relational.InvariantWP.MemoryReadPullbackEdgeClosed"
+                    if supported_successor_pullbacks else None
+                ),
             },
             "blocker": (
                 "the region's mutation has not been proved to preserve the live memory observations "
@@ -2858,6 +2908,71 @@ def _relational_semantic_ir(
     }
 
 
+def _semantic_memory_expression_pullback_supported(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    operation = value.get("op")
+    if operation in {"input_reg", "input_fs_base", "constant", "undefined"}:
+        return True
+    if operation == "input_flag_value":
+        return int(value.get("bit", -1)) in {0, 2, 6, 7, 10, 11}
+    if operation in {"read8", "read32"}:
+        return _semantic_memory_expression_pullback_supported(value.get("address"))
+    if operation == "read8_after_write":
+        return all(
+            _semantic_memory_expression_pullback_supported(value.get(field))
+            for field in ("address", "write_address", "write_value", "prior")
+        )
+    if operation not in _PURE_SEMANTIC_EXPR_OPERATIONS:
+        return False
+    return all(
+        _semantic_memory_expression_pullback_supported(child)
+        for key, child in value.items()
+        if key != "op" and isinstance(child, dict) and "op" in child
+    )
+
+
+def _semantic_memory_pullback_support(value: dict[str, Any]) -> tuple[str, str | None]:
+    operation = value.get("op")
+    if operation in {"read8", "read32", "read8_after_write"}:
+        if _semantic_memory_expression_pullback_supported(value):
+            return "lean_pullback_supported", None
+    if operation in {"read8", "read32"}:
+        return (
+            "unsupported_stateful_address",
+            "the read address contains a flag-dependent, x87-dependent, or unsupported "
+            "machine-state expression",
+        )
+    if operation == "read8_after_write":
+        return (
+            "unsupported_nested_post_write_read",
+            "the local write operands or prior byte observation contain a flag-dependent, "
+            "x87-dependent, or unsupported machine-state expression",
+        )
+    return (
+        "unsupported_x87_load",
+        "x87 load observations require a byte-range pullback into X87Expr semantics",
+    )
+
+
+def _semantic_value_at_path(value: Any, path: list[str]) -> Any:
+    for component in path:
+        value = value[int(component)] if isinstance(value, list) else value[component]
+    return value
+
+
+def _semantic_x87_load_pullback_supported(
+    observation: dict[str, Any], source_behavior: dict[str, Any]
+) -> bool:
+    address = observation.get("address")
+    control = observation.get("control")
+    if not _semantic_memory_expression_pullback_supported(address):
+        return False
+    if isinstance(control, dict) and control.get("op") == "input_x87_control":
+        return isinstance(source_behavior.get("x87", {}).get("control"), dict)
+    return _semantic_memory_expression_pullback_supported(control)
+
+
 def _semantic_memory_reads(value: Any, path: tuple[str, ...] = ()) -> list[dict[str, Any]]:
     reads: list[dict[str, Any]] = []
     if isinstance(value, list):
@@ -2887,11 +3002,14 @@ def _semantic_memory_reads(value: Any, path: tuple[str, ...] = ()) -> list[dict[
             }.get(value.get("format"))
             relation = "exact_x87_load_bytes"
         address = value.get("address")
+        pullback_support, pullback_blocker = _semantic_memory_pullback_support(value)
         reads.append({
             "path": list(path),
             "operation": operation,
             "width": width,
             "required_relation": relation,
+            "pullback_support": pullback_support,
+            "pullback_blocker": pullback_blocker,
             "address_sha256": sha256_bytes(
                 json.dumps(address, sort_keys=True, separators=(",", ":")).encode()
             ),
@@ -2938,7 +3056,7 @@ def _relational_memory_contracts(
     behaviors: list[dict[str, Any]],
 ) -> dict[str, Any]:
     region_rows: list[dict[str, Any]] = []
-    reads_by_id: dict[int, dict[str, int]] = {}
+    reads_by_id: dict[int, dict[str, Any]] = {}
     for index, (region, behavior) in enumerate(
         zip(contract["regions"], behaviors, strict=True)
     ):
@@ -2974,6 +3092,41 @@ def _relational_memory_contracts(
         original_writes = original_semantic.get("writes") or []
         candidate_writes = candidate_semantic.get("writes") or []
         successor = _semantic_successors(original_semantic.get("outcome") or {})
+        candidate_successor = _semantic_successors(
+            candidate_semantic.get("outcome") or {}
+        )
+
+        def pullback_summary(side: str) -> dict[str, Any]:
+            observations = [
+                read[side] for read in paired if read.get(side) is not None
+            ]
+            ordinary = [
+                read for read in observations if read["operation"] != "load"
+            ]
+            unsupported: dict[str, int] = {}
+            for read in ordinary:
+                status = read["pullback_support"]
+                if status != "lean_pullback_supported":
+                    unsupported[status] = unsupported.get(status, 0) + 1
+            return {
+                "ordinary_observations": len(ordinary),
+                "lean_pullback_supported": sum(
+                    read["pullback_support"] == "lean_pullback_supported"
+                    for read in ordinary
+                ),
+                "all_ordinary_reads_supported": not unsupported,
+                "unsupported": dict(sorted(unsupported.items())),
+                "x87_load_observations": sum(
+                    read["operation"] == "load" for read in observations
+                ),
+            }
+
+        pullback = {
+            side: pullback_summary(side) for side in ("original", "candidate")
+        }
+        pullback["paired_direct_successors"] = (
+            successor["direct"] == candidate_successor["direct"]
+        )
         row = {
             "index": index,
             "id": region["id"],
@@ -2985,19 +3138,65 @@ def _relational_memory_contracts(
                 "symbolically_identical": original_writes == candidate_writes,
             },
             "successors": successor,
+            "candidate_successors": candidate_successor,
+            "pullback": pullback,
         }
         region_rows.append(row)
         reads_by_id[region["numeric_id"]] = {
             "paired": sum(read["status"] == "paired_shape" for read in paired),
             "unpaired": sum(read["status"] != "paired_shape" for read in paired),
+            "pullback": pullback,
         }
 
+    index_by_numeric_id = {
+        row["numeric_id"]: row["index"] for row in region_rows
+    }
     for row in region_rows:
-        row["successor_read_requirements"] = [
-            {"numeric_id": target, **reads_by_id[target]}
-            for target in row["successors"]["direct"]
-            if target in reads_by_id
-        ]
+        requirements = []
+        for target in row["successors"]["direct"]:
+            if target not in reads_by_id:
+                continue
+            target_index = index_by_numeric_id[target]
+            target_row = region_rows[target_index]
+            x87_loads = [
+                read for read in target_row["reads"]
+                if (read.get("original") or {}).get("operation") == "load"
+            ]
+            x87_side_supported = {}
+            for side in ("original", "candidate"):
+                source_behavior = behaviors[row["index"]].get(f"{side}_ir") or {}
+                target_behavior = behaviors[target_index].get(f"{side}_ir") or {}
+                observations = [
+                    _semantic_value_at_path(target_behavior, read[side]["path"])
+                    for read in x87_loads
+                    if read.get(side) is not None
+                ]
+                x87_side_supported[side] = all(
+                    _semantic_x87_load_pullback_supported(
+                        observation, source_behavior
+                    )
+                    for observation in observations
+                )
+            requirements.append({
+                "numeric_id": target,
+                **reads_by_id[target],
+                "ordinary_pullback_pair_supported": (
+                    row["pullback"]["paired_direct_successors"]
+                    and all(
+                        reads_by_id[target]["pullback"][side][
+                            "all_ordinary_reads_supported"
+                        ]
+                        for side in ("original", "candidate")
+                    )
+                ),
+                "x87_load_observations": len(x87_loads),
+                "x87_load_pullback": x87_side_supported,
+                "x87_load_pullback_pair_supported": (
+                    row["pullback"]["paired_direct_successors"]
+                    and all(x87_side_supported.values())
+                ),
+            })
+        row["successor_read_requirements"] = requirements
 
     all_reads = [read for row in region_rows for read in row["reads"]]
     operation_counts = {
@@ -3012,6 +3211,26 @@ def _relational_memory_contracts(
             if read.get("original") is not None
         })
     }
+    pullback_counts = {
+        side: {
+            "ordinary_observations": sum(
+                row["pullback"][side]["ordinary_observations"] for row in region_rows
+            ),
+            "lean_pullback_supported": sum(
+                row["pullback"][side]["lean_pullback_supported"] for row in region_rows
+            ),
+            "regions_all_ordinary_reads_supported": sum(
+                row["pullback"][side]["all_ordinary_reads_supported"]
+                for row in region_rows
+            ),
+        }
+        for side in ("original", "candidate")
+    }
+    direct_requirements = [
+        requirement
+        for row in region_rows
+        for requirement in row["successor_read_requirements"]
+    ]
     return {
         "format": "stage-a-relational-memory-contracts-v1",
         "status": "analysis_requires_lean_pullback_replay",
@@ -3038,6 +3257,21 @@ def _relational_memory_contracts(
                 read["status"] != "paired_shape" for read in all_reads
             ),
             "read_operations": operation_counts,
+            "pullback": pullback_counts,
+            "direct_successor_requirements": len(direct_requirements),
+            "ordinary_pullback_pair_supported_edges": sum(
+                requirement["ordinary_pullback_pair_supported"]
+                for requirement in direct_requirements
+            ),
+            "x87_load_successor_edges": sum(
+                requirement["x87_load_observations"] > 0
+                for requirement in direct_requirements
+            ),
+            "x87_load_pullback_pair_supported_edges": sum(
+                requirement["x87_load_observations"] > 0
+                and requirement["x87_load_pullback_pair_supported"]
+                for requirement in direct_requirements
+            ),
         },
         "regions": region_rows,
     }
@@ -5792,6 +6026,161 @@ def _write_relational_invariant_modules(
     return modules
 
 
+def _write_relational_memory_pullback_modules(
+    lean_dir: Path,
+    contract: dict[str, Any],
+    memory_contracts: dict[str, Any],
+    definition_modules: list[str],
+    shard_groups: list[list[int]],
+    decode_chunk_regions: list[list[int]],
+) -> list[dict[str, str]]:
+    definition_by_region = {
+        region_index: definition_modules[shard_index]
+        for shard_index, indices in enumerate(shard_groups)
+        for region_index in indices
+    }
+    index_by_numeric_id = {
+        region["numeric_id"]: index
+        for index, region in enumerate(contract["regions"])
+    }
+    modules: list[dict[str, str]] = []
+    for chunk_index, source_indices in enumerate(decode_chunk_regions):
+        edges: list[tuple[int, int, int]] = []
+        for source_index in source_indices:
+            row = memory_contracts["regions"][source_index]
+            if not row["pullback"]["paired_direct_successors"]:
+                continue
+            for target_id in dict.fromkeys(row["successors"]["direct"]):
+                target_index = index_by_numeric_id.get(target_id)
+                if target_index is None:
+                    continue
+                target_pullback = memory_contracts["regions"][target_index]["pullback"]
+                if all(
+                    target_pullback[side]["all_ordinary_reads_supported"]
+                    for side in ("original", "candidate")
+                ):
+                    edges.append((source_index, target_index, target_id))
+        if not edges:
+            continue
+
+        involved = sorted({index for edge in edges for index in edge[:2]})
+        imports = "\n".join(
+            f"import StageA.{module}"
+            for module in sorted({definition_by_region[index] for index in involved})
+        )
+        definitions: list[str] = []
+        for index in involved:
+            for side in ("original", "candidate"):
+                candidate = "true" if side == "candidate" else "false"
+                side_name = side.capitalize()
+                definitions.append(
+                    f"def memoryPullbackChunk{chunk_index}{side_name}Behavior{index} : "
+                    "NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior {candidate} region{index}.targets "
+                    f"{side}Behavior{index}).get (by decide)"
+                )
+
+        theorem_names: list[str] = []
+        claims: list[str] = []
+        x87_theorem_names: list[str] = []
+        x87_claims: list[str] = []
+        for edge_index, (source_index, target_index, target_id) in enumerate(edges):
+            requirement = next(
+                item
+                for item in memory_contracts["regions"][source_index][
+                    "successor_read_requirements"
+                ]
+                if item["numeric_id"] == target_id
+            )
+            for side in ("original", "candidate"):
+                side_name = side.capitalize()
+                theorem_name = (
+                    f"memoryPullbackChunk{chunk_index}Edge{edge_index}{side_name}Checked"
+                )
+                source_name = (
+                    f"memoryPullbackChunk{chunk_index}{side_name}Behavior{source_index}"
+                )
+                target_name = (
+                    f"memoryPullbackChunk{chunk_index}{side_name}Behavior{target_index}"
+                )
+                claim = (
+                    f"InvariantWP.MemoryReadPullbackEdgeClosed {source_name} "
+                    f"{target_name} {target_id}"
+                )
+                theorem_names.append(theorem_name)
+                claims.append(claim)
+                definitions.append(
+                    f"theorem {theorem_name} : {claim} :=\n"
+                    "  InvariantWP.memoryReadPullbackEdgeClosed_of_checked "
+                    f"{source_name} {target_name} {target_id} (by decide) (by decide)"
+                )
+                if (
+                    requirement["x87_load_observations"] > 0
+                    and requirement["x87_load_pullback_pair_supported"]
+                ):
+                    x87_theorem_name = (
+                        f"x87LoadPullbackChunk{chunk_index}Edge{edge_index}"
+                        f"{side_name}Checked"
+                    )
+                    x87_claim = (
+                        f"InvariantWP.X87LoadPullbackEdgeClosed {source_name} "
+                        f"{target_name} {target_id}"
+                    )
+                    x87_theorem_names.append(x87_theorem_name)
+                    x87_claims.append(x87_claim)
+                    definitions.append(
+                        f"theorem {x87_theorem_name} : {x87_claim} :=\n"
+                        "  InvariantWP.x87LoadPullbackEdgeClosed_of_checked "
+                        f"{source_name} {target_name} {target_id} (by decide) (by decide)"
+                    )
+
+        claims_name = f"memoryPullbackChunk{chunk_index}Claims"
+        checked_name = f"memoryPullbackChunk{chunk_index}Checked"
+        definitions.append(f"def {claims_name} : List Prop := [{', '.join(claims)}]")
+        all_proof = (
+            "".join(f"And.intro {name} (" for name in theorem_names)
+            + "True.intro"
+            + ")" * len(theorem_names)
+        )
+        definitions.append(
+            f"theorem {checked_name} : AllInvariantClaims {claims_name} := by\n"
+            f"  exact {all_proof}"
+        )
+        x87_claims_name = f"x87LoadPullbackChunk{chunk_index}Claims"
+        x87_checked_name = f"x87LoadPullbackChunk{chunk_index}Checked"
+        definitions.append(
+            f"def {x87_claims_name} : List Prop := [{', '.join(x87_claims)}]"
+        )
+        x87_all_proof = (
+            "".join(f"And.intro {name} (" for name in x87_theorem_names)
+            + "True.intro"
+            + ")" * len(x87_theorem_names)
+        )
+        definitions.append(
+            f"theorem {x87_checked_name} : AllInvariantClaims {x87_claims_name} := by\n"
+            f"  exact {x87_all_proof}"
+        )
+        module = f"RelationalMemoryPullbackChunk{chunk_index}"
+        source = (
+            imports
+            + "\n\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+        modules.append({
+            "module": module,
+            "ordinary_claims": claims_name,
+            "ordinary_theorem": checked_name,
+            "x87_claims": x87_claims_name,
+            "x87_theorem": x87_checked_name,
+            "edges": str(len(edges)),
+        })
+    return modules
+
+
 def _write_sharded_relational_proof(
     lean_dir: Path,
     original_bin: StageABinary,
@@ -5802,6 +6191,7 @@ def _write_sharded_relational_proof(
     behaviors: list[dict[str, str]],
     *,
     invariant_synthesis: dict[str, Any],
+    memory_contracts: dict[str, Any],
     replay: bool,
     certificates: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], int]:
@@ -5996,6 +6386,15 @@ def _write_sharded_relational_proof(
     )
     _write_text_if_changed(
         lean_dir / "StageA" / "RelationalRegionChunks.lean", region_chunks_source
+    )
+
+    memory_pullback_modules = _write_relational_memory_pullback_modules(
+        lean_dir,
+        contract,
+        memory_contracts,
+        definition_modules,
+        shard_groups,
+        decode_chunk_regions,
     )
 
     direct_modules: list[str] = []
@@ -6328,11 +6727,45 @@ def _write_sharded_relational_proof(
         + "True.intro"
         + ")" * len(invariant_modules)
     )
+    memory_pullback_certificate_type = " ∧ ".join(
+        [
+            f"AllInvariantClaims {item['ordinary_claims']}"
+            for item in memory_pullback_modules
+        ]
+        + ["True"]
+    )
+    memory_pullback_certificate_proof = (
+        "".join(
+            f"And.intro {item['ordinary_theorem']} ("
+            for item in memory_pullback_modules
+        )
+        + "True.intro"
+        + ")" * len(memory_pullback_modules)
+    )
+    x87_pullback_certificate_type = " ∧ ".join(
+        [
+            f"AllInvariantClaims {item['x87_claims']}"
+            for item in memory_pullback_modules
+        ]
+        + ["True"]
+    )
+    x87_pullback_certificate_proof = (
+        "".join(
+            f"And.intro {item['x87_theorem']} ("
+            for item in memory_pullback_modules
+        )
+        + "True.intro"
+        + ")" * len(memory_pullback_modules)
+    )
     final = (
         "import StageA.RelationalProofClosureBase\n"
-        + "\n".join(f"import StageA.{module}" for module in direct_modules)
-        + ("\n" if direct_modules and invariant_modules else "")
-        + "\n".join(f"import StageA.{item['module']}" for item in invariant_modules)
+        + "".join(f"import StageA.{module}\n" for module in direct_modules)
+        + "".join(
+            f"import StageA.{item['module']}\n" for item in invariant_modules
+        )
+        + "".join(
+            f"import StageA.{item['module']}\n" for item in memory_pullback_modules
+        )
         + "\n\nnamespace StageA.GeneratedRelational\n\nopen StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
         "set_option linter.unusedSimpArgs false\n\n"
@@ -6353,15 +6786,34 @@ def _write_sharded_relational_proof(
         "theorem generatedMappedRelocationImageCertificateChecked :\n"
         "    GeneratedMappedRelocationImageCertificate :=\n"
         "  mappedRelocationImageRelationsChecked\n\n"
+        f"def GeneratedOrdinaryMemoryReadPullbackCertificate : Prop := "
+        f"{memory_pullback_certificate_type}\n\n"
+        "theorem generatedOrdinaryMemoryReadPullbackCertificateChecked :\n"
+        "    GeneratedOrdinaryMemoryReadPullbackCertificate := by\n"
+        f"  exact {memory_pullback_certificate_proof}\n\n"
+        f"def GeneratedX87LoadPullbackCertificate : Prop := "
+        f"{x87_pullback_certificate_type}\n\n"
+        "theorem generatedX87LoadPullbackCertificateChecked :\n"
+        "    GeneratedX87LoadPullbackCertificate := by\n"
+        f"  exact {x87_pullback_certificate_proof}\n\n"
         "theorem candidateRelationalCertificate :\n"
         "    RelationalImageCertificate proofBundle ∧ GeneratedInvariantCertificate ∧\n"
-        "      GeneratedMappedRelocationImageCertificate :=\n"
+        "      GeneratedMappedRelocationImageCertificate ∧\n"
+        "      GeneratedOrdinaryMemoryReadPullbackCertificate ∧\n"
+        "      GeneratedX87LoadPullbackCertificate :=\n"
         "  ⟨regionalRelationalCertificate, generatedInvariantCertificateChecked,\n"
-        "    generatedMappedRelocationImageCertificateChecked⟩\n\n"
+        "    generatedMappedRelocationImageCertificateChecked,\n"
+        "    generatedOrdinaryMemoryReadPullbackCertificateChecked,\n"
+        "    generatedX87LoadPullbackCertificateChecked⟩\n\n"
         "#print axioms candidateRelationalCertificate\n\nend StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(lean_dir / "StageA" / "RelationalBundle.lean", final)
-    return shard_modules + [item["module"] for item in invariant_modules], shard_size
+    return (
+        shard_modules
+        + [item["module"] for item in invariant_modules]
+        + [item["module"] for item in memory_pullback_modules],
+        shard_size,
+    )
 
 
 def _lean_pe_side_source(side: str, binary: StageABinary, data: bytes) -> str:

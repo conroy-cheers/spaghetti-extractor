@@ -19,6 +19,8 @@ from wincr.stage_a_relational import (
     _normalized_behavior_fast_path,
     _partition_proof_shards,
     _run_lean_relational,
+    _semantic_memory_pullback_support,
+    _semantic_x87_load_pullback_supported,
     _synthesize_relational_invariants,
     _validate_prepared_relational,
     stage_a_build_relational,
@@ -31,6 +33,47 @@ from wincr.stage_binary import StageAInputError, _parse_stage_a_pe
 
 
 class StageARelationalTests(unittest.TestCase):
+    def test_memory_pullback_support_recurses_through_local_write_reads(self):
+        register = lambda name: {"op": "input_reg", "reg": name}
+        prior = {"op": "read8", "address": register("ebx")}
+        nested = {
+            "op": "read8_after_write",
+            "address": register("ebx"),
+            "write_address": register("esp"),
+            "write_value": register("eax"),
+            "prior": prior,
+        }
+        self.assertEqual(
+            _semantic_memory_pullback_support(nested),
+            ("lean_pullback_supported", None),
+        )
+        nested["prior"] = {
+            "op": "read8",
+            "address": {"op": "input_flag_value", "bit": 5},
+        }
+        status, blocker = _semantic_memory_pullback_support(nested)
+        self.assertEqual(status, "unsupported_nested_post_write_read")
+        self.assertIn("flag-dependent", blocker)
+
+    def test_x87_load_pullback_accepts_predecessor_control_replacement(self):
+        register = lambda name: {"op": "input_reg", "reg": name}
+        observation = {
+            "op": "load",
+            "format": "float64",
+            "address": {"op": "add", "left": register("esp"),
+                        "right": {"op": "constant", "value": 8}},
+            "control": {"op": "input_x87_control"},
+        }
+        source = {
+            "x87": {
+                "control": {"op": "read32", "address": register("eax")},
+                "status": {"op": "input_x87_status"},
+            }
+        }
+        self.assertTrue(_semantic_x87_load_pullback_supported(observation, source))
+        observation["control"] = {"op": "input_x87_status"}
+        self.assertFalse(_semantic_x87_load_pullback_supported(observation, source))
+
     def test_weakest_precondition_synthesizes_compare_branch_bound_invariant(self):
         registers = {
             register: {"op": "input_reg", "reg": register}
@@ -356,8 +399,8 @@ class StageARelationalTests(unittest.TestCase):
     def test_sharded_local_proof_does_not_import_raw_pe_attestations(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            original = self._write_pe(root / "original.exe", b"\x89\xd8\xeb\xfc")
-            candidate = self._write_pe(root / "candidate.exe", b"\x8d\x03\xeb\xfc")
+            original = self._write_pe(root / "original.exe", b"\x8b\x03\xeb\xfc")
+            candidate = self._write_pe(root / "candidate.exe", b"\x8b\x03\xeb\xfc")
             contract = self._write_contract(root / "relation.json")
             report = root / "report"
 
@@ -392,6 +435,9 @@ class StageARelationalTests(unittest.TestCase):
             closure = (
                 report / "lean" / "StageA" / "RelationalProofClosureBase.lean"
             ).read_text(encoding="utf-8")
+            pullback = (
+                report / "lean" / "StageA" / "RelationalMemoryPullbackChunk0.lean"
+            ).read_text(encoding="utf-8")
             self.assertIn("import StageA.RelationalDefinitionsShard0\n", shard)
             self.assertIn("import StageA.Relational\n", definitions)
             self.assertNotIn("RelationalProofBase", shard)
@@ -409,6 +455,10 @@ class StageARelationalTests(unittest.TestCase):
             self.assertIn("structuralChecked", closure)
             self.assertIn("allDirectRegionsChecked", bundle)
             self.assertIn("allRegionsChecked", bundle)
+            self.assertIn("MemoryReadPullbackEdgeClosed", pullback)
+            self.assertIn(
+                "GeneratedOrdinaryMemoryReadPullbackCertificate", bundle
+            )
             self.assertFalse(
                 (report / "lean" / "StageA" / "RelationalProofGoalChunk0.lean").exists()
             )
@@ -417,8 +467,8 @@ class StageARelationalTests(unittest.TestCase):
     def test_prepare_emits_valid_source_only_derivation_graph_and_rejects_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            original = self._write_pe(root / "original.exe", b"\x89\xd8\xeb\xfc")
-            candidate = self._write_pe(root / "candidate.exe", b"\x8d\x03\xeb\xfc")
+            original = self._write_pe(root / "original.exe", b"\x8b\x03\xeb\xfc")
+            candidate = self._write_pe(root / "candidate.exe", b"\x8b\x03\xeb\xfc")
             contract = self._write_contract(root / "relation.json")
             prepared = root / "prepared"
 
@@ -446,7 +496,11 @@ class StageARelationalTests(unittest.TestCase):
             self.assertEqual(len(semantic_ir["regions"]), 1)
             extracted = semantic_ir["regions"][0]
             self.assertEqual(extracted["original"]["format"], "stage-a-normalized-behavior-v1")
-            self.assertEqual(extracted["original"]["registers"]["eax"]["op"], "input_reg")
+            self.assertEqual(extracted["original"]["registers"]["eax"]["op"], "read32")
+            self.assertEqual(
+                extracted["original"]["registers"]["eax"]["address"],
+                {"op": "input_reg", "reg": "ebx"},
+            )
             self.assertEqual(extracted["original"]["outcome"]["op"], "jump")
             self.assertEqual(extracted["original"]["outcome"]["target"], 0)
             memory_contracts = json.loads(
@@ -456,7 +510,39 @@ class StageARelationalTests(unittest.TestCase):
                 memory_contracts["format"], "stage-a-relational-memory-contracts-v1"
             )
             self.assertEqual(memory_contracts["counts"]["regions"], 1)
-            self.assertEqual(memory_contracts["counts"]["read_observations"], 0)
+            self.assertEqual(memory_contracts["counts"]["read_observations"], 1)
+            read = memory_contracts["regions"][0]["reads"][0]
+            self.assertEqual(read["status"], "paired_shape")
+            self.assertEqual(
+                read["original"]["pullback_support"], "lean_pullback_supported"
+            )
+            self.assertEqual(
+                read["candidate"]["pullback_support"], "lean_pullback_supported"
+            )
+            self.assertEqual(
+                memory_contracts["counts"]["pullback"]["original"],
+                {
+                    "ordinary_observations": 1,
+                    "lean_pullback_supported": 1,
+                    "regions_all_ordinary_reads_supported": 1,
+                },
+            )
+            pullback_module = (
+                prepared / "lean" / "StageA" / "RelationalMemoryPullbackChunk0.lean"
+            )
+            self.assertTrue(pullback_module.is_file())
+            pullback_source = pullback_module.read_text(encoding="utf-8")
+            self.assertIn("MemoryReadPullbackEdgeClosed", pullback_source)
+            self.assertIn("memoryReadPullbackEdgeClosed_of_checked", pullback_source)
+            bundle = (
+                prepared / "lean" / "StageA" / "RelationalBundle.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "GeneratedOrdinaryMemoryReadPullbackCertificate", bundle
+            )
+            self.assertIn(
+                "import StageA.RelationalMemoryPullbackChunk0", bundle
+            )
 
             second = root / "prepared-second"
             stage_a_prepare_relational(
@@ -524,6 +610,21 @@ class StageARelationalTests(unittest.TestCase):
             self.assertTrue(result["checks"]["lean_trust_zero"])
             self.assertEqual(result["lean_audit"]["unexpected_axioms"], [])
             self.assertGreater(result["provenance"]["node_derivations"], 1)
+            self.assertEqual(result["provenance"]["nix_paths"], 1)
+            self.assertGreater(result["provenance"]["dependency_pack_bytes"], 0)
+            provenance = json.loads(
+                (root / "report" / "nix-provenance.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(provenance["nodes"])
+            self.assertNotIn("out_path", provenance["nodes"][0])
+            self.assertRegex(
+                provenance["nodes"][0]["outputs"][0]["olean_sha256"],
+                r"^[0-9a-f]{64}$",
+            )
+            self.assertEqual(
+                provenance["dependency_pack"]["node_count"],
+                result["provenance"]["node_derivations"] - 1,
+            )
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for process cancellation")
     def test_relational_lean_process_is_terminated_on_cancellation(self):

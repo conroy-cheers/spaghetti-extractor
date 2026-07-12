@@ -73,10 +73,16 @@ or special-case any host or target binary.
 The final derivation imports the generated bundle and runs Lean with
 `--trust=0`, which type-checks imported modules rather than trusting remote
 `.olean` files. It also rejects final-theorem dependencies outside the approved
-axiom set. `nix-provenance.json` records every node store path, derivation/NAR
-metadata, the evaluator and lock hashes, and the final audit output. A cached
-node is reused only when its generated source, dependencies, pinned toolchain,
-and evaluator are unchanged.
+axiom set. Non-root node outputs are merged locally into a deterministic zstd
+dependency pack before the root bundle and audit run. This avoids transferring
+thousands of individual files to the final builder and prevents the audit
+result from retaining the complete intermediate store closure.
+
+`nix-provenance.json` records every node's source identity and the SHA-256 and
+size of every `.olean`, dependency-pack metadata, the evaluator and lock
+hashes, and Nix path metadata for the zero-reference final audit output. A
+cached node is reused only when its generated source, dependencies, pinned
+toolchain, and evaluator are unchanged.
 
 The build command still fails closed on the proof inventory. A checked Lean
 bundle does not produce `pass` while CFG invariants, memory relations, or any
@@ -126,6 +132,17 @@ The exact-byte theorem checks:
 - output relations compose with region input relations in the current
   conservative profile.
 
+Preparation also emits `relational-memory-contracts.json`. It inventories
+ordinary and x87 memory observations from the normalized decoded behaviors,
+pairs reads by semantic path, records direct successor requirements, and
+classifies unsupported pullback fragments. Python's classification is only a
+proposal. Generated Lean modules reconstruct each target behavior's complete
+ordinary-read or x87-load inventory and prove predecessor pullbacks from the
+exact behavior definitions. X87 load pullbacks cover the control word and each
+byte in the format-specific load range. These certificates do not by
+themselves prove paired values related or close whole-program memory
+transitions.
+
 Physical code addresses are normalized through `code_targets`. Imported calls
 are compared by DLL and symbol or ordinal, not IAT RVA. External results are
 adversarial and cannot be specialized from observations of the original. The
@@ -153,13 +170,22 @@ Prepared Nix reports additionally contain:
 prepared-proof/
   prepared-proof.json
   module-graph.json
+  relation-contract.json
+  relational-proof-ir.json
+  relational-semantic-ir.json
+  relational-memory-contracts.json
+  relational-invariants.json
   artifacts/{original,candidate}.pe
   lean/StageA/*.lean
 
 report/
   verdict.json
   relational-proof-ir.json
+  relational-semantic-ir.json
+  relational-memory-contracts.json
+  relational-invariants.json
   lean-audit.json
+  dependency-pack.json
   nix-provenance.json
   lean.stdout
   lean.stderr

@@ -1729,6 +1729,46 @@ def outputFlag (flags : Option FlagsExpr) (index : Nat) : BoolExpr :=
       | 11 => value.overflow.getD (.inputFlag 11)
       | other => .inputFlag other
 
+theorem _root_.StageA.Formal.BoolExpr.eval_toWord
+    (state : MachineState) (expression : BoolExpr) :
+    expression.toWord.eval state =
+      if expression.eval state then BitVec.ofNat 32 1 else BitVec.ofNat 32 0 := by
+  induction expression <;> simp_all [BoolExpr.toWord, BoolExpr.eval, Expr.eval]
+  case and left right leftSound rightSound =>
+    cases leftValue : left.eval state <;> cases rightValue : right.eval state <;>
+      simp_all
+  case or left right leftSound rightSound =>
+    cases leftValue : left.eval state <;> cases rightValue : right.eval state <;>
+      simp_all
+  case xor left right leftSound rightSound =>
+    cases leftValue : left.eval state <;> cases rightValue : right.eval state <;>
+      simp_all
+  case divisionValid high low divisor =>
+    split <;> simp_all
+
+theorem outputFlag_eval (behavior : NormalizedSymbolicBehavior) (state : MachineState)
+    (index : Nat) (safe : [0, 2, 6, 7, 10, 11].contains index = true) :
+    (outputFlag behavior.flags index).eval state =
+      BoolExpr.eval ((behavior.eval state).nextMachineState state) (.inputFlag index) := by
+  simp only [BoolExpr.eval, RelationalBehavior.nextMachineState,
+    NormalizedSymbolicBehavior.eval_eflags]
+  rcases behavior with ⟨registers, x87, writes, flags, outcome⟩
+  cases flags with
+  | none => simp [outputFlag, evalNormalizedFlags, BoolExpr.eval]
+  | some flags =>
+      simp at safe
+      rcases safe with safe | safe | safe | safe | safe | safe <;> subst index <;>
+        simp [outputFlag, BoolExpr.eval, evalNormalizedFlags,
+          StageA.Formal.FlagsExpr.eval_extract_cf,
+          StageA.Formal.FlagsExpr.eval_extract_pf,
+          StageA.Formal.FlagsExpr.eval_extract_zf,
+          StageA.Formal.FlagsExpr.eval_extract_sf,
+          StageA.Formal.FlagsExpr.eval_extract_df,
+          StageA.Formal.FlagsExpr.eval_extract_of,
+          StageA.Formal.evalFlagBit]
+      all_goals split <;> simp_all [BoolExpr.eval]
+      all_goals split <;> simp_all
+
 def _root_.StageA.Formal.BoolExpr.substitute (registers : Registers Expr) (flags : Option FlagsExpr) :
     BoolExpr → BoolExpr
   | .equal left right =>
@@ -1761,16 +1801,280 @@ theorem Expr.eval_substituteRegisters (behavior : NormalizedSymbolicBehavior)
     simp_all [Expr.pureInvariant, Expr.substituteRegisters, Expr.eval,
       RelationalBehavior.nextMachineState, evalNormalizedRegisters_get]
 
+def _root_.StageA.Formal.Expr.pullbackMemoryExpression
+    (behavior : NormalizedSymbolicBehavior) : Expr → Option Expr
+  | .inputReg register => some (behavior.registers.get register)
+  | .inputFlagValue bit =>
+      if [0, 2, 6, 7, 10, 11].contains bit then
+        some ((outputFlag behavior.flags bit).toWord)
+      else none
+  | .inputFsBase => some .inputFsBase
+  | .constant value => some (.constant value)
+  | .undefined slot => some (.undefined slot)
+  | .add left right => do
+      return .add (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .sub left right => do
+      return .sub (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .bitAnd left right => do
+      return .bitAnd (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .bitXor left right => do
+      return .bitXor (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .bitNot value => return .bitNot (← value.pullbackMemoryExpression behavior)
+  | .read8 address => do
+      return (← address.pullbackMemoryExpression behavior).read8AfterWrites behavior.writes
+  | .read32 address => do
+      return (← address.pullbackMemoryExpression behavior).read32AfterWrites behavior.writes
+  | .read8AfterWrite address writeAddress writeValue prior => do
+      return .read8AfterWrite
+        (← address.pullbackMemoryExpression behavior)
+        (← writeAddress.pullbackMemoryExpression behavior)
+        (← writeValue.pullbackMemoryExpression behavior)
+        (← prior.pullbackMemoryExpression behavior)
+  | .extractByte value index =>
+      return .extractByte (← value.pullbackMemoryExpression behavior) index
+  | .shiftLeft value amount =>
+      return .shiftLeft (← value.pullbackMemoryExpression behavior) amount
+  | .shiftRight value amount =>
+      return .shiftRight (← value.pullbackMemoryExpression behavior) amount
+  | .shiftLeftBy value amount => do
+      return .shiftLeftBy (← value.pullbackMemoryExpression behavior)
+        (← amount.pullbackMemoryExpression behavior)
+  | .shiftRightBy value amount => do
+      return .shiftRightBy (← value.pullbackMemoryExpression behavior)
+        (← amount.pullbackMemoryExpression behavior)
+  | .shiftArithmeticRightBy value amount => do
+      return .shiftArithmeticRightBy (← value.pullbackMemoryExpression behavior)
+        (← amount.pullbackMemoryExpression behavior)
+  | .bitOr left right => do
+      return .bitOr (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .ifEqual left right thenValue elseValue => do
+      return .ifEqual
+        (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+        (← thenValue.pullbackMemoryExpression behavior)
+        (← elseValue.pullbackMemoryExpression behavior)
+  | .unsignedLessValue left right => do
+      return .unsignedLessValue (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .bitValue value index =>
+      return .bitValue (← value.pullbackMemoryExpression behavior) index
+  | .multiply left right => do
+      return .multiply (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .multiplyHighUnsigned left right => do
+      return .multiplyHighUnsigned (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .multiplyHighSigned left right => do
+      return .multiplyHighSigned (← left.pullbackMemoryExpression behavior)
+        (← right.pullbackMemoryExpression behavior)
+  | .divideQuotient high low divisor => do
+      return .divideQuotient (← high.pullbackMemoryExpression behavior)
+        (← low.pullbackMemoryExpression behavior)
+        (← divisor.pullbackMemoryExpression behavior)
+  | .divideRemainder high low divisor => do
+      return .divideRemainder (← high.pullbackMemoryExpression behavior)
+        (← low.pullbackMemoryExpression behavior)
+        (← divisor.pullbackMemoryExpression behavior)
+  | .divisionValidValue high low divisor => do
+      return .divisionValidValue (← high.pullbackMemoryExpression behavior)
+        (← low.pullbackMemoryExpression behavior)
+        (← divisor.pullbackMemoryExpression behavior)
+  | .lowestSetBit value =>
+      return .lowestSetBit (← value.pullbackMemoryExpression behavior)
+  | .highestSetBit value =>
+      return .highestSetBit (← value.pullbackMemoryExpression behavior)
+  | .inputX87Control | .inputX87Status |
+      .x87Part _ _ | .x87CompareBit _ _ _ _ | .x87ExamineStatus _ _ => none
+
+theorem _root_.StageA.Formal.Expr.eval_pullbackMemoryExpression
+    (behavior : NormalizedSymbolicBehavior) (state : MachineState)
+    (expression pulled : Expr)
+    (checked : expression.pullbackMemoryExpression behavior = some pulled) :
+    pulled.eval state = expression.eval ((behavior.eval state).nextMachineState state) := by
+  induction expression using Expr.rec (motive_2 := fun _ => True) generalizing pulled
+  all_goals try trivial
+  case inputReg register =>
+    simp [Expr.pullbackMemoryExpression] at checked
+    subst pulled
+    simpa [Expr.substituteRegisters] using
+      Expr.eval_substituteRegisters behavior state (.inputReg register) (by rfl)
+  case inputFlagValue bit =>
+    simp only [Expr.pullbackMemoryExpression] at checked
+    split at checked
+    · rename_i safe
+      simp at checked
+      subst pulled
+      rw [BoolExpr.eval_toWord, outputFlag_eval behavior state bit safe]
+      rfl
+    · simp_all
+  case inputFsBase =>
+    simp [Expr.pullbackMemoryExpression] at checked
+    subst pulled
+    rfl
+  case constant value =>
+    simp [Expr.pullbackMemoryExpression] at checked
+    subst pulled
+    rfl
+  case undefined slot =>
+    simp [Expr.pullbackMemoryExpression] at checked
+    subst pulled
+    rfl
+  case add left right leftSound rightSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [Expr.eval, leftSound pulledLeft leftChecked, rightSound pulledRight rightChecked]
+  case sub left right leftSound rightSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [Expr.eval, leftSound pulledLeft leftChecked, rightSound pulledRight rightChecked]
+  case bitAnd left right leftSound rightSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [Expr.eval, leftSound pulledLeft leftChecked, rightSound pulledRight rightChecked]
+  case bitXor left right leftSound rightSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [Expr.eval, leftSound pulledLeft leftChecked, rightSound pulledRight rightChecked]
+  case bitNot value sound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, rfl⟩
+    simp [Expr.eval, sound pulledValue valueChecked]
+  case read8 address addressSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledAddress, addressChecked, rfl⟩
+    rw [Expr.eval_read8AfterWrites, addressSound pulledAddress addressChecked]
+    rfl
+  case read32 address addressSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledAddress, addressChecked, rfl⟩
+    rw [Expr.eval_read32AfterWrites, addressSound pulledAddress addressChecked]
+    rfl
+  case read8AfterWrite address writeAddress writeValue prior addressSound
+      writeAddressSound writeValueSound priorSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledAddress, addressChecked, pulledWriteAddress,
+      writeAddressChecked, pulledWriteValue, writeValueChecked, pulledPrior,
+      priorChecked, rfl⟩
+    simp [Expr.eval, addressSound pulledAddress addressChecked,
+      writeAddressSound pulledWriteAddress writeAddressChecked,
+      writeValueSound pulledWriteValue writeValueChecked,
+      priorSound pulledPrior priorChecked]
+  case extractByte value index sound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, rfl⟩
+    simp [Expr.eval, sound pulledValue valueChecked]
+  case shiftLeft value amount sound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, rfl⟩
+    simp [Expr.eval, sound pulledValue valueChecked]
+  case shiftRight value amount sound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, rfl⟩
+    simp [Expr.eval, sound pulledValue valueChecked]
+  case shiftLeftBy value amount valueSound amountSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, pulledAmount, amountChecked, rfl⟩
+    simp [Expr.eval, valueSound pulledValue valueChecked,
+      amountSound pulledAmount amountChecked]
+  case shiftRightBy value amount valueSound amountSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, pulledAmount, amountChecked, rfl⟩
+    simp [Expr.eval, valueSound pulledValue valueChecked,
+      amountSound pulledAmount amountChecked]
+  case shiftArithmeticRightBy value amount valueSound amountSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, pulledAmount, amountChecked, rfl⟩
+    simp [Expr.eval, valueSound pulledValue valueChecked,
+      amountSound pulledAmount amountChecked]
+  case bitOr left right leftSound rightSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [Expr.eval, leftSound pulledLeft leftChecked, rightSound pulledRight rightChecked]
+  case ifEqual left right thenValue elseValue leftSound rightSound thenSound elseSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked,
+      pulledThen, thenChecked, pulledElse, elseChecked, rfl⟩
+    simp [Expr.eval, leftSound pulledLeft leftChecked, rightSound pulledRight rightChecked,
+      thenSound pulledThen thenChecked, elseSound pulledElse elseChecked]
+  case unsignedLessValue left right leftSound rightSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [Expr.eval, leftSound pulledLeft leftChecked, rightSound pulledRight rightChecked]
+  case bitValue value index sound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, rfl⟩
+    simp [Expr.eval, sound pulledValue valueChecked]
+  case multiply left right leftSound rightSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [Expr.eval, leftSound pulledLeft leftChecked, rightSound pulledRight rightChecked]
+  case multiplyHighUnsigned left right leftSound rightSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [Expr.eval, leftSound pulledLeft leftChecked, rightSound pulledRight rightChecked]
+  case multiplyHighSigned left right leftSound rightSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledLeft, leftChecked, pulledRight, rightChecked, rfl⟩
+    simp [Expr.eval, leftSound pulledLeft leftChecked, rightSound pulledRight rightChecked]
+  case divideQuotient high low divisor highSound lowSound divisorSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledHigh, highChecked, pulledLow, lowChecked,
+      pulledDivisor, divisorChecked, rfl⟩
+    simp [Expr.eval, highSound pulledHigh highChecked, lowSound pulledLow lowChecked,
+      divisorSound pulledDivisor divisorChecked]
+  case divideRemainder high low divisor highSound lowSound divisorSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledHigh, highChecked, pulledLow, lowChecked,
+      pulledDivisor, divisorChecked, rfl⟩
+    simp [Expr.eval, highSound pulledHigh highChecked, lowSound pulledLow lowChecked,
+      divisorSound pulledDivisor divisorChecked]
+  case divisionValidValue high low divisor highSound lowSound divisorSound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledHigh, highChecked, pulledLow, lowChecked,
+      pulledDivisor, divisorChecked, rfl⟩
+    simp [Expr.eval, highSound pulledHigh highChecked, lowSound pulledLow lowChecked,
+      divisorSound pulledDivisor divisorChecked]
+  case lowestSetBit value sound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, rfl⟩
+    simp [Expr.eval, sound pulledValue valueChecked]
+  case highestSetBit value sound =>
+    simp [Expr.pullbackMemoryExpression, Option.bind_eq_some_iff] at checked
+    rcases checked with ⟨pulledValue, valueChecked, rfl⟩
+    simp [Expr.eval, sound pulledValue valueChecked]
+  all_goals simp [Expr.pullbackMemoryExpression] at checked
+
+def _root_.StageA.Formal.Expr.pullbackX87LoadControl
+    (behavior : NormalizedSymbolicBehavior) : Expr → Option Expr
+  | .inputX87Control => some behavior.x87.control
+  | expression => expression.pullbackMemoryExpression behavior
+
+theorem _root_.StageA.Formal.Expr.eval_pullbackX87LoadControl_low16
+    (behavior : NormalizedSymbolicBehavior) (state : MachineState)
+    (expression pulled : Expr)
+    (checked : expression.pullbackX87LoadControl behavior = some pulled) :
+    (pulled.eval state).extractLsb' 0 16 =
+      (expression.eval ((behavior.eval state).nextMachineState state)).extractLsb' 0 16 := by
+  cases expression <;> simp [Expr.pullbackX87LoadControl] at checked
+  case inputX87Control =>
+    subst pulled
+    simp [Expr.eval, RelationalBehavior.nextMachineState,
+      NormalizedSymbolicBehavior.eval, evalNormalizedX87]
+    bv_decide
+  all_goals
+    have sound := Expr.eval_pullbackMemoryExpression behavior state _ pulled checked
+    exact congrArg (fun value : Word => value.extractLsb' 0 16) sound
+
 def _root_.StageA.Formal.Expr.pullbackMemoryRead
     (behavior : NormalizedSymbolicBehavior) : Expr → Option Expr
-  | .read8 address =>
-      if address.pureInvariant then
-        some ((address.substituteRegisters behavior.registers).read8AfterWrites behavior.writes)
-      else none
-  | .read32 address =>
-      if address.pureInvariant then
-        some ((address.substituteRegisters behavior.registers).read32AfterWrites behavior.writes)
-      else none
+  | expression@(.read8 _) | expression@(.read32 _) |
+      expression@(.read8AfterWrite _ _ _ _) =>
+      expression.pullbackMemoryExpression behavior
   | _ => none
 
 theorem _root_.StageA.Formal.Expr.eval_pullbackMemoryRead
@@ -1779,41 +2083,290 @@ theorem _root_.StageA.Formal.Expr.eval_pullbackMemoryRead
     (checked : expression.pullbackMemoryRead behavior = some pulled) :
     pulled.eval state = expression.eval ((behavior.eval state).nextMachineState state) := by
   cases expression <;> simp [Expr.pullbackMemoryRead] at checked
-  case read8 address =>
-    rcases checked with ⟨safe, equal⟩
-    subst pulled
-    rw [Expr.eval_read8AfterWrites,
-      Expr.eval_substituteRegisters behavior state address safe]
-    rfl
-  case read32 address =>
-    rcases checked with ⟨safe, equal⟩
-    subst pulled
-    rw [Expr.eval_read32AfterWrites,
-      Expr.eval_substituteRegisters behavior state address safe]
-    rfl
+  all_goals exact Expr.eval_pullbackMemoryExpression behavior state _ pulled checked
 
-theorem outputFlag_eval (behavior : NormalizedSymbolicBehavior) (state : MachineState)
-    (index : Nat) (safe : [0, 2, 6, 7, 10, 11].contains index = true) :
-    (outputFlag behavior.flags index).eval state =
-      BoolExpr.eval ((behavior.eval state).nextMachineState state) (.inputFlag index) := by
-  simp only [BoolExpr.eval, RelationalBehavior.nextMachineState,
-    NormalizedSymbolicBehavior.eval_eflags]
-  rcases behavior with ⟨registers, x87, writes, flags, outcome⟩
-  cases flags with
-  | none => simp [outputFlag, evalNormalizedFlags, BoolExpr.eval]
-  | some flags =>
-      simp at safe
-      rcases safe with safe | safe | safe | safe | safe | safe <;> subst index <;>
-        simp [outputFlag, BoolExpr.eval, evalNormalizedFlags,
-          StageA.Formal.FlagsExpr.eval_extract_cf,
-          StageA.Formal.FlagsExpr.eval_extract_pf,
-          StageA.Formal.FlagsExpr.eval_extract_zf,
-          StageA.Formal.FlagsExpr.eval_extract_sf,
-          StageA.Formal.FlagsExpr.eval_extract_df,
-          StageA.Formal.FlagsExpr.eval_extract_of,
-          StageA.Formal.evalFlagBit]
-      all_goals split <;> simp_all [BoolExpr.eval]
-      all_goals split <;> simp_all
+mutual
+def _root_.StageA.Formal.Expr.memoryReadObservations : Expr → List Expr
+  | .inputReg _ | .inputFlagValue _ | .inputFsBase | .inputX87Control |
+      .inputX87Status | .constant _ | .undefined _ => []
+  | .add left right | .sub left right | .bitAnd left right | .bitXor left right |
+      .shiftLeftBy left right | .shiftRightBy left right |
+      .shiftArithmeticRightBy left right | .bitOr left right |
+      .unsignedLessValue left right | .multiply left right |
+      .multiplyHighUnsigned left right | .multiplyHighSigned left right =>
+      left.memoryReadObservations ++ right.memoryReadObservations
+  | .bitNot value | .extractByte value _ | .shiftLeft value _ | .shiftRight value _ |
+      .bitValue value _ | .lowestSetBit value | .highestSetBit value =>
+      value.memoryReadObservations
+  | .read8 address =>
+      .read8 address :: address.memoryReadObservations
+  | .read32 address =>
+      .read32 address :: address.memoryReadObservations
+  | .read8AfterWrite address writeAddress writeValue prior =>
+      .read8AfterWrite address writeAddress writeValue prior ::
+        (address.memoryReadObservations ++ writeAddress.memoryReadObservations ++
+          writeValue.memoryReadObservations)
+  | .ifEqual left right thenValue elseValue =>
+      left.memoryReadObservations ++ right.memoryReadObservations ++
+        thenValue.memoryReadObservations ++ elseValue.memoryReadObservations
+  | .divideQuotient high low divisor | .divideRemainder high low divisor |
+      .divisionValidValue high low divisor =>
+      high.memoryReadObservations ++ low.memoryReadObservations ++
+        divisor.memoryReadObservations
+  | .x87Part value _ => value.memoryReadObservations
+  | .x87CompareBit left right control _ =>
+      left.memoryReadObservations ++ right.memoryReadObservations ++
+        control.memoryReadObservations
+  | .x87ExamineStatus value status =>
+      value.memoryReadObservations ++ status.memoryReadObservations
+
+def _root_.StageA.Formal.X87Expr.memoryReadObservations : X87Expr → List Expr
+  | .inputStack _ | .constant _ => []
+  | .load _ address control =>
+      address.memoryReadObservations ++ control.memoryReadObservations
+  | .imageLoad _ _ control => control.memoryReadObservations
+  | .unary _ value control | .store _ value control =>
+      value.memoryReadObservations ++ control.memoryReadObservations
+  | .binary _ left right control =>
+      left.memoryReadObservations ++ right.memoryReadObservations ++
+        control.memoryReadObservations
+end
+
+def _root_.StageA.Formal.BoolExpr.memoryReadObservations : BoolExpr → List Expr
+  | .equal left right | .unsignedLess left right =>
+      left.memoryReadObservations ++ right.memoryReadObservations
+  | .not value => value.memoryReadObservations
+  | .and left right | .or left right | .xor left right =>
+      left.memoryReadObservations ++ right.memoryReadObservations
+  | .msb value | .bit value _ => value.memoryReadObservations
+  | .inputFlag _ => []
+  | .divisionValid high low divisor =>
+      high.memoryReadObservations ++ low.memoryReadObservations ++
+        divisor.memoryReadObservations
+
+def _root_.StageA.Formal.FlagsExpr.memoryReadObservations
+    (flags : FlagsExpr) : List Expr :=
+  [flags.zero, flags.carry, flags.sign, flags.overflow, flags.parity].flatMap
+    fun value => match value with
+      | none => []
+      | some expression => expression.memoryReadObservations
+
+def _root_.StageA.Formal.SymbolicX87State.memoryReadObservations
+    (state : SymbolicX87State) : List Expr :=
+  state.stack.flatMap X87Expr.memoryReadObservations ++
+    state.control.memoryReadObservations ++ state.status.memoryReadObservations
+
+def _root_.StageA.Relational.NormalizedOutcomeExpr.memoryReadObservations :
+    NormalizedOutcomeExpr → List Expr
+  | .returned target | .indirectJump target => target.memoryReadObservations
+  | .jump _ | .call _ _ => []
+  | .branch condition _ _ => condition.memoryReadObservations
+  | .externalCall _ arguments _ | .externalJump _ arguments =>
+      arguments.flatMap Expr.memoryReadObservations
+  | .bulkCopy destination source count direction _ =>
+      destination.memoryReadObservations ++ source.memoryReadObservations ++
+        count.memoryReadObservations ++ direction.memoryReadObservations
+  | .indirectCall target _ => target.memoryReadObservations
+  | .checkedContinue valid _ => valid.memoryReadObservations
+  | .atomicCompareExchange address expected replacement _ =>
+      address.memoryReadObservations ++ expected.memoryReadObservations ++
+        replacement.memoryReadObservations
+
+def _root_.StageA.Relational.NormalizedOutcomeExpr.directTargets :
+    NormalizedOutcomeExpr → List Nat
+  | .jump target => [target]
+  | .branch _ taken fallthrough => [taken, fallthrough]
+  | .call target _ => [target]
+  | .externalCall _ _ continuation | .bulkCopy _ _ _ _ continuation |
+      .checkedContinue _ continuation | .atomicCompareExchange _ _ _ continuation =>
+      [continuation]
+  | _ => []
+
+def _root_.StageA.Relational.NormalizedSymbolicBehavior.memoryReadObservations
+    (behavior : NormalizedSymbolicBehavior) : List Expr :=
+  [behavior.registers.eax, behavior.registers.ebx, behavior.registers.ecx,
+      behavior.registers.edx, behavior.registers.esi, behavior.registers.edi,
+      behavior.registers.ebp, behavior.registers.esp].flatMap
+      Expr.memoryReadObservations ++
+    behavior.x87.memoryReadObservations ++
+    behavior.writes.flatMap (fun write =>
+      write.1.memoryReadObservations ++ write.2.memoryReadObservations) ++
+    (match behavior.flags with
+      | none => []
+      | some flags => flags.memoryReadObservations) ++
+    behavior.outcome.memoryReadObservations
+
+structure X87LoadObservation where
+  format : X87LoadFormat
+  address : Expr
+  control : Expr
+deriving Repr, DecidableEq
+
+mutual
+def _root_.StageA.Formal.Expr.x87LoadObservations : Expr → List X87LoadObservation
+  | .inputReg _ | .inputFlagValue _ | .inputFsBase | .inputX87Control |
+      .inputX87Status | .constant _ | .undefined _ => []
+  | .add left right | .sub left right | .bitAnd left right | .bitXor left right |
+      .shiftLeftBy left right | .shiftRightBy left right |
+      .shiftArithmeticRightBy left right | .bitOr left right |
+      .unsignedLessValue left right | .multiply left right |
+      .multiplyHighUnsigned left right | .multiplyHighSigned left right =>
+      left.x87LoadObservations ++ right.x87LoadObservations
+  | .bitNot value | .read8 value | .read32 value | .extractByte value _ |
+      .shiftLeft value _ | .shiftRight value _ | .bitValue value _ |
+      .lowestSetBit value | .highestSetBit value => value.x87LoadObservations
+  | .read8AfterWrite address writeAddress writeValue prior |
+      .ifEqual address writeAddress writeValue prior =>
+      address.x87LoadObservations ++ writeAddress.x87LoadObservations ++
+        writeValue.x87LoadObservations ++ prior.x87LoadObservations
+  | .divideQuotient high low divisor | .divideRemainder high low divisor |
+      .divisionValidValue high low divisor =>
+      high.x87LoadObservations ++ low.x87LoadObservations ++ divisor.x87LoadObservations
+  | .x87Part value _ => value.x87LoadObservations
+  | .x87CompareBit left right control _ =>
+      left.x87LoadObservations ++ right.x87LoadObservations ++ control.x87LoadObservations
+  | .x87ExamineStatus value status =>
+      value.x87LoadObservations ++ status.x87LoadObservations
+
+def _root_.StageA.Formal.X87Expr.x87LoadObservations :
+    X87Expr → List X87LoadObservation
+  | .inputStack _ | .constant _ => []
+  | .load format address control =>
+      { format := format, address := address, control := control } ::
+        (address.x87LoadObservations ++ control.x87LoadObservations)
+  | .imageLoad _ _ control => control.x87LoadObservations
+  | .unary _ value control | .store _ value control =>
+      value.x87LoadObservations ++ control.x87LoadObservations
+  | .binary _ left right control =>
+      left.x87LoadObservations ++ right.x87LoadObservations ++
+        control.x87LoadObservations
+end
+
+def _root_.StageA.Formal.BoolExpr.x87LoadObservations :
+    BoolExpr → List X87LoadObservation
+  | .equal left right | .unsignedLess left right =>
+      left.x87LoadObservations ++ right.x87LoadObservations
+  | .not value => value.x87LoadObservations
+  | .and left right | .or left right | .xor left right =>
+      left.x87LoadObservations ++ right.x87LoadObservations
+  | .msb value | .bit value _ => value.x87LoadObservations
+  | .inputFlag _ => []
+  | .divisionValid high low divisor =>
+      high.x87LoadObservations ++ low.x87LoadObservations ++ divisor.x87LoadObservations
+
+def _root_.StageA.Formal.FlagsExpr.x87LoadObservations
+    (flags : FlagsExpr) : List X87LoadObservation :=
+  [flags.zero, flags.carry, flags.sign, flags.overflow, flags.parity].flatMap
+    fun value => match value with
+      | none => []
+      | some expression => expression.x87LoadObservations
+
+def _root_.StageA.Formal.SymbolicX87State.x87LoadObservations
+    (state : SymbolicX87State) : List X87LoadObservation :=
+  state.stack.flatMap X87Expr.x87LoadObservations ++
+    state.control.x87LoadObservations ++ state.status.x87LoadObservations
+
+def _root_.StageA.Relational.NormalizedOutcomeExpr.x87LoadObservations :
+    NormalizedOutcomeExpr → List X87LoadObservation
+  | .returned target | .indirectJump target => target.x87LoadObservations
+  | .jump _ | .call _ _ => []
+  | .branch condition _ _ => condition.x87LoadObservations
+  | .externalCall _ arguments _ | .externalJump _ arguments =>
+      arguments.flatMap Expr.x87LoadObservations
+  | .bulkCopy destination source count direction _ =>
+      destination.x87LoadObservations ++ source.x87LoadObservations ++
+        count.x87LoadObservations ++ direction.x87LoadObservations
+  | .indirectCall target _ => target.x87LoadObservations
+  | .checkedContinue valid _ => valid.x87LoadObservations
+  | .atomicCompareExchange address expected replacement _ =>
+      address.x87LoadObservations ++ expected.x87LoadObservations ++
+        replacement.x87LoadObservations
+
+def _root_.StageA.Relational.NormalizedSymbolicBehavior.x87LoadObservations
+    (behavior : NormalizedSymbolicBehavior) : List X87LoadObservation :=
+  [behavior.registers.eax, behavior.registers.ebx, behavior.registers.ecx,
+      behavior.registers.edx, behavior.registers.esi, behavior.registers.edi,
+      behavior.registers.ebp, behavior.registers.esp].flatMap
+      Expr.x87LoadObservations ++
+    behavior.x87.x87LoadObservations ++
+    behavior.writes.flatMap (fun write =>
+      write.1.x87LoadObservations ++ write.2.x87LoadObservations) ++
+    (match behavior.flags with
+      | none => []
+      | some flags => flags.x87LoadObservations) ++
+    behavior.outcome.x87LoadObservations
+
+def X87LoadObservation.byteReads (observation : X87LoadObservation) : List Expr :=
+  (List.range observation.format.byteWidth).map fun offset =>
+    .read8 (.add observation.address (.constant offset))
+
+def X87LoadObservation.PullbackClosed
+    (source : NormalizedSymbolicBehavior) (observation : X87LoadObservation) : Prop :=
+  (∃ pulledControl,
+      observation.control.pullbackX87LoadControl source = some pulledControl) ∧
+    ∀ read, read ∈ observation.byteReads →
+      ∃ pulledRead, read.pullbackMemoryRead source = some pulledRead
+
+def X87LoadObservation.pullbackChecked
+    (source : NormalizedSymbolicBehavior) (observation : X87LoadObservation) : Bool :=
+  (observation.control.pullbackX87LoadControl source).isSome &&
+    observation.byteReads.all fun read => (read.pullbackMemoryRead source).isSome
+
+theorem X87LoadObservation.pullbackClosed_of_checked
+    (source : NormalizedSymbolicBehavior) (observation : X87LoadObservation)
+    (checked : observation.pullbackChecked source = true) :
+    observation.PullbackClosed source := by
+  simp only [X87LoadObservation.pullbackChecked, Bool.and_eq_true] at checked
+  rcases checked with ⟨controlChecked, readsChecked⟩
+  constructor
+  · cases result : observation.control.pullbackX87LoadControl source with
+    | none => simp [result] at controlChecked
+    | some pulled => exact ⟨pulled, rfl⟩
+  · intro read member
+    simp only [List.all_eq_true] at readsChecked
+    have readChecked := readsChecked read member
+    cases result : read.pullbackMemoryRead source with
+    | none => simp [result] at readChecked
+    | some pulled => exact ⟨pulled, rfl⟩
+
+def X87LoadPullbackEdgeClosed (source target : NormalizedSymbolicBehavior)
+    (targetId : Nat) : Prop :=
+  source.outcome.directTargets.contains targetId = true ∧
+    ∀ observation, observation ∈ target.x87LoadObservations →
+      observation.PullbackClosed source
+
+theorem x87LoadPullbackEdgeClosed_of_checked
+    (source target : NormalizedSymbolicBehavior) (targetId : Nat)
+    (edgeChecked : source.outcome.directTargets.contains targetId = true)
+    (loadsChecked : target.x87LoadObservations.all
+      (X87LoadObservation.pullbackChecked source) = true) :
+    X87LoadPullbackEdgeClosed source target targetId := by
+  constructor
+  · exact edgeChecked
+  · intro observation member
+    simp only [List.all_eq_true] at loadsChecked
+    exact observation.pullbackClosed_of_checked source (loadsChecked observation member)
+
+def MemoryReadPullbackEdgeClosed (source target : NormalizedSymbolicBehavior)
+    (targetId : Nat) : Prop :=
+  source.outcome.directTargets.contains targetId = true ∧
+    ∀ read, read ∈ target.memoryReadObservations →
+      ∃ pulled, read.pullbackMemoryRead source = some pulled
+
+theorem memoryReadPullbackEdgeClosed_of_checked
+    (source target : NormalizedSymbolicBehavior) (targetId : Nat)
+    (edgeChecked : source.outcome.directTargets.contains targetId = true)
+    (readsChecked : target.memoryReadObservations.all
+      (fun read => (read.pullbackMemoryRead source).isSome) = true) :
+    MemoryReadPullbackEdgeClosed source target targetId := by
+  constructor
+  · exact edgeChecked
+  · intro read member
+    simp only [List.all_eq_true] at readsChecked
+    have checked := readsChecked read member
+    cases result : read.pullbackMemoryRead source with
+    | none => simp [result] at checked
+    | some pulled => exact ⟨pulled, rfl⟩
 
 theorem BoolExpr.eval_substitute (behavior : NormalizedSymbolicBehavior)
     (state : MachineState) (predicate : BoolExpr)
