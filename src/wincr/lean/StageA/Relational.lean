@@ -495,6 +495,12 @@ def evalNormalizedRegisters (state : MachineState) (registers : Registers Expr) 
   esp := registers.esp.eval state
 }
 
+@[simp] theorem evalNormalizedRegisters_get (state : MachineState)
+    (registers : Registers Expr) (register : Reg) :
+    (evalNormalizedRegisters state registers).get register =
+      (registers.get register).eval state := by
+  cases register <;> rfl
+
 def evalNormalizedX87 (state : MachineState) (x87 : SymbolicX87State) : ConcreteX87State := {
   stack := x87.stack.map fun value => value.eval state
   control := (x87.control.eval state).extractLsb' 0 16
@@ -767,6 +773,16 @@ theorem memoryRelated_without_relocations (originalImageBase candidateImageBase 
     (related : memoryRelated originalImageBase candidateImageBase targets values original candidate) :
     candidate = fun address => original (normalizeDataAddress values address) := by
   simpa [memoryRelated, none] using related
+
+theorem memoryRelated_without_values_eq (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (original candidate : Memory)
+    (related : memoryRelated originalImageBase candidateImageBase targets []
+      original candidate) :
+    original = candidate := by
+  have candidateEqual := memoryRelated_without_relocations originalImageBase
+    candidateImageBase targets [] original candidate (by rfl) related
+  symm
+  simpa using candidateEqual
 
 theorem memoryRelated_with_relocations (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair) (values : List ValueTargetPair)
@@ -1081,6 +1097,80 @@ structure RegisterPair where
   candidate : Reg
 deriving Repr, DecidableEq
 
+inductive RegisterValueRelation where
+  | exact
+  | codePointer
+  | dataPointer
+  | relatedWord
+deriving Repr, DecidableEq
+
+structure RegisterRelationPair where
+  original : Reg
+  candidate : Reg
+  relation : RegisterValueRelation
+deriving Repr, DecidableEq
+
+def RegisterValueRelation.holds
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relation : RegisterValueRelation) (original candidate : Word) : Bool :=
+  match relation with
+  | .exact => original == candidate
+  | .codePointer =>
+      (original == BitVec.ofNat 32 0 && candidate == BitVec.ofNat 32 0) ||
+        codePointerRelated originalImageBase candidateImageBase targets original candidate
+  | .dataPointer =>
+      (original == BitVec.ofNat 32 0 && candidate == BitVec.ofNat 32 0) ||
+        mappedValueRelated values original candidate
+  | .relatedWord =>
+      wordRelated originalImageBase candidateImageBase targets values original candidate
+
+def registerRelationsHold (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relations : List RegisterRelationPair) (original candidate : PureState) : Bool :=
+  relations.all fun relation => relation.relation.holds originalImageBase candidateImageBase
+    targets values (original.get relation.original) (candidate.get relation.candidate)
+
+def exactIdentityRegister (relations : List RegisterRelationPair) (register : Reg) : Bool :=
+  relations.any fun relation =>
+    relation.original == register && relation.candidate == register &&
+      relation.relation == .exact
+
+theorem registerRelationsHold_exact_identity
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relations : List RegisterRelationPair) (original candidate : PureState)
+    (register : Reg)
+    (related : registerRelationsHold originalImageBase candidateImageBase targets values
+      relations original candidate = true)
+    (exact : exactIdentityRegister relations register = true) :
+    original.get register = candidate.get register := by
+  simp only [registerRelationsHold, List.all_eq_true] at related
+  simp only [exactIdentityRegister, List.any_eq_true] at exact
+  rcases exact with ⟨relation, member, checks⟩
+  have holds := related relation member
+  rcases relation with ⟨originalRegister, candidateRegister, relationKind⟩
+  simp only [Bool.and_eq_true, beq_iff_eq] at checks
+  rcases checks with ⟨⟨originalEqual, candidateEqual⟩, relationExact⟩
+  rw [originalEqual, candidateEqual, relationExact] at holds
+  simpa [RegisterValueRelation.holds] using holds
+
+theorem registerRelationsHold_self_exact
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relations : List RegisterRelationPair) (state : PureState)
+    (exact : relations.all (fun relation => relation.relation == .exact) = true)
+    (identity : relations.all (fun relation => relation.original == relation.candidate) = true) :
+    registerRelationsHold originalImageBase candidateImageBase targets values
+      relations state state = true := by
+  simp only [registerRelationsHold, List.all_eq_true] at exact identity ⊢
+  intro relation member
+  have relationExact := exact relation member
+  have registersEqual := identity relation member
+  simp only [beq_iff_eq] at relationExact registersEqual
+  rw [relationExact, registersEqual]
+  simp [RegisterValueRelation.holds]
+
 structure RegisterBoundPair where
   original : Reg
   candidate : Reg
@@ -1153,6 +1243,15 @@ def registersRelatedValues (originalImageBase candidateImageBase : Nat)
   pairs.all fun pair => wordRelated originalImageBase candidateImageBase targets values
     (original.get pair.original) (candidate.get pair.candidate)
 
+def RegisterPair.exactRelation (pair : RegisterPair) : RegisterRelationPair := {
+  original := pair.original
+  candidate := pair.candidate
+  relation := .exact
+}
+
+def exactRegisterRelations (pairs : List RegisterPair) : List RegisterRelationPair :=
+  pairs.map RegisterPair.exactRelation
+
 theorem registersRelatedValues_self_of_identity
     (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair) (values : List ValueTargetPair)
@@ -1190,9 +1289,9 @@ def composableStatesRelated (originalImageBase candidateImageBase : Nat)
     (flagInputs : List Nat)
     (bounds : List RegisterBoundPair) (separations : List AddressSeparationPair)
     (values : List ValueTargetPair)
-    (pairs : List RegisterPair)
+    (relations : List RegisterRelationPair)
     (original candidate : MachineState) : Prop :=
-  registersRelatedValues originalImageBase candidateImageBase targets values pairs
+  registerRelationsHold originalImageBase candidateImageBase targets values relations
       original.registers candidate.registers = true ∧
     boundsRelated bounds original.registers candidate.registers = true ∧
     addressSeparationsRelated separations original.registers candidate.registers = true ∧
@@ -1228,10 +1327,12 @@ theorem statesRelated_implies_composable
     (related : statesRelated originalImageBase candidateImageBase targets flagInputs bounds
       separations values pairs original candidate) :
     composableStatesRelated originalImageBase candidateImageBase targets flagInputs bounds
-      separations values pairs original candidate := by
+      separations values (exactRegisterRelations pairs) original candidate := by
   rcases related with ⟨registers, rest⟩
-  exact ⟨registersRelated_implies_registersRelatedValues originalImageBase candidateImageBase
-    targets values pairs original.registers candidate.registers registers, rest⟩
+  refine ⟨?_, rest⟩
+  unfold registerRelationsHold exactRegisterRelations RegisterPair.exactRelation
+  unfold registersRelated at registers
+  simpa [RegisterValueRelation.holds] using registers
 
 structure RegionRelation where
   id : Nat
@@ -1240,6 +1341,8 @@ structure RegionRelation where
   root : Bool
   inputs : List RegisterPair
   outputs : List RegisterPair
+  inputRelations : List RegisterRelationPair := []
+  outputRelations : List RegisterRelationPair := []
   bounds : List RegisterBoundPair := []
   addressSeparations : List AddressSeparationPair := []
   targets : List CodeTargetPair
@@ -1267,7 +1370,7 @@ def MemoryObservationTransitionClosed
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Prop :=
   ∀ originalState candidateState,
     composableStatesRelated originalImageBase candidateImageBase source.targets
-      source.flagInputs source.bounds source.addressSeparations source.values source.inputs
+      source.flagInputs source.bounds source.addressSeparations source.values source.inputRelations
       originalState candidateState →
     memoryObservationContractHolds originalImageBase candidateImageBase observationTargets
       observationValues requirements
@@ -1643,6 +1746,864 @@ def _root_.StageA.Formal.Expr.pureInvariant : Expr → Bool
       .read8AfterWrite _ _ _ _ | .x87Part _ _ | .x87CompareBit _ _ _ _ |
       .x87ExamineStatus _ _ => false
 
+def _root_.StageA.Formal.Expr.exactInputs
+    (relations : List RegisterRelationPair) : Expr → Bool
+  | .inputReg register => exactIdentityRegister relations register
+  | .inputFsBase | .constant _ | .undefined _ => true
+  | .add left right | .sub left right | .bitAnd left right | .bitXor left right |
+      .shiftLeftBy left right | .shiftRightBy left right |
+      .shiftArithmeticRightBy left right | .bitOr left right |
+      .unsignedLessValue left right | .multiply left right |
+      .multiplyHighUnsigned left right | .multiplyHighSigned left right =>
+      left.exactInputs relations && right.exactInputs relations
+  | .bitNot value | .extractByte value _ | .shiftLeft value _ | .shiftRight value _ |
+      .bitValue value _ | .lowestSetBit value | .highestSetBit value =>
+      value.exactInputs relations
+  | .ifEqual left right thenValue elseValue =>
+      left.exactInputs relations && right.exactInputs relations &&
+        thenValue.exactInputs relations && elseValue.exactInputs relations
+  | .divideQuotient high low divisor | .divideRemainder high low divisor |
+      .divisionValidValue high low divisor =>
+      high.exactInputs relations && low.exactInputs relations &&
+        divisor.exactInputs relations
+  | .inputFlagValue _ | .inputX87Control | .inputX87Status | .read8 _ | .read32 _ |
+      .read8AfterWrite _ _ _ _ | .x87Part _ _ | .x87CompareBit _ _ _ _ |
+      .x87ExamineStatus _ _ => false
+
+theorem _root_.StageA.Formal.Expr.eval_eq_of_exactInputs
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relations : List RegisterRelationPair) (original candidate : MachineState)
+    (expression : Expr)
+    (registers : registerRelationsHold originalImageBase candidateImageBase targets values
+      relations original.registers candidate.registers = true)
+    (undefinedValue : original.undefinedValue = candidate.undefinedValue)
+    (fsBase : original.fsBase = candidate.fsBase)
+    (safe : expression.exactInputs relations = true) :
+    expression.eval original = expression.eval candidate := by
+  induction expression using Expr.rec (motive_2 := fun _ => True)
+  case inputReg register =>
+    exact registerRelationsHold_exact_identity originalImageBase candidateImageBase targets
+      values relations original.registers candidate.registers register registers safe
+  case inputFsBase => exact fsBase
+  case undefined slot => simpa [Expr.eval] using congrFun undefinedValue slot
+  case constant value => rfl
+  case add left right leftSound rightSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case sub left right leftSound rightSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case bitAnd left right leftSound rightSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case bitXor left right leftSound rightSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case bitNot value sound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, sound safe]
+  case extractByte value index sound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, sound safe]
+  case shiftLeft value amount sound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, sound safe]
+  case shiftRight value amount sound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, sound safe]
+  case shiftLeftBy value amount valueSound amountSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, valueSound safe.1, amountSound safe.2]
+  case shiftRightBy value amount valueSound amountSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, valueSound safe.1, amountSound safe.2]
+  case shiftArithmeticRightBy value amount valueSound amountSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, valueSound safe.1, amountSound safe.2]
+  case bitOr left right leftSound rightSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case ifEqual left right thenValue elseValue leftSound rightSound thenSound elseSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, leftSound safe.1.1.1, rightSound safe.1.1.2,
+      thenSound safe.1.2, elseSound safe.2]
+  case unsignedLessValue left right leftSound rightSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case bitValue value index sound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, sound safe]
+  case multiply left right leftSound rightSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case multiplyHighUnsigned left right leftSound rightSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case multiplyHighSigned left right leftSound rightSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case divideQuotient high low divisor highSound lowSound divisorSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, highSound safe.1.1, lowSound safe.1.2, divisorSound safe.2]
+  case divideRemainder high low divisor highSound lowSound divisorSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, highSound safe.1.1, lowSound safe.1.2, divisorSound safe.2]
+  case divisionValidValue high low divisor highSound lowSound divisorSound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, highSound safe.1.1, lowSound safe.1.2, divisorSound safe.2]
+  case lowestSetBit value sound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, sound safe]
+  case highestSetBit value sound =>
+    simp [Expr.exactInputs] at safe
+    simp [Expr.eval, sound safe]
+  case inputFlagValue => simp [Expr.exactInputs] at safe
+  case inputX87Control => simp [Expr.exactInputs] at safe
+  case inputX87Status => simp [Expr.exactInputs] at safe
+  case read8 => simp [Expr.exactInputs] at safe
+  case read32 => simp [Expr.exactInputs] at safe
+  case read8AfterWrite => simp [Expr.exactInputs] at safe
+  case x87Part => simp [Expr.exactInputs] at safe
+  case x87CompareBit => simp [Expr.exactInputs] at safe
+  case x87ExamineStatus => simp [Expr.exactInputs] at safe
+  all_goals trivial
+
+def _root_.StageA.Formal.Expr.exactMemoryInputs
+    (relations : List RegisterRelationPair) : Expr → Bool
+  | .inputReg register => exactIdentityRegister relations register
+  | .inputFsBase | .constant _ | .undefined _ => true
+  | .add left right | .sub left right | .bitAnd left right | .bitXor left right |
+      .shiftLeftBy left right | .shiftRightBy left right |
+      .shiftArithmeticRightBy left right | .bitOr left right |
+      .unsignedLessValue left right | .multiply left right |
+      .multiplyHighUnsigned left right | .multiplyHighSigned left right =>
+      left.exactMemoryInputs relations && right.exactMemoryInputs relations
+  | .bitNot value | .read8 value | .read32 value | .extractByte value _ |
+      .shiftLeft value _ | .shiftRight value _ | .bitValue value _ |
+      .lowestSetBit value | .highestSetBit value =>
+      value.exactMemoryInputs relations
+  | .read8AfterWrite address writeAddress writeValue prior |
+      .ifEqual address writeAddress writeValue prior =>
+      address.exactMemoryInputs relations && writeAddress.exactMemoryInputs relations &&
+        writeValue.exactMemoryInputs relations && prior.exactMemoryInputs relations
+  | .divideQuotient high low divisor | .divideRemainder high low divisor |
+      .divisionValidValue high low divisor =>
+      high.exactMemoryInputs relations && low.exactMemoryInputs relations &&
+        divisor.exactMemoryInputs relations
+  | .inputFlagValue _ | .inputX87Control | .inputX87Status |
+      .x87Part _ _ | .x87CompareBit _ _ _ _ | .x87ExamineStatus _ _ => false
+
+theorem _root_.StageA.Formal.Expr.eval_eq_of_exactMemoryInputs
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relations : List RegisterRelationPair) (original candidate : MachineState)
+    (expression : Expr)
+    (registers : registerRelationsHold originalImageBase candidateImageBase targets values
+      relations original.registers candidate.registers = true)
+    (memory : original.memory = candidate.memory)
+    (undefinedValue : original.undefinedValue = candidate.undefinedValue)
+    (fsBase : original.fsBase = candidate.fsBase)
+    (safe : expression.exactMemoryInputs relations = true) :
+    expression.eval original = expression.eval candidate := by
+  induction expression using Expr.rec (motive_2 := fun _ => True)
+  case inputReg register =>
+    exact registerRelationsHold_exact_identity originalImageBase candidateImageBase targets
+      values relations original.registers candidate.registers register registers safe
+  case inputFsBase => exact fsBase
+  case undefined slot => simpa [Expr.eval] using congrFun undefinedValue slot
+  case constant => rfl
+  case add left right leftSound rightSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case sub left right leftSound rightSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case bitAnd left right leftSound rightSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case bitXor left right leftSound rightSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case bitNot value sound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, sound safe]
+  case read8 address sound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, sound safe, memory]
+  case read32 address sound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, MachineState.read32, sound safe, memory]
+  case read8AfterWrite address writeAddress writeValue prior addressSound
+      writeAddressSound writeValueSound priorSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, addressSound safe.1.1.1, writeAddressSound safe.1.1.2,
+      writeValueSound safe.1.2, priorSound safe.2]
+  case extractByte value index sound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, sound safe]
+  case shiftLeft value amount sound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, sound safe]
+  case shiftRight value amount sound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, sound safe]
+  case shiftLeftBy value amount valueSound amountSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, valueSound safe.1, amountSound safe.2]
+  case shiftRightBy value amount valueSound amountSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, valueSound safe.1, amountSound safe.2]
+  case shiftArithmeticRightBy value amount valueSound amountSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, valueSound safe.1, amountSound safe.2]
+  case bitOr left right leftSound rightSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case ifEqual left right thenValue elseValue leftSound rightSound thenSound elseSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, leftSound safe.1.1.1, rightSound safe.1.1.2,
+      thenSound safe.1.2, elseSound safe.2]
+  case unsignedLessValue left right leftSound rightSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case bitValue value index sound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, sound safe]
+  case multiply left right leftSound rightSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case multiplyHighUnsigned left right leftSound rightSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case multiplyHighSigned left right leftSound rightSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, leftSound safe.1, rightSound safe.2]
+  case divideQuotient high low divisor highSound lowSound divisorSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, highSound safe.1.1, lowSound safe.1.2, divisorSound safe.2]
+  case divideRemainder high low divisor highSound lowSound divisorSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, highSound safe.1.1, lowSound safe.1.2, divisorSound safe.2]
+  case divisionValidValue high low divisor highSound lowSound divisorSound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, highSound safe.1.1, lowSound safe.1.2, divisorSound safe.2]
+  case lowestSetBit value sound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, sound safe]
+  case highestSetBit value sound =>
+    simp [Expr.exactMemoryInputs] at safe
+    simp [Expr.eval, sound safe]
+  case inputFlagValue => simp [Expr.exactMemoryInputs] at safe
+  case inputX87Control => simp [Expr.exactMemoryInputs] at safe
+  case inputX87Status => simp [Expr.exactMemoryInputs] at safe
+  case x87Part => simp [Expr.exactMemoryInputs] at safe
+  case x87CompareBit => simp [Expr.exactMemoryInputs] at safe
+  case x87ExamineStatus => simp [Expr.exactMemoryInputs] at safe
+  all_goals trivial
+
+structure ExactRegisterOutputClaim where
+  output : RegisterRelationPair
+  expression : Expr
+deriving Repr, DecidableEq
+
+def ExactRegisterOutputClaim.checked (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactRegisterOutputClaim) : Bool :=
+  claim.output.relation == .exact &&
+    originalBehavior.registers.get claim.output.original == claim.expression &&
+    candidateBehavior.registers.get claim.output.candidate == claim.expression &&
+    claim.expression.exactInputs region.inputRelations
+
+def ExactRegisterOutputClaim.Holds
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactRegisterOutputClaim) : Prop :=
+  ∀ originalState candidateState,
+    composableStatesRelated originalImageBase candidateImageBase region.targets
+      region.flagInputs region.bounds region.addressSeparations region.values
+      region.inputRelations originalState candidateState →
+    claim.output.relation.holds originalImageBase candidateImageBase region.targets region.values
+      ((originalBehavior.eval originalState).registers.get claim.output.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true
+
+theorem ExactRegisterOutputClaim.holds_of_checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactRegisterOutputClaim)
+    (checked : claim.checked region originalBehavior candidateBehavior = true) :
+    claim.Holds originalImageBase candidateImageBase region originalBehavior candidateBehavior := by
+  rcases claim with ⟨output, expression⟩
+  rcases output with ⟨originalRegister, candidateRegister, relation⟩
+  simp only [ExactRegisterOutputClaim.checked] at checked
+  simp only [Bool.and_eq_true] at checked
+  have relationChecked := checked.1.1.1
+  have originalChecked := checked.1.1.2
+  have candidateChecked := checked.1.2
+  have safe := checked.2
+  have relationExact := beq_iff_eq.mp relationChecked
+  have originalExpression := beq_iff_eq.mp originalChecked
+  have candidateExpression := beq_iff_eq.mp candidateChecked
+  intro originalState candidateState related
+  rcases related with ⟨registers, _, _, _, undefinedValue, _, _, fsBase⟩
+  simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
+  rw [relationExact, originalExpression, candidateExpression]
+  simp only [RegisterValueRelation.holds, beq_iff_eq]
+  exact Expr.eval_eq_of_exactInputs originalImageBase candidateImageBase region.targets
+    region.values region.inputRelations originalState candidateState expression registers
+    undefinedValue fsBase safe
+
+structure ExactMemoryRegisterOutputClaim where
+  output : RegisterRelationPair
+  expression : Expr
+deriving Repr, DecidableEq
+
+def ExactMemoryRegisterOutputClaim.checked (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactMemoryRegisterOutputClaim) : Bool :=
+  region.values == [] &&
+    claim.output.relation == .exact &&
+    originalBehavior.registers.get claim.output.original == claim.expression &&
+    candidateBehavior.registers.get claim.output.candidate == claim.expression &&
+    claim.expression.exactMemoryInputs region.inputRelations
+
+def ExactMemoryRegisterOutputClaim.Holds
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactMemoryRegisterOutputClaim) : Prop :=
+  ∀ originalState candidateState,
+    composableStatesRelated originalImageBase candidateImageBase region.targets
+      region.flagInputs region.bounds region.addressSeparations region.values
+      region.inputRelations originalState candidateState →
+    claim.output.relation.holds originalImageBase candidateImageBase region.targets region.values
+      ((originalBehavior.eval originalState).registers.get claim.output.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true
+
+theorem ExactMemoryRegisterOutputClaim.holds_of_checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactMemoryRegisterOutputClaim)
+    (checked : claim.checked region originalBehavior candidateBehavior = true) :
+    claim.Holds originalImageBase candidateImageBase region originalBehavior candidateBehavior := by
+  rcases claim with ⟨output, expression⟩
+  rcases output with ⟨originalRegister, candidateRegister, relation⟩
+  simp only [ExactMemoryRegisterOutputClaim.checked, Bool.and_eq_true] at checked
+  have valuesChecked := checked.1.1.1.1
+  have relationChecked := checked.1.1.1.2
+  have originalChecked := checked.1.1.2
+  have candidateChecked := checked.1.2
+  have safe := checked.2
+  have valuesEmpty := beq_iff_eq.mp valuesChecked
+  have relationExact := beq_iff_eq.mp relationChecked
+  have originalExpression := beq_iff_eq.mp originalChecked
+  have candidateExpression := beq_iff_eq.mp candidateChecked
+  intro originalState candidateState related
+  rcases related with ⟨registers, _, _, memoryRelated, undefinedValue, _, _, fsBase⟩
+  rw [valuesEmpty] at registers memoryRelated
+  have memoryEqual := memoryRelated_without_values_eq originalImageBase candidateImageBase
+    region.targets originalState.memory candidateState.memory memoryRelated
+  have expressionEqual := Expr.eval_eq_of_exactMemoryInputs originalImageBase
+    candidateImageBase region.targets [] region.inputRelations originalState candidateState
+    expression registers memoryEqual undefinedValue fsBase safe
+  simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
+  rw [relationExact, originalExpression, candidateExpression]
+  simpa [RegisterValueRelation.holds] using expressionEqual
+
+def AllExactRegisterOutputClaims
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) :
+    List ExactRegisterOutputClaim → Prop
+  | [] => True
+  | claim :: tail =>
+      claim.Holds originalImageBase candidateImageBase region originalBehavior candidateBehavior ∧
+        AllExactRegisterOutputClaims originalImageBase candidateImageBase region
+          originalBehavior candidateBehavior tail
+
+theorem allExactRegisterOutputClaims_of_checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List ExactRegisterOutputClaim)
+    (checked : claims.all (ExactRegisterOutputClaim.checked region
+      originalBehavior candidateBehavior) = true) :
+    AllExactRegisterOutputClaims originalImageBase candidateImageBase region
+      originalBehavior candidateBehavior claims := by
+  induction claims with
+  | nil => trivial
+  | cons claim tail ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      exact ⟨claim.holds_of_checked originalImageBase candidateImageBase region
+        originalBehavior candidateBehavior checked.1, ih checked.2⟩
+
+theorem registerRelationsHold_of_exact_output_claims
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List ExactRegisterOutputClaim)
+    (checked : claims.all (ExactRegisterOutputClaim.checked region
+      originalBehavior candidateBehavior) = true) :
+    ∀ originalState candidateState,
+      composableStatesRelated originalImageBase candidateImageBase region.targets
+        region.flagInputs region.bounds region.addressSeparations region.values
+        region.inputRelations originalState candidateState →
+      registerRelationsHold originalImageBase candidateImageBase region.targets region.values
+        (claims.map (fun claim => claim.output))
+        (originalBehavior.eval originalState).registers
+        (candidateBehavior.eval candidateState).registers = true := by
+  intro originalState candidateState related
+  induction claims with
+  | nil => rfl
+  | cons claim tail ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      unfold registerRelationsHold
+      simp only [List.map_cons, List.all_cons, Bool.and_eq_true]
+      exact ⟨claim.holds_of_checked originalImageBase candidateImageBase region
+        originalBehavior candidateBehavior checked.1 originalState candidateState related,
+        ih checked.2⟩
+
+def ExactRegisterTransferClosed
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Prop :=
+  ∀ originalState candidateState,
+    composableStatesRelated originalImageBase candidateImageBase region.targets
+      region.flagInputs region.bounds region.addressSeparations region.values
+      region.inputRelations originalState candidateState →
+    registerRelationsHold originalImageBase candidateImageBase region.targets region.values
+      region.outputRelations
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers = true
+
+theorem exactRegisterTransferClosed_of_checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List ExactRegisterOutputClaim)
+    (inventory : claims.map (fun claim => claim.output) = region.outputRelations)
+    (checked : claims.all (ExactRegisterOutputClaim.checked region
+      originalBehavior candidateBehavior) = true) :
+    ExactRegisterTransferClosed originalImageBase candidateImageBase region
+      originalBehavior candidateBehavior := by
+  intro originalState candidateState related
+  rw [← inventory]
+  exact registerRelationsHold_of_exact_output_claims originalImageBase candidateImageBase
+    region originalBehavior candidateBehavior claims checked originalState candidateState related
+
+structure IdentityRegisterOutputClaim where
+  input : RegisterRelationPair
+  output : RegisterRelationPair
+deriving Repr, DecidableEq
+
+def IdentityRegisterOutputClaim.checked (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : IdentityRegisterOutputClaim) : Bool :=
+  region.inputRelations.contains claim.input &&
+    claim.output.relation == claim.input.relation &&
+    originalBehavior.registers.get claim.output.original == .inputReg claim.input.original &&
+    candidateBehavior.registers.get claim.output.candidate == .inputReg claim.input.candidate
+
+def IdentityRegisterOutputClaim.Holds
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : IdentityRegisterOutputClaim) : Prop :=
+  ∀ originalState candidateState,
+    composableStatesRelated originalImageBase candidateImageBase region.targets
+      region.flagInputs region.bounds region.addressSeparations region.values
+      region.inputRelations originalState candidateState →
+    claim.output.relation.holds originalImageBase candidateImageBase region.targets region.values
+      ((originalBehavior.eval originalState).registers.get claim.output.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true
+
+theorem IdentityRegisterOutputClaim.holds_of_checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : IdentityRegisterOutputClaim)
+    (checked : claim.checked region originalBehavior candidateBehavior = true) :
+    claim.Holds originalImageBase candidateImageBase region originalBehavior candidateBehavior := by
+  rcases claim with ⟨input, output⟩
+  rcases input with ⟨inputOriginal, inputCandidate, inputRelation⟩
+  rcases output with ⟨outputOriginal, outputCandidate, outputRelation⟩
+  simp only [IdentityRegisterOutputClaim.checked, Bool.and_eq_true] at checked
+  have inputMember := checked.1.1.1
+  have relationChecked := checked.1.1.2
+  have originalChecked := checked.1.2
+  have candidateChecked := checked.2
+  have relationEqual := beq_iff_eq.mp relationChecked
+  have originalExpression := beq_iff_eq.mp originalChecked
+  have candidateExpression := beq_iff_eq.mp candidateChecked
+  intro originalState candidateState related
+  have inputRelations := related.1
+  simp only [registerRelationsHold, List.all_eq_true] at inputRelations
+  have inputMember' :
+      { original := inputOriginal, candidate := inputCandidate, relation := inputRelation } ∈
+        region.inputRelations := by
+    simpa using inputMember
+  have inputRelated := inputRelations
+    { original := inputOriginal, candidate := inputCandidate, relation := inputRelation }
+    inputMember'
+  simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
+  rw [relationEqual, originalExpression, candidateExpression]
+  simpa [Expr.eval] using inputRelated
+
+structure ConstantRegisterOutputClaim where
+  output : RegisterRelationPair
+  originalValue : Nat
+  candidateValue : Nat
+deriving Repr, DecidableEq
+
+def ConstantRegisterOutputClaim.checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ConstantRegisterOutputClaim) : Bool :=
+  originalBehavior.registers.get claim.output.original == .constant claim.originalValue &&
+    candidateBehavior.registers.get claim.output.candidate == .constant claim.candidateValue &&
+    claim.output.relation.holds originalImageBase candidateImageBase region.targets region.values
+      (BitVec.ofNat 32 claim.originalValue) (BitVec.ofNat 32 claim.candidateValue)
+
+def ConstantRegisterOutputClaim.Holds
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ConstantRegisterOutputClaim) : Prop :=
+  ∀ originalState candidateState,
+    composableStatesRelated originalImageBase candidateImageBase region.targets
+      region.flagInputs region.bounds region.addressSeparations region.values
+      region.inputRelations originalState candidateState →
+    claim.output.relation.holds originalImageBase candidateImageBase region.targets region.values
+      ((originalBehavior.eval originalState).registers.get claim.output.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true
+
+theorem ConstantRegisterOutputClaim.holds_of_checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ConstantRegisterOutputClaim)
+    (checked : claim.checked originalImageBase candidateImageBase region
+      originalBehavior candidateBehavior = true) :
+    claim.Holds originalImageBase candidateImageBase region originalBehavior candidateBehavior := by
+  rcases claim with ⟨output, originalValue, candidateValue⟩
+  rcases output with ⟨outputOriginal, outputCandidate, outputRelation⟩
+  simp only [ConstantRegisterOutputClaim.checked, Bool.and_eq_true] at checked
+  have originalExpression := beq_iff_eq.mp checked.1.1
+  have candidateExpression := beq_iff_eq.mp checked.1.2
+  have valuesRelated := checked.2
+  intro originalState candidateState _
+  simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
+  rw [originalExpression, candidateExpression]
+  simpa [Expr.eval] using valuesRelated
+
+inductive RegisterOutputClaim where
+  | exactExpression (claim : ExactRegisterOutputClaim)
+  | exactMemory (claim : ExactMemoryRegisterOutputClaim)
+  | identity (claim : IdentityRegisterOutputClaim)
+  | constant (claim : ConstantRegisterOutputClaim)
+deriving Repr, DecidableEq
+
+def RegisterOutputClaim.output : RegisterOutputClaim → RegisterRelationPair
+  | .exactExpression claim => claim.output
+  | .exactMemory claim => claim.output
+  | .identity claim => claim.output
+  | .constant claim => claim.output
+
+def RegisterOutputClaim.checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) :
+    RegisterOutputClaim → Bool
+  | .exactExpression claim => claim.checked region originalBehavior candidateBehavior
+  | .exactMemory claim => claim.checked region originalBehavior candidateBehavior
+  | .identity claim => claim.checked region originalBehavior candidateBehavior
+  | .constant claim => claim.checked originalImageBase candidateImageBase region
+      originalBehavior candidateBehavior
+
+def RegisterOutputClaim.Holds
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) :
+    RegisterOutputClaim → Prop
+  | .exactExpression claim =>
+      claim.Holds originalImageBase candidateImageBase region originalBehavior candidateBehavior
+  | .exactMemory claim =>
+      claim.Holds originalImageBase candidateImageBase region originalBehavior candidateBehavior
+  | .identity claim =>
+      claim.Holds originalImageBase candidateImageBase region originalBehavior candidateBehavior
+  | .constant claim =>
+      claim.Holds originalImageBase candidateImageBase region originalBehavior candidateBehavior
+
+theorem RegisterOutputClaim.holds_of_checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : RegisterOutputClaim)
+    (checked : claim.checked originalImageBase candidateImageBase region
+      originalBehavior candidateBehavior = true) :
+    claim.Holds originalImageBase candidateImageBase region originalBehavior candidateBehavior := by
+  cases claim with
+  | exactExpression claim =>
+      exact claim.holds_of_checked originalImageBase candidateImageBase region
+        originalBehavior candidateBehavior checked
+  | exactMemory claim =>
+      exact claim.holds_of_checked originalImageBase candidateImageBase region
+        originalBehavior candidateBehavior checked
+  | identity claim =>
+      exact claim.holds_of_checked originalImageBase candidateImageBase region
+        originalBehavior candidateBehavior checked
+  | constant claim =>
+      exact claim.holds_of_checked originalImageBase candidateImageBase region
+        originalBehavior candidateBehavior checked
+
+theorem RegisterOutputClaim.holds_output
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : RegisterOutputClaim)
+    (holds : claim.Holds originalImageBase candidateImageBase region
+      originalBehavior candidateBehavior)
+    (originalState candidateState : MachineState)
+    (related : composableStatesRelated originalImageBase candidateImageBase region.targets
+      region.flagInputs region.bounds region.addressSeparations region.values
+      region.inputRelations originalState candidateState) :
+    claim.output.relation.holds originalImageBase candidateImageBase region.targets region.values
+      ((originalBehavior.eval originalState).registers.get claim.output.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true := by
+  cases claim <;> exact holds originalState candidateState related
+
+def AllRegisterOutputClaims
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) :
+    List RegisterOutputClaim → Prop
+  | [] => True
+  | claim :: tail =>
+      claim.Holds originalImageBase candidateImageBase region
+          originalBehavior candidateBehavior ∧
+        AllRegisterOutputClaims originalImageBase candidateImageBase region
+          originalBehavior candidateBehavior tail
+
+theorem allRegisterOutputClaims_of_checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List RegisterOutputClaim)
+    (checked : claims.all (RegisterOutputClaim.checked originalImageBase candidateImageBase
+      region originalBehavior candidateBehavior) = true) :
+    AllRegisterOutputClaims originalImageBase candidateImageBase region
+      originalBehavior candidateBehavior claims := by
+  induction claims with
+  | nil => trivial
+  | cons claim tail ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      exact ⟨claim.holds_of_checked originalImageBase candidateImageBase region
+        originalBehavior candidateBehavior checked.1, ih checked.2⟩
+
+def RegisterTransferClosed
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Prop :=
+  ∀ originalState candidateState,
+    composableStatesRelated originalImageBase candidateImageBase region.targets
+      region.flagInputs region.bounds region.addressSeparations region.values
+      region.inputRelations originalState candidateState →
+    registerRelationsHold originalImageBase candidateImageBase region.targets region.values
+      region.outputRelations
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers = true
+
+theorem registerRelationsHold_of_output_claims
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List RegisterOutputClaim)
+    (checked : claims.all (RegisterOutputClaim.checked originalImageBase candidateImageBase
+      region originalBehavior candidateBehavior) = true) :
+    ∀ originalState candidateState,
+      composableStatesRelated originalImageBase candidateImageBase region.targets
+        region.flagInputs region.bounds region.addressSeparations region.values
+        region.inputRelations originalState candidateState →
+      registerRelationsHold originalImageBase candidateImageBase region.targets region.values
+        (claims.map RegisterOutputClaim.output)
+        (originalBehavior.eval originalState).registers
+        (candidateBehavior.eval candidateState).registers = true := by
+  intro originalState candidateState related
+  induction claims with
+  | nil => rfl
+  | cons claim tail ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      unfold registerRelationsHold
+      simp only [List.map_cons, List.all_cons, Bool.and_eq_true]
+      have headHolds := claim.holds_of_checked originalImageBase candidateImageBase region
+        originalBehavior candidateBehavior checked.1
+      exact ⟨claim.holds_output originalImageBase candidateImageBase region
+        originalBehavior candidateBehavior headHolds originalState candidateState related,
+        ih checked.2⟩
+
+theorem registerTransferClosed_of_checked
+    (originalImageBase candidateImageBase : Nat) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List RegisterOutputClaim)
+    (inventory : claims.map RegisterOutputClaim.output = region.outputRelations)
+    (checked : claims.all (RegisterOutputClaim.checked originalImageBase candidateImageBase
+      region originalBehavior candidateBehavior) = true) :
+    RegisterTransferClosed originalImageBase candidateImageBase region
+      originalBehavior candidateBehavior := by
+  intro originalState candidateState related
+  rw [← inventory]
+  exact registerRelationsHold_of_output_claims originalImageBase candidateImageBase region
+    originalBehavior candidateBehavior claims checked originalState candidateState related
+
+def registerRelationListAllExact (relations : List RegisterRelationPair) : Bool :=
+  relations.all fun relation => relation.relation == .exact
+
+def _root_.StageA.Relational.NormalizedOutcomeExpr.registerRelationDirectTargets :
+    NormalizedOutcomeExpr → List Nat
+  | .jump target => [target]
+  | .branch _ taken fallthrough => [taken, fallthrough]
+  | .call target continuation => [target, continuation]
+  | .externalCall _ _ continuation => [continuation]
+  | .bulkCopy _ _ _ _ continuation => [continuation]
+  | .indirectCall _ continuation => [continuation]
+  | .checkedContinue _ continuation => [continuation]
+  | .atomicCompareExchange _ _ _ continuation => [continuation]
+  | .returned _ | .externalJump _ _ | .indirectJump _ => []
+
+theorem registerRelationsHold_exact_change_context
+    (sourceOriginalImageBase sourceCandidateImageBase : Nat)
+    (sourceTargets : List CodeTargetPair) (sourceValues : List ValueTargetPair)
+    (targetOriginalImageBase targetCandidateImageBase : Nat)
+    (targetTargets : List CodeTargetPair) (targetValues : List ValueTargetPair)
+    (relations : List RegisterRelationPair) (original candidate : PureState)
+    (allExact : registerRelationListAllExact relations = true)
+    (related : registerRelationsHold sourceOriginalImageBase sourceCandidateImageBase
+      sourceTargets sourceValues relations original candidate = true) :
+    registerRelationsHold targetOriginalImageBase targetCandidateImageBase targetTargets
+      targetValues relations original candidate = true := by
+  simp only [registerRelationListAllExact, registerRelationsHold,
+    List.all_eq_true] at allExact related ⊢
+  intro relation member
+  have relationExact := allExact relation member
+  have relationRelated := related relation member
+  simp only [beq_iff_eq] at relationExact
+  rw [relationExact] at relationRelated ⊢
+  exact relationRelated
+
+def ExactRegisterRelationEdgeClosed
+    (originalImageBase candidateImageBase : Nat)
+    (source target : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Prop :=
+  originalBehavior.outcome.registerRelationDirectTargets.contains target.id = true ∧
+    candidateBehavior.outcome.registerRelationDirectTargets.contains target.id = true ∧
+    ∀ originalState candidateState,
+      composableStatesRelated originalImageBase candidateImageBase source.targets
+        source.flagInputs source.bounds source.addressSeparations source.values
+        source.inputRelations originalState candidateState →
+      registerRelationsHold originalImageBase candidateImageBase target.targets target.values
+        target.inputRelations
+        (originalBehavior.eval originalState).registers
+        (candidateBehavior.eval candidateState).registers = true
+
+theorem exactRegisterRelationEdgeClosed_of_checked
+    (originalImageBase candidateImageBase : Nat)
+    (source target : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List ExactRegisterOutputClaim)
+    (originalDirect :
+      originalBehavior.outcome.registerRelationDirectTargets.contains target.id = true)
+    (candidateDirect :
+      candidateBehavior.outcome.registerRelationDirectTargets.contains target.id = true)
+    (inventory : claims.map (fun claim => claim.output) = source.outputRelations)
+    (composition : source.outputRelations = target.inputRelations)
+    (targetExact : registerRelationListAllExact target.inputRelations = true)
+    (checked : claims.all (ExactRegisterOutputClaim.checked source
+      originalBehavior candidateBehavior) = true) :
+    ExactRegisterRelationEdgeClosed originalImageBase candidateImageBase source target
+      originalBehavior candidateBehavior := by
+  refine ⟨originalDirect, candidateDirect, ?_⟩
+  intro originalState candidateState related
+  have sourceRelated := exactRegisterTransferClosed_of_checked originalImageBase
+    candidateImageBase source originalBehavior candidateBehavior claims inventory checked
+    originalState candidateState related
+  rw [composition] at sourceRelated
+  exact registerRelationsHold_exact_change_context originalImageBase candidateImageBase
+    source.targets source.values originalImageBase candidateImageBase target.targets target.values
+    target.inputRelations _ _ targetExact sourceRelated
+
+structure ExactRegisterRelationPairEdgeClaim where
+  sourceOutput : ExactRegisterOutputClaim
+  targetInput : RegisterRelationPair
+deriving Repr, DecidableEq
+
+def registerValueRelationAcceptsExact : RegisterValueRelation → Bool
+  | .exact | .relatedWord => true
+  | .codePointer | .dataPointer => false
+
+def ExactRegisterRelationPairEdgeClaim.checked
+    (source target : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactRegisterRelationPairEdgeClaim) : Bool :=
+  claim.sourceOutput.checked source originalBehavior candidateBehavior &&
+    claim.sourceOutput.output.original == claim.targetInput.original &&
+    claim.sourceOutput.output.candidate == claim.targetInput.candidate &&
+    target.inputRelations.contains claim.targetInput &&
+    registerValueRelationAcceptsExact claim.targetInput.relation
+
+def ExactRegisterRelationPairEdgeClaim.Holds
+    (originalImageBase candidateImageBase : Nat)
+    (source target : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactRegisterRelationPairEdgeClaim) : Prop :=
+  ∀ originalState candidateState,
+    composableStatesRelated originalImageBase candidateImageBase source.targets
+      source.flagInputs source.bounds source.addressSeparations source.values
+      source.inputRelations originalState candidateState →
+    claim.targetInput.relation.holds originalImageBase candidateImageBase
+      target.targets target.values
+      ((originalBehavior.eval originalState).registers.get claim.targetInput.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.targetInput.candidate) = true
+
+theorem ExactRegisterRelationPairEdgeClaim.holds_of_checked
+    (originalImageBase candidateImageBase : Nat)
+    (source target : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactRegisterRelationPairEdgeClaim)
+    (checked : claim.checked source target originalBehavior candidateBehavior = true) :
+    claim.Holds originalImageBase candidateImageBase source target
+      originalBehavior candidateBehavior := by
+  rcases claim with ⟨sourceOutput, targetInput⟩
+  rcases targetInput with ⟨targetOriginal, targetCandidate, targetKind⟩
+  simp only [ExactRegisterRelationPairEdgeClaim.checked, Bool.and_eq_true] at checked
+  have sourceChecked := checked.1.1.1.1
+  have originalChecked := checked.1.1.1.2
+  have candidateChecked := checked.1.1.2
+  have targetSupported := checked.2
+  have originalEqual := beq_iff_eq.mp originalChecked
+  have candidateEqual := beq_iff_eq.mp candidateChecked
+  have sourceHolds := ExactRegisterOutputClaim.holds_of_checked originalImageBase
+    candidateImageBase source originalBehavior candidateBehavior sourceOutput sourceChecked
+  intro originalState candidateState related
+  have valuesEqual := sourceHolds originalState candidateState related
+  simp only [ExactRegisterOutputClaim.checked, Bool.and_eq_true] at sourceChecked
+  have sourceExact := beq_iff_eq.mp sourceChecked.1.1.1
+  rw [sourceExact] at valuesEqual
+  simp only [RegisterValueRelation.holds, beq_iff_eq] at valuesEqual
+  rw [← originalEqual, ← candidateEqual]
+  cases targetKind <;> simp [registerValueRelationAcceptsExact] at targetSupported
+  case exact => simpa [RegisterValueRelation.holds] using valuesEqual
+  case relatedWord =>
+    rw [valuesEqual]
+    exact wordRelated_self originalImageBase candidateImageBase target.targets target.values _
+
+def ExactRegisterRelationPairEdgeClosed
+    (originalImageBase candidateImageBase : Nat)
+    (source target : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactRegisterRelationPairEdgeClaim) : Prop :=
+  originalBehavior.outcome.registerRelationDirectTargets.contains target.id = true ∧
+    candidateBehavior.outcome.registerRelationDirectTargets.contains target.id = true ∧
+    claim.Holds originalImageBase candidateImageBase source target
+      originalBehavior candidateBehavior
+
+theorem exactRegisterRelationPairEdgeClosed_of_checked
+    (originalImageBase candidateImageBase : Nat)
+    (source target : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ExactRegisterRelationPairEdgeClaim)
+    (originalDirect :
+      originalBehavior.outcome.registerRelationDirectTargets.contains target.id = true)
+    (candidateDirect :
+      candidateBehavior.outcome.registerRelationDirectTargets.contains target.id = true)
+    (checked : claim.checked source target originalBehavior candidateBehavior = true) :
+    ExactRegisterRelationPairEdgeClosed originalImageBase candidateImageBase source target
+      originalBehavior candidateBehavior claim :=
+  ⟨originalDirect, candidateDirect,
+    claim.holds_of_checked originalImageBase candidateImageBase source target
+      originalBehavior candidateBehavior checked⟩
+
 def _root_.StageA.Formal.BoolExpr.pureInvariant : BoolExpr → Bool
   | .equal left right | .unsignedLess left right =>
       left.pureInvariant && right.pureInvariant
@@ -1785,12 +2746,6 @@ def _root_.StageA.Formal.BoolExpr.substitute (registers : Registers Expr) (flags
   | .divisionValid high low divisor =>
       .divisionValid (high.substituteRegisters registers) (low.substituteRegisters registers)
         (divisor.substituteRegisters registers)
-
-@[simp] theorem evalNormalizedRegisters_get (state : MachineState)
-    (registers : Registers Expr) (register : Reg) :
-    (evalNormalizedRegisters state registers).get register =
-      (registers.get register).eval state := by
-  cases register <;> rfl
 
 theorem Expr.eval_substituteRegisters (behavior : NormalizedSymbolicBehavior)
     (state : MachineState) (expression : Expr)
@@ -2346,6 +3301,137 @@ theorem x87LoadPullbackEdgeClosed_of_checked
   · intro observation member
     simp only [List.all_eq_true] at loadsChecked
     exact observation.pullbackClosed_of_checked source (loadsChecked observation member)
+
+structure ExactMemoryReadPullbackPairClaim where
+  originalRead : Expr
+  candidateRead : Expr
+  pulled : Expr
+deriving Repr, DecidableEq
+
+def ExactMemoryReadPullbackPairClaim.checked
+    (source : RegionRelation)
+    (originalSource candidateSource originalTarget candidateTarget : NormalizedSymbolicBehavior)
+    (claim : ExactMemoryReadPullbackPairClaim) : Bool :=
+  source.values == [] &&
+    originalTarget.memoryReadObservations.contains claim.originalRead &&
+    candidateTarget.memoryReadObservations.contains claim.candidateRead &&
+    claim.originalRead.pullbackMemoryRead originalSource == some claim.pulled &&
+    claim.candidateRead.pullbackMemoryRead candidateSource == some claim.pulled &&
+    claim.pulled.exactMemoryInputs source.inputRelations
+
+def ExactMemoryReadPullbackPairClaim.Holds
+    (originalImageBase candidateImageBase : Nat) (source : RegionRelation)
+    (originalSource candidateSource : NormalizedSymbolicBehavior)
+    (claim : ExactMemoryReadPullbackPairClaim) : Prop :=
+  ∀ originalState candidateState,
+    composableStatesRelated originalImageBase candidateImageBase source.targets
+      source.flagInputs source.bounds source.addressSeparations source.values
+      source.inputRelations originalState candidateState →
+    claim.originalRead.eval ((originalSource.eval originalState).nextMachineState originalState) =
+      claim.candidateRead.eval ((candidateSource.eval candidateState).nextMachineState candidateState)
+
+theorem ExactMemoryReadPullbackPairClaim.holds_of_checked
+    (originalImageBase candidateImageBase : Nat) (source : RegionRelation)
+    (originalSource candidateSource originalTarget candidateTarget : NormalizedSymbolicBehavior)
+    (claim : ExactMemoryReadPullbackPairClaim)
+    (checked : claim.checked source originalSource candidateSource
+      originalTarget candidateTarget = true) :
+    claim.Holds originalImageBase candidateImageBase source originalSource candidateSource := by
+  rcases claim with ⟨originalRead, candidateRead, pulled⟩
+  simp only [ExactMemoryReadPullbackPairClaim.checked, Bool.and_eq_true] at checked
+  have valuesChecked := checked.1.1.1.1.1
+  have originalPullbackChecked := checked.1.1.2
+  have candidatePullbackChecked := checked.1.2
+  have safe := checked.2
+  have valuesEmpty := beq_iff_eq.mp valuesChecked
+  intro originalState candidateState related
+  rcases related with ⟨registers, _, _, memoryRelated, undefinedValue, _, _, fsBase⟩
+  rw [valuesEmpty] at registers memoryRelated
+  have memoryEqual := memoryRelated_without_values_eq originalImageBase candidateImageBase
+    source.targets originalState.memory candidateState.memory memoryRelated
+  have pulledEqual := Expr.eval_eq_of_exactMemoryInputs originalImageBase candidateImageBase
+    source.targets [] source.inputRelations originalState candidateState pulled registers
+    memoryEqual undefinedValue fsBase safe
+  have originalSound := Expr.eval_pullbackMemoryRead originalSource originalState
+    originalRead pulled (beq_iff_eq.mp originalPullbackChecked)
+  have candidateSound := Expr.eval_pullbackMemoryRead candidateSource candidateState
+    candidateRead pulled (beq_iff_eq.mp candidatePullbackChecked)
+  exact originalSound.symm.trans (pulledEqual.trans candidateSound)
+
+def ExactMemoryReadPullbackPairClaim.requirement
+    (claim : ExactMemoryReadPullbackPairClaim) : MemoryObservationRequirement := {
+  id := 0
+  relation := .exact
+  original := claim.originalRead
+  candidate := claim.candidateRead
+}
+
+theorem memoryObservationContractHolds_of_exact_pullback_pairs
+    (originalImageBase candidateImageBase : Nat) (source : RegionRelation)
+    (observationTargets : List CodeTargetPair)
+    (observationValues : List ValueTargetPair)
+    (originalSource candidateSource originalTarget candidateTarget : NormalizedSymbolicBehavior)
+    (claims : List ExactMemoryReadPullbackPairClaim)
+    (checked : claims.all (ExactMemoryReadPullbackPairClaim.checked source originalSource
+      candidateSource originalTarget candidateTarget) = true) :
+    ∀ originalState candidateState,
+      composableStatesRelated originalImageBase candidateImageBase source.targets
+        source.flagInputs source.bounds source.addressSeparations source.values
+        source.inputRelations originalState candidateState →
+      memoryObservationContractHolds originalImageBase candidateImageBase observationTargets
+        observationValues (claims.map ExactMemoryReadPullbackPairClaim.requirement)
+        ((originalSource.eval originalState).nextMachineState originalState)
+        ((candidateSource.eval candidateState).nextMachineState candidateState) = true := by
+  intro originalState candidateState related
+  induction claims with
+  | nil => rfl
+  | cons claim tail ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      unfold memoryObservationContractHolds
+      simp only [List.map_cons, List.all_cons, Bool.and_eq_true]
+      have headEqual := claim.holds_of_checked originalImageBase candidateImageBase source
+        originalSource candidateSource originalTarget candidateTarget checked.1
+        originalState candidateState related
+      exact ⟨beq_iff_eq.mpr headEqual, ih checked.2⟩
+
+theorem memoryObservationTransitionClosed_of_exact_pullback_pairs
+    (originalImageBase candidateImageBase : Nat) (source target : RegionRelation)
+    (originalSource candidateSource originalTarget candidateTarget : NormalizedSymbolicBehavior)
+    (claims : List ExactMemoryReadPullbackPairClaim)
+    (checked : claims.all (ExactMemoryReadPullbackPairClaim.checked source originalSource
+      candidateSource originalTarget candidateTarget) = true) :
+    MemoryObservationTransitionClosed originalImageBase candidateImageBase source
+      target.targets target.values
+      (claims.map ExactMemoryReadPullbackPairClaim.requirement) []
+      originalSource candidateSource := by
+  intro originalState candidateState related
+  constructor
+  · exact memoryObservationContractHolds_of_exact_pullback_pairs originalImageBase
+      candidateImageBase source target.targets target.values originalSource candidateSource
+      originalTarget candidateTarget claims checked originalState candidateState related
+  · rfl
+
+def ExactMemoryReadPullbackPairEdgeClosed
+    (originalImageBase candidateImageBase : Nat) (source target : RegionRelation)
+    (originalSource candidateSource : NormalizedSymbolicBehavior)
+    (claim : ExactMemoryReadPullbackPairClaim) : Prop :=
+  originalSource.outcome.directTargets.contains target.id = true ∧
+    candidateSource.outcome.directTargets.contains target.id = true ∧
+    claim.Holds originalImageBase candidateImageBase source originalSource candidateSource
+
+theorem exactMemoryReadPullbackPairEdgeClosed_of_checked
+    (originalImageBase candidateImageBase : Nat) (source target : RegionRelation)
+    (originalSource candidateSource originalTarget candidateTarget : NormalizedSymbolicBehavior)
+    (claim : ExactMemoryReadPullbackPairClaim)
+    (originalDirect : originalSource.outcome.directTargets.contains target.id = true)
+    (candidateDirect : candidateSource.outcome.directTargets.contains target.id = true)
+    (checked : claim.checked source originalSource candidateSource
+      originalTarget candidateTarget = true) :
+    ExactMemoryReadPullbackPairEdgeClosed originalImageBase candidateImageBase source target
+      originalSource candidateSource claim :=
+  ⟨originalDirect, candidateDirect,
+    claim.holds_of_checked originalImageBase candidateImageBase source originalSource
+      candidateSource originalTarget candidateTarget checked⟩
 
 def MemoryReadPullbackEdgeClosed (source target : NormalizedSymbolicBehavior)
     (targetId : Nat) : Prop :=
@@ -2916,8 +4002,9 @@ def regionMachineStatesRelated (originalImageBase candidateImageBase : Nat)
     (original candidate : MachineState) : Prop :=
   match regionById regions id with
   | some region =>
-      composableStatesRelated originalImageBase candidateImageBase region.targets region.flagInputs
-        region.bounds region.addressSeparations region.values region.inputs original candidate
+      composableStatesRelated originalImageBase candidateImageBase (allCodeTargets regions)
+        region.flagInputs region.bounds region.addressSeparations (allValueTargets regions)
+        region.inputRelations original candidate
   | none => False
 
 def executionsRelated (originalImageBase candidateImageBase : Nat)
@@ -2963,8 +4050,9 @@ def RegionRunningTransitionRelated
     (terminalRelation : MachineState -> MachineState -> Prop)
     (region : RegionRelation) : Prop :=
   ∀ originalState candidateState calls eventIndex,
-    composableStatesRelated originalImageBase candidateImageBase region.targets region.flagInputs
-      region.bounds region.addressSeparations region.values region.inputs
+    composableStatesRelated originalImageBase candidateImageBase (allCodeTargets regions)
+      region.flagInputs region.bounds region.addressSeparations (allValueTargets regions)
+      region.inputRelations
       originalState candidateState ->
     relationalObservationsRelated originalImageBase candidateImageBase targets values
         (stepRelationalExecution original

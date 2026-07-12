@@ -511,6 +511,12 @@ class StageARelationalTests(unittest.TestCase):
             )
             self.assertEqual(memory_contracts["counts"]["regions"], 1)
             self.assertEqual(memory_contracts["counts"]["read_observations"], 1)
+            self.assertEqual(
+                memory_contracts["counts"]["exact_pullback_pair_claims"], 1
+            )
+            self.assertEqual(
+                memory_contracts["counts"]["edges_with_exact_pullback_pair_claims"], 1
+            )
             read = memory_contracts["regions"][0]["reads"][0]
             self.assertEqual(read["status"], "paired_shape")
             self.assertEqual(
@@ -527,6 +533,42 @@ class StageARelationalTests(unittest.TestCase):
                     "regions_all_ordinary_reads_supported": 1,
                 },
             )
+            register_relations = json.loads(
+                (prepared / "relational-register-relations.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                register_relations["format"],
+                "stage-a-relational-register-relations-v1",
+            )
+            self.assertTrue(register_relations["converged"])
+            self.assertEqual(
+                register_relations["trust"]["role"],
+                "analysis_and_proof_proposal_only",
+            )
+            self.assertEqual(
+                register_relations["counts"]["lean_exact_output_claims"], 7
+            )
+            self.assertEqual(
+                register_relations["regions"][0]["outputs"][0]["relation"],
+                "exact",
+            )
+            self.assertEqual(
+                register_relations["counts"]["register_output_claims"], 8
+            )
+            self.assertEqual(
+                register_relations["counts"]["fully_supported_output_regions"], 1
+            )
+            self.assertEqual(
+                {
+                    claim["register"]
+                    for claim in register_relations["regions"][0][
+                        "exact_output_claims"
+                    ]
+                },
+                {"ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"},
+            )
             pullback_module = (
                 prepared / "lean" / "StageA" / "RelationalMemoryPullbackChunk0.lean"
             )
@@ -534,6 +576,20 @@ class StageARelationalTests(unittest.TestCase):
             pullback_source = pullback_module.read_text(encoding="utf-8")
             self.assertIn("MemoryReadPullbackEdgeClosed", pullback_source)
             self.assertIn("memoryReadPullbackEdgeClosed_of_checked", pullback_source)
+            self.assertIn("ExactMemoryReadPullbackPairEdgeClosed", pullback_source)
+            self.assertIn(
+                "exactMemoryReadPullbackPairEdgeClosed_of_checked", pullback_source
+            )
+            register_module = (
+                prepared
+                / "lean"
+                / "StageA"
+                / "RelationalRegisterRelationsChunk0.lean"
+            )
+            self.assertIn(
+                "RegisterOutputClaim.exactMemory",
+                register_module.read_text(encoding="utf-8"),
+            )
             bundle = (
                 prepared / "lean" / "StageA" / "RelationalBundle.lean"
             ).read_text(encoding="utf-8")
@@ -542,6 +598,22 @@ class StageARelationalTests(unittest.TestCase):
             )
             self.assertIn(
                 "import StageA.RelationalMemoryPullbackChunk0", bundle
+            )
+            register_module = (
+                prepared
+                / "lean"
+                / "StageA"
+                / "RelationalRegisterRelationsChunk0.lean"
+            )
+            self.assertTrue(register_module.is_file())
+            register_source = register_module.read_text(encoding="utf-8")
+            self.assertIn("ExactRegisterOutputClaim", register_source)
+            self.assertIn("allExactRegisterOutputClaims_of_checked", register_source)
+            self.assertIn(
+                "GeneratedExactRegisterRelationCertificate", bundle
+            )
+            self.assertIn(
+                "import StageA.RelationalRegisterRelationsChunk0", bundle
             )
 
             second = root / "prepared-second"
@@ -567,6 +639,10 @@ class StageARelationalTests(unittest.TestCase):
                 (prepared / "relational-memory-contracts.json").read_bytes(),
                 (second / "relational-memory-contracts.json").read_bytes(),
             )
+            self.assertEqual(
+                (prepared / "relational-register-relations.json").read_bytes(),
+                (second / "relational-register-relations.json").read_bytes(),
+            )
 
             memory_contract_path = prepared / "relational-memory-contracts.json"
             memory_contract_bytes = memory_contract_path.read_bytes()
@@ -581,6 +657,76 @@ class StageARelationalTests(unittest.TestCase):
             source.write_text(source.read_text(encoding="utf-8") + "\n", encoding="utf-8")
             with self.assertRaisesRegex(StageAInputError, "source hash does not match"):
                 _validate_prepared_relational(prepared)
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for relational proofs")
+    def test_exact_register_transfer_and_cfg_edge_are_checked_by_lean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = self._write_pe(
+                root / "original.exe", bytes.fromhex("89442404ebfa")
+            )
+            candidate = self._write_pe(
+                root / "candidate.exe", bytes.fromhex("89442404ebfa")
+            )
+            contract = self._write_contract(root / "relation.json", region_size=6)
+            report = root / "report"
+
+            with patch.dict(
+                os.environ, {"WINCR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}
+            ):
+                result = stage_a_prove_relational(
+                    original=original,
+                    candidate=candidate,
+                    relation_contract=contract,
+                    out=report,
+                )
+
+            self.assertEqual(result["verdict"], "incomplete", result)
+            self.assertEqual(result["proof"]["lean"]["status"], "checked", result)
+            relations = json.loads(
+                (report / "relational-register-relations.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(relations["counts"]["fully_exact_output_regions"], 1)
+            self.assertEqual(relations["counts"]["fully_exact_edge_proposals"], 1)
+            self.assertEqual(relations["counts"]["exact_pair_edge_claims"], 8)
+            self.assertEqual(relations["counts"]["register_output_claims"], 8)
+            self.assertEqual(relations["counts"]["fully_supported_output_regions"], 1)
+            source = (
+                report
+                / "lean"
+                / "StageA"
+                / "RelationalRegisterRelationsChunk0.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn("ExactRegisterTransferClosed", source)
+            self.assertIn("ExactRegisterRelationEdgeClosed", source)
+            self.assertIn("exactRegisterRelationEdgeClosed_of_checked", source)
+            self.assertIn("ExactRegisterRelationPairEdgeClosed", source)
+            self.assertIn("exactRegisterRelationPairEdgeClosed_of_checked", source)
+            self.assertIn("RegisterOutputClaim.identity", source)
+            self.assertIn("RegisterTransferClosed", source)
+            self.assertIn("registerTransferClosed_of_checked", source)
+            proof_ir = json.loads(
+                (report / "relational-proof-ir.json").read_text(encoding="utf-8")
+            )
+            transition = next(
+                obligation for obligation in proof_ir["obligations"]
+                if obligation["kind"] == "memory_transition_preservation"
+            )
+            self.assertEqual(transition["status"], "proved")
+            self.assertEqual(
+                transition["evidence"]["kind"],
+                "lean_checked_exact_memory_pullback_transition",
+            )
+            memory_contracts = json.loads(
+                (report / "relational-memory-contracts.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                memory_contracts["counts"]["exact_memory_transition_edges"], 1
+            )
 
     @unittest.skipUnless(
         shutil.which("lean") and shutil.which("nix") and os.environ.get("WINCR_RUN_NIX_INTEGRATION") == "1",
@@ -1323,11 +1469,12 @@ end StageA.FlagsCompose
             }
             self.assertEqual(assumption_kinds, {
                 "cfg_bound_invariant": "incomplete",
+                "cfg_register_relation_preservation": "incomplete",
                 "mapped_relocation_image_relation": "proved",
                 "whole_program_bisimulation": "incomplete",
             })
             self.assertEqual(proof_ir["status"], "incomplete")
-            self.assertEqual(result["counts"]["incomplete_assumptions"], 2)
+            self.assertEqual(result["counts"]["incomplete_assumptions"], 3)
             relocation = next(
                 obligation for obligation in proof_ir["obligations"]
                 if obligation["kind"] == "mapped_relocation_image_relation"
@@ -1388,6 +1535,7 @@ end StageA.FlagsCompose
             }
             self.assertEqual(assumption_kinds, {
                 "cfg_address_separation_invariant",
+                "cfg_register_relation_preservation",
                 "memory_transition_preservation",
                 "whole_program_bisimulation",
             })

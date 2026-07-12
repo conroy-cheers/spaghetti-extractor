@@ -143,6 +143,39 @@ byte in the format-specific load range. These certificates do not by
 themselves prove paired values related or close whole-program memory
 transitions.
 
+For sources without mapped-data objects, Stage A separately proposes paired
+pullbacks whose complete expression depends only on exact register inputs,
+equal ordinary memory, undefined values, and FS base. Lean checks the pulled
+expression, including local `write32` overlays, proves the successor read
+values equal, and lifts complete read inventories to
+`MemoryObservationTransitionClosed`. Empty live-read inventories close
+trivially. Mapped-memory, flag/x87-dependent, and non-exact address cases stay
+incomplete.
+
+Preparation emits `relational-register-relations.json` as a separate,
+point-sensitive register dataflow contract. Register values are classified as
+`exact`, `code_pointer`, `data_pointer`, or `related_word`; the relation is
+attached to each region input and output rather than globally to an
+architectural register. The fixed-point analysis is untrusted proposal logic.
+Generated Lean modules reconstruct and check:
+
+- exact memory-free output expressions from exact input relations;
+- exact ordinary-memory output expressions when addresses use exact inputs and
+  the region has no mapped-data relation;
+- identity transfers for scalar and pointer relations;
+- paired constant relations, including checked code/data mappings;
+- complete local register transfers when every output has a checked claim;
+- direct CFG membership and per-register exact-output edge claims.
+
+External-call continuations and predecessorless non-entry regions are explicit
+barriers. Unsupported arithmetic, mapped-memory values, and mixed pointer joins
+remain `related_word` with incomplete obligations. A checked partial register
+certificate does not close whole-program composition: Stage A still requires a
+checked transfer for every live destination relation under one explicit mapping
+context. The whole-program execution relation uses `allCodeTargets regions` and
+`allValueTargets regions`; per-region target/value lists remain decoder and
+local-proof inputs only.
+
 Physical code addresses are normalized through `code_targets`. Imported calls
 are compared by DLL and symbol or ordinal, not IAT RVA. External results are
 adversarial and cannot be specialized from observations of the original. The
@@ -174,6 +207,7 @@ prepared-proof/
   relational-proof-ir.json
   relational-semantic-ir.json
   relational-memory-contracts.json
+  relational-register-relations.json
   relational-invariants.json
   artifacts/{original,candidate}.pe
   lean/StageA/*.lean
@@ -183,6 +217,7 @@ report/
   relational-proof-ir.json
   relational-semantic-ir.json
   relational-memory-contracts.json
+  relational-register-relations.json
   relational-invariants.json
   lean-audit.json
   dependency-pack.json

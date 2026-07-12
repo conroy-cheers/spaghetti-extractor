@@ -623,7 +623,14 @@ def stage_a_prove_relational(
             blocker="Lean could not decode every relational region from the exact PE bytes",
         )
     normalized = _refine_contract_bounds(normalized, behaviors)
+    normalized, register_relations = _synthesize_register_relations(
+        normalized,
+        behaviors,
+        original_image_base=original_bin.image_base,
+        candidate_image_base=candidate_bin.image_base,
+    )
     write_json(out / "relation-contract.json", normalized)
+    write_json(out / "relational-register-relations.json", register_relations)
     proof_ir = _proof_ir(original_bin, candidate_bin, normalized)
     write_json(out / "relational-proof-ir.json", proof_ir)
     semantic_ir = _relational_semantic_ir(
@@ -631,14 +638,15 @@ def stage_a_prove_relational(
     )
     write_json(out / "relational-semantic-ir.json", semantic_ir)
     memory_contracts = _relational_memory_contracts(
-        original_bin, candidate_bin, normalized, behaviors
+        original_bin, candidate_bin, normalized, behaviors, register_relations
     )
     write_json(out / "relational-memory-contracts.json", memory_contracts)
     invariant_synthesis = _synthesize_relational_invariants(normalized, behaviors)
     write_json(out / "relational-invariants.json", invariant_synthesis)
     proof_ir = _attach_invariant_synthesis(proof_ir, invariant_synthesis)
+    proof_ir = _attach_register_relation_analysis(proof_ir, register_relations)
     proof_ir = _attach_memory_transition_analysis(
-        proof_ir, normalized, behaviors, memory_contracts
+        proof_ir, normalized, behaviors, memory_contracts, register_relations
     )
     write_json(out / "relational-proof-ir.json", proof_ir)
     bundle_path = out / "lean" / "StageA" / "RelationalBundle.lean"
@@ -652,7 +660,8 @@ def stage_a_prove_relational(
             out / "lean", original_bin, candidate_bin,
             original_artifact.read_bytes(), candidate_artifact.read_bytes(),
             normalized, behaviors, invariant_synthesis=invariant_synthesis,
-            memory_contracts=memory_contracts, replay=False,
+            memory_contracts=memory_contracts, register_relations=register_relations,
+            replay=False,
         )
         if _prepare_only:
             graph = _write_relational_module_graph(
@@ -675,6 +684,9 @@ def stage_a_prove_relational(
                 "semantic_ir_sha256": sha256_file(out / "relational-semantic-ir.json"),
                 "memory_contracts_sha256": sha256_file(
                     out / "relational-memory-contracts.json"
+                ),
+                "register_relations_sha256": sha256_file(
+                    out / "relational-register-relations.json"
                 ),
                 "invariants_sha256": sha256_file(out / "relational-invariants.json"),
                 "module_graph_sha256": sha256_file(out / "module-graph.json"),
@@ -768,7 +780,7 @@ def stage_a_prove_relational(
             out / "lean", original_bin, candidate_bin,
             original_artifact.read_bytes(), candidate_artifact.read_bytes(),
             normalized, behaviors, invariant_synthesis=invariant_synthesis,
-            memory_contracts=memory_contracts,
+            memory_contracts=memory_contracts, register_relations=register_relations,
             replay=True, certificates=certificates,
         )
         replay = _run_sharded_relational(out / "lean", shard_modules)
@@ -999,7 +1011,8 @@ def stage_a_build_relational(
     for name in (
         "prepared-proof.json", "module-graph.json", "relation-contract.json",
         "relational-proof-ir.json", "relational-semantic-ir.json",
-        "relational-memory-contracts.json", "relational-invariants.json",
+        "relational-memory-contracts.json", "relational-register-relations.json",
+        "relational-invariants.json",
         "trusted-base.json", "semantic-gaps.json",
     ):
         source = prepared / name
@@ -1096,6 +1109,24 @@ def _finalize_nix_proof_ir(
                     ),
                 },
             })
+        elif (
+            theorem_checked
+            and obligation["kind"] == "memory_transition_preservation"
+            and obligation.get("analysis", {}).get("status")
+                == "candidate_requires_lean_replay"
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "evidence": {
+                    **evidence,
+                    "kind": "lean_checked_exact_memory_pullback_transition",
+                    "lemma": (
+                        "StageA.Relational.InvariantWP."
+                        "memoryObservationTransitionClosed_of_exact_pullback_pairs"
+                    ),
+                },
+            })
         else:
             finalized_obligations.append(obligation)
     assumption_obligations = [
@@ -1113,6 +1144,13 @@ def _finalize_nix_proof_ir(
         {"family": "executable_coverage", "status": "satisfied" if theorem_checked else "incomplete"},
         {"family": "roots_and_targets", "status": "satisfied" if theorem_checked else "incomplete"},
         {"family": "relational_regions", "status": "satisfied" if theorem_checked else "incomplete"},
+        {
+            "family": "cfg_register_relations",
+            "status": "incomplete" if any(
+                obligation["kind"] == "cfg_register_relation_preservation"
+                for obligation in assumption_obligations
+            ) else "satisfied",
+        },
         {
             "family": "whole_program_composition",
             "status": "incomplete" if any(
@@ -1499,6 +1537,7 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         "proof_ir_sha256": prepared / "relational-proof-ir.json",
         "semantic_ir_sha256": prepared / "relational-semantic-ir.json",
         "memory_contracts_sha256": prepared / "relational-memory-contracts.json",
+        "register_relations_sha256": prepared / "relational-register-relations.json",
         "invariants_sha256": prepared / "relational-invariants.json",
         "module_graph_sha256": prepared / "module-graph.json",
     }
@@ -2438,11 +2477,57 @@ def _mapped_relocation_image_obligations(
     return obligations
 
 
+def _attach_register_relation_analysis(
+    proof_ir: dict[str, Any], register_relations: dict[str, Any]
+) -> dict[str, Any]:
+    counts = register_relations["counts"]
+    total_register_outputs = counts["regions"] * len(REGISTERS)
+    unclaimed_outputs = total_register_outputs - counts["register_output_claims"]
+    obligation = {
+        "id": "cfg-register-relation-preservation",
+        "kind": "cfg_register_relation_preservation",
+        "status": "incomplete",
+        "analysis": {
+            **counts,
+            "total_register_outputs": total_register_outputs,
+            "unclaimed_register_outputs": unclaimed_outputs,
+            "checked_claim_types": [
+                "exact_memory_free_expression",
+                "identity_register_transfer",
+                "paired_constant_relation",
+                "exact_register_edge_pair",
+            ],
+            "generated_certificate": (
+                "StageA.GeneratedRelational."
+                "GeneratedExactRegisterRelationCertificate"
+            ),
+        },
+        "blocker": (
+            f"{unclaimed_outputs} register outputs and the remaining mixed-relation CFG edges "
+            "lack a complete checked transfer rule"
+        ),
+        "next_action": (
+            "add generic checked transfer rules for memory-derived values and pointer arithmetic, "
+            "then compose region relations under one explicit global code/data mapping context"
+        ),
+    }
+    attached = dict(proof_ir)
+    attached["register_relation_summary"] = {
+        **counts,
+        "total_register_outputs": total_register_outputs,
+        "unclaimed_register_outputs": unclaimed_outputs,
+    }
+    attached["obligations"] = [*proof_ir["obligations"], obligation]
+    attached["status"] = "incomplete"
+    return attached
+
+
 def _attach_memory_transition_analysis(
     proof_ir: dict[str, Any],
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
     memory_contracts: dict[str, Any],
+    register_relations: dict[str, Any],
 ) -> dict[str, Any]:
     regions_with_writes = 0
     write_pairs = 0
@@ -2514,16 +2599,27 @@ def _attach_memory_transition_analysis(
             requirement["ordinary_pullback_pair_supported"]
             for requirement in successor_requirements
         )
+        exact_transition_supported = bool(successor_requirements) and all(
+            requirement["exact_memory_transition_proposed"]
+            for requirement in successor_requirements
+        ) and not has_bulk_copy and not has_atomic_compare_exchange
         transition_obligations.append({
             "id": f"memory-transition:{region['id']}",
             "kind": "memory_transition_preservation",
-            "status": "incomplete",
+            "status": (
+                "candidate_requires_lean_replay"
+                if exact_transition_supported else "incomplete"
+            ),
             "region_id": region["id"],
             "region_index": region_index,
             "semantic_ir_region_index": region_index,
             "memory_contract_region_index": region_index,
             "repair_class": repair_class,
             "analysis": {
+                "status": (
+                    "candidate_requires_lean_replay"
+                    if exact_transition_supported else "incomplete"
+                ),
                 "original_writes": len(original_writes),
                 "candidate_writes": len(candidate_writes),
                 "symbolic_writes_identical": original_writes == candidate_writes,
@@ -2552,12 +2648,38 @@ def _attach_memory_transition_analysis(
                     "StageA.Relational.InvariantWP.MemoryReadPullbackEdgeClosed"
                     if supported_successor_pullbacks else None
                 ),
+                "exact_memory_transition_supported": exact_transition_supported,
+                "exact_memory_transition_edges": sum(
+                    requirement["exact_memory_transition_proposed"]
+                    for requirement in successor_requirements
+                ),
+                "register_relation": {
+                    "exact_inputs": sum(
+                        relation["relation"] == "exact"
+                        for relation in register_relations["regions"][region_index]["inputs"]
+                    ),
+                    "checked_output_claims": len(
+                        register_relations["regions"][region_index]["output_claims"]
+                    ),
+                    "fully_supported_output_transfer": register_relations["regions"][
+                        region_index
+                    ]["fully_supported_output_transfer"],
+                    "checked_successor_pair_claims": sum(
+                        len(edge["exact_output_pair_claims"])
+                        for edge in register_relations["edges"]
+                        if edge["source_region_index"] == region_index
+                    ),
+                },
             },
             "blocker": (
+                None if exact_transition_supported else
                 "the region's mutation has not been proved to preserve the live memory observations "
                 "required at each reachable successor"
             ),
-            "next_action": next_action,
+            "next_action": (
+                "replay the generated exact pullback transition certificate in Lean"
+                if exact_transition_supported else next_action
+            ),
         })
 
     if not (regions_with_writes or bulk_copy_regions or atomic_compare_exchange_regions):
@@ -2932,6 +3054,76 @@ def _semantic_memory_expression_pullback_supported(value: Any) -> bool:
     )
 
 
+def _semantic_exact_memory_inputs(
+    value: Any, exact_registers: set[str]
+) -> bool:
+    if not isinstance(value, dict):
+        return False
+    operation = value.get("op")
+    if operation == "input_reg":
+        return str(value.get("reg")) in exact_registers
+    if operation in {"input_fs_base", "constant", "undefined"}:
+        return True
+    if operation in {"input_flag_value", "input_x87_control", "input_x87_status"}:
+        return False
+    if operation in {"read8", "read32"}:
+        return _semantic_exact_memory_inputs(value.get("address"), exact_registers)
+    if operation == "read8_after_write":
+        return all(
+            _semantic_exact_memory_inputs(value.get(field), exact_registers)
+            for field in ("address", "write_address", "write_value", "prior")
+        )
+    if operation not in _PURE_SEMANTIC_EXPR_OPERATIONS:
+        return False
+    return all(
+        _semantic_exact_memory_inputs(child, exact_registers)
+        for key, child in value.items()
+        if key != "op" and isinstance(child, dict) and "op" in child
+    )
+
+
+def _semantic_pullback_exact_memory_inputs(
+    value: Any,
+    source_behavior: dict[str, Any],
+    exact_registers: set[str],
+) -> bool:
+    if not isinstance(value, dict):
+        return False
+    operation = value.get("op")
+    if operation == "input_reg":
+        expression = source_behavior.get("registers", {}).get(str(value.get("reg")))
+        return _semantic_exact_memory_inputs(expression, exact_registers)
+    if operation in {"input_fs_base", "constant", "undefined"}:
+        return True
+    if operation in {"input_flag_value", "input_x87_control", "input_x87_status"}:
+        return False
+    if operation in {"read8", "read32"}:
+        return (
+            _semantic_pullback_exact_memory_inputs(
+                value.get("address"), source_behavior, exact_registers
+            )
+            and all(
+                _semantic_exact_memory_inputs(expression, exact_registers)
+                for write in source_behavior.get("writes", [])
+                for expression in (write.get("address"), write.get("value"))
+            )
+        )
+    if operation == "read8_after_write":
+        return all(
+            _semantic_pullback_exact_memory_inputs(
+                value.get(field), source_behavior, exact_registers
+            )
+            for field in ("address", "write_address", "write_value", "prior")
+        )
+    if operation not in _PURE_SEMANTIC_EXPR_OPERATIONS:
+        return False
+    return all(
+        _semantic_pullback_exact_memory_inputs(child, source_behavior, exact_registers)
+        for key, child in value.items()
+        if key != "op" and isinstance(child, dict) and "op" in child
+    )
+
+
 def _semantic_memory_pullback_support(value: dict[str, Any]) -> tuple[str, str | None]:
     operation = value.get("op")
     if operation in {"read8", "read32", "read8_after_write"}:
@@ -3054,6 +3246,7 @@ def _relational_memory_contracts(
     candidate: StageABinary,
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
 ) -> dict[str, Any]:
     region_rows: list[dict[str, Any]] = []
     reads_by_id: dict[int, dict[str, Any]] = {}
@@ -3177,6 +3370,46 @@ def _relational_memory_contracts(
                     )
                     for observation in observations
                 )
+            source_index = row["index"]
+            original_source = behaviors[source_index].get("original_ir") or {}
+            candidate_source = behaviors[source_index].get("candidate_ir") or {}
+            exact_registers = {
+                relation["original"]
+                for relation in register_relations["regions"][source_index]["inputs"]
+                if relation["relation"] == "exact"
+                and relation["original"] == relation["candidate"]
+            }
+            exact_pullback_pair_claims = []
+            if (
+                not contract["regions"][source_index].get("values")
+                and original_source.get("registers") == candidate_source.get("registers")
+                and original_source.get("writes") == candidate_source.get("writes")
+            ):
+                original_target = behaviors[target_index].get("original_ir") or {}
+                candidate_target = behaviors[target_index].get("candidate_ir") or {}
+                for read in target_row["reads"]:
+                    if (
+                        read["status"] != "paired_shape"
+                        or (read.get("original") or {}).get("operation") == "load"
+                    ):
+                        continue
+                    original_expression = _semantic_value_at_path(
+                        original_target, read["original"]["path"]
+                    )
+                    candidate_expression = _semantic_value_at_path(
+                        candidate_target, read["candidate"]["path"]
+                    )
+                    if (
+                        original_expression == candidate_expression
+                        and _semantic_pullback_exact_memory_inputs(
+                            original_expression, original_source, exact_registers
+                        )
+                    ):
+                        exact_pullback_pair_claims.append({
+                            "read_id": read["id"],
+                            "path": read["original"]["path"],
+                            "expression": original_expression,
+                        })
             requirements.append({
                 "numeric_id": target,
                 **reads_by_id[target],
@@ -3194,6 +3427,15 @@ def _relational_memory_contracts(
                 "x87_load_pullback_pair_supported": (
                     row["pullback"]["paired_direct_successors"]
                     and all(x87_side_supported.values())
+                ),
+                "exact_pullback_pair_claims": exact_pullback_pair_claims,
+                "exact_memory_transition_proposed": (
+                    len(exact_pullback_pair_claims)
+                    == reads_by_id[target]["pullback"]["original"][
+                        "ordinary_observations"
+                    ]
+                    and reads_by_id[target]["unpaired"] == 0
+                    and not x87_loads
                 ),
             })
         row["successor_read_requirements"] = requirements
@@ -3270,6 +3512,18 @@ def _relational_memory_contracts(
             "x87_load_pullback_pair_supported_edges": sum(
                 requirement["x87_load_observations"] > 0
                 and requirement["x87_load_pullback_pair_supported"]
+                for requirement in direct_requirements
+            ),
+            "exact_pullback_pair_claims": sum(
+                len(requirement["exact_pullback_pair_claims"])
+                for requirement in direct_requirements
+            ),
+            "edges_with_exact_pullback_pair_claims": sum(
+                bool(requirement["exact_pullback_pair_claims"])
+                for requirement in direct_requirements
+            ),
+            "exact_memory_transition_edges": sum(
+                requirement["exact_memory_transition_proposed"]
                 for requirement in direct_requirements
             ),
         },
@@ -3414,6 +3668,384 @@ def _refine_contract_bounds(
                 bound.pop("candidate_expression", None)
                 bound.pop("expression_source", None)
     return refined
+
+
+_REGISTER_RELATION_KINDS = {
+    "exact", "code_pointer", "data_pointer", "related_word",
+}
+
+
+def _register_relation_join(relations: list[str]) -> str:
+    unique = set(relations)
+    if not unique:
+        return "related_word"
+    if len(unique) == 1:
+        return next(iter(unique))
+    return "related_word"
+
+
+def _register_relation_implies(source: str, target: str) -> bool:
+    return source == target or target == "related_word"
+
+
+def _paired_constant_relation(
+    original_expression: dict[str, Any],
+    candidate_expression: dict[str, Any],
+    contract: dict[str, Any],
+    original_image_base: int,
+    candidate_image_base: int,
+) -> str | None:
+    if (
+        original_expression.get("op") != "constant"
+        or candidate_expression.get("op") != "constant"
+    ):
+        return None
+    original_value = int(original_expression["value"]) & 0xFFFFFFFF
+    candidate_value = int(candidate_expression["value"]) & 0xFFFFFFFF
+    if original_value == candidate_value:
+        return "exact"
+    if any(
+        int(target["original_value"]) == original_value
+        and int(target["candidate_value"]) == candidate_value
+        for target in contract.get("value_targets", [])
+    ):
+        return "data_pointer"
+    if any(
+        original_image_base + int(target["original_rva"]) == original_value
+        and candidate_image_base + int(target["candidate_rva"]) == candidate_value
+        for target in contract.get("code_targets", [])
+    ):
+        return "code_pointer"
+    return None
+
+
+def _infer_register_output_relation(
+    original_expression: dict[str, Any],
+    candidate_expression: dict[str, Any],
+    input_relations: dict[str, str],
+    contract: dict[str, Any],
+    original_image_base: int,
+    candidate_image_base: int,
+    region_values_empty: bool,
+) -> tuple[str, str]:
+    constant_relation = _paired_constant_relation(
+        original_expression,
+        candidate_expression,
+        contract,
+        original_image_base,
+        candidate_image_base,
+    )
+    if constant_relation is not None:
+        return constant_relation, "paired_constant"
+    if original_expression == candidate_expression:
+        if original_expression.get("op") == "input_reg":
+            register = str(original_expression.get("reg"))
+            return input_relations.get(register, "related_word"), "identity_transfer"
+        dependencies = _semantic_expr_registers(original_expression)
+        if _semantic_expr_is_pure(original_expression) and all(
+            input_relations.get(register) == "exact" for register in dependencies
+        ):
+            return "exact", "lean_exact_memory_free_expression"
+        if region_values_empty and _semantic_exact_memory_inputs(
+            original_expression,
+            {
+                register for register, relation in input_relations.items()
+                if relation == "exact"
+            },
+        ):
+            return "exact", "lean_exact_memory_expression"
+    return "related_word", "unsupported_or_mixed_relation"
+
+
+def _synthesize_register_relations(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    *,
+    original_image_base: int,
+    candidate_image_base: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    refined = json.loads(json.dumps(contract))
+    regions = refined["regions"]
+    region_by_id = {int(region["numeric_id"]): index for index, region in enumerate(regions)}
+    predecessors: list[list[tuple[int, bool, str]]] = [[] for _ in regions]
+    edges: list[dict[str, Any]] = []
+    for source_index, behavior_pair in enumerate(behaviors):
+        original_edges = _semantic_edges(behavior_pair["original_ir"])
+        candidate_edges = _semantic_edges(behavior_pair["candidate_ir"])
+        if original_edges != candidate_edges:
+            continue
+        for edge in original_edges:
+            target_index = region_by_id.get(int(edge["target"]))
+            if target_index is None:
+                continue
+            barrier = bool(edge.get("environment_barrier"))
+            predecessors[target_index].append((source_index, barrier, str(edge["kind"])))
+            edges.append({
+                "source_region_index": source_index,
+                "target_region_index": target_index,
+                "kind": str(edge["kind"]),
+                "environment_barrier": barrier,
+            })
+
+    register_order = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+    input_kinds = [
+        {register: "exact" for register in register_order}
+        for _ in regions
+    ]
+    output_kinds = [dict(kinds) for kinds in input_kinds]
+    output_reasons = [
+        {register: "initial_exact_candidate" for register in register_order}
+        for _ in regions
+    ]
+    max_iterations = max(1, len(regions) * len(register_order) + 1)
+    converged = False
+    for iteration in range(max_iterations):
+        next_outputs: list[dict[str, str]] = []
+        next_reasons: list[dict[str, str]] = []
+        for region_index, behavior_pair in enumerate(behaviors):
+            kinds: dict[str, str] = {}
+            reasons: dict[str, str] = {}
+            original_registers = behavior_pair["original_ir"]["registers"]
+            candidate_registers = behavior_pair["candidate_ir"]["registers"]
+            for register in register_order:
+                kinds[register], reasons[register] = _infer_register_output_relation(
+                    original_registers[register],
+                    candidate_registers[register],
+                    input_kinds[region_index],
+                    refined,
+                    original_image_base,
+                    candidate_image_base,
+                    not refined["regions"][region_index].get("values"),
+                )
+            next_outputs.append(kinds)
+            next_reasons.append(reasons)
+
+        next_inputs: list[dict[str, str]] = []
+        for region_index, region in enumerate(regions):
+            incoming = predecessors[region_index]
+            kinds: dict[str, str] = {}
+            for register in register_order:
+                candidates: list[str] = []
+                if region.get("root"):
+                    candidates.append("exact")
+                for source_index, barrier, _ in incoming:
+                    candidates.append(
+                        "related_word" if barrier else next_outputs[source_index][register]
+                    )
+                if not candidates:
+                    candidates.append("related_word")
+                kinds[register] = _register_relation_join(candidates)
+            next_inputs.append(kinds)
+        if next_inputs == input_kinds and next_outputs == output_kinds:
+            output_reasons = next_reasons
+            converged = True
+            break
+        input_kinds = next_inputs
+        output_kinds = next_outputs
+        output_reasons = next_reasons
+    else:
+        iteration = max_iterations - 1
+
+    relation_rows: list[dict[str, Any]] = []
+    exact_claims = 0
+    for region_index, region in enumerate(regions):
+        input_pairs = {pair["original"]: pair for pair in region["inputs"]}
+        output_pairs = {pair["original"]: pair for pair in region["outputs"]}
+        region["input_relations"] = [
+            {
+                "original": input_pairs[register]["original"],
+                "candidate": input_pairs[register]["candidate"],
+                "relation": input_kinds[region_index][register],
+            }
+            for register in register_order
+            if register in input_pairs
+        ]
+        region["output_relations"] = [
+            {
+                "original": output_pairs[register]["original"],
+                "candidate": output_pairs[register]["candidate"],
+                "relation": output_kinds[region_index][register],
+            }
+            for register in register_order
+            if register in output_pairs
+        ]
+        claims = []
+        output_claims = []
+        input_relation_by_original = {
+            relation["original"]: relation for relation in region["input_relations"]
+        }
+        for relation in region["output_relations"]:
+            register = relation["original"]
+            original_expression = behaviors[region_index]["original_ir"]["registers"][register]
+            candidate_expression = behaviors[region_index]["candidate_ir"]["registers"][
+                relation["candidate"]
+            ]
+            reason = output_reasons[region_index][register]
+            if (
+                relation["relation"] == "exact"
+                and relation["original"] == relation["candidate"]
+                and original_expression == candidate_expression
+                and reason != "lean_exact_memory_expression"
+            ):
+                claims.append({
+                    "register": register,
+                    "relation": "exact",
+                    "reason": reason,
+                    "expression": original_expression,
+                })
+            if reason == "identity_transfer":
+                input_register = str(original_expression["reg"])
+                input_relation = input_relation_by_original.get(input_register)
+                if (
+                    input_relation is not None
+                    and candidate_expression.get("op") == "input_reg"
+                    and str(candidate_expression["reg"]) == input_relation["candidate"]
+                    and input_relation["relation"] == relation["relation"]
+                ):
+                    output_claims.append({
+                        "kind": "identity",
+                        "input": input_relation,
+                        "output": relation,
+                    })
+            elif reason == "paired_constant":
+                output_claims.append({
+                    "kind": "constant",
+                    "output": relation,
+                    "original_value": int(original_expression["value"]),
+                    "candidate_value": int(candidate_expression["value"]),
+                })
+            elif reason == "lean_exact_memory_expression":
+                output_claims.append({
+                    "kind": "exact_memory",
+                    "output": relation,
+                    "expression": original_expression,
+                })
+            elif relation["relation"] == "exact" and any(
+                claim["register"] == register for claim in claims
+            ):
+                output_claims.append({
+                    "kind": "exact_expression",
+                    "output": relation,
+                    "expression": original_expression,
+                })
+        exact_claims += len(claims)
+        relation_rows.append({
+            "region_id": region["id"],
+            "region_index": region_index,
+            "inputs": region["input_relations"],
+            "outputs": region["output_relations"],
+            "exact_output_claims": claims,
+            "output_claims": output_claims,
+            "fully_exact_output_transfer": (
+                len(claims) == len(region["output_relations"])
+                and bool(region["output_relations"])
+            ),
+            "fully_supported_output_transfer": (
+                len(output_claims) == len(region["output_relations"])
+                and bool(region["output_relations"])
+            ),
+            "predecessor_count": len(predecessors[region_index]),
+            "environment_barrier": any(barrier for _, barrier, _ in predecessors[region_index]),
+        })
+
+    unsupported_edges = 0
+    fully_exact_edges = 0
+    exact_pair_edge_claims = 0
+    edges_with_exact_pair_claims = 0
+    for edge in edges:
+        source = edge["source_region_index"]
+        target = edge["target_region_index"]
+        source_claims = {
+            claim["register"]: claim
+            for claim in relation_rows[source]["exact_output_claims"]
+        }
+        source_outputs = {
+            relation["original"]: relation
+            for relation in relation_rows[source]["outputs"]
+        }
+        pair_claims = [] if edge["environment_barrier"] else [
+            {
+                "register": target_relation["original"],
+                "target_relation": target_relation["relation"],
+                "expression": source_claims[target_relation["original"]]["expression"],
+            }
+            for target_relation in relation_rows[target]["inputs"]
+            if target_relation["relation"] in {"exact", "related_word"}
+            and target_relation["original"] in source_claims
+            and source_outputs[target_relation["original"]]["candidate"]
+                == target_relation["candidate"]
+        ]
+        edge["exact_output_pair_claims"] = pair_claims
+        supported = not edge["environment_barrier"] and all(
+            _register_relation_implies(
+                output_kinds[source][register], input_kinds[target][register]
+            )
+            for register in register_order
+        )
+        edge["relation_preservation_proposed"] = supported
+        edge["fully_exact_edge_proposed"] = (
+            not edge["environment_barrier"]
+            and relation_rows[source]["fully_exact_output_transfer"]
+            and all(
+                relation["relation"] == "exact"
+                for relation in relation_rows[target]["inputs"]
+            )
+            and relation_rows[source]["outputs"] == relation_rows[target]["inputs"]
+        )
+        unsupported_edges += not supported
+        fully_exact_edges += edge["fully_exact_edge_proposed"]
+        exact_pair_edge_claims += len(pair_claims)
+        edges_with_exact_pair_claims += bool(pair_claims)
+    counts = {
+        "regions": len(regions),
+        "direct_edges": len(edges),
+        "exact_input_relations": sum(
+            kind == "exact" for kinds in input_kinds for kind in kinds.values()
+        ),
+        "exact_output_relations": sum(
+            kind == "exact" for kinds in output_kinds for kind in kinds.values()
+        ),
+        "code_pointer_output_relations": sum(
+            kind == "code_pointer" for kinds in output_kinds for kind in kinds.values()
+        ),
+        "data_pointer_output_relations": sum(
+            kind == "data_pointer" for kinds in output_kinds for kind in kinds.values()
+        ),
+        "lean_exact_output_claims": exact_claims,
+        "fully_exact_output_regions": sum(
+            row["fully_exact_output_transfer"] for row in relation_rows
+        ),
+        "register_output_claims": sum(
+            len(row["output_claims"]) for row in relation_rows
+        ),
+        "fully_supported_output_regions": sum(
+            row["fully_supported_output_transfer"] for row in relation_rows
+        ),
+        "environment_barrier_edges": sum(edge["environment_barrier"] for edge in edges),
+        "unsupported_edge_proposals": unsupported_edges,
+        "fully_exact_edge_proposals": fully_exact_edges,
+        "exact_pair_edge_claims": exact_pair_edge_claims,
+        "edges_with_exact_pair_claims": edges_with_exact_pair_claims,
+    }
+    artifact = {
+        "format": "stage-a-relational-register-relations-v1",
+        "status": "proposal_requires_generated_lean_replay",
+        "model": STAGE_A_RELATIONAL_MODEL_ID,
+        "converged": converged,
+        "iterations": iteration + 1,
+        "relation_kinds": sorted(_REGISTER_RELATION_KINDS),
+        "trust": {
+            "role": "analysis_and_proof_proposal_only",
+            "acceptance_rule": (
+                "exact output claims and every direct-edge implication must be reconstructed "
+                "from decoded behavior and checked by Lean"
+            ),
+        },
+        "counts": counts,
+        "regions": relation_rows,
+        "edges": edges,
+    }
+    return refined, artifact
 
 
 _SEMANTIC_FLAG_FIELDS = {
@@ -4672,6 +5304,12 @@ def _lean_semantic_bool_expr(expression: dict[str, Any]) -> str:
 def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
     input_rows = ", ".join(_lean_register_pair(pair) for pair in region["inputs"])
     output_rows = ", ".join(_lean_register_pair(pair) for pair in region["outputs"])
+    input_relation_rows = ", ".join(
+        _lean_register_relation_pair(pair) for pair in region.get("input_relations", [])
+    )
+    output_relation_rows = ", ".join(
+        _lean_register_relation_pair(pair) for pair in region.get("output_relations", [])
+    )
     bound_rows = ", ".join(
         f"{{ original := .{bound['original']}, candidate := .{bound['candidate']}, "
         + (
@@ -4708,7 +5346,9 @@ def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
         f"def region{index} : RegionRelation := {{ id := {region['numeric_id']}, root := {_lean_bool(region['root'])}, "
         f"original := {{ start := {region['original']['rva_start']}, size := {region['original']['size']} }}, "
         f"candidate := {{ start := {region['candidate']['rva_start']}, size := {region['candidate']['size']} }}, "
-        f"inputs := [{input_rows}], outputs := [{output_rows}], bounds := [{bound_rows}], "
+        f"inputs := [{input_rows}], outputs := [{output_rows}], "
+        f"inputRelations := [{input_relation_rows}], outputRelations := [{output_relation_rows}], "
+        f"bounds := [{bound_rows}], "
         f"flagInputs := [{flag_inputs}], flagOutputs := [{flag_outputs}], "
         f"addressSeparations := [{separation_rows}], "
         f"targets := [{target_rows}], values := [{value_rows}] }}"
@@ -6033,6 +6673,9 @@ def _write_relational_memory_pullback_modules(
     definition_modules: list[str],
     shard_groups: list[list[int]],
     decode_chunk_regions: list[list[int]],
+    *,
+    original_image_base: int,
+    candidate_image_base: int,
 ) -> list[dict[str, str]]:
     definition_by_region = {
         region_index: definition_modules[shard_index]
@@ -6133,6 +6776,112 @@ def _write_relational_memory_pullback_modules(
                         "  InvariantWP.x87LoadPullbackEdgeClosed_of_checked "
                         f"{source_name} {target_name} {target_id} (by decide) (by decide)"
                     )
+            pair_claim_names: list[str] = []
+            for pair_index, pair_claim in enumerate(
+                requirement["exact_pullback_pair_claims"]
+            ):
+                expression_name = (
+                    f"memoryPullbackChunk{chunk_index}Edge{edge_index}"
+                    f"Pair{pair_index}Read"
+                )
+                pulled_name = expression_name + "Pulled"
+                claim_name = expression_name + "Claim"
+                theorem_name = expression_name + "Checked"
+                source_original = (
+                    f"memoryPullbackChunk{chunk_index}OriginalBehavior{source_index}"
+                )
+                source_candidate = (
+                    f"memoryPullbackChunk{chunk_index}CandidateBehavior{source_index}"
+                )
+                target_original = (
+                    f"memoryPullbackChunk{chunk_index}OriginalBehavior{target_index}"
+                )
+                target_candidate = (
+                    f"memoryPullbackChunk{chunk_index}CandidateBehavior{target_index}"
+                )
+                definitions.append(
+                    f"def {expression_name} : Expr := "
+                    f"{_lean_semantic_expr(pair_claim['expression'])}"
+                )
+                definitions.append(
+                    f"def {pulled_name} : Expr :=\n"
+                    f"  ({expression_name}.pullbackMemoryRead {source_original}).get "
+                    "(by decide)"
+                )
+                definitions.append(
+                    f"def {claim_name} : InvariantWP.ExactMemoryReadPullbackPairClaim := "
+                    f"{{ originalRead := {expression_name}, candidateRead := {expression_name}, "
+                    f"pulled := {pulled_name} }}"
+                )
+                pair_claim_names.append(claim_name)
+                claim = (
+                    f"InvariantWP.ExactMemoryReadPullbackPairEdgeClosed "
+                    f"{original_image_base} {candidate_image_base} region{source_index} "
+                    f"region{target_index} {source_original} {source_candidate} "
+                    f"{claim_name}"
+                )
+                theorem_names.append(theorem_name)
+                claims.append(claim)
+                definitions.append(
+                    f"theorem {theorem_name} : {claim} := by\n"
+                    f"  apply InvariantWP.exactMemoryReadPullbackPairEdgeClosed_of_checked "
+                    f"{original_image_base} {candidate_image_base} region{source_index} "
+                    f"region{target_index} {source_original} {source_candidate} "
+                    f"{target_original} {target_candidate} {claim_name}\n"
+                    "  · decide\n"
+                    "  · decide\n"
+                    "  · decide"
+                )
+            if requirement["exact_memory_transition_proposed"]:
+                transition_claims = (
+                    f"memoryPullbackChunk{chunk_index}Edge{edge_index}"
+                    "ExactTransitionClaims"
+                )
+                transition_proposition = (
+                    f"memoryPullbackChunk{chunk_index}Edge{edge_index}"
+                    "ExactTransitionClosed"
+                )
+                transition_theorem = (
+                    f"memoryPullbackChunk{chunk_index}Edge{edge_index}"
+                    "ExactTransitionChecked"
+                )
+                source_original = (
+                    f"memoryPullbackChunk{chunk_index}OriginalBehavior{source_index}"
+                )
+                source_candidate = (
+                    f"memoryPullbackChunk{chunk_index}CandidateBehavior{source_index}"
+                )
+                target_original = (
+                    f"memoryPullbackChunk{chunk_index}OriginalBehavior{target_index}"
+                )
+                target_candidate = (
+                    f"memoryPullbackChunk{chunk_index}CandidateBehavior{target_index}"
+                )
+                definitions.append(
+                    f"def {transition_claims} : List "
+                    "InvariantWP.ExactMemoryReadPullbackPairClaim := "
+                    f"[{', '.join(pair_claim_names)}]"
+                )
+                transition_claim = (
+                    f"MemoryObservationTransitionClosed {original_image_base} "
+                    f"{candidate_image_base} region{source_index} region{target_index}.targets "
+                    f"region{target_index}.values ({transition_claims}.map "
+                    "InvariantWP.ExactMemoryReadPullbackPairClaim.requirement) [] "
+                    f"{source_original} {source_candidate}"
+                )
+                definitions.append(
+                    f"def {transition_proposition} : Prop := {transition_claim}"
+                )
+                definitions.append(
+                    f"theorem {transition_theorem} : {transition_proposition} := by\n"
+                    f"  apply InvariantWP.memoryObservationTransitionClosed_of_exact_pullback_pairs "
+                    f"{original_image_base} {candidate_image_base} region{source_index} "
+                    f"region{target_index} {source_original} {source_candidate} "
+                    f"{target_original} {target_candidate} {transition_claims}\n"
+                    "  decide"
+                )
+                theorem_names.append(transition_theorem)
+                claims.append(transition_claim)
 
         claims_name = f"memoryPullbackChunk{chunk_index}Claims"
         checked_name = f"memoryPullbackChunk{chunk_index}Checked"
@@ -6181,6 +6930,353 @@ def _write_relational_memory_pullback_modules(
     return modules
 
 
+def _write_relational_register_relation_modules(
+    lean_dir: Path,
+    contract: dict[str, Any],
+    register_relations: dict[str, Any],
+    definition_modules: list[str],
+    shard_groups: list[list[int]],
+    decode_chunk_regions: list[list[int]],
+    *,
+    original_image_base: int,
+    candidate_image_base: int,
+) -> list[dict[str, str]]:
+    definition_by_region = {
+        region_index: definition_modules[shard_index]
+        for shard_index, indices in enumerate(shard_groups)
+        for region_index in indices
+    }
+    relation_by_region = {
+        int(row["region_index"]): row for row in register_relations["regions"]
+    }
+    modules: list[dict[str, str]] = []
+    for chunk_index, region_indices in enumerate(decode_chunk_regions):
+        exact_edges = [
+            edge for edge in register_relations["edges"]
+            if edge["source_region_index"] in region_indices
+            and edge["fully_exact_edge_proposed"]
+        ]
+        pair_edges = [
+            edge for edge in register_relations["edges"]
+            if edge["source_region_index"] in region_indices
+            and edge["exact_output_pair_claims"]
+        ]
+        selected = [
+            index for index in region_indices
+            if relation_by_region[index]["output_claims"]
+        ]
+        if not selected:
+            continue
+        involved = set(selected) | {
+            int(edge["target_region_index"]) for edge in exact_edges
+        } | {
+            int(edge["target_region_index"]) for edge in pair_edges
+        }
+        imports = "\n".join(
+            f"import StageA.{module}"
+            for module in sorted({definition_by_region[index] for index in involved})
+        )
+        definitions: list[str] = []
+        theorem_names: list[str] = []
+        proposition_names: list[str] = []
+        for index in selected:
+            row = relation_by_region[index]
+            original_name = f"registerRelationChunk{chunk_index}OriginalBehavior{index}"
+            candidate_name = f"registerRelationChunk{chunk_index}CandidateBehavior{index}"
+            claims_name = f"registerRelationChunk{chunk_index}Region{index}Claims"
+            theorem_name = f"registerRelationChunk{chunk_index}Region{index}Checked"
+            proposition_name = f"registerRelationChunk{chunk_index}Region{index}Closed"
+            definitions.extend([
+                f"def {original_name} : NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior false region{index}.targets "
+                f"originalBehavior{index}).get (by decide)",
+                f"def {candidate_name} : NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior true region{index}.targets "
+                f"candidateBehavior{index}).get (by decide)",
+            ])
+            claim_literals = []
+            for claim in row["exact_output_claims"]:
+                register = claim["register"]
+                claim_literals.append(
+                    "{ output := { original := ." + register
+                    + ", candidate := ." + register
+                    + ", relation := .exact }, expression := "
+                    + _lean_semantic_expr(claim["expression"])
+                    + " }"
+                )
+            definitions.append(
+                f"def {claims_name} : List InvariantWP.ExactRegisterOutputClaim := "
+                f"[{', '.join(claim_literals)}]"
+            )
+            output_claims_name = (
+                f"registerRelationChunk{chunk_index}Region{index}OutputClaims"
+            )
+            output_claim_literals: list[str] = []
+            for claim in row["output_claims"]:
+                if claim["kind"] == "exact_expression":
+                    output_claim_literals.append(
+                        "InvariantWP.RegisterOutputClaim.exactExpression "
+                        "{ output := " + _lean_register_relation_pair(claim["output"])
+                        + ", expression := " + _lean_semantic_expr(claim["expression"])
+                        + " }"
+                    )
+                elif claim["kind"] == "exact_memory":
+                    output_claim_literals.append(
+                        "InvariantWP.RegisterOutputClaim.exactMemory "
+                        "{ output := " + _lean_register_relation_pair(claim["output"])
+                        + ", expression := " + _lean_semantic_expr(claim["expression"])
+                        + " }"
+                    )
+                elif claim["kind"] == "identity":
+                    output_claim_literals.append(
+                        "InvariantWP.RegisterOutputClaim.identity { input := "
+                        + _lean_register_relation_pair(claim["input"])
+                        + ", output := "
+                        + _lean_register_relation_pair(claim["output"])
+                        + " }"
+                    )
+                elif claim["kind"] == "constant":
+                    output_claim_literals.append(
+                        "InvariantWP.RegisterOutputClaim.constant { output := "
+                        + _lean_register_relation_pair(claim["output"])
+                        + ", originalValue := " + str(claim["original_value"])
+                        + ", candidateValue := " + str(claim["candidate_value"])
+                        + " }"
+                    )
+                else:
+                    raise StageAInputError(
+                        f"unsupported register output claim {claim['kind']!r}"
+                    )
+            definitions.append(
+                f"def {output_claims_name} : List InvariantWP.RegisterOutputClaim := "
+                f"[{', '.join(output_claim_literals)}]"
+            )
+            definitions.append(
+                f"def {proposition_name} : Prop :=\n"
+                f"  InvariantWP.AllExactRegisterOutputClaims {original_image_base} "
+                f"{candidate_image_base} "
+                f"region{index} {original_name} {candidate_name} {claims_name}"
+            )
+            definitions.append(
+                f"theorem {theorem_name} : {proposition_name} := by\n"
+                f"  apply InvariantWP.allExactRegisterOutputClaims_of_checked "
+                f"{original_image_base} {candidate_image_base} region{index} "
+                f"{original_name} {candidate_name} {claims_name}\n"
+                "  decide"
+            )
+            theorem_names.append(theorem_name)
+            proposition_names.append(proposition_name)
+            output_proposition_name = (
+                f"registerRelationChunk{chunk_index}Region{index}OutputClaimsClosed"
+            )
+            output_theorem_name = (
+                f"registerRelationChunk{chunk_index}Region{index}OutputClaimsChecked"
+            )
+            definitions.append(
+                f"def {output_proposition_name} : Prop :=\n"
+                f"  InvariantWP.AllRegisterOutputClaims {original_image_base} "
+                f"{candidate_image_base} region{index} {original_name} {candidate_name} "
+                f"{output_claims_name}"
+            )
+            definitions.append(
+                f"theorem {output_theorem_name} : {output_proposition_name} := by\n"
+                f"  apply InvariantWP.allRegisterOutputClaims_of_checked "
+                f"{original_image_base} {candidate_image_base} region{index} "
+                f"{original_name} {candidate_name} {output_claims_name}\n"
+                "  decide"
+            )
+            theorem_names.append(output_theorem_name)
+            proposition_names.append(output_proposition_name)
+            if row["fully_supported_output_transfer"]:
+                supported_transfer_name = (
+                    f"registerRelationChunk{chunk_index}Region{index}"
+                    "SupportedTransferClosed"
+                )
+                supported_transfer_theorem = (
+                    f"registerRelationChunk{chunk_index}Region{index}"
+                    "SupportedTransferChecked"
+                )
+                definitions.append(
+                    f"def {supported_transfer_name} : Prop :=\n"
+                    f"  InvariantWP.RegisterTransferClosed {original_image_base} "
+                    f"{candidate_image_base} region{index} {original_name} {candidate_name}"
+                )
+                definitions.append(
+                    f"theorem {supported_transfer_theorem} : "
+                    f"{supported_transfer_name} := by\n"
+                    f"  apply InvariantWP.registerTransferClosed_of_checked "
+                    f"{original_image_base} {candidate_image_base} region{index} "
+                    f"{original_name} {candidate_name} {output_claims_name}\n"
+                    "  · decide\n"
+                    "  · decide"
+                )
+                theorem_names.append(supported_transfer_theorem)
+                proposition_names.append(supported_transfer_name)
+            if row["fully_exact_output_transfer"]:
+                transfer_name = (
+                    f"registerRelationChunk{chunk_index}Region{index}TransferClosed"
+                )
+                transfer_theorem = (
+                    f"registerRelationChunk{chunk_index}Region{index}TransferChecked"
+                )
+                definitions.append(
+                    f"def {transfer_name} : Prop :=\n"
+                    f"  InvariantWP.ExactRegisterTransferClosed {original_image_base} "
+                    f"{candidate_image_base} region{index} {original_name} {candidate_name}"
+                )
+                definitions.append(
+                    f"theorem {transfer_theorem} : {transfer_name} := by\n"
+                    f"  apply InvariantWP.exactRegisterTransferClosed_of_checked "
+                    f"{original_image_base} {candidate_image_base} region{index} "
+                    f"{original_name} {candidate_name} {claims_name}\n"
+                    "  · decide\n"
+                    "  · decide"
+                )
+                theorem_names.append(transfer_theorem)
+                proposition_names.append(transfer_name)
+        for edge_index, edge in enumerate(exact_edges):
+            source_index = int(edge["source_region_index"])
+            target_index = int(edge["target_region_index"])
+            original_name = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{source_index}"
+            )
+            candidate_name = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{source_index}"
+            )
+            source_claims = (
+                f"registerRelationChunk{chunk_index}Region{source_index}Claims"
+            )
+            proposition_name = (
+                f"registerRelationChunk{chunk_index}Edge{edge_index}Closed"
+            )
+            theorem_name = (
+                f"registerRelationChunk{chunk_index}Edge{edge_index}Checked"
+            )
+            definitions.append(
+                f"def {proposition_name} : Prop :=\n"
+                f"  InvariantWP.ExactRegisterRelationEdgeClosed {original_image_base} "
+                f"{candidate_image_base} region{source_index} region{target_index} "
+                f"{original_name} {candidate_name}"
+            )
+            definitions.append(
+                f"theorem {theorem_name} : {proposition_name} := by\n"
+                f"  apply InvariantWP.exactRegisterRelationEdgeClosed_of_checked "
+                f"{original_image_base} {candidate_image_base} region{source_index} "
+                f"region{target_index} {original_name} {candidate_name} {source_claims}\n"
+                "  · decide\n"
+                "  · decide\n"
+                "  · decide\n"
+                "  · decide\n"
+                "  · decide\n"
+                "  · decide"
+            )
+            theorem_names.append(theorem_name)
+            proposition_names.append(proposition_name)
+        for edge_index, edge in enumerate(pair_edges):
+            source_index = int(edge["source_region_index"])
+            target_index = int(edge["target_region_index"])
+            original_name = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{source_index}"
+            )
+            candidate_name = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{source_index}"
+            )
+            target_inputs = {
+                relation["original"]: relation
+                for relation in relation_by_region[target_index]["inputs"]
+            }
+            for pair_index, pair_claim in enumerate(edge["exact_output_pair_claims"]):
+                register = pair_claim["register"]
+                target_relation = target_inputs[register]
+                relation_constructor = {
+                    "exact": "exact",
+                    "related_word": "relatedWord",
+                }[target_relation["relation"]]
+                claim_name = (
+                    f"registerRelationChunk{chunk_index}Edge{edge_index}"
+                    f"Pair{pair_index}Claim"
+                )
+                proposition_name = (
+                    f"registerRelationChunk{chunk_index}Edge{edge_index}"
+                    f"Pair{pair_index}Closed"
+                )
+                theorem_name = (
+                    f"registerRelationChunk{chunk_index}Edge{edge_index}"
+                    f"Pair{pair_index}Checked"
+                )
+                definitions.append(
+                    f"def {claim_name} : InvariantWP.ExactRegisterRelationPairEdgeClaim := "
+                    "{ sourceOutput := { output := { original := ." + register
+                    + ", candidate := ." + target_relation["candidate"]
+                    + ", relation := .exact }, expression := "
+                    + _lean_semantic_expr(pair_claim["expression"])
+                    + " }, targetInput := { original := ." + register
+                    + ", candidate := ." + target_relation["candidate"]
+                    + ", relation := ." + relation_constructor + " } }"
+                )
+                definitions.append(
+                    f"def {proposition_name} : Prop :=\n"
+                    f"  InvariantWP.ExactRegisterRelationPairEdgeClosed "
+                    f"{original_image_base} {candidate_image_base} region{source_index} "
+                    f"region{target_index} {original_name} {candidate_name} {claim_name}"
+                )
+                definitions.append(
+                    f"theorem {theorem_name} : {proposition_name} := by\n"
+                    f"  apply InvariantWP.exactRegisterRelationPairEdgeClosed_of_checked "
+                    f"{original_image_base} {candidate_image_base} region{source_index} "
+                    f"region{target_index} {original_name} {candidate_name} {claim_name}\n"
+                    "  · decide\n"
+                    "  · decide\n"
+                    "  · decide"
+                )
+                theorem_names.append(theorem_name)
+                proposition_names.append(proposition_name)
+        claims_name = f"registerRelationChunk{chunk_index}Claims"
+        checked_name = f"registerRelationChunk{chunk_index}Checked"
+        definitions.append(
+            f"def {claims_name} : List Prop := [{', '.join(proposition_names)}]"
+        )
+        proof = (
+            "".join(f"And.intro {name} (" for name in theorem_names)
+            + "True.intro"
+            + ")" * len(theorem_names)
+        )
+        definitions.append(
+            f"theorem {checked_name} : AllInvariantClaims {claims_name} := by\n"
+            f"  exact {proof}"
+        )
+        module = f"RelationalRegisterRelationsChunk{chunk_index}"
+        source = (
+            imports
+            + "\n\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+            "set_option linter.unusedSimpArgs false\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+        modules.append({
+            "module": module,
+            "claims": claims_name,
+            "theorem": checked_name,
+            "regions": str(len(selected)),
+            "exact_output_claims": str(sum(
+                len(relation_by_region[index]["exact_output_claims"])
+                for index in selected
+            )),
+            "output_claims": str(sum(
+                len(relation_by_region[index]["output_claims"])
+                for index in selected
+            )),
+            "fully_exact_edges": str(len(exact_edges)),
+            "exact_pair_edge_claims": str(sum(
+                len(edge["exact_output_pair_claims"]) for edge in pair_edges
+            )),
+        })
+    return modules
+
+
 def _write_sharded_relational_proof(
     lean_dir: Path,
     original_bin: StageABinary,
@@ -6192,6 +7288,7 @@ def _write_sharded_relational_proof(
     *,
     invariant_synthesis: dict[str, Any],
     memory_contracts: dict[str, Any],
+    register_relations: dict[str, Any],
     replay: bool,
     certificates: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], int]:
@@ -6395,6 +7492,18 @@ def _write_sharded_relational_proof(
         definition_modules,
         shard_groups,
         decode_chunk_regions,
+        original_image_base=original_bin.image_base,
+        candidate_image_base=candidate_bin.image_base,
+    )
+    register_relation_modules = _write_relational_register_relation_modules(
+        lean_dir,
+        contract,
+        register_relations,
+        definition_modules,
+        shard_groups,
+        decode_chunk_regions,
+        original_image_base=original_bin.image_base,
+        candidate_image_base=candidate_bin.image_base,
     )
 
     direct_modules: list[str] = []
@@ -6757,6 +7866,21 @@ def _write_sharded_relational_proof(
         + "True.intro"
         + ")" * len(memory_pullback_modules)
     )
+    register_relation_certificate_type = " ∧ ".join(
+        [
+            f"AllInvariantClaims {item['claims']}"
+            for item in register_relation_modules
+        ]
+        + ["True"]
+    )
+    register_relation_certificate_proof = (
+        "".join(
+            f"And.intro {item['theorem']} ("
+            for item in register_relation_modules
+        )
+        + "True.intro"
+        + ")" * len(register_relation_modules)
+    )
     final = (
         "import StageA.RelationalProofClosureBase\n"
         + "".join(f"import StageA.{module}\n" for module in direct_modules)
@@ -6765,6 +7889,9 @@ def _write_sharded_relational_proof(
         )
         + "".join(
             f"import StageA.{item['module']}\n" for item in memory_pullback_modules
+        )
+        + "".join(
+            f"import StageA.{item['module']}\n" for item in register_relation_modules
         )
         + "\n\nnamespace StageA.GeneratedRelational\n\nopen StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
@@ -6796,22 +7923,30 @@ def _write_sharded_relational_proof(
         "theorem generatedX87LoadPullbackCertificateChecked :\n"
         "    GeneratedX87LoadPullbackCertificate := by\n"
         f"  exact {x87_pullback_certificate_proof}\n\n"
+        f"def GeneratedExactRegisterRelationCertificate : Prop := "
+        f"{register_relation_certificate_type}\n\n"
+        "theorem generatedExactRegisterRelationCertificateChecked :\n"
+        "    GeneratedExactRegisterRelationCertificate := by\n"
+        f"  exact {register_relation_certificate_proof}\n\n"
         "theorem candidateRelationalCertificate :\n"
         "    RelationalImageCertificate proofBundle ∧ GeneratedInvariantCertificate ∧\n"
         "      GeneratedMappedRelocationImageCertificate ∧\n"
         "      GeneratedOrdinaryMemoryReadPullbackCertificate ∧\n"
-        "      GeneratedX87LoadPullbackCertificate :=\n"
+        "      GeneratedX87LoadPullbackCertificate ∧\n"
+        "      GeneratedExactRegisterRelationCertificate :=\n"
         "  ⟨regionalRelationalCertificate, generatedInvariantCertificateChecked,\n"
         "    generatedMappedRelocationImageCertificateChecked,\n"
         "    generatedOrdinaryMemoryReadPullbackCertificateChecked,\n"
-        "    generatedX87LoadPullbackCertificateChecked⟩\n\n"
+        "    generatedX87LoadPullbackCertificateChecked,\n"
+        "    generatedExactRegisterRelationCertificateChecked⟩\n\n"
         "#print axioms candidateRelationalCertificate\n\nend StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(lean_dir / "StageA" / "RelationalBundle.lean", final)
     return (
         shard_modules
         + [item["module"] for item in invariant_modules]
-        + [item["module"] for item in memory_pullback_modules],
+        + [item["module"] for item in memory_pullback_modules]
+        + [item["module"] for item in register_relation_modules],
         shard_size,
     )
 
@@ -8036,6 +9171,23 @@ def _lean_register_pair(pair: dict[str, str]) -> str:
     return f"{{ original := .{pair['original']}, candidate := .{pair['candidate']} }}"
 
 
+def _lean_register_relation_pair(pair: dict[str, str]) -> str:
+    relation = {
+        "exact": "exact",
+        "code_pointer": "codePointer",
+        "data_pointer": "dataPointer",
+        "related_word": "relatedWord",
+    }.get(pair.get("relation"))
+    if relation is None:
+        raise StageAInputError(
+            f"unsupported register relation kind {pair.get('relation')!r}"
+        )
+    return (
+        f"{{ original := .{pair['original']}, candidate := .{pair['candidate']}, "
+        f"relation := .{relation} }}"
+    )
+
+
 def _required_input_pairs(regions: list[dict[str, Any]]) -> list[dict[str, str]]:
     return _required_input_pairs_from([], regions)
 
@@ -8511,6 +9663,24 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
                     ),
                 },
             })
+        elif (
+            lean.get("status") == "checked"
+            and obligation["kind"] == "memory_transition_preservation"
+            and obligation.get("analysis", {}).get("status")
+                == "candidate_requires_lean_replay"
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "evidence": {
+                    "kind": "lean_checked_exact_memory_pullback_transition",
+                    "theorem": "StageA.GeneratedRelational.candidateRelationalCertificate",
+                    "lemma": (
+                        "StageA.Relational.InvariantWP."
+                        "memoryObservationTransitionClosed_of_exact_pullback_pairs"
+                    ),
+                },
+            })
         else:
             finalized_obligations.append(obligation)
     assumption_obligations = [
@@ -8534,6 +9704,13 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
             "status": "satisfied" if lean.get("status") == "checked"
             else "violated" if verdict == "fail"
             else "incomplete",
+        },
+        {
+            "family": "cfg_register_relations",
+            "status": "incomplete" if any(
+                obligation["kind"] == "cfg_register_relation_preservation"
+                for obligation in assumption_obligations
+            ) else "satisfied",
         },
         {
             "family": "whole_program_composition",
@@ -8600,6 +9777,11 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         "memory_contracts_sha256": (
             sha256_file(out / "relational-memory-contracts.json")
             if (out / "relational-memory-contracts.json").is_file()
+            else None
+        ),
+        "register_relations_sha256": (
+            sha256_file(out / "relational-register-relations.json")
+            if (out / "relational-register-relations.json").is_file()
             else None
         ),
         "invariants_sha256": (
