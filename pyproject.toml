@@ -32,3 +32,4 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
 
 [tool.setuptools.data-files]
 "share/spaghetti-extractor/nix" = [ "nix/stage-a-lean-graph.nix" ]
+"share/spaghetti-extractor/profiles" = [ "profiles/*.json" ]

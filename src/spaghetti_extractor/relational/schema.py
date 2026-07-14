@@ -8,6 +8,7 @@ from typing import Any, Mapping
 STAGE_A_RELATIONAL_MODEL_ID = "x86-pe32-relational-v3"
 STAGE_A_RELATIONAL_PROFILE_ID = "x86-pe32-lean-relational-v3"
 RELATION_CONTRACT_FORMAT = "stage-a-relation-contract-v1"
+EXTERNAL_ENVIRONMENT_PROFILE_FORMAT = "stage-a-external-environment-profile-v1"
 RELATIONAL_PROOF_IR_FORMAT = "stage-a-relational-proof-ir-v1"
 RELATIONAL_SEGMENT_CERTIFICATE_FORMAT = (
     "stage-a-relational-segment-certificate-v1"

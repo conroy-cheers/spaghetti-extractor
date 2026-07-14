@@ -1,0 +1,135 @@
+{
+  "format": "stage-a-external-environment-profile-v1",
+  "id": "pe32-kernel32-lockstep-v1",
+  "machine_import_call_contracts": [
+    {
+      "id": 0,
+      "import": {"dll": "kernel32.dll", "symbol": "DeleteCriticalSection"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 24},
+          "nullable": false
+        }
+      ],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "id": 1,
+      "import": {"dll": "kernel32.dll", "symbol": "InitializeCriticalSection"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 24},
+          "nullable": false
+        }
+      ],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "id": 2,
+      "import": {"dll": "kernel32.dll", "symbol": "Sleep"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "id": 4,
+      "import": {"dll": "kernel32.dll", "symbol": "VirtualQuery"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 3,
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 1,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
+    },
+    {
+      "id": 5,
+      "import": {"dll": "kernel32.dll", "symbol": "VirtualProtect"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 4,
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 3,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 4},
+          "nullable": false
+        }
+      ],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "id": 6,
+      "import": {"dll": "kernel32.dll", "symbol": "GetLastError"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 0,
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "id": 7,
+      "import": {"dll": "kernel32.dll", "symbol": "EnterCriticalSection"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 24},
+          "nullable": false
+        }
+      ],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "id": 8,
+      "import": {"dll": "kernel32.dll", "symbol": "LeaveCriticalSection"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 24},
+          "nullable": false
+        }
+      ],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "id": 9,
+      "import": {"dll": "kernel32.dll", "symbol": "TlsGetValue"},
+      "abi_template": "pe32-stdcall-v1",
+      "argument_words": 1,
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "tlsState"
+    }
+  ]
+}

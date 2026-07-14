@@ -280,6 +280,7 @@
                 --original "$fixture_dir/jq-original.exe" \
                 --candidate "$fixture_dir/jq-candidate.exe" \
                 --mapping "$work/jq-block-map.json" \
+                --external-profile "${./profiles/pe32-kernel32-lockstep-v1.json}" \
                 --out "$work/jq-relation-contract.json" \
                 > "$work/generate-relation.stdout"
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
@@ -296,6 +297,9 @@
                 .composition_progress.status == "incomplete" and
                 .composition_progress.counts.rooted_reachable_nodes > 0 and
                 .composition_progress.counts.rooted_reachable_feasible_edges > 0 and
+                .composition_progress.counts.rooted_external_refinement_candidates == 9 and
+                .composition_progress.counts.rooted_external_contract_gap_edges == 3 and
+                .composition_progress.counts.rooted_refined_segments == 48 and
                 .composition_progress.counts.unsupported_instructions == 0
               ' "$work/relational-v3/prepared-proof.json" >/dev/null
               jq -e '.status == "supported" and .counts.issues == 0' \

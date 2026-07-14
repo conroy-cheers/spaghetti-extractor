@@ -166,12 +166,18 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     generate_relation.add_argument("--original", type=Path, required=True)
     generate_relation.add_argument("--candidate", type=Path, required=True)
     generate_relation.add_argument("--mapping", type=Path, required=True)
+    generate_relation.add_argument(
+        "--external-profile",
+        type=Path,
+        help="versioned machine-level contracts for shared imported calls",
+    )
     generate_relation.add_argument("--out", type=Path, required=True)
     generate_relation.set_defaults(
         func=lambda args: stage_a_generate_relation_contract(
             original=args.original,
             candidate=args.candidate,
             mapping=args.mapping,
+            external_profile=args.external_profile,
             out=args.out,
         )
     )

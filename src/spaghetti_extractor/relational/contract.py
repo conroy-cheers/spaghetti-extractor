@@ -10,6 +10,7 @@ from ..util import sha256_file, write_json
 from .build import _read_json
 from .model import PURE_SEMANTIC_EXPR_OPERATIONS
 from .schema import (
+    EXTERNAL_ENVIRONMENT_PROFILE_FORMAT,
     FLAG_BITS,
     MACHINE_CALL_ABI_REGISTERS,
     MACHINE_CALL_ABI_TEMPLATES,
@@ -392,6 +393,7 @@ def stage_a_generate_relation_contract(
     original: Path,
     candidate: Path,
     mapping: Path,
+    external_profile: Path | None = None,
     out: Path,
 ) -> dict[str, Any]:
     original_bin = _parse_stage_a_pe(Path(original))
@@ -499,16 +501,111 @@ def stage_a_generate_relation_contract(
             "mapping_sha256": sha256_file(Path(mapping)),
         },
     }
-    normalized, issues = _normalize_contract(contract, original_bin, candidate_bin)
+    profile_summary: dict[str, Any] | None = None
+    profile_issues: list[dict[str, Any]] = []
+    if external_profile is not None:
+        machine_contracts, profile_summary, profile_issues = (
+            _select_external_profile_contracts(
+                Path(external_profile), original_bin, candidate_bin
+            )
+        )
+        contract["machine_import_call_contracts"] = machine_contracts
+    normalized, normalization_issues = _normalize_contract(
+        contract, original_bin, candidate_bin
+    )
+    issues = profile_issues + normalization_issues
     payload = contract if issues else normalized
     write_json(Path(out), payload)
-    return {
+    result = {
         "format": "stage-a-relation-contract-generation-v1",
         "status": "generated" if not issues else "incomplete",
         "out": str(out),
-        "counts": {"regions": len(regions), "code_targets": len(code_targets), "value_targets": len(value_targets), "padding": len(padding)},
+        "counts": {
+            "regions": len(regions),
+            "code_targets": len(code_targets),
+            "value_targets": len(value_targets),
+            "padding": len(padding),
+            "machine_import_call_contracts": len(
+                contract.get("machine_import_call_contracts", [])
+            ),
+        },
         "issues": issues,
     }
+    if profile_summary is not None:
+        result["external_profile"] = profile_summary
+    return result
+
+
+def _select_external_profile_contracts(
+    path: Path,
+    original: StageABinary,
+    candidate: StageABinary,
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+    payload = _read_json(path)
+    issues: list[dict[str, Any]] = []
+    profile_id = payload.get("id")
+    raw_contracts = payload.get("machine_import_call_contracts")
+    if payload.get("format") != EXTERNAL_ENVIRONMENT_PROFILE_FORMAT:
+        issues.append({
+            "category": "external_environment_profile_format_mismatch",
+            "severity": "hard",
+            "expected": EXTERNAL_ENVIRONMENT_PROFILE_FORMAT,
+            "observed": payload.get("format"),
+        })
+    if not isinstance(profile_id, str) or not profile_id:
+        issues.append({
+            "category": "external_environment_profile_id_missing",
+            "severity": "hard",
+        })
+        profile_id = "invalid"
+    if not isinstance(raw_contracts, list):
+        issues.append({
+            "category": "external_environment_profile_contracts_not_list",
+            "severity": "hard",
+        })
+        raw_contracts = []
+
+    selected = _machine_import_call_contracts(
+        raw_contracts,
+        original,
+        candidate,
+        issues,
+        select_common_imports=True,
+    )
+
+    def binary_imports(binary: StageABinary) -> set[tuple[str, str, str | int]]:
+        return {
+            (identity[0].lower(), identity[1], identity[2])
+            for imported in binary.imports
+            if (identity := _import_identity(imported)) is not None
+        }
+
+    common_imports = binary_imports(original).intersection(binary_imports(candidate))
+    covered_imports = {
+        identity
+        for contract in selected
+        if (identity := _import_identity(contract.get("import"))) is not None
+    }
+
+    def rendered(identity: tuple[str, str, str | int]) -> dict[str, Any]:
+        result: dict[str, Any] = {"dll": identity[0]}
+        result[identity[1]] = identity[2]
+        return result
+
+    summary = {
+        "format": EXTERNAL_ENVIRONMENT_PROFILE_FORMAT,
+        "id": profile_id,
+        "sha256": sha256_file(path),
+        "declared_contracts": len(raw_contracts),
+        "selected_contracts": len(selected),
+        "ignored_contracts": len(raw_contracts) - len(selected),
+        "common_imports": len(common_imports),
+        "covered_common_imports": len(covered_imports),
+        "uncovered_common_imports": [
+            rendered(identity) for identity in sorted(common_imports - covered_imports)
+        ],
+    }
+    return selected, summary, issues
 
 def _normalize_contract(contract: dict[str, Any], original: StageABinary, candidate: StageABinary) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     issues: list[dict[str, Any]] = []
@@ -1255,6 +1352,8 @@ def _machine_import_call_contracts(
     original: StageABinary,
     candidate: StageABinary,
     issues: list[dict[str, Any]],
+    *,
+    select_common_imports: bool = False,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     ids: set[int] = set()
@@ -1460,7 +1559,11 @@ def _machine_import_call_contracts(
             continue
         assert contract_id is not None
         assert target is not None
+        ids.add(contract_id)
+        targets.add(target)
         if target not in original_imports or target not in candidate_imports:
+            if select_common_imports:
+                continue
             issues.append({
                 "category": "machine_import_call_contract_import_mismatch",
                 "severity": "hard",
@@ -1471,8 +1574,6 @@ def _machine_import_call_contracts(
                 "next_action": "use an import identity present in both exact PE import tables",
             })
             continue
-        ids.add(contract_id)
-        targets.add(target)
         normalized_import: dict[str, Any] = {"dll": target[0]}
         normalized_import[target[1]] = target[2]
         normalized = {
@@ -1770,9 +1871,14 @@ def _semantic_expr_is_pure(expression: Any) -> bool:
     return True
 
 def _import_identity(imported: Any) -> tuple[str, str, str | int] | None:
-    dll = str(getattr(imported, "dll", "")).lower()
-    symbol = getattr(imported, "symbol", None)
-    ordinal = getattr(imported, "ordinal", None)
+    if isinstance(imported, dict):
+        dll = str(imported.get("dll", "")).lower()
+        symbol = imported.get("symbol")
+        ordinal = _integer(imported.get("ordinal"))
+    else:
+        dll = str(getattr(imported, "dll", "")).lower()
+        symbol = getattr(imported, "symbol", None)
+        ordinal = getattr(imported, "ordinal", None)
     if not dll or (symbol is None) == (ordinal is None):
         return None
     return (dll, "symbol", str(symbol)) if symbol is not None else (

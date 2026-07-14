@@ -38,6 +38,22 @@ nix build .#stage-a-jq-fixtures --no-link
 nix build .#stage-a-jq-fixtures-check --no-link
 ```
 
+Generate a relation contract with reusable machine-level external-call schemas:
+
+```sh
+spaghetti-extractor stage-a-generate-relation-contract \
+  --original original.exe \
+  --candidate candidate.exe \
+  --mapping block-map.json \
+  --external-profile profiles/pe32-kernel32-lockstep-v1.json \
+  --out relation-contract.json
+```
+
+External profiles are checked theorem inputs, not trusted API implementations.
+Stage A selects only declarations whose exact import identity occurs in both
+binaries, validates every declaration, and still requires Lean to close each
+reachable external boundary. See [profiles/README.md](profiles/README.md).
+
 Bootstrap a jq skeleton from the Stage A contract:
 
 ```sh
