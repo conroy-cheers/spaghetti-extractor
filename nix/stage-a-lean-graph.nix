@@ -1,13 +1,19 @@
-{ pkgs, prepared }:
+{ pkgs, prepared, targetNode ? null, targetNodes ? [] }:
 
 let
   lib = pkgs.lib;
   graph = builtins.fromJSON (builtins.readFile (prepared + "/module-graph.json"));
+  moduleSources = lib.mapAttrs (module: metadata:
+    builtins.path {
+      path = prepared + "/${metadata.source}";
+      name = "stage-a-${module}.lean";
+    }
+  ) graph.modules;
 
   sourceChecks = node:
     lib.concatMapStringsSep "\n" (module:
       let metadata = graph.modules.${module};
-      in "${metadata.source_sha256}  ${prepared}/${metadata.source}"
+      in "${metadata.source_sha256}  ${moduleSources.${module}}"
     ) node.modules;
 
   nodeById = builtins.listToAttrs (map (node: {
@@ -15,17 +21,11 @@ let
     value = node;
   }) graph.nodes);
 
-  dependencyClosure = node:
-    lib.unique (lib.concatMap (dependency:
-      [ dependency ] ++ dependencyClosure nodeById.${dependency}
-    ) node.dependencies);
-
   nodeDrvs = lib.fix (self:
     builtins.listToAttrs (map (node:
       let
-        dependencies = map (dependency: self.${dependency}) (dependencyClosure node);
+        dependencies = map (dependency: self.${dependency}) node.dependencies;
         dependencyArgs = lib.escapeShellArgs (map toString dependencies);
-        modules = lib.escapeShellArgs node.modules;
         metadata = builtins.toJSON {
           format = "stage-a-lean-node-result-v1";
           id = node.id;
@@ -42,25 +42,72 @@ let
           }
           ''
             mkdir -p "$out/StageA" source/StageA deps/StageA
+            ulimit -s unlimited
             cat > source-hashes <<'HASHES'
             ${sourceChecks node}
             HASHES
             sha256sum --check --strict source-hashes
+            : > inherited-olean-index
+            : > inherited-node-result-index
+            link_dependency() {
+              dependency_file="$1"
+              destination="deps/StageA/$(basename "$dependency_file")"
+              if [ -e "$destination" ]; then
+                if [ "$(readlink -f "$destination")" != "$(readlink -f "$dependency_file")" ]; then
+                  echo "conflicting dependency module: $(basename "$dependency_file")" >&2
+                  exit 1
+                fi
+              else
+                ln -s "$dependency_file" "$destination"
+              fi
+            }
             for dependency in ${dependencyArgs}; do
               for dependency_file in "$dependency"/StageA/*; do
-                ln -s "$dependency_file" "deps/StageA/$(basename "$dependency_file")"
+                link_dependency "$dependency_file"
+                readlink -f "$dependency_file" >> inherited-olean-index
               done
+              if [ -s "$dependency/inherited-olean-index" ]; then
+                while IFS= read -r dependency_file; do
+                  link_dependency "$dependency_file"
+                  printf '%s\n' "$dependency_file" >> inherited-olean-index
+                done < "$dependency/inherited-olean-index"
+              fi
+              readlink -f "$dependency/module-result.json" >> inherited-node-result-index
+              if [ -s "$dependency/inherited-node-result-index" ]; then
+                cat "$dependency/inherited-node-result-index" >> inherited-node-result-index
+              fi
             done
+            sort -u inherited-olean-index > "$out/inherited-olean-index"
+            sort -u inherited-node-result-index > "$out/inherited-node-result-index"
             export LEAN_PATH="$PWD/deps"
-            for module in ${modules}; do
-              cp "${prepared}/lean/StageA/$module.lean" "source/StageA/$module.lean"
-              lean \
-                -R source \
-                -o "deps/StageA/$module.olean" \
-                "source/StageA/$module.lean"
-              cp "deps/StageA/$module.olean" "$out/StageA/$module.olean"
-              cp "source/StageA/$module.lean" "$out/StageA/$module.lean"
-            done
+            ${lib.concatMapStringsSep "\n" (module:
+              ''cp "${moduleSources.${module}}" "source/StageA/${module}.lean"''
+            ) node.modules}
+            ${if builtins.length node.modules == 1 then
+              let module = builtins.head node.modules; in ''
+                lean -j 2 \
+                  -R source \
+                  -o "deps/StageA/${module}.olean" \
+                  "source/StageA/${module}.lean"
+              ''
+            else ''
+              compile_jobs="$NIX_BUILD_CORES"
+              if [ "$compile_jobs" -eq 0 ]; then
+                compile_jobs="$(nproc)"
+              fi
+              printf '%s\n' ${lib.escapeShellArgs node.modules} | \
+                xargs -r -P "$compile_jobs" -n 1 bash -c '
+                  module="$1"
+                  lean -j 1 \
+                    -R source \
+                    -o "deps/StageA/$module.olean" \
+                    "source/StageA/$module.lean"
+                ' _
+            ''}
+            ${lib.concatMapStringsSep "\n" (module: ''
+              cp "deps/StageA/${module}.olean" "$out/StageA/${module}.olean"
+              cp "source/StageA/${module}.lean" "$out/StageA/${module}.lean"
+            '') node.modules}
             cat > "$out/module-result.json" <<'JSON'
             ${metadata}
             JSON
@@ -91,10 +138,8 @@ let
     ) graph.nodes));
 
   rootNode = nodeById.${graph.final_node};
-  nonRootNodes = builtins.filter (node: node.id != graph.final_node) graph.nodes;
-  nonRootNodePaths = map (node: nodeDrvs.${node.id}) nonRootNodes;
-  nonRootNodeArgs = lib.escapeShellArgs (map toString nonRootNodePaths);
-  rootModules = lib.escapeShellArgs rootNode.modules;
+  rootDependencyPaths = map (dependency: nodeDrvs.${dependency}) rootNode.dependencies;
+  rootDependencyArgs = lib.escapeShellArgs (map toString rootDependencyPaths);
   rootMetadata = builtins.toJSON {
     format = "stage-a-lean-node-result-v1";
     inherit (rootNode) id modules dependencies resource_class estimated_memory_mb source_sha256;
@@ -102,17 +147,38 @@ let
   rootDependencyPack = pkgs.runCommand "stage-a-relational-root-dependencies"
     {
       nativeBuildInputs = [ pkgs.python3 pkgs.gnutar pkgs.zstd pkgs.coreutils ];
-      preferLocalBuild = true;
+      preferLocalBuild = false;
       allowSubstitutes = true;
     }
     ''
       mkdir -p staging/StageA staging/node-results "$out"
-      node_index=0
-      for dependency in ${nonRootNodeArgs}; do
-        cp -L "$dependency"/StageA/*.olean staging/StageA/
-        cp "$dependency/module-result.json" "staging/node-results/$node_index.json"
-        node_index=$((node_index + 1))
+      : > olean-paths
+      : > node-result-paths
+      for dependency in ${rootDependencyArgs}; do
+        for dependency_file in "$dependency"/StageA/*.olean; do
+          readlink -f "$dependency_file" >> olean-paths
+        done
+        if [ -s "$dependency/inherited-olean-index" ]; then
+          cat "$dependency/inherited-olean-index" >> olean-paths
+        fi
+        readlink -f "$dependency/module-result.json" >> node-result-paths
+        if [ -s "$dependency/inherited-node-result-index" ]; then
+          cat "$dependency/inherited-node-result-index" >> node-result-paths
+        fi
       done
+      while IFS= read -r dependency_file; do
+        destination="staging/StageA/$(basename "$dependency_file")"
+        if [ -e "$destination" ] && ! cmp -s "$destination" "$dependency_file"; then
+          echo "conflicting root dependency module: $(basename "$dependency_file")" >&2
+          exit 1
+        fi
+        cp -L "$dependency_file" "$destination"
+      done < <(sort -u olean-paths)
+      node_index=0
+      while IFS= read -r result_file; do
+        cp "$result_file" "staging/node-results/$node_index.json"
+        node_index=$((node_index + 1))
+      done < <(sort -u node-result-paths)
       tar --sort=name --mtime=@1 --owner=0 --group=0 --numeric-owner \
         --zstd -cf "$out/dependencies.tar.zst" -C staging StageA node-results
       python3 - "$out/pack.json" "$out/dependencies.tar.zst" "$node_index" <<'PY'
@@ -141,10 +207,36 @@ let
     #print axioms ${graph.expected_final_theorem}
   '';
   approvedAxioms = builtins.toJSON graph.approved_axioms;
+  selectedTargetNodes =
+    if targetNode != null then [ targetNode ] else targetNodes;
+  acceptanceReady =
+    graph.acceptance.status == "ready"
+    && graph.acceptance.theorem == graph.expected_final_theorem
+    && graph.expected_final_theorem
+      == "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent";
+  selectedNodeResults = map (node:
+    let source = nodeDrvs.${node};
+    in pkgs.runCommand
+      (lib.strings.sanitizeDerivationName "stage-a-lean-${node}-detached")
+      {
+        nativeBuildInputs = [ pkgs.coreutils ];
+        preferLocalBuild = false;
+        allowSubstitutes = true;
+      }
+      ''
+        mkdir -p "$out/StageA"
+        cp -L "${source}"/StageA/*.lean "$out/StageA/"
+        cp -L "${source}"/StageA/*.olean "$out/StageA/"
+        cp "${source}/module-result.json" "$out/module-result.json"
+      ''
+  ) selectedTargetNodes;
 in
 assert graph.format == "stage-a-lean-module-graph-v1";
 assert graph.lean.trust == 0;
 assert builtins.length graph.nodes > 0;
+assert builtins.all (node: builtins.hasAttr node nodeDrvs) selectedTargetNodes;
+assert selectedTargetNodes != [] || acceptanceReady;
+if selectedTargetNodes != [] then selectedNodeResults else
 pkgs.runCommand "stage-a-relational-proof-audit"
   {
     nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.gnutar pkgs.zstd pkgs.coreutils ];
@@ -153,19 +245,20 @@ pkgs.runCommand "stage-a-relational-proof-audit"
   }
   ''
     mkdir -p "$out" deps source/StageA
+    ulimit -s unlimited
     tar --zstd -xf ${rootDependencyPack}/dependencies.tar.zst -C deps
     export LEAN_PATH="$PWD/deps"
     cat > root-source-hashes <<'HASHES'
     ${sourceChecks rootNode}
     HASHES
     sha256sum --check --strict root-source-hashes
-    for module in ${rootModules}; do
-      cp "${prepared}/lean/StageA/$module.lean" "source/StageA/$module.lean"
-      lean \
+    ${lib.concatMapStringsSep "\n" (module: ''
+      cp "${moduleSources.${module}}" "source/StageA/${module}.lean"
+      lean -j 2 \
         -R source \
-        -o "deps/StageA/$module.olean" \
-        "source/StageA/$module.lean"
-    done
+        -o "deps/StageA/${module}.olean" \
+        "source/StageA/${module}.lean"
+    '') rootNode.modules}
     cat > deps/root-module-result.json <<'JSON'
     ${rootMetadata}
     JSON
@@ -195,7 +288,7 @@ pkgs.runCommand "stage-a-relational-proof-audit"
     )
     PY
     cp ${auditSource} StageARelationalAudit.lean
-    lean --trust=0 \
+    lean -j 2 --trust=0 \
       -o "$out/StageARelationalAudit.olean" \
       StageARelationalAudit.lean \
       > "$out/lean.stdout" \

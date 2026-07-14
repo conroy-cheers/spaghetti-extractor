@@ -137,7 +137,18 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     build_relational.add_argument("--flake", type=Path)
     build_relational.add_argument(
         "--builders-file", type=Path,
-        help="optional Nix machines file; normal Nix builder configuration is used otherwise",
+        help=(
+            "Nix machines file; when supplied, derivation builds are remote-only "
+            "(--max-jobs 0)"
+        ),
+    )
+    build_relational.add_argument(
+        "--target-node",
+        action="append",
+        help=(
+            "build a prepared module-graph node and its dependency closure; repeat "
+            "to schedule a node set in one Nix invocation"
+        ),
     )
     build_relational.add_argument("--out", type=Path, required=True)
     build_relational.set_defaults(
@@ -146,6 +157,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
             executor=args.executor,
             flake=args.flake,
             builders_file=args.builders_file,
+            target_nodes=args.target_node,
             out=args.out,
         )
     )
@@ -709,7 +721,9 @@ def _candidate_modules(values: list[str]) -> list[dict[str, Any]] | None:
 def _exit_status(result: dict[str, Any]) -> int:
     status = result.get("status", result.get("verdict"))
     verdict = result.get("verdict", status)
-    if status in {"pass", "passed", "generated", "prepared", "complete", "detected"}:
+    if status in {
+        "pass", "passed", "generated", "prepared", "checked", "complete", "detected"
+    }:
         return 0
     if verdict == "pass":
         return 0

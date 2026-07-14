@@ -1,2 +1,2 @@
-ssh-ng://root@acacia x86_64-linux /home/conroy/.ssh/stage_a_nix_builder_ed25519 10 2 big-parallel - c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUxzNnhpdVJtUmk0SWdESnZuYWE3cW5xTnQ1aEpVQThaNkNUc1pPRk02dGkK
-ssh-ng://root@banksia x86_64-linux /home/conroy/.ssh/stage_a_nix_builder_ed25519 10 2 big-parallel - c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUxtTloxNXhnMUFOQzJvQ1FHZCtFR0VWSlF6UUh4MUZ5WmVYUnRtUjJZS28K
+ssh-ng://root@acacia.tail738663.ts.net x86_64-linux /home/conroy/.ssh/stage_a_nix_builder_ed25519 16 2 big-parallel - c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUxzNnhpdVJtUmk0SWdESnZuYWE3cW5xTnQ1aEpVQThaNkNUc1pPRk02dGkK
+ssh-ng://root@banksia.tail738663.ts.net x86_64-linux /home/conroy/.ssh/stage_a_nix_builder_ed25519 16 2 big-parallel - c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUxtTloxNXhnMUFOQzJvQ1FHZCtFR0VWSlF6UUh4MUZ5WmVYUnRtUjJZS28K

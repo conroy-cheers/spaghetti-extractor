@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections import Counter, defaultdict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 from threading import Event
@@ -24,7 +25,30 @@ STAGE_A_RELATIONAL_MODEL_ID = "x86-pe32-relational-v3"
 STAGE_A_RELATIONAL_PROFILE_ID = "x86-pe32-lean-relational-v3"
 RELATION_CONTRACT_FORMAT = "stage-a-relation-contract-v1"
 RELATIONAL_PROOF_IR_FORMAT = "stage-a-relational-proof-ir-v1"
+RELATIONAL_SEGMENT_CERTIFICATE_FORMAT = (
+    "stage-a-relational-segment-certificate-v1"
+)
 REGISTERS = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
+MACHINE_CALL_ABI_REGISTERS = REGISTERS - {"esp"}
+MACHINE_CALL_MEMORY_EFFECTS = {
+    "none", "readOnly", "argumentRanges",
+}
+MACHINE_CALL_WORLD_EFFECTS = {
+    "none", "opaqueResources", "dynamicRanges", "tlsState",
+}
+MACHINE_CALL_ABI_TEMPLATES = {
+    "pe32-cdecl-v1": {
+        "callee_cleanup": False,
+        "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+        "clobbered_registers": ["eax", "ecx", "edx"],
+    },
+    "pe32-stdcall-v1": {
+        "callee_cleanup": True,
+        "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+        "clobbered_registers": ["eax", "ecx", "edx"],
+    },
+}
+MACHINE_CALL_MAX_ARGUMENT_WORDS = 1024
 FLAG_BITS = {
     0: "CF",
     2: "PF",
@@ -36,6 +60,41 @@ FLAG_BITS = {
 RELATIONAL_APPROVED_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
 RELATIONAL_ENVIRONMENT_ID = "adversarial-pe32-external-v1"
 RELATIONAL_OBSERVATIONS = ["external_call", "external_jump", "return", "fault"]
+RELATIONAL_KERNEL_MODULES = (
+    "Formal",
+    "RelationalDecode",
+    "RelationalMachine",
+    "Relational",
+    "RelationalSegment",
+    "RelationalComposition",
+    "RelationalEnvironment",
+    "RelationalCertificates",
+    "RelationalStaticTree",
+)
+RELATIONAL_ACCEPTANCE_THEOREM = (
+    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+)
+RELATIONAL_PREPARED_REPORT_FILES = (
+    "prepared-proof.json",
+    "module-graph.json",
+    "relation-contract.json",
+    "relational-proof-ir.json",
+    "relational-semantic-ir.json",
+    "relational-memory-contracts.json",
+    "relational-register-relations.json",
+    "relational-stack-windows.json",
+    "relational-product-graph.json",
+    "relational-invariants.json",
+    "relational-machine-import-calls.json",
+    "relational-external-call-sites.json",
+    "relational-import-register-invariants.json",
+    "relational-import-register-seeds.json",
+    "relational-indirect-call-targets.json",
+    "whole-program-acceptance.json",
+    "composition-progress.json",
+    "trusted-base.json",
+    "semantic-gaps.json",
+)
 
 
 def _raw_base_relocations(binary: StageABinary) -> list[dict[str, int]]:
@@ -431,6 +490,22 @@ def stage_a_generate_relation_contract(
         if original_span is None or candidate_span is None:
             raise StageAInputError(f"mapping block {block_id} has malformed spans")
         if block.get("kind", "code") == "code":
+            source = block.get("source") if isinstance(block.get("source"), dict) else {}
+            root_evidence = block.get("root") if isinstance(block.get("root"), dict) else {}
+            function_id = str(
+                source.get("function")
+                or (
+                    root_evidence.get("symbol")
+                    if root_evidence.get("kind") == "linker_map_function"
+                    else ""
+                )
+                or ""
+            )
+            function_block_index = _integer(source.get("function_block_index"))
+            checked_function_entry = bool(
+                root_evidence.get("checked")
+                and root_evidence.get("kind") == "linker_map_function"
+            )
             split_spans = _semantic_cutpoint_spans(
                 original_bin, candidate_bin, original_span, candidate_span, block_id
             )
@@ -441,7 +516,7 @@ def stage_a_generate_relation_contract(
                     "original_rva": original_split["rva_start"],
                     "candidate_rva": candidate_split["rva_start"],
                 })
-                regions.append({
+                region = {
                     "id": block_id if len(split_spans) == 1 else f"{block_id}~cut-{split_index}",
                     "root": (
                         original_split["rva_start"] == original_bin.entrypoint_rva
@@ -451,7 +526,19 @@ def stage_a_generate_relation_contract(
                     "candidate": {"rva": candidate_split["rva_start"], "size": candidate_split["size"]},
                     "inputs": pairs,
                     "outputs": pairs,
-                })
+                }
+                if function_id:
+                    region["function_id"] = function_id
+                if function_block_index is not None and function_block_index >= 0:
+                    region["function_block_index"] = function_block_index
+                    region["function_cut_index"] = split_index
+                if checked_function_entry and split_index == 0:
+                    region["function_entry"] = True
+                    region["function_root_kind"] = "linker_map_function"
+                    region["function_root_symbol"] = str(
+                        root_evidence.get("symbol") or function_id
+                    )
+                regions.append(region)
         else:
             padding.extend([
                 {"id": f"{block_id}-original", "side": "original", "rva": original_span["rva_start"], "size": original_span["size"]},
@@ -498,6 +585,16 @@ def stage_a_generate_relation_contract(
         "counts": {"regions": len(regions), "code_targets": len(code_targets), "value_targets": len(value_targets), "padding": len(padding)},
         "issues": issues,
     }
+
+
+def _copy_relational_kernel_sources(destination: Path) -> None:
+    source_root = Path(__file__).with_name("lean") / "StageA"
+    destination.mkdir(parents=True, exist_ok=True)
+    for module in RELATIONAL_KERNEL_MODULES:
+        _write_text_if_changed(
+            destination / f"{module}.lean",
+            (source_root / f"{module}.lean").read_text(encoding="utf-8"),
+        )
 
 
 def stage_a_prove_relational(
@@ -590,15 +687,7 @@ def stage_a_prove_relational(
             blocker="x86 semantic preflight found regions outside the reviewed Lean decoder",
         )
 
-    lean_root = Path(__file__).with_name("lean") / "StageA"
-    _write_text_if_changed(
-        out / "lean" / "StageA" / "Formal.lean",
-        (lean_root / "Formal.lean").read_text(encoding="utf-8"),
-    )
-    _write_text_if_changed(
-        out / "lean" / "StageA" / "Relational.lean",
-        (lean_root / "Relational.lean").read_text(encoding="utf-8"),
-    )
+    _copy_relational_kernel_sources(out / "lean" / "StageA")
     behaviors, extraction = _extract_relational_behaviors(
         out / "lean",
         original_bin,
@@ -623,15 +712,82 @@ def stage_a_prove_relational(
             blocker="Lean could not decode every relational region from the exact PE bytes",
         )
     normalized = _refine_contract_bounds(normalized, behaviors)
+    indirect_call_candidates = _immutable_indirect_call_candidates(
+        original_bin, candidate_bin, normalized, behaviors
+    )
+    dynamic_call_candidates = _dynamic_range_indirect_call_candidates(
+        normalized, behaviors
+    )
+    import_register_seeds = _iat_import_register_seed_candidates(
+        original_bin, candidate_bin, behaviors
+    )
+    normalized = _attach_import_seed_address_separations(
+        normalized, import_register_seeds
+    )
+    import_register_analysis = _infer_import_register_invariants(
+        normalized, behaviors, import_register_seeds
+    )
+    write_json(
+        out / "relational-indirect-call-targets.json",
+        {
+            "format": "stage-a-relational-indirect-call-targets-v1",
+            "status": "proposal_requires_generated_lean_replay",
+            "candidates": indirect_call_candidates,
+            "dynamic_range_candidates": dynamic_call_candidates,
+        },
+    )
+    write_json(
+        out / "relational-import-register-seeds.json",
+        {
+            "format": "stage-a-relational-import-register-seeds-v1",
+            "status": "proposal_requires_generated_lean_replay",
+            "candidates": import_register_seeds,
+        },
+    )
+    write_json(
+        out / "relational-import-register-invariants.json",
+        import_register_analysis,
+    )
+    normalized = _attach_import_register_invariants(
+        normalized, import_register_analysis
+    )
+    normalized = _attach_return_write_address_separations(
+        normalized, behaviors, original_bin, candidate_bin
+    )
     normalized, register_relations = _synthesize_register_relations(
         normalized,
         behaviors,
         original_image_base=original_bin.image_base,
         candidate_image_base=candidate_bin.image_base,
+        indirect_call_candidates=indirect_call_candidates,
+        import_call_candidates=import_register_analysis["indirect_import_calls"],
     )
+    normalized, stack_window_analysis = _attach_stack_window_invariants(
+        normalized, behaviors, register_relations, original_bin, candidate_bin
+    )
+    normalized, register_relations = _lower_stack_register_relations(
+        normalized, register_relations
+    )
+    register_relations = _attach_stack_register_output_claims(
+        normalized, behaviors, register_relations
+    )
+    write_json(out / "relational-stack-windows.json", stack_window_analysis)
     write_json(out / "relation-contract.json", normalized)
     write_json(out / "relational-register-relations.json", register_relations)
     proof_ir = _proof_ir(original_bin, candidate_bin, normalized)
+    machine_call_analysis = _machine_import_call_contract_analysis(
+        normalized, behaviors
+    )
+    write_json(out / "relational-machine-import-calls.json", machine_call_analysis)
+    external_call_sites = _external_call_site_candidates(
+        normalized, behaviors, register_relations,
+        import_register_analysis["indirect_import_calls"],
+    )
+    write_json(out / "relational-external-call-sites.json", external_call_sites)
+    proof_ir = _attach_machine_import_call_contract_analysis(
+        proof_ir, machine_call_analysis
+    )
+    proof_ir = _attach_external_call_site_analysis(proof_ir, external_call_sites)
     write_json(out / "relational-proof-ir.json", proof_ir)
     semantic_ir = _relational_semantic_ir(
         original_bin, candidate_bin, normalized, behaviors
@@ -648,28 +804,68 @@ def stage_a_prove_relational(
     proof_ir = _attach_memory_transition_analysis(
         proof_ir, normalized, behaviors, memory_contracts, register_relations
     )
+    segment_candidates = _segment_refinement_candidates(
+        normalized, behaviors, memory_contracts, register_relations,
+        import_register_seeds,
+    )
+    proof_ir = _attach_segment_refinement_analysis(
+        proof_ir, normalized, behaviors, memory_contracts, register_relations,
+        import_register_seeds, segment_candidates=segment_candidates,
+    )
+    product_graph = _relational_product_graph(
+        normalized, behaviors, register_relations, segment_candidates,
+        original_image_base=original_bin.image_base,
+        candidate_image_base=candidate_bin.image_base,
+        indirect_call_candidates=indirect_call_candidates,
+        dynamic_call_candidates=dynamic_call_candidates,
+        import_register_seeds=import_register_seeds,
+        import_call_candidates=import_register_analysis["indirect_import_calls"],
+        external_call_candidates=external_call_sites["candidates"],
+    )
+    write_json(out / "relational-product-graph.json", product_graph)
+    proof_ir = _attach_product_graph_analysis(proof_ir, product_graph)
+    proof_ir = _attach_dynamic_indirect_call_analysis(
+        proof_ir, normalized, behaviors, dynamic_call_candidates, product_graph
+    )
+    proof_ir = _attach_import_register_analysis(
+        proof_ir, import_register_seeds, import_register_analysis,
+        segment_candidates, memory_contracts,
+    )
+    proof_ir = _attach_stack_window_analysis(
+        proof_ir, normalized, stack_window_analysis
+    )
     write_json(out / "relational-proof-ir.json", proof_ir)
     bundle_path = out / "lean" / "StageA" / "RelationalBundle.lean"
-    shard_threshold = max(
-        1,
-        int(os.environ.get("WINCR_STAGE_A_RELATIONAL_SHARD_THRESHOLD", "129")),
-    )
-    sharded = _prepare_only or len(normalized["regions"]) >= shard_threshold
+    # The canonical context and segment interface are part of every proof graph.
+    # Keeping a second monolithic certificate path would bypass those checks.
+    sharded = True
     if sharded:
         shard_modules, _ = _write_sharded_relational_proof(
             out / "lean", original_bin, candidate_bin,
             original_artifact.read_bytes(), candidate_artifact.read_bytes(),
             normalized, behaviors, invariant_synthesis=invariant_synthesis,
             memory_contracts=memory_contracts, register_relations=register_relations,
+            product_graph=product_graph,
+            import_register_seeds=import_register_seeds,
+            segment_candidates=segment_candidates,
             replay=False,
         )
+        acceptance = _read_json(out / "whole-program-acceptance.json")
+        composition_progress = _composition_progress(
+            product_graph,
+            semantic_preflight,
+            external_call_sites,
+            acceptance,
+            stack_window_analysis,
+        )
+        write_json(out / "composition-progress.json", composition_progress)
+        graph = _write_relational_module_graph(
+            out,
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+            trusted_base=trusted_base,
+        )
         if _prepare_only:
-            graph = _write_relational_module_graph(
-                out,
-                original_bin=original_bin,
-                candidate_bin=candidate_bin,
-                trusted_base=trusted_base,
-            )
             for olean in (out / "lean").rglob("*.olean"):
                 olean.unlink()
             prepared = {
@@ -688,9 +884,23 @@ def stage_a_prove_relational(
                 "register_relations_sha256": sha256_file(
                     out / "relational-register-relations.json"
                 ),
+                "stack_windows_sha256": sha256_file(
+                    out / "relational-stack-windows.json"
+                ),
+                "product_graph_sha256": sha256_file(
+                    out / "relational-product-graph.json"
+                ),
                 "invariants_sha256": sha256_file(out / "relational-invariants.json"),
+                "whole_program_acceptance_sha256": sha256_file(
+                    out / "whole-program-acceptance.json"
+                ),
+                "composition_progress_sha256": sha256_file(
+                    out / "composition-progress.json"
+                ),
                 "module_graph_sha256": sha256_file(out / "module-graph.json"),
                 "expected_final_theorem": graph["expected_final_theorem"],
+                "acceptance": graph["acceptance"],
+                "composition_progress": composition_progress,
                 "approved_axioms": graph["approved_axioms"],
                 "counts": graph["counts"],
             }
@@ -781,6 +991,9 @@ def stage_a_prove_relational(
             original_artifact.read_bytes(), candidate_artifact.read_bytes(),
             normalized, behaviors, invariant_synthesis=invariant_synthesis,
             memory_contracts=memory_contracts, register_relations=register_relations,
+            product_graph=product_graph,
+            import_register_seeds=import_register_seeds,
+            segment_candidates=segment_candidates,
             replay=True, certificates=certificates,
         )
         replay = _run_sharded_relational(out / "lean", shard_modules)
@@ -797,12 +1010,23 @@ def stage_a_prove_relational(
         )
         bundle_path.write_text(replay_source, encoding="utf-8")
         replay = _run_lean_relational(out / "lean")
+    theorem = str(replay.get("theorem") or "")
+    theorem_checked = (
+        replay["status"] == "checked"
+        and theorem == RELATIONAL_ACCEPTANCE_THEOREM
+    )
+    finalized_proof_ir = _finalize_local_proof_ir(
+        proof_ir,
+        theorem_checked=theorem_checked,
+        theorem=theorem,
+    )
     assumption_obligations = [
-        obligation for obligation in proof_ir["obligations"]
+        obligation for obligation in finalized_proof_ir["obligations"]
         if obligation["kind"] != "relational_region_equivalence"
+        and obligation.get("status") != "proved"
     ]
     verdict = (
-        "pass" if replay["status"] == "checked" and not assumption_obligations
+        "pass" if theorem_checked and not assumption_obligations
         else "incomplete"
     )
     return _write_relational_verdict(
@@ -811,7 +1035,7 @@ def stage_a_prove_relational(
         original_bin,
         candidate_bin,
         normalized,
-        proof_ir,
+        finalized_proof_ir,
         trusted_base,
         verdict,
         replay,
@@ -841,6 +1065,34 @@ def stage_a_prepare_relational(
     )
 
 
+def _remove_relational_build_output(path: Path) -> None:
+    if not path.exists():
+        return
+    directories = [
+        child for child in path.rglob("*")
+        if child.is_dir() and not child.is_symlink()
+    ]
+    for directory in directories:
+        directory.chmod(directory.stat().st_mode | 0o700)
+    path.chmod(path.stat().st_mode | 0o700)
+    shutil.rmtree(path)
+
+
+def _relational_nix_build_command(
+    expression: str,
+    builders_file: Path | None,
+) -> list[str]:
+    command = [
+        "nix", "build", "--no-link", "--json", "--impure", "--expr", expression,
+    ]
+    if builders_file is not None:
+        command[2:2] = [
+            "--max-jobs", "0", "--cores", "2",
+            "--builders", f"@{builders_file}",
+        ]
+    return command
+
+
 def stage_a_build_relational(
     *,
     prepared: Path,
@@ -848,33 +1100,116 @@ def stage_a_build_relational(
     executor: str = "nix",
     flake: Path | None = None,
     builders_file: Path | None = None,
+    target_node: str | None = None,
+    target_nodes: list[str] | None = None,
 ) -> dict[str, Any]:
     prepared = Path(prepared).resolve()
     out = Path(out).resolve()
     if executor != "nix":
         raise StageAInputError(f"unsupported relational proof executor {executor!r}")
     graph = _validate_prepared_relational(prepared)
+    graph_node_ids = {node["id"] for node in graph["nodes"]}
+    requested_target_nodes = ([target_node] if target_node is not None else []) + list(
+        target_nodes or []
+    )
+    if len(requested_target_nodes) != len(set(requested_target_nodes)):
+        raise StageAInputError("relational target-node inventory contains duplicates")
+    missing_target_nodes = sorted(set(requested_target_nodes) - graph_node_ids)
+    if missing_target_nodes:
+        raise StageAInputError(
+            "prepared module graph has no nodes " + repr(missing_target_nodes)
+        )
     evaluator = _relational_nix_evaluator()
     flake_root = _find_relational_flake_root(flake)
     if out == prepared or prepared in out.parents:
         raise StageAInputError("build output must not be inside the prepared proof directory")
+    acceptance = graph["acceptance"]
+    if not requested_target_nodes and acceptance["status"] != "ready":
+        _remove_relational_build_output(out)
+        out.mkdir(parents=True)
+        result = {
+            "format": "stage-a-relational-nix-build-v1",
+            "status": "incomplete",
+            "verdict": "incomplete",
+            "acceptance": acceptance,
+            "checks": {
+                "prepared_graph_valid": True,
+                "whole_program_acceptance_ready": False,
+                "nix_graph_built": False,
+            },
+            "diagnostic": {
+                "category": "whole_program_certificate_missing",
+                "severity": "hard",
+                "next_action": acceptance["blockers"][0]["next_action"],
+            },
+            "elapsed_seconds": 0.0,
+        }
+        write_json(out / "verdict.json", result)
+        return result
+
+    focused_prepared: tempfile.TemporaryDirectory[str] | None = None
+    nix_prepared = prepared
+    focused_input: dict[str, Any] | None = None
+    if requested_target_nodes:
+        focused_prepared = tempfile.TemporaryDirectory(
+            prefix="stage-a-relational-node-input-"
+        )
+        nix_prepared = Path(focused_prepared.name)
+        (nix_prepared / "lean" / "StageA").mkdir(parents=True)
+        shutil.copyfile(
+            prepared / "module-graph.json", nix_prepared / "module-graph.json"
+        )
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        closure: set[str] = set()
+
+        def include(node_id: str) -> None:
+            if node_id in closure:
+                return
+            closure.add(node_id)
+            for dependency in nodes[node_id]["dependencies"]:
+                include(dependency)
+
+        for requested_target_node in requested_target_nodes:
+            include(requested_target_node)
+        modules = sorted({
+            module
+            for node_id in closure
+            for module in nodes[node_id]["modules"]
+        })
+        source_bytes = 0
+        for module in modules:
+            metadata = graph["modules"][module]
+            source = prepared / metadata["source"]
+            destination = nix_prepared / metadata["source"]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+            source_bytes += source.stat().st_size
+        focused_input = {
+            "nodes": len(closure),
+            "modules": len(modules),
+            "source_bytes": source_bytes,
+        }
 
     locked_nixpkgs = _locked_flake_input(flake_root / "flake.lock", "nixpkgs")
     expression = "\n".join([
         "let",
         f"  nixpkgs = builtins.fetchTree (builtins.fromJSON {json.dumps(json.dumps(locked_nixpkgs, sort_keys=True))});",
         "  pkgs = import nixpkgs { system = builtins.currentSystem; };",
-        f"  prepared = builtins.path {{ path = builtins.toPath {json.dumps(str(prepared))}; name = \"stage-a-prepared-proof\"; }};",
-        f"in import (builtins.toPath {json.dumps(str(evaluator))}) {{ inherit pkgs prepared; }}",
+        f"  prepared = builtins.path {{ path = builtins.toPath {json.dumps(str(nix_prepared))}; name = \"stage-a-prepared-proof\"; }};",
+        "  targetNode = " + (
+            "null" if target_node is None else json.dumps(target_node)
+        ) + ";",
+        "  targetNodes = [ "
+        + " ".join(json.dumps(node) for node in requested_target_nodes)
+        + " ];",
+        f"in import (builtins.toPath {json.dumps(str(evaluator))}) {{ inherit pkgs prepared targetNode targetNodes; }}",
     ])
-    command = [
-        "nix", "build", "--no-link", "--json", "--impure", "--expr", expression,
-    ]
+    builders_path: Path | None = None
     if builders_file is not None:
         builders_path = Path(builders_file).resolve()
         if not builders_path.is_file():
             raise StageAInputError(f"Nix builders file does not exist: {builders_path}")
-        command[2:2] = ["--builders", f"@{builders_path}"]
+    command = _relational_nix_build_command(expression, builders_path)
     started = time.monotonic()
     process = subprocess.run(
         command,
@@ -883,10 +1218,11 @@ def stage_a_build_relational(
         stderr=subprocess.PIPE,
         check=False,
     )
+    if focused_prepared is not None:
+        focused_prepared.cleanup()
     elapsed = round(time.monotonic() - started, 3)
     if process.returncode != 0:
-        if out.exists():
-            shutil.rmtree(out)
+        _remove_relational_build_output(out)
         out.mkdir(parents=True)
         (out / "nix.stdout").write_text(process.stdout, encoding="utf-8")
         (out / "nix.stderr").write_text(process.stderr, encoding="utf-8")
@@ -911,9 +1247,61 @@ def stage_a_build_relational(
         )
     try:
         build_outputs = json.loads(process.stdout)
-        result_path = Path(build_outputs[0]["outputs"]["out"])
+        result_paths = [Path(output["outputs"]["out"]) for output in build_outputs]
     except (json.JSONDecodeError, IndexError, KeyError, TypeError) as exc:
         raise StageAInputError("Nix returned a malformed relational graph result") from exc
+    if requested_target_nodes:
+        node_results = [_read_json(path / "module-result.json") for path in result_paths]
+        observed_target_nodes = {node_result.get("id") for node_result in node_results}
+        if (
+            observed_target_nodes != set(requested_target_nodes)
+            or len(node_results) != len(requested_target_nodes)
+            or any(
+                node_result.get("format") != "stage-a-lean-node-result-v1"
+                or not isinstance(node_result.get("outputs"), list)
+                for node_result in node_results
+            )
+        ):
+            raise StageAInputError("Nix returned malformed relational node-set provenance")
+        _remove_relational_build_output(out)
+        out.mkdir(parents=True)
+        if len(requested_target_nodes) == 1:
+            result_path = result_paths[0]
+            node_result = node_results[0]
+            shutil.copytree(result_path, out, dirs_exist_ok=True, symlinks=True)
+            out.chmod(out.stat().st_mode | 0o700)
+            result = {
+                "format": "stage-a-relational-nix-node-build-v1",
+                "status": "checked",
+                "target_node": requested_target_nodes[0],
+                "result_path": str(result_path),
+                "elapsed_seconds": elapsed,
+                "focused_input": focused_input,
+                "node": node_result,
+            }
+            write_json(out / "node-build.json", result)
+        else:
+            result_by_id = {node_result["id"]: node_result for node_result in node_results}
+            path_by_id = {
+                node_result["id"]: path
+                for node_result, path in zip(node_results, result_paths, strict=True)
+            }
+            result = {
+                "format": "stage-a-relational-nix-node-set-build-v1",
+                "status": "checked",
+                "target_nodes": requested_target_nodes,
+                "result_paths": [str(path_by_id[node]) for node in requested_target_nodes],
+                "elapsed_seconds": elapsed,
+                "focused_input": focused_input,
+                "nodes": [result_by_id[node] for node in requested_target_nodes],
+            }
+            write_json(out / "node-set-build.json", result)
+        for directory in [out, *(
+            child for child in out.rglob("*") if child.is_dir() and not child.is_symlink()
+        )]:
+            directory.chmod(directory.stat().st_mode | 0o700)
+        return result
+    result_path = result_paths[0]
     audit = _read_json(result_path / "audit.json")
     dependency_pack = _read_json(result_path / "dependency-pack.json")
     if (
@@ -1005,29 +1393,30 @@ def stage_a_build_relational(
         == graph["artifacts"]["candidate"]["sha256"],
     }
     status = "pass" if all(checks.values()) else "incomplete"
-    if out.exists():
-        shutil.rmtree(out)
+    _remove_relational_build_output(out)
     out.mkdir(parents=True)
-    for name in (
-        "prepared-proof.json", "module-graph.json", "relation-contract.json",
-        "relational-proof-ir.json", "relational-semantic-ir.json",
-        "relational-memory-contracts.json", "relational-register-relations.json",
-        "relational-invariants.json",
-        "trusted-base.json", "semantic-gaps.json",
-    ):
+    for name in RELATIONAL_PREPARED_REPORT_FILES:
         source = prepared / name
         if source.is_file():
             shutil.copyfile(source, out / name)
+    shutil.copytree(prepared / "artifacts", out / "artifacts")
+    shutil.copytree(prepared / "lean", out / "lean")
     shutil.copyfile(result_path / "audit.json", out / "lean-audit.json")
     shutil.copyfile(result_path / "lean.stdout", out / "lean.stdout")
     shutil.copyfile(result_path / "lean.stderr", out / "lean.stderr")
     shutil.copyfile(result_path / "dependency-pack.json", out / "dependency-pack.json")
     write_json(out / "relational-proof-ir.json", proof_ir)
+    report_manifest = _read_json(out / "prepared-proof.json")
+    report_manifest["proof_ir_sha256"] = sha256_file(
+        out / "relational-proof-ir.json"
+    )
+    write_json(out / "prepared-proof.json", report_manifest)
     provenance = {
         "format": "stage-a-relational-nix-provenance-v1",
         "executor": executor,
         "flake": str(flake_root),
         "builders_file": str(Path(builders_file).resolve()) if builders_file is not None else None,
+        "local_derivation_builds": builders_file is None,
         "flake_lock_sha256": sha256_file(flake_root / "flake.lock"),
         "evaluator_sha256": sha256_file(evaluator),
         "result_path": str(result_path),
@@ -1043,6 +1432,32 @@ def stage_a_build_relational(
         "verdict": status,
         "profile": STAGE_A_RELATIONAL_PROFILE_ID,
         "model": STAGE_A_RELATIONAL_MODEL_ID,
+        "claim_scope": {
+            "kind": "whole_program_observational_equivalence",
+            "whole_program_observational_equivalence": status == "pass",
+            "acceptance_eligible": status == "pass",
+        },
+        "expected_final_theorem": graph["expected_final_theorem"],
+        "acceptance": graph["acceptance"],
+        "original": {
+            "path": graph["artifacts"]["original"]["path"],
+            "sha256": graph["artifacts"]["original"]["sha256"],
+        },
+        "candidate": {
+            "path": graph["artifacts"]["candidate"]["path"],
+            "sha256": graph["artifacts"]["candidate"]["sha256"],
+        },
+        "relation_contract_sha256": sha256_file(out / "relation-contract.json"),
+        "proof_ir_sha256": sha256_file(out / "relational-proof-ir.json"),
+        "product_graph_sha256": sha256_file(out / "relational-product-graph.json"),
+        "whole_program_acceptance_sha256": sha256_file(
+            out / "whole-program-acceptance.json"
+        ),
+        "composition_progress_sha256": sha256_file(
+            out / "composition-progress.json"
+        ),
+        "module_graph_sha256": sha256_file(out / "module-graph.json"),
+        "trusted_base_sha256": sha256_file(out / "trusted-base.json"),
         "checks": checks,
         "lean_audit": audit,
         "counts": graph["counts"],
@@ -1058,19 +1473,13 @@ def stage_a_build_relational(
     return result
 
 
-def _finalize_nix_proof_ir(
+def _finalize_proof_ir(
     proof_ir: dict[str, Any],
     *,
     theorem_checked: bool,
     theorem: str,
-    result_path: Path,
+    evidence: dict[str, Any],
 ) -> dict[str, Any]:
-    evidence = {
-        "kind": "lean_trust_zero_nix_graph",
-        "theorem": theorem,
-        "lean_trust": 0,
-        "nix_result_path": str(result_path),
-    }
     invariant_evidence = {
         **evidence,
         "kind": "lean_checked_inductive_invariant_family",
@@ -1082,6 +1491,29 @@ def _finalize_nix_proof_ir(
                 **obligation,
                 "status": "proved" if theorem_checked else "incomplete",
                 "evidence": evidence if theorem_checked else None,
+            })
+        elif (
+            theorem_checked
+            and theorem == RELATIONAL_ACCEPTANCE_THEOREM
+            and obligation["kind"] in {
+                "whole_program_bisimulation",
+                "whole_program_observational_equivalence",
+                "cfg_register_relation_preservation",
+                "relational_product_graph_structure",
+                "relational_product_graph_declared_edge_refinement",
+                "relational_product_graph_decoded_exit_completeness",
+                "relational_product_graph_reachable_local_refinement",
+            }
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "blocker": None,
+                "evidence": {
+                    **evidence,
+                    "kind": "lean_checked_whole_program_composition",
+                    "theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                },
             })
         elif (
             theorem_checked
@@ -1109,6 +1541,26 @@ def _finalize_nix_proof_ir(
                     ),
                 },
             })
+        elif theorem_checked and obligation["kind"] == "static_proof_context":
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "evidence": {
+                    **evidence,
+                    "kind": "lean_checked_static_proof_context",
+                    "theorem": "StageA.GeneratedRelational.staticProofContextChecked",
+                },
+            })
+        elif theorem_checked and obligation["kind"] == "iat_memory_relation_override":
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "evidence": {
+                    **evidence,
+                    "kind": "lean_checked_iat_masked_memory_relation",
+                    "lemma": "StageA.Relational.StateRel.ordinaryMemoryRelation",
+                },
+            })
         elif (
             theorem_checked
             and obligation["kind"] == "memory_transition_preservation"
@@ -1127,12 +1579,39 @@ def _finalize_nix_proof_ir(
                     ),
                 },
             })
+        elif (
+            theorem_checked
+            and obligation["kind"] == "external_call_product_edge_refinement"
+            and obligation.get("status") == "pending_lean"
+        ):
+            edge_id = int(obligation["edge_id"])
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "blocker": None,
+                "evidence": {
+                    **evidence,
+                    "kind": "lean_checked_paired_external_call_refinement",
+                    "theorem": (
+                        "StageA.GeneratedRelational."
+                        f"externalCallEdge{edge_id}ProductRefinementChecked"
+                    ),
+                },
+            })
         else:
             finalized_obligations.append(obligation)
     assumption_obligations = [
         obligation for obligation in finalized_obligations
         if obligation["kind"] != "relational_region_equivalence"
         and obligation.get("status") != "proved"
+    ]
+    external_obligations = [
+        obligation for obligation in finalized_obligations
+        if obligation["kind"] == "external_call_product_edge_refinement"
+    ]
+    external_assumptions = [
+        obligation for obligation in assumption_obligations
+        if obligation["kind"] == "external_call_product_edge_refinement"
     ]
     finalized = dict(proof_ir)
     finalized["status"] = (
@@ -1143,7 +1622,15 @@ def _finalize_nix_proof_ir(
         {"family": "x86_semantics", "status": "satisfied" if theorem_checked else "incomplete"},
         {"family": "executable_coverage", "status": "satisfied" if theorem_checked else "incomplete"},
         {"family": "roots_and_targets", "status": "satisfied" if theorem_checked else "incomplete"},
+        {"family": "static_proof_context", "status": "satisfied" if theorem_checked else "incomplete"},
         {"family": "relational_regions", "status": "satisfied" if theorem_checked else "incomplete"},
+        {
+            "family": "segment_refinement",
+            "status": "incomplete" if any(
+                obligation["kind"] == "relational_segment_refinement"
+                for obligation in assumption_obligations
+            ) else "satisfied",
+        },
         {
             "family": "cfg_register_relations",
             "status": "incomplete" if any(
@@ -1157,6 +1644,10 @@ def _finalize_nix_proof_ir(
                 obligation["kind"] == "whole_program_bisimulation"
                 for obligation in assumption_obligations
             ) else "satisfied",
+        },
+        {
+            "family": "whole_program_observational_equivalence",
+            "status": "satisfied" if theorem_checked else "incomplete",
         },
         {
             "family": "cfg_invariants",
@@ -1173,25 +1664,108 @@ def _finalize_nix_proof_ir(
                 obligation["kind"] in {
                     "mapped_relocation_image_relation",
                     "memory_transition_preservation",
+                    "iat_memory_relation_override",
                 }
                 for obligation in assumption_obligations
             ) else "satisfied",
         },
-        {"family": "adversarial_environment", "status": "satisfied"},
+        {
+            "family": "paired_external_environment_refinement",
+            "status": (
+                "incomplete" if external_assumptions else
+                "satisfied" if external_obligations else
+                "not_applicable"
+            ),
+        },
+        {
+            "family": "adversarial_environment",
+            "status": "incomplete" if external_assumptions else "satisfied",
+        },
     ]
     finalized["obligations"] = finalized_obligations
     return finalized
 
 
+def _finalize_nix_proof_ir(
+    proof_ir: dict[str, Any],
+    *,
+    theorem_checked: bool,
+    theorem: str,
+    result_path: Path,
+) -> dict[str, Any]:
+    return _finalize_proof_ir(
+        proof_ir,
+        theorem_checked=theorem_checked,
+        theorem=theorem,
+        evidence={
+            "kind": "lean_trust_zero_nix_graph",
+            "theorem": theorem,
+            "lean_trust": 0,
+            "nix_result_path": str(result_path),
+        },
+    )
+
+
+def _finalize_local_proof_ir(
+    proof_ir: dict[str, Any],
+    *,
+    theorem_checked: bool,
+    theorem: str,
+) -> dict[str, Any]:
+    return _finalize_proof_ir(
+        proof_ir,
+        theorem_checked=theorem_checked,
+        theorem=theorem,
+        evidence={
+            "kind": "lean_kernel_checked_local_graph",
+            "theorem": theorem,
+            "lean_trust": 0,
+        },
+    )
+
+
 def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> dict[str, Any]:
     report = Path(report)
     verdict = _read_json(report / "verdict.json")
+    if verdict.get("format") == "stage-a-relational-nix-build-v1":
+        return _check_nix_relational_report(report=report, verdict=verdict, out=out)
     contract = _read_json(report / "relation-contract.json")
     proof_ir = _read_json(report / "relational-proof-ir.json")
     index = _read_json(report / "certificates" / "index.json")
+    acceptance = _read_json(report / "whole-program-acceptance.json")
+    try:
+        module_graph = _validate_relational_module_graph(report)
+    except StageAInputError:
+        module_graph = None
     checks = {
         "report_pass": verdict.get("verdict") == "pass",
         "profile_matches": verdict.get("profile") == STAGE_A_RELATIONAL_PROFILE_ID,
+        "claim_scope_acceptance_eligible": (
+            verdict.get("claim_scope", {}).get("acceptance_eligible") is True
+            and verdict.get("claim_scope", {}).get(
+                "whole_program_observational_equivalence"
+            ) is True
+        ),
+        "acceptance_ready": (
+            acceptance.get("status") == "ready"
+            and acceptance.get("theorem") == RELATIONAL_ACCEPTANCE_THEOREM
+        ),
+        "reported_final_theorem_matches": (
+            verdict.get("proof", {}).get("theorem")
+            == RELATIONAL_ACCEPTANCE_THEOREM
+        ),
+        "module_graph_hash_matches": (
+            (report / "module-graph.json").is_file()
+            and sha256_file(report / "module-graph.json")
+                == verdict.get("module_graph_sha256")
+        ),
+        "module_graph_valid": module_graph is not None,
+        "module_graph_selects_final_theorem": (
+            module_graph is not None
+            and module_graph.get("root_module") == "RelationalAcceptance"
+            and module_graph.get("expected_final_theorem")
+                == RELATIONAL_ACCEPTANCE_THEOREM
+        ),
         "proof_ir_satisfied": proof_ir.get("status") == "satisfied",
         "no_incomplete_assumptions": verdict.get("counts", {}).get("incomplete_assumptions") == 0,
         "contract_families_closed": all(
@@ -1200,6 +1774,21 @@ def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> 
         ),
         "proof_ir_hash_matches": sha256_file(report / "relational-proof-ir.json") == verdict.get("proof_ir_sha256"),
         "contract_hash_matches": sha256_file(report / "relation-contract.json") == verdict.get("relation_contract_sha256"),
+        "product_graph_hash_matches": (
+            (report / "relational-product-graph.json").is_file()
+            and sha256_file(report / "relational-product-graph.json")
+                == verdict.get("product_graph_sha256")
+        ),
+        "acceptance_hash_matches": (
+            (report / "whole-program-acceptance.json").is_file()
+            and sha256_file(report / "whole-program-acceptance.json")
+                == verdict.get("whole_program_acceptance_sha256")
+        ),
+        "composition_progress_hash_matches": (
+            (report / "composition-progress.json").is_file()
+            and sha256_file(report / "composition-progress.json")
+                == verdict.get("composition_progress_sha256")
+        ),
         "original_matches": sha256_file(report / "artifacts" / "original.pe") == proof_ir.get("original", {}).get("sha256"),
         "candidate_matches": sha256_file(report / "artifacts" / "candidate.pe") == proof_ir.get("candidate", {}).get("sha256"),
         "certificate_index_complete": index.get("status") == "satisfied",
@@ -1215,8 +1804,11 @@ def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> 
             lean_dir = replay_root / "lean"
             (lean_dir / "StageA").mkdir(parents=True)
             (replay_root / "artifacts").mkdir()
-            shutil.copyfile(report / "lean" / "StageA" / "Formal.lean", lean_dir / "StageA" / "Formal.lean")
-            shutil.copyfile(report / "lean" / "StageA" / "Relational.lean", lean_dir / "StageA" / "Relational.lean")
+            for module in RELATIONAL_KERNEL_MODULES:
+                shutil.copyfile(
+                    report / "lean" / "StageA" / f"{module}.lean",
+                    lean_dir / "StageA" / f"{module}.lean",
+                )
             shutil.copyfile(report / "artifacts" / "original.pe", replay_root / "artifacts" / "original.pe")
             shutil.copyfile(report / "artifacts" / "candidate.pe", replay_root / "artifacts" / "candidate.pe")
             behaviors, behavior_check = _extract_relational_behaviors(
@@ -1229,40 +1821,192 @@ def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> 
                 use_cache=False,
             )
         checks["behaviors_redecoded"] = behaviors is not None and behavior_check.get("status") == "checked"
-        checks["bundle_reproduced"] = False
-        if behaviors is not None:
-            expected_source = _lean_bundle_source(
-                original_bin,
-                candidate_bin,
-                (report / "artifacts" / "original.pe").read_bytes(),
-                (report / "artifacts" / "candidate.pe").read_bytes(),
-                contract,
-                behaviors,
-                replay=True,
-                certificates=index.get("entries", []),
+        canonical_root = Path(__file__).with_name("lean") / "StageA"
+        checks["kernel_matches"] = all(
+            sha256_file(canonical_root / f"{module}.lean") == sha256_file(
+                report / "lean" / "StageA" / f"{module}.lean"
             )
-            source_path = report / "lean" / "StageA" / "RelationalBundle.lean"
-            checks["bundle_reproduced"] = source_path.read_text(encoding="utf-8") == expected_source
-        canonical_relational = Path(__file__).with_name("lean") / "StageA" / "Relational.lean"
-        canonical_formal = Path(__file__).with_name("lean") / "StageA" / "Formal.lean"
-        checks["kernel_matches"] = (
-            sha256_file(canonical_relational) == sha256_file(report / "lean" / "StageA" / "Relational.lean")
-            and sha256_file(canonical_formal) == sha256_file(report / "lean" / "StageA" / "Formal.lean")
+            for module in RELATIONAL_KERNEL_MODULES
         )
         if all(checks.values()):
-            replay = _run_lean_relational(report / "lean")
-    checks["lean_lrat_replay_checked"] = replay.get("status") == "checked"
+            replay = _run_lean_relational(
+                report / "lean", bundle="RelationalAcceptance"
+            )
+            if replay.get("status") == "checked":
+                replay["theorem"] = RELATIONAL_ACCEPTANCE_THEOREM
+    checks["lean_lrat_replay_checked"] = (
+        replay.get("status") == "checked"
+        and replay.get("theorem") == RELATIONAL_ACCEPTANCE_THEOREM
+    )
     status = "pass" if all(checks.values()) else "incomplete"
     result = {
         "format": "stage-a-relational-proof-check-v1",
         "status": status,
         "profile": STAGE_A_RELATIONAL_PROFILE_ID,
         "claim_scope": {
-            "kind": "relational_region_certificate",
-            "whole_program_observational_equivalence": False,
+            "kind": "whole_program_observational_equivalence",
+            "whole_program_observational_equivalence": status == "pass",
         },
         "checks": checks,
         "lean_check": replay,
+    }
+    if out is not None:
+        write_json(Path(out), result)
+    return result
+
+
+def _check_nix_relational_report(
+    *, report: Path, verdict: dict[str, Any], out: Path | None
+) -> dict[str, Any]:
+    checks: dict[str, bool] = {
+        "report_pass": verdict.get("verdict") == "pass",
+        "profile_matches": verdict.get("profile") == STAGE_A_RELATIONAL_PROFILE_ID,
+        "model_matches": verdict.get("model") == STAGE_A_RELATIONAL_MODEL_ID,
+        "claim_scope_acceptance_eligible": (
+            verdict.get("claim_scope", {}).get("acceptance_eligible") is True
+            and verdict.get("claim_scope", {}).get(
+                "whole_program_observational_equivalence"
+            ) is True
+        ),
+    }
+    audit: dict[str, Any] = {}
+    if checks["report_pass"]:
+        try:
+            graph = _validate_prepared_relational(report)
+            proof_ir = _read_json(report / "relational-proof-ir.json")
+            acceptance = _read_json(report / "whole-program-acceptance.json")
+            composition_progress = _read_json(report / "composition-progress.json")
+            audit = _read_json(report / "lean-audit.json")
+            provenance = _read_json(report / "nix-provenance.json")
+            dependency_pack = _read_json(report / "dependency-pack.json")
+            trusted_base = _read_json(report / "trusted-base.json")
+        except StageAInputError:
+            checks["prepared_report_valid"] = False
+        else:
+            checks["prepared_report_valid"] = True
+            checks.update({
+                "acceptance_ready": (
+                    acceptance.get("status") == "ready"
+                    and acceptance.get("theorem") == RELATIONAL_ACCEPTANCE_THEOREM
+                    and graph.get("expected_final_theorem")
+                        == RELATIONAL_ACCEPTANCE_THEOREM
+                    and verdict.get("expected_final_theorem")
+                        == RELATIONAL_ACCEPTANCE_THEOREM
+                    and verdict.get("acceptance") == acceptance
+                ),
+                "lean_trust_zero": audit.get("lean_trust") == 0,
+                "final_theorem_matches": (
+                    audit.get("status") == "checked"
+                    and audit.get("theorem") == RELATIONAL_ACCEPTANCE_THEOREM
+                ),
+                "axioms_approved": (
+                    isinstance(audit.get("observed_axioms"), list)
+                    and set(audit["observed_axioms"]).issubset(
+                        set(graph.get("approved_axioms", []))
+                    )
+                    and audit.get("unexpected_axioms") == []
+                ),
+                "proof_ir_satisfied": proof_ir.get("status") == "satisfied",
+                "contract_families_closed": all(
+                    family.get("status") in {"satisfied", "not_applicable"}
+                    for family in proof_ir.get("families", [])
+                ),
+                "proof_ir_hash_matches": (
+                    sha256_file(report / "relational-proof-ir.json")
+                    == verdict.get("proof_ir_sha256")
+                ),
+                "contract_hash_matches": (
+                    sha256_file(report / "relation-contract.json")
+                    == verdict.get("relation_contract_sha256")
+                ),
+                "product_graph_hash_matches": (
+                    sha256_file(report / "relational-product-graph.json")
+                    == verdict.get("product_graph_sha256")
+                ),
+                "acceptance_hash_matches": (
+                    sha256_file(report / "whole-program-acceptance.json")
+                    == verdict.get("whole_program_acceptance_sha256")
+                ),
+                "composition_progress_hash_matches": (
+                    sha256_file(report / "composition-progress.json")
+                    == verdict.get("composition_progress_sha256")
+                ),
+                "composition_ready": (
+                    composition_progress.get("status") == "ready_for_lean"
+                    and composition_progress.get("acceptance", {}).get("theorem")
+                        == RELATIONAL_ACCEPTANCE_THEOREM
+                ),
+                "module_graph_hash_matches": (
+                    sha256_file(report / "module-graph.json")
+                    == verdict.get("module_graph_sha256")
+                ),
+                "trusted_base_hash_matches": (
+                    sha256_file(report / "trusted-base.json")
+                    == verdict.get("trusted_base_sha256")
+                ),
+                "original_matches": (
+                    sha256_file(report / graph["artifacts"]["original"]["path"])
+                    == graph["artifacts"]["original"]["sha256"]
+                    == proof_ir.get("original", {}).get("sha256")
+                ),
+                "candidate_matches": (
+                    sha256_file(report / graph["artifacts"]["candidate"]["path"])
+                    == graph["artifacts"]["candidate"]["sha256"]
+                    == proof_ir.get("candidate", {}).get("sha256")
+                ),
+                "kernel_matches": all(
+                    sha256_file(
+                        Path(__file__).with_name("lean") / "StageA" / f"{module}.lean"
+                    ) == sha256_file(report / "lean" / "StageA" / f"{module}.lean")
+                    for module in RELATIONAL_KERNEL_MODULES
+                ),
+            })
+            expected_nodes = {node["id"]: node for node in graph["nodes"]}
+            observed_rows = provenance.get("nodes")
+            observed_nodes = {
+                row.get("id"): row
+                for row in observed_rows or []
+                if isinstance(row, dict)
+            }
+            checks["nix_node_provenance_matches"] = (
+                provenance.get("format") == "stage-a-relational-nix-provenance-v1"
+                and isinstance(observed_rows, list)
+                and len(observed_rows) == len(observed_nodes)
+                and set(observed_nodes) == set(expected_nodes)
+                and all(
+                    observed_nodes[node_id].get("source_sha256")
+                        == expected["source_sha256"]
+                    and {
+                        output.get("module")
+                        for output in observed_nodes[node_id].get("outputs", [])
+                        if isinstance(output, dict)
+                    } == set(expected["modules"])
+                    for node_id, expected in expected_nodes.items()
+                )
+            )
+            checks["dependency_pack_provenance_matches"] = (
+                dependency_pack.get("format")
+                    == "stage-a-lean-root-dependency-pack-v1"
+                and provenance.get("dependency_pack") == dependency_pack
+                and dependency_pack.get("node_count") == len(graph["nodes"]) - 1
+            )
+            checks["declared_build_checks_hold"] = all(
+                value is True for value in verdict.get("checks", {}).values()
+            )
+            checks["trusted_base_matches_graph"] = (
+                trusted_base.get("approved_axioms") == graph.get("approved_axioms")
+            )
+    status = "pass" if checks and all(checks.values()) else "incomplete"
+    result = {
+        "format": "stage-a-relational-proof-check-v1",
+        "status": status,
+        "profile": STAGE_A_RELATIONAL_PROFILE_ID,
+        "claim_scope": {
+            "kind": "whole_program_observational_equivalence",
+            "whole_program_observational_equivalence": status == "pass",
+        },
+        "checks": checks,
+        "lean_check": audit,
     }
     if out is not None:
         write_json(Path(out), result)
@@ -1295,9 +2039,25 @@ def _write_relational_module_graph(
 ) -> dict[str, Any]:
     stage_a = prepared / "lean" / "StageA"
     sources = {path.stem: path for path in stage_a.glob("*.lean")}
-    root = "RelationalBundle"
+    acceptance_path = prepared / "whole-program-acceptance.json"
+    acceptance = _read_json(acceptance_path) if acceptance_path.is_file() else {
+        "format": "stage-a-whole-program-acceptance-v1",
+        "status": "incomplete",
+        "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+        "theorem": None,
+        "profile": None,
+        "blockers": [{
+            "code": "whole_program_certificate_missing",
+            "message": "no whole-program acceptance analysis was generated",
+            "next_action": "regenerate the relational proof graph",
+        }],
+    }
+    if acceptance.get("format") != "stage-a-whole-program-acceptance-v1":
+        raise StageAInputError("prepared proof has an invalid whole-program acceptance artifact")
+    acceptance_ready = acceptance.get("status") == "ready"
+    root = "RelationalAcceptance" if acceptance_ready else "RelationalBundle"
     if root not in sources:
-        raise StageAInputError("prepared proof is missing StageA.RelationalBundle")
+        raise StageAInputError(f"prepared proof is missing StageA.{root}")
 
     import_pattern = re.compile(r"^import StageA\.([A-Za-z0-9_]+)$", re.MULTILINE)
     imports = {
@@ -1341,15 +2101,30 @@ def _write_relational_module_graph(
     pack_size = max(
         1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_NIX_PACK_MODULES", "16"))
     )
+    static_usage_pack_size = max(
+        1,
+        int(
+            os.environ.get(
+                "WINCR_STAGE_A_RELATIONAL_STATIC_USAGE_NIX_PACK_MODULES", "4"
+            )
+        ),
+    )
     packed: set[str] = set()
     raw_nodes: list[dict[str, Any]] = []
-    for prefix, label in (
-        ("RelationalDefinitionsShard", "definitions-pack"),
-        ("RelationalProofShard", "local-proof-pack"),
+    for prefix, label, node_pack_size in (
+        ("RelationalDefinitionsShard", "definitions-pack", pack_size),
+        ("RelationalProofShard", "local-proof-pack", pack_size),
+        (
+            "RelationalProofStaticUsageLeaf",
+            "static-usage-pack",
+            static_usage_pack_size,
+        ),
     ):
         modules = numbered(prefix)
-        for pack_index, offset in enumerate(range(0, len(modules), pack_size)):
-            members = modules[offset : offset + pack_size]
+        for pack_index, offset in enumerate(
+            range(0, len(modules), node_pack_size)
+        ):
+            members = modules[offset : offset + node_pack_size]
             packed.update(members)
             raw_nodes.append({"id": f"{label}-{pack_index:03d}", "modules": members})
     for module in sorted(reachable - packed):
@@ -1367,18 +2142,85 @@ def _write_relational_module_graph(
     def resource_class(modules: list[str]) -> tuple[str, int]:
         names = " ".join(modules)
         source_bytes = sum(logical_modules[module]["source_bytes"] for module in modules)
+        if any(
+            module in (
+                "RelationalProofOriginalCoverageData",
+                "RelationalProofCandidateCoverageData",
+            )
+            for module in modules
+        ):
+            return "high-memory", max(12288, source_bytes // 1024 * 3)
+        if any(
+            module.startswith("RelationalProofStaticUsageLeaf")
+            or module in (
+                "RelationalProofStaticUsageCertificate",
+                "RelationalProofClosureData",
+            )
+            for module in modules
+        ):
+            return "high-memory", max(6144, source_bytes // 1024 * 3)
+        if any(
+            module.startswith("RelationalProofRegionIndexChunk")
+            or module.startswith("RelationalProofStaticUsageChunk")
+            or module in (
+                "RelationalProofRegionIndexData",
+                "RelationalProofRegionInventoryData",
+                "RelationalProofPaddingData",
+                "RelationalProofRequiredInputsData",
+            )
+            for module in modules
+        ):
+            return "medium", max(2048, source_bytes // 1024 * 2)
+        if "RelationalStaticContext" in modules:
+            return "high-memory", max(4096, source_bytes // 1024 * 3)
+        if any(module.startswith("RelationalStaticCodeMapChunk") for module in modules):
+            # The generated source is small, but reducing indexed lookups through a
+            # jq-sized imported map dominates the Lean process's resident set.
+            return "high-memory", max(4096, source_bytes // 1024 * 3)
+        if any(
+            module.startswith(prefix)
+            for module in modules
+            for prefix in (
+                "RelationalAcceptanceChunk",
+                "RelationalProductGraphChunk",
+                "RelationalDynamicRangeIndirectCallChunk",
+                "RelationalDynamicCallFanout",
+                "RelationalProductDecodedControlChunk",
+                "RelationalProductReachabilityChunk",
+                "RelationalProductEdgeRefinementChunk",
+                "RelationalProductNodeCoverageChunk",
+                "RelationalReachableProduct",
+            )
+        ):
+            # Each checker reduces indexed lookups through the full imported jq
+            # graph. Six GiB is conservative for the bounded 16-entry chunks.
+            return "high-memory", max(6144, source_bytes // 1024 * 3)
         if "DecodeChunk" in names or "StructuralPadding" in names or "StructuralCoverage" in names:
             return "high-memory", max(4096, source_bytes // 1024 * 3)
         if "RelationalProofOriginal" in names or "RelationalProofCandidate" in names:
-            return "high-memory", max(3072, source_bytes // 1024 * 3)
+            return "high-memory", max(16384, source_bytes // 1024 * 3)
         if "DirectChunk" in names or any(
             module.startswith("RelationalProofShard") for module in modules
         ):
+            return "medium", max(1536, source_bytes // 1024 * 2)
+        if source_bytes >= 512 * 1024:
             return "medium", max(1536, source_bytes // 1024 * 2)
         return "light", max(512, source_bytes // 1024 + 256)
 
     nodes: list[dict[str, Any]] = []
     for raw in raw_nodes:
+        packed_modules = set(raw["modules"])
+        internal_dependencies = sorted({
+            (module, dependency)
+            for module in raw["modules"]
+            for dependency in logical_modules[module]["imports"]
+            if dependency in packed_modules
+        })
+        if internal_dependencies:
+            raise StageAInputError(
+                f"generated build pack {raw['id']} contains internal imports "
+                f"{internal_dependencies!r}"
+            )
         dependencies = sorted({
             module_node[dependency]
             for module in raw["modules"]
@@ -1415,7 +2257,10 @@ def _write_relational_module_graph(
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "root_module": root,
         "final_node": module_node[root],
-        "expected_final_theorem": "StageA.GeneratedRelational.candidateRelationalCertificate",
+        "expected_final_theorem": (
+            RELATIONAL_ACCEPTANCE_THEOREM if acceptance_ready else None
+        ),
+        "acceptance": acceptance,
         "approved_axioms": trusted_base["approved_axioms"],
         "lean": {"version": lean_version, "githash": lean_githash, "trust": 0},
         "artifacts": {
@@ -1513,9 +2358,31 @@ def _validate_relational_module_graph(
     visit_node(str(graph.get("final_node")))
     if visited != set(node_by_id):
         raise StageAInputError("Lean graph contains nodes outside the final theorem closure")
+    acceptance = graph.get("acceptance")
+    if not isinstance(acceptance, dict):
+        raise StageAInputError("prepared Lean graph omits its acceptance state")
+    acceptance_status = acceptance.get("status")
     theorem = graph.get("expected_final_theorem")
-    if not isinstance(theorem, str) or not re.fullmatch(r"[A-Za-z0-9_.]+", theorem):
-        raise StageAInputError("prepared Lean graph has an invalid final theorem name")
+    if acceptance.get("required_theorem") != RELATIONAL_ACCEPTANCE_THEOREM:
+        raise StageAInputError("prepared Lean graph names the wrong acceptance theorem")
+    if acceptance_status == "ready":
+        if (
+            theorem != RELATIONAL_ACCEPTANCE_THEOREM
+            or acceptance.get("theorem") != theorem
+        ):
+            raise StageAInputError(
+                "acceptance-ready Lean graph does not name the closed whole-program theorem"
+            )
+    elif acceptance_status == "incomplete":
+        if theorem is not None or acceptance.get("theorem") is not None:
+            raise StageAInputError(
+                "incomplete Lean graph must not advertise an acceptance theorem"
+            )
+        blockers = acceptance.get("blockers")
+        if not isinstance(blockers, list) or not blockers:
+            raise StageAInputError("incomplete Lean graph omits acceptance blockers")
+    else:
+        raise StageAInputError("prepared Lean graph has an invalid acceptance state")
     approved_axioms = graph.get("approved_axioms")
     if not isinstance(approved_axioms, list) or not all(
         isinstance(axiom, str) and re.fullmatch(r"[A-Za-z0-9_.]+", axiom)
@@ -1538,7 +2405,13 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         "semantic_ir_sha256": prepared / "relational-semantic-ir.json",
         "memory_contracts_sha256": prepared / "relational-memory-contracts.json",
         "register_relations_sha256": prepared / "relational-register-relations.json",
+        "stack_windows_sha256": prepared / "relational-stack-windows.json",
+        "product_graph_sha256": prepared / "relational-product-graph.json",
         "invariants_sha256": prepared / "relational-invariants.json",
+        "whole_program_acceptance_sha256": (
+            prepared / "whole-program-acceptance.json"
+        ),
+        "composition_progress_sha256": prepared / "composition-progress.json",
         "module_graph_sha256": prepared / "module-graph.json",
     }
     for field, path in expected_hashes.items():
@@ -1546,6 +2419,18 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
             raise StageAInputError(f"prepared relational proof hash mismatch for {path.name}")
     if manifest.get("expected_final_theorem") != graph.get("expected_final_theorem"):
         raise StageAInputError("prepared relational theorem inventory does not match its graph")
+    if manifest.get("acceptance") != graph.get("acceptance"):
+        raise StageAInputError("prepared relational acceptance state does not match its graph")
+    composition_progress = _read_json(prepared / "composition-progress.json")
+    if (
+        composition_progress.get("format") != "stage-a-composition-progress-v1"
+        or composition_progress.get("trust", {}).get("acceptance_authority") is not False
+    ):
+        raise StageAInputError("prepared relational composition progress is malformed")
+    if manifest.get("composition_progress") != composition_progress:
+        raise StageAInputError(
+            "prepared relational composition progress does not match its manifest"
+        )
     if manifest.get("approved_axioms") != graph.get("approved_axioms"):
         raise StageAInputError("prepared relational axiom inventory does not match its graph")
     if manifest.get("original_sha256") != graph["artifacts"]["original"]["sha256"]:
@@ -1635,7 +2520,9 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         })
         observations = RELATIONAL_OBSERVATIONS
     memory_relation = contract.get("memory_relation")
-    if not isinstance(memory_relation, dict) or memory_relation.get("mode") not in {"identity", "mapped_objects"}:
+    if not isinstance(memory_relation, dict) or memory_relation.get("mode") not in {
+        "identity", "mapped_objects", "relational_world",
+    }:
         issues.append({
             "category": "memory_relation_missing",
             "severity": "hard",
@@ -1643,14 +2530,10 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             "next_action": "declare the relation between original and candidate data addresses",
         })
         memory_relation = {"mode": "identity"}
-    if memory_relation.get("mode") != "identity":
-        issues.append({
-            "category": "memory_relation_out_of_model",
-            "severity": "hard",
-            "next_action": "lower mapped memory objects into checked relational memory obligations",
-        })
     targets = contract.get("code_targets")
     value_targets = contract.get("value_targets", [])
+    static_dynamic_pointer_slots = contract.get("static_dynamic_pointer_slots", [])
+    machine_import_call_contracts = contract.get("machine_import_call_contracts", [])
     regions = contract.get("regions")
     padding = contract.get("padding", [])
     if not isinstance(targets, list) or not targets:
@@ -1662,6 +2545,18 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
     if not isinstance(value_targets, list):
         issues.append({"category": "value_targets_not_list"})
         value_targets = []
+    if not isinstance(static_dynamic_pointer_slots, list):
+        issues.append({
+            "category": "static_dynamic_pointer_slots_not_list",
+            "severity": "hard",
+        })
+        static_dynamic_pointer_slots = []
+    if not isinstance(machine_import_call_contracts, list):
+        issues.append({
+            "category": "machine_import_call_contracts_not_list",
+            "severity": "hard",
+        })
+        machine_import_call_contracts = []
     if not isinstance(padding, list):
         issues.append({"category": "padding_not_list"})
         padding = []
@@ -1721,6 +2616,12 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         )
         normalized_value_targets.append(normalized_target)
     value_target_by_id = {target["id"]: target for target in normalized_value_targets}
+    normalized_static_dynamic_pointer_slots = _static_dynamic_pointer_slots(
+        static_dynamic_pointer_slots, original, candidate, issues,
+    )
+    normalized_machine_import_call_contracts = _machine_import_call_contracts(
+        machine_import_call_contracts, original, candidate, issues,
+    )
     for index, item in enumerate(regions):
         if not isinstance(item, dict):
             issues.append({"category": "malformed_region", "index": index})
@@ -1730,6 +2631,14 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         candidate_span = _span(item.get("candidate"))
         inputs = _register_pairs(item.get("inputs"), issues, region_id, "inputs")
         outputs = _register_pairs(item.get("outputs"), issues, region_id, "outputs")
+        input_dynamic_range_relations = _dynamic_range_relations(
+            item.get("input_dynamic_range_relations", []), issues, region_id,
+            "input_dynamic_range_relations",
+        )
+        output_dynamic_range_relations = _dynamic_range_relations(
+            item.get("output_dynamic_range_relations", []), issues, region_id,
+            "output_dynamic_range_relations",
+        )
         raw_bounds = item.get("bounds", [])
         bounds: list[dict[str, Any]] = []
         if not isinstance(raw_bounds, list):
@@ -1813,14 +2722,48 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             region_values,
             inputs,
         )
-        normalized_regions.append(
-            {
+        function_id = item.get("function_id")
+        function_block_index = _integer(item.get("function_block_index"))
+        function_cut_index = _integer(item.get("function_cut_index"))
+        function_entry = bool(item.get("function_entry"))
+        function_root_kind = item.get("function_root_kind")
+        function_root_symbol = item.get("function_root_symbol")
+        has_function_metadata = any(
+            field in item
+            for field in (
+                "function_id", "function_block_index", "function_cut_index",
+                "function_entry", "function_root_kind", "function_root_symbol",
+            )
+        )
+        if has_function_metadata and (
+            not isinstance(function_id, str)
+            or not function_id
+            or function_block_index is None
+            or function_block_index < 0
+            or function_cut_index is None
+            or function_cut_index < 0
+            or (
+                function_entry
+                and (
+                    function_root_kind != "linker_map_function"
+                    or not isinstance(function_root_symbol, str)
+                    or not function_root_symbol
+                )
+            )
+        ):
+            issues.append({
+                "category": "malformed_region_function_metadata",
+                "id": region_id,
+            })
+        normalized_region = {
                 "id": region_id,
                 "numeric_id": index,
                 "original": original_span,
                 "candidate": candidate_span,
                 "inputs": inputs,
                 "outputs": outputs,
+                "input_dynamic_range_relations": input_dynamic_range_relations,
+                "output_dynamic_range_relations": output_dynamic_range_relations,
                 "bounds": bounds,
                 "target_ids": [target["id"] for target in region_targets],
                 "code_targets": region_targets,
@@ -1829,7 +2772,23 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
                 "address_separations": address_separations,
                 "root": bool(item.get("root")),
             }
-        )
+        if has_function_metadata and not any(
+            issue.get("category") == "malformed_region_function_metadata"
+            and issue.get("id") == region_id
+            for issue in issues
+        ):
+            normalized_region.update({
+                "function_id": function_id,
+                "function_block_index": function_block_index,
+                "function_cut_index": function_cut_index,
+                "function_entry": function_entry,
+            })
+            if function_entry:
+                normalized_region.update({
+                    "function_root_kind": function_root_kind,
+                    "function_root_symbol": function_root_symbol,
+                })
+        normalized_regions.append(normalized_region)
 
     normalized_padding = _normalize_padding(padding, original, candidate, issues)
     padding_indices = {
@@ -1907,11 +2866,13 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "code_targets": normalized_targets,
         "value_targets": normalized_value_targets,
+        "static_dynamic_pointer_slots": normalized_static_dynamic_pointer_slots,
+        "machine_import_call_contracts": normalized_machine_import_call_contracts,
         "regions": normalized_regions,
         "padding": normalized_padding,
         "environment": {
             "id": RELATIONAL_ENVIRONMENT_ID,
-            "external_results": "universally_quantified_and_synchronized",
+            "external_results": "paired_environment_refinement_required",
             "original_execution": "static_only",
         },
         "observations": observations,
@@ -2140,6 +3101,387 @@ def _span(value: Any) -> dict[str, int] | None:
     return {"rva_start": start, "rva_end": start + size, "size": size}
 
 
+def _static_dynamic_pointer_slots(
+    value: list[Any],
+    original: StageABinary,
+    candidate: StageABinary,
+    issues: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    ids: set[int] = set()
+    address_ranges: dict[str, list[tuple[int, int]]] = {
+        "original": [], "candidate": [],
+    }
+
+    def writable_data_word(binary: StageABinary, address: int) -> bool:
+        rva = address - binary.image_base
+        return 0 <= address < 2**32 and address + 4 <= 2**32 and any(
+            section.writable and not section.executable
+            and section.rva_start <= rva
+            and rva + 4 <= section.rva_end
+            for section in binary.sections
+        )
+
+    def overlaps_iat(binary: StageABinary, address: int) -> bool:
+        return any(
+            imported.thunk_rva is not None
+            and address < binary.image_base + int(imported.thunk_rva) + 4
+            and binary.image_base + int(imported.thunk_rva) < address + 4
+            for imported in binary.imports
+        )
+
+    for index, item in enumerate(value):
+        slot_id = _integer(item.get("id")) if isinstance(item, dict) else None
+        original_address = (
+            _integer(item.get("original_address")) if isinstance(item, dict) else None
+        )
+        candidate_address = (
+            _integer(item.get("candidate_address")) if isinstance(item, dict) else None
+        )
+        required_words = item.get("required_words") if isinstance(item, dict) else None
+        malformed = (
+            not isinstance(item, dict)
+            or slot_id is None
+            or slot_id < 0
+            or slot_id in ids
+            or original_address is None
+            or candidate_address is None
+            or original_address == 0
+            or candidate_address == 0
+            or not isinstance(required_words, list)
+            or not required_words
+        )
+        words: list[dict[str, Any]] = []
+        word_offsets: set[int] = set()
+        if not malformed:
+            for word in required_words:
+                offset = _integer(word.get("offset")) if isinstance(word, dict) else None
+                kind = word.get("kind") if isinstance(word, dict) else None
+                if (
+                    offset is None
+                    or not 0 <= offset < 2**32
+                    or offset + 4 > 2**32
+                    or kind not in {
+                        "relatedWord", "codePointer", "dataPointer",
+                        "nullableDynamicPointer",
+                    }
+                    or any(
+                        offset < prior_offset + 4 and prior_offset < offset + 4
+                        for prior_offset in word_offsets
+                    )
+                ):
+                    malformed = True
+                    break
+                word_offsets.add(offset)
+                words.append({"offset": offset, "kind": str(kind)})
+        if malformed:
+            issues.append({
+                "category": "static_dynamic_pointer_slot_invalid",
+                "severity": "hard",
+                "index": index,
+                "item": item,
+                "next_action": (
+                    "declare one unique PE pointer-word pair and a nonempty, "
+                    "nonoverlapping dynamic-object word shape"
+                ),
+            })
+            continue
+        assert slot_id is not None
+        assert original_address is not None
+        assert candidate_address is not None
+        ids.add(slot_id)
+        side_values = {
+            "original": (original, original_address),
+            "candidate": (candidate, candidate_address),
+        }
+        side_invalid = False
+        for side, (binary, address) in side_values.items():
+            if not writable_data_word(binary, address):
+                issues.append({
+                    "category": "static_dynamic_pointer_slot_not_writable_data",
+                    "severity": "hard",
+                    "index": index,
+                    "side": side,
+                    "address": address,
+                    "next_action": (
+                        "use a four-byte word wholly inside a writable, "
+                        "non-executable mapped PE section"
+                    ),
+                })
+                side_invalid = True
+            if overlaps_iat(binary, address):
+                issues.append({
+                    "category": "static_dynamic_pointer_slot_overlaps_iat",
+                    "severity": "hard",
+                    "index": index,
+                    "side": side,
+                    "address": address,
+                    "next_action": "classify this word as an import address instead",
+                })
+                side_invalid = True
+            if any(address < stop and start < address + 4
+                   for start, stop in address_ranges[side]):
+                issues.append({
+                    "category": "static_dynamic_pointer_slot_overlap",
+                    "severity": "hard",
+                    "index": index,
+                    "side": side,
+                    "address": address,
+                })
+                side_invalid = True
+        if side_invalid:
+            continue
+        for side, (_, address) in side_values.items():
+            address_ranges[side].append((address, address + 4))
+        result.append({
+            "id": slot_id,
+            "original_address": original_address,
+            "candidate_address": candidate_address,
+            "required_words": sorted(words, key=lambda word: word["offset"]),
+        })
+    return sorted(result, key=lambda slot: slot["id"])
+
+
+def _machine_import_call_contracts(
+    value: list[Any],
+    original: StageABinary,
+    candidate: StageABinary,
+    issues: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    ids: set[int] = set()
+    targets: set[tuple[str, str, str | int]] = set()
+
+    def binary_imports(binary: StageABinary) -> set[tuple[str, str, str | int]]:
+        return {
+            (identity[0].lower(), identity[1], identity[2])
+            for imported in binary.imports
+            if (identity := _import_identity(imported)) is not None
+        }
+
+    original_imports = binary_imports(original)
+    candidate_imports = binary_imports(candidate)
+    for index, item in enumerate(value):
+        contract_id = _integer(item.get("id")) if isinstance(item, dict) else None
+        imported = item.get("import") if isinstance(item, dict) else None
+        dll = imported.get("dll") if isinstance(imported, dict) else None
+        symbol = imported.get("symbol") if isinstance(imported, dict) else None
+        ordinal = _integer(imported.get("ordinal")) if isinstance(imported, dict) else None
+        abi_template = item.get("abi_template") if isinstance(item, dict) else None
+        argument_words = (
+            _integer(item.get("argument_words")) if isinstance(item, dict) else None
+        )
+        explicit_abi_fields = {
+            "stack_argument_offsets", "stack_result_delta",
+            "preserved_registers", "clobbered_registers",
+        }
+        has_explicit_abi = isinstance(item, dict) and any(
+            field in item for field in explicit_abi_fields
+        )
+        template = (
+            MACHINE_CALL_ABI_TEMPLATES.get(abi_template)
+            if isinstance(abi_template, str) else None
+        )
+        template_valid = abi_template is None or (
+            template is not None
+            and argument_words is not None
+            and 0 <= argument_words <= MACHINE_CALL_MAX_ARGUMENT_WORDS
+            and not has_explicit_abi
+        )
+        if abi_template is not None and template_valid:
+            assert template is not None
+            assert argument_words is not None
+            argument_offsets = list(range(0, argument_words * 4, 4))
+            stack_result_delta = argument_words * 4 if template["callee_cleanup"] else 0
+            preserved = list(template["preserved_registers"])
+            clobbered = list(template["clobbered_registers"])
+        else:
+            argument_offsets = (
+                item.get("stack_argument_offsets") if isinstance(item, dict) else None
+            )
+            stack_result_delta = (
+                _integer(item.get("stack_result_delta"))
+                if isinstance(item, dict) else None
+            )
+            preserved = item.get("preserved_registers") if isinstance(item, dict) else None
+            clobbered = item.get("clobbered_registers") if isinstance(item, dict) else None
+        memory_effect = item.get("memory_effect") if isinstance(item, dict) else None
+        world_effect = item.get("world_effect") if isinstance(item, dict) else None
+        import_valid = (
+            isinstance(dll, str)
+            and bool(dll)
+            and (isinstance(symbol, str) and bool(symbol)) != (ordinal is not None)
+        )
+        target = (
+            (dll.lower(), "symbol", str(symbol))
+            if import_valid and symbol is not None
+            else (dll.lower(), "ordinal", int(ordinal or 0))
+            if import_valid else None
+        )
+        offsets = (
+            [_integer(offset) for offset in argument_offsets]
+            if isinstance(argument_offsets, list) else []
+        )
+        raw_footprints = (
+            item.get("memory_footprints", []) if isinstance(item, dict) else None
+        )
+        footprints: list[dict[str, Any]] = []
+        footprint_keys: set[tuple[Any, ...]] = set()
+        footprints_valid = isinstance(raw_footprints, list)
+        if isinstance(raw_footprints, list):
+            for footprint in raw_footprints:
+                access = footprint.get("access") if isinstance(footprint, dict) else None
+                base_argument = (
+                    _integer(footprint.get("base_argument"))
+                    if isinstance(footprint, dict) else None
+                )
+                offset = (
+                    _integer(footprint.get("offset", 0))
+                    if isinstance(footprint, dict) else None
+                )
+                nullable = (
+                    footprint.get("nullable", False)
+                    if isinstance(footprint, dict) else None
+                )
+                size = footprint.get("size") if isinstance(footprint, dict) else None
+                size_kind = size.get("kind") if isinstance(size, dict) else None
+                normalized_size: dict[str, Any] | None = None
+                size_key: tuple[Any, ...] | None = None
+                if size_kind == "fixed":
+                    size_bytes = _integer(size.get("bytes"))
+                    if size_bytes is not None and 0 < size_bytes < 2**32:
+                        normalized_size = {"kind": "fixed", "bytes": size_bytes}
+                        size_key = ("fixed", size_bytes)
+                elif size_kind == "argument":
+                    size_argument = _integer(size.get("argument"))
+                    scale = _integer(size.get("scale", 1))
+                    if (
+                        size_argument is not None
+                        and 0 <= size_argument < len(offsets)
+                        and scale is not None
+                        and 0 < scale < 2**32
+                    ):
+                        normalized_size = {
+                            "kind": "argument",
+                            "argument": size_argument,
+                            "scale": scale,
+                        }
+                        size_key = ("argument", size_argument, scale)
+                key = (
+                    access, base_argument, offset, *size_key
+                ) if size_key is not None else None
+                valid_footprint = (
+                    access in {"read", "write"}
+                    and base_argument is not None
+                    and 0 <= base_argument < len(offsets)
+                    and offset is not None
+                    and 0 <= offset < 2**32
+                    and isinstance(nullable, bool)
+                    and normalized_size is not None
+                    and key not in footprint_keys
+                )
+                if not valid_footprint:
+                    footprints_valid = False
+                    continue
+                assert key is not None
+                footprint_keys.add(key)
+                footprints.append({
+                    "access": access,
+                    "base_argument": base_argument,
+                    "offset": offset,
+                    "size": normalized_size,
+                    "nullable": nullable,
+                })
+        memory_shape_valid = (
+            footprints_valid
+            and (
+                (memory_effect == "none" and not footprints)
+                or (
+                    memory_effect == "readOnly"
+                    and all(footprint["access"] == "read" for footprint in footprints)
+                )
+                or (
+                    memory_effect == "argumentRanges"
+                    and bool(footprints)
+                    and any(footprint["access"] == "write" for footprint in footprints)
+                )
+            )
+        )
+        malformed = (
+            not isinstance(item, dict)
+            or not template_valid
+            or (abi_template is None and "argument_words" in item)
+            or contract_id is None
+            or contract_id < 0
+            or contract_id in ids
+            or target is None
+            or target in targets
+            or not isinstance(argument_offsets, list)
+            or any(offset is None or offset < 0 or offset % 4 != 0
+                   or offset + 4 > 2**32 for offset in offsets)
+            or len(set(offsets)) != len(offsets)
+            or stack_result_delta is None
+            or stack_result_delta < 0
+            or stack_result_delta >= 2**32
+            or stack_result_delta % 4 != 0
+            or not isinstance(preserved, list)
+            or not isinstance(clobbered, list)
+            or any(register not in MACHINE_CALL_ABI_REGISTERS for register in preserved)
+            or any(register not in MACHINE_CALL_ABI_REGISTERS for register in clobbered)
+            or len(set(preserved)) != len(preserved)
+            or len(set(clobbered)) != len(clobbered)
+            or set(preserved).intersection(clobbered)
+            or set(preserved).union(clobbered) != MACHINE_CALL_ABI_REGISTERS
+            or memory_effect not in MACHINE_CALL_MEMORY_EFFECTS
+            or not memory_shape_valid
+            or world_effect not in MACHINE_CALL_WORLD_EFFECTS
+        )
+        if malformed:
+            issues.append({
+                "category": "machine_import_call_contract_invalid",
+                "severity": "hard",
+                "index": index,
+                "item": item,
+                "next_action": (
+                    "declare one unique imported target; use either explicit aligned ABI "
+                    "fields or one supported ABI template with argument_words; use explicit "
+                    "argument-relative read/write footprints for writable memory; and retain "
+                    "an explicit world effect"
+                ),
+            })
+            continue
+        assert contract_id is not None
+        assert target is not None
+        if target not in original_imports or target not in candidate_imports:
+            issues.append({
+                "category": "machine_import_call_contract_import_mismatch",
+                "severity": "hard",
+                "index": index,
+                "import": imported,
+                "original_has_import": target in original_imports,
+                "candidate_has_import": target in candidate_imports,
+                "next_action": "use an import identity present in both exact PE import tables",
+            })
+            continue
+        ids.add(contract_id)
+        targets.add(target)
+        normalized_import: dict[str, Any] = {"dll": target[0]}
+        normalized_import[target[1]] = target[2]
+        normalized = {
+            "id": contract_id,
+            "import": normalized_import,
+            "stack_argument_offsets": [int(offset) for offset in offsets],
+            "stack_result_delta": stack_result_delta,
+            "preserved_registers": sorted(str(register) for register in preserved),
+            "clobbered_registers": sorted(str(register) for register in clobbered),
+            "memory_effect": str(memory_effect),
+            "memory_footprints": footprints,
+            "world_effect": str(world_effect),
+        }
+        result.append(normalized)
+    return sorted(result, key=lambda contract: contract["id"])
+
+
 def _register_pairs(value: Any, issues: list[dict[str, Any]], region: str, family: str) -> list[dict[str, str]]:
     if not isinstance(value, list) or not value:
         issues.append({"category": "register_relation_missing", "region": region, "family": family})
@@ -2164,6 +3506,89 @@ def _register_pairs(value: Any, issues: list[dict[str, Any]], region: str, famil
         original_seen.add(original_register)
         candidate_seen.add(candidate_register)
         result.append({"original": original_register, "candidate": candidate_register})
+    return result
+
+
+def _dynamic_range_relations(
+    value: Any,
+    issues: list[dict[str, Any]],
+    region: str,
+    family: str,
+) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        issues.append({
+            "category": "dynamic_range_relation_not_list",
+            "severity": "hard",
+            "region": region,
+            "family": family,
+        })
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int, int]] = set()
+    for item in value:
+        original_offset = _integer(item.get("original_offset")) if isinstance(item, dict) else None
+        candidate_offset = _integer(item.get("candidate_offset")) if isinstance(item, dict) else None
+        required_words = item.get("required_words") if isinstance(item, dict) else None
+        if (
+            not isinstance(item, dict)
+            or item.get("original") not in REGISTERS
+            or item.get("candidate") not in REGISTERS
+            or original_offset is None
+            or candidate_offset is None
+            or not 0 <= original_offset < 2**32
+            or not 0 <= candidate_offset < 2**32
+            or not isinstance(required_words, list)
+        ):
+            issues.append({
+                "category": "dynamic_range_relation_invalid",
+                "severity": "hard",
+                "region": region,
+                "family": family,
+                "item": item,
+            })
+            continue
+        words: list[dict[str, Any]] = []
+        word_offsets: set[int] = set()
+        malformed_word = False
+        for word in required_words:
+            offset = _integer(word.get("offset")) if isinstance(word, dict) else None
+            kind = word.get("kind") if isinstance(word, dict) else None
+            if (
+                offset is None
+                or not 0 <= offset < 2**32
+                or kind not in {
+                    "relatedWord", "codePointer", "dataPointer",
+                    "nullableDynamicPointer",
+                }
+                or offset in word_offsets
+            ):
+                malformed_word = True
+                break
+            word_offsets.add(offset)
+            words.append({"offset": offset, "kind": str(kind)})
+        key = (
+            str(item["original"]), str(item["candidate"]),
+            original_offset, candidate_offset,
+        )
+        if malformed_word or key in seen:
+            issues.append({
+                "category": "dynamic_range_relation_invalid",
+                "severity": "hard",
+                "region": region,
+                "family": family,
+                "item": item,
+            })
+            continue
+        seen.add(key)
+        result.append({
+            "original": key[0],
+            "candidate": key[1],
+            "original_offset": original_offset,
+            "candidate_offset": candidate_offset,
+            "required_words": sorted(words, key=lambda word: word["offset"]),
+        })
     return result
 
 
@@ -2366,6 +3791,19 @@ def _proof_ir(original: StageABinary, candidate: StageABinary, contract: dict[st
     )
     obligations.extend(_mapped_relocation_image_obligations(original, candidate, contract))
     obligations.append({
+        "id": "static-context:canonical-pe32",
+        "kind": "static_proof_context",
+        "status": "pending_lean",
+        "blocker": (
+            "the canonical PE, import, relocation, code/data map, root, and observation "
+            "context has not yet been checked by Lean"
+        ),
+        "next_action": (
+            "replay StaticProofContext.valid_of_checked over the exact bundled PE bytes and "
+            "the indexed mapping inventories"
+        ),
+    })
+    obligations.append({
         "id": "composition:whole-image-weak-bisimulation",
         "kind": "whole_program_bisimulation",
         "status": "incomplete",
@@ -2383,6 +3821,7 @@ def _proof_ir(original: StageABinary, candidate: StageABinary, contract: dict[st
         {"family": "x86_semantics", "status": "incomplete"},
         {"family": "executable_coverage", "status": "incomplete"},
         {"family": "roots_and_targets", "status": "incomplete"},
+        {"family": "static_proof_context", "status": "incomplete"},
         {"family": "relational_regions", "status": "incomplete"},
         {"family": "whole_program_composition", "status": "incomplete"},
         {
@@ -2481,7 +3920,10 @@ def _attach_register_relation_analysis(
     proof_ir: dict[str, Any], register_relations: dict[str, Any]
 ) -> dict[str, Any]:
     counts = register_relations["counts"]
-    total_register_outputs = counts["regions"] * len(REGISTERS)
+    total_register_outputs = sum(
+        len(region.get("outputs", []))
+        for region in register_relations.get("regions", [])
+    )
     unclaimed_outputs = total_register_outputs - counts["register_output_claims"]
     obligation = {
         "id": "cfg-register-relation-preservation",
@@ -2493,9 +3935,11 @@ def _attach_register_relation_analysis(
             "unclaimed_register_outputs": unclaimed_outputs,
             "checked_claim_types": [
                 "exact_memory_free_expression",
+                "exact_identity_memory_expression_when_global_value_map_empty",
                 "identity_register_transfer",
                 "paired_constant_relation",
                 "exact_register_edge_pair",
+                "win32_external_register_policy_edge",
             ],
             "generated_certificate": (
                 "StageA.GeneratedRelational."
@@ -2503,21 +3947,196 @@ def _attach_register_relation_analysis(
             ),
         },
         "blocker": (
-            f"{unclaimed_outputs} register outputs and the remaining mixed-relation CFG edges "
-            "lack a complete checked transfer rule"
+            f"{unclaimed_outputs} register outputs, mixed-relation direct edges, and explicit "
+            "external-environment result compatibility remain open"
         ),
         "next_action": (
-            "add generic checked transfer rules for memory-derived values and pointer arithmetic, "
-            "then compose region relations under one explicit global code/data mapping context"
+            "add generic checked mapped-memory and pointer-arithmetic transfer rules, then "
+            "instantiate the checked Win32 register policy with a relational environment contract"
         ),
     }
+    call_return_obligations = [
+        {
+            "id": (
+                "call-return:"
+                f"{edge['callsite_region_index']}:"
+                f"{edge['source_region_index']}:"
+                f"{edge['target_region_index']}"
+            ),
+            "kind": "call_return_stack_composition",
+            "status": "incomplete",
+            "callsite_region_index": edge["callsite_region_index"],
+            "callee_entry_region_index": edge["callee_entry_region_index"],
+            "return_region_index": edge["source_region_index"],
+            "continuation_region_index": edge["target_region_index"],
+            "function_id": edge["function_id"],
+            "blocker": (
+                "function metadata proposes a return-to-continuation edge, but Lean has not "
+                "proved call-stack membership and mapped return-address resolution"
+            ),
+            "next_action": (
+                "check the caller/callee/return decoded outcomes, prove the return target "
+                "resolves to the pushed continuation, and preserve the global state relation"
+            ),
+        }
+        for edge in register_relations["edges"]
+        if edge.get("requires_call_stack_proof")
+    ]
+    direct_call_push_obligations = [
+        {
+            "id": (
+                "direct-call-push:"
+                f"{edge['source_region_index']}:{edge['target_region_index']}"
+            ),
+            "kind": "direct_call_push",
+            "status": (
+                "candidate_requires_lean_replay"
+                if edge.get("direct_call_push_claim") is not None
+                else "incomplete"
+            ),
+            "source_region_index": edge["source_region_index"],
+            "callee_region_index": edge["target_region_index"],
+            "claim": edge.get("direct_call_push_claim"),
+            "blocker": (
+                None if edge.get("direct_call_push_claim") is not None else
+                "decoded call does not have one unique mapped continuation and final "
+                "ESP-relative mapped return-address write"
+            ),
+            "next_action": (
+                "replay DirectCallPushClosed in Lean"
+                if edge.get("direct_call_push_claim") is not None else
+                "inspect the decoded call target, continuation map, final ESP expression, "
+                "and last stack write"
+            ),
+        }
+        for edge in register_relations["edges"]
+        if edge["kind"] == "call" and not edge.get("indirect_target_profile")
+    ]
+    return_pop_obligations = [
+        {
+            "id": f"return-pop:{region['region_index']}",
+            "kind": "return_pop",
+            "status": (
+                "candidate_requires_lean_replay"
+                if region.get("return_pop_claim") is not None
+                else "incomplete"
+            ),
+            "region_index": region["region_index"],
+            "claim": region.get("return_pop_claim"),
+            "profile": (
+                (region.get("return_pop_claim") or {}).get("profile")
+            ),
+            "blocker": (
+                None if region.get("return_pop_claim") is not None else
+                "return target is neither one direct ESP-relative read nor an exact "
+                "post-write read whose constant image writes have complete byte-level "
+                "stack-separation witnesses, or the stack-pop deltas differ"
+            ),
+            "next_action": (
+                "replay ReturnPopAfterWritesClosed and its runtime-frame target theorem "
+                "in Lean"
+                if (region.get("return_pop_claim") or {}).get("profile")
+                    == "esp_relative_return_after_static_writes_v1" else
+                "replay ReturnPopClosed in Lean"
+                if region.get("return_pop_claim") is not None else
+                "classify preceding stack writes and reduce the return target to a checked "
+                "ESP-relative slot; constant PE-image writes require all 16 byte-pair "
+                "separations per written dword"
+            ),
+        }
+        for region in register_relations["regions"]
+        if region.get("is_return")
+    ]
+    return_slot_transfer_obligations = [
+        {
+            "id": (
+                f"return-slot-transfer:{edge['source_region_index']}:"
+                f"{edge['target_region_index']}:{claim_index}"
+            ),
+            "kind": "return_slot_affine_transfer",
+            "status": "candidate_requires_lean_replay",
+            "source_region_index": edge["source_region_index"],
+            "target_region_index": edge["target_region_index"],
+            "claim": claim,
+            "blocker": None,
+            "next_action": "replay ReturnSlotTransferClosed in Lean",
+        }
+        for edge in register_relations["edges"]
+        for claim_index, claim in enumerate(
+            edge.get("return_slot_transfer_claims", [])
+        )
+    ]
+    return_slot_frame_obligations = [
+        {
+            "id": f"return-slot-frame:{region['region_index']}",
+            "kind": "return_slot_runtime_frame",
+            "status": (
+                "candidate_requires_lean_replay"
+                if region.get("return_slot_status") == "satisfied"
+                else "incomplete"
+            ),
+            "region_index": region["region_index"],
+            "offsets": region.get("return_slot_offsets", []),
+            "claims": region.get("return_pop_frame_claims", []),
+            "blocker": (
+                None
+                if region.get("return_slot_status") == "satisfied"
+                else region.get("return_slot_status")
+            ),
+            "next_action": (
+                "replay the checked return-pop runtime-frame theorem and compose the "
+                "active frame"
+                if region.get("return_slot_status") == "satisfied"
+                else "close the reported call-path, affine-offset, or finite-join frontier"
+            ),
+        }
+        for region in register_relations["regions"]
+        if region.get("is_return")
+    ]
+    return_slot_call_summary_obligations = [
+        {
+            "id": (
+                f"return-slot-call-summary:{edge['source_region_index']}:"
+                f"{claim['return_region_index']}:{claim_index}"
+            ),
+            "kind": "return_slot_call_summary",
+            "status": "candidate_requires_lean_replay",
+            "callsite_region_index": edge["source_region_index"],
+            "callee_region_index": edge["target_region_index"],
+            "return_region_index": claim["return_region_index"],
+            "claim": claim,
+            "blocker": None,
+            "next_action": "replay ReturnSlotCallSummaryClosed in Lean",
+        }
+        for edge in register_relations["edges"]
+        for claim_index, claim in enumerate(
+            edge.get("return_slot_call_summary_claims", [])
+        )
+    ]
     attached = dict(proof_ir)
     attached["register_relation_summary"] = {
         **counts,
         "total_register_outputs": total_register_outputs,
         "unclaimed_register_outputs": unclaimed_outputs,
+        "call_return_obligations": len(call_return_obligations),
+        "direct_call_push_obligations": len(direct_call_push_obligations),
+        "return_pop_obligations": len(return_pop_obligations),
+        "return_slot_transfer_obligations": len(return_slot_transfer_obligations),
+        "return_slot_frame_obligations": len(return_slot_frame_obligations),
+        "return_slot_call_summary_obligations": len(
+            return_slot_call_summary_obligations
+        ),
     }
-    attached["obligations"] = [*proof_ir["obligations"], obligation]
+    attached["obligations"] = [
+        *proof_ir["obligations"],
+        obligation,
+        *call_return_obligations,
+        *direct_call_push_obligations,
+        *return_pop_obligations,
+        *return_slot_transfer_obligations,
+        *return_slot_frame_obligations,
+        *return_slot_call_summary_obligations,
+    ]
     attached["status"] = "incomplete"
     return attached
 
@@ -2702,6 +4321,4076 @@ def _attach_memory_transition_analysis(
     }
 
 
+def _semantic_expr_has_exact_inputs(
+    source: dict[str, Any], expression: dict[str, Any],
+) -> bool:
+    exact_identity_registers = {
+        str(relation["original"])
+        for relation in source.get("input_relations", [])
+        if relation.get("relation") == "exact"
+        and relation.get("original") == relation.get("candidate")
+    }
+    return (
+        _semantic_expr_is_pure(expression)
+        and _semantic_expr_registers(expression) <= exact_identity_registers
+    )
+
+
+def _paired_stack_word_value_claim(
+    source: dict[str, Any],
+    original_value: dict[str, Any],
+    candidate_value: dict[str, Any],
+) -> dict[str, Any] | None:
+    if (
+        original_value == candidate_value
+        and _semantic_expr_has_exact_inputs(source, original_value)
+    ):
+        return {
+            "profile": "exact_inputs_v1",
+            "original": original_value,
+            "candidate": candidate_value,
+        }
+
+    original_argument = _semantic_input_register_offset(original_value)
+    candidate_argument = _semantic_input_register_offset(candidate_value)
+    if original_argument is None or candidate_argument is None:
+        return None
+    original_register, original_offset = original_argument
+    candidate_register, candidate_offset = candidate_argument
+    if original_offset != candidate_offset:
+        return None
+
+    def canonical_argument(register: str, offset: int) -> dict[str, Any]:
+        register_expression = {"op": "input_reg", "reg": register}
+        if offset == 0:
+            return register_expression
+        return {
+            "op": "add",
+            "left": register_expression,
+            "right": {"op": "constant", "value": offset},
+        }
+
+    if (
+        original_value != canonical_argument(original_register, original_offset)
+        or candidate_value
+            != canonical_argument(candidate_register, candidate_offset)
+    ):
+        return None
+    matching_relations = [
+        relation for relation in source.get("input_relations", [])
+        if relation.get("original") == original_register
+        and relation.get("candidate") == candidate_register
+        and (
+            relation.get("relation") == "exact"
+            or (
+                relation.get("relation") == "related_word"
+                and original_offset == 0
+            )
+        )
+    ]
+    if len(matching_relations) != 1:
+        return None
+    return {
+        "profile": "register_argument_v1",
+        "original": original_value,
+        "candidate": candidate_value,
+        "claim": {
+            "relation": matching_relations[0],
+            "offset": original_offset,
+        },
+    }
+
+
+def _paired_stack_word_write_claim(
+    source: dict[str, Any], behavior_pair: dict[str, Any],
+) -> dict[str, Any] | None:
+    original_writes = (behavior_pair.get("original_ir") or {}).get("writes") or []
+    candidate_writes = (behavior_pair.get("candidate_ir") or {}).get("writes") or []
+    if len(original_writes) != 1 or len(candidate_writes) != 1:
+        return None
+    original_write = original_writes[0]
+    candidate_write = candidate_writes[0]
+    original_value = original_write.get("value") or {}
+    candidate_value = candidate_write.get("value") or {}
+    value_claim = _paired_stack_word_value_claim(
+        source, original_value, candidate_value
+    )
+    if value_claim is None:
+        return None
+
+    def positive_register_offset(
+        expression: Any, register: str,
+    ) -> int | None:
+        if not isinstance(expression, dict) or expression.get("op") != "add":
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if left.get("op") == "constant":
+            left, right = right, left
+        if (
+            left != {"op": "input_reg", "reg": register}
+            or right.get("op") != "constant"
+        ):
+            return None
+        amount = _integer(right.get("value"))
+        if amount is None or not 0 <= amount < 2**31:
+            return None
+        return amount
+
+    matches = []
+    for window in source.get("stack_windows", []):
+        original_register = str(window.get("original_register"))
+        candidate_register = str(window.get("candidate_register"))
+        original_amount = positive_register_offset(
+            original_write.get("address"), original_register
+        )
+        candidate_amount = positive_register_offset(
+            candidate_write.get("address"), candidate_register
+        )
+        if (
+            original_amount is not None
+            and original_amount == candidate_amount
+            and original_amount % 4 == 0
+            and original_amount + 4 <= int(window.get("bytes_above", -1))
+        ):
+            matches.append((window, original_amount))
+    if len(matches) != 1:
+        return None
+    window, amount = matches[0]
+    return {
+        "profile": "paired_stack_word_write_v1",
+        "window": window,
+        "amount": amount,
+        "value": value_claim,
+    }
+
+
+def _paired_stack_word_writes_claim(
+    source: dict[str, Any], behavior_pair: dict[str, Any],
+) -> dict[str, Any] | None:
+    original_writes = (behavior_pair.get("original_ir") or {}).get("writes") or []
+    candidate_writes = (behavior_pair.get("candidate_ir") or {}).get("writes") or []
+    if len(original_writes) < 2 or len(original_writes) != len(candidate_writes):
+        return None
+    value_claims = [
+        _paired_stack_word_value_claim(
+            source, original.get("value") or {}, candidate.get("value") or {}
+        )
+        for original, candidate in zip(
+            original_writes, candidate_writes, strict=True
+        )
+    ]
+    if any(claim is None for claim in value_claims):
+        return None
+
+    def register_offset(expression: Any, register: str) -> int | None:
+        if expression == {"op": "input_reg", "reg": register}:
+            return 0
+        if not isinstance(expression, dict) or expression.get("op") != "add":
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if left.get("op") == "constant":
+            left, right = right, left
+        if (
+            left != {"op": "input_reg", "reg": register}
+            or right.get("op") != "constant"
+        ):
+            return None
+        amount = _integer(right.get("value"))
+        return amount if amount is not None and 0 < amount < 2**31 else None
+
+    matches: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    for window in source.get("stack_windows", []):
+        original_register = str(window.get("original_register"))
+        candidate_register = str(window.get("candidate_register"))
+        writes: list[dict[str, Any]] = []
+        for original, candidate, value_claim in zip(
+            original_writes, candidate_writes, value_claims, strict=True
+        ):
+            original_amount = register_offset(
+                original.get("address"), original_register
+            )
+            candidate_amount = register_offset(
+                candidate.get("address"), candidate_register
+            )
+            if (
+                original_amount is None
+                or original_amount != candidate_amount
+                or original_amount % 4 != 0
+                or original_amount + 4 > int(window.get("bytes_above", -1))
+            ):
+                break
+            writes.append({
+                "amount": original_amount,
+                "value": value_claim,
+            })
+        else:
+            matches.append((window, writes))
+    if len(matches) != 1:
+        return None
+    window, writes = matches[0]
+    return {
+        "profile": "paired_stack_word_writes_v1",
+        "window": window,
+        "writes": writes,
+    }
+
+
+def _segment_refinement_candidates(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    memory_contracts: dict[str, Any],
+    register_relations: dict[str, Any],
+    import_register_seeds: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    by_edge: dict[int, dict[str, Any]] = {}
+    memory_regions = memory_contracts.get("regions", [])
+    register_regions = register_relations.get("regions", [])
+    for edge_index, edge in enumerate(register_relations.get("edges", [])):
+        if edge_index in by_edge:
+            continue
+        source_index = int(edge["source_region_index"])
+        target_index = int(edge["target_region_index"])
+        if (
+            source_index >= len(memory_regions)
+            or source_index >= len(register_regions)
+            or source_index >= len(behaviors)
+        ):
+            continue
+        source = contract["regions"][source_index]
+        target = contract["regions"][target_index]
+        memory = memory_regions[source_index]
+        successors = memory.get("successors", {})
+        candidate_successors = memory.get("candidate_successors", {})
+        direct_targets = successors.get("direct", [])
+        candidate_direct_targets = candidate_successors.get("direct", [])
+        target_flags = target.get("flag_inputs", list(FLAG_BITS))
+        import_transfer_claims = _import_register_transfer_claims(
+            contract, behaviors, source_index, target_index,
+            import_register_seeds or [],
+        )
+        dynamic_transfer_claims = _dynamic_range_transfer_claims(
+            contract, behaviors, source_index, target_index,
+            edge.get("original_guard") or {},
+            edge.get("candidate_guard") or {},
+        )
+        guard_relation_claim = _related_word_zero_guard_claim(
+            source,
+            edge.get("original_guard") or {},
+            edge.get("candidate_guard") or {},
+        ) or _paired_stack_guard_claim(
+            source,
+            edge.get("original_guard") or {},
+            edge.get("candidate_guard") or {},
+        ) or _static_dynamic_pointer_slot_guard_claim(
+            contract,
+            edge.get("original_guard") or {},
+            edge.get("candidate_guard") or {},
+        )
+        if guard_relation_claim is None and dynamic_transfer_claims is not None:
+            next_claim_index = next((
+                index for index, claim in enumerate(dynamic_transfer_claims)
+                if claim.get("kind") == "nullable_pointer"
+            ), None)
+            if next_claim_index is not None:
+                guard_relation_claim = {
+                    "profile": "dynamic_range_next_guard_v1",
+                    "claim_index": next_claim_index,
+                }
+        branch_edge = edge.get("kind") in {"branch_taken", "branch_fallthrough"}
+        stack_transfer_claims = _stack_window_transfer_claims(
+            source, target, behaviors[source_index]
+        )
+        dynamic_register_output_claims = _dynamic_range_register_output_claims(
+            register_regions[source_index], dynamic_transfer_claims,
+            behaviors[source_index], guard_relation_claim,
+        )
+        register_transfer_supported = (
+            bool(register_regions[source_index].get("fully_supported_output_transfer"))
+            or dynamic_register_output_claims is not None
+        )
+        common_transfer_supported = (
+            edge.get("relation_preservation_proposed")
+            and register_transfer_supported
+            and all(
+                claim.get("kind") != "exact_memory"
+                for claim in register_regions[source_index].get("output_claims", [])
+            )
+            and not edge.get("environment_barrier")
+            and not edge.get("requires_call_stack_proof")
+            and source.get("output_relations", []) == target.get("input_relations", [])
+            and not source.get("output_import_relations")
+            and import_transfer_claims is not None
+            and dynamic_transfer_claims is not None
+            and stack_transfer_claims is not None
+            and source.get("flag_outputs", []) == target_flags
+            and target_flags in ([], [10])
+            and not target.get("bounds")
+            and (
+                not target.get("address_separations")
+                or bool(target.get("stack_address_separation_claims"))
+            )
+            and _lean_x87_state_only_pair(behaviors[source_index])
+        )
+        no_write_supported = (
+            edge.get("kind") in {"jump", "branch_taken", "branch_fallthrough"}
+            and common_transfer_supported
+            and memory.get("writes", {}).get("original_count") == 0
+            and memory.get("writes", {}).get("candidate_count") == 0
+            and (
+                (
+                    successors.get("outcome") in {"jump", "branch"}
+                    and candidate_successors.get("outcome") == successors.get("outcome")
+                    and isinstance(direct_targets, list)
+                    and direct_targets == candidate_direct_targets
+                    and int(target["numeric_id"]) in direct_targets
+                )
+                or (
+                    edge.get("indirect_target_profile") ==
+                        "immutable_relocated_function_pointer_jump_v1"
+                    and successors.get("outcome") == "indirect_jump"
+                    and candidate_successors.get("outcome") == "indirect_jump"
+                    and isinstance(edge.get("indirect_target_claim"), dict)
+                    and int(edge["indirect_target_claim"].get("target_id", -1))
+                        == int(target["numeric_id"])
+                )
+            )
+            and (not branch_edge or guard_relation_claim is not None)
+        )
+        call_claim = edge.get("direct_call_push_claim")
+        call_windows = [
+            window for window in source.get("stack_windows", [])
+            if str(window.get("original_register")) == "esp"
+            and str(window.get("candidate_register")) == "esp"
+            and int(window.get("bytes_below", 0)) >= 4
+        ]
+        call_supported = (
+            edge.get("kind") == "call"
+            and common_transfer_supported
+            and isinstance(call_claim, dict)
+            and call_claim.get("profile") == "mapped_direct_call_push_v1"
+            and len(call_windows) == 1
+            and memory.get("writes", {}).get("original_count") == 1
+            and memory.get("writes", {}).get("candidate_count") == 1
+            and successors.get("outcome") == "call"
+            and candidate_successors.get("outcome") == "call"
+            and int(call_claim.get("callee_target_id", -1))
+                == int(target["numeric_id"])
+            and int(call_claim.get("callee_target_id", -1)) in direct_targets
+            and direct_targets == candidate_direct_targets
+            and not target.get("input_import_relations")
+            and not target.get("input_dynamic_range_relations")
+            and edge.get("original_guard") == {
+                "op": "bool_constant", "value": True,
+            }
+            and edge.get("candidate_guard") == {
+                "op": "bool_constant", "value": True,
+            }
+        )
+        stack_write_claim = _paired_stack_word_write_claim(
+            source, behaviors[source_index]
+        )
+        stack_writes_claim = _paired_stack_word_writes_claim(
+            source, behaviors[source_index]
+        )
+        stack_write_supported = (
+            edge.get("kind") in {"jump", "branch_taken", "branch_fallthrough"}
+            and common_transfer_supported
+            and isinstance(stack_write_claim, dict)
+            and memory.get("writes", {}).get("original_count") == 1
+            and memory.get("writes", {}).get("candidate_count") == 1
+            and successors.get("outcome") in {"jump", "branch"}
+            and candidate_successors.get("outcome") == successors.get("outcome")
+            and isinstance(direct_targets, list)
+            and direct_targets == candidate_direct_targets
+            and int(target["numeric_id"]) in direct_targets
+            and not target.get("input_import_relations")
+            and not target.get("input_dynamic_range_relations")
+            and (not branch_edge or guard_relation_claim is not None)
+        )
+        stack_writes_supported = (
+            edge.get("kind") in {"jump", "branch_taken", "branch_fallthrough"}
+            and common_transfer_supported
+            and isinstance(stack_writes_claim, dict)
+            and memory.get("writes", {}).get("original_count")
+                == len(stack_writes_claim["writes"])
+            and memory.get("writes", {}).get("candidate_count")
+                == len(stack_writes_claim["writes"])
+            and successors.get("outcome") in {"jump", "branch"}
+            and candidate_successors.get("outcome") == successors.get("outcome")
+            and isinstance(direct_targets, list)
+            and direct_targets == candidate_direct_targets
+            and int(target["numeric_id"]) in direct_targets
+            and not target.get("input_import_relations")
+            and not target.get("input_dynamic_range_relations")
+            and (not branch_edge or guard_relation_claim is not None)
+        )
+        if not (
+            no_write_supported or call_supported or stack_write_supported
+            or stack_writes_supported
+        ):
+            continue
+        source_target = next((
+            code_target for code_target in contract.get("code_targets", [])
+            if int(code_target.get("region_index", -1)) == source_index
+            and int(code_target["original_rva"]) == int(source["original"]["rva_start"])
+            and int(code_target["candidate_rva"]) == int(source["candidate"]["rva_start"])
+        ), None)
+        if source_target is None:
+            continue
+        by_edge[edge_index] = {
+            "format": RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
+            "edge_index": edge_index,
+            "source_region_index": source_index,
+            "target_region_index": target_index,
+            "source_target_id": int(source_target["id"]),
+            "target_id": int(target["numeric_id"]),
+            "local_code_target_ids": [
+                int(target["id"]) for target in source.get("code_targets", [])
+            ],
+            "local_value_target_ids": [
+                int(target["id"]) for target in source.get("values", [])
+            ],
+            "certificate_profile": (
+                "composable_direct_call_v1" if call_supported
+                else "composable_paired_stack_word_write_v1"
+                if stack_write_supported
+                else "composable_paired_stack_word_writes_v1"
+                if stack_writes_supported
+                else "composable_immutable_indirect_jump_v1"
+                if edge.get("indirect_target_profile") ==
+                    "immutable_relocated_function_pointer_jump_v1"
+                else "composable_local_no_write_v1"
+            ),
+            "indirect_target_claim": edge.get("indirect_target_claim"),
+            "import_transfer_claims": import_transfer_claims,
+            "dynamic_transfer_claims": dynamic_transfer_claims,
+            "dynamic_register_output_claims": dynamic_register_output_claims or [],
+            "original_guard": edge["original_guard"],
+            "candidate_guard": edge["candidate_guard"],
+            **({
+                "source_stack_window": call_windows[0],
+                "callee_target_id": int(call_claim["callee_target_id"]),
+                "continuation_target_id": int(call_claim["continuation_target_id"]),
+                "original_return_address": int(call_claim["original_return_address"]),
+                "candidate_return_address": int(call_claim["candidate_return_address"]),
+            } if call_supported else {}),
+            "paired_stack_write_claim": (
+                stack_write_claim if stack_write_supported else None
+            ),
+            "paired_stack_writes_claim": (
+                stack_writes_claim if stack_writes_supported else None
+            ),
+            "guard_relation_claim": guard_relation_claim,
+            "stack_transfer_claims": stack_transfer_claims,
+        }
+    return [by_edge[index] for index in sorted(by_edge)]
+
+
+def _import_register_transfer_claims(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    source_index: int,
+    target_index: int,
+    seeds: list[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    target_relations = contract["regions"][target_index].get(
+        "input_import_relations", []
+    )
+    if not target_relations:
+        return []
+
+    def import_key(imported: dict[str, Any]) -> tuple[str, str, str | int]:
+        if "symbol" in imported:
+            return (str(imported["dll"]).lower(), "symbol", str(imported["symbol"]))
+        return (str(imported["dll"]).lower(), "ordinal", int(imported["ordinal"]))
+
+    source_relations = contract["regions"][source_index].get(
+        "input_import_relations", []
+    )
+    original_registers = behaviors[source_index]["original_ir"].get("registers") or {}
+    candidate_registers = behaviors[source_index]["candidate_ir"].get("registers") or {}
+    claims: list[dict[str, Any]] = []
+    for target_relation in target_relations:
+        target_key = import_key(target_relation["import"])
+        matches: list[dict[str, Any]] = []
+        for seed_index, seed in enumerate(seeds):
+            if (
+                int(seed["region_index"]) == source_index
+                and str(seed["original_register"]) == str(target_relation["original"])
+                and str(seed["candidate_register"]) == str(target_relation["candidate"])
+                and import_key(seed["import"]) == target_key
+            ):
+                matches.append({"kind": "seed", "seed_index": seed_index, **seed})
+        for source_relation in source_relations:
+            if import_key(source_relation["import"]) != target_key:
+                continue
+            original_expression = original_registers.get(
+                str(target_relation["original"])
+            ) or {}
+            candidate_expression = candidate_registers.get(
+                str(target_relation["candidate"])
+            ) or {}
+            if (
+                original_expression.get("op") == "input_reg"
+                and candidate_expression.get("op") == "input_reg"
+                and str(original_expression.get("reg"))
+                    == str(source_relation["original"])
+                and str(candidate_expression.get("reg"))
+                    == str(source_relation["candidate"])
+            ):
+                matches.append({
+                    "kind": "preserve",
+                    "import": target_relation["import"],
+                    "source_original_register": source_relation["original"],
+                    "source_candidate_register": source_relation["candidate"],
+                    "target_original_register": target_relation["original"],
+                    "target_candidate_register": target_relation["candidate"],
+                })
+        if len(matches) != 1:
+            return None
+        claims.append(matches[0])
+    return claims
+
+
+def _dynamic_range_transfer_claims(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    source_index: int,
+    target_index: int,
+    original_guard: dict[str, Any],
+    candidate_guard: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    target_relations = contract["regions"][target_index].get(
+        "input_dynamic_range_relations", []
+    )
+    if not target_relations:
+        return []
+    source_relations = contract["regions"][source_index].get(
+        "input_dynamic_range_relations", []
+    )
+    original_registers = behaviors[source_index]["original_ir"].get("registers") or {}
+    candidate_registers = behaviors[source_index]["candidate_ir"].get("registers") or {}
+    claims: list[dict[str, Any]] = []
+    for target_relation in target_relations:
+        target_words = {
+            (int(word["offset"]), str(word["kind"]))
+            for word in target_relation.get("required_words", [])
+        }
+        matches: list[dict[str, Any]] = []
+        original_expression = original_registers.get(
+            str(target_relation["original"])
+        ) or {}
+        candidate_expression = candidate_registers.get(
+            str(target_relation["candidate"])
+        ) or {}
+        for source_relation in source_relations:
+            source_words = {
+                (int(word["offset"]), str(word["kind"]))
+                for word in source_relation.get("required_words", [])
+            }
+            if (
+                int(source_relation.get("original_offset", -1))
+                    == int(target_relation.get("original_offset", -2))
+                and int(source_relation.get("candidate_offset", -1))
+                    == int(target_relation.get("candidate_offset", -2))
+                and target_words <= source_words
+                and original_expression == {
+                    "op": "input_reg", "reg": source_relation["original"]
+                }
+                and candidate_expression == {
+                    "op": "input_reg", "reg": source_relation["candidate"]
+                }
+            ):
+                matches.append({
+                    "kind": "preserve",
+                    "source_relation": source_relation,
+                    "target_relation": target_relation,
+                })
+            pointer_words = [
+                word for word in source_relation.get("required_words", [])
+                if word.get("kind") == "nullableDynamicPointer"
+            ]
+            for pointer_word in pointer_words:
+                pointer_offset = int(pointer_word["offset"])
+                original_read = {
+                    "op": "read32",
+                    "address": {
+                        "op": "add",
+                        "left": {
+                            "op": "input_reg",
+                            "reg": source_relation["original"],
+                        },
+                        "right": {"op": "constant", "value": pointer_offset},
+                    },
+                }
+                candidate_read = {
+                    "op": "read32",
+                    "address": {
+                        "op": "add",
+                        "left": {
+                            "op": "input_reg",
+                            "reg": source_relation["candidate"],
+                        },
+                        "right": {"op": "constant", "value": pointer_offset},
+                    },
+                }
+
+                if (
+                    int(source_relation.get("original_offset", -1)) == 0
+                    and int(source_relation.get("candidate_offset", -1)) == 0
+                    and int(target_relation.get("original_offset", -1)) == 0
+                    and int(target_relation.get("candidate_offset", -1)) == 0
+                    and target_words <= source_words
+                    and original_expression == original_read
+                    and candidate_expression == candidate_read
+                    and original_guard == _nonzero_word_guard(original_read)
+                    and candidate_guard == _nonzero_word_guard(candidate_read)
+                ):
+                    matches.append({
+                        "kind": "nullable_pointer",
+                        "source_relation": source_relation,
+                        "target_relation": target_relation,
+                        "pointer_offset": pointer_offset,
+                    })
+        for slot in contract.get("static_dynamic_pointer_slots", []):
+            slot_words = {
+                (int(word["offset"]), str(word["kind"]))
+                for word in slot.get("required_words", [])
+            }
+            original_read = {
+                "op": "read32",
+                "address": {
+                    "op": "constant",
+                    "value": int(slot["original_address"]),
+                },
+            }
+            candidate_read = {
+                "op": "read32",
+                "address": {
+                    "op": "constant",
+                    "value": int(slot["candidate_address"]),
+                },
+            }
+            if (
+                int(target_relation.get("original_offset", -1)) == 0
+                and int(target_relation.get("candidate_offset", -1)) == 0
+                and target_words <= slot_words
+                and original_expression == original_read
+                and candidate_expression == candidate_read
+                and original_guard == _nonzero_word_guard(original_read)
+                and candidate_guard == _nonzero_word_guard(candidate_read)
+            ):
+                matches.append({
+                    "kind": "static_pointer_seed",
+                    "slot": slot,
+                    "target_relation": target_relation,
+                })
+        if len(matches) != 1:
+            return None
+        claims.append(matches[0])
+    return claims
+
+
+def _nonzero_word_guard(expression: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "op": "not",
+        "value": {
+            "op": "equal",
+            "left": {
+                "op": "bit_and", "left": expression, "right": expression,
+            },
+            "right": {"op": "constant", "value": 0},
+        },
+    }
+
+
+def _read32_input_register_offset(
+    expression: dict[str, Any],
+) -> tuple[str, int] | None:
+    if expression.get("op") != "read32":
+        return None
+    address = expression.get("address") or {}
+    if address.get("op") == "input_reg":
+        return str(address["reg"]), 0
+    if address.get("op") != "add":
+        return None
+    left = address.get("left") or {}
+    right = address.get("right") or {}
+    if left.get("op") == "constant" and right.get("op") == "input_reg":
+        left, right = right, left
+    if left.get("op") != "input_reg" or right.get("op") != "constant":
+        return None
+    return str(left["reg"]), int(right["value"]) & 0xFFFFFFFF
+
+
+def _dynamic_pointer_traversal_diagnostic(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+    edge: dict[str, Any],
+    source_index: int,
+    target_index: int,
+) -> dict[str, Any] | None:
+    register_regions = register_relations.get("regions", [])
+    if source_index >= len(register_regions) or source_index >= len(behaviors):
+        return None
+    original_registers = behaviors[source_index]["original_ir"].get("registers") or {}
+    candidate_registers = behaviors[source_index]["candidate_ir"].get("registers") or {}
+    source = contract["regions"][source_index]
+    target = contract["regions"][target_index]
+    diagnostics: list[dict[str, Any]] = []
+    for output in register_regions[source_index].get("outputs", []):
+        if output.get("relation") != "related_word":
+            continue
+        original_output = str(output["original"])
+        candidate_output = str(output["candidate"])
+        original_expression = original_registers.get(original_output) or {}
+        candidate_expression = candidate_registers.get(candidate_output) or {}
+        original_read = _read32_input_register_offset(original_expression)
+        candidate_read = _read32_input_register_offset(candidate_expression)
+        if original_read is None or candidate_read is None:
+            continue
+        if original_read[1] != candidate_read[1]:
+            continue
+        original_source, word_offset = original_read
+        candidate_source = candidate_read[0]
+        guard_matches = (
+            edge.get("original_guard") == _nonzero_word_guard(original_expression)
+            and edge.get("candidate_guard") == _nonzero_word_guard(candidate_expression)
+        )
+        source_matches = [
+            relation for relation in source.get("input_dynamic_range_relations", [])
+            if str(relation["original"]) == original_source
+            and str(relation["candidate"]) == candidate_source
+            and int(relation.get("original_offset", -1)) == 0
+            and int(relation.get("candidate_offset", -1)) == 0
+            and {
+                "offset": word_offset, "kind": "nullableDynamicPointer",
+            } in relation.get("required_words", [])
+        ]
+        target_matches = [
+            relation for relation in target.get("input_dynamic_range_relations", [])
+            if str(relation["original"]) == original_output
+            and str(relation["candidate"]) == candidate_output
+            and int(relation.get("original_offset", -1)) == 0
+            and int(relation.get("candidate_offset", -1)) == 0
+        ]
+        if not source_matches and not target_matches:
+            continue
+        if not guard_matches and not target_matches:
+            continue
+        shape_matches = 0
+        if len(source_matches) == 1:
+            source_words = {
+                (int(word["offset"]), str(word["kind"]))
+                for word in source_matches[0].get("required_words", [])
+            }
+            shape_matches = sum(
+                {
+                    (int(word["offset"]), str(word["kind"]))
+                    for word in relation.get("required_words", [])
+                } <= source_words
+                for relation in target_matches
+            )
+        blockers = []
+        if len(source_matches) != 1:
+            blockers.append("source_nullable_pointer_relation_not_unique")
+        if len(target_matches) != 1:
+            blockers.append("successor_dynamic_range_relation_not_unique")
+        elif shape_matches != 1:
+            blockers.append("successor_range_shape_not_preserved")
+        if not guard_matches:
+            blockers.append("paired_nonzero_guard_not_exact")
+        diagnostics.append({
+            "profile": "paired_nullable_dynamic_pointer_traversal_v1",
+            "original_source_register": original_source,
+            "candidate_source_register": candidate_source,
+            "original_output_register": original_output,
+            "candidate_output_register": candidate_output,
+            "word_offset": word_offset,
+            "source_relation_matches": len(source_matches),
+            "target_relation_matches": len(target_matches),
+            "shape_matches": shape_matches,
+            "guard_matches": guard_matches,
+            "blockers": blockers,
+        })
+    if len(diagnostics) != 1:
+        return None
+    diagnostic = diagnostics[0]
+    diagnostic["status"] = (
+        "ready_for_lean_replay" if not diagnostic["blockers"] else "incomplete"
+    )
+    diagnostic["next_action"] = (
+        "replay the checked nullable dynamic-pointer load, nonzero guard, range-shape "
+        "preservation, and successor register relation in Lean"
+        if not diagnostic["blockers"] else
+        f"classify original {diagnostic['original_source_register']} and candidate "
+        f"{diagnostic['candidate_source_register']} as one unique dynamic range, mark "
+        f"word offset {diagnostic['word_offset']} nullableDynamicPointer, propagate the "
+        f"same required-word shape to original {diagnostic['original_output_register']} "
+        f"and candidate {diagnostic['candidate_output_register']} at the successor, and "
+        "use the exact paired nonzero branch guard"
+    )
+    return diagnostic
+
+
+def _static_dynamic_pointer_seed_diagnostic(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+    edge: dict[str, Any],
+    source_index: int,
+    target_index: int,
+) -> dict[str, Any] | None:
+    if source_index >= len(behaviors):
+        return None
+    register_regions = register_relations.get("regions", [])
+    if source_index >= len(register_regions):
+        return None
+    source_registers = register_regions[source_index]
+    original_registers = behaviors[source_index]["original_ir"].get("registers") or {}
+    candidate_registers = behaviors[source_index]["candidate_ir"].get("registers") or {}
+    target_relations = contract["regions"][target_index].get(
+        "input_dynamic_range_relations", []
+    )
+    matches: list[dict[str, Any]] = []
+    for output in source_registers.get("outputs", []):
+        if output.get("relation") != "related_word":
+            continue
+        target_matches = [
+            relation for relation in target_relations
+            if relation["original"] == output["original"]
+            and relation["candidate"] == output["candidate"]
+            and int(relation.get("original_offset", -1)) == 0
+            and int(relation.get("candidate_offset", -1)) == 0
+        ]
+        if len(target_matches) != 1:
+            continue
+        original_expression = original_registers.get(output["original"]) or {}
+        candidate_expression = candidate_registers.get(output["candidate"]) or {}
+        if (
+            original_expression.get("op") != "read32"
+            or candidate_expression.get("op") != "read32"
+            or (original_expression.get("address") or {}).get("op") != "constant"
+            or (candidate_expression.get("address") or {}).get("op") != "constant"
+        ):
+            continue
+        original_address = int(original_expression["address"]["value"])
+        candidate_address = int(candidate_expression["address"]["value"])
+        slots = [
+            slot for slot in contract.get("static_dynamic_pointer_slots", [])
+            if int(slot["original_address"]) == original_address
+            and int(slot["candidate_address"]) == candidate_address
+        ]
+        guard_kind = None
+        if (
+            edge.get("original_guard") == _nonzero_word_guard(original_expression)
+            and edge.get("candidate_guard") == _nonzero_word_guard(candidate_expression)
+        ):
+            guard_kind = "nonzero"
+        elif (
+            edge.get("original_guard") == _nonzero_word_guard(original_expression)["value"]
+            and edge.get("candidate_guard") == _nonzero_word_guard(candidate_expression)["value"]
+        ):
+            guard_kind = "zero"
+        required_words = target_matches[0].get("required_words", [])
+        slot_shape_matches = sum(
+            {
+                (int(word["offset"]), str(word["kind"]))
+                for word in required_words
+            } <= {
+                (int(word["offset"]), str(word["kind"]))
+                for word in slot.get("required_words", [])
+            }
+            for slot in slots
+        )
+        blockers: list[str] = []
+        if len(slots) != 1:
+            blockers.append("static_dynamic_pointer_slot_not_unique")
+        elif slot_shape_matches != 1:
+            blockers.append("static_dynamic_pointer_slot_shape_insufficient")
+        if guard_kind != "nonzero":
+            blockers.append("paired_nonzero_static_pointer_guard_not_exact")
+        matches.append({
+            "profile": "paired_static_dynamic_pointer_seed_v1",
+            "original_address": original_address,
+            "candidate_address": candidate_address,
+            "original_output_register": output["original"],
+            "candidate_output_register": output["candidate"],
+            "required_words": required_words,
+            "slot_matches": len(slots),
+            "slot_shape_matches": slot_shape_matches,
+            "guard_kind": guard_kind,
+            "blockers": blockers,
+        })
+    if len(matches) != 1:
+        return None
+    diagnostic = matches[0]
+    diagnostic["status"] = (
+        "ready_for_lean_replay" if not diagnostic["blockers"] else "incomplete"
+    )
+    diagnostic["next_action"] = (
+        "replay the checked writable-PE pointer slot, nonzero guard, dynamic-range "
+        "shape, and loaded-register relation in Lean"
+        if not diagnostic["blockers"] else
+        "declare one static_dynamic_pointer_slots entry for original address "
+        f"0x{diagnostic['original_address']:08x} and candidate address "
+        f"0x{diagnostic['candidate_address']:08x}, give it the successor's required "
+        "dynamic word shape, and retain the exact paired nonzero branch guard"
+    )
+    return diagnostic
+
+
+def _dynamic_range_register_output_claims(
+    register_region: dict[str, Any],
+    dynamic_transfer_claims: list[dict[str, Any]] | None,
+    behavior: dict[str, Any] | None = None,
+    guard_relation_claim: dict[str, Any] | None = None,
+) -> list[dict[str, Any]] | None:
+    if dynamic_transfer_claims is None:
+        return None
+    ordinary_outputs = {
+        (
+            claim["output"]["original"],
+            claim["output"]["candidate"],
+            claim["output"]["relation"],
+        )
+        for claim in register_region.get("output_claims", [])
+        if isinstance(claim.get("output"), dict)
+    }
+    missing = [
+        output for output in register_region.get("outputs", [])
+        if (output["original"], output["candidate"], output["relation"])
+            not in ordinary_outputs
+    ]
+    if not missing:
+        return []
+    result: list[dict[str, Any]] = []
+    for output in missing:
+        matches = [
+            claim for claim in dynamic_transfer_claims
+            if claim.get("kind") in {"nullable_pointer", "static_pointer_seed"}
+            and claim["target_relation"]["original"] == output["original"]
+            and claim["target_relation"]["candidate"] == output["candidate"]
+            and int(claim["target_relation"].get("original_offset", -1)) == 0
+            and int(claim["target_relation"].get("candidate_offset", -1)) == 0
+            and output["relation"] == "related_word"
+        ]
+        if (
+            behavior is not None
+            and guard_relation_claim is not None
+            and guard_relation_claim.get("profile")
+                == "static_dynamic_pointer_guard_v1"
+            and guard_relation_claim.get("kind") == "zero"
+            and output["relation"] == "related_word"
+        ):
+            slot = guard_relation_claim["slot"]
+            original_expression = (
+                behavior.get("original_ir", {}).get("registers") or {}
+            ).get(output["original"])
+            candidate_expression = (
+                behavior.get("candidate_ir", {}).get("registers") or {}
+            ).get(output["candidate"])
+            if (
+                original_expression == {
+                    "op": "read32",
+                    "address": {
+                        "op": "constant", "value": int(slot["original_address"]),
+                    },
+                }
+                and candidate_expression == {
+                    "op": "read32",
+                    "address": {
+                        "op": "constant", "value": int(slot["candidate_address"]),
+                    },
+                }
+            ):
+                matches.append({
+                    "kind": "static_pointer_zero",
+                    "slot": slot,
+                    "output": output,
+                })
+        if len(matches) != 1:
+            return None
+        result.append({"output": output, "claim": matches[0]})
+    return result
+
+
+def _static_dynamic_pointer_slot_guard_claim(
+    contract: dict[str, Any],
+    original_guard: dict[str, Any],
+    candidate_guard: dict[str, Any],
+) -> dict[str, Any] | None:
+    matches: list[dict[str, Any]] = []
+    for slot in contract.get("static_dynamic_pointer_slots", []):
+        original_read = {
+            "op": "read32",
+            "address": {
+                "op": "constant", "value": int(slot["original_address"]),
+            },
+        }
+        candidate_read = {
+            "op": "read32",
+            "address": {
+                "op": "constant", "value": int(slot["candidate_address"]),
+            },
+        }
+        original_zero = _nonzero_word_guard(original_read)["value"]
+        candidate_zero = _nonzero_word_guard(candidate_read)["value"]
+        for kind, expected_original, expected_candidate in (
+            ("zero", original_zero, candidate_zero),
+            ("nonzero", _nonzero_word_guard(original_read),
+             _nonzero_word_guard(candidate_read)),
+        ):
+            if original_guard == expected_original and candidate_guard == expected_candidate:
+                matches.append({
+                    "profile": "static_dynamic_pointer_guard_v1",
+                    "kind": kind,
+                    "slot": slot,
+                })
+    return matches[0] if len(matches) == 1 else None
+
+
+def _related_word_zero_guard_claim(
+    source: dict[str, Any],
+    original_guard: dict[str, Any],
+    candidate_guard: dict[str, Any],
+) -> dict[str, Any] | None:
+    def parse(expression: dict[str, Any]) -> tuple[str, int] | None:
+        not_count = 0
+        while expression.get("op") == "not":
+            not_count += 1
+            expression = expression.get("value") or {}
+        if expression.get("op") != "equal":
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if right.get("op") == "constant" and int(right.get("value", -1)) == 0:
+            word = left
+        elif left.get("op") == "constant" and int(left.get("value", -1)) == 0:
+            word = right
+        else:
+            return None
+        if word.get("op") != "bit_and" or word.get("left") != word.get("right"):
+            return None
+        register = word.get("left") or {}
+        if register.get("op") != "input_reg":
+            return None
+        return str(register["reg"]), not_count
+
+    original = parse(original_guard)
+    candidate = parse(candidate_guard)
+    if original is None or candidate is None or original[1] != candidate[1]:
+        return None
+    relation = next((
+        relation for relation in source.get("input_relations", [])
+        if str(relation["original"]) == original[0]
+        and str(relation["candidate"]) == candidate[0]
+        and relation["relation"] in {"exact", "related_word"}
+    ), None)
+    if relation is None:
+        return None
+    return {
+        "profile": "related_word_zero_guard_v1",
+        "original_register": original[0],
+        "candidate_register": candidate[0],
+        "value_relation": relation["relation"],
+        "not_count": original[1],
+    }
+
+
+def _paired_stack_guard_claim(
+    source: dict[str, Any],
+    original_guard: dict[str, Any],
+    candidate_guard: dict[str, Any],
+) -> dict[str, Any] | None:
+    windows = source.get("stack_windows", [])
+    if not windows:
+        return None
+
+    def register_offset(address: Any) -> tuple[str, int] | None:
+        if not isinstance(address, dict) or address.get("op") != "add":
+            return None
+        register = address.get("left")
+        constant = address.get("right")
+        if (
+            not isinstance(register, dict)
+            or register.get("op") != "input_reg"
+            or not isinstance(constant, dict)
+            or constant.get("op") != "constant"
+        ):
+            return None
+        offset = int(constant.get("value", -1))
+        if offset < 0 or offset >= 2**31:
+            return None
+        return str(register.get("reg")), offset
+
+    def parse(expression: dict[str, Any]) -> tuple[str, int, int] | None:
+        not_count = 0
+        while expression.get("op") == "not":
+            not_count += 1
+            expression = expression.get("value") or {}
+        if expression.get("op") != "equal":
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if right.get("op") == "constant" and int(right.get("value", -1)) == 0:
+            word = left
+        elif left.get("op") == "constant" and int(left.get("value", -1)) == 0:
+            word = right
+        else:
+            return None
+        if word.get("op") != "bit_and" or word.get("left") != word.get("right"):
+            return None
+        read = word.get("left") or {}
+        if read.get("op") != "read32":
+            return None
+        address = register_offset(read.get("address"))
+        if address is None or address[1] % 4 != 0:
+            return None
+        return address[0], address[1], not_count
+
+    original = parse(original_guard)
+    candidate = parse(candidate_guard)
+    if (
+        original is None
+        or candidate is None
+        or original[1:] != candidate[1:]
+    ):
+        return None
+    matches = [
+        window for window in windows
+        if str(window.get("original_register")) == original[0]
+        and str(window.get("candidate_register")) == candidate[0]
+        and original[1] + 4 <= int(window.get("bytes_above", -1))
+    ]
+    if len(matches) != 1:
+        return None
+    return {
+        "profile": "paired_stack_read_guard_v1",
+        "window": matches[0],
+        "offset": original[1],
+        "not_count": original[2],
+    }
+
+
+def _stack_read32_sub_output_claim(
+    region: dict[str, Any],
+    output: dict[str, Any],
+    original_expression: dict[str, Any],
+    candidate_expression: dict[str, Any],
+) -> dict[str, Any] | None:
+    def parse(expression: dict[str, Any]) -> tuple[str, int, int] | None:
+        if expression.get("op") != "sub":
+            return None
+        read = expression.get("left") or {}
+        subtract = expression.get("right") or {}
+        address = read.get("address") or {}
+        register = address.get("left") or {}
+        offset = address.get("right") or {}
+        if (
+            read.get("op") != "read32"
+            or address.get("op") != "add"
+            or register.get("op") != "input_reg"
+            or offset.get("op") != "constant"
+            or subtract.get("op") != "constant"
+        ):
+            return None
+        offset_value = int(offset.get("value", -1))
+        subtract_value = int(subtract.get("value", -1))
+        if not (0 <= offset_value < 2**31 and 0 <= subtract_value < 2**32):
+            return None
+        return str(register.get("reg")), offset_value, subtract_value
+
+    original = parse(original_expression)
+    candidate = parse(candidate_expression)
+    if (
+        original is None
+        or candidate is None
+        or original[1:] != candidate[1:]
+        or output.get("relation") != "related_word"
+        or original[1] % 4 != 0
+        or original[2] != 0
+    ):
+        return None
+    matches = [
+        window for window in region.get("stack_windows", [])
+        if str(window.get("original_register")) == original[0]
+        and str(window.get("candidate_register")) == candidate[0]
+        and original[1] + 4 <= int(window.get("bytes_above", -1))
+    ]
+    if len(matches) != 1:
+        return None
+    return {
+        "kind": "stack_read32_sub",
+        "output": output,
+        "window": matches[0],
+        "offset": original[1],
+        "subtract": original[2],
+    }
+
+
+def _stack_window_transfer_claims(
+    source: dict[str, Any],
+    target: dict[str, Any],
+    behavior: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    target_windows = target.get("stack_windows", [])
+    if not target_windows:
+        return []
+    source_windows = source.get("stack_windows", [])
+    original_registers = behavior["original_ir"].get("registers") or {}
+    candidate_registers = behavior["candidate_ir"].get("registers") or {}
+
+    def adjustment(expression: Any, register: str) -> dict[str, Any] | None:
+        if expression == {"op": "input_reg", "reg": register}:
+            return {"kind": "identity", "amount": 0}
+        if not isinstance(expression, dict) or expression.get("op") not in {"add", "sub"}:
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if (
+            left != {"op": "input_reg", "reg": register}
+            or right.get("op") != "constant"
+        ):
+            return None
+        amount = int(right.get("value", -1))
+        if not 0 <= amount < 2**32:
+            return None
+        signed = amount if amount < 2**31 else amount - 2**32
+        delta = signed if expression["op"] == "add" else -signed
+        if not -(2**31) < delta < 2**31 or delta % 4 != 0:
+            return None
+        if delta == 0:
+            return {"kind": "identity", "amount": 0}
+        return {
+            "kind": "add" if delta > 0 else "subtract",
+            "amount": abs(delta),
+        }
+
+    claims: list[dict[str, Any]] = []
+    for target_window in target_windows:
+        original_adjustment = adjustment(
+            original_registers.get(target_window["original_register"]),
+            str(target_window["original_register"]),
+        )
+        candidate_adjustment = adjustment(
+            candidate_registers.get(target_window["candidate_register"]),
+            str(target_window["candidate_register"]),
+        )
+        if original_adjustment is None or original_adjustment != candidate_adjustment:
+            return None
+        amount = int(original_adjustment["amount"])
+        if original_adjustment["kind"] == "add":
+            required_below = max(int(target_window.get("bytes_below", 0)) - amount, 0)
+            required_above = int(target_window["bytes_above"]) + amount
+        elif original_adjustment["kind"] == "subtract":
+            required_below = int(target_window.get("bytes_below", 0)) + amount
+            required_above = max(int(target_window["bytes_above"]) - amount, 0)
+        else:
+            required_below = int(target_window.get("bytes_below", 0))
+            required_above = int(target_window["bytes_above"])
+        matches = [
+            window for window in source_windows
+            if int(window.get("range_id", -1)) == int(target_window.get("range_id", -2))
+            and str(window.get("original_register"))
+                == str(target_window.get("original_register"))
+            and str(window.get("candidate_register"))
+                == str(target_window.get("candidate_register"))
+            and int(window.get("bytes_below", 0)) >= required_below
+            and int(window.get("bytes_above", 0)) >= required_above
+        ]
+        if len(matches) != 1:
+            return None
+        claims.append({
+            "source": matches[0],
+            "target": target_window,
+            "adjustment": original_adjustment,
+        })
+    return claims
+
+
+def _attach_stack_register_output_claims(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+) -> dict[str, Any]:
+    for region_index, row in enumerate(register_relations.get("regions", [])):
+        region = contract["regions"][region_index]
+        existing = {
+            (str(claim["output"]["original"]), str(claim["output"]["candidate"])):
+                claim
+            for claim in row.get("output_claims", [])
+        }
+        for output in row.get("outputs", []):
+            key = (str(output["original"]), str(output["candidate"]))
+            if key in existing:
+                continue
+            original_expression = behaviors[region_index]["original_ir"]["registers"][
+                output["original"]
+            ]
+            candidate_expression = behaviors[region_index]["candidate_ir"]["registers"][
+                output["candidate"]
+            ]
+            claim = _stack_read32_sub_output_claim(
+                region, output, original_expression, candidate_expression
+            )
+            if claim is not None:
+                existing[key] = claim
+        row["output_claims"] = [
+            existing[(str(output["original"]), str(output["candidate"]))]
+            for output in row.get("outputs", [])
+            if (str(output["original"]), str(output["candidate"])) in existing
+        ]
+        row["fully_supported_output_transfer"] = (
+            len(row["output_claims"]) == len(row["outputs"])
+        )
+    return register_relations
+
+
+def _lower_stack_register_relations(
+    contract: dict[str, Any],
+    register_relations: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    regions = contract.get("regions", [])
+    rows = register_relations.get("regions", [])
+
+    def covered_pairs(region: dict[str, Any]) -> set[tuple[str, str]]:
+        return {
+            (str(window["original_register"]), str(window["candidate_register"]))
+            for window in region.get("stack_windows", [])
+        }
+
+    input_covered = [covered_pairs(region) for region in regions]
+    outgoing: dict[int, list[dict[str, Any]]] = {}
+    for edge in register_relations.get("edges", []):
+        outgoing.setdefault(int(edge["source_region_index"]), []).append(edge)
+
+    for index, (region, row) in enumerate(zip(regions, rows, strict=True)):
+        removed_inputs = input_covered[index]
+        if removed_inputs:
+            region["input_relations"] = [
+                relation for relation in region.get("input_relations", [])
+                if (str(relation["original"]), str(relation["candidate"]))
+                    not in removed_inputs
+            ]
+            row["inputs"] = [
+                relation for relation in row.get("inputs", [])
+                if (str(relation["original"]), str(relation["candidate"]))
+                    not in removed_inputs
+            ]
+            removed_originals = {pair[0] for pair in removed_inputs}
+            row["exact_output_claims"] = [
+                claim for claim in row.get("exact_output_claims", [])
+                if not (
+                    _semantic_expr_registers(claim.get("expression") or {})
+                    & removed_originals
+                )
+            ]
+            row["output_claims"] = [
+                claim for claim in row.get("output_claims", [])
+                if not (
+                    (
+                        claim.get("kind") == "identity"
+                        and str(claim.get("input", {}).get("original"))
+                            in removed_originals
+                    )
+                    or (
+                        claim.get("kind") in {"exact_expression", "exact_memory"}
+                        and bool(
+                            _semantic_expr_registers(claim.get("expression") or {})
+                            & removed_originals
+                        )
+                    )
+                )
+            ]
+
+        edges = outgoing.get(index, [])
+        removable_outputs = {
+            pair for pair in covered_pairs(region)
+            if edges and all(
+                not edge.get("environment_barrier")
+                and not edge.get("requires_call_stack_proof")
+                and pair in input_covered[int(edge["target_region_index"])]
+                for edge in edges
+            )
+        }
+        if not removable_outputs:
+            row["fully_exact_output_transfer"] = bool(row.get("outputs")) and (
+                len(row.get("exact_output_claims", [])) == len(row.get("outputs", []))
+            )
+            row["fully_supported_output_transfer"] = (
+                len(row.get("output_claims", [])) == len(row.get("outputs", []))
+            )
+            continue
+        region["output_relations"] = [
+            relation for relation in region.get("output_relations", [])
+            if (str(relation["original"]), str(relation["candidate"]))
+                not in removable_outputs
+        ]
+        row["outputs"] = [
+            relation for relation in row.get("outputs", [])
+            if (str(relation["original"]), str(relation["candidate"]))
+                not in removable_outputs
+        ]
+        row["exact_output_claims"] = [
+            claim for claim in row.get("exact_output_claims", [])
+            if (str(claim["register"]), str(claim["register"]))
+                not in removable_outputs
+        ]
+        row["output_claims"] = [
+            claim for claim in row.get("output_claims", [])
+            if (str(claim["output"]["original"]), str(claim["output"]["candidate"]))
+                not in removable_outputs
+        ]
+        row["fully_exact_output_transfer"] = bool(row["outputs"]) and (
+            len(row["exact_output_claims"]) == len(row["outputs"])
+        )
+        row["fully_supported_output_transfer"] = (
+            len(row["output_claims"]) == len(row["outputs"])
+        )
+    return contract, register_relations
+
+
+def _attach_segment_refinement_analysis(
+    proof_ir: dict[str, Any],
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    memory_contracts: dict[str, Any],
+    register_relations: dict[str, Any],
+    import_register_seeds: list[dict[str, Any]] | None = None,
+    *,
+    segment_candidates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    candidates = {
+        item["edge_index"]: item
+        for item in (
+            segment_candidates
+            if segment_candidates is not None
+            else _segment_refinement_candidates(
+                contract, behaviors, memory_contracts, register_relations,
+                import_register_seeds,
+            )
+        )
+    }
+    obligations: list[dict[str, Any]] = []
+    for edge_index, edge in enumerate(register_relations["edges"]):
+        source_index = int(edge["source_region_index"])
+        target_index = int(edge["target_region_index"])
+        source = contract["regions"][source_index]
+        target = contract["regions"][target_index]
+        dynamic_pointer = _dynamic_pointer_traversal_diagnostic(
+            contract, behaviors, register_relations, edge, source_index, target_index
+        )
+        static_pointer = _static_dynamic_pointer_seed_diagnostic(
+            contract, behaviors, register_relations, edge, source_index, target_index
+        )
+        if edge.get("requires_call_stack_proof"):
+            repair_class = "call_stack_and_return_address"
+            next_action = (
+                "prove the pushed return address, abstract call-stack membership, and mapped "
+                "return exit before checking the successor StateRel"
+            )
+        elif edge.get("environment_barrier"):
+            repair_class = "external_environment_refinement"
+            next_action = (
+                "instantiate paired external environments for the machine-level call event, "
+                "world update, memory effects, and continuation StateRel"
+            )
+        elif dynamic_pointer is not None and dynamic_pointer["status"] == "incomplete":
+            repair_class = "dynamic_pointer_traversal_relation"
+            next_action = dynamic_pointer["next_action"]
+        elif static_pointer is not None and static_pointer["status"] == "incomplete":
+            repair_class = "static_dynamic_pointer_seed_relation"
+            next_action = static_pointer["next_action"]
+        elif not edge.get("relation_preservation_proposed"):
+            repair_class = "register_state_relation"
+            next_action = (
+                "strengthen the source invariant or add checked relation witnesses for every "
+                "target input register"
+            )
+        else:
+            repair_class = "successor_state_composition"
+            next_action = (
+                "combine exact decode, register transfer, flags, x87, memory writes, and the "
+                "edge guard into RelationalSegmentRefinement under the canonical StateRel"
+            )
+        candidate = candidates.get(edge_index)
+        obligations.append({
+            "id": (
+                f"segment:{source['id']}:{target['id']}:{edge_index}"
+            ),
+            "kind": "relational_segment_refinement",
+            "status": "proved" if candidate is not None else "incomplete",
+            "source_region_id": source["id"],
+            "target_region_id": target["id"],
+            "source_region_index": source_index,
+            "target_region_index": target_index,
+            "edge_kind": edge.get("kind"),
+            "original_span": source["original"],
+            "candidate_span": source["candidate"],
+            "repair_class": repair_class,
+            "blocker": (
+                None if candidate is not None else
+                (
+                    "the paired dynamic-pointer traversal lacks a unique checked source "
+                    "range, successor range shape, or exact nonzero edge guard"
+                    if dynamic_pointer is not None
+                    and dynamic_pointer["status"] == "incomplete" else
+                    "the paired writable-PE pointer load lacks one checked static slot, "
+                    "successor shape, or exact nonzero guard"
+                    if static_pointer is not None
+                    and static_pointer["status"] == "incomplete" else
+                    "no Lean RelationalSegmentRefinement theorem connects this decoded edge "
+                    "to the canonical global StateRel"
+                )
+            ),
+            "next_action": (
+                f"replay the generated {candidate['certificate_profile']} segment theorem in Lean"
+                if candidate is not None else next_action
+            ),
+            "analysis": {
+                "register_relation_preservation_proposed": bool(
+                    edge.get("relation_preservation_proposed")
+                ),
+                "environment_barrier": bool(edge.get("environment_barrier")),
+                "requires_call_stack_proof": bool(
+                    edge.get("requires_call_stack_proof")
+                ),
+                "certificate_profile": (
+                    candidate["certificate_profile"] if candidate is not None else None
+                ),
+                "certificate": candidate,
+                "dynamic_pointer_traversal": dynamic_pointer,
+                "static_dynamic_pointer_seed": static_pointer,
+            },
+        })
+    attached = dict(proof_ir)
+    attached["segment_refinement_summary"] = {
+        "edges": len(obligations),
+        "proved": len(candidates),
+        "incomplete": len(obligations) - len(candidates),
+        "interface": "StageA.Relational.RelationalSegmentRefinement",
+        "certificate_format": RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
+    }
+    attached["obligations"] = [*proof_ir["obligations"], *obligations]
+    attached["families"] = [
+        *proof_ir["families"],
+        {
+            "family": "segment_refinement",
+            "status": (
+                "not_applicable" if not obligations else
+                "satisfied" if len(candidates) == len(obligations) else
+                "incomplete"
+            ),
+        },
+    ]
+    attached["status"] = "incomplete"
+    return attached
+
+
+def _semantic_constant_word(expression: dict[str, Any]) -> int | None:
+    operation = expression.get("op")
+    if operation == "constant":
+        return int(expression["value"]) & 0xFFFFFFFF
+    if operation == "sub" and expression.get("left") == expression.get("right"):
+        return 0
+    return None
+
+
+def _semantic_constant_bool(expression: dict[str, Any]) -> bool | None:
+    operation = expression.get("op")
+    if operation == "bool_constant":
+        return bool(expression.get("value"))
+    if operation in {"equal", "unsigned_less"}:
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if operation == "equal" and left == right:
+            return True
+        left_value = _semantic_constant_word(left)
+        right_value = _semantic_constant_word(right)
+        if left_value is None or right_value is None:
+            return None
+        return (
+            left_value == right_value
+            if operation == "equal"
+            else left_value < right_value
+        )
+    if operation == "not":
+        value = _semantic_constant_bool(expression.get("value") or {})
+        return None if value is None else not value
+    if operation in {"and", "or", "xor"}:
+        left = _semantic_constant_bool(expression.get("left") or {})
+        right = _semantic_constant_bool(expression.get("right") or {})
+        if left is None or right is None:
+            return None
+        return {
+            "and": left and right,
+            "or": left or right,
+            "xor": left != right,
+        }[operation]
+    return None
+
+
+def _semantic_external_target_identity(
+    imported: Any,
+) -> tuple[str, str, str | int] | None:
+    if not isinstance(imported, dict):
+        return None
+    dll = imported.get("dll")
+    if isinstance(dll, list) and all(isinstance(byte, int) for byte in dll):
+        try:
+            dll = bytes(dll).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+    name = imported.get("name")
+    if not isinstance(dll, str) or not isinstance(name, dict):
+        return None
+    operation = name.get("op")
+    if operation == "symbol":
+        value = name.get("bytes")
+        if not isinstance(value, list) or not all(isinstance(byte, int) for byte in value):
+            return None
+        try:
+            symbol = bytes(value).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+        return (dll.lower(), "symbol", symbol)
+    if operation == "ordinal":
+        ordinal = _integer(name.get("value", name.get("ordinal")))
+        return None if ordinal is None else (dll.lower(), "ordinal", ordinal)
+    return None
+
+
+def _machine_import_call_contract_analysis(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    contracts_by_target = {
+        (
+            str(item["import"]["dll"]).lower(),
+            "symbol" if "symbol" in item["import"] else "ordinal",
+            item["import"].get("symbol", item["import"].get("ordinal")),
+        ): item
+        for item in contract.get("machine_import_call_contracts", [])
+    }
+    calls: list[dict[str, Any]] = []
+    for region_index, behavior_pair in enumerate(behaviors):
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        original_operation = original_outcome.get("op")
+        candidate_operation = candidate_outcome.get("op")
+        if original_operation not in {"external_call", "external_jump"} and \
+                candidate_operation not in {"external_call", "external_jump"}:
+            continue
+        original_target = _semantic_external_target_identity(
+            original_outcome.get("import")
+        )
+        candidate_target = _semantic_external_target_identity(
+            candidate_outcome.get("import")
+        )
+        matched_contract = (
+            contracts_by_target.get(original_target)
+            if original_target is not None and original_target == candidate_target
+            else None
+        )
+        original_arguments = original_outcome.get("arguments")
+        candidate_arguments = candidate_outcome.get("arguments")
+        expected_arguments = (
+            len(matched_contract["stack_argument_offsets"])
+            if matched_contract is not None else None
+        )
+        arguments_recovered = (
+            expected_arguments is not None
+            and isinstance(original_arguments, list)
+            and isinstance(candidate_arguments, list)
+            and len(original_arguments) == expected_arguments
+            and len(candidate_arguments) == expected_arguments
+        )
+        calls.append({
+            "region_index": region_index,
+            "region_id": contract["regions"][region_index]["id"],
+            "original_operation": original_operation,
+            "candidate_operation": candidate_operation,
+            "original_import": (
+                list(original_target) if original_target is not None else None
+            ),
+            "candidate_import": (
+                list(candidate_target) if candidate_target is not None else None
+            ),
+            "contract_id": (
+                int(matched_contract["id"]) if matched_contract is not None else None
+            ),
+            "expected_argument_words": expected_arguments,
+            "original_arguments": original_arguments,
+            "candidate_arguments": candidate_arguments,
+            "arguments_recovered": arguments_recovered,
+            "status": (
+                "candidate_requires_lean_replay"
+                if original_operation == candidate_operation
+                and original_target == candidate_target
+                and arguments_recovered
+                else "incomplete"
+            ),
+        })
+    return {
+        "format": "stage-a-relational-machine-import-calls-v1",
+        "status": "incomplete",
+        "contracts": contract.get("machine_import_call_contracts", []),
+        "calls": calls,
+        "counts": {
+            "contracts": len(contract.get("machine_import_call_contracts", [])),
+            "call_sites": len(calls),
+            "contracted_call_sites": sum(call["contract_id"] is not None for call in calls),
+            "argument_recovery_candidates": sum(
+                call["status"] == "candidate_requires_lean_replay" for call in calls
+            ),
+            "incomplete_call_sites": sum(
+                call["status"] == "incomplete" for call in calls
+            ),
+        },
+    }
+
+
+def _semantic_add_word_offset(
+    expression: dict[str, Any], offset: int,
+) -> dict[str, Any]:
+    offset %= 2**32
+    if offset == 0:
+        return expression
+    if (
+        expression.get("op") == "add"
+        and isinstance(expression.get("right"), dict)
+        and expression["right"].get("op") == "constant"
+    ):
+        combined = (int(expression["right"]["value"]) + offset) % 2**32
+        if combined == 0:
+            return expression["left"]
+        return {
+            "op": "add", "left": expression["left"],
+            "right": {"op": "constant", "value": combined},
+        }
+    if (
+        expression.get("op") == "sub"
+        and isinstance(expression.get("right"), dict)
+        and expression["right"].get("op") == "constant"
+    ):
+        combined = (2**32 - int(expression["right"]["value"]) + offset) % 2**32
+        if combined == 0:
+            return expression["left"]
+        return {
+            "op": "add", "left": expression["left"],
+            "right": {"op": "constant", "value": combined},
+        }
+    return {
+        "op": "add", "left": expression,
+        "right": {"op": "constant", "value": offset},
+    }
+
+
+def _semantic_call_push_base(expression: Any) -> dict[str, Any] | None:
+    if not isinstance(expression, dict) or expression.get("op") not in {"add", "sub"}:
+        return None
+    right = expression.get("right")
+    left = expression.get("left")
+    if (
+        not isinstance(left, dict)
+        or not isinstance(right, dict)
+        or right.get("op") != "constant"
+    ):
+        return None
+    value = _integer(right.get("value"))
+    if value is None or not 0 <= value < 2**32:
+        return None
+    restored = (
+        value + 4 if expression["op"] == "add" else 2**32 - value + 4
+    ) % 2**32
+    return _semantic_add_word_offset(left, restored)
+
+
+def _semantic_affine_base_offset(expression: Any) -> tuple[Any, int] | None:
+    if not isinstance(expression, dict):
+        return None
+    operation = expression.get("op")
+    right = expression.get("right")
+    if operation in {"add", "sub"} and isinstance(right, dict) \
+            and right.get("op") == "constant":
+        value = _integer(right.get("value"))
+        if value is None or not 0 <= value < 2**32:
+            return None
+        return (
+            expression.get("left"),
+            (value if operation == "add" else 2**32 - value) % 2**32,
+        )
+    return expression, 0
+
+
+def _semantic_word_writes_disjoint(left: Any, right: Any) -> bool:
+    left_affine = _semantic_affine_base_offset(left)
+    right_affine = _semantic_affine_base_offset(right)
+    if left_affine is None or right_affine is None or left_affine[0] != right_affine[0]:
+        return False
+    return all(
+        (left_affine[1] + left_offset) % 2**32
+        != (right_affine[1] + right_offset) % 2**32
+        for left_offset in range(4) for right_offset in range(4)
+    )
+
+
+def _semantic_exact_stack_argument(
+    stack: dict[str, Any], writes: list[dict[str, Any]], offset: int,
+) -> dict[str, Any] | None:
+    address = _semantic_add_word_offset(stack, offset)
+    for index in range(len(writes) - 1, -1, -1):
+        write = writes[index]
+        if write.get("address") != address:
+            continue
+        if not all(
+            _semantic_word_writes_disjoint(address, later.get("address"))
+            for later in writes[index + 1:]
+        ):
+            return None
+        value = write.get("value")
+        return value if isinstance(value, dict) else None
+    return None
+
+
+def _semantic_externalize_register_import_call(
+    behavior: dict[str, Any], machine_contract: dict[str, Any],
+    dispatch_register: str, imported: dict[str, Any],
+) -> dict[str, Any] | None:
+    outcome = behavior.get("outcome") or {}
+    target = outcome.get("target") or {}
+    registers = behavior.get("registers") or {}
+    writes = behavior.get("writes") or []
+    if (
+        outcome.get("op") != "indirect_call"
+        or target != {"op": "input_reg", "reg": dispatch_register}
+        or not isinstance(writes, list) or not writes
+        or not isinstance(registers.get("esp"), dict)
+    ):
+        return None
+    final_write = writes[-1]
+    if (
+        final_write.get("address") != registers["esp"]
+        or not isinstance(final_write.get("value"), dict)
+        or final_write["value"].get("op") != "constant"
+    ):
+        return None
+    restored_stack = _semantic_call_push_base(registers["esp"])
+    if restored_stack is None:
+        return None
+    prior_writes = writes[:-1]
+    arguments: list[dict[str, Any]] = []
+    for offset in machine_contract.get("stack_argument_offsets", []):
+        argument = _semantic_exact_stack_argument(
+            restored_stack, prior_writes, int(offset)
+        )
+        if argument is None:
+            return None
+        arguments.append(argument)
+    externalized = json.loads(json.dumps(behavior))
+    externalized["registers"]["esp"] = restored_stack
+    externalized["writes"] = prior_writes
+    externalized["outcome"] = {
+        "op": "external_call",
+        "import": imported,
+        "arguments": arguments,
+        "continuation": int(outcome["continuation"]),
+    }
+    return externalized
+
+
+def _semantic_input_register_offset(
+    expression: Any,
+) -> tuple[str, int] | None:
+    for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"):
+        witness = _register_offset_witness(expression, register)
+        if witness is not None:
+            return register, int(witness[1])
+    return None
+
+
+def _semantic_affine_word_read(
+    register: str, offset: int,
+) -> dict[str, Any]:
+    def byte_address(byte_offset: int) -> dict[str, Any]:
+        absolute_offset = offset + byte_offset
+        if absolute_offset == 0:
+            return {"op": "input_reg", "reg": register}
+        return {
+            "op": "add",
+            "left": {"op": "input_reg", "reg": register},
+            "right": {"op": "constant", "value": absolute_offset},
+        }
+
+    byte_reads = [
+        {"op": "read8", "address": byte_address(byte_offset)}
+        for byte_offset in range(4)
+    ]
+    return {
+        "op": "bit_or",
+        "left": {
+            "op": "bit_or",
+            "left": byte_reads[0],
+            "right": {"op": "shift_left", "value": byte_reads[1], "amount": 8},
+        },
+        "right": {
+            "op": "bit_or",
+            "left": {"op": "shift_left", "value": byte_reads[2], "amount": 16},
+            "right": {"op": "shift_left", "value": byte_reads[3], "amount": 24},
+        },
+    }
+
+
+def _semantic_word_read(expression: dict[str, Any]) -> tuple[dict[str, Any], bool] | None:
+    if expression.get("op") == "read32" and isinstance(expression.get("address"), dict):
+        return expression["address"], False
+    left = expression.get("left")
+    first_byte = left.get("left") if isinstance(left, dict) else None
+    first_address = first_byte.get("address") if isinstance(first_byte, dict) else None
+    if not isinstance(first_address, dict):
+        return None
+    affine = _semantic_input_register_offset(first_address)
+    if affine is None or affine[1] + 4 > 2**32:
+        return None
+    register, offset = affine
+    if expression != _semantic_affine_word_read(register, offset):
+        return None
+    return first_address, True
+
+
+def _external_argument_relation_claims(
+    source: dict[str, Any], original_arguments: Any, candidate_arguments: Any,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    if not isinstance(original_arguments, list) or not isinstance(candidate_arguments, list):
+        return None, "external call arguments were not recovered as expression lists"
+    if len(original_arguments) != len(candidate_arguments):
+        return None, "original and candidate external argument counts differ"
+    claims: list[dict[str, Any]] = []
+    for argument_index, (original, candidate) in enumerate(zip(
+        original_arguments, candidate_arguments, strict=True
+    )):
+        if not isinstance(original, dict) or not isinstance(candidate, dict):
+            return None, f"external argument {argument_index} is not a symbolic expression"
+        original_constant = _semantic_constant_word(original)
+        candidate_constant = _semantic_constant_word(candidate)
+        if original_constant is not None and original_constant == candidate_constant:
+            claims.append({
+                "kind": "self",
+                "original_expression": original,
+                "candidate_expression": candidate,
+            })
+            continue
+        original_register = _semantic_input_register_offset(original)
+        candidate_register = _semantic_input_register_offset(candidate)
+        if original_register is not None and candidate_register is not None:
+            matches = [
+                relation for relation in source.get("input_relations", [])
+                if str(relation["original"]) == original_register[0]
+                and str(relation["candidate"]) == candidate_register[0]
+            ]
+            if len(matches) != 1:
+                return None, (
+                    f"external argument {argument_index} lacks one unambiguous source "
+                    "register relation"
+                )
+            relation = matches[0]
+            if original_register[1] != candidate_register[1]:
+                return None, (
+                    f"external argument {argument_index} has differing affine register "
+                    "offsets"
+                )
+            if relation["relation"] == "exact" or (
+                relation["relation"] == "related_word" and original_register[1] == 0
+            ):
+                claims.append({
+                    "kind": "register_word",
+                    "relation": relation,
+                    "offset": original_register[1],
+                    "original_expression": original,
+                    "candidate_expression": candidate,
+                })
+                continue
+            return None, (
+                f"external argument {argument_index} uses affine offset "
+                f"{original_register[1]} from a {relation['relation']} register; "
+                "establish an exact relation or a checked mapped-range witness"
+            )
+        original_read = _semantic_word_read(original)
+        candidate_read = _semantic_word_read(candidate)
+        if original_read is None or candidate_read is None:
+            return None, (
+                f"external argument {argument_index} is neither a paired constant, "
+                "a checked register word, nor a checked memory word read"
+            )
+        original_read_address, original_assembled = original_read
+        candidate_read_address, candidate_assembled = candidate_read
+        original_address = _semantic_input_register_offset(original_read_address)
+        candidate_address = _semantic_input_register_offset(candidate_read_address)
+        if original_address is None or candidate_address is None:
+            return None, (
+                f"external argument {argument_index} memory read address is not an "
+                "affine input-register expression"
+            )
+        stack_matches = [
+            window for window in source.get("stack_windows", [])
+            if str(window["original_register"]) == original_address[0]
+            and str(window["candidate_register"]) == candidate_address[0]
+            and original_address[1] == candidate_address[1]
+            and original_address[1] + 4 <= int(window.get("bytes_above", 0))
+        ]
+        if len(stack_matches) == 1:
+            claims.append({
+                "kind": "stack_word_read",
+                "window": stack_matches[0],
+                "offset": original_address[1],
+                "original_assembled_read": original_assembled,
+                "candidate_assembled_read": candidate_assembled,
+                "original_expression": original,
+                "candidate_expression": candidate,
+            })
+            continue
+        if len(stack_matches) > 1:
+            return None, (
+                f"external argument {argument_index} matches multiple source stack windows"
+            )
+        if original_assembled or candidate_assembled:
+            return None, (
+                f"external argument {argument_index} assembled memory read lacks one "
+                "checked source stack-window relation"
+            )
+        matches = [
+            relation for relation in source.get("input_dynamic_range_relations", [])
+            if str(relation["original"]) == original_address[0]
+            and str(relation["candidate"]) == candidate_address[0]
+        ]
+        if len(matches) != 1:
+            return None, (
+                f"external argument {argument_index} lacks one unambiguous source "
+                "dynamic-range relation"
+            )
+        relation = matches[0]
+        original_offset = int(relation.get("original_offset", 0)) + original_address[1]
+        candidate_offset = int(relation.get("candidate_offset", 0)) + candidate_address[1]
+        if (
+            original_offset >= 2**32
+            or candidate_offset >= 2**32
+            or original_offset != candidate_offset
+        ):
+            return None, (
+                f"external argument {argument_index} resolves to differing or wrapped "
+                "dynamic-range offsets"
+            )
+        word = {"offset": original_offset, "kind": "relatedWord"}
+        if word not in relation.get("required_words", []):
+            return None, (
+                f"external argument {argument_index} requires relatedWord at dynamic "
+                f"range offset {original_offset}; add it to the source relation and "
+                "prove it on every incoming edge"
+            )
+        claims.append({
+            "kind": "dynamic_related_word_read",
+            "range_relation": relation,
+            "word_relation": word,
+            "original_read_offset": original_address[1],
+            "candidate_read_offset": candidate_address[1],
+            "original_expression": original,
+            "candidate_expression": candidate,
+        })
+    return claims, None
+
+
+def _external_call_site_candidates(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+    import_call_candidates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    contracts_by_target = {
+        (
+            str(item["import"]["dll"]).lower(),
+            "symbol" if "symbol" in item["import"] else "ordinal",
+            item["import"].get("symbol", item["import"].get("ordinal")),
+        ): item
+        for item in contract.get("machine_import_call_contracts", [])
+    }
+    indirect_calls_by_edge: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for call in import_call_candidates or []:
+        key = (
+            int(call["source_region_index"]),
+            int(call["continuation_region_index"]),
+        )
+        indirect_calls_by_edge.setdefault(key, []).append(call)
+    candidates: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    for edge_index, edge in enumerate(register_relations.get("edges", [])):
+        if not edge.get("environment_barrier"):
+            continue
+        source_index = int(edge["source_region_index"])
+        target_index = int(edge["target_region_index"])
+        source = contract["regions"][source_index]
+        decoded_original = behaviors[source_index]["original_ir"]
+        decoded_candidate = behaviors[source_index]["candidate_ir"]
+        original = decoded_original
+        candidate = decoded_candidate
+        original_outcome = decoded_original.get("outcome") or {}
+        candidate_outcome = decoded_candidate.get("outcome") or {}
+        original_target = _semantic_external_target_identity(
+            original_outcome.get("import")
+        )
+        candidate_target = _semantic_external_target_identity(
+            candidate_outcome.get("import")
+        )
+        machine_contract = contracts_by_target.get(original_target)
+        dispatch_profile = "decoded_external_call"
+        dispatch_registers = None
+        argument_claims = None
+        blocker = None
+        paired_direct = (
+            original_outcome.get("op") == "external_call"
+            and candidate_outcome.get("op") == "external_call"
+        )
+        paired_indirect = (
+            original_outcome.get("op") == "indirect_call"
+            and candidate_outcome.get("op") == "indirect_call"
+        )
+        if paired_indirect:
+            indirect_matches = indirect_calls_by_edge.get(
+                (source_index, target_index), []
+            )
+            if len(indirect_matches) != 1:
+                blocker = (
+                    "register-held import call lacks one unambiguous checked "
+                    "import-register target"
+                )
+            else:
+                indirect = indirect_matches[0]
+                imported = indirect["import"]
+                original_target = (
+                    str(imported["dll"]).lower(),
+                    "symbol" if "symbol" in imported else "ordinal",
+                    imported.get("symbol", imported.get("ordinal")),
+                )
+                candidate_target = original_target
+                machine_contract = contracts_by_target.get(original_target)
+                if machine_contract is None:
+                    blocker = "no unique machine import call contract matches the call"
+                else:
+                    original = _semantic_externalize_register_import_call(
+                        decoded_original, machine_contract,
+                        str(indirect["original_register"]), imported,
+                    )
+                    candidate = _semantic_externalize_register_import_call(
+                        decoded_candidate, machine_contract,
+                        str(indirect["candidate_register"]), imported,
+                    )
+                    if original is None or candidate is None:
+                        blocker = (
+                            "register-held import call does not have the checked "
+                            "decoder call-push and stack-argument shape"
+                        )
+                    else:
+                        original_outcome = original["outcome"]
+                        candidate_outcome = candidate["outcome"]
+                        dispatch_profile = "checked_import_register"
+                        dispatch_registers = {
+                            "original": str(indirect["original_register"]),
+                            "candidate": str(indirect["candidate_register"]),
+                        }
+        elif not paired_direct:
+            blocker = "external edge is not a paired returning import call"
+        if blocker is None:
+            if original_target is None or original_target != candidate_target:
+                blocker = "original and candidate import identities do not match"
+            elif machine_contract is None:
+                blocker = "no unique machine import call contract matches the call"
+            elif edge.get("original_guard") != {"op": "bool_constant", "value": True} or (
+                edge.get("candidate_guard") != {"op": "bool_constant", "value": True}
+            ):
+                blocker = "external call guard is not unconditionally paired"
+            elif original_outcome.get("arguments") != candidate_outcome.get("arguments"):
+                blocker = "original and candidate external arguments differ"
+            elif original.get("x87") != candidate.get("x87"):
+                blocker = "external call setup has differing x87 transformations"
+            else:
+                argument_claims, argument_blocker = _external_argument_relation_claims(
+                    source,
+                    original_outcome.get("arguments", []),
+                    candidate_outcome.get("arguments", []),
+                )
+                if argument_blocker is not None:
+                    blocker = argument_blocker
+
+        boundary_windows: list[dict[str, Any]] = []
+        if blocker is None:
+            for window in contract["regions"][source_index].get(
+                "stack_windows", []
+            ):
+                original_register = str(window["original_register"])
+                candidate_register = str(window["candidate_register"])
+                original_offset = _register_offset_witness(
+                    (original.get("registers") or {}).get(original_register),
+                    original_register,
+                )
+                candidate_offset = _register_offset_witness(
+                    (candidate.get("registers") or {}).get(candidate_register),
+                    candidate_register,
+                )
+                if original_offset is None or candidate_offset is None:
+                    blocker = "call boundary stack register is not affine"
+                    break
+                original_delta = int(original_offset[1])
+                candidate_delta = int(candidate_offset[1])
+                if original_delta >= 2**31:
+                    original_delta -= 2**32
+                if candidate_delta >= 2**31:
+                    candidate_delta -= 2**32
+                if original_delta != candidate_delta:
+                    blocker = "paired call boundary stack deltas differ"
+                    break
+                boundary_windows.append({
+                    "range_id": int(window["range_id"]),
+                    "original_register": original_register,
+                    "candidate_register": candidate_register,
+                    "bytes_below": max(
+                        int(window.get("bytes_below", 0)) + original_delta, 0
+                    ),
+                    "bytes_above": max(
+                        int(window.get("bytes_above", 0)) - original_delta, 0
+                    ),
+                    "source": "external_call_boundary_affine_transfer",
+                })
+        boundary_invariant = {
+            "register_relations": [],
+            "import_register_relations": source.get(
+                "output_import_relations", []
+            ),
+            "dynamic_register_range_relations": source.get(
+                "output_dynamic_range_relations", []
+            ),
+            "bounds": [],
+            "flag_bits": source.get("flag_outputs", []),
+            "address_separations": [],
+            "stack_windows": boundary_windows,
+        }
+        import_transfer_claims: list[dict[str, Any]] = []
+        dynamic_transfer_claims: list[dict[str, Any]] = []
+        if blocker is None and dispatch_profile == "checked_import_register":
+            boundary_invariant["register_relations"] = []
+            boundary_invariant["import_register_relations"] = []
+            boundary_invariant["dynamic_register_range_relations"] = []
+            original_registers = original.get("registers") or {}
+            candidate_registers = candidate.get("registers") or {}
+            for register in machine_contract.get("preserved_registers", []):
+                original_expression = original_registers.get(register) or {}
+                candidate_expression = candidate_registers.get(register) or {}
+                if (
+                    original_expression.get("op") != "input_reg"
+                    or candidate_expression.get("op") != "input_reg"
+                ):
+                    blocker = (
+                        f"preserved register {register} is not an identity transfer at "
+                        "the register-held import boundary"
+                    )
+                    break
+                source_original = str(original_expression["reg"])
+                source_candidate = str(candidate_expression["reg"])
+                imports = [
+                    relation for relation in source.get("input_import_relations", [])
+                    if str(relation["original"]) == source_original
+                    and str(relation["candidate"]) == source_candidate
+                ]
+                dynamics = [
+                    relation for relation in source.get(
+                        "input_dynamic_range_relations", []
+                    )
+                    if str(relation["original"]) == source_original
+                    and str(relation["candidate"]) == source_candidate
+                ]
+                ordinary = [
+                    relation for relation in source.get("input_relations", [])
+                    if str(relation["original"]) == source_original
+                    and str(relation["candidate"]) == source_candidate
+                ]
+                if len(imports) == 1:
+                    target_relation = {
+                        "original": str(register), "candidate": str(register),
+                        "import": imports[0]["import"],
+                    }
+                    boundary_invariant["import_register_relations"].append(
+                        target_relation
+                    )
+                    import_transfer_claims.append({
+                        "import": imports[0]["import"],
+                        "source_original_register": source_original,
+                        "source_candidate_register": source_candidate,
+                        "target_original_register": str(register),
+                        "target_candidate_register": str(register),
+                    })
+                elif len(dynamics) == 1:
+                    target_relation = json.loads(json.dumps(dynamics[0]))
+                    target_relation["original"] = str(register)
+                    target_relation["candidate"] = str(register)
+                    boundary_invariant["dynamic_register_range_relations"].append(
+                        target_relation
+                    )
+                    dynamic_transfer_claims.append({
+                        "source_relation": dynamics[0],
+                        "target_relation": target_relation,
+                    })
+                elif len(ordinary) == 1:
+                    target_relation = {
+                        "original": str(register), "candidate": str(register),
+                        "relation": ordinary[0]["relation"],
+                    }
+                    boundary_invariant["register_relations"].append(target_relation)
+                else:
+                    blocker = (
+                        f"preserved register {register} lacks one source relation at "
+                        "the register-held import boundary"
+                    )
+                    break
+        if blocker is None and boundary_invariant["flag_bits"] not in ([], [10]):
+            blocker = "external boundary flag transfer is not limited to preserved DF"
+        if (
+            blocker is None
+            and boundary_invariant["flag_bits"] == [10]
+            and 10 not in source.get("flag_inputs", [])
+        ):
+            blocker = "external boundary requires DF without a source DF relation"
+
+        covered_registers = {
+            (window["original_register"], window["candidate_register"])
+            for window in boundary_windows
+        }
+        if dispatch_profile != "checked_import_register":
+            boundary_invariant["register_relations"] = [
+                relation for relation in source.get("output_relations", [])
+                if (relation["original"], relation["candidate"])
+                not in covered_registers
+            ]
+        selected_output_claims: list[dict[str, Any]] = []
+        if blocker is None:
+            output_claims = register_relations["regions"][source_index].get(
+                "output_claims", []
+            )
+            for relation in boundary_invariant["register_relations"]:
+                matches = [
+                    claim for claim in output_claims
+                    if claim.get("output") == relation
+                    and claim.get("kind") != "exact_memory"
+                ]
+                if len(matches) != 1:
+                    blocker = (
+                        "boundary register relation lacks one non-memory output claim"
+                    )
+                    break
+                selected_output_claims.append(matches[0])
+        if (
+            blocker is None
+            and boundary_invariant["import_register_relations"]
+            and dispatch_profile != "checked_import_register"
+        ):
+            blocker = "external boundary import-register transfer is not implemented"
+        if (
+            blocker is None
+            and boundary_invariant["dynamic_register_range_relations"]
+            and dispatch_profile != "checked_import_register"
+        ):
+            blocker = "external boundary dynamic-register transfer is not implemented"
+
+        stack_transfer_claims = None
+        if blocker is None:
+            stack_transfer_claims = _stack_window_transfer_claims(
+                source,
+                {"stack_windows": boundary_windows},
+                {"original_ir": original, "candidate_ir": candidate},
+            )
+            if stack_transfer_claims is None:
+                blocker = "external boundary stack window transfer is not affine"
+        if blocker is not None:
+            def import_value(
+                identity: tuple[str, str, str | int] | None,
+            ) -> dict[str, Any] | None:
+                if identity is None:
+                    return None
+                imported: dict[str, Any] = {"dll": identity[0]}
+                imported[identity[1]] = identity[2]
+                return imported
+
+            gaps.append({
+                "edge_index": edge_index,
+                "source_region_index": source_index,
+                "target_region_index": target_index,
+                "reason": blocker,
+                "original_import": import_value(original_target),
+                "candidate_import": import_value(candidate_target),
+                "dispatch_profile": dispatch_profile,
+            })
+            continue
+
+        candidates.append({
+            "id": edge_index,
+            "edge_index": edge_index,
+            "source_region_index": source_index,
+            "target_region_index": target_index,
+            "source_target_id": int(source["numeric_id"]),
+            "continuation_target_id": int(
+                contract["regions"][target_index]["numeric_id"]
+            ),
+            "machine_contract_id": int(machine_contract["id"]),
+            "dispatch_profile": dispatch_profile,
+            "dispatch_registers": dispatch_registers,
+            "argument_relation_claims": argument_claims,
+            "import_transfer_claims": import_transfer_claims,
+            "dynamic_transfer_claims": dynamic_transfer_claims,
+            "boundary_invariant": boundary_invariant,
+            "register_output_claims": selected_output_claims,
+            "stack_transfer_claims": stack_transfer_claims,
+            "argument_values": [
+                _semantic_constant_word(argument)
+                for argument in original_outcome.get("arguments", [])
+            ],
+            "argument_expressions": original_outcome.get("arguments", []),
+            "proof_profile": (
+                "paired_constant_arguments_external_call_v1"
+                if all(claim["kind"] == "self" for claim in argument_claims or [])
+                else "paired_relational_arguments_external_call_v1"
+            ),
+            "status": "candidate_requires_lean_replay",
+        })
+    return {
+        "format": "stage-a-relational-external-call-sites-v1",
+        "status": "incomplete" if gaps else "candidate_requires_lean_replay",
+        "candidates": candidates,
+        "gaps": gaps,
+        "counts": {
+            "candidates": len(candidates),
+            "gaps": len(gaps),
+        },
+    }
+
+
+def _attach_machine_import_call_contract_analysis(
+    proof_ir: dict[str, Any], analysis: dict[str, Any]
+) -> dict[str, Any]:
+    obligations: list[dict[str, Any]] = []
+    for call in analysis["calls"]:
+        replay = call["status"] == "candidate_requires_lean_replay"
+        obligations.append({
+            "id": f"machine-import-call:{call['region_index']}",
+            "kind": "machine_import_call_boundary",
+            "status": call["status"],
+            "region_id": call["region_id"],
+            "region_index": call["region_index"],
+            "contract_id": call["contract_id"],
+            "repair_class": (
+                "checked_stack_argument_recovery"
+                if replay else "missing_machine_import_call_contract"
+            ),
+            "blocker": None if replay else (
+                "the paired external exit lacks one unique machine-level call contract, "
+                "matching import identity, or the declared number of recovered arguments"
+            ),
+            "next_action": (
+                "replay the exact decoded outcome and stack-after-local-writes argument "
+                "expressions in Lean, then instantiate paired environment refinement"
+                if replay else
+                "declare stack argument offsets, stack result delta, preserved/clobbered "
+                "registers, and memory/world effects for this imported target"
+            ),
+            "analysis": call,
+        })
+    attached = dict(proof_ir)
+    attached["machine_import_call_summary"] = analysis["counts"]
+    attached["obligations"] = [*proof_ir["obligations"], *obligations]
+    attached["families"] = [
+        *proof_ir["families"],
+        {
+            "family": "machine_import_call_boundaries",
+            "status": "not_applicable" if not obligations else "incomplete",
+        },
+    ]
+    attached["status"] = "incomplete"
+    return attached
+
+
+def _attach_external_call_site_analysis(
+    proof_ir: dict[str, Any], analysis: dict[str, Any]
+) -> dict[str, Any]:
+    obligations = [
+        {
+            "id": f"external-call-edge:{site['edge_index']}",
+            "kind": "external_call_product_edge_refinement",
+            "status": "pending_lean",
+            "edge_id": int(site["edge_index"]),
+            "source_region_index": int(site["source_region_index"]),
+            "target_region_index": int(site["target_region_index"]),
+            "machine_contract_id": int(site["machine_contract_id"]),
+            "repair_class": "paired_external_call_refinement",
+            "blocker": (
+                "the generated local call-boundary and paired-environment refinement "
+                "theorems have not yet been replayed by Lean"
+            ),
+            "next_action": (
+                "build the generated external-call edge theorem, then include its "
+                "product-edge refinement in the checked external-call certificate"
+            ),
+            "analysis": site,
+        }
+        for site in analysis["candidates"]
+    ]
+    gap_actions = {
+        "no unique machine import call contract matches the call": (
+            "declare one machine-level contract for the matched import, including "
+            "argument words, stack cleanup, register policy, memory effect, and world effect"
+        ),
+        "external edge is not a paired returning import call": (
+            "recover a paired returning import-call outcome or classify the external "
+            "transition under a separately checked event profile"
+        ),
+        "external arguments are not yet checked constant expressions": (
+            "prove the original and candidate argument expressions related at the call "
+            "boundary and emit their explicit relation witnesses"
+        ),
+        "boundary register relation lacks one non-memory output claim": (
+            "establish one unambiguous checked output claim for every boundary register"
+        ),
+    }
+
+    def gap_next_action(gap: dict[str, Any]) -> str:
+        reason = str(gap["reason"])
+        if reason == "no unique machine import call contract matches the call":
+            imported = gap.get("original_import")
+            identity = None
+            if isinstance(imported, dict):
+                name = imported.get("symbol", imported.get("ordinal"))
+                if imported.get("dll") is not None and name is not None:
+                    identity = f"{imported['dll']}!{name}"
+            prefix = f"declare one machine-level contract for {identity}; " if identity else ""
+            return (
+                prefix
+                + "select a reviewed pe32-cdecl-v1 or pe32-stdcall-v1 ABI template, "
+                "provide argument_words, and explicitly declare memory and world effects"
+            )
+        if reason in gap_actions:
+            return gap_actions[reason]
+        if "external argument" in reason or "dynamic range offset" in reason:
+            return (
+                "prove the original and candidate argument expressions related at the "
+                "call boundary and emit their explicit relation witnesses"
+            )
+        if "import-register target" in reason:
+            return (
+                "close the decoded indirect target through one checked ImportAddressPair "
+                "and source import-register invariant"
+            )
+        return "supply the missing machine-level external-call evidence and regenerate"
+
+    obligations.extend(
+        {
+            "id": f"external-call-edge:{gap['edge_index']}",
+            "kind": "external_call_product_edge_refinement",
+            "status": "incomplete",
+            "edge_id": int(gap["edge_index"]),
+            "source_region_index": int(gap["source_region_index"]),
+            "target_region_index": int(gap["target_region_index"]),
+            "repair_class": "external_call_contract_gap",
+            "blocker": str(gap["reason"]),
+            "next_action": gap_next_action(gap),
+            "analysis": gap,
+        }
+        for gap in analysis["gaps"]
+    )
+    attached = dict(proof_ir)
+    attached["external_call_sites"] = analysis
+    attached["external_call_summary"] = analysis["counts"]
+    attached["obligations"] = [*proof_ir["obligations"], *obligations]
+    attached["families"] = [
+        *proof_ir["families"],
+        {
+            "family": "paired_external_environment_refinement",
+            "status": "not_applicable" if not obligations else "incomplete",
+        },
+    ]
+    attached["status"] = "incomplete"
+    return attached
+
+
+def _relational_product_graph(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+    segment_candidates: list[dict[str, Any]],
+    *,
+    original_image_base: int,
+    candidate_image_base: int,
+    indirect_call_candidates: list[dict[str, Any]] | None = None,
+    dynamic_call_candidates: list[dict[str, Any]] | None = None,
+    import_register_seeds: list[dict[str, Any]] | None = None,
+    import_call_candidates: list[dict[str, Any]] | None = None,
+    external_call_candidates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    targets_by_region: dict[int, list[dict[str, Any]]] = {}
+    for target in contract.get("code_targets", []):
+        targets_by_region.setdefault(int(target["region_index"]), []).append(target)
+
+    node_targets: list[dict[str, Any]] = []
+    for region_index, region in enumerate(contract.get("regions", [])):
+        matching = [
+            target for target in targets_by_region.get(region_index, [])
+            if int(target["original_rva"]) == int(region["original"]["rva_start"])
+            and int(target["candidate_rva"]) == int(region["candidate"]["rva_start"])
+        ]
+        if len(matching) != 1:
+            raise StageAInputError(
+                f"region {region.get('id', region_index)} has {len(matching)} canonical "
+                "product-graph cutpoint targets"
+            )
+        node_targets.append(matching[0])
+
+    edges: list[dict[str, Any]] = []
+    outgoing: list[list[int]] = [[] for _ in node_targets]
+    kind_names = {
+        "jump": "jump",
+        "branch_taken": "branchTaken",
+        "branch_fallthrough": "branchFallthrough",
+        "branch_converged": "jump",
+        "call": "call",
+        "call_return": "callReturn",
+        "bulk_copy": "bulkCopy",
+        "external_call": "externalCall",
+        "checked_continue": "checkedContinue",
+        "atomic_compare_exchange": "atomicCompareExchange",
+    }
+    for edge_id, relation_edge in enumerate(register_relations.get("edges", [])):
+        source = int(relation_edge["source_region_index"])
+        target = int(relation_edge["target_region_index"])
+        kind = kind_names.get(str(relation_edge.get("kind")))
+        if kind is None:
+            raise StageAInputError(
+                f"unsupported relational product edge kind {relation_edge.get('kind')!r}"
+            )
+        if not (0 <= source < len(node_targets) and 0 <= target < len(node_targets)):
+            raise StageAInputError(f"product edge {edge_id} has an out-of-range node")
+        outgoing[source].append(edge_id)
+        edges.append({
+            "id": edge_id,
+            "source_node_id": source,
+            "target_node_id": target,
+            "source_target_id": int(node_targets[source]["id"]),
+            "target_target_id": int(node_targets[target]["id"]),
+            "kind": kind,
+            "original_guard": relation_edge["original_guard"],
+            "candidate_guard": relation_edge["candidate_guard"],
+            "infeasible": (
+                _semantic_constant_bool(relation_edge["original_guard"]) is False
+                and _semantic_constant_bool(relation_edge["candidate_guard"]) is False
+            ),
+        })
+
+    def code_target_guard(
+        expression: dict[str, Any], image_base: int, primary_rva: int,
+        aliases: list[int],
+    ) -> dict[str, Any]:
+        guard: dict[str, Any] = {
+            "op": "equal",
+            "left": expression,
+            "right": {"op": "constant", "value": image_base + primary_rva},
+        }
+        for alias_rva in reversed(aliases):
+            guard = {
+                "op": "or",
+                "left": {
+                    "op": "equal",
+                    "left": expression,
+                    "right": {
+                        "op": "constant",
+                        "value": image_base + int(alias_rva),
+                    },
+                },
+                "right": guard,
+            }
+        return guard
+
+    dynamic_edge_groups: list[dict[str, Any]] = []
+    dynamic_sources: set[int] = set()
+    for candidate_index, dynamic_candidate in enumerate(
+        dynamic_call_candidates or []
+    ):
+        source = int(dynamic_candidate["source_region_index"])
+        if source in dynamic_sources:
+            raise StageAInputError(
+                f"product node {source} has duplicate dynamic indirect-call claims"
+            )
+        dynamic_sources.add(source)
+        if not 0 <= source < len(node_targets):
+            raise StageAInputError(
+                f"dynamic indirect-call source {source} is out of range"
+            )
+        if outgoing[source]:
+            raise StageAInputError(
+                f"dynamic indirect-call source {source} already has submitted edges"
+            )
+        shape = _dynamic_range_indirect_call_shape(behaviors[source])
+        if shape is None:
+            raise StageAInputError(
+                f"dynamic indirect-call source {source} no longer has the checked shape"
+            )
+        original_register, candidate_register, word_offset, continuation = shape
+        relation = dynamic_candidate["range_relation"]
+        if (
+            str(relation.get("original")) != original_register
+            or str(relation.get("candidate")) != candidate_register
+            or int(dynamic_candidate["word_offset"]) != word_offset
+            or int(dynamic_candidate["continuation_target_id"]) != continuation
+        ):
+            raise StageAInputError(
+                f"dynamic indirect-call source {source} claim does not match decoded control"
+            )
+        original_expression = behaviors[source]["original_ir"]["outcome"]["target"]
+        candidate_expression = behaviors[source]["candidate_ir"]["outcome"]["target"]
+        edge_ids: list[int] = []
+        for target_node_id, target in enumerate(node_targets):
+            edge_id = len(edges)
+            edge_ids.append(edge_id)
+            outgoing[source].append(edge_id)
+            edges.append({
+                "id": edge_id,
+                "source_node_id": source,
+                "target_node_id": target_node_id,
+                "source_target_id": int(node_targets[source]["id"]),
+                "target_target_id": int(target["id"]),
+                "kind": "call",
+                "original_guard": code_target_guard(
+                    original_expression,
+                    original_image_base,
+                    int(target["original_rva"]),
+                    [int(alias) for alias in target.get("original_aliases", [])],
+                ),
+                "candidate_guard": code_target_guard(
+                    candidate_expression,
+                    candidate_image_base,
+                    int(target["candidate_rva"]),
+                    [int(alias) for alias in target.get("candidate_aliases", [])],
+                ),
+                "infeasible": False,
+                "dynamic_indirect_call_candidate_index": candidate_index,
+            })
+        dynamic_edge_groups.append({
+            "source_node_id": source,
+            "candidate_index": candidate_index,
+            "edge_ids": edge_ids,
+        })
+
+    root_node_ids = [
+        index for index, region in enumerate(contract.get("regions", []))
+        if bool(region.get("root"))
+    ]
+    proved_edge_ids = sorted(int(candidate["edge_index"]) for candidate in segment_candidates)
+    complete = proved_edge_ids == list(range(len(edges)))
+    nodes = [
+        {
+            "id": index,
+            "target_id": int(node_targets[index]["id"]),
+            "root": index in root_node_ids,
+            "outgoing_edge_ids": outgoing[index],
+        }
+        for index in range(len(node_targets))
+    ]
+    region_by_numeric_id = {
+        int(region["numeric_id"]): index
+        for index, region in enumerate(contract.get("regions", []))
+    }
+    indirect_by_source = {
+        int(candidate["source_region_index"]): candidate
+        for candidate in (indirect_call_candidates or [])
+    }
+    import_call_by_source = {
+        int(candidate["source_region_index"]): candidate
+        for candidate in (import_call_candidates or [])
+    }
+    dynamic_call_by_source = {
+        int(candidate["source_region_index"]): candidate
+        for candidate in (dynamic_call_candidates or [])
+    }
+    if set(indirect_by_source).intersection(dynamic_call_by_source):
+        raise StageAInputError(
+            "a product node cannot have both immutable and dynamic indirect-call claims"
+        )
+
+    def decoded_control_edges(
+        behavior: dict[str, Any],
+        indirect_candidate: dict[str, Any] | None,
+        dynamic_candidate: dict[str, Any] | None,
+        import_call_candidate: dict[str, Any] | None,
+        *,
+        candidate_side: bool,
+    ) -> list[dict[str, Any]] | None:
+        outcome = behavior.get("outcome") or {}
+        operation = outcome.get("op")
+        if (
+            operation == "indirect_call"
+            and indirect_candidate is not None
+            and indirect_candidate["profile"] ==
+                "immutable_relocated_function_pointer_call_v1"
+        ):
+            return [{
+                "kind": "call",
+                "target_target_id": int(indirect_candidate["target_id"]),
+                "guard": {"op": "bool_constant", "value": True},
+            }]
+        if (
+            operation == "indirect_jump"
+            and indirect_candidate is not None
+            and indirect_candidate["profile"] ==
+                "immutable_relocated_function_pointer_jump_v1"
+        ):
+            return [{
+                "kind": "jump",
+                "target_target_id": int(indirect_candidate["target_id"]),
+                "guard": {"op": "bool_constant", "value": True},
+            }]
+        if operation == "indirect_call" and import_call_candidate is not None:
+            continuation_index = int(
+                import_call_candidate["continuation_region_index"]
+            )
+            return [{
+                "kind": "externalCall",
+                "target_target_id": int(node_targets[continuation_index]["id"]),
+                "guard": {"op": "bool_constant", "value": True},
+            }]
+        if operation == "indirect_call" and dynamic_candidate is not None:
+            expression = outcome["target"]
+            image_base = candidate_image_base if candidate_side else original_image_base
+            rva_key = "candidate_rva" if candidate_side else "original_rva"
+            aliases_key = (
+                "candidate_aliases" if candidate_side else "original_aliases"
+            )
+            return [
+                {
+                    "kind": "call",
+                    "target_target_id": int(target["id"]),
+                    "guard": code_target_guard(
+                        expression,
+                        image_base,
+                        int(target[rva_key]),
+                        [int(alias) for alias in target.get(aliases_key, [])],
+                    ),
+                }
+                for target in node_targets
+            ]
+        if operation in {"indirect_call", "indirect_jump", "checked_continue"}:
+            return None
+        if operation in {"returned", "external_jump"}:
+            return []
+        decoded: list[dict[str, Any]] = []
+        for edge in _semantic_edges(behavior):
+            target_index = region_by_numeric_id.get(int(edge["target"]))
+            kind = kind_names.get(str(edge.get("kind")))
+            if target_index is None or kind is None:
+                return None
+            decoded.append({
+                "kind": kind,
+                "target_target_id": int(node_targets[target_index]["id"]),
+                "guard": edge["guard"],
+            })
+        if operation not in {
+            "jump",
+            "branch",
+            "call",
+            "external_call",
+            "bulk_copy",
+            "atomic_compare_exchange",
+        }:
+            return None
+        return decoded
+
+    decoded_control_candidates: list[dict[str, int]] = []
+    for node_id, (node, behavior_pair) in enumerate(
+        zip(nodes, behaviors, strict=True)
+    ):
+        indirect_candidate = indirect_by_source.get(node_id)
+        dynamic_candidate = dynamic_call_by_source.get(node_id)
+        import_call_candidate = import_call_by_source.get(node_id)
+        original_decoded = decoded_control_edges(
+            behavior_pair["original_ir"], indirect_candidate, dynamic_candidate,
+            import_call_candidate, candidate_side=False,
+        )
+        candidate_decoded = decoded_control_edges(
+            behavior_pair["candidate_ir"], indirect_candidate, dynamic_candidate,
+            import_call_candidate, candidate_side=True,
+        )
+        original_graph_decoded = [
+            {
+                "kind": edges[edge_id]["kind"],
+                "target_target_id": edges[edge_id]["target_target_id"],
+                "guard": edges[edge_id]["original_guard"],
+            }
+            for edge_id in node["outgoing_edge_ids"]
+        ]
+        candidate_graph_decoded = [
+            {
+                "kind": edges[edge_id]["kind"],
+                "target_target_id": edges[edge_id]["target_target_id"],
+                "guard": edges[edge_id]["candidate_guard"],
+            }
+            for edge_id in node["outgoing_edge_ids"]
+        ]
+        if (
+            original_decoded is not None
+            and candidate_decoded is not None
+            and original_graph_decoded == original_decoded
+            and candidate_graph_decoded == candidate_decoded
+        ):
+            decoded_candidate = {
+                "node_id": node_id,
+                "region_index": node_id,
+                "profile": "direct_decoded_control_v1",
+            }
+            if indirect_candidate is not None:
+                decoded_candidate.update(indirect_candidate)
+            if dynamic_candidate is not None:
+                decoded_candidate.update(dynamic_candidate)
+            if import_call_candidate is not None:
+                decoded_candidate.update(import_call_candidate)
+                decoded_candidate["continuation_target_id"] = int(
+                    node_targets[
+                        int(import_call_candidate["continuation_region_index"])
+                    ]["id"]
+                )
+            decoded_control_candidates.append(decoded_candidate)
+    decoded_control_complete_node_ids = [
+        candidate["node_id"] for candidate in decoded_control_candidates
+    ]
+    candidates_by_edge = {
+        int(candidate["edge_index"]): candidate for candidate in segment_candidates
+    }
+    coverage_candidates = []
+    for node in nodes:
+        outgoing_edge_ids = node["outgoing_edge_ids"]
+        if len(outgoing_edge_ids) != 1:
+            continue
+        edge_id = int(outgoing_edge_ids[0])
+        edge = edges[edge_id]
+        candidate = candidates_by_edge.get(edge_id)
+        if (
+            candidate is None
+            or edge["original_guard"] != {"op": "bool_constant", "value": True}
+            or edge["candidate_guard"] != {"op": "bool_constant", "value": True}
+        ):
+            continue
+        coverage_candidates.append({
+            "node_id": int(node["id"]),
+            "edge_id": edge_id,
+            "source_region_index": int(candidate["source_region_index"]),
+            "target_region_index": int(candidate["target_region_index"]),
+        })
+    covered_node_ids = [item["node_id"] for item in coverage_candidates]
+    runtime_call_continuations: dict[int, set[int]] = defaultdict(set)
+    for relation_edge in register_relations.get("edges", []):
+        claim = relation_edge.get("direct_call_push_claim")
+        if not isinstance(claim, dict):
+            continue
+        source_node_id = int(relation_edge["source_region_index"])
+        continuation_node_id = int(claim["continuation_region_index"])
+        if not (
+            0 <= source_node_id < len(nodes)
+            and 0 <= continuation_node_id < len(nodes)
+        ):
+            raise StageAInputError(
+                "direct-call continuation references an out-of-range product node"
+            )
+        runtime_call_continuations[source_node_id].add(continuation_node_id)
+    reachable_node_ids_set = set(root_node_ids)
+    reachability_worklist = list(root_node_ids)
+    worklist_index = 0
+    while worklist_index < len(reachability_worklist):
+        source_node_id = reachability_worklist[worklist_index]
+        worklist_index += 1
+        for edge_id in nodes[source_node_id]["outgoing_edge_ids"]:
+            if bool(edges[edge_id]["infeasible"]):
+                continue
+            target_node_id = int(edges[edge_id]["target_node_id"])
+            if target_node_id in reachable_node_ids_set:
+                continue
+            reachable_node_ids_set.add(target_node_id)
+            reachability_worklist.append(target_node_id)
+        for continuation_node_id in sorted(
+            runtime_call_continuations.get(source_node_id, set())
+        ):
+            if continuation_node_id in reachable_node_ids_set:
+                continue
+            reachable_node_ids_set.add(continuation_node_id)
+            reachability_worklist.append(continuation_node_id)
+    declared_reachable_node_ids = sorted(reachable_node_ids_set)
+    declared_reachable_bits = [
+        node_id in reachable_node_ids_set for node_id in range(len(nodes))
+    ]
+    reachable_covered_nodes = len(
+        reachable_node_ids_set.intersection(covered_node_ids)
+    )
+    reachable_uncovered_nodes = (
+        len(declared_reachable_node_ids) - reachable_covered_nodes
+    )
+    decoded_control_complete_node_ids_set = set(
+        decoded_control_complete_node_ids
+    )
+    reachable_decoded_control_frontier_node_ids = sorted(
+        reachable_node_ids_set - decoded_control_complete_node_ids_set
+    )
+    declared_reachability_control_closed = not (
+        reachable_decoded_control_frontier_node_ids
+    )
+    potential_reachable_node_ids_set = set(root_node_ids)
+    potential_reachability_worklist = list(root_node_ids)
+    potential_worklist_index = 0
+    potential_control_cuts: list[dict[str, Any]] = []
+    potential_control_cut_nodes: set[int] = set()
+    while potential_worklist_index < len(potential_reachability_worklist):
+        source_node_id = potential_reachability_worklist[
+            potential_worklist_index
+        ]
+        potential_worklist_index += 1
+        for edge_id in nodes[source_node_id]["outgoing_edge_ids"]:
+            if bool(edges[edge_id]["infeasible"]):
+                continue
+            target_node_id = int(edges[edge_id]["target_node_id"])
+            if target_node_id not in potential_reachable_node_ids_set:
+                potential_reachable_node_ids_set.add(target_node_id)
+                potential_reachability_worklist.append(target_node_id)
+        for continuation_node_id in sorted(
+            runtime_call_continuations.get(source_node_id, set())
+        ):
+            if continuation_node_id in potential_reachable_node_ids_set:
+                continue
+            potential_reachable_node_ids_set.add(continuation_node_id)
+            potential_reachability_worklist.append(continuation_node_id)
+        if source_node_id in decoded_control_complete_node_ids_set:
+            continue
+        behavior_pair = behaviors[source_node_id]
+        operations = sorted({
+            str((behavior_pair[side].get("outcome") or {}).get("op"))
+            for side in ("original_ir", "candidate_ir")
+        })
+        added_targets: set[int] = set()
+        if any(
+            operation in {"indirect_call", "indirect_jump", "checked_continue"}
+            for operation in operations
+        ):
+            added_targets.update(range(len(nodes)))
+            reason = "unresolved_indirect_control_all_canonical_targets"
+        else:
+            for side in ("original_ir", "candidate_ir"):
+                for semantic_edge in _semantic_edges(behavior_pair[side]):
+                    target_index = region_by_numeric_id.get(
+                        int(semantic_edge["target"])
+                    )
+                    if target_index is not None:
+                        added_targets.add(target_index)
+            reason = "decoded_direct_control_not_represented"
+        if source_node_id not in potential_control_cut_nodes:
+            potential_control_cut_nodes.add(source_node_id)
+            potential_control_cuts.append({
+                "node_id": source_node_id,
+                "operations": operations,
+                "reason": reason,
+                "potential_target_count": len(added_targets),
+                "target_scope": (
+                    "all_canonical_code_targets"
+                    if len(added_targets) == len(nodes)
+                    else "decoded_target_union"
+                ),
+            })
+        for target_node_id in sorted(added_targets):
+            if target_node_id in potential_reachable_node_ids_set:
+                continue
+            potential_reachable_node_ids_set.add(target_node_id)
+            potential_reachability_worklist.append(target_node_id)
+    potential_reachable_node_ids = sorted(potential_reachable_node_ids_set)
+    potential_reachable_feasible_edge_ids = sorted(
+        int(edge["id"])
+        for edge in edges
+        if int(edge["source_node_id"]) in potential_reachable_node_ids_set
+        and not bool(edge["infeasible"])
+    )
+    potential_unrepresented_control_edges = sum(
+        int(cut["potential_target_count"]) for cut in potential_control_cuts
+    )
+    external_proved_edge_ids = sorted({
+        int(candidate["edge_index"])
+        for candidate in (external_call_candidates or [])
+    })
+    locally_refined_edge_ids = sorted(
+        set(proved_edge_ids).union(external_proved_edge_ids)
+    )
+    reachable_feasible_edge_ids = sorted(
+        int(edge["id"])
+        for edge in edges
+        if int(edge["source_node_id"]) in reachable_node_ids_set
+        and not bool(edge["infeasible"])
+    )
+    locally_refined_edge_ids_set = set(locally_refined_edge_ids)
+    reachable_locally_refined_edge_ids = [
+        edge_id for edge_id in reachable_feasible_edge_ids
+        if edge_id in locally_refined_edge_ids_set
+    ]
+    reachable_local_refinement_frontier_edge_ids = [
+        edge_id for edge_id in reachable_feasible_edge_ids
+        if edge_id not in locally_refined_edge_ids_set
+    ]
+    reachable_product_local_complete = (
+        declared_reachability_control_closed
+        and not reachable_local_refinement_frontier_edge_ids
+    )
+    return {
+        "format": "stage-a-relational-product-graph-v1",
+        "status": "candidate_requires_lean_replay",
+        "model": "relational-cutpoint-product-graph-v1",
+        "nodes": nodes,
+        "edges": edges,
+        "root_node_ids": root_node_ids,
+        "evidence": {
+            "proved_edge_ids": proved_edge_ids,
+            "complete": complete,
+            "covered_node_ids": covered_node_ids,
+            "coverage_candidates": coverage_candidates,
+            "declared_reachable_node_ids": declared_reachable_node_ids,
+            "declared_reachable_bits": declared_reachable_bits,
+            "decoded_control_complete_node_ids": decoded_control_complete_node_ids,
+            "decoded_control_candidates": decoded_control_candidates,
+            "import_register_seed_candidates": import_register_seeds or [],
+            "dynamic_range_indirect_call_candidates": dynamic_call_candidates or [],
+            "dynamic_range_indirect_call_edge_groups": dynamic_edge_groups,
+            "runtime_call_continuations": [
+                {
+                    "source_node_id": source_node_id,
+                    "continuation_node_ids": sorted(continuation_node_ids),
+                }
+                for source_node_id, continuation_node_ids in sorted(
+                    runtime_call_continuations.items()
+                )
+            ],
+            "reachable_decoded_control_frontier_node_ids": (
+                reachable_decoded_control_frontier_node_ids
+            ),
+            "potential_reachable_node_ids": potential_reachable_node_ids,
+            "potential_control_cuts": potential_control_cuts,
+            "potential_reachable_feasible_edge_ids": (
+                potential_reachable_feasible_edge_ids
+            ),
+            "external_proved_edge_ids": external_proved_edge_ids,
+            "locally_refined_edge_ids": locally_refined_edge_ids,
+            "reachable_feasible_edge_ids": reachable_feasible_edge_ids,
+            "reachable_locally_refined_edge_ids": (
+                reachable_locally_refined_edge_ids
+            ),
+            "reachable_local_refinement_frontier_edge_ids": (
+                reachable_local_refinement_frontier_edge_ids
+            ),
+            "reachable_product_local_complete": reachable_product_local_complete,
+        },
+        "counts": {
+            "nodes": len(nodes),
+            "edges": len(edges),
+            "roots": len(root_node_ids),
+            "proved_edges": len(proved_edge_ids),
+            "incomplete_edges": len(edges) - len(proved_edge_ids),
+            "covered_nodes": len(covered_node_ids),
+            "uncovered_nodes": len(nodes) - len(covered_node_ids),
+            "declared_reachable_nodes": len(declared_reachable_node_ids),
+            "declared_reachable_covered_nodes": reachable_covered_nodes,
+            "declared_reachable_uncovered_nodes": reachable_uncovered_nodes,
+            "declared_unreachable_nodes": (
+                len(nodes) - len(declared_reachable_node_ids)
+            ),
+            "potential_reachable_nodes": len(potential_reachable_node_ids),
+            "potential_reachable_feasible_edges": len(
+                potential_reachable_feasible_edge_ids
+            ),
+            "potential_unrepresented_control_edges": (
+                potential_unrepresented_control_edges
+            ),
+            "reachability_truncated_by_control_frontier": bool(
+                potential_reachable_node_ids_set - reachable_node_ids_set
+            ),
+            "decoded_control_complete_nodes": len(
+                decoded_control_complete_node_ids
+            ),
+            "decoded_control_incomplete_nodes": (
+                len(nodes) - len(decoded_control_complete_node_ids)
+            ),
+            "reachable_decoded_control_frontier_nodes": len(
+                reachable_decoded_control_frontier_node_ids
+            ),
+            "external_proved_edges": len(external_proved_edge_ids),
+            "locally_refined_edges": len(locally_refined_edge_ids),
+            "reachable_feasible_edges": len(reachable_feasible_edge_ids),
+            "reachable_locally_refined_edges": len(
+                reachable_locally_refined_edge_ids
+            ),
+            "reachable_local_refinement_frontier_edges": len(
+                reachable_local_refinement_frontier_edge_ids
+            ),
+            "reachable_product_local_complete": reachable_product_local_complete,
+            "declared_reachability_control_closed": (
+                declared_reachability_control_closed
+            ),
+        },
+        "trust": {
+            "role": "untrusted_graph_and_evidence_proposal",
+            "lean_checks": [
+                "indexed_nodes",
+                "indexed_edges",
+                "canonical_cutpoint_targets",
+                "outgoing_edge_inventory",
+                "declared_roots",
+                "proved_edge_inventory",
+                "unconditional_single-successor_coverage",
+                "root_reachability_successor_closure",
+                "exact_decoded_control_exit_inventory",
+            ],
+        },
+    }
+
+
+def _composition_progress(
+    product_graph: dict[str, Any],
+    semantic_preflight: dict[str, Any],
+    external_call_sites: dict[str, Any],
+    acceptance: dict[str, Any],
+    stack_window_analysis: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Summarize rooted composition without promoting proposal data to proof facts."""
+    counts = product_graph["counts"]
+    evidence = product_graph["evidence"]
+    reachable_node_ids = [
+        int(node_id) for node_id in evidence["declared_reachable_node_ids"]
+    ]
+    reachable_edge_ids = [
+        int(edge_id) for edge_id in evidence["reachable_feasible_edge_ids"]
+    ]
+    edges_by_id = {
+        int(edge["id"]): edge for edge in product_graph["edges"]
+    }
+    reachable_external_edge_ids = [
+        edge_id for edge_id in reachable_edge_ids
+        if edges_by_id[edge_id]["kind"] == "externalCall"
+    ]
+    external_candidate_edge_ids = {
+        int(site["edge_index"]) for site in external_call_sites["candidates"]
+    }
+    external_gap_edge_ids = {
+        int(site["edge_index"]) for site in external_call_sites["gaps"]
+    }
+    reachable_external_candidate_edge_ids = sorted(
+        set(reachable_external_edge_ids).intersection(external_candidate_edge_ids)
+    )
+    reachable_external_gap_edge_ids = sorted(
+        set(reachable_external_edge_ids).intersection(external_gap_edge_ids)
+    )
+    environment_frontier_edge_ids = (
+        []
+        if acceptance.get("status") == "ready"
+        else reachable_external_edge_ids
+    )
+
+    potential_control_cuts = evidence["potential_control_cuts"]
+    unresolved_indirect_control_cuts = [
+        cut for cut in potential_control_cuts
+        if str(cut.get("reason", "")).startswith("unresolved_indirect_control")
+    ]
+    unresolved_indirect_node_ids = {
+        int(cut["node_id"]) for cut in unresolved_indirect_control_cuts
+    }
+    unsupported_instruction_issues = [
+        issue for issue in semantic_preflight.get("issues", [])
+        if issue.get("category") == "formal_instruction_unsupported"
+    ]
+    acceptance_blockers = list(acceptance.get("blockers", []))
+    acceptance_blocker_count = sum(
+        int(blocker.get("count", 1)) for blocker in acceptance_blockers
+    )
+    local_frontier_edge_ids = [
+        int(edge_id)
+        for edge_id in evidence["reachable_local_refinement_frontier_edge_ids"]
+    ]
+    decoded_frontier_node_ids = [
+        int(node_id)
+        for node_id in evidence["reachable_decoded_control_frontier_node_ids"]
+    ]
+    reachable_node_id_set = set(reachable_node_ids)
+    root_node_ids = {int(node_id) for node_id in product_graph["root_node_ids"]}
+    stack_invariant_frontier = [
+        row for row in (stack_window_analysis or {}).get("frontier", [])
+        if int(row["region_index"]) in reachable_node_id_set
+        and not (
+            row.get("reason") == "no_checked_incoming_edge"
+            and int(row["region_index"]) in root_node_ids
+        )
+    ]
+    relational_frame_reasons = {
+        "recursive_call_window_requires_inductive_frame",
+        "nonzero_stack_delta_cycle_requires_relational_frame",
+    }
+    relational_frame_frontier = [
+        row for row in stack_invariant_frontier
+        if row.get("reason") in relational_frame_reasons
+    ]
+    relational_frame_frontier_node_ids = sorted({
+        int(row["region_index"]) for row in relational_frame_frontier
+    })
+    stack_invariant_frontier_node_ids = sorted({
+        int(row["region_index"]) for row in stack_invariant_frontier
+    })
+    ready_for_lean = (
+        acceptance.get("status") == "ready"
+        and bool(counts["reachable_product_local_complete"])
+        and not unresolved_indirect_control_cuts
+        and not unsupported_instruction_issues
+        and not environment_frontier_edge_ids
+        and not stack_invariant_frontier
+    )
+
+    next_work: list[dict[str, Any]] = []
+    if unresolved_indirect_control_cuts:
+        next_work.append({
+            "category": "unresolved_indirect_control",
+            "count": len(unresolved_indirect_control_cuts),
+            "example_ids": [
+                int(cut["node_id"]) for cut in unresolved_indirect_control_cuts[:10]
+            ],
+            "next_action": (
+                "classify the first indirect target by checked static, dynamic-range, "
+                "import, jump-table, callback, or finite-target provenance"
+            ),
+        })
+    direct_decoded_frontier_node_ids = [
+        node_id for node_id in decoded_frontier_node_ids
+        if node_id not in unresolved_indirect_node_ids
+    ]
+    if direct_decoded_frontier_node_ids:
+        next_work.append({
+            "category": "decoded_control_frontier",
+            "count": len(direct_decoded_frontier_node_ids),
+            "example_ids": direct_decoded_frontier_node_ids[:10],
+            "next_action": (
+                "recover and check the exact decoded exits for the first rooted frontier node"
+            ),
+        })
+    if relational_frame_frontier_node_ids:
+        next_work.append({
+            "category": "relational_call_frame_frontier",
+            "count": len(relational_frame_frontier_node_ids),
+            "example_ids": relational_frame_frontier_node_ids[:10],
+            "reason_counts": dict(sorted(Counter(
+                str(row["reason"]) for row in relational_frame_frontier
+            ).items())),
+            "next_action": (
+                "close the first non-zero or recursive stack cycle with a checked "
+                "relational call-frame invariant instead of a finite flat stack window"
+            ),
+        })
+    if local_frontier_edge_ids:
+        next_work.append({
+            "category": "segment_refinement_frontier",
+            "count": len(local_frontier_edge_ids),
+            "example_ids": local_frontier_edge_ids[:10],
+            "next_action": (
+                "close the first rooted feasible edge with a checked segment refinement"
+            ),
+        })
+    if environment_frontier_edge_ids:
+        next_work.append({
+            "category": "environment_frontier",
+            "count": len(environment_frontier_edge_ids),
+            "example_ids": environment_frontier_edge_ids[:10],
+            "next_action": (
+                "close the first rooted external edge through a machine-level call "
+                "contract and paired environment refinement"
+            ),
+        })
+    if unsupported_instruction_issues:
+        next_work.append({
+            "category": "unsupported_instruction",
+            "count": len(unsupported_instruction_issues),
+            "example_ids": [
+                str(issue["id"]) for issue in unsupported_instruction_issues[:10]
+            ],
+            "next_action": (
+                "add reviewed decode and machine semantics for the first unsupported form"
+            ),
+        })
+    if acceptance_blockers and not next_work:
+        next_work.append({
+            "category": "acceptance_frontier",
+            "count": acceptance_blocker_count,
+            "example_ids": [
+                str(blocker.get("code", "unknown"))
+                for blocker in acceptance_blockers[:10]
+            ],
+            "next_action": str(
+                acceptance_blockers[0].get(
+                    "next_action", "close the first whole-program acceptance blocker"
+                )
+            ),
+        })
+
+    return {
+        "format": "stage-a-composition-progress-v1",
+        "status": "ready_for_lean" if ready_for_lean else "incomplete",
+        "metric_policy": {
+            "primary": "rooted_product_composition",
+            "local_proof_counts_are_secondary": True,
+            "reachability_source": "decoded_behavior_and_checked_runtime_continuations",
+            "unresolved_control_fails_closed": True,
+        },
+        "counts": {
+            "roots": int(counts["roots"]),
+            "rooted_reachable_nodes": len(reachable_node_ids),
+            "potential_reachable_nodes": int(counts["potential_reachable_nodes"]),
+            "rooted_reachable_feasible_edges": len(reachable_edge_ids),
+            "rooted_refined_segments": int(
+                counts["reachable_locally_refined_edges"]
+            ),
+            "rooted_segment_refinement_frontier_edges": len(
+                local_frontier_edge_ids
+            ),
+            "rooted_decoded_control_frontier_nodes": len(
+                decoded_frontier_node_ids
+            ),
+            "rooted_stack_invariant_frontier_nodes": len(
+                stack_invariant_frontier_node_ids
+            ),
+            "rooted_relational_call_frame_frontier_nodes": len(
+                relational_frame_frontier_node_ids
+            ),
+            "unresolved_indirect_control_nodes": len(
+                unresolved_indirect_control_cuts
+            ),
+            "unresolved_indirect_potential_targets": sum(
+                int(cut["potential_target_count"])
+                for cut in unresolved_indirect_control_cuts
+            ),
+            "unsupported_instructions": len(unsupported_instruction_issues),
+            "rooted_external_edges": len(reachable_external_edge_ids),
+            "rooted_external_refinement_candidates": len(
+                reachable_external_candidate_edge_ids
+            ),
+            "rooted_external_contract_gap_edges": len(
+                reachable_external_gap_edge_ids
+            ),
+            "rooted_environment_frontier_edges": len(
+                environment_frontier_edge_ids
+            ),
+            "acceptance_blockers": acceptance_blocker_count,
+            "acceptance_blocker_categories": len(acceptance_blockers),
+        },
+        "reachability": {
+            "rooted_node_ids": reachable_node_ids,
+            "potential_node_ids": [
+                int(node_id) for node_id in evidence["potential_reachable_node_ids"]
+            ],
+            "truncated_by_control_frontier": bool(
+                counts["reachability_truncated_by_control_frontier"]
+            ),
+        },
+        "frontiers": {
+            "decoded_control_node_ids": decoded_frontier_node_ids,
+            "segment_edge_ids": local_frontier_edge_ids,
+            "stack_invariant": stack_invariant_frontier,
+            "relational_call_frame": relational_frame_frontier,
+            "unresolved_indirect_control": unresolved_indirect_control_cuts,
+            "unsupported_instruction_issue_ids": [
+                str(issue["id"]) for issue in unsupported_instruction_issues
+            ],
+            "external_edge_ids": environment_frontier_edge_ids,
+            "external_contract_gaps": [
+                gap for gap in external_call_sites["gaps"]
+                if int(gap["edge_index"]) in reachable_external_gap_edge_ids
+            ],
+            "acceptance_blockers": acceptance_blockers,
+        },
+        "acceptance": {
+            "status": acceptance.get("status"),
+            "profile": acceptance.get("profile"),
+            "theorem": acceptance.get("theorem"),
+        },
+        "next_work": next_work,
+        "trust": {
+            "role": "diagnostic_projection_of_hashed_proof_inputs",
+            "acceptance_authority": False,
+            "final_pass_requires": RELATIONAL_ACCEPTANCE_THEOREM,
+        },
+    }
+
+
+def _attach_product_graph_analysis(
+    proof_ir: dict[str, Any], product_graph: dict[str, Any]
+) -> dict[str, Any]:
+    complete = bool(product_graph["evidence"]["complete"])
+    counts = product_graph["counts"]
+    obligations = [
+        {
+            "id": "product-graph:structure",
+            "kind": "relational_product_graph_structure",
+            "status": "candidate_requires_lean_replay",
+            "repair_class": "product_graph_structure",
+            "blocker": None,
+            "next_action": "replay the indexed node, edge, outgoing, and root inventories in Lean",
+        },
+        {
+            "id": "product-graph:edge-completeness",
+            "kind": "relational_product_graph_declared_edge_refinement",
+            "status": "proved" if complete else "incomplete",
+            "repair_class": "product_edge_refinement",
+            "blocker": (
+                None if complete else
+                f"{counts['incomplete_edges']} declared product edges lack a checked "
+                "RelationalSegmentRefinement theorem"
+            ),
+            "next_action": (
+                "construct the complete product-edge refinement certificate in Lean"
+                if complete else
+                "close the highest-impact incomplete segment refinements, then regenerate the graph"
+            ),
+        },
+        {
+            "id": "product-graph:decoded-control-completeness",
+            "kind": "relational_product_graph_decoded_exit_completeness",
+            "status": (
+                "candidate_requires_lean_replay"
+                if counts["declared_reachability_control_closed"]
+                else "incomplete"
+            ),
+            "repair_class": "decoded_exit_inventory",
+            "blocker": (
+                None
+                if counts["declared_reachability_control_closed"]
+                else
+                f"{counts['reachable_decoded_control_frontier_nodes']} nodes in the "
+                "declared root closure have decoded control exits not represented on both "
+                "sides of the product graph; the checked graph closure contains "
+                f"{counts['declared_reachable_nodes']} nodes, while conservative "
+                f"potential reachability contains {counts['potential_reachable_nodes']}; "
+                f"{counts['potential_unrepresented_control_edges']} conservative "
+                "control transitions remain unsubmitted"
+            ),
+            "next_action": (
+                "replay every root-closure decoded control-exit witness in Lean"
+                if counts["declared_reachability_control_closed"]
+                else
+                "repair the first root-reachable omitted or mismatched branch, call, return, "
+                "or indirect-target inventory before using graph reachability"
+            ),
+            "analysis": {
+                "frontier_node_ids": product_graph["evidence"][
+                    "reachable_decoded_control_frontier_node_ids"
+                ],
+                "checked_graph_reachable_nodes": counts[
+                    "declared_reachable_nodes"
+                ],
+                "potential_reachable_nodes": counts[
+                    "potential_reachable_nodes"
+                ],
+                "potential_control_cuts": product_graph["evidence"][
+                    "potential_control_cuts"
+                ],
+            },
+        },
+        {
+            "id": "product-graph:reachable-local-refinement",
+            "kind": "relational_product_graph_reachable_local_refinement",
+            "status": (
+                "candidate_requires_lean_replay"
+                if counts["reachable_product_local_complete"]
+                else "incomplete"
+            ),
+            "repair_class": "reachable_product_edge_refinement",
+            "blocker": (
+                None
+                if counts["reachable_product_local_complete"]
+                else (
+                    f"{counts['reachable_decoded_control_frontier_nodes']} reachable "
+                    "nodes lack exact decoded-exit inventories and "
+                    f"{counts['reachable_local_refinement_frontier_edges']} reachable "
+                    "feasible edges lack internal or external refinement witnesses"
+                )
+            ),
+            "next_action": (
+                "replay the complete reachable product-local certificate in Lean"
+                if counts["reachable_product_local_complete"]
+                else "repair the first reachable decoded-control or local-refinement "
+                "frontier item, then regenerate only its dependent proof nodes"
+            ),
+            "analysis": {
+                "decoded_control_frontier_node_ids": product_graph["evidence"][
+                    "reachable_decoded_control_frontier_node_ids"
+                ],
+                "local_refinement_frontier_edge_ids": product_graph["evidence"][
+                    "reachable_local_refinement_frontier_edge_ids"
+                ],
+                "reachable_feasible_edge_ids": product_graph["evidence"][
+                    "reachable_feasible_edge_ids"
+                ],
+            },
+        },
+        {
+            "id": "whole-program:acceptance-certificate",
+            "kind": "whole_program_observational_equivalence",
+            "status": "incomplete",
+            "repair_class": "rooted_product_simulation",
+            "blocker": (
+                "no closed WholeProgramCertificate currently connects launch, rooted "
+                "reachability, relational call frames, paired environments, segment "
+                "refinements, faults, returns, and termination"
+            ),
+            "next_action": (
+                "prove ProductStepRefinement for the complete rooted graph and emit "
+                f"{RELATIONAL_ACCEPTANCE_THEOREM} as a closed application of "
+                "StageA.Relational.pe32ProgramsEquivalent"
+            ),
+            "lean_witness": "StageA.Relational.pe32ProgramsEquivalent",
+        },
+    ]
+    attached = dict(proof_ir)
+    attached["product_graph_summary"] = {
+        **counts,
+        "declared_edges_complete": complete,
+        "interface": "StageA.Relational.RelationalProductGraph",
+    }
+    attached["obligations"] = [*proof_ir["obligations"], *obligations]
+    attached["families"] = [
+        *proof_ir["families"],
+        {
+            "family": "product_graph",
+            "status": "incomplete",
+        },
+        {
+            "family": "whole_program_observational_equivalence",
+            "status": "incomplete",
+        },
+    ]
+    attached["status"] = "incomplete"
+    return attached
+
+
+def _attach_dynamic_indirect_call_analysis(
+    proof_ir: dict[str, Any],
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    product_graph: dict[str, Any],
+) -> dict[str, Any]:
+    candidate_by_region = {
+        int(candidate["source_region_index"]): candidate for candidate in candidates
+    }
+    frontier = set(
+        product_graph["evidence"]["reachable_decoded_control_frontier_node_ids"]
+    )
+    obligations: list[dict[str, Any]] = []
+    for region_index, behavior_pair in enumerate(behaviors):
+        shape = _dynamic_range_indirect_call_shape(behavior_pair)
+        if shape is None or (
+            region_index not in candidate_by_region and region_index not in frontier
+        ):
+            continue
+        original_register, candidate_register, word_offset, continuation = shape
+        region = contract["regions"][region_index]
+        candidate = candidate_by_region.get(region_index)
+        if candidate is not None:
+            obligations.append({
+                "id": f"dynamic-indirect-call:{region_index}",
+                "kind": "dynamic_range_indirect_call_target",
+                "status": "candidate_requires_lean_replay",
+                "repair_class": "dynamic_code_pointer_relation",
+                "region_id": region["id"],
+                "region_index": region_index,
+                "blocker": None,
+                "next_action": (
+                    "replay DynamicRangeIndirectCallTargetsClosed in Lean, then connect "
+                    "the related runtime code pointer to a finite checked product-graph "
+                    "target inventory"
+                ),
+                "analysis": candidate,
+            })
+            continue
+        obligations.append({
+            "id": f"dynamic-indirect-call:{region_index}",
+            "kind": "dynamic_range_indirect_call_target",
+            "status": "incomplete",
+            "repair_class": "memory_loaded_code_pointer_relation",
+            "region_id": region["id"],
+            "region_index": region_index,
+            "blocker": (
+                "the paired indirect call loads its target from related-looking memory, "
+                "but no unique checked range relation classifies that word as a code pointer"
+            ),
+            "next_action": (
+                f"propagate a DynamicRegisterRangeRelation for original {original_register} "
+                f"and candidate {candidate_register} into this region, classify byte offset "
+                f"{word_offset} as codePointer, and prove the paired allocation or mutable "
+                "static range plus its world update at the producer"
+            ),
+            "analysis": {
+                "original_register": original_register,
+                "candidate_register": candidate_register,
+                "word_offset": word_offset,
+                "continuation_target_id": continuation,
+            },
+        })
+    if not obligations:
+        return proof_ir
+    attached = dict(proof_ir)
+    attached["obligations"] = [*proof_ir["obligations"], *obligations]
+    attached["dynamic_indirect_call_summary"] = {
+        "sites": len(obligations),
+        "lean_replay_candidates": sum(
+            obligation["status"] == "candidate_requires_lean_replay"
+            for obligation in obligations
+        ),
+        "incomplete": sum(
+            obligation["status"] == "incomplete" for obligation in obligations
+        ),
+    }
+    attached["status"] = "incomplete"
+    return attached
+
+
+def _attach_stack_window_analysis(
+    proof_ir: dict[str, Any],
+    contract: dict[str, Any],
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    obligations: list[dict[str, Any]] = []
+    if analysis.get("windows", 0):
+        obligations.append({
+            "id": "stack-range:world-profile",
+            "kind": "paired_stack_range_world",
+            "status": "incomplete",
+            "repair_class": "pe32_launch_stack_range",
+            "blocker": (
+                "the relational world does not yet establish paired non-wrapping stack "
+                "ranges at the PE32 console launch boundary"
+            ),
+            "next_action": (
+                "construct stack range 0 from the launch profile, prove both concrete "
+                "ranges are disjoint from their PE images, and establish root windows"
+            ),
+            "lean_witness": "StageA.Relational.RelationalWorld.stackRangesValid",
+        })
+    for region_index, region in enumerate(contract.get("regions", [])):
+        claims = region.get("stack_address_separation_claims", [])
+        if claims:
+            obligations.append({
+                "id": f"stack-separation-inventory:{region_index}",
+                "kind": "stack_address_separation_inventory",
+                "status": "candidate_requires_lean_replay",
+                "region_index": region_index,
+                "region_id": region["id"],
+                "windows": len(region.get("stack_windows", [])),
+                "separation_claims": len(claims),
+                "repair_class": "stack_window_image_disjointness",
+                "blocker": None,
+                "next_action": (
+                    "replay the complete stack-window separation inventory against exact "
+                    "PE image bounds and the paired runtime range validity theorem"
+                ),
+                "lean_witness": (
+                    f"region{region_index}StackSeparationInventoryChecked"
+                ),
+            })
+    for frontier_index, frontier in enumerate(analysis.get("frontier", [])):
+        reason = frontier["reason"]
+        obligations.append({
+            "id": f"stack-window-frontier:{frontier_index}",
+            "kind": "stack_window_reachability",
+            "status": "incomplete",
+            **frontier,
+            "region_id": contract["regions"][int(frontier["region_index"])]["id"],
+            "repair_class": (
+                "stack_window_root_establishment"
+                if reason == "no_checked_incoming_edge"
+                else "stack_pointer_affine_transfer"
+            ),
+            "blocker": (
+                "no checked incoming product edge currently establishes this stack window"
+                if reason == "no_checked_incoming_edge" else
+                "the incoming edge changes stack state or crosses an environment boundary "
+                "without a checked affine stack-window transfer"
+            ),
+            "next_action": (
+                "connect the cutpoint to a checked root/call edge and establish its window"
+                if reason == "no_checked_incoming_edge" else
+                "decode the paired stack-pointer adjustment and prove the transformed "
+                "below/above window and paired range offset"
+            ),
+        })
+    attached = dict(proof_ir)
+    attached["stack_window_summary"] = analysis
+    attached["obligations"] = [*proof_ir["obligations"], *obligations]
+    attached["families"] = [
+        *proof_ir["families"],
+        {"family": "stack_windows", "status": "incomplete"},
+    ]
+    attached["status"] = "incomplete"
+    return attached
+
+
+def _attach_import_register_analysis(
+    proof_ir: dict[str, Any],
+    seeds: list[dict[str, Any]],
+    analysis: dict[str, Any],
+    segment_candidates: list[dict[str, Any]] | None = None,
+    memory_contracts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    obligations: list[dict[str, Any]] = []
+    if seeds:
+        obligations.append({
+            "id": "import-address-memory:state-relation",
+            "kind": "iat_memory_relation_override",
+            "status": "candidate_requires_lean_replay",
+            "repair_class": "relational_memory_import_cells",
+            "blocker": None,
+            "next_action": (
+                "compile the IAT-masked ordinary-memory relation and its StateRel projection "
+                "in Lean; reject memory-dependent claims without checked non-IAT witnesses"
+            ),
+            "lean_witness": "StageA.Relational.StateRel.ordinaryMemoryRelation",
+        })
+    for row in (memory_contracts or {}).get("regions", []):
+        assembled = row.get("assembled_iat_read_candidates", {})
+        original_candidates = {
+            (
+                candidate["register"],
+                json.dumps(candidate["import"], sort_keys=True),
+            ): candidate
+            for candidate in assembled.get("original", [])
+        }
+        candidate_candidates = {
+            (
+                candidate["register"],
+                json.dumps(candidate["import"], sort_keys=True),
+            ): candidate
+            for candidate in assembled.get("candidate", [])
+        }
+        for key in sorted(original_candidates.keys() & candidate_candidates.keys()):
+            original_candidate = original_candidates[key]
+            candidate_candidate = candidate_candidates[key]
+            if (
+                original_candidate["status"] == "exact_iat_cell"
+                and candidate_candidate["status"] == "exact_iat_cell"
+            ):
+                continue
+            matching_seeds = [
+                seed for seed in seeds
+                if int(seed["region_index"]) == int(row["index"])
+                and str(seed["original_register"]) == str(key[0])
+                and str(seed["candidate_register"]) == str(key[0])
+                and json.dumps(seed["import"], sort_keys=True) == key[1]
+                and int(seed["original_iat_rva"])
+                    == int(original_candidate["iat_rva"])
+                and int(seed["candidate_iat_rva"])
+                    == int(candidate_candidate["iat_rva"])
+                and seed.get("assembled_read")
+            ]
+            replayable = len(matching_seeds) == 1
+            obligations.append({
+                "id": f"assembled-iat-read:{int(row['index'])}:{key[0]}",
+                "kind": "assembled_iat_register_seed",
+                "status": (
+                    "candidate_requires_lean_replay" if replayable else "incomplete"
+                ),
+                "region_index": int(row["index"]),
+                "region_id": row["id"],
+                "register": key[0],
+                "import": original_candidate["import"],
+                "original": original_candidate,
+                "candidate": candidate_candidate,
+                "repair_class": "iat_assembled_dword_write_separation",
+                "blocker": None if replayable else (
+                    "the import pointer is assembled from four IAT byte reads after "
+                    "intervening writes whose addresses are not yet proved disjoint "
+                    "from the IAT cell"
+                ),
+                "next_action": (
+                    "replay the generated write-separation inventory, assembled read32 "
+                    "reduction, and ImportAddressPair binding in Lean"
+                    if replayable else
+                    "emit checked address-separation witnesses for every intervening "
+                    "write, reduce the byte assembly to Memory.read32, and reuse the "
+                    "ImportAddressPair binding as a register seed"
+                ),
+                "lean_witness": (
+                    f"importSeed{seeds.index(matching_seeds[0])}Checked"
+                    if replayable else None
+                ),
+            })
+    for seed_index, seed in enumerate(seeds):
+        obligations.append({
+            "id": f"import-register-seed:{seed_index}",
+            "kind": "iat_import_register_seed",
+            "status": "candidate_requires_lean_replay",
+            "region_index": int(seed["region_index"]),
+            "original_register": seed["original_register"],
+            "candidate_register": seed["candidate_register"],
+            "import": seed["import"],
+            "original_iat_rva": int(seed["original_iat_rva"]),
+            "candidate_iat_rva": int(seed["candidate_iat_rva"]),
+            "profile": seed["profile"],
+            "intervening_writes": {
+                "original": len(seed.get("original_writes", [])),
+                "candidate": len(seed.get("candidate_writes", [])),
+            },
+            "repair_class": (
+                "iat_assembled_dword_write_separation"
+                if seed.get("assembled_read") else "iat_seed_identity"
+            ),
+            "blocker": None,
+            "next_action": (
+                "replay the parsed IAT identity, checked write-separation inventory, "
+                "assembled read32 reduction, and normalized register-load expression in Lean"
+                if seed.get("assembled_read") else
+                "replay the parsed IAT identity and normalized register-load expression in Lean"
+            ),
+            "lean_witness": f"importSeed{seed_index}Checked",
+        })
+    for relation_index, relation in enumerate(analysis.get("relations", [])):
+        relation_import = relation["import"]
+
+        def claim_matches(claim: dict[str, Any]) -> bool:
+            if claim["kind"] == "seed":
+                original_register = claim["original_register"]
+                candidate_register = claim["candidate_register"]
+            else:
+                original_register = claim["target_original_register"]
+                candidate_register = claim["target_candidate_register"]
+            return (
+                str(original_register) == str(relation["original_register"])
+                and str(candidate_register) == str(relation["candidate_register"])
+                and json.dumps(claim["import"], sort_keys=True)
+                    == json.dumps(relation_import, sort_keys=True)
+            )
+
+        incoming_pairs = {
+            (
+                int(edge["source_region_index"]),
+                int(edge["target_region_index"]),
+            )
+            for edge in relation.get("incoming_edges", [])
+            if not edge.get("environment_barrier")
+        }
+        has_environment_incoming = any(
+            edge.get("environment_barrier")
+            for edge in relation.get("incoming_edges", [])
+        )
+        covered_pairs = {
+            (
+                int(candidate["source_region_index"]),
+                int(candidate["target_region_index"]),
+            )
+            for candidate in (segment_candidates or [])
+            if int(candidate["target_region_index"]) == int(relation["region_index"])
+            and any(
+                claim_matches(claim)
+                for claim in candidate.get("import_transfer_claims", [])
+            )
+        }
+        incoming_rows = relation.get("incoming_edges", [])
+        covered_incoming = [
+            edge for edge in incoming_rows
+            if not edge.get("environment_barrier")
+            and (
+                int(edge["source_region_index"]),
+                int(edge["target_region_index"]),
+            ) in covered_pairs
+        ]
+        uncovered_incoming = [
+            edge for edge in incoming_rows if edge not in covered_incoming
+        ]
+        replay_candidate = (
+            bool(incoming_pairs)
+            and not has_environment_incoming
+            and incoming_pairs <= covered_pairs
+        )
+        obligations.append({
+            "id": f"import-register-invariant:{relation_index}",
+            "kind": "inductive_import_register_relation",
+            "status": (
+                "candidate_requires_lean_replay" if replay_candidate else "incomplete"
+            ),
+            "region_index": int(relation["region_index"]),
+            "original_register": relation["original_register"],
+            "candidate_register": relation["candidate_register"],
+            "import": relation["import"],
+            "incoming_edge_indices": relation["incoming_edge_indices"],
+            "analysis": {
+                "incoming_edges": incoming_rows,
+                "covered_incoming_edges": covered_incoming,
+                "uncovered_incoming_edges": uncovered_incoming,
+            },
+            "repair_class": "import_pointer_scc_invariant",
+            "blocker": (None if replay_candidate else
+                f"{len(uncovered_incoming)} of {len(incoming_rows)} decoded incoming "
+                "edges lack a checked import-register transfer or external-preservation "
+                "witness"),
+            "next_action": (
+                "compile the generated seed/register-transfer segment witness in Lean"
+                if replay_candidate else
+                "emit checked seed, register-transfer, external-preservation, and SCC "
+                "induction witnesses for this import-pointer invariant"
+            ),
+            "lean_witness": (
+                "generated segment import-transfer certificate"
+                if replay_candidate else None
+            ),
+        })
+    for call_index, call in enumerate(analysis.get("indirect_import_calls", [])):
+        obligations.append({
+            "id": f"indirect-import-call:{call_index}",
+            "kind": "indirect_import_call_environment_refinement",
+            "status": "incomplete",
+            "source_region_index": int(call["source_region_index"]),
+            "continuation_region_index": int(call["continuation_region_index"]),
+            "original_register": call["original_register"],
+            "candidate_register": call["candidate_register"],
+            "import": call["import"],
+            "repair_class": "machine_import_call_contract",
+            "blocker": (
+                "call-target identity can be replayed locally, but argument recovery, "
+                "resolver validity, ABI results, memory effects, and successor world are open"
+            ),
+            "next_action": (
+                "instantiate paired machine-level import-call resolvers and prove the "
+                "external environment transition preserves the continuation StateRel"
+            ),
+        })
+    attached = dict(proof_ir)
+    attached["import_register_summary"] = analysis["counts"]
+    attached["obligations"] = [*proof_ir["obligations"], *obligations]
+    attached["families"] = [
+        *proof_ir["families"],
+        {"family": "iat_import_register_seeds", "status": (
+            "not_applicable" if not seeds else "satisfied"
+        )},
+        {"family": "iat_memory_relation", "status": (
+            "not_applicable" if not seeds else "incomplete"
+        )},
+        {"family": "import_register_invariant_composition", "status": (
+            "not_applicable" if not analysis.get("relations") else "incomplete"
+        )},
+        {"family": "indirect_import_environment_refinement", "status": (
+            "not_applicable"
+            if not analysis.get("indirect_import_calls") else "incomplete"
+        )},
+    ]
+    attached["status"] = "incomplete"
+    return attached
+
+
 def _relational_semantic_preflight(original: Path, candidate: Path, contract: dict[str, Any]) -> dict[str, Any]:
     from .stage_a import _formal_profile_side_diagnostics
 
@@ -2823,20 +8512,72 @@ def _extract_relational_behaviors(
     binaries = {"original": original_bin, "candidate": candidate_bin}
     lean_root = Path(__file__).with_name("lean") / "StageA"
     formal_sha256 = sha256_file(lean_root / "Formal.lean")
-    relational_sha256 = sha256_file(lean_root / "Relational.lean")
+    decode_path = lean_root / "RelationalDecode.lean"
+    relational_path = lean_root / "Relational.lean"
+    extraction_semantics_sha256 = _relational_extraction_semantics_sha256(
+        decode_path
+    )
+    legacy_extraction_semantics_sha256 = (
+        _relational_legacy_extraction_semantics_sha256(decode_path)
+    )
+    legacy_relational_sha256 = sha256_file(relational_path)
     for index, region in enumerate(contract["regions"]):
         for side in ("original", "candidate"):
             key = _behavior_cache_key(
                 binaries[side], region[side],
                 side=side,
                 targets=region.get("code_targets", []),
+                machine_import_call_contracts=contract.get(
+                    "machine_import_call_contracts", []
+                ),
                 formal_sha256=formal_sha256,
-                relational_sha256=relational_sha256,
+                extraction_semantics_sha256=extraction_semantics_sha256,
             )
             cache_keys[(side, index)] = key
             if cache_dir is not None:
                 cached = _read_behavior_cache(cache_dir / f"{key}.json")
+                migrated = cached is None
+                if cached is None:
+                    legacy_extraction_key = _legacy_extraction_behavior_cache_key(
+                        binaries[side],
+                        region[side],
+                        side=side,
+                        targets=region.get("code_targets", []),
+                        formal_sha256=formal_sha256,
+                        extraction_semantics_sha256=(
+                            legacy_extraction_semantics_sha256
+                        ),
+                    )
+                    cached = _read_behavior_cache(
+                        cache_dir / f"{legacy_extraction_key}.json"
+                    )
+                if cached is None:
+                    legacy_key = _legacy_behavior_cache_key(
+                        binaries[side],
+                        region[side],
+                        side=side,
+                        targets=region.get("code_targets", []),
+                        formal_sha256=formal_sha256,
+                        relational_sha256=legacy_relational_sha256,
+                    )
+                    cached = _read_behavior_cache(cache_dir / f"{legacy_key}.json")
+                if (
+                    cached is not None
+                    and migrated
+                    and _cached_behavior_affected_by_machine_contracts(
+                        cached, contract.get("machine_import_call_contracts", [])
+                    )
+                ):
+                    cached = None
                 if cached is not None:
+                    if migrated:
+                        write_json(
+                            cache_dir / f"{key}.json",
+                            {
+                                "format": "stage-a-relational-behavior-cache-v2",
+                                **cached,
+                            },
+                        )
                     values[(side, index)] = cached
     missing = {
         (side, index)
@@ -3205,6 +8946,12 @@ def _semantic_memory_reads(value: Any, path: tuple[str, ...] = ()) -> list[dict[
             "address_sha256": sha256_bytes(
                 json.dumps(address, sort_keys=True, separators=(",", ":")).encode()
             ),
+            "address": address,
+            "constant_address": (
+                int(address["value"]) & 0xFFFFFFFF
+                if isinstance(address, dict) and address.get("op") == "constant"
+                else None
+            ),
         })
 
     for key in sorted(value):
@@ -3214,6 +8961,82 @@ def _semantic_memory_reads(value: Any, path: tuple[str, ...] = ()) -> list[dict[
             continue
         reads.extend(_semantic_memory_reads(value[key], (*path, key)))
     return reads
+
+
+def _iat_read_classification(
+    binary: StageABinary, observation: dict[str, Any],
+) -> dict[str, Any]:
+    address = observation.get("constant_address")
+    width = observation.get("width")
+    if not isinstance(address, int) or not isinstance(width, int):
+        return {
+            "status": "dynamic_address_requires_non_iat_proof",
+            "proof_role": "untrusted_side_condition_proposal",
+        }
+    end = address + width
+    overlaps = []
+    for imported in binary.imports:
+        if imported.thunk_rva is None:
+            continue
+        iat_address = binary.image_base + int(imported.thunk_rva)
+        if address < iat_address + 4 and iat_address < end:
+            overlaps.append((imported, iat_address))
+    if not overlaps:
+        return {
+            "status": "statically_outside_iat",
+            "proof_role": "untrusted_side_condition_proposal",
+        }
+    if len(overlaps) == 1 and width == 4 and address == overlaps[0][1]:
+        imported, iat_address = overlaps[0]
+        identity = _import_identity(imported)
+        if identity is not None:
+            return {
+                "status": "exact_iat_cell",
+                "proof_role": "requires_import_address_pair_witness",
+                "iat_rva": iat_address - binary.image_base,
+                "import": {
+                    "dll": identity[0],
+                    identity[1]: identity[2],
+                },
+            }
+    return {
+        "status": "partial_iat_overlap_unsupported",
+        "proof_role": "hard_incomplete",
+        "overlap_count": len(overlaps),
+    }
+
+
+def _assembled_iat_read_candidates(
+    binary: StageABinary, semantic: dict[str, Any],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for register, expression in sorted((semantic.get("registers") or {}).items()):
+        assembled = _assembled_u32_after_register_writes(expression)
+        if assembled is None:
+            continue
+        address, writes = assembled
+        imported = _unique_import_at_absolute_address(binary, address)
+        identity = _import_identity(imported) if imported is not None else None
+        if identity is None:
+            continue
+        candidates.append({
+            "register": register,
+            "absolute_address": address,
+            "iat_rva": address - binary.image_base,
+            "import": {"dll": identity[0], identity[1]: identity[2]},
+            "intervening_register_writes": len(writes),
+            "status": (
+                "exact_iat_cell"
+                if not writes else "requires_intervening_write_separation"
+            ),
+            "next_action": (
+                "use ImportAddressPair.memoryHolds directly"
+                if not writes else
+                "prove every intervening write avoids the four-byte IAT cell, then "
+                "reduce the assembled bytes to Memory.read32"
+            ),
+        })
+    return candidates
 
 
 def _semantic_successors(outcome: dict[str, Any]) -> dict[str, Any]:
@@ -3257,6 +9080,11 @@ def _relational_memory_contracts(
         for side in ("original", "candidate"):
             semantic = behavior.get(f"{side}_ir") or {}
             side_reads[side] = _semantic_memory_reads(semantic)
+            binary = original if side == "original" else candidate
+            for observation in side_reads[side]:
+                observation["iat_classification"] = _iat_read_classification(
+                    binary, observation
+                )
         paired = []
         reads_by_path = {
             side: {tuple(read["path"]): read for read in side_reads[side]}
@@ -3333,6 +9161,14 @@ def _relational_memory_contracts(
             "successors": successor,
             "candidate_successors": candidate_successor,
             "pullback": pullback,
+            "assembled_iat_read_candidates": {
+                "original": _assembled_iat_read_candidates(
+                    original, original_semantic
+                ),
+                "candidate": _assembled_iat_read_candidates(
+                    candidate, candidate_semantic
+                ),
+            },
         }
         region_rows.append(row)
         reads_by_id[region["numeric_id"]] = {
@@ -3381,7 +9217,7 @@ def _relational_memory_contracts(
             }
             exact_pullback_pair_claims = []
             if (
-                not contract["regions"][source_index].get("values")
+                not contract.get("value_targets")
                 and original_source.get("registers") == candidate_source.get("registers")
                 and original_source.get("writes") == candidate_source.get("writes")
             ):
@@ -3473,6 +9309,21 @@ def _relational_memory_contracts(
         for row in region_rows
         for requirement in row["successor_read_requirements"]
     ]
+    iat_read_counts = {
+        side: dict(sorted(Counter(
+            read[side]["iat_classification"]["status"]
+            for read in all_reads if read.get(side) is not None
+        ).items()))
+        for side in ("original", "candidate")
+    }
+    assembled_iat_counts = {
+        side: dict(sorted(Counter(
+            candidate["status"]
+            for row in region_rows
+            for candidate in row["assembled_iat_read_candidates"][side]
+        ).items()))
+        for side in ("original", "candidate")
+    }
     return {
         "format": "stage-a-relational-memory-contracts-v1",
         "status": "analysis_requires_lean_pullback_replay",
@@ -3499,6 +9350,8 @@ def _relational_memory_contracts(
                 read["status"] != "paired_shape" for read in all_reads
             ),
             "read_operations": operation_counts,
+            "iat_read_classification": iat_read_counts,
+            "assembled_iat_reads": assembled_iat_counts,
             "pullback": pullback_counts,
             "direct_successor_requirements": len(direct_requirements),
             "ordinary_pullback_pair_supported_edges": sum(
@@ -3532,7 +9385,8 @@ def _relational_memory_contracts(
 
 
 _PURE_SEMANTIC_EXPR_OPERATIONS = {
-    "input_reg", "constant", "add", "sub", "bit_and", "bit_xor", "bit_not",
+    "input_reg", "input_fs_base", "constant", "undefined", "add", "sub",
+    "bit_and", "bit_xor", "bit_not",
     "extract_byte", "shift_left", "shift_right", "shift_left_by", "shift_right_by",
     "shift_arithmetic_right_by", "bit_or", "if_equal", "unsigned_less_value",
     "bit_value", "multiply", "multiply_high_unsigned", "multiply_high_signed",
@@ -3674,6 +9528,11 @@ _REGISTER_RELATION_KINDS = {
     "exact", "code_pointer", "data_pointer", "related_word",
 }
 
+_PE32_EXTERNAL_REGISTER_POLICY_ID = "win32-cdecl-stdcall-registers-v1"
+_PE32_EXTERNAL_PRESERVED_REGISTERS = frozenset({
+    "ebx", "esi", "edi", "ebp", "esp",
+})
+
 
 def _register_relation_join(relations: list[str]) -> str:
     unique = set(relations)
@@ -3686,6 +9545,46 @@ def _register_relation_join(relations: list[str]) -> str:
 
 def _register_relation_implies(source: str, target: str) -> bool:
     return source == target or target == "related_word"
+
+
+def _target_shaped_register_output_claims(
+    source: dict[str, Any], target: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Build checked source claims whose outputs are exactly the target inventory."""
+    existing_by_register = {
+        str(claim["output"]["original"]): claim
+        for claim in source.get("output_claims", [])
+    }
+    exact_by_register = {
+        str(claim["register"]): claim
+        for claim in source.get("exact_output_claims", [])
+    }
+    source_outputs = {
+        str(relation["original"]): relation
+        for relation in source.get("outputs", [])
+    }
+    claims: list[dict[str, Any]] = []
+    for target_relation in target.get("inputs", []):
+        register = str(target_relation["original"])
+        existing = existing_by_register.get(register)
+        if existing is not None and existing.get("output") == target_relation:
+            claims.append(existing)
+            continue
+        exact = exact_by_register.get(register)
+        source_output = source_outputs.get(register)
+        if (
+            exact is None
+            or source_output is None
+            or source_output.get("candidate") != target_relation.get("candidate")
+            or target_relation.get("relation") not in {"exact", "related_word"}
+        ):
+            return None
+        claims.append({
+            "kind": "exact_expression",
+            "output": target_relation,
+            "expression": exact["expression"],
+        })
+    return claims
 
 
 def _paired_constant_relation(
@@ -3726,7 +9625,7 @@ def _infer_register_output_relation(
     contract: dict[str, Any],
     original_image_base: int,
     candidate_image_base: int,
-    region_values_empty: bool,
+    global_values_empty: bool,
 ) -> tuple[str, str]:
     constant_relation = _paired_constant_relation(
         original_expression,
@@ -3746,7 +9645,7 @@ def _infer_register_output_relation(
             input_relations.get(register) == "exact" for register in dependencies
         ):
             return "exact", "lean_exact_memory_free_expression"
-        if region_values_empty and _semantic_exact_memory_inputs(
+        if global_values_empty and _semantic_exact_memory_inputs(
             original_expression,
             {
                 register for register, relation in input_relations.items()
@@ -3757,35 +9656,1557 @@ def _infer_register_output_relation(
     return "related_word", "unsupported_or_mixed_relation"
 
 
+def _register_offset_write(
+    address: dict[str, Any], value: dict[str, Any]
+) -> dict[str, Any] | None:
+    if address.get("op") == "input_reg":
+        return {
+            "register": str(address["reg"]),
+            "offset": 0,
+            "value": value,
+        }
+    if address.get("op") != "add":
+        return None
+    left = address.get("left") or {}
+    right = address.get("right") or {}
+    if left.get("op") == "constant":
+        left, right = right, left
+    if left.get("op") != "input_reg" or right.get("op") != "constant":
+        return None
+    offset = int(right["value"])
+    if not 0 <= offset < 2**32:
+        return None
+    return {
+        "register": str(left["reg"]),
+        "offset": offset,
+        "value": value,
+    }
+
+
+def _read8_after_register_writes(
+    expression: dict[str, Any],
+) -> tuple[int, list[dict[str, Any]]] | None:
+    writes_reversed: list[dict[str, Any]] = []
+    cursor = expression
+    while cursor.get("op") == "read8_after_write":
+        write = _register_offset_write(
+            cursor.get("write_address") or {}, cursor.get("write_value") or {}
+        )
+        if write is None:
+            return None
+        writes_reversed.append(write)
+        cursor = cursor.get("prior") or {}
+    address = cursor.get("address") or {}
+    if cursor.get("op") != "read8" or address.get("op") != "constant":
+        return None
+    return int(address["value"]), list(reversed(writes_reversed))
+
+
+def _assembled_u32_after_register_writes(
+    expression: dict[str, Any],
+) -> tuple[int, list[dict[str, Any]]] | None:
+    if expression.get("op") == "read32":
+        address = expression.get("address") or {}
+        if address.get("op") == "constant":
+            return int(address["value"]), []
+    shifted_bytes: dict[int, dict[str, Any]] = {}
+
+    def collect(node: dict[str, Any], shift: int = 0) -> bool:
+        operation = node.get("op")
+        if operation == "bit_or":
+            return collect(node.get("left") or {}, shift) and collect(
+                node.get("right") or {}, shift
+            )
+        if operation == "shift_left":
+            return collect(node.get("value") or {}, shift + int(node.get("amount", -1)))
+        if shift not in {0, 8, 16, 24} or shift in shifted_bytes:
+            return False
+        shifted_bytes[shift] = node
+        return True
+
+    if not collect(expression) or set(shifted_bytes) != {0, 8, 16, 24}:
+        return None
+    decoded = [
+        _read8_after_register_writes(shifted_bytes[shift])
+        for shift in (0, 8, 16, 24)
+    ]
+    if any(item is None for item in decoded):
+        return None
+    byte_rows = [item for item in decoded if item is not None]
+    base = byte_rows[0][0]
+    writes = byte_rows[0][1]
+    if any(address != base + index or row_writes != writes
+           for index, (address, row_writes) in enumerate(byte_rows)):
+        return None
+    return base, writes
+
+
+def _immutable_image_u32(binary: StageABinary, absolute: int) -> int | None:
+    if absolute < binary.image_base:
+        return None
+    rva = absolute - binary.image_base
+    section = next((
+        section for section in binary.sections
+        if not section.writable
+        and section.rva_start <= rva
+        and rva + 4 <= section.rva_end
+    ), None)
+    if section is None:
+        return None
+    data = binary.pe.get_data(rva, 4)
+    if len(data) != 4:
+        return None
+    return int.from_bytes(data, "little")
+
+
+def _register_writes_have_address_separations(
+    region: dict[str, Any], side: str, word_address: int,
+    writes: list[dict[str, Any]],
+) -> bool:
+    separations = region.get("address_separations", [])
+    return all(
+        any(
+            str(separation.get(f"{side}_register")) == str(write["register"])
+            and int(separation.get(f"{side}_offset", -1))
+                == int(write["offset"]) + write_byte
+            and int(separation.get(f"{side}_address", -1))
+                == word_address + word_byte
+            for separation in separations
+        )
+        for write in writes
+        for word_byte in range(4)
+        for write_byte in range(4)
+    )
+
+
+def _import_identity(imported: Any) -> tuple[str, str, str | int] | None:
+    dll = str(getattr(imported, "dll", "")).lower()
+    symbol = getattr(imported, "symbol", None)
+    ordinal = getattr(imported, "ordinal", None)
+    if not dll or (symbol is None) == (ordinal is None):
+        return None
+    return (dll, "symbol", str(symbol)) if symbol is not None else (
+        dll, "ordinal", int(ordinal)
+    )
+
+
+def _unique_import_at_absolute_address(
+    binary: StageABinary, absolute_address: int,
+) -> Any | None:
+    iat_rva = absolute_address - binary.image_base
+    matches = [
+        imported for imported in binary.imports
+        if imported.thunk_rva is not None and int(imported.thunk_rva) == iat_rva
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _constant_read32_address(expression: dict[str, Any]) -> int | None:
+    if expression.get("op") != "read32":
+        return None
+    address = expression.get("address") or {}
+    if address.get("op") != "constant":
+        return None
+    return int(address["value"]) & 0xFFFFFFFF
+
+
+def _iat_seed_read(
+    expression: dict[str, Any],
+) -> tuple[int, list[dict[str, Any]], bool] | None:
+    direct = _constant_read32_address(expression)
+    if direct is not None:
+        return direct, [], False
+    assembled = _assembled_u32_after_register_writes(expression)
+    if assembled is None:
+        return None
+    address, writes = assembled
+    return address, writes, True
+
+
+def _iat_import_register_seed_candidates(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    behaviors: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for region_index, behavior_pair in enumerate(behaviors):
+        original_registers = behavior_pair["original_ir"].get("registers") or {}
+        candidate_registers = behavior_pair["candidate_ir"].get("registers") or {}
+        for original_register, original_expression in sorted(original_registers.items()):
+            original_read = _iat_seed_read(original_expression)
+            if original_read is None:
+                continue
+            original_address, original_writes, original_assembled = original_read
+            original_import = _unique_import_at_absolute_address(
+                original_bin, original_address
+            )
+            original_identity = (
+                _import_identity(original_import) if original_import is not None else None
+            )
+            if original_identity is None:
+                continue
+            matches: list[dict[str, Any]] = []
+            for candidate_register, candidate_expression in sorted(
+                candidate_registers.items()
+            ):
+                candidate_read = _iat_seed_read(candidate_expression)
+                if candidate_read is None:
+                    continue
+                candidate_address, candidate_writes, candidate_assembled = candidate_read
+                candidate_import = _unique_import_at_absolute_address(
+                    candidate_bin, candidate_address
+                )
+                if (
+                    candidate_import is None
+                    or _import_identity(candidate_import) != original_identity
+                    or candidate_assembled != original_assembled
+                    or len(candidate_writes) != len(original_writes)
+                ):
+                    continue
+                matches.append({
+                    "profile": (
+                        "assembled_iat_register_seed_v1"
+                        if original_assembled else "iat_register_seed_v1"
+                    ),
+                    "region_index": region_index,
+                    "original_register": original_register,
+                    "candidate_register": candidate_register,
+                    "original_iat_rva": int(original_import.thunk_rva),
+                    "candidate_iat_rva": int(candidate_import.thunk_rva),
+                    "original_absolute_address": original_address,
+                    "candidate_absolute_address": candidate_address,
+                    "assembled_read": original_assembled,
+                    "original_writes": original_writes,
+                    "candidate_writes": candidate_writes,
+                    "import": {
+                        "dll": original_identity[0],
+                        original_identity[1]: original_identity[2],
+                    },
+                })
+            if len(matches) == 1:
+                result.append(matches[0])
+    return result
+
+
+def _attach_import_seed_address_separations(
+    contract: dict[str, Any], seeds: list[dict[str, Any]],
+) -> dict[str, Any]:
+    refined = json.loads(json.dumps(contract))
+    regions = refined.get("regions", [])
+    for seed in seeds:
+        if not seed.get("assembled_read"):
+            continue
+        original_writes = seed.get("original_writes", [])
+        candidate_writes = seed.get("candidate_writes", [])
+        if len(original_writes) != len(candidate_writes):
+            continue
+        region_index = int(seed["region_index"])
+        if not 0 <= region_index < len(regions):
+            continue
+        rows = regions[region_index].setdefault("address_separations", [])
+        keys = {
+            (
+                str(row["original_register"]), str(row["candidate_register"]),
+                int(row["original_offset"]), int(row["candidate_offset"]),
+                int(row["original_address"]), int(row["candidate_address"]),
+            )
+            for row in rows
+        }
+        for original_write, candidate_write in zip(
+            original_writes, candidate_writes, strict=True
+        ):
+            for word_byte in range(4):
+                for write_byte in range(4):
+                    key = (
+                        str(original_write["register"]),
+                        str(candidate_write["register"]),
+                        (int(original_write["offset"]) + write_byte) & 0xFFFFFFFF,
+                        (int(candidate_write["offset"]) + write_byte) & 0xFFFFFFFF,
+                        (int(seed["original_absolute_address"]) + word_byte) & 0xFFFFFFFF,
+                        (int(seed["candidate_absolute_address"]) + word_byte) & 0xFFFFFFFF,
+                    )
+                    if key in keys:
+                        continue
+                    rows.append({
+                        "original_register": key[0],
+                        "candidate_register": key[1],
+                        "original_offset": key[2],
+                        "candidate_offset": key[3],
+                        "original_address": key[4],
+                        "candidate_address": key[5],
+                        "source": "assembled_iat_write_separation",
+                    })
+                    keys.add(key)
+        rows.sort(key=lambda row: (
+            str(row["original_register"]), str(row["candidate_register"]),
+            int(row["original_offset"]), int(row["candidate_offset"]),
+            int(row["original_address"]), int(row["candidate_address"]),
+        ))
+    return refined
+
+
+def _attach_return_write_address_separations(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+) -> dict[str, Any]:
+    refined = json.loads(json.dumps(contract))
+
+    def inside_image(binary: StageABinary, address: int) -> bool:
+        return (
+            binary.image_base <= address
+            < binary.image_base + binary.pe.OPTIONAL_HEADER.SizeOfImage
+            and address < 2**32
+        )
+
+    for region, behavior_pair in zip(
+        refined.get("regions", []), behaviors, strict=True
+    ):
+        original = behavior_pair.get("original_ir") or {}
+        candidate = behavior_pair.get("candidate_ir") or {}
+        original_outcome = original.get("outcome") or {}
+        candidate_outcome = candidate.get("outcome") or {}
+        if (
+            original_outcome.get("op") != "returned"
+            or candidate_outcome.get("op") != "returned"
+        ):
+            continue
+        original_writes = original.get("writes") or []
+        candidate_writes = candidate.get("writes") or []
+        original_stack = _semantic_read32_after_writes_address(
+            original_outcome.get("target") or {}, original_writes
+        )
+        candidate_stack = _semantic_read32_after_writes_address(
+            candidate_outcome.get("target") or {}, candidate_writes
+        )
+        if original_stack is None or candidate_stack is None:
+            continue
+        original_slot_result = _register_offset_witness(original_stack, "esp")
+        candidate_slot_result = _register_offset_witness(candidate_stack, "esp")
+        if original_slot_result is None or candidate_slot_result is None:
+            continue
+        original_requirements = _constant_return_write_requirements(
+            original, int(original_slot_result[1])
+        )
+        candidate_requirements = _constant_return_write_requirements(
+            candidate, int(candidate_slot_result[1])
+        )
+        if not original_requirements or not candidate_requirements:
+            continue
+        if (
+            any(
+                offset >= 2**32 or not inside_image(original_bin, address)
+                for offset, address in original_requirements
+            )
+            or any(
+                offset >= 2**32 or not inside_image(candidate_bin, address)
+                for offset, address in candidate_requirements
+            )
+        ):
+            continue
+        original_rows = sorted(original_requirements)
+        candidate_rows = sorted(candidate_requirements)
+        row_count = max(len(original_rows), len(candidate_rows))
+        separations = region.setdefault("address_separations", [])
+        existing = {
+            (
+                str(row["original_register"]),
+                str(row["candidate_register"]),
+                int(row["original_offset"]),
+                int(row["candidate_offset"]),
+                int(row["original_address"]),
+                int(row["candidate_address"]),
+            )
+            for row in separations
+        }
+        for index in range(row_count):
+            original_offset, original_address = original_rows[
+                index % len(original_rows)
+            ]
+            candidate_offset, candidate_address = candidate_rows[
+                index % len(candidate_rows)
+            ]
+            key = (
+                "esp", "esp", original_offset, candidate_offset,
+                original_address, candidate_address,
+            )
+            if key in existing:
+                continue
+            separations.append({
+                "original_register": "esp",
+                "candidate_register": "esp",
+                "original_offset": original_offset,
+                "candidate_offset": candidate_offset,
+                "original_address": original_address,
+                "candidate_address": candidate_address,
+                "source": "return_after_static_write_separation",
+            })
+            existing.add(key)
+        separations.sort(key=lambda row: (
+            str(row["original_register"]), str(row["candidate_register"]),
+            int(row["original_offset"]), int(row["candidate_offset"]),
+            int(row["original_address"]), int(row["candidate_address"]),
+        ))
+    return refined
+
+
+def _reachable_weighted_nonzero_cycle_nodes(
+    adjacency: dict[int, list[tuple[int, int]]],
+    roots: set[int],
+) -> set[int]:
+    """Find reachable SCCs whose edge weights cannot have one node potential."""
+    reachable: set[int] = set()
+    pending = list(sorted(roots, reverse=True))
+    while pending:
+        node = pending.pop()
+        if node in reachable:
+            continue
+        reachable.add(node)
+        pending.extend(
+            target for target, _ in reversed(adjacency.get(node, []))
+            if target not in reachable
+        )
+
+    order: list[int] = []
+    visited: set[int] = set()
+    for start in sorted(reachable):
+        if start in visited:
+            continue
+        stack: list[tuple[int, bool]] = [(start, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if expanded:
+                order.append(node)
+                continue
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.append((node, True))
+            stack.extend(
+                (target, False)
+                for target, _ in reversed(adjacency.get(node, []))
+                if target in reachable and target not in visited
+            )
+
+    reverse: dict[int, list[int]] = defaultdict(list)
+    for source in reachable:
+        for target, _ in adjacency.get(source, []):
+            if target in reachable:
+                reverse[target].append(source)
+
+    result: set[int] = set()
+    assigned: set[int] = set()
+    for start in reversed(order):
+        if start in assigned:
+            continue
+        component: set[int] = set()
+        pending = [start]
+        assigned.add(start)
+        while pending:
+            node = pending.pop()
+            component.add(node)
+            for predecessor in reverse.get(node, []):
+                if predecessor not in assigned:
+                    assigned.add(predecessor)
+                    pending.append(predecessor)
+
+        potential = {start: 0}
+        pending = [start]
+        inconsistent = False
+        while pending:
+            source = pending.pop()
+            for target, weight in adjacency.get(source, []):
+                if target not in component:
+                    continue
+                expected = potential[source] + weight
+                if target not in potential:
+                    potential[target] = expected
+                    pending.append(target)
+                elif potential[target] != expected:
+                    inconsistent = True
+        if inconsistent:
+            result.update(component)
+    return result
+
+
+def _attach_stack_window_invariants(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    refined = json.loads(json.dumps(contract))
+    regions = refined.get("regions", [])
+    requirements: dict[tuple[int, str, str], tuple[int, int]] = {}
+    seed_sources: dict[tuple[int, str, str], set[str]] = {}
+
+    def inside_image(binary: StageABinary, address: int) -> bool:
+        return binary.image_base <= address < binary.image_base + binary.pe.OPTIONAL_HEADER.SizeOfImage
+
+    def register_offset(expression: Any) -> tuple[str, int] | None:
+        if not isinstance(expression, dict):
+            return None
+        if expression.get("op") == "input_reg":
+            return str(expression.get("reg")), 0
+        if expression.get("op") != "add":
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if left.get("op") == "constant":
+            left, right = right, left
+        if left.get("op") != "input_reg" or right.get("op") != "constant":
+            return None
+        offset = int(right.get("value", -1))
+        if not 0 <= offset < 2**31:
+            return None
+        return str(left.get("reg")), offset
+
+    def add_requirement(
+        region_index: int, original_register: str, candidate_register: str,
+        bytes_above: int, source: str, bytes_below: int = 0,
+    ) -> None:
+        # A live stack pointer must have headroom for a checked positive ESP
+        # adjustment; otherwise an IA-32 add can wrap at the top of memory.
+        bytes_above = max(bytes_above, 1)
+        if (
+            original_register != "esp"
+            or candidate_register != "esp"
+            or not 0 <= bytes_below < 2**32
+            or not 0 <= bytes_above < 2**32
+            or bytes_below + bytes_above == 0
+        ):
+            return
+        key = (region_index, original_register, candidate_register)
+        prior_below, prior_above = requirements.get(key, (0, 0))
+        requirements[key] = (
+            max(prior_below, bytes_below), max(prior_above, bytes_above)
+        )
+        seed_sources.setdefault(key, set()).add(source)
+
+    def stack_delta(expression: Any, register: str) -> int | None:
+        if expression == {"op": "input_reg", "reg": register}:
+            return 0
+        if not isinstance(expression, dict) or expression.get("op") not in {"add", "sub"}:
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if (
+            left != {"op": "input_reg", "reg": register}
+            or right.get("op") != "constant"
+        ):
+            return None
+        constant = int(right.get("value", -1))
+        if not 0 <= constant < 2**32:
+            return None
+        signed = constant if constant < 2**31 else constant - 2**32
+        delta = signed if expression["op"] == "add" else -signed
+        return delta if -(2**31) < delta < 2**31 else None
+
+    for region_index, region in enumerate(regions):
+        for separation in region.get("address_separations", []):
+            original_register = str(separation["original_register"])
+            candidate_register = str(separation["candidate_register"])
+            original_offset = int(separation["original_offset"])
+            candidate_offset = int(separation["candidate_offset"])
+            if (
+                original_register != "esp"
+                or candidate_register != "esp"
+                or original_offset >= 2**31
+                or candidate_offset >= 2**31
+                or not inside_image(original_bin, int(separation["original_address"]))
+                or not inside_image(candidate_bin, int(separation["candidate_address"]))
+            ):
+                continue
+            key = (region_index, original_register, candidate_register)
+            prior_below, prior_above = requirements.get(key, (0, 0))
+            requirements[key] = (
+                prior_below,
+                max(prior_above, original_offset + 1, candidate_offset + 1),
+            )
+            seed_sources.setdefault(key, set()).add("address_separation_seed")
+
+    for region_index, behavior in enumerate(behaviors):
+        original_reads = {
+            tuple(read["path"]): read
+            for read in _semantic_memory_reads(behavior["original_ir"])
+        }
+        candidate_reads = {
+            tuple(read["path"]): read
+            for read in _semantic_memory_reads(behavior["candidate_ir"])
+        }
+        for path in sorted(original_reads.keys() & candidate_reads.keys()):
+            original_read = original_reads[path]
+            candidate_read = candidate_reads[path]
+            width = original_read.get("width")
+            if not isinstance(width, int) or width != candidate_read.get("width"):
+                continue
+            original_address = register_offset(original_read.get("address"))
+            candidate_address = register_offset(candidate_read.get("address"))
+            if original_address is None or candidate_address is None:
+                continue
+            add_requirement(
+                region_index, original_address[0], candidate_address[0],
+                max(original_address[1], candidate_address[1]) + width,
+                "paired_memory_read_seed",
+            )
+        original_outcome = behavior["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior["candidate_ir"].get("outcome") or {}
+        if original_outcome.get("op") == candidate_outcome.get("op") == "returned":
+            original_delta = stack_delta(
+                (behavior["original_ir"].get("registers") or {}).get("esp"), "esp"
+            )
+            candidate_delta = stack_delta(
+                (behavior["candidate_ir"].get("registers") or {}).get("esp"), "esp"
+            )
+            if (
+                original_delta is not None
+                and original_delta == candidate_delta
+                and original_delta > 0
+            ):
+                add_requirement(
+                    region_index, "esp", "esp", original_delta + 1,
+                    "return_stack_no_wrap_seed",
+                )
+        original_writes = behavior["original_ir"].get("writes") or []
+        candidate_writes = behavior["candidate_ir"].get("writes") or []
+        if len(original_writes) == len(candidate_writes):
+            for original_write, candidate_write in zip(
+                original_writes, candidate_writes, strict=True
+            ):
+                original_address = register_offset(original_write.get("address"))
+                candidate_address = register_offset(candidate_write.get("address"))
+                if original_address is None or candidate_address is None:
+                    continue
+                add_requirement(
+                    region_index, original_address[0], candidate_address[0],
+                    max(original_address[1], candidate_address[1]) + 4,
+                    "paired_memory_write_seed",
+                )
+
+    incoming: dict[int, list[dict[str, Any]]] = {}
+    for edge in register_relations.get("edges", []):
+        incoming.setdefault(int(edge["target_region_index"]), []).append(edge)
+    region_index_by_target_id = {
+        int(region.get("numeric_id", index)): index
+        for index, region in enumerate(regions)
+    }
+    direct_call_continuations: dict[int, list[dict[str, int]]] = defaultdict(list)
+    for source_index, behavior in enumerate(behaviors):
+        original_outcome = behavior["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior["candidate_ir"].get("outcome") or {}
+        if (
+            original_outcome.get("op") != "call"
+            or candidate_outcome.get("op") != "call"
+            or original_outcome.get("target") != candidate_outcome.get("target")
+            or original_outcome.get("continuation")
+                != candidate_outcome.get("continuation")
+        ):
+            continue
+        callee_index = region_index_by_target_id.get(
+            int(original_outcome["target"])
+        )
+        continuation_index = region_index_by_target_id.get(
+            int(original_outcome["continuation"])
+        )
+        if callee_index is None or continuation_index is None:
+            continue
+        original_delta = stack_delta(
+            (behavior["original_ir"].get("registers") or {}).get("esp"), "esp"
+        )
+        candidate_delta = stack_delta(
+            (behavior["candidate_ir"].get("registers") or {}).get("esp"), "esp"
+        )
+        if original_delta is None or original_delta != candidate_delta:
+            continue
+        direct_call_continuations[continuation_index].append({
+            "source_region_index": source_index,
+            "callee_region_index": callee_index,
+            "entry_stack_delta": original_delta,
+        })
+    call_window_adjacency = {
+        continuation: {
+            int(call["callee_region_index"]) for call in calls
+        }
+        for continuation, calls in direct_call_continuations.items()
+    }
+
+    def call_window_path_exists(start: int, target: int) -> bool:
+        pending = [start]
+        seen: set[int] = set()
+        while pending:
+            node = pending.pop()
+            if node == target:
+                return True
+            if node in seen:
+                continue
+            seen.add(node)
+            pending.extend(call_window_adjacency.get(node, set()) - seen)
+        return False
+
+    for continuation, calls in direct_call_continuations.items():
+        for call in calls:
+            call["recursive"] = int(call_window_path_exists(
+                int(call["callee_region_index"]), continuation,
+            ))
+    machine_contracts_by_target = {
+        (
+            str(item["import"]["dll"]).lower(),
+            "symbol" if "symbol" in item["import"] else "ordinal",
+            item["import"].get("symbol", item["import"].get("ordinal")),
+        ): item
+        for item in refined.get("machine_import_call_contracts", [])
+    }
+
+    def edge_stack_delta(
+        edge: dict[str, Any], original_register: str, candidate_register: str,
+    ) -> tuple[int | None, str | None]:
+        source_index = int(edge["source_region_index"])
+        original_expression = (
+            behaviors[source_index]["original_ir"].get("registers") or {}
+        ).get(original_register) or {}
+        candidate_expression = (
+            behaviors[source_index]["candidate_ir"].get("registers") or {}
+        ).get(candidate_register) or {}
+        original_delta = stack_delta(original_expression, original_register)
+        candidate_delta = stack_delta(candidate_expression, candidate_register)
+        environment_delta = 0
+        if edge.get("environment_barrier"):
+            original_outcome = behaviors[source_index]["original_ir"].get(
+                "outcome"
+            ) or {}
+            candidate_outcome = behaviors[source_index]["candidate_ir"].get(
+                "outcome"
+            ) or {}
+            original_target = _semantic_external_target_identity(
+                original_outcome.get("import")
+            )
+            candidate_target = _semantic_external_target_identity(
+                candidate_outcome.get("import")
+            )
+            machine_contract = machine_contracts_by_target.get(original_target)
+            if (
+                original_outcome.get("op") != "external_call"
+                or candidate_outcome.get("op") != "external_call"
+                or original_target is None
+                or original_target != candidate_target
+                or machine_contract is None
+            ):
+                return None, "unsupported_environment_stack_transfer"
+            environment_delta = int(machine_contract["stack_result_delta"])
+        if (
+            original_delta is None
+            or candidate_delta is None
+            or original_delta + environment_delta
+                != candidate_delta + environment_delta
+        ):
+            return None, "non_identity_or_environment_stack_transfer"
+        return original_delta + environment_delta, None
+
+    unbounded_cycle_nodes: dict[tuple[str, str], set[int]] = {}
+    for original_register, candidate_register in sorted({
+        (original_register, candidate_register)
+        for _, original_register, candidate_register in requirements
+    }):
+        adjacency: dict[int, list[tuple[int, int]]] = defaultdict(list)
+        for target_index, target_edges in incoming.items():
+            for edge in target_edges:
+                delta, _ = edge_stack_delta(
+                    edge, original_register, candidate_register
+                )
+                if delta is not None:
+                    adjacency[target_index].append((
+                        int(edge["source_region_index"]), delta,
+                    ))
+        if original_register == "esp" and candidate_register == "esp":
+            for continuation, calls in direct_call_continuations.items():
+                for call in calls:
+                    if not bool(call.get("recursive")):
+                        adjacency[continuation].append((
+                            int(call["callee_region_index"]),
+                            -int(call["entry_stack_delta"]),
+                        ))
+        for edges in adjacency.values():
+            edges.sort()
+        roots = {
+            region_index
+            for region_index, source_original, source_candidate in requirements
+            if source_original == original_register
+            and source_candidate == candidate_register
+        }
+        unbounded_cycle_nodes[(original_register, candidate_register)] = (
+            _reachable_weighted_nonzero_cycle_nodes(adjacency, roots)
+        )
+
+    frontier: list[dict[str, Any]] = []
+    frontier_keys: set[tuple[tuple[str, Any], ...]] = set()
+    duplicate_frontier_observations = 0
+    propagation_steps = 0
+    requirement_updates = 0
+
+    def add_frontier(row: dict[str, Any]) -> None:
+        nonlocal duplicate_frontier_observations
+        key = tuple(sorted(row.items()))
+        if key in frontier_keys:
+            duplicate_frontier_observations += 1
+            return
+        frontier_keys.add(key)
+        frontier.append(row)
+
+    queue = deque(sorted(requirements))
+    queued = set(queue)
+    while queue:
+        target_key = queue.popleft()
+        propagation_steps += 1
+        queued.discard(target_key)
+        target_index, original_register, candidate_register = target_key
+        bytes_below, bytes_above = requirements[target_key]
+        if target_index in unbounded_cycle_nodes.get(
+            (original_register, candidate_register), set()
+        ):
+            add_frontier({
+                "region_index": target_index,
+                "original_register": original_register,
+                "candidate_register": candidate_register,
+                "bytes_below": bytes_below,
+                "bytes_above": bytes_above,
+                "reason": "nonzero_stack_delta_cycle_requires_relational_frame",
+            })
+            continue
+        if original_register == "esp" and candidate_register == "esp":
+            for call in direct_call_continuations.get(target_index, []):
+                if bool(call.get("recursive")):
+                    add_frontier({
+                        "region_index": target_index,
+                        "source_region_index": int(call["source_region_index"]),
+                        "callee_region_index": int(call["callee_region_index"]),
+                        "original_register": original_register,
+                        "candidate_register": candidate_register,
+                        "bytes_below": bytes_below,
+                        "bytes_above": bytes_above,
+                        "reason": "recursive_call_window_requires_inductive_frame",
+                    })
+                    continue
+                entry_delta = int(call["entry_stack_delta"])
+                callee_key = (
+                    int(call["callee_region_index"]),
+                    original_register,
+                    candidate_register,
+                )
+                callee_below = max(bytes_below + entry_delta, 0)
+                callee_above = max(bytes_above - entry_delta, 1)
+                prior_below, prior_above = requirements.get(callee_key, (0, 0))
+                required = (
+                    max(prior_below, callee_below),
+                    max(prior_above, callee_above),
+                )
+                if required != (prior_below, prior_above):
+                    requirements[callee_key] = required
+                    seed_sources.setdefault(callee_key, set()).add(
+                        "direct_call_continuation_window"
+                    )
+                    requirement_updates += 1
+                    if callee_key not in queued:
+                        queue.append(callee_key)
+                        queued.add(callee_key)
+        edges = incoming.get(target_index, [])
+        if not edges:
+            add_frontier({
+                "region_index": target_index,
+                "original_register": original_register,
+                "candidate_register": candidate_register,
+                "bytes_below": bytes_below,
+                "bytes_above": bytes_above,
+                "reason": "no_checked_incoming_edge",
+            })
+            continue
+        for edge in edges:
+            source_index = int(edge["source_region_index"])
+            original_delta, transfer_issue = edge_stack_delta(
+                edge, original_register, candidate_register
+            )
+            if original_delta is None:
+                add_frontier({
+                    "region_index": target_index,
+                    "source_region_index": source_index,
+                    "original_register": original_register,
+                    "candidate_register": candidate_register,
+                    "bytes_below": bytes_below,
+                    "bytes_above": bytes_above,
+                    "reason": transfer_issue,
+                })
+                continue
+            source_below = max(bytes_below - original_delta, 0)
+            source_above = max(bytes_above + original_delta, 1)
+            source_key = (source_index, original_register, candidate_register)
+            prior_below, prior_above = requirements.get(source_key, (0, 0))
+            required = (
+                max(prior_below, source_below), max(prior_above, source_above)
+            )
+            if required != (prior_below, prior_above):
+                requirements[source_key] = required
+                requirement_updates += 1
+                if source_key not in queued:
+                    queue.append(source_key)
+                    queued.add(source_key)
+
+    windows_by_region: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for (region_index, original_register, candidate_register), (
+        bytes_below, bytes_above,
+    ) in sorted(requirements.items()):
+        windows_by_region[region_index].append({
+            "range_id": 0,
+            "original_register": original_register,
+            "candidate_register": candidate_register,
+            "bytes_below": bytes_below,
+            "bytes_above": bytes_above,
+            "source": (
+                "+".join(sorted(seed_sources[
+                    (region_index, original_register, candidate_register)
+                ]))
+                if (region_index, original_register, candidate_register)
+                    in seed_sources
+                else "backward_identity_stack_window"
+            ),
+        })
+
+    for region_index, region in enumerate(regions):
+        windows = windows_by_region.get(region_index, [])
+        region["stack_windows"] = windows
+        claims = []
+        for separation in region.get("address_separations", []):
+            matches = [
+                window for window in windows
+                if window["original_register"] == separation["original_register"]
+                and window["candidate_register"] == separation["candidate_register"]
+                and int(separation["original_offset"]) < int(window["bytes_above"])
+                and int(separation["candidate_offset"]) < int(window["bytes_above"])
+            ]
+            if len(matches) == 1:
+                claims.append({"window": matches[0], "separation": separation})
+        region["stack_address_separation_claims"] = claims
+
+    return refined, {
+        "format": "stage-a-relational-stack-windows-v1",
+        "status": "proposal_requires_lean_replay",
+        "range_profile": "paired-stack-range-v1",
+        "regions_with_windows": sum(bool(region.get("stack_windows")) for region in regions),
+        "windows": sum(len(region.get("stack_windows", [])) for region in regions),
+        "separation_claims": sum(
+            len(region.get("stack_address_separation_claims", [])) for region in regions
+        ),
+        "propagation_steps": propagation_steps,
+        "requirement_updates": requirement_updates,
+        "nonzero_stack_delta_cycle_nodes": sum(
+            len(nodes) for nodes in unbounded_cycle_nodes.values()
+        ),
+        "duplicate_frontier_observations": duplicate_frontier_observations,
+        "frontier": frontier,
+    }
+
+
+def _infer_import_register_invariants(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    seeds: list[dict[str, Any]],
+) -> dict[str, Any]:
+    region_by_numeric_id = {
+        int(region["numeric_id"]): index
+        for index, region in enumerate(contract.get("regions", []))
+    }
+    nonvolatile = {"ebx", "esi", "edi", "ebp"}
+
+    def identity_key(imported: dict[str, Any]) -> tuple[str, str, str | int]:
+        if "symbol" in imported:
+            return (str(imported["dll"]).lower(), "symbol", str(imported["symbol"]))
+        return (str(imported["dll"]).lower(), "ordinal", int(imported["ordinal"]))
+
+    identities = {
+        identity_key(seed["import"]): seed["import"] for seed in seeds
+    }
+    seed_facts: dict[int, set[tuple[str, str, tuple[str, str, str | int]]]] = {}
+    for seed in seeds:
+        seed_facts.setdefault(int(seed["region_index"]), set()).add((
+            str(seed["original_register"]),
+            str(seed["candidate_register"]),
+            identity_key(seed["import"]),
+        ))
+
+    edges: list[dict[str, Any]] = []
+    incoming: list[list[int]] = [[] for _ in behaviors]
+    for source_index, behavior_pair in enumerate(behaviors):
+        original_edges = _semantic_edges(behavior_pair["original_ir"])
+        candidate_edges = _semantic_edges(behavior_pair["candidate_ir"])
+        if len(original_edges) == len(candidate_edges):
+            for original_edge, candidate_edge in zip(
+                original_edges, candidate_edges, strict=True
+            ):
+                if (
+                    int(original_edge["target"]) != int(candidate_edge["target"])
+                    or str(original_edge["kind"]) != str(candidate_edge["kind"])
+                ):
+                    continue
+                target_index = region_by_numeric_id.get(int(original_edge["target"]))
+                if target_index is None:
+                    continue
+                if (
+                    _semantic_constant_bool(original_edge["guard"]) is False
+                    and _semantic_constant_bool(candidate_edge["guard"]) is False
+                ):
+                    continue
+                edge = {
+                    "source_region_index": source_index,
+                    "target_region_index": target_index,
+                    "kind": str(original_edge["kind"]),
+                    "environment_barrier": bool(
+                        original_edge.get("environment_barrier")
+                        or candidate_edge.get("environment_barrier")
+                    ),
+                }
+                incoming[target_index].append(len(edges))
+                edges.append(edge)
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        if (
+            original_outcome.get("op") == "indirect_call"
+            and candidate_outcome.get("op") == "indirect_call"
+            and int(original_outcome.get("continuation", -1))
+                == int(candidate_outcome.get("continuation", -2))
+        ):
+            target_index = region_by_numeric_id.get(
+                int(original_outcome["continuation"])
+            )
+            if target_index is not None:
+                incoming[target_index].append(len(edges))
+                edges.append({
+                    "source_region_index": source_index,
+                    "target_region_index": target_index,
+                    "kind": "indirect_external_call_continuation",
+                    "environment_barrier": True,
+                })
+
+    def transferred_source_fact(
+        edge: dict[str, Any],
+        target_fact: tuple[str, str, tuple[str, str, str | int]],
+    ) -> tuple[str, str, tuple[str, str, str | int]] | None:
+        source_index = int(edge["source_region_index"])
+        original_register, candidate_register, imported = target_fact
+        original_expression = (
+            behaviors[source_index]["original_ir"].get("registers") or {}
+        ).get(original_register) or {}
+        candidate_expression = (
+            behaviors[source_index]["candidate_ir"].get("registers") or {}
+        ).get(candidate_register) or {}
+        if (
+            original_expression.get("op") != "input_reg"
+            or candidate_expression.get("op") != "input_reg"
+        ):
+            return None
+        if edge["environment_barrier"] and (
+            original_register not in nonvolatile
+            or candidate_register not in nonvolatile
+        ):
+            return None
+        return (
+            str(original_expression["reg"]),
+            str(candidate_expression["reg"]),
+            imported,
+        )
+
+    def edge_supports(
+        edge: dict[str, Any],
+        target_fact: tuple[str, str, tuple[str, str, str | int]],
+        facts: set[tuple[int, str, str, tuple[str, str, str | int]]],
+    ) -> bool:
+        source_index = int(edge["source_region_index"])
+        if target_fact in seed_facts.get(source_index, set()):
+            return True
+        source_fact = transferred_source_fact(edge, target_fact)
+        return source_fact is not None and (source_index, *source_fact) in facts
+
+    facts: set[tuple[int, str, str, tuple[str, str, str | int]]] = set()
+    changed = True
+    while changed:
+        changed = False
+        for target_index, edge_indices in enumerate(incoming):
+            for edge_index in edge_indices:
+                source_index = int(edges[edge_index]["source_region_index"])
+                proposals = set(seed_facts.get(source_index, set()))
+                proposals.update(
+                    (original_register, candidate_register, imported)
+                    for region_index, original_register, candidate_register, imported in facts
+                    if region_index == source_index
+                )
+                for proposal in proposals:
+                    transferred = transferred_source_fact(edges[edge_index], proposal)
+                    candidates = {proposal}
+                    if transferred is not None:
+                        candidates.add((
+                            proposal[0], proposal[1], proposal[2]
+                        ))
+                    for candidate_fact in candidates:
+                        fact = (target_index, *candidate_fact)
+                        if fact not in facts and edge_supports(
+                            edges[edge_index], candidate_fact, facts
+                        ):
+                            facts.add(fact)
+                            changed = True
+
+    changed = True
+    while changed:
+        changed = False
+        for fact in list(facts):
+            target_index, original_register, candidate_register, imported = fact
+            edge_indices = incoming[target_index]
+            target_fact = (original_register, candidate_register, imported)
+            if not edge_indices or not all(
+                edge_supports(edges[edge_index], target_fact, facts)
+                for edge_index in edge_indices
+            ):
+                facts.remove(fact)
+                changed = True
+
+    relation_rows = []
+    for region_index, original_register, candidate_register, imported in sorted(facts):
+        relation_rows.append({
+            "region_index": region_index,
+            "original_register": original_register,
+            "candidate_register": candidate_register,
+            "import": identities[imported],
+            "incoming_edge_indices": incoming[region_index],
+            "incoming_edges": [edges[index] for index in incoming[region_index]],
+        })
+
+    call_rows = []
+    facts_by_region: dict[int, list[dict[str, Any]]] = {}
+    for row in relation_rows:
+        facts_by_region.setdefault(int(row["region_index"]), []).append(row)
+    for source_index, behavior_pair in enumerate(behaviors):
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        original_target = original_outcome.get("target") or {}
+        candidate_target = candidate_outcome.get("target") or {}
+        if (
+            original_outcome.get("op") != "indirect_call"
+            or candidate_outcome.get("op") != "indirect_call"
+            or original_target.get("op") != "input_reg"
+            or candidate_target.get("op") != "input_reg"
+        ):
+            continue
+        matches = [
+            row for row in facts_by_region.get(source_index, [])
+            if row["original_register"] == original_target.get("reg")
+            and row["candidate_register"] == candidate_target.get("reg")
+        ]
+        if len(matches) != 1:
+            continue
+        continuation = int(original_outcome.get("continuation", -1))
+        if continuation != int(candidate_outcome.get("continuation", -2)):
+            continue
+        continuation_index = region_by_numeric_id.get(continuation)
+        if continuation_index is None:
+            continue
+        call_rows.append({
+            "profile": "inductive_iat_register_call_v1",
+            "source_region_index": source_index,
+            "continuation_region_index": continuation_index,
+            "original_register": str(original_target["reg"]),
+            "candidate_register": str(candidate_target["reg"]),
+            "import": matches[0]["import"],
+        })
+
+    return {
+        "format": "stage-a-relational-import-register-invariants-v1",
+        "status": "proposal_requires_edge_and_scc_lean_replay",
+        "abi_profile": "pe32-win32-nonvolatile-registers-v1",
+        "nonvolatile_registers": sorted(nonvolatile),
+        "relations": relation_rows,
+        "indirect_import_calls": call_rows,
+        "counts": {
+            "seeds": len(seeds),
+            "relations": len(relation_rows),
+            "indirect_import_calls": len(call_rows),
+        },
+    }
+
+
+def _attach_import_register_invariants(
+    contract: dict[str, Any], analysis: dict[str, Any],
+) -> dict[str, Any]:
+    refined = json.loads(json.dumps(contract))
+    relations_by_region: dict[int, list[dict[str, Any]]] = {}
+    for relation in analysis.get("relations", []):
+        relations_by_region.setdefault(int(relation["region_index"]), []).append({
+            "original": str(relation["original_register"]),
+            "candidate": str(relation["candidate_register"]),
+            "import": relation["import"],
+        })
+    for region_index, region in enumerate(refined.get("regions", [])):
+        region["input_import_relations"] = sorted(
+            relations_by_region.get(region_index, []),
+            key=lambda item: (
+                item["original"], item["candidate"],
+                json.dumps(item["import"], sort_keys=True),
+            ),
+        )
+        region["output_import_relations"] = []
+    return refined
+
+
+def _immutable_indirect_call_candidates(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    def immutable_read(
+        expression: dict[str, Any],
+    ) -> tuple[int, list[dict[str, Any]], bool] | None:
+        direct = _constant_read32_address(expression)
+        if direct is not None:
+            return direct, [], False
+        assembled = _assembled_u32_after_register_writes(expression)
+        if assembled is None:
+            return None
+        address, writes = assembled
+        return address, writes, True
+
+    code_targets = contract.get("code_targets", [])
+    region_by_numeric_id = {
+        int(region["numeric_id"]): index
+        for index, region in enumerate(contract.get("regions", []))
+    }
+    result: list[dict[str, Any]] = []
+    for source_index, (region, behavior_pair) in enumerate(zip(
+        contract.get("regions", []), behaviors, strict=True
+    )):
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        operation = str(original_outcome.get("op"))
+        if (
+            operation not in {"indirect_call", "indirect_jump"}
+            or candidate_outcome.get("op") != operation
+        ):
+            continue
+        original_read = immutable_read(
+            original_outcome.get("target") or {}
+        )
+        candidate_read = immutable_read(
+            candidate_outcome.get("target") or {}
+        )
+        if original_read is None or candidate_read is None:
+            continue
+        original_address, original_writes, original_assembled = original_read
+        candidate_address, candidate_writes, candidate_assembled = candidate_read
+        if not _register_writes_have_address_separations(
+            region, "original", original_address, original_writes
+        ) or not _register_writes_have_address_separations(
+            region, "candidate", candidate_address, candidate_writes
+        ):
+            continue
+        original_word = _immutable_image_u32(original_bin, original_address)
+        candidate_word = _immutable_image_u32(candidate_bin, candidate_address)
+        if original_word is None or candidate_word is None:
+            continue
+        matching_targets = [
+            target for target in code_targets
+            if original_word == original_bin.image_base + int(target["original_rva"])
+            and candidate_word == candidate_bin.image_base + int(target["candidate_rva"])
+        ]
+        if len(matching_targets) != 1:
+            continue
+        target = matching_targets[0]
+        mapped_words = []
+        for value in contract.get("value_targets", []):
+            original_offset = original_address - int(value["original_value"])
+            candidate_offset = candidate_address - int(value["candidate_value"])
+            if (
+                original_offset == candidate_offset
+                and 0 <= original_offset
+                and original_offset + 4 <= int(value["mapped_size"])
+                and original_offset in {
+                    int(offset) for offset in value.get("relocation_offsets", [])
+                }
+            ):
+                mapped_words.append(value)
+        mapped_word_keys = {
+            (
+                int(value["original_value"]),
+                int(value["candidate_value"]),
+                int(value["mapped_size"]),
+                tuple(int(offset) for offset in value.get("relocation_offsets", [])),
+            )
+            for value in mapped_words
+        }
+        if len(mapped_word_keys) != 1:
+            continue
+        mapped_word = min(mapped_words, key=lambda value: int(value["id"]))
+        available_target_ids = {
+            int(item["id"]) for item in region.get("code_targets", [])
+        }
+        if int(target["id"]) not in available_target_ids:
+            continue
+        row = {
+            "profile": (
+                "immutable_relocated_function_pointer_call_v1"
+                if operation == "indirect_call"
+                else "immutable_relocated_function_pointer_jump_v1"
+            ),
+            "source_region_index": source_index,
+            "target_region_index": int(target["region_index"]),
+            "target_id": int(target["id"]),
+            "original_address": original_address,
+            "candidate_address": candidate_address,
+            "original_assembled_read": original_assembled,
+            "candidate_assembled_read": candidate_assembled,
+            "original_writes": original_writes,
+            "candidate_writes": candidate_writes,
+            "value_target_id": int(mapped_word["id"]),
+        }
+        if operation == "indirect_call":
+            original_continuation = int(original_outcome.get("continuation", -1))
+            candidate_continuation = int(candidate_outcome.get("continuation", -1))
+            if original_continuation != candidate_continuation:
+                continue
+            continuation_index = region_by_numeric_id.get(original_continuation)
+            if continuation_index is None:
+                continue
+            continuation_targets = [
+                item for item in code_targets
+                if int(item["region_index"]) == continuation_index
+            ]
+            if len(continuation_targets) != 1:
+                continue
+            continuation_target_id = int(continuation_targets[0]["id"])
+            if continuation_target_id not in available_target_ids:
+                continue
+            row.update({
+                "continuation_region_index": continuation_index,
+                "continuation_target_id": continuation_target_id,
+            })
+        result.append(row)
+    return result
+
+
+def _dynamic_range_indirect_call_shape(
+    behavior_pair: dict[str, Any],
+) -> tuple[str, str, int, int] | None:
+    def register_read(expression: Any) -> tuple[str, int] | None:
+        if not isinstance(expression, dict) or expression.get("op") != "read32":
+            return None
+        address = expression.get("address") or {}
+        if address.get("op") == "input_reg":
+            return str(address.get("reg")), 0
+        if address.get("op") != "add":
+            return None
+        left = address.get("left") or {}
+        right = address.get("right") or {}
+        if left.get("op") == "constant":
+            left, right = right, left
+        if left.get("op") != "input_reg" or right.get("op") != "constant":
+            return None
+        offset = _integer(right.get("value"))
+        if offset is None or not 0 <= offset < 2**32:
+            return None
+        return str(left.get("reg")), offset
+
+    original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+    candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+    if (
+        original_outcome.get("op") != "indirect_call"
+        or candidate_outcome.get("op") != "indirect_call"
+    ):
+        return None
+    original_read = register_read(original_outcome.get("target"))
+    candidate_read = register_read(candidate_outcome.get("target"))
+    if original_read is None or candidate_read is None:
+        return None
+    original_register, original_word_offset = original_read
+    candidate_register, candidate_word_offset = candidate_read
+    if original_word_offset != candidate_word_offset:
+        return None
+    original_continuation = _integer(original_outcome.get("continuation"))
+    candidate_continuation = _integer(candidate_outcome.get("continuation"))
+    if (
+        original_continuation is None
+        or original_continuation != candidate_continuation
+    ):
+        return None
+    return (
+        original_register,
+        candidate_register,
+        original_word_offset,
+        original_continuation,
+    )
+
+
+def _dynamic_range_indirect_call_candidates(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for source_index, (region, behavior_pair) in enumerate(zip(
+        contract.get("regions", []), behaviors, strict=True
+    )):
+        shape = _dynamic_range_indirect_call_shape(behavior_pair)
+        if shape is None:
+            continue
+        (
+            original_register, candidate_register, original_word_offset,
+            original_continuation,
+        ) = shape
+        matches = []
+        for relation in region.get("input_dynamic_range_relations", []):
+            if (
+                relation.get("original") != original_register
+                or relation.get("candidate") != candidate_register
+                or int(relation.get("original_offset", -1)) !=
+                    int(relation.get("candidate_offset", -2))
+            ):
+                continue
+            required_offset = (
+                int(relation["original_offset"]) + original_word_offset
+            )
+            if {
+                "offset": required_offset,
+                "kind": "codePointer",
+            } not in relation.get("required_words", []):
+                continue
+            matches.append(relation)
+        if len(matches) != 1:
+            continue
+        result.append({
+            "profile": "dynamic_range_code_pointer_call_v1",
+            "source_region_index": source_index,
+            "range_relation": matches[0],
+            "word_offset": original_word_offset,
+            "continuation_target_id": original_continuation,
+        })
+    return result
+
+
 def _synthesize_register_relations(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
     *,
     original_image_base: int,
     candidate_image_base: int,
+    indirect_call_candidates: list[dict[str, Any]] | None = None,
+    import_call_candidates: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     refined = json.loads(json.dumps(contract))
     regions = refined["regions"]
     region_by_id = {int(region["numeric_id"]): index for index, region in enumerate(regions)}
     predecessors: list[list[tuple[int, bool, str]]] = [[] for _ in regions]
     edges: list[dict[str, Any]] = []
+    pending_indirect_edges: list[dict[str, Any]] = []
+    pending_indirect_jump_edges: list[dict[str, Any]] = []
+    pending_import_edges: list[dict[str, Any]] = []
+    indirect_by_source = {
+        int(candidate["source_region_index"]): candidate
+        for candidate in (indirect_call_candidates or [])
+    }
+    import_call_by_source = {
+        int(candidate["source_region_index"]): candidate
+        for candidate in (import_call_candidates or [])
+    }
     for source_index, behavior_pair in enumerate(behaviors):
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
         original_edges = _semantic_edges(behavior_pair["original_ir"])
         candidate_edges = _semantic_edges(behavior_pair["candidate_ir"])
-        if original_edges != candidate_edges:
+        if len(original_edges) != len(candidate_edges):
             continue
-        for edge in original_edges:
-            target_index = region_by_id.get(int(edge["target"]))
+        paired_edges = list(zip(original_edges, candidate_edges, strict=True))
+        if any(
+            int(original_edge["target"]) != int(candidate_edge["target"])
+            or str(original_edge["kind"]) != str(candidate_edge["kind"])
+            or bool(original_edge.get("environment_barrier")) !=
+                bool(candidate_edge.get("environment_barrier"))
+            for original_edge, candidate_edge in paired_edges
+        ):
+            continue
+        for original_edge, candidate_edge in paired_edges:
+            target_index = region_by_id.get(int(original_edge["target"]))
             if target_index is None:
                 continue
-            barrier = bool(edge.get("environment_barrier"))
-            predecessors[target_index].append((source_index, barrier, str(edge["kind"])))
+            barrier = bool(original_edge.get("environment_barrier"))
+            predecessors[target_index].append(
+                (source_index, barrier, str(original_edge["kind"]))
+            )
             edges.append({
                 "source_region_index": source_index,
                 "target_region_index": target_index,
-                "kind": str(edge["kind"]),
+                "kind": str(original_edge["kind"]),
+                "original_guard": original_edge["guard"],
+                "candidate_guard": candidate_edge["guard"],
                 "environment_barrier": barrier,
+                "requires_call_stack_proof": False,
             })
+        indirect_candidate = indirect_by_source.get(source_index)
+        if indirect_candidate is not None:
+            target_index = int(indirect_candidate["target_region_index"])
+            indirect_kind = (
+                "jump"
+                if indirect_candidate["profile"] ==
+                    "immutable_relocated_function_pointer_jump_v1"
+                else "call"
+            )
+            predecessors[target_index].append(
+                (source_index, False, indirect_kind)
+            )
+            pending_edge = {
+                "source_region_index": source_index,
+                "target_region_index": target_index,
+                "kind": indirect_kind,
+                "original_guard": {"op": "bool_constant", "value": True},
+                "candidate_guard": {"op": "bool_constant", "value": True},
+                "environment_barrier": False,
+                "requires_call_stack_proof": False,
+                "indirect_target_profile": indirect_candidate["profile"],
+                "indirect_target_claim": indirect_candidate,
+            }
+            if indirect_kind == "jump":
+                pending_indirect_jump_edges.append(pending_edge)
+            else:
+                pending_indirect_edges.append(pending_edge)
+        import_call_candidate = import_call_by_source.get(source_index)
+        if import_call_candidate is not None:
+            target_index = int(import_call_candidate["continuation_region_index"])
+            predecessors[target_index].append(
+                (source_index, True, "external_call")
+            )
+            pending_import_edges.append({
+                "source_region_index": source_index,
+                "target_region_index": target_index,
+                "kind": "external_call",
+                "original_guard": {"op": "bool_constant", "value": True},
+                "candidate_guard": {"op": "bool_constant", "value": True},
+                "environment_barrier": True,
+                "requires_call_stack_proof": False,
+                "indirect_target_profile": import_call_candidate["profile"],
+                "import": import_call_candidate["import"],
+            })
+    # A return destination is selected by the checked runtime call frame, not by
+    # untrusted function recovery.  Return continuations therefore participate
+    # in rooted reachability but are not submitted as decoded outgoing edges of
+    # the return instruction.
+
+    # Keep existing direct edge IDs stable when a new checked indirect-target
+    # profile becomes available. Product-graph arrays remain contiguous, while
+    # an added indirect edge only changes the tail chunk and its source node's
+    # outgoing inventory.
+    edges.extend(pending_indirect_edges)
+    edges.extend(pending_import_edges)
+    edges.extend(pending_indirect_jump_edges)
+    for edge in edges:
+        edge["direct_call_push_claim"] = _direct_call_push_claim(
+            regions[int(edge["source_region_index"])],
+            behaviors[int(edge["source_region_index"])],
+            original_image_base=original_image_base,
+            candidate_image_base=candidate_image_base,
+        ) if edge["kind"] == "call" else None
 
     register_order = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
     input_kinds = [
@@ -3815,7 +11236,7 @@ def _synthesize_register_relations(
                     refined,
                     original_image_base,
                     candidate_image_base,
-                    not refined["regions"][region_index].get("values"),
+                    not refined.get("value_targets"),
                 )
             next_outputs.append(kinds)
             next_reasons.append(reasons)
@@ -3830,7 +11251,9 @@ def _synthesize_register_relations(
                     candidates.append("exact")
                 for source_index, barrier, _ in incoming:
                     candidates.append(
-                        "related_word" if barrier else next_outputs[source_index][register]
+                        next_outputs[source_index][register]
+                        if not barrier or register in _PE32_EXTERNAL_PRESERVED_REGISTERS
+                        else "related_word"
                     )
                 if not candidates:
                     candidates.append("related_word")
@@ -3848,6 +11271,19 @@ def _synthesize_register_relations(
 
     relation_rows: list[dict[str, Any]] = []
     exact_claims = 0
+    input_import_pairs = [
+        {
+            (str(relation["original"]), str(relation["candidate"]))
+            for relation in region.get("input_import_relations", [])
+        }
+        for region in regions
+    ]
+    output_import_pairs: list[set[tuple[str, str]]] = [set() for _ in regions]
+    for edge in edges:
+        if not edge["environment_barrier"] and not edge["requires_call_stack_proof"]:
+            output_import_pairs[int(edge["source_region_index"])].update(
+                input_import_pairs[int(edge["target_region_index"])]
+            )
     for region_index, region in enumerate(regions):
         input_pairs = {pair["original"]: pair for pair in region["inputs"]}
         output_pairs = {pair["original"]: pair for pair in region["outputs"]}
@@ -3859,6 +11295,10 @@ def _synthesize_register_relations(
             }
             for register in register_order
             if register in input_pairs
+            and (
+                input_pairs[register]["original"],
+                input_pairs[register]["candidate"],
+            ) not in input_import_pairs[region_index]
         ]
         region["output_relations"] = [
             {
@@ -3868,6 +11308,10 @@ def _synthesize_register_relations(
             }
             for register in register_order
             if register in output_pairs
+            and (
+                output_pairs[register]["original"],
+                output_pairs[register]["candidate"],
+            ) not in output_import_pairs[region_index]
         ]
         claims = []
         output_claims = []
@@ -3936,6 +11380,15 @@ def _synthesize_register_relations(
             "outputs": region["output_relations"],
             "exact_output_claims": claims,
             "output_claims": output_claims,
+            "return_pop_claim": _return_pop_claim(
+                behaviors[region_index], region=region
+            ),
+            "is_return": (
+                (behaviors[region_index]["original_ir"].get("outcome") or {}).get("op")
+                    == "returned"
+                and (behaviors[region_index]["candidate_ir"].get("outcome") or {}).get("op")
+                    == "returned"
+            ),
             "fully_exact_output_transfer": (
                 len(claims) == len(region["output_relations"])
                 and bool(region["output_relations"])
@@ -3955,6 +11408,11 @@ def _synthesize_register_relations(
     for edge in edges:
         source = edge["source_region_index"]
         target = edge["target_region_index"]
+        indirect_control = bool(edge.get("indirect_target_profile"))
+        immutable_indirect_jump = (
+            edge.get("indirect_target_profile") ==
+            "immutable_relocated_function_pointer_jump_v1"
+        )
         source_claims = {
             claim["register"]: claim
             for claim in relation_rows[source]["exact_output_claims"]
@@ -3963,7 +11421,10 @@ def _synthesize_register_relations(
             relation["original"]: relation
             for relation in relation_rows[source]["outputs"]
         }
-        pair_claims = [] if edge["environment_barrier"] else [
+        pair_claims = [] if (
+            edge["environment_barrier"] or edge["requires_call_stack_proof"]
+            or indirect_control
+        ) else [
             {
                 "register": target_relation["original"],
                 "target_relation": target_relation["relation"],
@@ -3976,15 +11437,34 @@ def _synthesize_register_relations(
                 == target_relation["candidate"]
         ]
         edge["exact_output_pair_claims"] = pair_claims
-        supported = not edge["environment_barrier"] and all(
+        supported = (
+            not edge["environment_barrier"]
+            and not edge["requires_call_stack_proof"]
+            and (not indirect_control or immutable_indirect_jump)
+            and all(
             _register_relation_implies(
                 output_kinds[source][register], input_kinds[target][register]
             )
             for register in register_order
+            )
         )
         edge["relation_preservation_proposed"] = supported
+        edge["environment_register_policy"] = (
+            {
+                "id": _PE32_EXTERNAL_REGISTER_POLICY_ID,
+                "preserved": sorted(_PE32_EXTERNAL_PRESERVED_REGISTERS),
+                "clobbered": sorted(
+                    set(register_order) - _PE32_EXTERNAL_PRESERVED_REGISTERS
+                ),
+                "status": "requires_relational_environment_compatibility",
+            }
+            if edge["environment_barrier"]
+            else None
+        )
         edge["fully_exact_edge_proposed"] = (
             not edge["environment_barrier"]
+            and not edge["requires_call_stack_proof"]
+            and not indirect_control
             and relation_rows[source]["fully_exact_output_transfer"]
             and all(
                 relation["relation"] == "exact"
@@ -3996,6 +11476,9 @@ def _synthesize_register_relations(
         fully_exact_edges += edge["fully_exact_edge_proposed"]
         exact_pair_edge_claims += len(pair_claims)
         edges_with_exact_pair_claims += bool(pair_claims)
+    return_slot_analysis = _attach_return_slot_contracts(
+        behaviors, relation_rows, edges
+    )
     counts = {
         "regions": len(regions),
         "direct_edges": len(edges),
@@ -4022,6 +11505,42 @@ def _synthesize_register_relations(
             row["fully_supported_output_transfer"] for row in relation_rows
         ),
         "environment_barrier_edges": sum(edge["environment_barrier"] for edge in edges),
+        "environment_register_policy_edges": sum(
+            edge["environment_register_policy"] is not None for edge in edges
+        ),
+        "call_return_edges": sum(
+            edge["requires_call_stack_proof"] for edge in edges
+        ),
+        "direct_call_edges": sum(
+            edge["kind"] == "call" and not edge.get("indirect_target_profile")
+            for edge in edges
+        ),
+        "checked_direct_call_pushes": sum(
+            edge["direct_call_push_claim"] is not None for edge in edges
+        ),
+        "return_regions": sum(
+            (behavior["original_ir"].get("outcome") or {}).get("op") == "returned"
+            and (behavior["candidate_ir"].get("outcome") or {}).get("op") == "returned"
+            for behavior in behaviors
+        ),
+        "checked_return_pops": sum(
+            row["return_pop_claim"] is not None for row in relation_rows
+        ),
+        "return_slot_seed_edges": int(return_slot_analysis["seed_edges"]),
+        "return_slot_transfer_claims": int(return_slot_analysis["transfer_claims"]),
+        "return_slot_call_summary_claims": int(
+            return_slot_analysis["call_summary_claims"]
+        ),
+        "replayable_return_slot_call_summaries": int(
+            return_slot_analysis["replayable_call_summaries"]
+        ),
+        "regions_with_return_slot_offsets": int(
+            return_slot_analysis["regions_with_offsets"]
+        ),
+        "return_regions_with_aligned_runtime_frame": int(
+            return_slot_analysis["aligned_returns"]
+        ),
+        "return_slot_overflow_regions": len(return_slot_analysis["overflow_regions"]),
         "unsupported_edge_proposals": unsupported_edges,
         "fully_exact_edge_proposals": fully_exact_edges,
         "exact_pair_edge_claims": exact_pair_edge_claims,
@@ -4041,11 +11560,821 @@ def _synthesize_register_relations(
                 "from decoded behavior and checked by Lean"
             ),
         },
+        "return_slot_analysis": return_slot_analysis,
         "counts": counts,
         "regions": relation_rows,
         "edges": edges,
     }
     return refined, artifact
+
+
+def _direct_call_push_claim(
+    region: dict[str, Any],
+    behavior_pair: dict[str, Any],
+    *,
+    original_image_base: int,
+    candidate_image_base: int,
+) -> dict[str, Any] | None:
+    original = behavior_pair.get("original_ir") or {}
+    candidate = behavior_pair.get("candidate_ir") or {}
+    original_outcome = original.get("outcome") or {}
+    candidate_outcome = candidate.get("outcome") or {}
+    if (
+        original_outcome.get("op") != "call"
+        or candidate_outcome.get("op") != "call"
+        or original_outcome != candidate_outcome
+    ):
+        return None
+    callee_id = int(original_outcome["target"])
+    continuation_id = int(original_outcome["continuation"])
+    local_targets = region.get("code_targets", [])
+    callees = [item for item in local_targets if int(item["id"]) == callee_id]
+    continuations = [
+        item for item in local_targets if int(item["id"]) == continuation_id
+    ]
+    if len(callees) != 1 or len(continuations) != 1:
+        return None
+    original_writes = original.get("writes", [])
+    candidate_writes = candidate.get("writes", [])
+    if not original_writes or not candidate_writes:
+        return None
+    original_last = original_writes[-1]
+    candidate_last = candidate_writes[-1]
+    original_stack = (original.get("registers") or {}).get("esp")
+    candidate_stack = (candidate.get("registers") or {}).get("esp")
+    continuation = continuations[0]
+    original_return = original_last.get("value")
+    candidate_return = candidate_last.get("value")
+    original_rvas = {
+        int(continuation["original_rva"]),
+        *(int(rva) for rva in continuation.get("original_aliases", [])),
+    }
+    candidate_rvas = {
+        int(continuation["candidate_rva"]),
+        *(int(rva) for rva in continuation.get("candidate_aliases", [])),
+    }
+    if (
+        original_stack is None
+        or candidate_stack is None
+        or original_last.get("address") != original_stack
+        or candidate_last.get("address") != candidate_stack
+        or not isinstance(original_return, dict)
+        or original_return.get("op") != "constant"
+        or int(original_return.get("value", -1)) - original_image_base
+            not in original_rvas
+        or not isinstance(candidate_return, dict)
+        or candidate_return.get("op") != "constant"
+        or int(candidate_return.get("value", -1)) - candidate_image_base
+            not in candidate_rvas
+    ):
+        return None
+    return {
+        "profile": "mapped_direct_call_push_v1",
+        "callee_target_id": callee_id,
+        "continuation_target_id": continuation_id,
+        "continuation_region_index": int(continuation["region_index"]),
+        "original_return_address": int(original_return["value"]),
+        "candidate_return_address": int(candidate_return["value"]),
+        "original_stack_address": original_stack,
+        "candidate_stack_address": candidate_stack,
+    }
+
+
+def _register_offset_witness(
+    expression: Any,
+    register: str = "esp",
+) -> tuple[dict[str, Any], int] | None:
+    if not isinstance(expression, dict):
+        return None
+    operation = expression.get("op")
+    if operation == "input_reg":
+        if expression.get("reg") != register:
+            return None
+        return {"kind": "input"}, 0
+    if operation not in {"add", "sub"}:
+        return None
+    left = expression.get("left")
+    right = expression.get("right")
+    witness_kind = "add_right" if operation == "add" else "sub_right"
+    if (
+        operation == "add"
+        and isinstance(left, dict)
+        and left.get("op") == "constant"
+    ):
+        left, right = right, left
+        witness_kind = "add_left"
+    if not isinstance(right, dict) or right.get("op") != "constant":
+        return None
+    value = int(right.get("value", -1))
+    if not 0 <= value < 2**32:
+        return None
+    prior = _register_offset_witness(left, register)
+    if prior is None:
+        return None
+    prior_witness, prior_offset = prior
+    offset = (
+        prior_offset + value
+        if operation == "add"
+        else prior_offset - value
+    ) % 2**32
+    return {
+        "kind": witness_kind,
+        "prior": prior_witness,
+        "value": value,
+    }, offset
+
+
+def _semantic_read8_after_writes(
+    address: dict[str, Any], writes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {"op": "read8", "address": address}
+    for write in writes:
+        result = {
+            "op": "read8_after_write",
+            "address": address,
+            "write_address": write["address"],
+            "write_value": write["value"],
+            "prior": result,
+        }
+    return result
+
+
+def _semantic_read32_after_writes(
+    address: dict[str, Any], writes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    def byte_address(offset: int) -> dict[str, Any]:
+        if offset == 0:
+            return address
+        return {
+            "op": "add",
+            "left": address,
+            "right": {"op": "constant", "value": offset},
+        }
+
+    byte_reads = [
+        _semantic_read8_after_writes(byte_address(offset), writes)
+        for offset in range(4)
+    ]
+    shifted = [
+        byte_reads[0],
+        {"op": "shift_left", "value": byte_reads[1], "amount": 8},
+        {"op": "shift_left", "value": byte_reads[2], "amount": 16},
+        {"op": "shift_left", "value": byte_reads[3], "amount": 24},
+    ]
+    return {
+        "op": "bit_or",
+        "left": {"op": "bit_or", "left": shifted[0], "right": shifted[1]},
+        "right": {"op": "bit_or", "left": shifted[2], "right": shifted[3]},
+    }
+
+
+def _semantic_read32_after_writes_address(
+    target: dict[str, Any], writes: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    left = target.get("left") or {}
+    first_byte = left.get("left") or {}
+    if first_byte.get("op") not in {"read8", "read8_after_write"}:
+        return None
+    address = first_byte.get("address")
+    if not isinstance(address, dict):
+        return None
+    return address if target == _semantic_read32_after_writes(address, writes) else None
+
+
+def _constant_return_write_requirements(
+    behavior: dict[str, Any], stack_offset: int,
+) -> set[tuple[int, int]] | None:
+    requirements: set[tuple[int, int]] = set()
+    writes = behavior.get("writes") or []
+    if not writes:
+        return None
+    for write in writes:
+        address = write.get("address") or {}
+        if address.get("op") != "constant":
+            return None
+        write_address = int(address.get("value", -1))
+        if not 0 <= write_address < 2**32 or write_address + 4 > 2**32:
+            return None
+        for word_byte in range(4):
+            for write_byte in range(4):
+                requirements.add((
+                    stack_offset + word_byte,
+                    write_address + write_byte,
+                ))
+    return requirements
+
+
+def _return_write_separations_cover(
+    region: dict[str, Any] | None,
+    original_requirements: set[tuple[int, int]],
+    candidate_requirements: set[tuple[int, int]],
+) -> bool:
+    if region is None:
+        return False
+    separations = region.get("address_separations") or []
+    original_available = {
+        (int(row["original_offset"]), int(row["original_address"]))
+        for row in separations
+        if row.get("original_register") == "esp"
+    }
+    candidate_available = {
+        (int(row["candidate_offset"]), int(row["candidate_address"]))
+        for row in separations
+        if row.get("candidate_register") == "esp"
+    }
+    return (
+        original_requirements <= original_available
+        and candidate_requirements <= candidate_available
+    )
+
+
+def _return_pop_claim(
+    behavior_pair: dict[str, Any],
+    *,
+    region: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    original = behavior_pair.get("original_ir") or {}
+    candidate = behavior_pair.get("candidate_ir") or {}
+    original_outcome = original.get("outcome") or {}
+    candidate_outcome = candidate.get("outcome") or {}
+    if (
+        original_outcome.get("op") != "returned"
+        or candidate_outcome.get("op") != "returned"
+    ):
+        return None
+    original_target = original_outcome.get("target") or {}
+    candidate_target = candidate_outcome.get("target") or {}
+    original_writes = original.get("writes") or []
+    candidate_writes = candidate.get("writes") or []
+    if (
+        original_target.get("op") == "read32"
+        and candidate_target.get("op") == "read32"
+    ):
+        profile = "esp_relative_return_pop_v1"
+        original_stack = original_target.get("address")
+        candidate_stack = candidate_target.get("address")
+    else:
+        profile = "esp_relative_return_after_static_writes_v1"
+        original_stack = _semantic_read32_after_writes_address(
+            original_target, original_writes
+        )
+        candidate_stack = _semantic_read32_after_writes_address(
+            candidate_target, candidate_writes
+        )
+        if original_stack is None or candidate_stack is None:
+            return None
+
+    original_slot_result = _register_offset_witness(original_stack)
+    candidate_slot_result = _register_offset_witness(candidate_stack)
+    original_output_result = _register_offset_witness(
+        (original.get("registers") or {}).get("esp")
+    )
+    candidate_output_result = _register_offset_witness(
+        (candidate.get("registers") or {}).get("esp")
+    )
+    if any(result is None for result in (
+        original_slot_result, candidate_slot_result,
+        original_output_result, candidate_output_result,
+    )):
+        return None
+    assert original_slot_result is not None
+    assert candidate_slot_result is not None
+    assert original_output_result is not None
+    assert candidate_output_result is not None
+    original_slot_witness, original_slot = original_slot_result
+    candidate_slot_witness, candidate_slot = candidate_slot_result
+    original_output_witness, original_output = original_output_result
+    candidate_output_witness, candidate_output = candidate_output_result
+    original_delta = (int(original_output) - int(original_slot)) % 2**32
+    candidate_delta = (int(candidate_output) - int(candidate_slot)) % 2**32
+    if (
+        original_delta != candidate_delta
+        or not 4 <= original_delta <= 4 + 65535
+    ):
+        return None
+    if profile == "esp_relative_return_after_static_writes_v1":
+        original_requirements = _constant_return_write_requirements(
+            original, int(original_slot)
+        )
+        candidate_requirements = _constant_return_write_requirements(
+            candidate, int(candidate_slot)
+        )
+        if (
+            original_requirements is None
+            or candidate_requirements is None
+            or not _return_write_separations_cover(
+                region, original_requirements, candidate_requirements
+            )
+        ):
+            return None
+    return {
+        "profile": profile,
+        "original_stack_address": original_stack,
+        "candidate_stack_address": candidate_stack,
+        "original_stack_witness": original_slot_witness,
+        "candidate_stack_witness": candidate_slot_witness,
+        "original_stack_offset": original_slot,
+        "candidate_stack_offset": candidate_slot,
+        "original_output_witness": original_output_witness,
+        "candidate_output_witness": candidate_output_witness,
+        "original_output_offset": original_output,
+        "candidate_output_offset": candidate_output,
+        "pop_bytes": original_delta - 4,
+    }
+
+
+def _discover_static_call_return_summaries(
+    relation_rows: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    region_count = len(relation_rows)
+    ordinary_successors: list[set[int]] = [set() for _ in relation_rows]
+    call_edges: dict[int, dict[str, Any]] = {}
+    unsupported_exit = [False] * region_count
+    for edge in edges:
+        source = int(edge["source_region_index"])
+        if edge.get("direct_call_push_claim") is not None:
+            call_edges[source] = edge
+            continue
+        if (
+            edge["environment_barrier"]
+            or edge["requires_call_stack_proof"]
+            or edge.get("indirect_target_profile")
+            or edge["kind"] == "call"
+        ):
+            unsupported_exit[source] = True
+            continue
+        ordinary_successors[source].add(int(edge["target_region_index"]))
+
+    reverse_dependencies: list[set[int]] = [set() for _ in relation_rows]
+    for source, successors in enumerate(ordinary_successors):
+        for target in successors:
+            reverse_dependencies[target].add(source)
+    for source, edge in call_edges.items():
+        callee = int(edge["target_region_index"])
+        continuation = int(edge["direct_call_push_claim"]["continuation_region_index"])
+        reverse_dependencies[callee].add(source)
+        reverse_dependencies[continuation].add(source)
+
+    return_sets: list[set[int]] = [
+        {index} if row.get("is_return") else set()
+        for index, row in enumerate(relation_rows)
+    ]
+    pending = deque(range(region_count))
+    queued = set(range(region_count))
+    return_updates = 0
+    while pending:
+        source = pending.popleft()
+        queued.discard(source)
+        if relation_rows[source].get("is_return"):
+            continue
+        proposed: set[int] = set()
+        if source in call_edges:
+            edge = call_edges[source]
+            callee = int(edge["target_region_index"])
+            continuation = int(
+                edge["direct_call_push_claim"]["continuation_region_index"]
+            )
+            if return_sets[callee]:
+                proposed.update(return_sets[continuation])
+        else:
+            for target in ordinary_successors[source]:
+                proposed.update(return_sets[target])
+        if not proposed.issubset(return_sets[source]):
+            return_sets[source].update(proposed)
+            return_updates += 1
+            for predecessor in reverse_dependencies[source]:
+                if predecessor not in queued:
+                    queued.add(predecessor)
+                    pending.append(predecessor)
+
+    closed = [True] * region_count
+    changed = True
+    closure_iterations = 0
+    while changed:
+        changed = False
+        closure_iterations += 1
+        for source, row in enumerate(relation_rows):
+            if row.get("is_return"):
+                next_closed = not unsupported_exit[source]
+            elif unsupported_exit[source]:
+                next_closed = False
+            elif source in call_edges:
+                edge = call_edges[source]
+                callee = int(edge["target_region_index"])
+                continuation = int(
+                    edge["direct_call_push_claim"]["continuation_region_index"]
+                )
+                next_closed = closed[callee] and closed[continuation]
+            else:
+                successors = ordinary_successors[source]
+                next_closed = bool(successors) and all(closed[target] for target in successors)
+            if closed[source] and not next_closed:
+                closed[source] = False
+                changed = True
+
+    summaries = []
+    for source, edge in sorted(call_edges.items()):
+        callee = int(edge["target_region_index"])
+        continuation = int(edge["direct_call_push_claim"]["continuation_region_index"])
+        returns = sorted(return_sets[callee])
+        summaries.append({
+            "callsite_region_index": source,
+            "callee_region_index": callee,
+            "continuation_region_index": continuation,
+            "return_region_indices": returns,
+            "closed": bool(closed[callee]),
+            "status": (
+                "candidate_requires_return_slot_replay"
+                if closed[callee] and returns
+                else "incomplete"
+            ),
+            "blocker": (
+                None
+                if closed[callee] and returns
+                else "callee has an unsupported exit or no statically reachable return"
+            ),
+        })
+    return {
+        "profile": "static_pushdown_return_summary_v1",
+        "return_updates": return_updates,
+        "closure_iterations": closure_iterations,
+        "closed_regions": sum(closed),
+        "summaries": summaries,
+    }
+
+
+def _attach_return_slot_contracts(
+    behaviors: list[dict[str, Any]],
+    relation_rows: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    disjunction_budget: int = 8,
+) -> dict[str, Any]:
+    offsets: list[set[tuple[int, int]]] = [set() for _ in relation_rows]
+    overflow_regions: set[int] = set()
+    seed_edges = 0
+    for edge in edges:
+        edge["return_slot_seed"] = None
+        edge["return_slot_transfer_claims"] = []
+        edge["return_slot_call_summary_claims"] = []
+        if edge.get("direct_call_push_claim") is None:
+            continue
+        target_index = int(edge["target_region_index"])
+        offsets[target_index].add((0, 0))
+        edge["return_slot_seed"] = {
+            "profile": "direct_call_runtime_frame_seed_v1",
+            "target_region_index": target_index,
+            "offsets": {"original": 0, "candidate": 0},
+        }
+        seed_edges += 1
+
+    def transfer_witnesses(edge: dict[str, Any]) -> tuple[
+        dict[str, Any], int, dict[str, Any], int,
+    ] | None:
+        if (
+            edge["environment_barrier"]
+            or edge["requires_call_stack_proof"]
+            or edge["kind"] == "call"
+            or edge.get("indirect_target_profile")
+        ):
+            return None
+        source = int(edge["source_region_index"])
+        original = behaviors[source].get("original_ir") or {}
+        candidate = behaviors[source].get("candidate_ir") or {}
+        original_result = _register_offset_witness(
+            (original.get("registers") or {}).get("esp")
+        )
+        candidate_result = _register_offset_witness(
+            (candidate.get("registers") or {}).get("esp")
+        )
+        if original_result is None or candidate_result is None:
+            return None
+        original_witness, original_delta = original_result
+        candidate_witness, candidate_delta = candidate_result
+        return (
+            original_witness, original_delta,
+            candidate_witness, candidate_delta,
+        )
+
+    witnesses = [transfer_witnesses(edge) for edge in edges]
+    max_iterations = max(1, len(relation_rows) * (disjunction_budget + 1))
+    converged = False
+    for iteration in range(max_iterations):
+        changed = False
+        for edge, witness_pair in zip(edges, witnesses, strict=True):
+            if witness_pair is None:
+                continue
+            source = int(edge["source_region_index"])
+            target = int(edge["target_region_index"])
+            if source in overflow_regions or not offsets[source]:
+                continue
+            _, original_delta, _, candidate_delta = witness_pair
+            proposed = {
+                (
+                    (original_source - original_delta) % 2**32,
+                    (candidate_source - candidate_delta) % 2**32,
+                )
+                for original_source, candidate_source in offsets[source]
+            }
+            joined = offsets[target] | proposed
+            if len(joined) > disjunction_budget:
+                if target not in overflow_regions:
+                    overflow_regions.add(target)
+                    changed = True
+                continue
+            if joined != offsets[target]:
+                offsets[target] = joined
+                changed = True
+        if not changed:
+            converged = True
+            break
+    else:
+        iteration = max_iterations - 1
+
+    total_iterations = iteration + 1
+    call_summary_analysis = _discover_static_call_return_summaries(
+        relation_rows, edges
+    )
+    direct_call_edge_by_source = {
+        int(edge["source_region_index"]): edge
+        for edge in edges
+        if edge.get("direct_call_push_claim") is not None
+    }
+
+    def replayable_call_summary(summary: dict[str, Any]) -> dict[str, Any] | None:
+        if not summary["closed"] or not summary["return_region_indices"]:
+            return None
+        callsite = int(summary["callsite_region_index"])
+        call_edge = direct_call_edge_by_source.get(callsite)
+        if call_edge is None:
+            return None
+        original = behaviors[callsite].get("original_ir") or {}
+        candidate = behaviors[callsite].get("candidate_ir") or {}
+        original_call_result = _register_offset_witness(
+            (original.get("registers") or {}).get("esp")
+        )
+        candidate_call_result = _register_offset_witness(
+            (candidate.get("registers") or {}).get("esp")
+        )
+        if original_call_result is None or candidate_call_result is None:
+            return None
+        original_call_witness, original_call_delta = original_call_result
+        candidate_call_witness, candidate_call_delta = candidate_call_result
+        summary_deltas: set[tuple[int, int]] = set()
+        return_rows = []
+        for return_index in summary["return_region_indices"]:
+            row = relation_rows[int(return_index)]
+            return_claim = row.get("return_pop_claim")
+            if return_claim is None:
+                return None
+            expected = (
+                int(return_claim["original_stack_offset"]),
+                int(return_claim["candidate_stack_offset"]),
+            )
+            if offsets[int(return_index)] != {expected}:
+                return None
+            delta = (
+                (
+                    original_call_delta + 4 + int(return_claim["pop_bytes"])
+                ) % 2**32,
+                (
+                    candidate_call_delta + 4 + int(return_claim["pop_bytes"])
+                ) % 2**32,
+            )
+            summary_deltas.add(delta)
+            return_rows.append({
+                "return_region_index": int(return_index),
+                "return_claim": return_claim,
+            })
+        if len(summary_deltas) != 1:
+            return None
+        summary_delta = next(iter(summary_deltas))
+        return {
+            "original_call_witness": original_call_witness,
+            "candidate_call_witness": candidate_call_witness,
+            "summary_delta": {
+                "original": summary_delta[0],
+                "candidate": summary_delta[1],
+            },
+            "returns": return_rows,
+        }
+
+    summary_rounds = 0
+    max_summary_rounds = max(1, len(direct_call_edge_by_source) + 1)
+    while summary_rounds < max_summary_rounds:
+        summary_rounds += 1
+        summary_changed = False
+        for summary in call_summary_analysis["summaries"]:
+            replay = replayable_call_summary(summary)
+            if replay is None:
+                continue
+            callsite = int(summary["callsite_region_index"])
+            continuation = int(summary["continuation_region_index"])
+            if callsite in overflow_regions or not offsets[callsite]:
+                continue
+            original_delta = int(replay["summary_delta"]["original"])
+            candidate_delta = int(replay["summary_delta"]["candidate"])
+            proposed = {
+                (
+                    (original_source - original_delta) % 2**32,
+                    (candidate_source - candidate_delta) % 2**32,
+                )
+                for original_source, candidate_source in offsets[callsite]
+            }
+            joined = offsets[continuation] | proposed
+            if len(joined) > disjunction_budget:
+                overflow_regions.add(continuation)
+                continue
+            if joined != offsets[continuation]:
+                offsets[continuation] = joined
+                summary_changed = True
+        if not summary_changed:
+            break
+        for ordinary_iteration in range(max_iterations):
+            ordinary_changed = False
+            for edge, witness_pair in zip(edges, witnesses, strict=True):
+                if witness_pair is None:
+                    continue
+                source = int(edge["source_region_index"])
+                target = int(edge["target_region_index"])
+                if source in overflow_regions or not offsets[source]:
+                    continue
+                _, original_delta, _, candidate_delta = witness_pair
+                proposed = {
+                    (
+                        (original_source - original_delta) % 2**32,
+                        (candidate_source - candidate_delta) % 2**32,
+                    )
+                    for original_source, candidate_source in offsets[source]
+                }
+                joined = offsets[target] | proposed
+                if len(joined) > disjunction_budget:
+                    overflow_regions.add(target)
+                    continue
+                if joined != offsets[target]:
+                    offsets[target] = joined
+                    ordinary_changed = True
+            total_iterations += 1
+            if not ordinary_changed:
+                break
+
+    call_summary_claim_count = 0
+    replayable_call_summaries = 0
+    for summary in call_summary_analysis["summaries"]:
+        replay = replayable_call_summary(summary)
+        summary["return_slot_status"] = "incomplete"
+        summary["return_slot_claims"] = []
+        if replay is None:
+            continue
+        callsite = int(summary["callsite_region_index"])
+        continuation = int(summary["continuation_region_index"])
+        call_edge = direct_call_edge_by_source[callsite]
+        claims = []
+        for original_source, candidate_source in sorted(offsets[callsite]):
+            target_pair = {
+                "original": (
+                    original_source - int(replay["summary_delta"]["original"])
+                ) % 2**32,
+                "candidate": (
+                    candidate_source - int(replay["summary_delta"]["candidate"])
+                ) % 2**32,
+            }
+            if (target_pair["original"], target_pair["candidate"]) not in offsets[continuation]:
+                continue
+            for return_row in replay["returns"]:
+                return_claim = return_row["return_claim"]
+                claims.append({
+                    "profile": "return_slot_call_summary_v1",
+                    "source": {
+                        "original": original_source,
+                        "candidate": candidate_source,
+                    },
+                    "target": target_pair,
+                    "return_region_index": return_row["return_region_index"],
+                    "original_call_witness": replay["original_call_witness"],
+                    "candidate_call_witness": replay["candidate_call_witness"],
+                    "original_return_slot_witness": return_claim[
+                        "original_stack_witness"
+                    ],
+                    "candidate_return_slot_witness": return_claim[
+                        "candidate_stack_witness"
+                    ],
+                    "original_return_output_witness": return_claim[
+                        "original_output_witness"
+                    ],
+                    "candidate_return_output_witness": return_claim[
+                        "candidate_output_witness"
+                    ],
+                    "pop_bytes": int(return_claim["pop_bytes"]),
+                })
+        if claims:
+            summary["return_slot_status"] = "candidate_requires_lean_replay"
+            summary["return_slot_claims"] = claims
+            call_edge["return_slot_call_summary_claims"].extend(claims)
+            call_summary_claim_count += len(claims)
+            replayable_call_summaries += 1
+
+    transfer_claim_count = 0
+    for edge, witness_pair in zip(edges, witnesses, strict=True):
+        if witness_pair is None:
+            continue
+        source = int(edge["source_region_index"])
+        target = int(edge["target_region_index"])
+        if source in overflow_regions or target in overflow_regions:
+            continue
+        original_witness, original_delta, candidate_witness, candidate_delta = witness_pair
+        claims = []
+        for original_source, candidate_source in sorted(offsets[source]):
+            target_pair = (
+                (original_source - original_delta) % 2**32,
+                (candidate_source - candidate_delta) % 2**32,
+            )
+            if target_pair not in offsets[target]:
+                continue
+            claims.append({
+                "profile": "return_slot_affine_transfer_v1",
+                "source": {
+                    "original": original_source,
+                    "candidate": candidate_source,
+                },
+                "target": {
+                    "original": target_pair[0],
+                    "candidate": target_pair[1],
+                },
+                "original_esp_witness": original_witness,
+                "candidate_esp_witness": candidate_witness,
+            })
+        edge["return_slot_transfer_claims"] = claims
+        transfer_claim_count += len(claims)
+
+    aligned_returns = 0
+    partially_aligned_returns = 0
+    for region_index, row in enumerate(relation_rows):
+        row["return_slot_offsets"] = [
+            {"original": original, "candidate": candidate}
+            for original, candidate in sorted(offsets[region_index])
+        ]
+        row["return_pop_frame_claims"] = []
+        row["return_slot_status"] = (
+            "incomplete_disjunction_budget"
+            if region_index in overflow_regions
+            else "not_a_return"
+        )
+        return_claim = row.get("return_pop_claim")
+        if return_claim is None:
+            if row.get("is_return") and region_index not in overflow_regions:
+                row["return_slot_status"] = "incomplete_return_pop"
+            continue
+        expected = (
+            int(return_claim["original_stack_offset"]),
+            int(return_claim["candidate_stack_offset"]),
+        )
+        if expected in offsets[region_index]:
+            row["return_pop_frame_claims"] = [{
+                "profile": "return_pop_runtime_frame_v1",
+                "offsets": {
+                    "original": expected[0],
+                    "candidate": expected[1],
+                },
+                "original_slot_witness": return_claim["original_stack_witness"],
+                "candidate_slot_witness": return_claim["candidate_stack_witness"],
+            }]
+        if not offsets[region_index]:
+            row["return_slot_status"] = "incomplete_no_checked_call_path"
+        elif offsets[region_index] == {expected}:
+            row["return_slot_status"] = "satisfied"
+            aligned_returns += 1
+        elif expected in offsets[region_index]:
+            row["return_slot_status"] = "incomplete_ambiguous_path_offsets"
+            partially_aligned_returns += 1
+        else:
+            row["return_slot_status"] = "incomplete_slot_offset_mismatch"
+
+    return {
+        "profile": "bounded_return_slot_dataflow_v1",
+        "status": "proposal_requires_generated_lean_replay",
+        "disjunction_budget": disjunction_budget,
+        "converged": converged,
+        "iterations": total_iterations,
+        "seed_edges": seed_edges,
+        "transfer_claims": transfer_claim_count,
+        "regions_with_offsets": sum(bool(items) for items in offsets),
+        "overflow_regions": sorted(overflow_regions),
+        "aligned_returns": aligned_returns,
+        "partially_aligned_returns": partially_aligned_returns,
+        "call_summary_rounds": summary_rounds,
+        "replayable_call_summaries": replayable_call_summaries,
+        "call_summary_claims": call_summary_claim_count,
+        "call_summary_analysis": call_summary_analysis,
+        "trust": {
+            "role": "analysis_and_certificate_proposal_only",
+            "acceptance_rule": (
+                "Lean must reconstruct every affine ESP expression and prove each seed, "
+                "transfer, and return-slot use against decoded behavior"
+            ),
+        },
+    }
 
 
 _SEMANTIC_FLAG_FIELDS = {
@@ -4344,7 +12673,11 @@ def _semantic_edges(behavior: dict[str, Any]) -> list[dict[str, Any]]:
             }]
         return [
             {"target": int(outcome["taken"]), "guard": outcome["condition"], "kind": "branch_taken"},
-            {"target": int(outcome["fallthrough"]), "guard": _semantic_not(outcome["condition"]), "kind": "branch_fallthrough"},
+            {
+                "target": int(outcome["fallthrough"]),
+                "guard": {"op": "not", "value": outcome["condition"]},
+                "kind": "branch_fallthrough",
+            },
         ]
     if operation in {"bulk_copy", "atomic_compare_exchange"}:
         return [{"target": int(outcome["continuation"]), "guard": truth, "kind": operation}]
@@ -4642,20 +12975,89 @@ def _behavior_cache_key(
     *,
     side: str,
     targets: list[dict[str, Any]],
+    machine_import_call_contracts: list[dict[str, Any]] | None = None,
     formal_sha256: str | None = None,
-    relational_sha256: str | None = None,
+    extraction_semantics_sha256: str | None = None,
 ) -> str:
     lean_root = Path(__file__).with_name("lean") / "StageA"
+    payload = {
+        "format": "stage-a-relational-behavior-cache-key-v6",
+        "binary_sha256": binary.sha256,
+        "span": {"rva_start": span["rva_start"], "size": span["size"]},
+        "side": side,
+        "targets": targets,
+        "machine_import_call_contracts": machine_import_call_contracts or [],
+        "formal_sha256": formal_sha256 or sha256_file(lean_root / "Formal.lean"),
+        "decode_module_sha256": extraction_semantics_sha256
+        or _relational_extraction_semantics_sha256(
+            lean_root / "RelationalDecode.lean"
+        ),
+    }
+    return sha256_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _legacy_behavior_cache_key(
+    binary: StageABinary,
+    span: dict[str, Any],
+    *,
+    side: str,
+    targets: list[dict[str, Any]],
+    formal_sha256: str,
+    relational_sha256: str,
+) -> str:
     payload = {
         "format": "stage-a-relational-behavior-cache-key-v3",
         "binary_sha256": binary.sha256,
         "span": {"rva_start": span["rva_start"], "size": span["size"]},
         "side": side,
         "targets": targets,
-        "formal_sha256": formal_sha256 or sha256_file(lean_root / "Formal.lean"),
-        "relational_sha256": relational_sha256 or sha256_file(lean_root / "Relational.lean"),
+        "formal_sha256": formal_sha256,
+        "relational_sha256": relational_sha256,
     }
     return sha256_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _legacy_extraction_behavior_cache_key(
+    binary: StageABinary,
+    span: dict[str, Any],
+    *,
+    side: str,
+    targets: list[dict[str, Any]],
+    formal_sha256: str,
+    extraction_semantics_sha256: str,
+) -> str:
+    payload = {
+        "format": "stage-a-relational-behavior-cache-key-v4",
+        "binary_sha256": binary.sha256,
+        "span": {"rva_start": span["rva_start"], "size": span["size"]},
+        "side": side,
+        "targets": targets,
+        "formal_sha256": formal_sha256,
+        "extraction_semantics_sha256": extraction_semantics_sha256,
+    }
+    return sha256_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    )
+
+
+def _relational_extraction_semantics_sha256(path: Path) -> str:
+    if path.name != "RelationalDecode.lean":
+        raise StageAInputError(
+            "relational extraction semantics must come from RelationalDecode.lean"
+        )
+    return sha256_file(path)
+
+
+def _relational_legacy_extraction_semantics_sha256(path: Path) -> str:
+    source = path.read_text(encoding="utf-8")
+    marker = "-- STAGE_A_EXTRACTION_SEMANTICS_END"
+    boundary = source.find(marker)
+    if boundary < 0:
+        raise StageAInputError(
+            "RelationalDecode.lean is missing the legacy extraction cache boundary"
+        )
+    boundary += len(marker)
+    return sha256_bytes(source[:boundary].encode("utf-8"))
 
 
 def _read_behavior_cache(path: Path) -> dict[str, Any] | None:
@@ -4677,6 +13079,29 @@ def _read_behavior_cache(path: Path) -> dict[str, Any] | None:
     return {"behavior": behavior, "semantic_ir": semantic_ir}
 
 
+def _cached_behavior_affected_by_machine_contracts(
+    cached: dict[str, Any], contracts: list[dict[str, Any]]
+) -> bool:
+    outcome = cached.get("semantic_ir", {}).get("outcome")
+    if not isinstance(outcome, dict) or outcome.get("op") not in {
+        "external_call", "external_jump",
+    }:
+        return False
+    target = _semantic_external_target_identity(outcome.get("import"))
+    if target is None:
+        return bool(contracts)
+    for contract in contracts:
+        imported = contract.get("import", {})
+        identity = (
+            str(imported.get("dll", "")).lower(),
+            "symbol" if "symbol" in imported else "ordinal",
+            imported.get("symbol", imported.get("ordinal")),
+        )
+        if identity == target:
+            return True
+    return False
+
+
 def _lean_extraction_source(
     original_bin: StageABinary,
     candidate_bin: StageABinary,
@@ -4688,6 +13113,14 @@ def _lean_extraction_source(
 ) -> str:
     evaluations: list[str] = []
     definitions: list[str] = []
+    machine_call_contracts = ", ".join(
+        _lean_machine_import_call_contract(item)
+        for item in contract.get("machine_import_call_contracts", [])
+    )
+    definitions.append(
+        "def machineImportCallContracts : List MachineImportCallContract := "
+        f"[{machine_call_contracts}]"
+    )
     for index, region in enumerate(contract["regions"]):
         if not any((side, index) in requests for side in ("original", "candidate")):
             continue
@@ -4700,7 +13133,8 @@ def _lean_extraction_source(
             candidate_literal = "true" if side == "candidate" else "false"
             evaluations.extend((
                 f"  let some {side}Behavior{index} := "
-                f"regionBehaviorWithImports {side}Pe {side}Imports {span_literal} | "
+                f"regionBehaviorWithMachineCallContracts {side}Pe {side}Imports "
+                f"machineImportCallContracts {span_literal} | "
                 f'throw (IO.userError "{side} region {index} did not decode")',
                 f"  let some {side}Normalized{index} := normalizeSymbolicBehavior "
                 f"{candidate_literal} region{index}.targets {side}Behavior{index} | "
@@ -4789,6 +13223,7 @@ def _check_relational_counterexample(
             original,
             candidate,
             contract["code_targets"],
+            contract.get("machine_import_call_contracts", []),
             region,
             index,
             behaviors[index],
@@ -4824,11 +13259,16 @@ def _lean_counterexample_source(
     original: bytes,
     candidate: bytes,
     targets: list[dict[str, Any]],
+    machine_import_call_contracts: list[dict[str, Any]],
     region: dict[str, Any],
     index: int,
     behaviors: dict[str, str],
     assignment: dict[str, int],
 ) -> str:
+    machine_call_contract_rows = ", ".join(
+        _lean_machine_import_call_contract(item)
+        for item in machine_import_call_contracts
+    )
     def registers(side: str) -> str:
         fields = ", ".join(
             f"{register} := BitVec.ofNat 32 {assignment[f'{side}{register}']}"
@@ -4852,6 +13292,7 @@ def _lean_counterexample_source(
         f"def candidateImportCertificate : ImportTableCertificate := {_lean_import_certificate(candidate_bin)}\n\n"
         "def originalImports : List PEImport := originalImportCertificate.imports\n\n"
         "def candidateImports : List PEImport := candidateImportCertificate.imports\n\n"
+        f"def machineImportCallContracts : List MachineImportCallContract := [{machine_call_contract_rows}]\n\n"
         "theorem originalMetadataParsed : parsePEMetadataTree originalBytes = some originalPe.metadata := by decide\n\n"
         "theorem candidateMetadataParsed : parsePEMetadataTree candidateBytes = some candidatePe.metadata := by decide\n\n"
         "theorem originalParsed : parsePE32Tree originalBytes = some originalPe := by\n  simp [parsePE32Tree, originalMetadataParsed, PE32.metadata, PEMetadata.toPE32, originalPe]\n\n"
@@ -4864,8 +13305,8 @@ def _lean_counterexample_source(
         + f"def candidateBehavior : SymbolicBehavior := {behaviors['candidate']}\n\n"
         + f"def originalState : MachineState := {{ registers := {registers('o')}, memory := fun _ => BitVec.ofNat 8 0 }}\n\n"
         + f"def candidateState : MachineState := {{ registers := {registers('c')}, memory := fun _ => BitVec.ofNat 8 0 }}\n\n"
-        + f"theorem originalBehaviorCachedDecoded : regionBehaviorWithImports originalPe originalImports region{index}.original = some originalBehavior := by decide\n\n"
-        + f"theorem candidateBehaviorCachedDecoded : regionBehaviorWithImports candidatePe candidateImports region{index}.candidate = some candidateBehavior := by decide\n\n"
+        + f"theorem originalBehaviorCachedDecoded : regionBehaviorWithMachineCallContracts originalPe originalImports machineImportCallContracts region{index}.original = some originalBehavior := by decide\n\n"
+        + f"theorem candidateBehaviorCachedDecoded : regionBehaviorWithMachineCallContracts candidatePe candidateImports machineImportCallContracts region{index}.candidate = some candidateBehavior := by decide\n\n"
         + f"theorem inputsRelated : statesRelated originalPe.imageBase candidatePe.imageBase "
         + f"region{index}.targets region{index}.flagInputs region{index}.bounds "
         + f"region{index}.addressSeparations region{index}.values region{index}.inputs "
@@ -4887,8 +13328,8 @@ def _lean_counterexample_source(
         + "    parsePE32Tree candidateBytes = some candidatePe ∧\n"
         + "    importTableValid originalPe originalImportCertificate = true ∧\n"
         + "    importTableValid candidatePe candidateImportCertificate = true ∧\n"
-        + f"    regionBehaviorWithImports originalPe originalImports region{index}.original = some originalBehavior ∧\n"
-        + f"    regionBehaviorWithImports candidatePe candidateImports region{index}.candidate = some candidateBehavior ∧\n"
+        + f"    regionBehaviorWithMachineCallContracts originalPe originalImports machineImportCallContracts region{index}.original = some originalBehavior ∧\n"
+        + f"    regionBehaviorWithMachineCallContracts candidatePe candidateImports machineImportCallContracts region{index}.candidate = some candidateBehavior ∧\n"
         + f"    statesRelated originalPe.imageBase candidatePe.imageBase region{index}.targets "
         + f"region{index}.flagInputs region{index}.bounds region{index}.addressSeparations "
         + f"region{index}.values region{index}.inputs originalState candidateState ∧ "
@@ -4919,6 +13360,580 @@ def _lean_targets_definition(targets: list[dict[str, Any]]) -> str:
         for target in targets
     )
     return f"def allTargets : List CodeTargetPair := [{target_rows}]"
+
+
+def _lean_global_mapping_context_source(contract: dict[str, Any]) -> str:
+    target_rows = ", ".join(
+        f"{{ id := {target['id']}, regionIndex := {target['region_index']}, "
+        f"originalRva := {target['original_rva']}, candidateRva := {target['candidate_rva']}, "
+        f"originalAliases := {_lean_code_aliases(target, 'original')}, "
+        f"candidateAliases := {_lean_code_aliases(target, 'candidate')} }}"
+        for target in contract.get("code_targets", [])
+    )
+    value_rows = ", ".join(
+        _lean_value_target(target) for target in contract.get("value_targets", [])
+    )
+
+    def code_addresses(side: str) -> str:
+        addresses: list[tuple[int, str]] = []
+        for target in contract.get("code_targets", []):
+            target_id = int(target["id"])
+            addresses.append((
+                int(target[f"{side}_rva"]),
+                f"{{ targetId := {target_id}, kind := .canonical }}",
+            ))
+            addresses.extend(
+                (
+                    int(alias),
+                    f"{{ targetId := {target_id}, kind := .alias {alias_index} }}",
+                )
+                for alias_index, alias in enumerate(
+                    target.get(f"{side}_aliases", [])
+                )
+            )
+        return ", ".join(row for _, row in sorted(addresses))
+
+    original_value_order = ", ".join(
+        str(target["id"])
+        for target in sorted(
+            contract.get("value_targets", []),
+            key=lambda target: (target["original_value"], target["id"]),
+        )
+    )
+    candidate_value_order = ", ".join(
+        str(target["id"])
+        for target in sorted(
+            contract.get("value_targets", []),
+            key=lambda target: (target["candidate_value"], target["id"]),
+        )
+    )
+    return (
+        "import StageA.RelationalMachine\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        f"def globalCodeTargetIndex : Array CodeTargetPair := #[{target_rows}]\n\n"
+        "def globalCodeTargets : List CodeTargetPair := globalCodeTargetIndex.toList\n\n"
+        f"def globalValueTargetIndex : Array ValueTargetPair := #[{value_rows}]\n\n"
+        "def globalValueTargets : List ValueTargetPair := globalValueTargetIndex.toList\n\n"
+        "def globalCodeMap : StaticCodeMap := {\n"
+        "  entries := globalCodeTargetIndex\n"
+        f"  originalAddresses := #[{code_addresses('original')}]\n"
+        f"  candidateAddresses := #[{code_addresses('candidate')}]\n"
+        "}\n\n"
+        "def globalDataMap : StaticDataMap := {\n"
+        "  entries := globalValueTargetIndex\n"
+        f"  originalOrder := [{original_value_order}]\n"
+        f"  candidateOrder := [{candidate_value_order}]\n"
+        "}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+
+
+def _lean_static_proof_context_base_source(
+    contract: dict[str, Any],
+    *,
+    original_entrypoint_rva: int,
+    candidate_entrypoint_rva: int,
+) -> str:
+    code_targets = contract.get("code_targets", [])
+    roots: list[tuple[int, str]] = []
+    for region in contract["regions"]:
+        if not region.get("root"):
+            continue
+        target = next((
+            target for target in code_targets
+            if target["original_rva"] == region["original"]["rva_start"]
+            and target["candidate_rva"] == region["candidate"]["rva_start"]
+        ), None)
+        if target is None:
+            raise StageAInputError(
+                f"root region {region['id']} has no canonical code-map target"
+            )
+        root_kind = region.get("function_root_kind")
+        is_entrypoint = (
+            region["original"]["rva_start"] == original_entrypoint_rva
+            and region["candidate"]["rva_start"] == candidate_entrypoint_rva
+        )
+        kind = "entrypoint" if is_entrypoint else {
+            "export": "exported",
+            "exported": "exported",
+            "callback": "callback",
+            "tls": "tlsInitializer",
+            "tls_initializer": "tlsInitializer",
+        }.get(root_kind, "exported")
+        roots.append((int(target["id"]), kind))
+    root_rows = ", ".join(
+        f"{{ targetId := {target_id}, kind := .{kind} }}"
+        for target_id, kind in roots
+    )
+    has_callbacks = any(kind == "callback" for _, kind in roots)
+    has_tls = any(kind == "tlsInitializer" for _, kind in roots)
+    static_dynamic_pointer_slots = ", ".join(
+        _lean_static_dynamic_pointer_slot(slot)
+        for slot in contract.get("static_dynamic_pointer_slots", [])
+    )
+    return (
+        "import StageA.RelationalProofBase\n"
+        "import StageA.RelationalGlobalMappingContext\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "def staticProofContext : StaticProofContext := {\n"
+        "  originalPe\n"
+        "  candidatePe\n"
+        "  originalImportCertificate\n"
+        "  candidateImportCertificate\n"
+        "  originalRelocations\n"
+        "  candidateRelocations\n"
+        "  codeMap := globalCodeMap\n"
+        "  dataMap := globalDataMap\n"
+        f"  roots := [{root_rows}]\n"
+        "  observations := { "
+        f"callbacks := {_lean_bool(has_callbacks)}, tls := {_lean_bool(has_tls)} "
+        "}\n"
+        f"  staticDynamicPointerSlots := [{static_dynamic_pointer_slots}]\n"
+        "  machineImportCallContracts\n"
+        "}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+
+
+def _static_index_ranges(size: int, chunk_size: int) -> list[tuple[int, int]]:
+    return [
+        (start, min(chunk_size, size - start))
+        for start in range(0, size, chunk_size)
+    ]
+
+
+def _lean_static_range(name: str, start: int, size: int) -> str:
+    return f"def {name} : Span := {{ start := {start}, size := {size} }}"
+
+
+def _write_relational_static_context_modules(
+    lean_dir: Path,
+    contract: dict[str, Any],
+    *,
+    original_entrypoint_rva: int,
+    candidate_entrypoint_rva: int,
+) -> list[str]:
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalStaticContextBase.lean",
+        _lean_static_proof_context_base_source(
+            contract,
+            original_entrypoint_rva=original_entrypoint_rva,
+            candidate_entrypoint_rva=candidate_entrypoint_rva,
+        ),
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalStaticDataContext.lean",
+        (
+            "import StageA.RelationalStaticContextBase\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            "theorem staticDataMapChecked :\n"
+            "    staticProofContext.dataMap.valid originalPe candidatePe = true := by decide\n\n"
+            "end StageA.GeneratedRelational\n"
+        ),
+    )
+    chunk_size = max(
+        1, int(os.environ.get("WINCR_STAGE_A_STATIC_MAP_CHUNK", "16"))
+    )
+    target_count = len(contract.get("code_targets", []))
+    original_address_count = target_count + sum(
+        len(target.get("original_aliases", []))
+        for target in contract.get("code_targets", [])
+    )
+    candidate_address_count = target_count + sum(
+        len(target.get("candidate_aliases", []))
+        for target in contract.get("code_targets", [])
+    )
+    families = {
+        "Entry": {
+            "count": target_count,
+            "predicate": "(globalCodeMap.entryAtValid)",
+        },
+        "OriginalAddress": {
+            "count": original_address_count,
+            "predicate": "(globalCodeMap.addressAtValid false originalPe)",
+        },
+        "CandidateAddress": {
+            "count": candidate_address_count,
+            "predicate": "(globalCodeMap.addressAtValid true candidatePe)",
+        },
+    }
+    ranges = {
+        family: _static_index_ranges(int(spec["count"]), chunk_size)
+        for family, spec in families.items()
+    }
+    module_count = max((len(items) for items in ranges.values()), default=0)
+    modules: list[str] = []
+    range_nodes: dict[str, list[dict[str, Any]]] = {
+        family: [] for family in families
+    }
+    count_range_nodes: dict[str, list[dict[str, Any]]] = {
+        "OriginalCount": [],
+        "CandidateCount": [],
+    }
+    address_count_prefixes: dict[str, list[int]] = {}
+    for family, side in (
+        ("OriginalCount", "original"),
+        ("CandidateCount", "candidate"),
+    ):
+        prefix = [0]
+        for target in contract.get("code_targets", []):
+            prefix.append(
+                prefix[-1] + 1 + len(target.get(f"{side}_aliases", []))
+            )
+        address_count_prefixes[family] = prefix
+    for chunk_index in range(module_count):
+        module = f"RelationalStaticCodeMapChunk{chunk_index}"
+        modules.append(module)
+        definitions: list[str] = []
+        for family, spec in families.items():
+            if chunk_index >= len(ranges[family]):
+                continue
+            start, count = ranges[family][chunk_index]
+            range_name = f"static{family}Range{chunk_index}"
+            theorem_name = f"static{family}Range{chunk_index}Checked"
+            predicate = str(spec["predicate"])
+            definitions.append(_lean_static_range(range_name, start, count))
+            definitions.append(
+                f"theorem {theorem_name} :\n"
+                f"    IndexedBoolRangeHolds {predicate} {range_name} :=\n"
+                f"  indexedBoolRangeHolds_of_checked {predicate} {range_name} (by decide)"
+            )
+            range_nodes[family].append({
+                "module": module,
+                "range": range_name,
+                "theorem": theorem_name,
+                "start": start,
+                "size": count,
+            })
+        if chunk_index < len(ranges["Entry"]):
+            start, count = ranges["Entry"][chunk_index]
+            for family, candidate in (
+                ("OriginalCount", "false"),
+                ("CandidateCount", "true"),
+            ):
+                range_name = f"static{family}Range{chunk_index}"
+                theorem_name = f"static{family}Range{chunk_index}Checked"
+                before = address_count_prefixes[family][start]
+                after = address_count_prefixes[family][start + count]
+                value = f"(globalCodeMap.addressContribution {candidate})"
+                definitions.append(_lean_static_range(range_name, start, count))
+                definitions.append(
+                    f"theorem {theorem_name} :\n"
+                    f"    IndexedNatRangeFoldHolds {value} {range_name} "
+                    f"{before} {after} := by\n"
+                    "  unfold IndexedNatRangeFoldHolds\n"
+                    "  decide"
+                )
+                count_range_nodes[family].append({
+                    "module": module,
+                    "range": range_name,
+                    "theorem": theorem_name,
+                    "start": start,
+                    "size": count,
+                    "before": before,
+                    "after": after,
+                })
+        source = (
+            "import StageA.RelationalStaticContextBase\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+
+    range_roots: dict[str, dict[str, Any]] = {}
+    tree_fanout = max(
+        2, int(os.environ.get("WINCR_STAGE_A_STATIC_TREE_FANOUT", "16"))
+    )
+    for family, nodes in range_nodes.items():
+        if not nodes:
+            raise StageAInputError(
+                f"canonical static {family} inventory cannot be empty"
+            )
+        level = 0
+        while len(nodes) > 1:
+            next_nodes: list[dict[str, Any]] = []
+            for group_offset in range(0, len(nodes), tree_fanout):
+                group = nodes[group_offset : group_offset + tree_fanout]
+                if len(group) == 1:
+                    next_nodes.append(group[0])
+                    continue
+                node_index = group_offset // tree_fanout
+                module = f"RelationalStatic{family}Tree{level}Node{node_index}"
+                predicate = str(families[family]["predicate"])
+                imports = "\n".join(
+                    f"import StageA.{name}"
+                    for name in dict.fromkeys(
+                        ["RelationalStaticTree"]
+                        + [str(child["module"]) for child in group]
+                    )
+                )
+                definitions: list[str] = []
+                current = group[0]
+                for merge_index, right in enumerate(group[1:], 1):
+                    if (
+                        int(right["start"])
+                        != int(current["start"]) + int(current["size"])
+                    ):
+                        raise StageAInputError(
+                            f"canonical static {family} certificate ranges are not adjacent"
+                        )
+                    range_name = (
+                        f"static{family}Tree{level}Node{node_index}Step{merge_index}Range"
+                    )
+                    theorem_name = f"{range_name}Checked"
+                    start = int(current["start"])
+                    size = int(current["size"]) + int(right["size"])
+                    definitions.extend([
+                        _lean_static_range(range_name, start, size),
+                        (
+                            f"theorem {theorem_name} :\n"
+                            f"    IndexedBoolRangeHolds {predicate} {range_name} :=\n"
+                            f"  indexedBoolRangeHolds_append {predicate} "
+                            f"{current['range']} {right['range']} (by decide)\n"
+                            f"    {current['theorem']} {right['theorem']}"
+                        ),
+                    ])
+                    current = {
+                        "module": module,
+                        "range": range_name,
+                        "theorem": theorem_name,
+                        "start": start,
+                        "size": size,
+                    }
+                source = (
+                    imports
+                    + "\n\nnamespace StageA.GeneratedRelational\n\n"
+                    "open StageA.Formal StageA.Relational\n\n"
+                    "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+                    + "\n\n".join(definitions)
+                    + "\n\n"
+                    "end StageA.GeneratedRelational\n"
+                )
+                _write_text_if_changed(
+                    lean_dir / "StageA" / f"{module}.lean", source
+                )
+                modules.append(module)
+                next_nodes.append(current)
+            nodes = next_nodes
+            level += 1
+        range_roots[family] = nodes[0]
+
+    count_roots: dict[str, dict[str, Any]] = {}
+    for family, nodes in count_range_nodes.items():
+        candidate = "true" if family == "CandidateCount" else "false"
+        value = f"(globalCodeMap.addressContribution {candidate})"
+        level = 0
+        while len(nodes) > 1:
+            next_nodes: list[dict[str, Any]] = []
+            for group_offset in range(0, len(nodes), tree_fanout):
+                group = nodes[group_offset : group_offset + tree_fanout]
+                if len(group) == 1:
+                    next_nodes.append(group[0])
+                    continue
+                node_index = group_offset // tree_fanout
+                module = f"RelationalStatic{family}Tree{level}Node{node_index}"
+                imports = "\n".join(
+                    f"import StageA.{name}"
+                    for name in dict.fromkeys(
+                        ["RelationalStaticTree"]
+                        + [str(child["module"]) for child in group]
+                    )
+                )
+                definitions: list[str] = []
+                current = group[0]
+                for merge_index, right in enumerate(group[1:], 1):
+                    if (
+                        int(right["start"])
+                        != int(current["start"]) + int(current["size"])
+                        or int(right["before"]) != int(current["after"])
+                    ):
+                        raise StageAInputError(
+                            f"canonical static {family} fold ranges do not compose"
+                        )
+                    range_name = (
+                        f"static{family}Tree{level}Node{node_index}Step{merge_index}Range"
+                    )
+                    theorem_name = f"{range_name}Checked"
+                    start = int(current["start"])
+                    size = int(current["size"]) + int(right["size"])
+                    before = int(current["before"])
+                    middle = int(current["after"])
+                    after = int(right["after"])
+                    definitions.extend([
+                        _lean_static_range(range_name, start, size),
+                        (
+                            f"theorem {theorem_name} :\n"
+                            f"    IndexedNatRangeFoldHolds {value} {range_name} "
+                            f"{before} {after} :=\n"
+                            f"  indexedNatRangeFoldHolds_append {value} "
+                            f"{current['range']} {right['range']} "
+                            f"{before} {middle} {after} (by decide)\n"
+                            f"    {current['theorem']} {right['theorem']}"
+                        ),
+                    ])
+                    current = {
+                        "module": module,
+                        "range": range_name,
+                        "theorem": theorem_name,
+                        "start": start,
+                        "size": size,
+                        "before": before,
+                        "after": after,
+                    }
+                source = (
+                    imports
+                    + "\n\nnamespace StageA.GeneratedRelational\n\n"
+                    "open StageA.Formal StageA.Relational\n\n"
+                    "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+                    + "\n\n".join(definitions)
+                    + "\n\nend StageA.GeneratedRelational\n"
+                )
+                _write_text_if_changed(
+                    lean_dir / "StageA" / f"{module}.lean", source
+                )
+                modules.append(module)
+                next_nodes.append(current)
+            nodes = next_nodes
+            level += 1
+        count_roots[family] = nodes[0]
+
+    final_imports = "\n".join(
+        f"import StageA.{module}"
+        for module in dict.fromkeys(
+            root["module"]
+            for root in [*range_roots.values(), *count_roots.values()]
+        )
+    ) + "\nimport StageA.RelationalStaticDataContext"
+    final_parts: list[str] = []
+    holds_names: dict[str, str] = {}
+    for family, spec in families.items():
+        predicate = str(spec["predicate"])
+        root = range_roots[family]
+        ranges_name = f"static{family}Ranges"
+        certificate_name = f"static{family}Certificate"
+        ranges_checked_name = f"static{family}RangesChecked"
+        holds_name = f"static{family}IndexChecked"
+        holds_names[family] = holds_name
+        final_parts.extend([
+            f"def {ranges_name} : List Span := [{root['range']}]",
+            f"def {certificate_name} : IndexedBoolCertificate := {{ ranges := {ranges_name} }}",
+            (
+                f"theorem {ranges_checked_name} :\n"
+                f"    AllIndexedBoolRangesHold {predicate} {ranges_name} := by\n"
+                f"  exact ⟨{root['theorem']}, True.intro⟩"
+            ),
+            (
+                f"theorem {holds_name} :\n"
+                f"    {certificate_name}.Holds {predicate} {int(spec['count'])} :=\n"
+                f"  IndexedBoolCertificate.holds_of_ranges {predicate} {int(spec['count'])}\n"
+                f"    {certificate_name} (by decide) {ranges_checked_name}"
+            ),
+        ])
+    original_count_root = count_roots["OriginalCount"]
+    candidate_count_root = count_roots["CandidateCount"]
+    final_parts.extend([
+        (
+            "theorem staticCodeEntryCountChecked :\n"
+            f"    globalCodeMap.entries.size = {target_count} := by decide"
+        ),
+        (
+            "theorem staticOriginalExpectedAddressCountChecked :\n"
+            "    globalCodeMap.expectedAddressCount false = "
+            f"{original_address_count} := by\n"
+            "  unfold StaticCodeMap.expectedAddressCount\n"
+            "  rw [staticCodeEntryCountChecked]\n"
+            f"  simpa [IndexedNatRangeFoldHolds, {original_count_root['range']}] using "
+            f"{original_count_root['theorem']}"
+        ),
+        (
+            "theorem staticCandidateExpectedAddressCountChecked :\n"
+            "    globalCodeMap.expectedAddressCount true = "
+            f"{candidate_address_count} := by\n"
+            "  unfold StaticCodeMap.expectedAddressCount\n"
+            "  rw [staticCodeEntryCountChecked]\n"
+            f"  simpa [IndexedNatRangeFoldHolds, {candidate_count_root['range']}] using "
+            f"{candidate_count_root['theorem']}"
+        ),
+        (
+            "theorem staticOriginalAddressArrayCountChecked :\n"
+            f"    globalCodeMap.originalAddresses.size = {original_address_count} := by decide"
+        ),
+        (
+            "theorem staticCandidateAddressArrayCountChecked :\n"
+            f"    globalCodeMap.candidateAddresses.size = {candidate_address_count} := by decide"
+        ),
+        (
+            "theorem staticOriginalAddressCountChecked :\n"
+            "    globalCodeMap.originalAddresses.size =\n"
+            "      globalCodeMap.expectedAddressCount false :=\n"
+            "  staticOriginalAddressArrayCountChecked.trans\n"
+            "    staticOriginalExpectedAddressCountChecked.symm"
+        ),
+        (
+            "theorem staticCandidateAddressCountChecked :\n"
+            "    globalCodeMap.candidateAddresses.size =\n"
+            "      globalCodeMap.expectedAddressCount true :=\n"
+            "  staticCandidateAddressArrayCountChecked.trans\n"
+            "    staticCandidateExpectedAddressCountChecked.symm"
+        ),
+        (
+            "theorem staticCodeMapChecked :\n"
+            "    globalCodeMap.IndexedValid originalPe candidatePe :=\n"
+            f"  ⟨{holds_names['Entry']}, staticOriginalAddressCountChecked,\n"
+            "    staticCandidateAddressCountChecked, "
+            f"{holds_names['OriginalAddress']}, {holds_names['CandidateAddress']}⟩"
+        ),
+        "theorem staticRootsChecked : rootsValid staticProofContext = true := by decide",
+        (
+            "theorem staticDynamicPointerSlotsChecked :\n"
+            "    staticDynamicPointerSlotsValid staticProofContext = true := by decide"
+        ),
+        (
+            "theorem staticOriginalMachineCallContractsChecked :\n"
+            "    machineImportCallContractsValid originalImports\n"
+            "      staticProofContext.machineImportCallContracts = true := by decide"
+        ),
+        (
+            "theorem staticCandidateMachineCallContractsChecked :\n"
+            "    machineImportCallContractsValid candidateImports\n"
+            "      staticProofContext.machineImportCallContracts = true := by decide"
+        ),
+        (
+            "theorem staticObservationsChecked :\n"
+            "    observationProfileValid staticProofContext.observations = true := by decide"
+        ),
+        (
+            "theorem staticProofContextChecked : staticProofContext.StructurallyValid :=\n"
+            "  StaticProofContext.structurallyValid_of_components staticProofContext\n"
+            "    originalParsed candidateParsed originalImportsChecked candidateImportsChecked\n"
+            "    originalRelocationsParsed candidateRelocationsParsed staticCodeMapChecked\n"
+            "    staticDataMapChecked staticDynamicPointerSlotsChecked\n"
+            "    staticOriginalMachineCallContractsChecked\n"
+            "    staticCandidateMachineCallContractsChecked staticRootsChecked\n"
+            "    staticObservationsChecked"
+        ),
+    ])
+    final_source = (
+        final_imports
+        + "\n\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        + "\n\n".join(final_parts)
+        + "\n\nend StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalStaticContext.lean", final_source
+    )
+    return modules
 
 
 def _lean_semantic_expr(expression: dict[str, Any]) -> str:
@@ -5030,6 +14045,150 @@ def _lean_semantic_expr(expression: dict[str, Any]) -> str:
     raise StageAInputError(f"unsupported semantic expression operation {operation!r}")
 
 
+def _lean_register_offset_witness(witness: dict[str, Any]) -> str:
+    kind = str(witness["kind"])
+    if kind == "input":
+        return "RegisterOffsetWitness.input"
+    constructor = {
+        "add_right": "addRight",
+        "add_left": "addLeft",
+        "sub_right": "subRight",
+    }.get(kind)
+    if constructor is None:
+        raise StageAInputError(f"unsupported register-offset witness: {kind}")
+    prior = _lean_register_offset_witness(witness["prior"])
+    value = int(witness["value"])
+    if kind == "add_left":
+        return f"RegisterOffsetWitness.{constructor} {value} ({prior})"
+    return f"RegisterOffsetWitness.{constructor} ({prior}) {value}"
+
+
+def _lean_return_slot_offset_pair(offsets: dict[str, Any]) -> str:
+    return (
+        "{ originalOffset := BitVec.ofNat 32 "
+        f"{int(offsets['original'])}, candidateOffset := BitVec.ofNat 32 "
+        f"{int(offsets['candidate'])} }}"
+    )
+
+
+def _lean_register_offset_write(write: dict[str, Any]) -> str:
+    return (
+        "{ register := ." + str(write["register"])
+        + ", offset := " + str(int(write["offset"]))
+        + ", value := " + _lean_semantic_expr(write["value"])
+        + " }"
+    )
+
+
+def _lean_immutable_indirect_jump_claim(candidate: dict[str, Any]) -> str:
+    original_writes = ", ".join(
+        _lean_register_offset_write(write)
+        for write in candidate.get("original_writes", [])
+    )
+    candidate_writes = ", ".join(
+        _lean_register_offset_write(write)
+        for write in candidate.get("candidate_writes", [])
+    )
+    return (
+        "{\n"
+        f"  targetId := {int(candidate['target_id'])}\n"
+        f"  originalAddress := {int(candidate['original_address'])}\n"
+        f"  candidateAddress := {int(candidate['candidate_address'])}\n"
+        f"  originalAssembledRead := "
+        f"{_lean_bool(bool(candidate['original_assembled_read']))}\n"
+        f"  candidateAssembledRead := "
+        f"{_lean_bool(bool(candidate['candidate_assembled_read']))}\n"
+        f"  originalWrites := [{original_writes}]\n"
+        f"  candidateWrites := [{candidate_writes}]\n"
+        "}"
+    )
+
+
+def _lean_import_register_seed_claim(candidate: dict[str, Any]) -> str:
+    original_writes = ", ".join(
+        _lean_register_offset_write(write)
+        for write in candidate.get("original_writes", [])
+    )
+    candidate_writes = ", ".join(
+        _lean_register_offset_write(write)
+        for write in candidate.get("candidate_writes", [])
+    )
+    return (
+        "{\n"
+        f"  imported := {_lean_external_target(candidate['import'])}\n"
+        f"  originalRegister := .{candidate['original_register']}\n"
+        f"  candidateRegister := .{candidate['candidate_register']}\n"
+        f"  originalIatRva := {int(candidate['original_iat_rva'])}\n"
+        f"  candidateIatRva := {int(candidate['candidate_iat_rva'])}\n"
+        f"  assembledRead := {_lean_bool(bool(candidate.get('assembled_read')))}\n"
+        f"  originalWrites := [{original_writes}]\n"
+        f"  candidateWrites := [{candidate_writes}]\n"
+        "}"
+    )
+
+
+def _lean_external_target(imported: dict[str, Any]) -> str:
+    def bytes_literal(value: str) -> str:
+        return "[" + ", ".join(str(byte) for byte in value.encode("utf-8")) + "]"
+
+    if "symbol" in imported:
+        name = f"(.symbol {bytes_literal(str(imported['symbol']))})"
+    elif "ordinal" in imported:
+        name = f"(.ordinal {int(imported['ordinal'])})"
+    else:
+        raise StageAInputError("import target has neither symbol nor ordinal")
+    return f"{{ dll := {bytes_literal(str(imported['dll']))}, name := {name} }}"
+
+
+def _lean_machine_call_memory_size(size: dict[str, Any]) -> str:
+    if size["kind"] == "fixed":
+        return f".fixed {int(size['bytes'])}"
+    if size["kind"] == "argument":
+        return f".argument {int(size['argument'])} {int(size['scale'])}"
+    raise StageAInputError(f"unsupported machine-call memory size {size!r}")
+
+
+def _lean_machine_call_memory_footprint(footprint: dict[str, Any]) -> str:
+    return (
+        "{ "
+        f"access := .{footprint['access']}, "
+        f"baseArgument := {int(footprint['base_argument'])}, "
+        f"offset := {int(footprint['offset'])}, "
+        f"size := {_lean_machine_call_memory_size(footprint['size'])}, "
+        f"nullable := {str(bool(footprint.get('nullable', False))).lower()} "
+        "}"
+    )
+
+
+def _lean_machine_import_call_contract(contract: dict[str, Any]) -> str:
+    offsets = ", ".join(
+        str(int(offset)) for offset in contract["stack_argument_offsets"]
+    )
+    preserved = ", ".join(
+        f".{register}" for register in contract["preserved_registers"]
+    )
+    clobbered = ", ".join(
+        f".{register}" for register in contract["clobbered_registers"]
+    )
+    footprints = ", ".join(
+        _lean_machine_call_memory_footprint(footprint)
+        for footprint in contract.get("memory_footprints", [])
+    )
+    return (
+        "{ "
+        f"id := {int(contract['id'])}, "
+        f"imported := {_lean_external_target(contract['import'])}, "
+        f"stackArgumentOffsets := [{offsets}], "
+        f"stackResultDelta := {int(contract['stack_result_delta'])}, "
+        f"preservedRegisters := [{preserved}], "
+        f"clobberedRegisters := [{clobbered}], "
+        f"memoryEffect := .{contract['memory_effect']}, "
+        f"memoryFootprints := [{footprints}], "
+        f"worldEffect := .{contract['world_effect']} "
+        "}"
+    )
+
+
 def _lean_semantic_x87_expr(expression: dict[str, Any]) -> str:
     operation = expression["op"]
     if operation == "input_stack":
@@ -5072,6 +14231,19 @@ def _lean_semantic_x87_expr(expression: dict[str, Any]) -> str:
             f"({_lean_semantic_expr(expression['control'])})"
         )
     raise StageAInputError(f"unsupported x87 invariant expression operation {operation!r}")
+
+
+def _lean_symbolic_x87_state(state: dict[str, Any]) -> str:
+    stack = ", ".join(
+        _lean_semantic_x87_expr(expression)
+        for expression in state.get("stack", [])
+    )
+    return (
+        "{ stack := [" + stack + "], control := "
+        + _lean_semantic_expr(state["control"])
+        + ", status := " + _lean_semantic_expr(state["status"])
+        + " }"
+    )
 
 
 def _semantic_masked_successor_shape(
@@ -5301,6 +14473,246 @@ def _lean_semantic_bool_expr(expression: dict[str, Any]) -> str:
     raise StageAInputError(f"unsupported invariant predicate operation {operation!r}")
 
 
+def _lean_stack_window(window: dict[str, Any]) -> str:
+    return (
+        "{ rangeId := " + str(int(window["range_id"]))
+        + ", originalRegister := ." + str(window["original_register"])
+        + ", candidateRegister := ." + str(window["candidate_register"])
+        + ", bytesBelow := " + str(int(window["bytes_below"]))
+        + ", bytesAbove := " + str(int(window["bytes_above"]))
+        + " }"
+    )
+
+
+def _lean_paired_stack_word_value_claim(claim: dict[str, Any]) -> str:
+    profile = claim.get("profile")
+    if profile == "exact_inputs_v1":
+        witness = ".exactInputs"
+    elif profile == "register_argument_v1":
+        witness = (
+            ".registerArgument "
+            + _lean_register_argument_claim(claim["claim"])
+        )
+    else:
+        raise StageAInputError(
+            f"unsupported paired stack-word value profile {profile!r}"
+        )
+    return (
+        "{ original := " + _lean_semantic_expr(claim["original"])
+        + ", candidate := " + _lean_semantic_expr(claim["candidate"])
+        + ", witness := " + witness + " }"
+    )
+
+
+def _lean_paired_stack_word_write_claim(claim: dict[str, Any]) -> str:
+    return (
+        "{ window := " + _lean_stack_window(claim["window"])
+        + ", amount := " + str(int(claim["amount"]))
+        + ", value := " + _lean_paired_stack_word_value_claim(claim["value"])
+        + " }"
+    )
+
+
+def _lean_paired_stack_word_writes_claim(claim: dict[str, Any]) -> str:
+    writes = ", ".join(
+        "{ amount := " + str(int(write["amount"]))
+        + ", value := " + _lean_paired_stack_word_value_claim(write["value"])
+        + " }"
+        for write in claim["writes"]
+    )
+    return (
+        "{ window := " + _lean_stack_window(claim["window"])
+        + ", writes := [" + writes + "] }"
+    )
+
+
+def _lean_state_invariant(invariant: dict[str, Any]) -> str:
+    register_relations = ", ".join(
+        _lean_register_relation_pair(pair)
+        for pair in invariant.get("register_relations", [])
+    )
+    import_relations = ", ".join(
+        "{ original := ." + str(pair["original"])
+        + ", candidate := ." + str(pair["candidate"])
+        + ", imported := " + _lean_external_target(pair["import"]) + " }"
+        for pair in invariant.get("import_register_relations", [])
+    )
+    dynamic_relations = ", ".join(
+        _lean_dynamic_range_relation(relation)
+        for relation in invariant.get("dynamic_register_range_relations", [])
+    )
+    bounds = ", ".join(
+        f"{{ original := .{bound['original']}, candidate := .{bound['candidate']}, "
+        + (
+            "originalExpression := some ("
+            + _lean_semantic_expr(bound["original_expression"])
+            + "), candidateExpression := some ("
+            + _lean_semantic_expr(bound["candidate_expression"])
+            + "), "
+            if "original_expression" in bound and "candidate_expression" in bound
+            else ""
+        )
+        + f"upperExclusive := {bound['unsigned_lt']} }}"
+        for bound in invariant.get("bounds", [])
+    )
+    flags = ", ".join(str(bit) for bit in invariant.get("flag_bits", []))
+    separations = ", ".join(
+        _lean_address_separation(separation)
+        for separation in invariant.get("address_separations", [])
+    )
+    windows = ", ".join(
+        _lean_stack_window(window)
+        for window in invariant.get("stack_windows", [])
+    )
+    return (
+        "{ registerRelations := [" + register_relations
+        + "], importRegisterRelations := [" + import_relations
+        + "], dynamicRegisterRangeRelations := [" + dynamic_relations
+        + "], bounds := [" + bounds
+        + "], flagBits := [" + flags
+        + "], addressSeparations := [" + separations
+        + "], stackWindows := [" + windows + "] }"
+    )
+
+
+def _lean_dynamic_range_relation(relation: dict[str, Any]) -> str:
+    words = ", ".join(
+        "{ offset := " + str(int(word["offset"]))
+        + ", kind := ." + str(word["kind"]) + " }"
+        for word in relation.get("required_words", [])
+    )
+    return (
+        "{ original := ." + str(relation["original"])
+        + ", candidate := ." + str(relation["candidate"])
+        + ", originalOffset := " + str(int(relation.get("original_offset", 0)))
+        + ", candidateOffset := " + str(int(relation.get("candidate_offset", 0)))
+        + ", requiredWords := [" + words + "] }"
+    )
+
+
+def _lean_static_dynamic_pointer_slot(slot: dict[str, Any]) -> str:
+    words = ", ".join(
+        "{ offset := " + str(int(word["offset"]))
+        + ", kind := ." + str(word["kind"]) + " }"
+        for word in slot.get("required_words", [])
+    )
+    return (
+        "{ id := " + str(int(slot["id"]))
+        + ", originalAddress := BitVec.ofNat 32 "
+        + str(int(slot["original_address"]))
+        + ", candidateAddress := BitVec.ofNat 32 "
+        + str(int(slot["candidate_address"]))
+        + ", requiredWords := [" + words + "] }"
+    )
+def _lean_stack_window_transfer_claim(claim: dict[str, Any]) -> str:
+    adjustment = claim["adjustment"]
+    adjustment_row = (
+        ".identity" if adjustment["kind"] == "identity"
+        else f".{adjustment['kind']} {int(adjustment['amount'])}"
+    )
+    return (
+        "{ source := " + _lean_stack_window(claim["source"])
+        + ", target := " + _lean_stack_window(claim["target"])
+        + ", adjustment := " + adjustment_row
+        + " }"
+    )
+
+
+def _lean_dynamic_range_argument_claim(claim: dict[str, Any]) -> str:
+    word = claim["word_relation"]
+    return (
+        "{ rangeRelation := "
+        + _lean_dynamic_range_relation(claim["range_relation"])
+        + ", wordRelation := { offset := " + str(int(word["offset"]))
+        + ", kind := ." + str(word["kind"])
+        + " }, originalReadOffset := " + str(int(claim["original_read_offset"]))
+        + ", candidateReadOffset := " + str(int(claim["candidate_read_offset"]))
+        + " }"
+    )
+
+
+def _lean_stack_window_argument_claim(claim: dict[str, Any]) -> str:
+    return (
+        "{ window := " + _lean_stack_window(claim["window"])
+        + ", offset := " + str(int(claim["offset"]))
+        + ", originalAssembledRead := "
+        + _lean_bool(bool(claim["original_assembled_read"]))
+        + ", candidateAssembledRead := "
+        + _lean_bool(bool(claim["candidate_assembled_read"]))
+        + " }"
+    )
+
+
+def _lean_register_argument_claim(claim: dict[str, Any]) -> str:
+    return (
+        "{ relation := " + _lean_register_relation_pair(claim["relation"])
+        + ", offset := " + str(int(claim["offset"])) + " }"
+    )
+
+
+def _lean_register_output_claim(claim: dict[str, Any]) -> str:
+    kind = claim["kind"]
+    if kind == "exact_expression":
+        return (
+            "InvariantWP.RegisterOutputClaim.exactExpression { output := "
+            + _lean_register_relation_pair(claim["output"])
+            + ", expression := " + _lean_semantic_expr(claim["expression"])
+            + " }"
+        )
+    if kind == "exact_memory":
+        return (
+            "InvariantWP.RegisterOutputClaim.exactMemory { output := "
+            + _lean_register_relation_pair(claim["output"])
+            + ", expression := " + _lean_semantic_expr(claim["expression"])
+            + " }"
+        )
+    if kind == "identity":
+        return (
+            "InvariantWP.RegisterOutputClaim.identity { input := "
+            + _lean_register_relation_pair(claim["input"])
+            + ", output := " + _lean_register_relation_pair(claim["output"])
+            + " }"
+        )
+    if kind == "constant":
+        return (
+            "InvariantWP.RegisterOutputClaim.constant { output := "
+            + _lean_register_relation_pair(claim["output"])
+            + ", originalValue := " + str(claim["original_value"])
+            + ", candidateValue := " + str(claim["candidate_value"])
+            + " }"
+        )
+    if kind == "stack_read32_sub":
+        return (
+            "InvariantWP.RegisterOutputClaim.stackRead32Sub { output := "
+            + _lean_register_relation_pair(claim["output"])
+            + ", window := " + _lean_stack_window(claim["window"])
+            + ", offset := " + str(claim["offset"])
+            + ", subtract := " + str(claim["subtract"])
+            + " }"
+        )
+    raise StageAInputError(f"unsupported register output claim {kind!r}")
+
+
+def _lean_address_separation(separation: dict[str, Any]) -> str:
+    return (
+        "{ originalRegister := ." + str(separation["original_register"])
+        + ", candidateRegister := ." + str(separation["candidate_register"])
+        + ", originalOffset := " + str(int(separation["original_offset"]))
+        + ", candidateOffset := " + str(int(separation["candidate_offset"]))
+        + ", originalAddress := " + str(int(separation["original_address"]))
+        + ", candidateAddress := " + str(int(separation["candidate_address"]))
+        + " }"
+    )
+
+
+def _lean_stack_address_separation_claim(claim: dict[str, Any]) -> str:
+    return (
+        "{ window := " + _lean_stack_window(claim["window"])
+        + ", separation := " + _lean_address_separation(claim["separation"])
+        + " }"
+    )
+
+
 def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
     input_rows = ", ".join(_lean_register_pair(pair) for pair in region["inputs"])
     output_rows = ", ".join(_lean_register_pair(pair) for pair in region["outputs"])
@@ -5309,6 +14721,26 @@ def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
     )
     output_relation_rows = ", ".join(
         _lean_register_relation_pair(pair) for pair in region.get("output_relations", [])
+    )
+    input_import_relation_rows = ", ".join(
+        "{ original := ." + str(pair["original"])
+        + ", candidate := ." + str(pair["candidate"])
+        + ", imported := " + _lean_external_target(pair["import"]) + " }"
+        for pair in region.get("input_import_relations", [])
+    )
+    output_import_relation_rows = ", ".join(
+        "{ original := ." + str(pair["original"])
+        + ", candidate := ." + str(pair["candidate"])
+        + ", imported := " + _lean_external_target(pair["import"]) + " }"
+        for pair in region.get("output_import_relations", [])
+    )
+    input_dynamic_relation_rows = ", ".join(
+        _lean_dynamic_range_relation(relation)
+        for relation in region.get("input_dynamic_range_relations", [])
+    )
+    output_dynamic_relation_rows = ", ".join(
+        _lean_dynamic_range_relation(relation)
+        for relation in region.get("output_dynamic_range_relations", [])
     )
     bound_rows = ", ".join(
         f"{{ original := .{bound['original']}, candidate := .{bound['candidate']}, "
@@ -5342,15 +14774,29 @@ def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
         + " }"
         for separation in region.get("address_separations", [])
     )
+    stack_window_rows = ", ".join(
+        "{ rangeId := " + str(int(window["range_id"]))
+        + ", originalRegister := ." + str(window["original_register"])
+        + ", candidateRegister := ." + str(window["candidate_register"])
+        + ", bytesBelow := " + str(int(window["bytes_below"]))
+        + ", bytesAbove := " + str(int(window["bytes_above"]))
+        + " }"
+        for window in region.get("stack_windows", [])
+    )
     return (
         f"def region{index} : RegionRelation := {{ id := {region['numeric_id']}, root := {_lean_bool(region['root'])}, "
         f"original := {{ start := {region['original']['rva_start']}, size := {region['original']['size']} }}, "
         f"candidate := {{ start := {region['candidate']['rva_start']}, size := {region['candidate']['size']} }}, "
         f"inputs := [{input_rows}], outputs := [{output_rows}], "
         f"inputRelations := [{input_relation_rows}], outputRelations := [{output_relation_rows}], "
+        f"inputImportRelations := [{input_import_relation_rows}], "
+        f"outputImportRelations := [{output_import_relation_rows}], "
+        f"inputDynamicRangeRelations := [{input_dynamic_relation_rows}], "
+        f"outputDynamicRangeRelations := [{output_dynamic_relation_rows}], "
         f"bounds := [{bound_rows}], "
         f"flagInputs := [{flag_inputs}], flagOutputs := [{flag_outputs}], "
         f"addressSeparations := [{separation_rows}], "
+        f"stackWindows := [{stack_window_rows}], "
         f"targets := [{target_rows}], values := [{value_rows}] }}"
     )
 
@@ -5693,20 +15139,26 @@ def _lean_region_separation_setup(index: int, region: dict[str, Any]) -> tuple[s
             f"candidateSeparationReverse{separation_index}",
         )
     ]
-    row_patterns = [
-        f"⟨originalSeparation{separation_index}, candidateSeparation{separation_index}⟩"
-        for separation_index in range(count)
-    ]
     setup = (
-        f"  simp [addressSeparationsRelated, StageA.Formal.Registers.get, region{index}] "
-        "at separationsSatisfied\n"
-        "  rcases separationsSatisfied with ⟨" + ", ".join(row_patterns) + "⟩\n"
-        + "".join(
+        "".join(
+            f"  have originalSeparation{separation_index} := "
+            "(addressSeparationsRelated_member "
+            f"{_lean_address_separation(separation)} (by decide) "
+            "separationsSatisfied).1\n"
+            f"  have candidateSeparation{separation_index} := "
+            "(addressSeparationsRelated_member "
+            f"{_lean_address_separation(separation)} (by decide) "
+            "separationsSatisfied).2\n"
+            f"  simp [StageA.Formal.Registers.get, region{index}] at "
+            f"originalSeparation{separation_index} "
+            f"candidateSeparation{separation_index}\n"
             f"  have originalSeparationReverse{separation_index} := "
             f"Ne.symm originalSeparation{separation_index}\n"
             f"  have candidateSeparationReverse{separation_index} := "
             f"Ne.symm candidateSeparation{separation_index}\n"
-            for separation_index in range(count)
+            for separation_index, separation in enumerate(
+                region.get("address_separations", [])
+            )
         )
     )
     return setup, ", ".join(hypotheses)
@@ -5997,7 +15449,8 @@ def _lean_identical_state_only_writes_component(
     register_equalities: list[str] = []
     if registers:
         rows.extend((
-            "  unfold statesRelated at related",
+            "  unfold statesRelated StateRelCore at related",
+            "  simp only [registerRelationsHold_exactRegisterRelations] at related",
             "  have registerInputs := related.1",
             f"  simp [registersRelated, StageA.Formal.Registers.get, {name}] at registerInputs",
         ))
@@ -6120,6 +15573,10 @@ def _lean_normalized_branch_parts(outcome: str) -> tuple[str, int, int] | None:
 
 def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary, original: bytes, candidate: bytes, contract: dict[str, Any], behaviors: list[dict[str, str]], *, replay: bool, certificates: list[dict[str, Any]] | None = None) -> str:
     certificate_by_region = {entry.get("region_id"): entry for entry in certificates or []}
+    machine_call_contract_rows = ", ".join(
+        _lean_machine_import_call_contract(item)
+        for item in contract.get("machine_import_call_contracts", [])
+    )
     region_defs: list[str] = []
     theorem_defs: list[str] = []
     theorem_names: list[str] = []
@@ -6250,15 +15707,16 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
             )
         )
         theorem_defs.append(
-            f"theorem originalBehavior{index}CachedDecoded : regionBehaviorWithImports originalPe originalImports {name}.original = some originalBehavior{index} := by decide\n\n"
-            + f"theorem candidateBehavior{index}CachedDecoded : regionBehaviorWithImports candidatePe candidateImports {name}.candidate = some candidateBehavior{index} := by decide\n\n"
+            f"theorem originalBehavior{index}CachedDecoded : regionBehaviorWithMachineCallContracts originalPe originalImports machineImportCallContracts {name}.original = some originalBehavior{index} := by decide\n\n"
+            + f"theorem candidateBehavior{index}CachedDecoded : regionBehaviorWithMachineCallContracts candidatePe candidateImports machineImportCallContracts {name}.candidate = some candidateBehavior{index} := by decide\n\n"
             + normalized_theorem
             + f"theorem {theorem_name}DirectBehavior : behaviorsEquivalent originalPe.imageBase candidatePe.imageBase originalBehavior{index} candidateBehavior{index} {name} := by\n"
             "  unfold behaviorsEquivalent\n"
             "  intro originalState candidateState related\n"
+            "  unfold statesRelated StateRelCore at related\n"
+            "  simp only [registerRelationsHold_exactRegisterRelations] at related\n"
             "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
             "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
-            "  unfold statesRelated at related\n"
             "  rcases related with ⟨related, boundsSatisfied, separationsSatisfied, memoryRelated, undefinedRelated, x87Related, flagsRelated, fsBaseRelated⟩\n"
             + _lean_region_memory_setup(
                 index, region, "originalPe.imageBase", "candidatePe.imageBase",
@@ -6278,8 +15736,8 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
             + relocation_memory_setup
             + separation_setup
             + proof_steps
-            + f"\ntheorem {theorem_name}Direct : regionEquivalentWithImports originalPe candidatePe originalImports candidateImports {name} :=\n"
-            f"  regionEquivalentWithImports_of_decoded originalPe candidatePe originalImports candidateImports {name} originalBehavior{index} candidateBehavior{index}\n"
+            + f"\ntheorem {theorem_name}Direct : regionEquivalentWithImports originalPe candidatePe originalImports candidateImports machineImportCallContracts {name} :=\n"
+            f"  regionEquivalentWithImports_of_decoded originalPe candidatePe originalImports candidateImports machineImportCallContracts {name} originalBehavior{index} candidateBehavior{index}\n"
             f"    originalBehavior{index}CachedDecoded candidateBehavior{index}CachedDecoded {theorem_name}DirectBehavior\n"
             f"\ntheorem {theorem_name} : regionGoal proofBundle {name} := by\n"
             "  unfold regionGoal parsedImages proofBundle\n"
@@ -6329,6 +15787,7 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
         f"def candidateImportCertificate : ImportTableCertificate := {_lean_import_certificate(candidate_bin)}\n\n"
         "def originalImports : List PEImport := originalImportCertificate.imports\n\n"
         "def candidateImports : List PEImport := candidateImportCertificate.imports\n\n"
+        f"def machineImportCallContracts : List MachineImportCallContract := [{machine_call_contract_rows}]\n\n"
         f"def originalRelocations : List BaseRelocation := {_lean_relocations(original_bin)}\n\n"
         f"def candidateRelocations : List BaseRelocation := {_lean_relocations(candidate_bin)}\n\n"
         + "\n\n"
@@ -6342,7 +15801,7 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
         "theorem candidateRelocationsParsed : parseRelocations candidatePe = some candidateRelocations := by decide\n\n"
         + "\n\n".join(region_defs)
         + f"\n\ndef allRegionIndex : IndexTree RegionRelation := {region_index_literal}\n\n"
-        + f"def proofBundle : StageA.Relational.ProofBundle := {{ originalBytes, candidateBytes, originalImports := originalImportCertificate, candidateImports := candidateImportCertificate, regions := allRegionIndex.toList, regionIndex := allRegionIndex, originalPadding := [{original_padding}], candidatePadding := [{candidate_padding}], originalCoverage := {original_coverage}, candidateCoverage := {candidate_coverage}, originalAliasCoverage := {original_alias_coverage}, candidateAliasCoverage := {candidate_alias_coverage} }}\n\n"
+        + f"def proofBundle : StageA.Relational.ProofBundle := {{ originalBytes, candidateBytes, originalImports := originalImportCertificate, candidateImports := candidateImportCertificate, machineImportCallContracts, regions := allRegionIndex.toList, regionIndex := allRegionIndex, originalPadding := [{original_padding}], candidatePadding := [{candidate_padding}], originalCoverage := {original_coverage}, candidateCoverage := {candidate_coverage}, originalAliasCoverage := {original_alias_coverage}, candidateAliasCoverage := {candidate_alias_coverage} }}\n\n"
         + "\n".join(theorem_defs)
         + "\ntheorem structuralChecked : structuralEligible proofBundle = true := by decide\n\n"
         + "theorem valueRegionsChecked : valueRegionsClosed originalPe candidatePe "
@@ -6361,10 +15820,10 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
         + all_proof
         + "\n\ntheorem regionalRelationalCertificate : RelationalImageCertificate proofBundle :=\n"
         "  relationalImageCertificate_intro proofBundle structuralChecked importsChecked allRegionsChecked\n\n"
-        "theorem candidateRelationalCertificate :\n"
+        "theorem candidateRelationalImageCertificate :\n"
         "    RelationalImageCertificate proofBundle ∧ GeneratedMappedRelocationImageCertificate :=\n"
         "  ⟨regionalRelationalCertificate, generatedMappedRelocationImageCertificateChecked⟩\n\n"
-        "#print axioms candidateRelationalCertificate\n\nend StageA.GeneratedRelational\n"
+        "#print axioms candidateRelationalImageCertificate\n\nend StageA.GeneratedRelational\n"
     )
 
 
@@ -6816,7 +16275,8 @@ def _write_relational_memory_pullback_modules(
                 pair_claim_names.append(claim_name)
                 claim = (
                     f"InvariantWP.ExactMemoryReadPullbackPairEdgeClosed "
-                    f"{original_image_base} {candidate_image_base} region{source_index} "
+                    f"{original_image_base} {candidate_image_base} globalCodeTargets "
+                    f"globalValueTargets region{source_index} "
                     f"region{target_index} {source_original} {source_candidate} "
                     f"{claim_name}"
                 )
@@ -6825,7 +16285,8 @@ def _write_relational_memory_pullback_modules(
                 definitions.append(
                     f"theorem {theorem_name} : {claim} := by\n"
                     f"  apply InvariantWP.exactMemoryReadPullbackPairEdgeClosed_of_checked "
-                    f"{original_image_base} {candidate_image_base} region{source_index} "
+                    f"{original_image_base} {candidate_image_base} globalCodeTargets "
+                    f"globalValueTargets region{source_index} "
                     f"region{target_index} {source_original} {source_candidate} "
                     f"{target_original} {target_candidate} {claim_name}\n"
                     "  · decide\n"
@@ -6864,8 +16325,8 @@ def _write_relational_memory_pullback_modules(
                 )
                 transition_claim = (
                     f"MemoryObservationTransitionClosed {original_image_base} "
-                    f"{candidate_image_base} region{source_index} region{target_index}.targets "
-                    f"region{target_index}.values ({transition_claims}.map "
+                    f"{candidate_image_base} globalCodeTargets globalValueTargets "
+                    f"region{source_index} ({transition_claims}.map "
                     "InvariantWP.ExactMemoryReadPullbackPairClaim.requirement) [] "
                     f"{source_original} {source_candidate}"
                 )
@@ -6875,7 +16336,8 @@ def _write_relational_memory_pullback_modules(
                 definitions.append(
                     f"theorem {transition_theorem} : {transition_proposition} := by\n"
                     f"  apply InvariantWP.memoryObservationTransitionClosed_of_exact_pullback_pairs "
-                    f"{original_image_base} {candidate_image_base} region{source_index} "
+                    f"{original_image_base} {candidate_image_base} globalCodeTargets "
+                    f"globalValueTargets region{source_index} "
                     f"region{target_index} {source_original} {source_candidate} "
                     f"{target_original} {target_candidate} {transition_claims}\n"
                     "  decide"
@@ -6911,7 +16373,8 @@ def _write_relational_memory_pullback_modules(
         )
         module = f"RelationalMemoryPullbackChunk{chunk_index}"
         source = (
-            imports
+            "import StageA.RelationalGlobalMappingContext\n"
+            + imports
             + "\n\nnamespace StageA.GeneratedRelational\n\n"
             "open StageA.Formal StageA.Relational\n\n"
             "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
@@ -6961,16 +16424,64 @@ def _write_relational_register_relation_modules(
             if edge["source_region_index"] in region_indices
             and edge["exact_output_pair_claims"]
         ]
-        selected = [
+        environment_edges = [
+            edge for edge in register_relations["edges"]
+            if edge["source_region_index"] in region_indices
+            and _external_register_policy_replay_candidate(contract, edge)
+        ]
+        call_return_edges = [
+            edge for edge in register_relations["edges"]
+            if edge["source_region_index"] in region_indices
+            and edge["requires_call_stack_proof"]
+        ]
+        call_push_edges = [
+            edge for edge in register_relations["edges"]
+            if edge["source_region_index"] in region_indices
+            and edge.get("direct_call_push_claim") is not None
+        ]
+        return_slot_edges = [
+            edge for edge in register_relations["edges"]
+            if edge["source_region_index"] in region_indices
+            and edge.get("return_slot_transfer_claims")
+        ]
+        call_summary_edges = [
+            edge for edge in register_relations["edges"]
+            if edge["source_region_index"] in region_indices
+            and edge.get("return_slot_call_summary_claims")
+        ]
+        selected = sorted(set(
             index for index in region_indices
             if relation_by_region[index]["output_claims"]
-        ]
+            or relation_by_region[index].get("return_pop_claim") is not None
+        ) | {
+            int(edge["source_region_index"]) for edge in environment_edges
+        } | {
+            int(edge["source_region_index"]) for edge in call_return_edges
+        } | {
+            int(edge["source_region_index"]) for edge in call_push_edges
+        } | {
+            int(edge["source_region_index"]) for edge in return_slot_edges
+        } | {
+            int(edge["source_region_index"]) for edge in call_summary_edges
+        })
         if not selected:
             continue
         involved = set(selected) | {
             int(edge["target_region_index"]) for edge in exact_edges
         } | {
             int(edge["target_region_index"]) for edge in pair_edges
+        } | {
+            int(edge["target_region_index"]) for edge in environment_edges
+        } | {
+            int(edge["callsite_region_index"]) for edge in call_return_edges
+        } | {
+            int(edge["callee_entry_region_index"]) for edge in call_return_edges
+        } | {
+            int(edge["target_region_index"]) for edge in call_return_edges
+        } | {
+            int(claim["return_region_index"])
+            for edge in call_summary_edges
+            for claim in edge["return_slot_call_summary_claims"]
         }
         imports = "\n".join(
             f"import StageA.{module}"
@@ -6979,6 +16490,24 @@ def _write_relational_register_relation_modules(
         definitions: list[str] = []
         theorem_names: list[str] = []
         proposition_names: list[str] = []
+        extra_behavior_indices = sorted(({
+            int(edge["callsite_region_index"]) for edge in call_return_edges
+        } | {
+            int(claim["return_region_index"])
+            for edge in call_summary_edges
+            for claim in edge["return_slot_call_summary_claims"]
+        }) - set(selected))
+        for index in extra_behavior_indices:
+            definitions.extend([
+                f"def registerRelationChunk{chunk_index}OriginalBehavior{index} : "
+                "NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior false region{index}.targets "
+                f"originalBehavior{index}).get (by decide)",
+                f"def registerRelationChunk{chunk_index}CandidateBehavior{index} : "
+                "NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior true region{index}.targets "
+                f"candidateBehavior{index}).get (by decide)",
+            ])
         for index in selected:
             row = relation_by_region[index]
             original_name = f"registerRelationChunk{chunk_index}OriginalBehavior{index}"
@@ -6994,6 +16523,136 @@ def _write_relational_register_relation_modules(
                 f"  (normalizeSymbolicBehavior true region{index}.targets "
                 f"candidateBehavior{index}).get (by decide)",
             ])
+            return_claim = row.get("return_pop_claim")
+            if return_claim is not None:
+                return_claim_name = (
+                    f"registerRelationChunk{chunk_index}Region{index}ReturnPopClaim"
+                )
+                return_proposition_name = (
+                    f"registerRelationChunk{chunk_index}Region{index}ReturnPopClosed"
+                )
+                return_theorem_name = (
+                    f"registerRelationChunk{chunk_index}Region{index}ReturnPopChecked"
+                )
+                after_writes = (
+                    return_claim["profile"]
+                    == "esp_relative_return_after_static_writes_v1"
+                )
+                if after_writes:
+                    definitions.append(
+                        f"def {return_claim_name} : ReturnPopAfterWritesClaim := {{\n"
+                        "  originalStack := "
+                        f"{_lean_register_offset_witness(return_claim['original_stack_witness'])}\n"
+                        "  candidateStack := "
+                        f"{_lean_register_offset_witness(return_claim['candidate_stack_witness'])}\n"
+                        "  originalOutput := "
+                        f"{_lean_register_offset_witness(return_claim['original_output_witness'])}\n"
+                        "  candidateOutput := "
+                        f"{_lean_register_offset_witness(return_claim['candidate_output_witness'])}\n"
+                        f"  popBytes := {int(return_claim['pop_bytes'])}\n"
+                        "}"
+                    )
+                    definitions.append(
+                        f"def {return_proposition_name} : Prop :=\n"
+                        f"  ReturnPopAfterWritesClosed region{index}.inputInvariant "
+                        f"{original_name} {candidate_name} {return_claim_name}"
+                    )
+                    definitions.append(
+                        f"theorem {return_theorem_name} : {return_proposition_name} := by\n"
+                        "  apply returnPopAfterWritesClosed_of_checked\n"
+                        "  decide"
+                    )
+                else:
+                    definitions.append(
+                        f"def {return_claim_name} : ReturnPopClaim := {{\n"
+                        "  originalStackAddress := "
+                        f"{_lean_semantic_expr(return_claim['original_stack_address'])}\n"
+                        "  candidateStackAddress := "
+                        f"{_lean_semantic_expr(return_claim['candidate_stack_address'])}\n"
+                        f"  popBytes := {int(return_claim['pop_bytes'])}\n"
+                        "}"
+                    )
+                    definitions.append(
+                        f"def {return_proposition_name} : Prop :=\n"
+                        f"  ReturnPopClosed {original_name} {candidate_name} "
+                        f"{return_claim_name}"
+                    )
+                    definitions.append(
+                        f"theorem {return_theorem_name} : {return_proposition_name} := by\n"
+                        "  apply returnPopClosed_of_checked\n"
+                        "  decide"
+                    )
+                theorem_names.append(return_theorem_name)
+                proposition_names.append(return_proposition_name)
+                for frame_index, frame_claim in enumerate(
+                    row.get("return_pop_frame_claims", [])
+                ):
+                    frame_name = (
+                        f"registerRelationChunk{chunk_index}Region{index}"
+                        f"ReturnFrame{frame_index}Claim"
+                    )
+                    frame_proposition = f"{frame_name}Closed"
+                    frame_theorem = f"{frame_name}Checked"
+                    definitions.append(
+                        f"def {frame_name} : ReturnPopFrameClaim := {{\n"
+                        "  offsets := "
+                        f"{_lean_return_slot_offset_pair(frame_claim['offsets'])}\n"
+                        "  originalSlot := "
+                        f"{_lean_register_offset_witness(frame_claim['original_slot_witness'])}\n"
+                        "  candidateSlot := "
+                        f"{_lean_register_offset_witness(frame_claim['candidate_slot_witness'])}\n"
+                        "}"
+                    )
+                    if after_writes:
+                        definitions.append(
+                            f"def {frame_proposition} : Prop :=\n"
+                            "  ReturnPopAfterWritesFrameClaimClosed "
+                            f"{return_claim_name} {frame_name}"
+                        )
+                        definitions.append(
+                            f"theorem {frame_theorem} : {frame_proposition} := by\n"
+                            "  apply returnPopAfterWritesFrameClaimClosed_of_checked\n"
+                            "  decide"
+                        )
+                        semantic_proposition = f"{frame_name}TargetsRuntimeFrame"
+                        semantic_theorem = f"{semantic_proposition}Checked"
+                        definitions.append(
+                            f"def {semantic_proposition} : Prop :=\n"
+                            "  forall world frame originalState candidateState,\n"
+                            f"    StateRel staticProofContext world region{index}.inputInvariant "
+                            "originalState candidateState ->\n"
+                            f"    {frame_name}.offsets.holds frame originalState.registers "
+                            "candidateState.registers ->\n"
+                            "    frame.memoryHolds originalState.memory candidateState.memory ->\n"
+                            f"    {original_name}.outcome.eval originalState = "
+                            ".returned frame.originalReturnAddress /\\\n"
+                            f"      {candidate_name}.outcome.eval candidateState = "
+                            ".returned frame.candidateReturnAddress"
+                        )
+                        definitions.append(
+                            f"theorem {semantic_theorem} : {semantic_proposition} := by\n"
+                            "  intro world frame originalState candidateState related "
+                            "offsetsHold memoryHolds\n"
+                            "  exact returnPopAfterWritesTargetsRuntimeFrame_of_checked\n"
+                            f"    staticProofContext world region{index}.inputInvariant "
+                            f"{original_name} {candidate_name}\n"
+                            f"    {return_claim_name} {frame_name} frame originalState "
+                            "candidateState (by decide) (by decide) related offsetsHold memoryHolds"
+                        )
+                        theorem_names.append(semantic_theorem)
+                        proposition_names.append(semantic_proposition)
+                    else:
+                        definitions.append(
+                            f"def {frame_proposition} : Prop :=\n"
+                            f"  ReturnPopFrameClaimClosed {return_claim_name} {frame_name}"
+                        )
+                        definitions.append(
+                            f"theorem {frame_theorem} : {frame_proposition} := by\n"
+                            "  apply returnPopFrameClaimClosed_of_checked\n"
+                            "  decide"
+                        )
+                    theorem_names.append(frame_theorem)
+                    proposition_names.append(frame_proposition)
             claim_literals = []
             for claim in row["exact_output_claims"]:
                 register = claim["register"]
@@ -7011,42 +16670,10 @@ def _write_relational_register_relation_modules(
             output_claims_name = (
                 f"registerRelationChunk{chunk_index}Region{index}OutputClaims"
             )
-            output_claim_literals: list[str] = []
-            for claim in row["output_claims"]:
-                if claim["kind"] == "exact_expression":
-                    output_claim_literals.append(
-                        "InvariantWP.RegisterOutputClaim.exactExpression "
-                        "{ output := " + _lean_register_relation_pair(claim["output"])
-                        + ", expression := " + _lean_semantic_expr(claim["expression"])
-                        + " }"
-                    )
-                elif claim["kind"] == "exact_memory":
-                    output_claim_literals.append(
-                        "InvariantWP.RegisterOutputClaim.exactMemory "
-                        "{ output := " + _lean_register_relation_pair(claim["output"])
-                        + ", expression := " + _lean_semantic_expr(claim["expression"])
-                        + " }"
-                    )
-                elif claim["kind"] == "identity":
-                    output_claim_literals.append(
-                        "InvariantWP.RegisterOutputClaim.identity { input := "
-                        + _lean_register_relation_pair(claim["input"])
-                        + ", output := "
-                        + _lean_register_relation_pair(claim["output"])
-                        + " }"
-                    )
-                elif claim["kind"] == "constant":
-                    output_claim_literals.append(
-                        "InvariantWP.RegisterOutputClaim.constant { output := "
-                        + _lean_register_relation_pair(claim["output"])
-                        + ", originalValue := " + str(claim["original_value"])
-                        + ", candidateValue := " + str(claim["candidate_value"])
-                        + " }"
-                    )
-                else:
-                    raise StageAInputError(
-                        f"unsupported register output claim {claim['kind']!r}"
-                    )
+            output_claim_literals = [
+                _lean_register_output_claim(claim)
+                for claim in row["output_claims"]
+            ]
             definitions.append(
                 f"def {output_claims_name} : List InvariantWP.RegisterOutputClaim := "
                 f"[{', '.join(output_claim_literals)}]"
@@ -7054,13 +16681,14 @@ def _write_relational_register_relation_modules(
             definitions.append(
                 f"def {proposition_name} : Prop :=\n"
                 f"  InvariantWP.AllExactRegisterOutputClaims {original_image_base} "
-                f"{candidate_image_base} "
+                f"{candidate_image_base} globalCodeTargets globalValueTargets "
                 f"region{index} {original_name} {candidate_name} {claims_name}"
             )
             definitions.append(
                 f"theorem {theorem_name} : {proposition_name} := by\n"
                 f"  apply InvariantWP.allExactRegisterOutputClaims_of_checked "
-                f"{original_image_base} {candidate_image_base} region{index} "
+                f"{original_image_base} {candidate_image_base} globalCodeTargets "
+                f"globalValueTargets region{index} "
                 f"{original_name} {candidate_name} {claims_name}\n"
                 "  decide"
             )
@@ -7072,22 +16700,31 @@ def _write_relational_register_relation_modules(
             output_theorem_name = (
                 f"registerRelationChunk{chunk_index}Region{index}OutputClaimsChecked"
             )
-            definitions.append(
-                f"def {output_proposition_name} : Prop :=\n"
-                f"  InvariantWP.AllRegisterOutputClaims {original_image_base} "
-                f"{candidate_image_base} region{index} {original_name} {candidate_name} "
-                f"{output_claims_name}"
-            )
-            definitions.append(
-                f"theorem {output_theorem_name} : {output_proposition_name} := by\n"
-                f"  apply InvariantWP.allRegisterOutputClaims_of_checked "
-                f"{original_image_base} {candidate_image_base} region{index} "
-                f"{original_name} {candidate_name} {output_claims_name}\n"
-                "  decide"
-            )
-            theorem_names.append(output_theorem_name)
-            proposition_names.append(output_proposition_name)
-            if row["fully_supported_output_transfer"]:
+            if not any(
+                claim["kind"] == "stack_read32_sub"
+                for claim in row["output_claims"]
+            ):
+                definitions.append(
+                    f"def {output_proposition_name} : Prop :=\n"
+                    f"  InvariantWP.AllRegisterOutputClaims {original_image_base} "
+                    f"{candidate_image_base} globalCodeTargets globalValueTargets "
+                    f"region{index} {original_name} {candidate_name} "
+                    f"{output_claims_name}"
+                )
+                definitions.append(
+                    f"theorem {output_theorem_name} : {output_proposition_name} := by\n"
+                    f"  apply InvariantWP.allRegisterOutputClaims_of_checked "
+                    f"{original_image_base} {candidate_image_base} globalCodeTargets "
+                    f"globalValueTargets region{index} "
+                    f"{original_name} {candidate_name} {output_claims_name}\n"
+                    "  decide"
+                )
+                theorem_names.append(output_theorem_name)
+                proposition_names.append(output_proposition_name)
+            if row["fully_supported_output_transfer"] and not any(
+                claim["kind"] == "stack_read32_sub"
+                for claim in row["output_claims"]
+            ):
                 supported_transfer_name = (
                     f"registerRelationChunk{chunk_index}Region{index}"
                     "SupportedTransferClosed"
@@ -7099,13 +16736,15 @@ def _write_relational_register_relation_modules(
                 definitions.append(
                     f"def {supported_transfer_name} : Prop :=\n"
                     f"  InvariantWP.RegisterTransferClosed {original_image_base} "
-                    f"{candidate_image_base} region{index} {original_name} {candidate_name}"
+                    f"{candidate_image_base} globalCodeTargets globalValueTargets "
+                    f"region{index} {original_name} {candidate_name}"
                 )
                 definitions.append(
                     f"theorem {supported_transfer_theorem} : "
                     f"{supported_transfer_name} := by\n"
                     f"  apply InvariantWP.registerTransferClosed_of_checked "
-                    f"{original_image_base} {candidate_image_base} region{index} "
+                    f"{original_image_base} {candidate_image_base} globalCodeTargets "
+                    f"globalValueTargets region{index} "
                     f"{original_name} {candidate_name} {output_claims_name}\n"
                     "  · decide\n"
                     "  · decide"
@@ -7122,12 +16761,14 @@ def _write_relational_register_relation_modules(
                 definitions.append(
                     f"def {transfer_name} : Prop :=\n"
                     f"  InvariantWP.ExactRegisterTransferClosed {original_image_base} "
-                    f"{candidate_image_base} region{index} {original_name} {candidate_name}"
+                    f"{candidate_image_base} globalCodeTargets globalValueTargets "
+                    f"region{index} {original_name} {candidate_name}"
                 )
                 definitions.append(
                     f"theorem {transfer_theorem} : {transfer_name} := by\n"
                     f"  apply InvariantWP.exactRegisterTransferClosed_of_checked "
-                    f"{original_image_base} {candidate_image_base} region{index} "
+                    f"{original_image_base} {candidate_image_base} globalCodeTargets "
+                    f"globalValueTargets region{index} "
                     f"{original_name} {candidate_name} {claims_name}\n"
                     "  · decide\n"
                     "  · decide"
@@ -7155,13 +16796,15 @@ def _write_relational_register_relation_modules(
             definitions.append(
                 f"def {proposition_name} : Prop :=\n"
                 f"  InvariantWP.ExactRegisterRelationEdgeClosed {original_image_base} "
-                f"{candidate_image_base} region{source_index} region{target_index} "
+                f"{candidate_image_base} globalCodeTargets globalValueTargets "
+                f"region{source_index} region{target_index} "
                 f"{original_name} {candidate_name}"
             )
             definitions.append(
                 f"theorem {theorem_name} : {proposition_name} := by\n"
                 f"  apply InvariantWP.exactRegisterRelationEdgeClosed_of_checked "
-                f"{original_image_base} {candidate_image_base} region{source_index} "
+                f"{original_image_base} {candidate_image_base} globalCodeTargets "
+                f"globalValueTargets region{source_index} "
                 f"region{target_index} {original_name} {candidate_name} {source_claims}\n"
                 "  · decide\n"
                 "  · decide\n"
@@ -7187,6 +16830,8 @@ def _write_relational_register_relation_modules(
             }
             for pair_index, pair_claim in enumerate(edge["exact_output_pair_claims"]):
                 register = pair_claim["register"]
+                if register not in target_inputs:
+                    continue
                 target_relation = target_inputs[register]
                 relation_constructor = {
                     "exact": "exact",
@@ -7217,17 +16862,222 @@ def _write_relational_register_relation_modules(
                 definitions.append(
                     f"def {proposition_name} : Prop :=\n"
                     f"  InvariantWP.ExactRegisterRelationPairEdgeClosed "
-                    f"{original_image_base} {candidate_image_base} region{source_index} "
+                    f"{original_image_base} {candidate_image_base} globalCodeTargets "
+                    f"globalValueTargets region{source_index} "
                     f"region{target_index} {original_name} {candidate_name} {claim_name}"
                 )
                 definitions.append(
                     f"theorem {theorem_name} : {proposition_name} := by\n"
                     f"  apply InvariantWP.exactRegisterRelationPairEdgeClosed_of_checked "
-                    f"{original_image_base} {candidate_image_base} region{source_index} "
+                    f"{original_image_base} {candidate_image_base} globalCodeTargets "
+                    f"globalValueTargets region{source_index} "
                     f"region{target_index} {original_name} {candidate_name} {claim_name}\n"
                     "  · decide\n"
                     "  · decide\n"
                     "  · decide"
+                )
+                theorem_names.append(theorem_name)
+                proposition_names.append(proposition_name)
+        for edge_index, edge in enumerate(environment_edges):
+            source_index = int(edge["source_region_index"])
+            target_index = int(edge["target_region_index"])
+            original_name = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{source_index}"
+            )
+            candidate_name = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{source_index}"
+            )
+            proposition_name = (
+                f"registerRelationChunk{chunk_index}EnvironmentEdge{edge_index}Closed"
+            )
+            theorem_name = (
+                f"registerRelationChunk{chunk_index}EnvironmentEdge{edge_index}Checked"
+            )
+            definitions.append(
+                f"def {proposition_name} : Prop :=\n"
+                "  InvariantWP.ExternalRegisterPolicyEdgeClosed "
+                f"region{source_index} region{target_index} "
+                f"{original_name} {candidate_name}"
+            )
+            definitions.append(
+                f"theorem {theorem_name} : {proposition_name} := by\n"
+                "  apply InvariantWP.externalRegisterPolicyEdgeClosed_of_checked\n"
+                "  decide"
+            )
+            theorem_names.append(theorem_name)
+            proposition_names.append(proposition_name)
+        for edge_index, edge in enumerate(call_return_edges):
+            return_index = int(edge["source_region_index"])
+            continuation_index = int(edge["target_region_index"])
+            callsite_index = int(edge["callsite_region_index"])
+            callee_index = int(edge["callee_entry_region_index"])
+            original_caller = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{callsite_index}"
+            )
+            candidate_caller = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{callsite_index}"
+            )
+            original_return = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{return_index}"
+            )
+            candidate_return = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{return_index}"
+            )
+            proposition_name = (
+                f"registerRelationChunk{chunk_index}CallReturnEdge{edge_index}ShapeClosed"
+            )
+            theorem_name = (
+                f"registerRelationChunk{chunk_index}CallReturnEdge{edge_index}ShapeChecked"
+            )
+            definitions.append(
+                f"def {proposition_name} : Prop :=\n"
+                "  InvariantWP.CallReturnEdgeShapeClosed "
+                f"region{callee_index} region{continuation_index} "
+                f"{original_caller} {candidate_caller} "
+                f"{original_return} {candidate_return}"
+            )
+            definitions.append(
+                f"theorem {theorem_name} : {proposition_name} := by\n"
+                "  apply InvariantWP.callReturnEdgeShapeClosed_of_checked\n"
+                "  decide"
+            )
+            theorem_names.append(theorem_name)
+            proposition_names.append(proposition_name)
+        for edge_index, edge in enumerate(return_slot_edges):
+            source_index = int(edge["source_region_index"])
+            original_name = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{source_index}"
+            )
+            candidate_name = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{source_index}"
+            )
+            for claim_index, claim in enumerate(edge["return_slot_transfer_claims"]):
+                claim_name = (
+                    f"registerRelationChunk{chunk_index}ReturnSlotEdge{edge_index}"
+                    f"Claim{claim_index}"
+                )
+                proposition_name = f"{claim_name}Closed"
+                theorem_name = f"{claim_name}Checked"
+                definitions.append(
+                    f"def {claim_name} : ReturnSlotTransferClaim := {{\n"
+                    f"  source := {_lean_return_slot_offset_pair(claim['source'])}\n"
+                    f"  target := {_lean_return_slot_offset_pair(claim['target'])}\n"
+                    "  originalEsp := "
+                    f"{_lean_register_offset_witness(claim['original_esp_witness'])}\n"
+                    "  candidateEsp := "
+                    f"{_lean_register_offset_witness(claim['candidate_esp_witness'])}\n"
+                    "}"
+                )
+                definitions.append(
+                    f"def {proposition_name} : Prop :=\n"
+                    f"  ReturnSlotTransferClosed {original_name} {candidate_name} "
+                    f"{claim_name}"
+                )
+                definitions.append(
+                    f"theorem {theorem_name} : {proposition_name} := by\n"
+                    "  apply returnSlotTransferClosed_of_checked\n"
+                    "  decide"
+                )
+                theorem_names.append(theorem_name)
+                proposition_names.append(proposition_name)
+        call_push_claim_name_by_source: dict[int, str] = {}
+        for edge_index, edge in enumerate(call_push_edges):
+            source_index = int(edge["source_region_index"])
+            claim = edge["direct_call_push_claim"]
+            original_name = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{source_index}"
+            )
+            candidate_name = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{source_index}"
+            )
+            claim_name = (
+                f"registerRelationChunk{chunk_index}CallPushEdge{edge_index}Claim"
+            )
+            call_push_claim_name_by_source[source_index] = claim_name
+            proposition_name = (
+                f"registerRelationChunk{chunk_index}CallPushEdge{edge_index}Closed"
+            )
+            theorem_name = (
+                f"registerRelationChunk{chunk_index}CallPushEdge{edge_index}Checked"
+            )
+            definitions.append(
+                f"def {claim_name} : DirectCallPushClaim := {{\n"
+                f"  calleeTargetId := {int(claim['callee_target_id'])}\n"
+                f"  continuationTargetId := {int(claim['continuation_target_id'])}\n"
+                f"  originalReturnAddress := {int(claim['original_return_address'])}\n"
+                f"  candidateReturnAddress := {int(claim['candidate_return_address'])}\n"
+                "  originalStackAddress := "
+                f"{_lean_semantic_expr(claim['original_stack_address'])}\n"
+                "  candidateStackAddress := "
+                f"{_lean_semantic_expr(claim['candidate_stack_address'])}\n"
+                "}"
+            )
+            definitions.append(
+                f"def {proposition_name} : Prop :=\n"
+                f"  DirectCallPushClosed staticProofContext {original_name} "
+                f"{candidate_name} {claim_name}"
+            )
+            definitions.append(
+                f"theorem {theorem_name} : {proposition_name} := by\n"
+                "  apply directCallPushClosed_of_checked\n"
+                "  decide"
+            )
+            theorem_names.append(theorem_name)
+            proposition_names.append(proposition_name)
+        for edge_index, edge in enumerate(call_summary_edges):
+            source_index = int(edge["source_region_index"])
+            original_call = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{source_index}"
+            )
+            candidate_call = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{source_index}"
+            )
+            call_claim_name = call_push_claim_name_by_source[source_index]
+            for claim_index, claim in enumerate(
+                edge["return_slot_call_summary_claims"]
+            ):
+                return_index = int(claim["return_region_index"])
+                original_return = (
+                    f"registerRelationChunk{chunk_index}OriginalBehavior{return_index}"
+                )
+                candidate_return = (
+                    f"registerRelationChunk{chunk_index}CandidateBehavior{return_index}"
+                )
+                claim_name = (
+                    f"registerRelationChunk{chunk_index}CallSummaryEdge{edge_index}"
+                    f"Claim{claim_index}"
+                )
+                proposition_name = f"{claim_name}Closed"
+                theorem_name = f"{claim_name}Checked"
+                definitions.append(
+                    f"def {claim_name} : ReturnSlotCallSummaryClaim := {{\n"
+                    f"  source := {_lean_return_slot_offset_pair(claim['source'])}\n"
+                    f"  target := {_lean_return_slot_offset_pair(claim['target'])}\n"
+                    "  originalCallEsp := "
+                    f"{_lean_register_offset_witness(claim['original_call_witness'])}\n"
+                    "  candidateCallEsp := "
+                    f"{_lean_register_offset_witness(claim['candidate_call_witness'])}\n"
+                    "  originalReturnSlot := "
+                    f"{_lean_register_offset_witness(claim['original_return_slot_witness'])}\n"
+                    "  candidateReturnSlot := "
+                    f"{_lean_register_offset_witness(claim['candidate_return_slot_witness'])}\n"
+                    "  originalReturnOutput := "
+                    f"{_lean_register_offset_witness(claim['original_return_output_witness'])}\n"
+                    "  candidateReturnOutput := "
+                    f"{_lean_register_offset_witness(claim['candidate_return_output_witness'])}\n"
+                    f"  popBytes := {int(claim['pop_bytes'])}\n"
+                    "}"
+                )
+                definitions.append(
+                    f"def {proposition_name} : Prop :=\n"
+                    "  ReturnSlotCallSummaryClosed "
+                    f"{original_call} {candidate_call} {original_return} "
+                    f"{candidate_return} {call_claim_name} {claim_name}"
+                )
+                definitions.append(
+                    f"theorem {theorem_name} : {proposition_name} := by\n"
+                    "  apply returnSlotCallSummaryClosed_of_checked\n"
+                    "  decide"
                 )
                 theorem_names.append(theorem_name)
                 proposition_names.append(proposition_name)
@@ -7247,7 +17097,10 @@ def _write_relational_register_relation_modules(
         )
         module = f"RelationalRegisterRelationsChunk{chunk_index}"
         source = (
-            imports
+            "import StageA.RelationalComposition\n"
+            "import StageA.RelationalGlobalMappingContext\n"
+            "import StageA.RelationalStaticContextBase\n"
+            + imports
             + "\n\nnamespace StageA.GeneratedRelational\n\n"
             "open StageA.Formal StageA.Relational\n\n"
             "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
@@ -7273,8 +17126,5410 @@ def _write_relational_register_relation_modules(
             "exact_pair_edge_claims": str(sum(
                 len(edge["exact_output_pair_claims"]) for edge in pair_edges
             )),
+            "environment_policy_edges": str(len(environment_edges)),
+            "call_return_shape_edges": str(len(call_return_edges)),
+            "direct_call_push_edges": str(len(call_push_edges)),
+            "return_slot_transfer_claims": str(sum(
+                len(edge["return_slot_transfer_claims"])
+                for edge in return_slot_edges
+            )),
+            "return_slot_call_summary_claims": str(sum(
+                len(edge["return_slot_call_summary_claims"])
+                for edge in call_summary_edges
+            )),
+            "return_pop_regions": str(sum(
+                relation_by_region[index].get("return_pop_claim") is not None
+                for index in selected
+            )),
         })
     return modules
+
+
+def _external_register_policy_replay_candidate(
+    contract: dict[str, Any], edge: dict[str, Any],
+) -> bool:
+    if not edge.get("environment_barrier"):
+        return False
+    # Register-indirect imports remain indirect calls in the normalized IR.
+    # Their transition belongs to the import/environment refinement proof, not
+    # the direct external-call register-policy checker.
+    if edge.get("indirect_target_profile"):
+        return False
+    target = contract["regions"][int(edge["target_region_index"])]
+    return not target.get("input_import_relations")
+
+
+def _write_relational_segment_refinement_modules(
+    lean_dir: Path,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    memory_contracts: dict[str, Any],
+    register_relations: dict[str, Any],
+    product_graph: dict[str, Any],
+    decode_chunk_regions: list[list[int]],
+    import_register_seeds: list[dict[str, Any]],
+    segment_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    candidates = segment_candidates
+    chunk_by_region = {
+        region_index: chunk_index
+        for chunk_index, region_indices in enumerate(decode_chunk_regions)
+        for region_index in region_indices
+    }
+    product_proof_chunk_size = max(
+        1, int(os.environ.get("WINCR_STAGE_A_PRODUCT_PROOF_CHUNK", "16"))
+    )
+    decoded_control_chunk_by_node = {
+        int(candidate["node_id"]): candidate_index // product_proof_chunk_size
+        for candidate_index, candidate in enumerate(
+            product_graph["evidence"]["decoded_control_candidates"]
+        )
+    }
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        grouped.setdefault(
+            chunk_by_region[int(candidate["source_region_index"])], []
+        ).append(candidate)
+    modules: list[dict[str, Any]] = []
+    for chunk_index, selected in sorted(grouped.items()):
+        definitions: list[str] = []
+        proposition_names: list[str] = []
+        theorem_names: list[str] = []
+        for candidate in selected:
+            edge_index = int(candidate["edge_index"])
+            source_index = int(candidate["source_region_index"])
+            target_index = int(candidate["target_region_index"])
+            source_target_id = int(candidate["source_target_id"])
+            target_id = int(candidate["target_id"])
+            prefix = f"segmentRefinementEdge{edge_index}"
+            edge_name = f"{prefix}Spec"
+            local_code_targets_name = f"{prefix}LocalCodeTargetsResolved"
+            local_values_name = f"{prefix}LocalValuesResolved"
+            code_map_name = f"{prefix}CodeMapExact"
+            data_map_name = f"{prefix}DataMapExact"
+            inputs_name = f"{prefix}InputRelationsExact"
+            shape_name = f"{prefix}ShapeChecked"
+            registers_name = f"{prefix}RegisterTransferChecked"
+            transition_name = f"{prefix}TransitionChecked"
+            proposition_name = f"{prefix}Closed"
+            theorem_name = f"{prefix}Checked"
+            if candidate["certificate_profile"] in {
+                "composable_local_no_write_v1", "composable_direct_call_v1",
+                "composable_immutable_indirect_jump_v1",
+                "composable_paired_stack_word_write_v1",
+                "composable_paired_stack_word_writes_v1",
+            }:
+                direct_call = (
+                    candidate["certificate_profile"] == "composable_direct_call_v1"
+                )
+                paired_stack_write = (
+                    candidate["certificate_profile"]
+                    == "composable_paired_stack_word_write_v1"
+                )
+                paired_stack_writes = (
+                    candidate["certificate_profile"]
+                    == "composable_paired_stack_word_writes_v1"
+                )
+                immutable_indirect_jump = (
+                    candidate["certificate_profile"] ==
+                    "composable_immutable_indirect_jump_v1"
+                )
+                if immutable_indirect_jump:
+                    original_normalized_behavior = (
+                        f"productNode{source_index}OriginalNormalized"
+                    )
+                    candidate_normalized_behavior = (
+                        f"productNode{source_index}CandidateNormalized"
+                    )
+                    original_normalized_checked = (
+                        f"productNode{source_index}OriginalNormalizedChecked"
+                    )
+                    candidate_normalized_checked = (
+                        f"productNode{source_index}CandidateNormalizedChecked"
+                    )
+                    normalized_x87_rewrites = (
+                        f"productNode{source_index}OriginalNormalizedX87, "
+                        f"productNode{source_index}CandidateNormalizedX87"
+                    )
+                else:
+                    original_normalized_behavior = (
+                        f"region{source_index}NormalizedBehavior"
+                    )
+                    candidate_normalized_behavior = original_normalized_behavior
+                    original_normalized_checked = (
+                        f"region{source_index}OriginalNormalized"
+                    )
+                    candidate_normalized_checked = (
+                        f"region{source_index}CandidateNormalized"
+                    )
+                    normalized_x87_rewrites = (
+                        f"region{source_index}NormalizedX87"
+                    )
+                composition_name = f"{prefix}RegisterCompositionChecked"
+                state_name = f"{prefix}StateTransferChecked"
+                import_transfer_name = f"{prefix}ImportTransferChecked"
+                dynamic_transfer_name = f"{prefix}DynamicTransferChecked"
+                guard_claim_name = f"{prefix}GuardClaim"
+                import_claim_definitions: list[str] = []
+                import_transfer_facts: list[str] = []
+                import_fact_names: list[str] = []
+                for claim_index, claim in enumerate(
+                    candidate.get("import_transfer_claims", [])
+                ):
+                    claim_name = f"{prefix}ImportClaim{claim_index}"
+                    fact_name = f"{prefix}ImportFact{claim_index}"
+                    import_fact_names.append(fact_name)
+                    if claim["kind"] == "seed":
+                        import_claim_definitions.append(
+                            f"def {claim_name} : ImportRegisterSeedClaim := "
+                            + _lean_import_register_seed_claim(claim)
+                        )
+                        import_transfer_facts.append(
+                            f"  have {fact_name} := importRegisterSeedOutputHolds_of_checked\n"
+                            f"    staticProofContext world region{source_index}.inputInvariant\n"
+                            f"    region{source_index}NormalizedBehavior "
+                            f"region{source_index}NormalizedBehavior {claim_name} (by decide)\n"
+                            "    originalState candidateState related"
+                        )
+                    else:
+                        import_claim_definitions.append(
+                            f"def {claim_name} : ImportRegisterPreserveClaim := {{\n"
+                            f"  imported := {_lean_external_target(claim['import'])}\n"
+                            f"  sourceOriginalRegister := .{claim['source_original_register']}\n"
+                            f"  sourceCandidateRegister := .{claim['source_candidate_register']}\n"
+                            f"  targetOriginalRegister := .{claim['target_original_register']}\n"
+                            f"  targetCandidateRegister := .{claim['target_candidate_register']}\n"
+                            "}"
+                        )
+                        import_transfer_facts.append(
+                            f"  have {fact_name} := importRegisterPreserveOutputHolds_of_checked\n"
+                            f"    staticProofContext world region{source_index}.inputInvariant\n"
+                            f"    region{target_index}.inputInvariant "
+                            f"region{source_index}NormalizedBehavior\n"
+                            f"    region{source_index}NormalizedBehavior {claim_name} (by decide)\n"
+                            "    originalState candidateState related"
+                        )
+                dynamic_claim_definitions: list[str] = []
+                dynamic_transfer_facts: list[str] = []
+                dynamic_fact_names: list[str] = []
+                for claim_index, claim in enumerate(
+                    candidate.get("dynamic_transfer_claims", [])
+                ):
+                    claim_name = f"{prefix}DynamicClaim{claim_index}"
+                    fact_name = f"{prefix}DynamicFact{claim_index}"
+                    dynamic_fact_names.append(fact_name)
+                    if claim["kind"] == "nullable_pointer":
+                        dynamic_claim_definitions.append(
+                            f"def {claim_name} : DynamicRegisterRangeNextClaim := {{\n"
+                            f"  sourceRelation := "
+                            f"{_lean_dynamic_range_relation(claim['source_relation'])}\n"
+                            f"  targetRelation := "
+                            f"{_lean_dynamic_range_relation(claim['target_relation'])}\n"
+                            f"  pointerOffset := {int(claim['pointer_offset'])}\n"
+                            "}"
+                        )
+                        dynamic_transfer_facts.append(
+                            f"  have {fact_name} := "
+                            "dynamicRegisterRangeNextOutputHolds_of_checked\n"
+                            f"    staticProofContext world region{source_index}.inputInvariant\n"
+                            f"    region{target_index}.inputInvariant "
+                            f"region{source_index}NormalizedBehavior\n"
+                            f"    region{source_index}NormalizedBehavior "
+                            f"{edge_name}.originalGuard {edge_name}.candidateGuard\n"
+                            f"    {claim_name} (by decide) originalState candidateState "
+                            "related guardTrue"
+                        )
+                    elif claim["kind"] == "static_pointer_seed":
+                        dynamic_claim_definitions.append(
+                            f"def {claim_name} : StaticDynamicPointerSeedClaim := {{\n"
+                            f"  slot := {_lean_static_dynamic_pointer_slot(claim['slot'])}\n"
+                            f"  targetRelation := "
+                            f"{_lean_dynamic_range_relation(claim['target_relation'])}\n"
+                            "}"
+                        )
+                        dynamic_transfer_facts.append(
+                            f"  have {fact_name} := "
+                            "staticDynamicPointerSeedOutputHolds_of_checked\n"
+                            f"    staticProofContext world region{source_index}.inputInvariant\n"
+                            f"    region{target_index}.inputInvariant "
+                            f"region{source_index}NormalizedBehavior\n"
+                            f"    region{source_index}NormalizedBehavior "
+                            f"{edge_name}.originalGuard {edge_name}.candidateGuard\n"
+                            f"    {claim_name} (by decide) originalState candidateState "
+                            "related guardTrue"
+                        )
+                    else:
+                        dynamic_claim_definitions.append(
+                            f"def {claim_name} : DynamicRegisterRangePreserveClaim := {{\n"
+                            f"  sourceRelation := "
+                            f"{_lean_dynamic_range_relation(claim['source_relation'])}\n"
+                            f"  targetRelation := "
+                            f"{_lean_dynamic_range_relation(claim['target_relation'])}\n"
+                            "}"
+                        )
+                        dynamic_transfer_facts.append(
+                            f"  have {fact_name} := "
+                            "dynamicRegisterRangePreserveOutputHolds_of_checked\n"
+                            f"    staticProofContext world region{source_index}.inputInvariant\n"
+                            f"    region{target_index}.inputInvariant "
+                            f"region{source_index}NormalizedBehavior\n"
+                            f"    region{source_index}NormalizedBehavior {claim_name} (by decide)\n"
+                            "    originalState candidateState related"
+                        )
+                guard_claim = candidate.get("guard_relation_claim")
+                if (
+                    guard_claim is not None
+                    and guard_claim["profile"] == "related_word_zero_guard_v1"
+                ):
+                    import_claim_definitions.append(
+                        f"def {guard_claim_name} : RelatedWordZeroGuardClaim := {{\n"
+                        f"  originalRegister := .{guard_claim['original_register']}\n"
+                        f"  candidateRegister := .{guard_claim['candidate_register']}\n"
+                        f"  valueRelation := .{_lean_relation_constructor(guard_claim['value_relation'])}\n"
+                        f"  notCount := {int(guard_claim['not_count'])}\n"
+                        "}"
+                    )
+                if (
+                    guard_claim is not None
+                    and guard_claim["profile"] == "static_dynamic_pointer_guard_v1"
+                ):
+                    import_claim_definitions.append(
+                        f"def {guard_claim_name} : StaticDynamicPointerGuardClaim := {{\n"
+                        f"  slot := {_lean_static_dynamic_pointer_slot(guard_claim['slot'])}\n"
+                        f"  kind := .{guard_claim['kind']}\n"
+                        "}"
+                    )
+                if (
+                    guard_claim is not None
+                    and guard_claim["profile"] == "paired_stack_read_guard_v1"
+                ):
+                    import_claim_definitions.append(
+                        f"def {guard_claim_name} : StackWordZeroGuardClaim := {{\n"
+                        f"  window := {_lean_stack_window(guard_claim['window'])}\n"
+                        f"  offset := {int(guard_claim['offset'])}\n"
+                        f"  notCount := {int(guard_claim['not_count'])}\n"
+                        "}"
+                        )
+                if guard_claim is None:
+                    guard_agreement_setup = ""
+                elif guard_claim["profile"] == "related_word_zero_guard_v1":
+                    guard_agreement_setup = (
+                        "  have guardAgreement := "
+                        "relatedWordZeroGuard_eval_equal_of_checked "
+                        "staticProofContext world region"
+                        f"{source_index}.inputInvariant {edge_name}.originalGuard "
+                        f"{edge_name}.candidateGuard {guard_claim_name} (by decide) "
+                        "originalState candidateState related\n"
+                    )
+                elif guard_claim["profile"] == "paired_stack_read_guard_v1":
+                    guard_agreement_setup = (
+                        "  have guardAgreement := "
+                        "stackWordZeroGuard_eval_equal_of_checked\n"
+                        f"    staticProofContext world region{source_index}.inputInvariant\n"
+                        f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
+                        f"{guard_claim_name} (by decide)\n"
+                        "    originalState candidateState related\n"
+                    )
+                elif guard_claim["profile"] == "static_dynamic_pointer_guard_v1":
+                    guard_agreement_setup = (
+                        "  have guardAgreement := "
+                        "staticDynamicPointerGuardsAgree_of_checked\n"
+                        f"    staticProofContext world region{source_index}.inputInvariant\n"
+                        f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
+                        f"{guard_claim_name} (by decide)\n"
+                        "    originalState candidateState related\n"
+                    )
+                else:
+                    dynamic_guard_claim_name = (
+                        f"{prefix}DynamicClaim{int(guard_claim['claim_index'])}"
+                    )
+                    guard_agreement_setup = (
+                        "  have guardAgreement := "
+                        "dynamicRegisterRangeNextGuardsAgree_of_checked\n"
+                        f"    staticProofContext world region{source_index}.inputInvariant\n"
+                        f"    region{target_index}.inputInvariant "
+                        f"region{source_index}NormalizedBehavior\n"
+                        f"    region{source_index}NormalizedBehavior "
+                        f"{edge_name}.originalGuard {edge_name}.candidateGuard\n"
+                        f"    {dynamic_guard_claim_name} (by decide) originalState "
+                        "candidateState related\n"
+                    )
+                guard_expected = (
+                    "true" if candidate.get("original_guard") is not None
+                    and candidate.get("guard_relation_claim") is not None
+                    and register_relations["edges"][edge_index].get("kind")
+                        == "branch_taken"
+                    else "false"
+                )
+                if guard_claim is None:
+                    guard_shape_setup = (
+                        "  refine ⟨rfl, ?_⟩\n"
+                        "  intro guard\n"
+                    )
+                    guard_shape_finish = ""
+                else:
+                    guard_shape_setup = (
+                        guard_agreement_setup
+                        + "  refine ⟨guardAgreement, ?_⟩\n"
+                        "  intro guard\n"
+                        "  have candidateGuard : "
+                        f"{edge_name}.candidateGuard.eval candidateState = true := by\n"
+                        "    rw [← guardAgreement]\n"
+                        "    exact guard\n"
+                        "  have originalCondition : "
+                        f"region{source_index}OutcomeCondition.eval originalState = "
+                        f"{guard_expected} := by\n"
+                        "    exact normalizedBranchCondition_eval_of_guard_true "
+                        f"region{source_index}OutcomeCondition {edge_name}.originalGuard "
+                        f"{guard_expected} originalState (by decide) guard\n"
+                        "  have candidateCondition : "
+                        f"region{source_index}OutcomeCondition.eval candidateState = "
+                        f"{guard_expected} := by\n"
+                        "    exact normalizedBranchCondition_eval_of_guard_true "
+                        f"region{source_index}OutcomeCondition {edge_name}.candidateGuard "
+                        f"{guard_expected} candidateState (by decide) candidateGuard\n"
+                    )
+                    guard_shape_finish = (
+                        "\n  exact ⟨originalCondition, candidateCondition, "
+                        "originalCondition.trans candidateCondition.symm⟩"
+                    )
+                flag_bits = contract["regions"][target_index].get(
+                    "flag_inputs", list(FLAG_BITS)
+                )
+                if flag_bits == []:
+                    flag_proof = "  · rfl"
+                else:
+                    flag_proof = (
+                        "  · apply flagsRelated_cons_of_eq\n"
+                        "    · simp only [NormalizedSymbolicBehavior.eval_eflags]\n"
+                        "      rw [evalNormalizedFlags_extract_df, "
+                        "evalNormalizedFlags_extract_df]\n"
+                        f"      exact flagsRelated_of_contains region{source_index}.flagInputs "
+                        "originalState.eflags candidateState.eflags inputFlags (by decide)\n"
+                        "    · rfl"
+                    )
+                if contract["regions"][target_index].get("stack_windows"):
+                    stack_transfer_rows = ", ".join(
+                        _lean_stack_window_transfer_claim(claim)
+                        for claim in candidate["stack_transfer_claims"]
+                    )
+                    stack_window_setup = (
+                        "  have outputStackWindows := "
+                        "stackWindowsRelated_after_affine_of_checked staticProofContext world "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant "
+                        f"{original_normalized_behavior} "
+                        f"{candidate_normalized_behavior} [{stack_transfer_rows}] "
+                        "originalState candidateState stackRangesValid inputStackWindows "
+                        "(by decide)\n"
+                    )
+                    stack_window_proof = "  · exact outputStackWindows\n"
+                else:
+                    stack_window_setup = ""
+                    stack_window_proof = (
+                        f"  · simp [RegionRelation.inputInvariant, region{target_index}, "
+                        "stackWindowsRelated]\n"
+                    )
+                target_stack_claims = contract["regions"][target_index].get(
+                    "stack_address_separation_claims", []
+                )
+                if target_stack_claims:
+                    claim_rows = ", ".join(
+                        _lean_stack_address_separation_claim(claim)
+                        for claim in target_stack_claims
+                    )
+                    stack_separation_proof = (
+                        "  · exact addressSeparationsRelated_of_stack_windows "
+                        "staticProofContext world "
+                        f"region{target_index}.inputInvariant [{claim_rows}] "
+                        f"({original_normalized_behavior}.eval originalState).registers "
+                        f"({candidate_normalized_behavior}.eval candidateState).registers "
+                        "stackRangesValid outputStackWindows (by decide)\n"
+                    )
+                else:
+                    stack_separation_proof = (
+                        f"  · simp [RegionRelation.inputInvariant, region{target_index}, "
+                        "addressSeparationsRelated]\n"
+                    )
+                dynamic_register_outputs = candidate.get(
+                    "dynamic_register_output_claims", []
+                )
+                if not dynamic_register_outputs:
+                    register_transfer_proof = (
+                        f"  · rw [RegionRelation.inputInvariant, ← {composition_name}]\n"
+                        "    exact InvariantWP.registerTransferUnderStateRel_of_checked "
+                        f"staticProofContext world region{source_index} "
+                        f"{original_normalized_behavior} "
+                        f"{candidate_normalized_behavior} "
+                        f"registerRelationChunk{chunk_index}Region{source_index}OutputClaims "
+                        "(by decide) (by decide) originalState candidateState "
+                        "relatedForRegisterTransfer\n"
+                    )
+                else:
+                    ordinary_fact_setup = (
+                        "  have ordinaryRegisterFacts := "
+                        "InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims\n"
+                        f"    staticProofContext world region{source_index} "
+                        f"region{source_index}NormalizedBehavior "
+                        f"region{source_index}NormalizedBehavior\n"
+                        f"    registerRelationChunk{chunk_index}Region{source_index}OutputClaims "
+                        "(by decide) originalState candidateState relatedForRegisterTransfer\n"
+                        "  simp only [registerRelationsHold, List.all_eq_true] "
+                        "at ordinaryRegisterFacts\n"
+                    )
+                    output_facts: dict[tuple[str, str, str], str] = {}
+                    ordinary_fact_rows: list[str] = []
+                    for fact_index, output_claim in enumerate(
+                        register_relations["regions"][source_index].get(
+                            "output_claims", []
+                        )
+                    ):
+                        output = output_claim.get("output")
+                        if not isinstance(output, dict):
+                            continue
+                        fact_name = f"ordinaryRegisterFact{fact_index}"
+                        ordinary_fact_rows.append(
+                            f"  have {fact_name} := ordinaryRegisterFacts "
+                            f"{_lean_register_relation_pair(output)} (by decide)\n"
+                        )
+                        output_facts[(
+                            output["original"], output["candidate"],
+                            output["relation"],
+                        )] = fact_name
+                    dynamic_fact_rows: list[str] = []
+                    for fact_index, output_claim in enumerate(dynamic_register_outputs):
+                        dynamic_claim = output_claim["claim"]
+                        output = output_claim["output"]
+                        word_fact = f"dynamicRegisterWordFact{fact_index}"
+                        if dynamic_claim["kind"] == "static_pointer_zero":
+                            claim_name = f"{prefix}StaticZeroOutputClaim{fact_index}"
+                            dynamic_claim_definitions.append(
+                                f"def {claim_name} : "
+                                "StaticDynamicPointerZeroOutputClaim := {\n"
+                                f"  slot := {_lean_static_dynamic_pointer_slot(dynamic_claim['slot'])}\n"
+                                f"  output := {_lean_register_relation_pair(output)}\n"
+                                "}"
+                            )
+                            dynamic_fact_rows.append(
+                                f"  have {word_fact} := "
+                                "staticDynamicPointerZeroOutputRelated_of_checked\n"
+                                f"    staticProofContext world region{source_index}.inputInvariant\n"
+                                f"    region{source_index}NormalizedBehavior "
+                                f"region{source_index}NormalizedBehavior\n"
+                                f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
+                                f"{claim_name} (by decide)\n"
+                                "    originalState candidateState "
+                                "relatedForRegisterTransfer guardTrue\n"
+                            )
+                            output_facts[(
+                                output["original"], output["candidate"],
+                                output["relation"],
+                            )] = word_fact
+                            continue
+                        claim_index = candidate["dynamic_transfer_claims"].index(
+                            dynamic_claim
+                        )
+                        claim_name = f"{prefix}DynamicClaim{claim_index}"
+                        range_fact = f"dynamicRegisterRangeFact{fact_index}"
+                        range_theorem = (
+                            "staticDynamicPointerSeedOutputHolds_of_checked"
+                            if dynamic_claim["kind"] == "static_pointer_seed"
+                            else "dynamicRegisterRangeNextOutputHolds_of_checked"
+                        )
+                        dynamic_fact_rows.append(
+                            f"  have {range_fact} := "
+                            f"{range_theorem}\n"
+                            f"    staticProofContext world region{source_index}.inputInvariant\n"
+                            f"    region{target_index}.inputInvariant "
+                            f"region{source_index}NormalizedBehavior\n"
+                            f"    region{source_index}NormalizedBehavior "
+                            f"{edge_name}.originalGuard {edge_name}.candidateGuard\n"
+                            f"    {claim_name} (by decide) originalState candidateState "
+                            "relatedForRegisterTransfer guardTrue\n"
+                            f"  have {word_fact} := "
+                            "dynamicRegisterRangeHolds_relatedWord_of_zero_offsets\n"
+                            f"    staticProofContext world {claim_name}.targetRelation\n"
+                            f"    (region{source_index}NormalizedBehavior.eval "
+                            "originalState).registers\n"
+                            f"    (region{source_index}NormalizedBehavior.eval "
+                            "candidateState).registers\n"
+                            f"    relatedForRegisterTransfer.1 (by decide) (by decide) "
+                            f"{range_fact}\n"
+                        )
+                        output_facts[(
+                            output["original"], output["candidate"],
+                            output["relation"],
+                        )] = word_fact
+                    target_fact_names = [
+                        output_facts[(
+                            output["original"], output["candidate"],
+                            output["relation"],
+                        )]
+                        for output in contract["regions"][target_index].get(
+                            "input_relations", []
+                        )
+                    ]
+                    register_transfer_body = (
+                        ordinary_fact_setup
+                        + "".join(ordinary_fact_rows)
+                        + "".join(dynamic_fact_rows)
+                        + f"  simpa [RegionRelation.inputInvariant, region{target_index}, "
+                        "registerRelationsHold] using (⟨"
+                        + ", ".join(target_fact_names)
+                        + "⟩)\n"
+                    )
+                    register_transfer_proof = (
+                        "  · "
+                        + register_transfer_body.lstrip().replace("\n  ", "\n    ")
+                    )
+                direct_call_shape_definition = ""
+                direct_call_transition_definition = ""
+                paired_stack_write_shape_definition = ""
+                paired_stack_write_transition_definition = ""
+                immutable_indirect_jump_shape_definition = ""
+                if direct_call:
+                    source_window = _lean_stack_window(
+                        candidate["source_stack_window"]
+                    )
+                    original_return = int(candidate["original_return_address"])
+                    candidate_return = int(candidate["candidate_return_address"])
+                    continuation_target = int(candidate["continuation_target_id"])
+                    direct_call_shape_definition = (
+                        f"theorem {shape_name} :\n"
+                        "    DirectCallSegmentShapeClosed staticProofContext "
+                        f"{edge_name} region{source_index}.inputInvariant\n"
+                        f"      {source_window} (BitVec.ofNat 32 {original_return}) "
+                        f"(BitVec.ofNat 32 {candidate_return})\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} := by\n"
+                        "  unfold DirectCallSegmentShapeClosed\n"
+                        f"  rw [{local_code_targets_name}, {local_values_name}]\n"
+                        "  intro world originalState candidateState related\n"
+                        "  refine ⟨rfl, ?_⟩\n"
+                        "  intro guard\n"
+                        f"  refine ⟨region{source_index}NormalizedBehavior.eval originalState, "
+                        f"region{source_index}NormalizedBehavior.eval candidateState, "
+                        "?_, ?_, ?_⟩\n"
+                        f"  · simp [evalBehavior, region{source_index}OriginalNormalized]\n"
+                        f"  · simp [evalBehavior, region{source_index}CandidateNormalized]\n"
+                        "  simp [NormalizedSymbolicBehavior.eval, "
+                        f"region{source_index}NormalizedWrites, evalNormalizedWrites,\n"
+                        f"    originalBehavior{source_index}, candidateBehavior{source_index},\n"
+                        f"    region{source_index}NormalizedOutcome, "
+                        f"NormalizedOutcomeExpr.eval,\n    {edge_name}, "
+                        "PureOutcome.segmentExitFor, PureOutcome.segmentExit, outcomesRelated, "
+                        "StageA.Formal.Expr.eval]\n"
+                    )
+                    direct_call_transition_definition = (
+                        f"theorem {transition_name} :\n"
+                        f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} :=\n"
+                        "  segmentTransitionClosed_of_direct_call staticProofContext "
+                        f"{edge_name} region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    {source_window} (BitVec.ofNat 32 {original_return}) "
+                        f"(BitVec.ofNat 32 {candidate_return})\n"
+                        f"    originalBehavior{source_index} candidateBehavior{source_index} "
+                        f"region{source_index}.targets region{source_index}.values\n"
+                        f"    {local_code_targets_name} {local_values_name} "
+                        "staticProofContextChecked (by decide) (by decide)\n"
+                        "    (by\n"
+                        "      intro world\n"
+                        "      apply codeTargetIdAddresses_wordRelated staticProofContext world "
+                        f"{continuation_target}\n"
+                        f"        (BitVec.ofNat 32 {original_return}) "
+                        f"(BitVec.ofNat 32 {candidate_return})\n"
+                        "      · decide\n"
+                        "      · decide)\n"
+                        f"    (by decide) (by decide) {shape_name} {state_name}"
+                    )
+                elif paired_stack_write:
+                    stack_claim_name = f"{prefix}PairedStackWriteClaim"
+                    stack_claim = candidate["paired_stack_write_claim"]
+                    assert isinstance(stack_claim, dict)
+                    paired_stack_write_shape_definition = (
+                        f"def {stack_claim_name} : PairedStackWordWriteClaim := "
+                        f"{_lean_paired_stack_word_write_claim(stack_claim)}\n\n"
+                        f"theorem {shape_name} :\n"
+                        "    PairedStackWordWriteSegmentShapeClosed staticProofContext "
+                        f"{edge_name} region{source_index}.inputInvariant {stack_claim_name}\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} := by\n"
+                        "  unfold PairedStackWordWriteSegmentShapeClosed\n"
+                        f"  rw [{local_code_targets_name}, {local_values_name}]\n"
+                        "  intro world originalState candidateState related\n"
+                        + guard_shape_setup
+                        + f"  refine ⟨region{source_index}NormalizedBehavior.eval originalState, "
+                        f"region{source_index}NormalizedBehavior.eval candidateState, "
+                        "?_, ?_, ?_⟩\n"
+                        f"  · simp [evalBehavior, region{source_index}OriginalNormalized]\n"
+                        f"  · simp [evalBehavior, region{source_index}CandidateNormalized]\n"
+                        "  simp [NormalizedSymbolicBehavior.eval, "
+                        f"region{source_index}NormalizedWrites, evalNormalizedWrites,\n"
+                        f"    originalBehavior{source_index}, candidateBehavior{source_index},\n"
+                        f"    region{source_index}NormalizedOutcome, "
+                        + ("" if guard_claim is None else
+                           f"region{source_index}OutcomeCondition, ")
+                        + "NormalizedOutcomeExpr.eval,\n"
+                        f"    {stack_claim_name}, PairedStackWordWriteClaim.originalAddress,\n"
+                        "    PairedStackWordWriteClaim.candidateAddress, "
+                        f"{edge_name}, PureOutcome.segmentExitFor,\n"
+                        "    PureOutcome.segmentExit, outcomesRelated, StageA.Formal.Expr.eval]\n"
+                        + guard_shape_finish
+                    )
+                    paired_stack_write_transition_definition = (
+                        f"theorem {transition_name} :\n"
+                        f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} :=\n"
+                        "  segmentTransitionClosed_of_paired_stack_word_write "
+                        f"staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    {stack_claim_name} originalBehavior{source_index} "
+                        f"candidateBehavior{source_index}\n"
+                        f"    region{source_index}NormalizedBehavior "
+                        f"region{source_index}NormalizedBehavior\n"
+                        f"    region{source_index}.targets region{source_index}.values\n"
+                        f"    {local_code_targets_name} {local_values_name} "
+                        "staticProofContextChecked\n"
+                        f"    (by decide) (by decide) (by decide) (by decide) "
+                        f"{shape_name} {state_name}"
+                    )
+                elif paired_stack_writes:
+                    stack_claim_name = f"{prefix}PairedStackWritesClaim"
+                    stack_claim = candidate["paired_stack_writes_claim"]
+                    assert isinstance(stack_claim, dict)
+                    paired_stack_write_shape_definition = (
+                        f"def {stack_claim_name} : PairedStackWordWritesClaim := "
+                        f"{_lean_paired_stack_word_writes_claim(stack_claim)}\n\n"
+                        f"theorem {shape_name} :\n"
+                        "    PairedStackWordWritesSegmentShapeClosed staticProofContext "
+                        f"{edge_name} region{source_index}.inputInvariant {stack_claim_name}\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} := by\n"
+                        "  unfold PairedStackWordWritesSegmentShapeClosed\n"
+                        f"  rw [{local_code_targets_name}, {local_values_name}]\n"
+                        "  intro world originalState candidateState related\n"
+                        + guard_shape_setup
+                        + f"  refine ⟨region{source_index}NormalizedBehavior.eval originalState, "
+                        f"region{source_index}NormalizedBehavior.eval candidateState, "
+                        "?_, ?_, ?_⟩\n"
+                        f"  · simp [evalBehavior, region{source_index}OriginalNormalized]\n"
+                        f"  · simp [evalBehavior, region{source_index}CandidateNormalized]\n"
+                        "  simp [NormalizedSymbolicBehavior.eval, "
+                        f"region{source_index}NormalizedWrites, evalNormalizedWrites,\n"
+                        f"    originalBehavior{source_index}, candidateBehavior{source_index},\n"
+                        f"    region{source_index}NormalizedOutcome, "
+                        + ("" if guard_claim is None else
+                           f"region{source_index}OutcomeCondition, ")
+                        + "NormalizedOutcomeExpr.eval,\n"
+                        f"    {stack_claim_name}, "
+                        "PairedStackWordWritesClaim.originalWrites,\n"
+                        "    PairedStackWordWritesClaim.candidateWrites, "
+                        "PairedStackWordWriteItem.originalAddress,\n"
+                        "    PairedStackWordWriteItem.candidateAddress, "
+                        f"{edge_name}, PureOutcome.segmentExitFor,\n"
+                        "    PureOutcome.segmentExit, outcomesRelated, "
+                        "pairedStackWordAddress, StageA.Formal.Expr.eval]\n"
+                        + guard_shape_finish
+                    )
+                    paired_stack_write_transition_definition = (
+                        f"theorem {transition_name} :\n"
+                        f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} :=\n"
+                        "  segmentTransitionClosed_of_paired_stack_word_writes "
+                        f"staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    {stack_claim_name} originalBehavior{source_index} "
+                        f"candidateBehavior{source_index}\n"
+                        f"    region{source_index}NormalizedBehavior "
+                        f"region{source_index}NormalizedBehavior\n"
+                        f"    region{source_index}.targets region{source_index}.values\n"
+                        f"    {local_code_targets_name} {local_values_name} "
+                        "staticProofContextChecked\n"
+                        f"    (by decide) (by decide) (by decide) (by decide) "
+                        f"{shape_name} {state_name}"
+                    )
+                elif immutable_indirect_jump:
+                    target_closed = (
+                        f"productNode{source_index}ImmutableIndirectJumpClosed"
+                    )
+                    immutable_indirect_jump_shape_definition = (
+                        f"theorem {shape_name} :\n"
+                        "    NoWriteSegmentShapeClosed staticProofContext "
+                        f"{edge_name} region{source_index}.inputInvariant\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} := by\n"
+                        "  unfold NoWriteSegmentShapeClosed\n"
+                        f"  rw [{local_code_targets_name}, {local_values_name}]\n"
+                        "  intro world originalState candidateState related\n"
+                        f"  have indirectTargets := {target_closed} world "
+                        "originalState candidateState related\n"
+                        "  refine ⟨rfl, ?_⟩\n"
+                        "  intro _guard\n"
+                        f"  refine ⟨{original_normalized_behavior}.eval originalState, "
+                        f"{candidate_normalized_behavior}.eval candidateState, "
+                        "?_, ?_, ?_, ?_, ?_, ?_, ?_⟩\n"
+                        f"  · simp [evalBehavior, {original_normalized_checked}]\n"
+                        f"  · simp [evalBehavior, {candidate_normalized_checked}]\n"
+                        "  · simp [NormalizedSymbolicBehavior.eval, "
+                        f"{original_normalized_behavior}WritesEmpty, "
+                        "evalNormalizedWrites]\n"
+                        "  · simp [NormalizedSymbolicBehavior.eval, "
+                        f"{candidate_normalized_behavior}WritesEmpty, "
+                        "evalNormalizedWrites]\n"
+                        "  · simp only [NormalizedSymbolicBehavior.eval_outcome]\n"
+                        "    rw [indirectTargets.1]\n"
+                        f"    decide\n"
+                        "  · simp only [NormalizedSymbolicBehavior.eval_outcome]\n"
+                        "    rw [indirectTargets.2]\n"
+                        f"    decide\n"
+                        "  · simp only [NormalizedSymbolicBehavior.eval_outcome]\n"
+                        "    rw [indirectTargets.1, indirectTargets.2]\n"
+                        "    decide"
+                    )
+                definitions.extend([
+                    *import_claim_definitions,
+                    *dynamic_claim_definitions,
+                    (
+                        f"def {edge_name} : RelationalSegmentEdge := {{\n"
+                        f"  sourceTargetId := {source_target_id}\n"
+                        f"  exit := .internal {target_id}\n"
+                        f"  originalSpan := region{source_index}.original\n"
+                        f"  candidateSpan := region{source_index}.candidate\n"
+                        "  localCodeTargetIds := ["
+                        + ", ".join(
+                            str(item) for item in candidate["local_code_target_ids"]
+                        )
+                        + "]\n  localValueTargetIds := ["
+                        + ", ".join(
+                            str(item) for item in candidate["local_value_target_ids"]
+                        )
+                        + "]\n"
+                        f"  originalGuard := {_lean_semantic_bool_expr(candidate['original_guard'])}\n"
+                        f"  candidateGuard := {_lean_semantic_bool_expr(candidate['candidate_guard'])}\n"
+                        "}"
+                    ),
+                    (
+                        f"theorem {local_code_targets_name} :\n"
+                        f"    staticProofContext.codeMap.resolveIds "
+                        f"{edge_name}.localCodeTargetIds = some region{source_index}.targets := "
+                        "by decide"
+                    ),
+                    (
+                        f"theorem {local_values_name} :\n"
+                        f"    staticProofContext.dataMap.resolveIds "
+                        f"{edge_name}.localValueTargetIds = some region{source_index}.values := "
+                        "by decide"
+                    ),
+                    (
+                        f"theorem {composition_name} : region{source_index}.outputRelations = "
+                        f"region{target_index}.inputRelations := by decide"
+                    ),
+                    direct_call_shape_definition
+                    or paired_stack_write_shape_definition
+                    or immutable_indirect_jump_shape_definition
+                    or (
+                        f"theorem {shape_name} :\n"
+                        f"    NoWriteSegmentShapeClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant\n"
+                        f"      originalBehavior{source_index} candidateBehavior{source_index} := by\n"
+                        "  unfold NoWriteSegmentShapeClosed\n"
+                        f"  rw [{local_code_targets_name}, {local_values_name}]\n"
+                        "  intro world originalState candidateState related\n"
+                        + guard_shape_setup
+                        + f"  refine ⟨region{source_index}NormalizedBehavior.eval originalState, "
+                        f"region{source_index}NormalizedBehavior.eval candidateState, ?_, ?_, ?_⟩\n"
+                        f"  · simp [evalBehavior, region{source_index}OriginalNormalized]\n"
+                        f"  · simp [evalBehavior, region{source_index}CandidateNormalized]\n"
+                        "  simp [NormalizedSymbolicBehavior.eval, "
+                        f"region{source_index}NormalizedWrites,\n"
+                        f"    region{source_index}OriginalWritesEmpty, evalNormalizedWrites, "
+                        f"region{source_index}NormalizedOutcome,\n"
+                        + ("" if guard_claim is None else
+                           f"    region{source_index}OutcomeCondition,\n")
+                        + f"    NormalizedOutcomeExpr.eval, {edge_name}, "
+                        "PureOutcome.segmentExitFor, PureOutcome.segmentExit, "
+                        "outcomesRelated]"
+                        + guard_shape_finish
+                    ),
+                    (
+                        f"theorem {state_name} :\n"
+                        f"    NoWriteSegmentStateTransferClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant region{target_index}.inputInvariant\n"
+                        f"      originalBehavior{source_index} candidateBehavior{source_index} := by\n"
+                        "  unfold NoWriteSegmentStateTransferClosed\n"
+                        f"  rw [{local_code_targets_name}]\n"
+                        "  intro world originalState candidateState originalResult candidateResult related\n"
+                        "    originalEval candidateEval guardTrue\n"
+                        f"  simp [evalBehavior, {original_normalized_checked}] at originalEval\n"
+                        f"  simp [evalBehavior, {candidate_normalized_checked}] at candidateEval\n"
+                        "  subst originalResult\n"
+                        "  subst candidateResult\n"
+                        "  have relatedForRegisterTransfer := related\n"
+                        "  rcases related with ⟨_worldStatic, stackRangesValid, _stackMemory, "
+                        "_importsStatic, _importsComplete, _importsMemory, _originalImmutable, _candidateImmutable, "
+                        "relatedCore, _importRegisters⟩\n"
+                        "  rcases relatedCore with ⟨inputRegisters, inputBounds, inputSeparations, "
+                        "inputStackWindows, inputMemory, _inputDynamicWords, inputUndefined, inputX87, inputFlags, "
+                        "inputFsBase⟩\n"
+                        + stack_window_setup
+                        + "  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩\n"
+                        + register_transfer_proof
+                        + f"  · simp [RegionRelation.inputInvariant, region{target_index}, boundsRelated]\n"
+                        + stack_separation_proof
+                        + stack_window_proof
+                        +
+                        "  · simp only [RelationalBehavior.nextMachineState, "
+                        "NormalizedSymbolicBehavior.eval_x87, "
+                        f"{normalized_x87_rewrites}]\n"
+                        "    rcases originalState with "
+                        "⟨originalRegisters, originalMemory, originalUndefined, originalX87, "
+                        "originalFlags, originalFsBase⟩\n"
+                        "    rcases candidateState with "
+                        "⟨candidateRegisters, candidateMemory, candidateUndefined, candidateX87, "
+                        "candidateFlags, candidateFsBase⟩\n"
+                        "    change originalX87 = candidateX87 at inputX87\n"
+                        "    subst candidateX87\n"
+                        f"    simp [evalNormalizedX87, "
+                        f"originalBehavior{source_index}, candidateBehavior{source_index}, "
+                        "StageA.Formal.X87Expr.eval, StageA.Formal.Expr.eval]\n"
+                        + flag_proof
+                    ),
+                    *([] if not import_fact_names else [
+                        (
+                            f"theorem {import_transfer_name} :\n"
+                            "    NoWriteSegmentImportTransferClosed staticProofContext "
+                            f"{edge_name} region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      originalBehavior{source_index} "
+                            f"candidateBehavior{source_index} := by\n"
+                            "  unfold NoWriteSegmentImportTransferClosed\n"
+                            f"  rw [{local_code_targets_name}]\n"
+                            "  intro world originalState candidateState originalResult "
+                            "candidateResult related originalEval candidateEval\n"
+                            f"  simp [evalBehavior, region{source_index}OriginalNormalized] "
+                            "at originalEval\n"
+                            f"  simp [evalBehavior, region{source_index}CandidateNormalized] "
+                            "at candidateEval\n"
+                            "  subst originalResult\n"
+                            "  subst candidateResult\n"
+                            + "\n".join(import_transfer_facts)
+                            + "\n  simpa [RegionRelation.inputInvariant, "
+                            f"region{target_index}, importRegisterRelationsHold, "
+                            "ImportRegisterSeedClaim.relation, "
+                            "ImportRegisterPreserveClaim.targetRelation] using "
+                            + (import_fact_names[0] if len(import_fact_names) == 1 else
+                               "\u27e8" + ", ".join(import_fact_names) + "\u27e9")
+                        )
+                    ]),
+                    *([] if not dynamic_fact_names else [
+                        (
+                            f"theorem {dynamic_transfer_name} :\n"
+                            "    NoWriteSegmentDynamicTransferClosed staticProofContext "
+                            f"{edge_name} region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      originalBehavior{source_index} "
+                            f"candidateBehavior{source_index} := by\n"
+                            "  unfold NoWriteSegmentDynamicTransferClosed\n"
+                            f"  rw [{local_code_targets_name}]\n"
+                            "  intro world originalState candidateState originalResult "
+                            "candidateResult related originalEval candidateEval guardTrue\n"
+                            f"  simp [evalBehavior, region{source_index}OriginalNormalized] "
+                            "at originalEval\n"
+                            f"  simp [evalBehavior, region{source_index}CandidateNormalized] "
+                            "at candidateEval\n"
+                            "  subst originalResult\n"
+                            "  subst candidateResult\n"
+                            + "\n".join(dynamic_transfer_facts)
+                            + "\n  simpa [RegionRelation.inputInvariant, "
+                            f"region{target_index}, dynamicRegisterRangeRelationsHold] using "
+                            + (dynamic_fact_names[0] if len(dynamic_fact_names) == 1 else
+                               "⟨" + ", ".join(dynamic_fact_names) + "⟩")
+                        )
+                    ]),
+                    direct_call_transition_definition
+                    or paired_stack_write_transition_definition
+                    or (
+                        f"theorem {transition_name} :\n"
+                        f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant region{target_index}.inputInvariant\n"
+                        f"      originalBehavior{source_index} candidateBehavior{source_index} :=\n"
+                        + (
+                            "  segmentTransitionClosed_of_no_write_with_transfers staticProofContext "
+                            if import_fact_names and dynamic_fact_names else
+                            "  segmentTransitionClosed_of_no_write_with_imports staticProofContext "
+                            if import_fact_names else
+                            "  segmentTransitionClosed_of_no_write_with_dynamic staticProofContext "
+                            if dynamic_fact_names else
+                            "  segmentTransitionClosed_of_no_write staticProofContext "
+                        )
+                        + f"{edge_name} region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    originalBehavior{source_index} candidateBehavior{source_index} "
+                        f"region{source_index}.targets region{source_index}.values\n"
+                        f"    {local_code_targets_name} {local_values_name} "
+                        + (
+                            f"{shape_name} {state_name} {import_transfer_name} "
+                            f"{dynamic_transfer_name}"
+                            if import_fact_names and dynamic_fact_names else
+                            f"{shape_name} {state_name} {import_transfer_name} (by decide)"
+                            if import_fact_names else
+                            f"(by decide) {shape_name} {state_name} {dynamic_transfer_name}"
+                            if dynamic_fact_names else
+                            f"(by decide) (by decide) {shape_name} {state_name}"
+                        )
+                    ),
+                    (
+                        f"def {proposition_name} : Prop :=\n"
+                        f"  RelationalSegmentRefinement staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant region{target_index}.inputInvariant"
+                    ),
+                    (
+                        f"theorem {theorem_name} : {proposition_name} :=\n"
+                        "  relationalSegmentRefinement_of_decoded staticProofContext "
+                        f"{edge_name} region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    originalBehavior{source_index} candidateBehavior{source_index}\n"
+                        f"    originalBehavior{source_index}CheckedDecoded "
+                        f"candidateBehavior{source_index}CheckedDecoded {transition_name}"
+                    ),
+                ])
+                proposition_names.append(proposition_name)
+                theorem_names.append(theorem_name)
+                continue
+            raise StageAInputError(
+                f"unsupported segment certificate profile: "
+                f"{candidate.get('certificate_profile')!r}"
+            )
+        claims_name = f"segmentRefinementChunk{chunk_index}Claims"
+        checked_name = f"segmentRefinementChunk{chunk_index}Checked"
+        definitions.append(
+            f"def {claims_name} : List Prop := [{', '.join(proposition_names)}]"
+        )
+        proof = (
+            "".join(f"And.intro {theorem} (" for theorem in theorem_names)
+            + "True.intro"
+            + ")" * len(theorem_names)
+        )
+        definitions.append(
+            f"theorem {checked_name} : AllInvariantClaims {claims_name} := by\n"
+            f"  exact {proof}"
+        )
+        module = f"RelationalSegmentRefinementChunk{chunk_index}"
+        target_chunk_imports = sorted({
+            chunk_by_region[int(candidate["target_region_index"])]
+            for candidate in selected
+            if chunk_by_region[int(candidate["target_region_index"])] != chunk_index
+        })
+        indirect_control_chunk_imports = sorted({
+            decoded_control_chunk_by_node[int(candidate["source_region_index"])]
+            for candidate in selected
+            if candidate.get("certificate_profile")
+                == "composable_immutable_indirect_jump_v1"
+        })
+        source = (
+            "import StageA.RelationalComposition\n"
+            "import StageA.RelationalStaticContext\n"
+            "import StageA.RelationalStaticContextBase\n"
+            f"import StageA.RelationalProofDirectChunk{chunk_index}\n"
+            f"import StageA.RelationalRegisterRelationsChunk{chunk_index}\n"
+            + "".join(
+                f"import StageA.RelationalRegionChunk{target_chunk}\n"
+                for target_chunk in target_chunk_imports
+            )
+            + "".join(
+                f"import StageA.RelationalProductDecodedControlChunk{source_chunk}\n"
+                for source_chunk in indirect_control_chunk_imports
+            )
+            + "\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+            "set_option linter.unusedSimpArgs false\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+        modules.append({
+            "module": module,
+            "claims": claims_name,
+            "theorem": checked_name,
+            "edges": str(len(selected)),
+            "edge_ids": [int(candidate["edge_index"]) for candidate in selected],
+        })
+    return modules
+
+
+def _write_relational_external_call_refinement_modules(
+    lean_dir: Path,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+    product_graph: dict[str, Any],
+    decode_chunk_regions: list[list[int]],
+    import_call_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    analysis = _external_call_site_candidates(
+        contract, behaviors, register_relations, import_call_candidates
+    )
+    chunk_by_region = {
+        region_index: chunk_index
+        for chunk_index, region_indices in enumerate(decode_chunk_regions)
+        for region_index in region_indices
+    }
+    contracts_by_id = {
+        int(item["id"]): item
+        for item in contract.get("machine_import_call_contracts", [])
+    }
+    graph_edges_by_id = {
+        int(edge["id"]): edge for edge in product_graph.get("edges", [])
+    }
+    modules: list[dict[str, Any]] = []
+    for site in analysis["candidates"]:
+        edge_id = int(site["edge_index"])
+        source_index = int(site["source_region_index"])
+        target_index = int(site["target_region_index"])
+        source = contract["regions"][source_index]
+        graph_edge = graph_edges_by_id.get(edge_id)
+        if graph_edge is None or (
+            graph_edge.get("kind") != "externalCall"
+            or int(graph_edge["source_node_id"]) != source_index
+            or int(graph_edge["target_node_id"]) != target_index
+        ):
+            raise StageAInputError(
+                f"external call site {edge_id} has no exact product-edge match"
+            )
+        machine_contract = contracts_by_id.get(int(site["machine_contract_id"]))
+        if machine_contract is None:
+            raise StageAInputError(
+                f"external call site {edge_id} has no machine contract"
+            )
+        chunk_index = chunk_by_region[source_index]
+        prefix = f"externalCallEdge{edge_id}"
+        edge_name = f"{prefix}Spec"
+        contract_name = f"{prefix}MachineContract"
+        original_normalized = f"{prefix}OriginalNormalized"
+        candidate_normalized = f"{prefix}CandidateNormalized"
+        local_code_targets = f"{prefix}LocalCodeTargetsResolved"
+        local_values = f"{prefix}LocalValuesResolved"
+        contract_resolved = f"{prefix}MachineContractResolved"
+        original_normalized_checked = f"{prefix}OriginalNormalizedChecked"
+        candidate_normalized_checked = f"{prefix}CandidateNormalizedChecked"
+        original_x87_checked = f"{prefix}OriginalX87Checked"
+        candidate_x87_checked = f"{prefix}CandidateX87Checked"
+        original_outcome_checked = f"{prefix}OriginalOutcomeChecked"
+        candidate_outcome_checked = f"{prefix}CandidateOutcomeChecked"
+        original_decoded = f"{prefix}OriginalDecoded"
+        candidate_decoded = f"{prefix}CandidateDecoded"
+        output_claims_name = f"{prefix}RegisterOutputClaims"
+        shape_name = f"{prefix}ShapeChecked"
+        boundary_name = f"{prefix}BoundaryTransferChecked"
+        transition_name = f"{prefix}TransitionChecked"
+        refinement_name = f"{prefix}RefinementChecked"
+        product_resolved_name = f"{prefix}ProductResolved"
+        product_name = f"{prefix}ProductRefinementChecked"
+        register_dispatch = site["dispatch_profile"] == "checked_import_register"
+        original_behavior_name = f"originalBehavior{source_index}"
+        candidate_behavior_name = f"candidateBehavior{source_index}"
+        original_decoded_normalized = f"{prefix}OriginalDecodedNormalized"
+        candidate_decoded_normalized = f"{prefix}CandidateDecodedNormalized"
+        original_externalized = f"{prefix}OriginalExternalized"
+        candidate_externalized = f"{prefix}CandidateExternalized"
+        dispatch_claim_name = f"{prefix}DispatchClaim"
+        target_closed_name = f"{prefix}DispatchTargetsClosed"
+        original_externalized_checked = f"{prefix}OriginalExternalizedChecked"
+        candidate_externalized_checked = f"{prefix}CandidateExternalizedChecked"
+        original_decoded_normalized_checked = (
+            f"{prefix}OriginalDecodedNormalizedChecked"
+        )
+        candidate_decoded_normalized_checked = (
+            f"{prefix}CandidateDecodedNormalizedChecked"
+        )
+        proof_original_behavior = (
+            original_externalized if register_dispatch else original_behavior_name
+        )
+        proof_candidate_behavior = (
+            candidate_externalized if register_dispatch else candidate_behavior_name
+        )
+        original_argument_words = "[" + ", ".join(
+            f"({_lean_semantic_expr(expression)}).eval originalState"
+            for expression in site["argument_expressions"]
+        ) + "]"
+        candidate_argument_words = "[" + ", ".join(
+            f"({_lean_semantic_expr(expression)}).eval candidateState"
+            for expression in site["argument_expressions"]
+        ) + "]"
+        argument_expressions = "[" + ", ".join(
+            _lean_semantic_expr(expression)
+            for expression in site["argument_expressions"]
+        ) + "]"
+        output_claims = ", ".join(
+            _lean_register_output_claim(claim)
+            for claim in site["register_output_claims"]
+        )
+        stack_claims = ", ".join(
+            _lean_stack_window_transfer_claim(claim)
+            for claim in site["stack_transfer_claims"]
+        )
+        original_x87 = _lean_symbolic_x87_state(
+            behaviors[source_index]["original_ir"]["x87"]
+        )
+        candidate_x87 = _lean_symbolic_x87_state(
+            behaviors[source_index]["candidate_ir"]["x87"]
+        )
+        flag_bits = site["boundary_invariant"].get("flag_bits", [])
+        if flag_bits == []:
+            flag_proof = "  · rfl\n"
+        elif flag_bits == [10]:
+            flag_proof = (
+                "  · apply flagsRelated_cons_of_eq\n"
+                "    · simp only [RelationalBehavior.nextMachineState, "
+                "NormalizedSymbolicBehavior.eval_eflags]\n"
+                "      rw [evalNormalizedFlags_extract_df, "
+                "evalNormalizedFlags_extract_df]\n"
+                f"      exact flagsRelated_of_contains region{source_index}.flagInputs "
+                "originalState.eflags candidateState.eflags inputFlags (by decide)\n"
+                "    · rfl\n"
+            )
+        else:
+            raise StageAInputError(
+                f"external call site {edge_id} has unsupported boundary flags"
+            )
+        source_target_ids = ", ".join(
+            str(int(item["id"])) for item in source.get("code_targets", [])
+        )
+        source_value_ids = ", ".join(
+            str(int(item["id"])) for item in source.get("values", [])
+        )
+        dispatch_definitions = ""
+        dispatch_theorems = ""
+        product_refinement = f"Or.inl {refinement_name}"
+        if register_dispatch:
+            dispatch_registers = site["dispatch_registers"]
+            assert dispatch_registers is not None
+            dispatch_definitions = (
+                f"def {dispatch_claim_name} : ImportRegisterIndirectCallClaim := {{\n"
+                f"  imported := {contract_name}.imported\n"
+                f"  originalRegister := .{dispatch_registers['original']}\n"
+                f"  candidateRegister := .{dispatch_registers['candidate']}\n"
+                f"  continuationTargetId := {int(site['continuation_target_id'])}\n"
+                "}\n\n"
+                f"def {original_decoded_normalized} : NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior false region{source_index}.targets "
+                f"{original_behavior_name}).get (by decide)\n\n"
+                f"def {candidate_decoded_normalized} : NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior true region{source_index}.targets "
+                f"{candidate_behavior_name}).get (by decide)\n\n"
+                f"def {original_externalized} : SymbolicBehavior :=\n"
+                f"  (externalizeRegisterImportCall {contract_name} "
+                f".{dispatch_registers['original']} {original_behavior_name}).get "
+                "(by decide)\n\n"
+                f"def {candidate_externalized} : SymbolicBehavior :=\n"
+                f"  (externalizeRegisterImportCall {contract_name} "
+                f".{dispatch_registers['candidate']} {candidate_behavior_name}).get "
+                "(by decide)\n\n"
+            )
+            dispatch_theorems = (
+                f"theorem {original_decoded_normalized_checked} :\n"
+                f"    normalizeSymbolicBehavior false region{source_index}.targets "
+                f"{original_behavior_name} = some {original_decoded_normalized} := by decide\n\n"
+                f"theorem {candidate_decoded_normalized_checked} :\n"
+                f"    normalizeSymbolicBehavior true region{source_index}.targets "
+                f"{candidate_behavior_name} = some {candidate_decoded_normalized} := by decide\n\n"
+                f"theorem {target_closed_name} :\n"
+                f"    ImportRegisterIndirectCallTargetsClosed "
+                f"region{source_index}.inputInvariant {original_decoded_normalized} "
+                f"{candidate_decoded_normalized} {dispatch_claim_name} :=\n"
+                "  importRegisterIndirectCallTargetsClosed_of_checked "
+                f"region{source_index}.inputInvariant {original_decoded_normalized} "
+                f"{candidate_decoded_normalized} {dispatch_claim_name} (by decide)\n\n"
+                f"theorem {original_externalized_checked} :\n"
+                f"    externalizeRegisterImportCall {contract_name} "
+                f".{dispatch_registers['original']} {original_behavior_name} = "
+                f"some {original_externalized} := by decide\n\n"
+                f"theorem {candidate_externalized_checked} :\n"
+                f"    externalizeRegisterImportCall {contract_name} "
+                f".{dispatch_registers['candidate']} {candidate_behavior_name} = "
+                f"some {candidate_externalized} := by decide\n\n"
+            )
+            product_refinement = f"Or.inr {refinement_name}"
+
+        argument_claim_definitions: list[str] = []
+        argument_fact_rows: list[str] = []
+        argument_fact_names: list[str] = []
+        for argument_index, claim in enumerate(site["argument_relation_claims"]):
+            claim_name = f"{prefix}ArgumentClaim{argument_index}"
+            fact_name = f"{prefix}ArgumentRelated{argument_index}"
+            argument_fact_names.append(fact_name)
+            if claim["kind"] == "dynamic_related_word_read":
+                argument_claim_definitions.append(
+                    f"def {claim_name} : DynamicRangeArgumentClaim := "
+                    f"{_lean_dynamic_range_argument_claim(claim)}"
+                )
+                argument_fact_rows.append(
+                    f"  have {fact_name} := dynamicRangeArgumentWordsRelated_of_checked\n"
+                    f"    staticProofContext world region{source_index}.inputInvariant\n"
+                    f"    ({_lean_semantic_expr(claim['original_expression'])})\n"
+                    f"    ({_lean_semantic_expr(claim['candidate_expression'])}) "
+                    f"{claim_name} (by decide) originalState candidateState related"
+                )
+            elif claim["kind"] == "stack_word_read":
+                argument_claim_definitions.append(
+                    f"def {claim_name} : StackWindowArgumentClaim := "
+                    f"{_lean_stack_window_argument_claim(claim)}"
+                )
+                argument_fact_rows.append(
+                    f"  have {fact_name} := stackWindowArgumentWordsRelated_of_checked\n"
+                    f"    staticProofContext world region{source_index}.inputInvariant\n"
+                    f"    ({_lean_semantic_expr(claim['original_expression'])})\n"
+                    f"    ({_lean_semantic_expr(claim['candidate_expression'])}) "
+                    f"{claim_name} (by decide) originalState candidateState related"
+                )
+            elif claim["kind"] == "register_word":
+                argument_claim_definitions.append(
+                    f"def {claim_name} : RegisterArgumentClaim := "
+                    f"{_lean_register_argument_claim(claim)}"
+                )
+                argument_fact_rows.append(
+                    f"  have {fact_name} := registerArgumentWordsRelated_of_checked\n"
+                    f"    staticProofContext world region{source_index}.inputInvariant\n"
+                    f"    ({_lean_semantic_expr(claim['original_expression'])})\n"
+                    f"    ({_lean_semantic_expr(claim['candidate_expression'])}) "
+                    f"{claim_name} (by decide) originalState candidateState related"
+                )
+            elif claim["kind"] == "self":
+                argument_fact_rows.append(
+                    f"  have {fact_name} :\n"
+                    "      wordRelated staticProofContext.originalPe.imageBase\n"
+                    "        staticProofContext.candidatePe.imageBase\n"
+                    "        staticProofContext.codeMap.entries.toList\n"
+                    "        (staticProofContext.relationalValueTargets world)\n"
+                    f"        (({_lean_semantic_expr(claim['original_expression'])}).eval "
+                    "originalState)\n"
+                    f"        (({_lean_semantic_expr(claim['candidate_expression'])}).eval "
+                    "candidateState) = true := by\n"
+                    "    simp [StageA.Formal.Expr.eval]"
+                )
+            else:
+                raise StageAInputError(
+                    f"external call site {edge_id} has unsupported argument relation "
+                    f"{claim['kind']}"
+                )
+        argument_list_proof = "(by rfl)"
+        for fact_name in reversed(argument_fact_names):
+            argument_list_proof = (
+                f"wordsRelated_cons_of_true {fact_name} ({argument_list_proof})"
+            )
+        argument_setup = (
+            ("\n".join(argument_fact_rows) + "\n")
+            + "  have argumentWordsRelated :\n"
+            "      wordsRelated staticProofContext.originalPe.imageBase\n"
+            "        staticProofContext.candidatePe.imageBase\n"
+            "        staticProofContext.codeMap.entries.toList\n"
+            "        (staticProofContext.relationalValueTargets world)\n"
+            f"        {original_argument_words} {candidate_argument_words} = true := by\n"
+            f"    exact {argument_list_proof}\n"
+        )
+
+        import_claim_definitions: list[str] = []
+        import_fact_rows: list[str] = []
+        import_fact_names: list[str] = []
+        for claim_index, claim in enumerate(site["import_transfer_claims"]):
+            claim_name = f"{prefix}ImportClaim{claim_index}"
+            fact_name = f"{prefix}ImportFact{claim_index}"
+            import_fact_names.append(fact_name)
+            import_claim_definitions.append(
+                f"def {claim_name} : ImportRegisterPreserveClaim := {{\n"
+                f"  imported := {_lean_external_target(claim['import'])}\n"
+                f"  sourceOriginalRegister := .{claim['source_original_register']}\n"
+                f"  sourceCandidateRegister := .{claim['source_candidate_register']}\n"
+                f"  targetOriginalRegister := .{claim['target_original_register']}\n"
+                f"  targetCandidateRegister := .{claim['target_candidate_register']}\n"
+                "}"
+            )
+            import_fact_rows.append(
+                f"  have {fact_name} := importRegisterPreserveOutputHolds_of_checked\n"
+                f"    staticProofContext world region{source_index}.inputInvariant\n"
+                f"    externalCallSite{edge_id}.boundaryInvariant {original_normalized}\n"
+                f"    {candidate_normalized} {claim_name} (by decide)\n"
+                "    originalState candidateState relatedForRegisterTransfer"
+            )
+        dynamic_claim_definitions: list[str] = []
+        dynamic_fact_rows: list[str] = []
+        dynamic_fact_names: list[str] = []
+        for claim_index, claim in enumerate(site["dynamic_transfer_claims"]):
+            claim_name = f"{prefix}DynamicClaim{claim_index}"
+            fact_name = f"{prefix}DynamicFact{claim_index}"
+            dynamic_fact_names.append(fact_name)
+            dynamic_claim_definitions.append(
+                f"def {claim_name} : DynamicRegisterRangePreserveClaim := {{\n"
+                f"  sourceRelation := {_lean_dynamic_range_relation(claim['source_relation'])}\n"
+                f"  targetRelation := {_lean_dynamic_range_relation(claim['target_relation'])}\n"
+                "}"
+            )
+            dynamic_fact_rows.append(
+                f"  have {fact_name} := dynamicRegisterRangePreserveOutputHolds_of_checked\n"
+                f"    staticProofContext world region{source_index}.inputInvariant\n"
+                f"    externalCallSite{edge_id}.boundaryInvariant {original_normalized}\n"
+                f"    {candidate_normalized} {claim_name} (by decide)\n"
+                "    originalState candidateState relatedForRegisterTransfer"
+            )
+        boundary_fact_setup = "\n".join([*import_fact_rows, *dynamic_fact_rows])
+        if boundary_fact_setup:
+            boundary_fact_setup += "\n"
+        import_boundary_proof = (
+            "  · simpa [externalCallSite" + str(edge_id)
+            + ", importRegisterRelationsHold, "
+            "ImportRegisterPreserveClaim.targetRelation] using "
+            + (import_fact_names[0] if len(import_fact_names) == 1 else
+               "\u27e8" + ", ".join(import_fact_names) + "\u27e9")
+            + "\n"
+            if import_fact_names else
+            f"  · simp [externalCallSite{edge_id}, importRegisterRelationsHold]\n"
+        )
+        dynamic_boundary_proof = (
+            f"  · simpa [externalCallSite{edge_id}, "
+            "dynamicRegisterRangeRelationsHold] using "
+            + (dynamic_fact_names[0] if len(dynamic_fact_names) == 1 else
+               "\u27e8" + ", ".join(dynamic_fact_names) + "\u27e9")
+            + "\n\n"
+            if dynamic_fact_names else
+            f"  · simp [externalCallSite{edge_id}, "
+            "dynamicRegisterRangeRelationsHold]\n\n"
+        )
+        support_definitions = dispatch_definitions + "\n\n".join([
+            *argument_claim_definitions,
+            *import_claim_definitions,
+            *dynamic_claim_definitions,
+        ])
+        if support_definitions:
+            support_definitions += "\n\n"
+        if register_dispatch:
+            refinement_source = (
+                f"theorem {refinement_name} :\n"
+                f"    RelationalRegisterExternalCallRefinement staticProofContext "
+                f"externalCallSite{edge_id} {edge_name} "
+                f"region{source_index}.inputInvariant := by\n"
+                "  unfold RelationalRegisterExternalCallRefinement\n"
+                f"  rw [{local_code_targets}]\n"
+                f"  refine \u27e8{contract_name}, {original_behavior_name}, "
+                f"{candidate_behavior_name}, {original_decoded_normalized}, "
+                f"{candidate_decoded_normalized}, {original_externalized}, "
+                f"{candidate_externalized}, {dispatch_claim_name}, "
+                f"{contract_resolved}, rfl, rfl, rfl, {original_decoded}, "
+                f"{candidate_decoded}, {original_decoded_normalized_checked}, "
+                f"{candidate_decoded_normalized_checked}, {target_closed_name}, "
+                f"{original_externalized_checked}, {candidate_externalized_checked}, "
+                f"{transition_name}\u27e9\n\n"
+            )
+        else:
+            refinement_source = (
+                f"theorem {refinement_name} :\n"
+                f"    RelationalExternalCallRefinement staticProofContext "
+                f"externalCallSite{edge_id} {edge_name} "
+                f"region{source_index}.inputInvariant := by\n"
+                f"  refine \u27e8{contract_name}, {original_behavior_name}, "
+                f"{candidate_behavior_name}, {contract_resolved}, rfl, "
+                f"{original_decoded}, {candidate_decoded}, {transition_name}\u27e9\n\n"
+            )
+        source_text = (
+            "import StageA.RelationalExternalCallSites\n"
+            "import StageA.RelationalProductGraphContext\n"
+            f"import StageA.RelationalRegisterRelationsChunk{chunk_index}\n\n"
+            f"import StageA.RelationalProofOriginalDecodeChunk{chunk_index}\n"
+            f"import StageA.RelationalProofCandidateDecodeChunk{chunk_index}\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+            "set_option linter.unusedSimpArgs false\n\n"
+            f"def {contract_name} : MachineImportCallContract := "
+            f"{_lean_machine_import_call_contract(machine_contract)}\n\n"
+            f"def {edge_name} : RelationalSegmentEdge := {{\n"
+            f"  sourceTargetId := {int(site['source_target_id'])}\n"
+            f"  exit := .external {contract_name}.imported\n"
+            f"  originalSpan := region{source_index}.original\n"
+            f"  candidateSpan := region{source_index}.candidate\n"
+            f"  localCodeTargetIds := [{source_target_ids}]\n"
+            f"  localValueTargetIds := [{source_value_ids}]\n"
+            f"  originalGuard := {_lean_semantic_bool_expr(graph_edge['original_guard'])}\n"
+            f"  candidateGuard := {_lean_semantic_bool_expr(graph_edge['candidate_guard'])}\n"
+            "}\n\n"
+            + support_definitions
+            + f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+            f"  (normalizeSymbolicBehavior false region{source_index}.targets "
+            f"{proof_original_behavior}).get (by decide)\n\n"
+            f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+            f"  (normalizeSymbolicBehavior true region{source_index}.targets "
+            f"{proof_candidate_behavior}).get (by decide)\n\n"
+            f"def {output_claims_name} : List InvariantWP.RegisterOutputClaim := "
+            f"[{output_claims}]\n\n"
+            f"theorem {local_code_targets} :\n"
+            f"    staticProofContext.codeMap.resolveIds {edge_name}.localCodeTargetIds = "
+            f"some region{source_index}.targets := by decide\n\n"
+            f"theorem {local_values} :\n"
+            f"    staticProofContext.dataMap.resolveIds {edge_name}.localValueTargetIds = "
+            f"some region{source_index}.values := by decide\n\n"
+            f"theorem {contract_resolved} :\n"
+            f"    machineImportCallContractById? staticProofContext "
+            f"{int(site['machine_contract_id'])} = some {contract_name} := by decide\n\n"
+            f"theorem {original_normalized_checked} :\n"
+            f"    normalizeSymbolicBehavior false region{source_index}.targets "
+            f"{proof_original_behavior} = some {original_normalized} := by decide\n\n"
+            f"theorem {candidate_normalized_checked} :\n"
+            f"    normalizeSymbolicBehavior true region{source_index}.targets "
+            f"{proof_candidate_behavior} = some {candidate_normalized} := by decide\n\n"
+            + dispatch_theorems
+            + f"theorem {original_x87_checked} :\n"
+            f"    {original_normalized}.x87 = {original_x87} := by decide\n\n"
+            f"theorem {candidate_x87_checked} :\n"
+            f"    {candidate_normalized}.x87 = {candidate_x87} := by decide\n\n"
+            f"theorem {original_outcome_checked} :\n"
+            f"    {original_normalized}.outcome = .externalCall "
+            f"{contract_name}.imported {argument_expressions} "
+            f"{int(site['continuation_target_id'])} := by decide\n\n"
+            f"theorem {candidate_outcome_checked} :\n"
+            f"    {candidate_normalized}.outcome = .externalCall "
+            f"{contract_name}.imported {argument_expressions} "
+            f"{int(site['continuation_target_id'])} := by decide\n\n"
+            f"theorem {original_decoded} :\n"
+            "    regionBehaviorWithMachineCallContracts staticProofContext.originalPe "
+            "staticProofContext.originalImports staticProofContext.machineImportCallContracts "
+            f"{edge_name}.originalSpan = some originalBehavior{source_index} := by\n"
+            f"  simpa [{edge_name}, staticProofContext, "
+            f"originalMachineImportCallContractsChunk{chunk_index}] using "
+            f"originalBehavior{source_index}CheckedDecoded\n\n"
+            f"theorem {candidate_decoded} :\n"
+            "    regionBehaviorWithMachineCallContracts staticProofContext.candidatePe "
+            "staticProofContext.candidateImports staticProofContext.machineImportCallContracts "
+            f"{edge_name}.candidateSpan = some candidateBehavior{source_index} := by\n"
+            f"  simpa [{edge_name}, staticProofContext, "
+            f"candidateMachineImportCallContractsChunk{chunk_index}] using "
+            f"candidateBehavior{source_index}CheckedDecoded\n\n"
+            f"theorem {shape_name} :\n"
+            f"    ExternalCallShapeClosed staticProofContext externalCallSite{edge_id} "
+            f"{contract_name} {edge_name} region{source_index}.inputInvariant\n"
+            f"      {proof_original_behavior} {proof_candidate_behavior} := by\n"
+            "  unfold ExternalCallShapeClosed\n"
+            f"  rw [{local_code_targets}, {local_values}]\n"
+            "  intro world originalState candidateState related\n"
+            + argument_setup
+            + "  refine \u27e8rfl, ?_\u27e9\n"
+            "  intro _guardTrue\n"
+            f"  refine \u27e8{original_normalized}.eval originalState, "
+            f"{candidate_normalized}.eval candidateState, {original_argument_words}, "
+            f"{candidate_argument_words}, ?_, ?_, ?_, ?_, ?_, ?_, ?_\u27e9\n"
+            "  · unfold evalBehavior\n"
+            f"    rw [{original_normalized_checked}]\n"
+            "    rfl\n"
+            "  · unfold evalBehavior\n"
+            f"    rw [{candidate_normalized_checked}]\n"
+            "    rfl\n"
+            f"  · simp only [NormalizedSymbolicBehavior.eval_outcome, "
+            f"{original_outcome_checked}, NormalizedOutcomeExpr.eval, "
+            "StageA.Formal.Expr.eval, List.map_cons, List.map_nil]\n"
+            f"    simpa [externalCallSite{edge_id}]\n"
+            f"  · simp only [NormalizedSymbolicBehavior.eval_outcome, "
+            f"{candidate_outcome_checked}, NormalizedOutcomeExpr.eval, "
+            "StageA.Formal.Expr.eval, List.map_cons, List.map_nil]\n"
+            f"    simpa [externalCallSite{edge_id}]\n"
+            f"  · rfl\n"
+            f"  · simpa [{original_outcome_checked}, {candidate_outcome_checked}, "
+            "NormalizedOutcomeExpr.eval, StageA.Formal.Expr.eval, outcomesRelated] "
+            "using argumentWordsRelated\n"
+            "  · unfold externalCallArgumentsRelated\n"
+            "    exact argumentWordsRelated\n\n"
+            f"theorem {boundary_name} :\n"
+            f"    ExternalBoundaryTransferClosed staticProofContext "
+            f"externalCallSite{edge_id} {edge_name} region{source_index}.inputInvariant\n"
+            f"      {proof_original_behavior} {proof_candidate_behavior} := by\n"
+            "  unfold ExternalBoundaryTransferClosed\n"
+            f"  rw [{local_code_targets}]\n"
+            "  intro world originalState candidateState originalResult candidateResult related\n"
+            "    originalEval candidateEval\n"
+            f"  simp [evalBehavior, {original_normalized_checked}] at originalEval\n"
+            f"  simp [evalBehavior, {candidate_normalized_checked}] at candidateEval\n"
+            "  subst originalResult\n"
+            "  subst candidateResult\n"
+            "  have relatedForRegisterTransfer := related\n"
+            "  rcases related with \u27e8worldValid, stackRangesValid, _stackMemory, "
+            "_importsStatic, _importsComplete, _importsMemory, _originalImmutable, "
+            "_candidateImmutable, relatedCore, importDynamic\u27e9\n"
+            "  rcases relatedCore with \u27e8inputRegisters, inputBounds, "
+            "inputSeparations, inputStackWindows, inputMemory, _inputDynamicWords, "
+            "inputUndefined, inputX87, inputFlags, inputFsBase\u27e9\n"
+            + boundary_fact_setup
+            + "  have outputStackWindows := "
+            "stackWindowsRelated_after_affine_of_checked staticProofContext world "
+            f"region{source_index}.inputInvariant "
+            f"externalCallSite{edge_id}.boundaryInvariant {original_normalized} "
+            f"{candidate_normalized} [{stack_claims}] originalState candidateState "
+            "stackRangesValid inputStackWindows (by decide)\n"
+            "  refine \u27e8worldValid, stackRangesValid, ?_, ?_, ?_, ?_, ?_, ?_, "
+            "?_, ?_, ?_, ?_\u27e9\n"
+            "  · exact InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims\n"
+            f"      staticProofContext world region{source_index} {original_normalized} "
+            f"{candidate_normalized} {output_claims_name} (by decide)\n"
+            "      originalState candidateState relatedForRegisterTransfer\n"
+            f"  · simp [{edge_name}, externalCallSite{edge_id}, boundsRelated]\n"
+            f"  · simp [{edge_name}, externalCallSite{edge_id}, "
+            "addressSeparationsRelated]\n"
+            "  · exact outputStackWindows\n"
+            "  · simpa [RelationalBehavior.nextMachineState] using inputUndefined\n"
+            "  · rcases originalState with \u27e8originalRegisters, originalMemory, "
+            "originalUndefined, originalX87, originalFlags, originalFsBase\u27e9\n"
+            "    rcases candidateState with \u27e8candidateRegisters, candidateMemory, "
+            "candidateUndefined, candidateX87, candidateFlags, candidateFsBase\u27e9\n"
+            "    change originalX87 = candidateX87 at inputX87\n"
+            "    subst candidateX87\n"
+            f"    simp [RelationalBehavior.nextMachineState, {original_x87_checked}, "
+            f"{candidate_x87_checked}, evalNormalizedX87, "
+            "StageA.Formal.X87Expr.eval, StageA.Formal.Expr.eval]\n"
+            + flag_proof
+            + "  · simpa [RelationalBehavior.nextMachineState] using inputFsBase\n"
+            + import_boundary_proof
+            + dynamic_boundary_proof
+            + f"theorem {transition_name} :\n"
+            f"    ExternalCallTransitionClosed staticProofContext "
+            f"externalCallSite{edge_id} {contract_name} {edge_name} "
+            f"region{source_index}.inputInvariant {proof_original_behavior} "
+            f"{proof_candidate_behavior} :=\n"
+            "  externalCallTransitionClosed_of_shape_and_transfer "
+            f"staticProofContext externalCallSite{edge_id} {contract_name} "
+            f"{edge_name} region{source_index}.inputInvariant "
+            f"{proof_original_behavior} {proof_candidate_behavior} "
+            f"{shape_name} {boundary_name}\n\n"
+            + refinement_source
+            + f"theorem {product_resolved_name} :\n"
+            f"    relationalProductGraph.getEdge? {edge_id} = "
+            f"some relationalProductGraph.edges[{edge_id}] := by decide\n\n"
+            f"theorem {product_name} :\n"
+            f"    RelationalExternalProductEdgeRefinement staticProofContext "
+            f"relationalProductGraph {edge_id} externalCallSite{edge_id} "
+            f"{edge_name} region{source_index}.inputInvariant := by\n"
+            "  unfold RelationalExternalProductEdgeRefinement\n"
+            f"  rw [{product_resolved_name}]\n"
+            f"  exact \u27e8rfl, rfl, rfl, {product_refinement}\u27e9\n\n"
+            "end StageA.GeneratedRelational\n"
+        )
+        module = f"RelationalExternalCallRefinementEdge{edge_id}"
+        _write_text_if_changed(
+            lean_dir / "StageA" / f"{module}.lean", source_text
+        )
+        modules.append({
+            "module": module,
+            "edge_id": edge_id,
+            "source_region_index": source_index,
+            "theorem": product_name,
+            "proposition": (
+                "RelationalExternalProductEdgeRefinement staticProofContext "
+                f"relationalProductGraph {edge_id} externalCallSite{edge_id} "
+                f"{edge_name} region{source_index}.inputInvariant"
+            ),
+        })
+
+    certificate_type = " \u2227 ".join(
+        [item["proposition"] for item in modules] + ["True"]
+    )
+    certificate_proof = (
+        "".join(f"And.intro {item['theorem']} (" for item in modules)
+        + "True.intro"
+        + ")" * len(modules)
+    )
+    certificate_source = (
+        "".join(f"import StageA.{item['module']}\n" for item in modules)
+        + "import StageA.RelationalEnvironment\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        f"def GeneratedExternalCallRefinementCertificate : Prop := "
+        f"{certificate_type}\n\n"
+        "theorem generatedExternalCallRefinementCertificateChecked :\n"
+        "    GeneratedExternalCallRefinementCertificate := by\n"
+        f"  exact {certificate_proof}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalExternalCallRefinementCertificate.lean",
+        certificate_source,
+    )
+    return modules
+
+
+def _write_reachable_product_local_certificate(
+    lean_dir: Path,
+    product_graph: dict[str, Any],
+    segment_candidates: list[dict[str, Any]],
+    external_call_refinement_modules: list[dict[str, Any]],
+) -> None:
+    evidence = product_graph["evidence"]
+    decoded_control_ids = set(evidence["decoded_control_complete_node_ids"])
+    decoded_node_ids = [
+        int(node_id) for node_id in evidence["declared_reachable_node_ids"]
+        if node_id in decoded_control_ids
+    ]
+    refined_edge_ids = [
+        int(edge_id) for edge_id in evidence["reachable_locally_refined_edge_ids"]
+    ]
+    internal_edge_ids = set(int(edge_id) for edge_id in evidence["proved_edge_ids"])
+    external_by_edge = {
+        int(item["edge_id"]): item for item in external_call_refinement_modules
+    }
+    proof_chunk_size = max(
+        1, int(os.environ.get("WINCR_STAGE_A_PRODUCT_PROOF_CHUNK", "16"))
+    )
+    decoded_by_node: dict[int, tuple[dict[str, Any], str]] = {}
+    decoded_candidates = evidence["decoded_control_candidates"]
+    for chunk_index, offset in enumerate(
+        range(0, len(decoded_candidates), proof_chunk_size)
+    ):
+        module = f"RelationalProductDecodedControlChunk{chunk_index}"
+        for candidate in decoded_candidates[offset : offset + proof_chunk_size]:
+            decoded_by_node[int(candidate["node_id"])] = (candidate, module)
+    internal_by_edge: dict[int, tuple[dict[str, Any], str]] = {}
+    for chunk_index, offset in enumerate(
+        range(0, len(segment_candidates), proof_chunk_size)
+    ):
+        module = f"RelationalProductEdgeRefinementChunk{chunk_index}"
+        for candidate in segment_candidates[offset : offset + proof_chunk_size]:
+            internal_by_edge[int(candidate["edge_index"])] = (candidate, module)
+    missing_external_modules = [
+        edge_id for edge_id in refined_edge_ids
+        if edge_id not in internal_edge_ids and edge_id not in external_by_edge
+    ]
+    if missing_external_modules:
+        raise StageAInputError(
+            "reachable local evidence lacks generated external refinement modules for "
+            + ", ".join(str(edge_id) for edge_id in missing_external_modules)
+        )
+
+    def listed_proof(witnesses: list[str]) -> str:
+        return (
+            "".join(f"And.intro ({witness}) (" for witness in witnesses)
+            + "True.intro"
+            + ")" * len(witnesses)
+        )
+
+    complete = bool(evidence["reachable_product_local_complete"])
+    decoded_rows = ", ".join(str(node_id) for node_id in decoded_node_ids)
+    refined_rows = ", ".join(str(edge_id) for edge_id in refined_edge_ids)
+    evidence_source = (
+        "import StageA.RelationalEnvironment\n"
+        "\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "def relationalProductLocalEvidence : RelationalProductLocalEvidence := {\n"
+        f"  decodedNodeIds := [{decoded_rows}]\n"
+        f"  refinedEdgeIds := [{refined_rows}]\n"
+        "}\n\n"
+        "theorem relationalProductLocalDecodedNodeIdsIncreasingChecked :\n"
+        "    strictlyIncreasingNats\n"
+        "      relationalProductLocalEvidence.decodedNodeIds = true := by decide\n\n"
+        "theorem relationalProductLocalRefinedEdgeIdsIncreasingChecked :\n"
+        "    strictlyIncreasingNats\n"
+        "      relationalProductLocalEvidence.refinedEdgeIds = true := by decide\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalReachableProductLocalEvidence.lean",
+        evidence_source,
+    )
+
+    local_chunk_size = max(
+        1,
+        int(os.environ.get("WINCR_STAGE_A_REACHABLE_PRODUCT_LOCAL_CHUNK", "8")),
+    )
+    node_chunks: list[dict[str, str]] = []
+    for chunk_index, offset in enumerate(
+        range(0, len(decoded_node_ids), local_chunk_size)
+    ):
+        selected_ids = decoded_node_ids[offset : offset + local_chunk_size]
+        module = f"RelationalReachableProductNodeChunk{chunk_index}"
+        ids_name = f"reachableProductNodeChunk{chunk_index}Ids"
+        theorem_name = f"reachableProductNodeChunk{chunk_index}Checked"
+        validity_theorem_name = (
+            f"reachableProductNodeChunk{chunk_index}ValidityChecked"
+        )
+        imports: set[str] = set()
+        witnesses: list[str] = []
+        for node_id in selected_ids:
+            candidate, decoded_module = decoded_by_node[node_id]
+            imports.add(decoded_module)
+            region_index = int(candidate["region_index"])
+            witnesses.append(
+                f"⟨region{region_index}, originalBehavior{region_index}, "
+                f"candidateBehavior{region_index}, "
+                f"productNode{node_id}DecodedControlEdgesComplete⟩"
+            )
+        validity_proof = listed_proof([
+            "⟨by decide, by decide⟩" for _ in selected_ids
+        ])
+        chunk_source = (
+            "import StageA.RelationalReachableProductLocalEvidence\n"
+            + "".join(f"import StageA.{item}\n" for item in sorted(imports))
+            + "\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            f"def {ids_name} : List Nat := ["
+            + ", ".join(str(node_id) for node_id in selected_ids)
+            + "]\n\n"
+            f"theorem {validity_theorem_name} :\n"
+            "    AllListedReachableProductNodes relationalProductGraph\n"
+            f"      relationalProductReachabilityEvidence {ids_name} := by\n"
+            f"  exact {validity_proof}\n\n"
+            f"theorem {theorem_name} :\n"
+            "    AllListedDecodedControlNodesComplete relationalProductGraph\n"
+            f"      staticProofContext {ids_name} := by\n"
+            f"  exact {listed_proof(witnesses)}\n\n"
+            "end StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", chunk_source)
+        node_chunks.append({
+            "module": module,
+            "ids": ids_name,
+            "theorem": theorem_name,
+            "validity_theorem": validity_theorem_name,
+        })
+
+    edge_chunks: list[dict[str, str]] = []
+    for chunk_index, offset in enumerate(
+        range(0, len(refined_edge_ids), local_chunk_size)
+    ):
+        selected_ids = refined_edge_ids[offset : offset + local_chunk_size]
+        module = f"RelationalReachableProductEdgeChunk{chunk_index}"
+        ids_name = f"reachableProductEdgeChunk{chunk_index}Ids"
+        theorem_name = f"reachableProductEdgeChunk{chunk_index}Checked"
+        validity_theorem_name = (
+            f"reachableProductEdgeChunk{chunk_index}ValidityChecked"
+        )
+        imports: set[str] = set()
+        witnesses: list[str] = []
+        for edge_id in selected_ids:
+            if edge_id in internal_edge_ids:
+                candidate, internal_module = internal_by_edge[edge_id]
+                imports.add(internal_module)
+                source_index = int(candidate["source_region_index"])
+                target_index = int(candidate["target_region_index"])
+                witnesses.append(
+                    f"Or.inl ⟨segmentRefinementEdge{edge_id}Spec, "
+                    f"region{source_index}.inputInvariant, "
+                    f"region{target_index}.inputInvariant, "
+                    f"productEdge{edge_id}Refined⟩"
+                )
+                continue
+            item = external_by_edge[edge_id]
+            imports.add(str(item["module"]))
+            source_index = int(item["source_region_index"])
+            witnesses.append(
+                f"Or.inr ⟨externalCallSite{edge_id}, "
+                f"externalCallEdge{edge_id}Spec, region{source_index}.inputInvariant, "
+                f"by decide, {item['theorem']}⟩"
+            )
+        validity_proof = listed_proof(["by decide" for _ in selected_ids])
+        chunk_source = (
+            "import StageA.RelationalReachableProductLocalEvidence\n"
+            + "".join(f"import StageA.{item}\n" for item in sorted(imports))
+            + "\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            f"def {ids_name} : List Nat := ["
+            + ", ".join(str(edge_id) for edge_id in selected_ids)
+            + "]\n\n"
+            f"theorem {validity_theorem_name} :\n"
+            "    AllListedReachableFeasibleProductEdges relationalProductGraph\n"
+            f"      relationalProductReachabilityEvidence {ids_name} := by\n"
+            f"  exact {validity_proof}\n\n"
+            f"theorem {theorem_name} :\n"
+            "    AllListedProductEdgesLocallyRefined staticProofContext\n"
+            f"      relationalProductGraph {ids_name} := by\n"
+            f"  exact {listed_proof(witnesses)}\n\n"
+            "end StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", chunk_source)
+        edge_chunks.append({
+            "module": module,
+            "ids": ids_name,
+            "theorem": theorem_name,
+            "validity_theorem": validity_theorem_name,
+        })
+
+    def append_proof(
+        chunks: list[dict[str, str]], theorem: str, arguments: str,
+        proof_key: str = "theorem",
+    ) -> str:
+        if not chunks:
+            return "True.intro"
+        proof = chunks[-1][proof_key]
+        ids = chunks[-1]["ids"]
+        for chunk in reversed(chunks[:-1]):
+            proof = (
+                f"{theorem} {arguments} {chunk['ids']} ({ids}) "
+                f"{chunk[proof_key]} ({proof})"
+            )
+            ids = f"{chunk['ids']} ++ ({ids})"
+        return proof
+
+    node_simp_arguments = ", ".join([
+        "relationalProductLocalEvidence",
+        *(item["ids"] for item in node_chunks),
+    ])
+    node_certificate_source = (
+        "import StageA.RelationalReachableProductLocalEvidence\n"
+        + "".join(f"import StageA.{item['module']}\n" for item in node_chunks)
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "theorem allReachableListedProductNodesValidChecked :\n"
+        "    AllListedReachableProductNodes relationalProductGraph\n"
+        "      relationalProductReachabilityEvidence\n"
+        "      relationalProductLocalEvidence.decodedNodeIds := by\n"
+        f"  simpa [{node_simp_arguments}] using\n    ("
+        + append_proof(
+            node_chunks,
+            "allListedReachableProductNodes_append",
+            "relationalProductGraph relationalProductReachabilityEvidence",
+            "validity_theorem",
+        )
+        + ")\n\n"
+        "theorem allReachableListedDecodedControlNodesCompleteChecked :\n"
+        "    AllListedDecodedControlNodesComplete relationalProductGraph\n"
+        "      staticProofContext relationalProductLocalEvidence.decodedNodeIds := by\n"
+        f"  simpa [{node_simp_arguments}] using\n    ("
+        + append_proof(
+            node_chunks,
+            "allListedDecodedControlNodesComplete_append",
+            "relationalProductGraph staticProofContext",
+        )
+        + ")\n\nend StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalReachableProductNodeCertificate.lean",
+        node_certificate_source,
+    )
+
+    edge_simp_arguments = ", ".join([
+        "relationalProductLocalEvidence",
+        *(item["ids"] for item in edge_chunks),
+    ])
+    edge_certificate_source = (
+        "import StageA.RelationalReachableProductLocalEvidence\n"
+        + "".join(f"import StageA.{item['module']}\n" for item in edge_chunks)
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "theorem allReachableListedProductEdgesValidChecked :\n"
+        "    AllListedReachableFeasibleProductEdges relationalProductGraph\n"
+        "      relationalProductReachabilityEvidence\n"
+        "      relationalProductLocalEvidence.refinedEdgeIds := by\n"
+        f"  simpa [{edge_simp_arguments}] using\n    ("
+        + append_proof(
+            edge_chunks,
+            "allListedReachableFeasibleProductEdges_append",
+            "relationalProductGraph relationalProductReachabilityEvidence",
+            "validity_theorem",
+        )
+        + ")\n\n"
+        "theorem allReachableListedProductEdgesLocallyRefinedChecked :\n"
+        "    AllListedProductEdgesLocallyRefined staticProofContext\n"
+        "      relationalProductGraph relationalProductLocalEvidence.refinedEdgeIds := by\n"
+        f"  simpa [{edge_simp_arguments}] using\n    ("
+        + append_proof(
+            edge_chunks,
+            "allListedProductEdgesLocallyRefined_append",
+            "staticProofContext relationalProductGraph",
+        )
+        + ")\n\nend StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalReachableProductEdgeCertificate.lean",
+        edge_certificate_source,
+    )
+
+    complete_certificate = ""
+    if complete:
+        complete_certificate = (
+            "\ntheorem relationalProductLocalEvidenceCompleteChecked :\n"
+            "    relationalProductLocalEvidence.complete relationalProductGraph\n"
+            "      relationalProductReachabilityEvidence = true := by decide\n\n"
+            "def reachableProductLocalCertificate :\n"
+            "    ReachableProductLocalCertificate staticProofContext\n"
+            "      relationalProductGraph relationalProductReachabilityEvidence := {\n"
+            "  staticContextValid := staticProofContextChecked\n"
+            "  reachabilitySound := "
+            "generatedDeclaredGraphReachabilityCertificateChecked\n"
+            "  reachableControlComplete :=\n"
+            "    reachableProductNodesDecodedControlComplete_of_complete_evidence\n"
+            "      staticProofContext relationalProductGraph\n"
+            "      relationalProductReachabilityEvidence relationalProductLocalEvidence\n"
+            "      relationalProductLocalEvidenceCompleteChecked\n"
+            "      allReachableListedDecodedControlNodesCompleteChecked\n"
+            "  reachableEdgesRefined :=\n"
+            "    reachableProductEdgesLocallyRefined_of_complete_evidence\n"
+            "      staticProofContext relationalProductGraph\n"
+            "      relationalProductReachabilityEvidence relationalProductLocalEvidence\n"
+            "      relationalProductLocalEvidenceCompleteChecked\n"
+            "      allReachableListedProductEdgesLocallyRefinedChecked\n"
+            "}\n"
+        )
+
+    source = (
+        "import StageA.RelationalReachableProductLocalEvidence\n"
+        "import StageA.RelationalReachableProductNodeCertificate\n"
+        "import StageA.RelationalReachableProductEdgeCertificate\n"
+        + (
+            "import StageA.RelationalProductReachabilityCertificate\n"
+            if complete else ""
+        )
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "def GeneratedPartialReachableProductLocalCertificate : Prop :=\n"
+        "  PartialReachableProductLocalCertificate staticProofContext\n"
+        "    relationalProductGraph relationalProductReachabilityEvidence\n"
+        "    relationalProductLocalEvidence\n\n"
+        "theorem generatedPartialReachableProductLocalCertificateChecked :\n"
+        "    GeneratedPartialReachableProductLocalCertificate := {\n"
+        "  decodedNodeIdsIncreasing :=\n"
+        "    relationalProductLocalDecodedNodeIdsIncreasingChecked\n"
+        "  decodedNodeIdsValid := allReachableListedProductNodesValidChecked\n"
+        "  refinedEdgeIdsIncreasing :=\n"
+        "    relationalProductLocalRefinedEdgeIdsIncreasingChecked\n"
+        "  refinedEdgeIdsValid := allReachableListedProductEdgesValidChecked\n"
+        "  decodedControlComplete :=\n"
+        "    allReachableListedDecodedControlNodesCompleteChecked\n"
+        "  edgesLocallyRefined :=\n"
+        "    allReachableListedProductEdgesLocallyRefinedChecked\n"
+        "}\n"
+        + complete_certificate
+        + "\nend StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalReachableProductLocalCertificate.lean",
+        source,
+    )
+
+
+def _write_relational_product_graph_modules(
+    lean_dir: Path,
+    product_graph: dict[str, Any],
+    segment_candidates: list[dict[str, Any]],
+    segment_refinement_modules: list[dict[str, Any]],
+    decode_chunk_regions: list[list[int]],
+) -> list[str]:
+    nodes = product_graph["nodes"]
+    edges = product_graph["edges"]
+    evidence = product_graph["evidence"]
+    node_rows = ",\n    ".join(
+        "{ "
+        f"id := {node['id']}, targetId := {node['target_id']}, "
+        f"root := {_lean_bool(bool(node['root']))}, outgoingEdgeIds := ["
+        + ", ".join(str(edge_id) for edge_id in node["outgoing_edge_ids"])
+        + "] }"
+        for node in nodes
+    )
+    edge_rows = ",\n    ".join(
+        "{ "
+        f"id := {edge['id']}, sourceNodeId := {edge['source_node_id']}, "
+        f"targetNodeId := {edge['target_node_id']}, "
+        f"sourceTargetId := {edge['source_target_id']}, "
+        f"targetTargetId := {edge['target_target_id']}, kind := .{edge['kind']}, "
+        f"originalGuard := {_lean_semantic_bool_expr(edge['original_guard'])}, "
+        f"candidateGuard := {_lean_semantic_bool_expr(edge['candidate_guard'])}, "
+        f"infeasible := {_lean_bool(bool(edge['infeasible']))} }}"
+        for edge in edges
+    )
+    roots = ", ".join(str(node_id) for node_id in product_graph["root_node_ids"])
+    proved = ", ".join(str(edge_id) for edge_id in evidence["proved_edge_ids"])
+    covered = ", ".join(str(node_id) for node_id in evidence["covered_node_ids"])
+    reachable = ", ".join(
+        _lean_bool(bool(value)) for value in evidence["declared_reachable_bits"]
+    )
+    decoded_control_complete = ", ".join(
+        str(node_id) for node_id in evidence["decoded_control_complete_node_ids"]
+    )
+    context_source = (
+        "import StageA.RelationalComposition\n"
+        "import StageA.RelationalStaticContext\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "def relationalProductGraph : RelationalProductGraph := {\n"
+        f"  nodes := #[\n    {node_rows}\n  ]\n"
+        f"  edges := #[\n    {edge_rows}\n  ]\n"
+        f"  rootNodeIds := [{roots}]\n"
+        "}\n\n"
+        "def relationalProductEvidence : RelationalProductEvidence := {\n"
+        f"  provedEdgeIds := [{proved}]\n"
+        "}\n\n"
+        "def relationalProductCoverageEvidence : RelationalProductCoverageEvidence := {\n"
+        f"  coveredNodeIds := [{covered}]\n"
+        "}\n\n"
+        "def relationalProductReachabilityEvidence : "
+        "RelationalProductReachabilityEvidence := {\n"
+        f"  reachable := #[{reachable}]\n"
+        "}\n\n"
+        "def relationalDecodedControlEvidence : RelationalDecodedControlEvidence := {\n"
+        f"  completeNodeIds := [{decoded_control_complete}]\n"
+        "}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalProductGraphContext.lean",
+        context_source,
+    )
+
+    chunk_size = max(
+        1, int(os.environ.get("WINCR_STAGE_A_PRODUCT_GRAPH_CHUNK", "16"))
+    )
+    node_ranges = _static_index_ranges(len(nodes), chunk_size)
+    edge_ranges = _static_index_ranges(len(edges), chunk_size)
+    chunk_count = max(len(node_ranges), len(edge_ranges))
+    modules: list[str] = []
+    node_claims: list[tuple[str, str]] = []
+    edge_claims: list[tuple[str, str]] = []
+    for chunk_index in range(chunk_count):
+        module = f"RelationalProductGraphChunk{chunk_index}"
+        modules.append(module)
+        definitions: list[str] = []
+        if chunk_index < len(node_ranges):
+            start, size = node_ranges[chunk_index]
+            range_name = f"productNodeRange{chunk_index}"
+            theorem_name = f"productNodeRange{chunk_index}Checked"
+            definitions.extend([
+                _lean_static_range(range_name, start, size),
+                (
+                    f"theorem {theorem_name} :\n"
+                    "    IndexedBoolRangeHolds "
+                    "(relationalProductGraph.nodeAtValid staticProofContext) "
+                    f"{range_name} :=\n"
+                    "  indexedBoolRangeHolds_of_checked "
+                    "(relationalProductGraph.nodeAtValid staticProofContext) "
+                    f"{range_name} (by decide)"
+                ),
+            ])
+            node_claims.append((range_name, theorem_name))
+        if chunk_index < len(edge_ranges):
+            start, size = edge_ranges[chunk_index]
+            range_name = f"productEdgeRange{chunk_index}"
+            theorem_name = f"productEdgeRange{chunk_index}Checked"
+            definitions.extend([
+                _lean_static_range(range_name, start, size),
+                (
+                    f"theorem {theorem_name} :\n"
+                    "    IndexedBoolRangeHolds relationalProductGraph.edgeAtValid "
+                    f"{range_name} :=\n"
+                    "  indexedBoolRangeHolds_of_checked "
+                    f"relationalProductGraph.edgeAtValid {range_name} (by decide)"
+                ),
+            ])
+            edge_claims.append((range_name, theorem_name))
+        source = (
+            "import StageA.RelationalProductGraphContext\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+
+    def range_certificate_source(
+        family: str,
+        claims: list[tuple[str, str]],
+        predicate: str,
+        size: int,
+    ) -> str:
+        ranges = ", ".join(name for name, _ in claims)
+        proof = (
+            "".join(f"And.intro {theorem} (" for _, theorem in claims)
+            + "True.intro"
+            + ")" * len(claims)
+        )
+        lower = family[0].lower() + family[1:]
+        return (
+            f"def product{family}Certificate : IndexedBoolCertificate := "
+            f"{{ ranges := [{ranges}] }}\n\n"
+            f"theorem product{family}Checked :\n"
+            f"    product{family}Certificate.Holds {predicate} {size} :=\n"
+            "  IndexedBoolCertificate.holds_of_ranges "
+            f"{predicate} {size} product{family}Certificate (by decide)\n"
+            f"    ({proof})\n\n"
+        )
+
+    aggregate_imports = "\n".join(f"import StageA.{module}" for module in modules)
+    complete = bool(evidence["complete"])
+    candidate_by_edge = {
+        int(candidate["edge_index"]): candidate for candidate in segment_candidates
+    }
+    certificate_source = (
+        aggregate_imports
+        + "\n\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        + range_certificate_source(
+            "Nodes", node_claims,
+            "(relationalProductGraph.nodeAtValid staticProofContext)", len(nodes),
+        )
+        + range_certificate_source(
+            "Edges", edge_claims, "relationalProductGraph.edgeAtValid", len(edges),
+        )
+        + "theorem relationalProductGraphRootsChecked :\n"
+        "    relationalProductGraph.rootsValid staticProofContext = true := by decide\n\n"
+        "theorem relationalProductGraphIndexedValidChecked :\n"
+        "    relationalProductGraph.IndexedValid staticProofContext :=\n"
+        "  ⟨productNodesChecked, productEdgesChecked, relationalProductGraphRootsChecked⟩\n\n"
+        "theorem relationalProductEvidenceValidChecked :\n"
+        "    relationalProductEvidence.valid relationalProductGraph = true := by decide\n\n"
+        "theorem relationalProductCoverageEvidenceValidChecked :\n"
+        "    relationalProductCoverageEvidence.valid relationalProductGraph = true := by decide\n\n"
+        f"theorem relationalProductEvidenceCompletenessChecked :\n"
+        f"    relationalProductEvidence.complete relationalProductGraph = "
+        f"{_lean_bool(complete)} := by decide\n"
+        + "\n\nend StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalProductGraphCertificate.lean",
+        certificate_source,
+    )
+
+    proof_chunk_size = max(
+        1, int(os.environ.get("WINCR_STAGE_A_PRODUCT_PROOF_CHUNK", "16"))
+    )
+    decode_chunk_by_region = {
+        region_index: chunk_index
+        for chunk_index, region_indices in enumerate(decode_chunk_regions)
+        for region_index in region_indices
+    }
+    import_seed_candidates = evidence.get("import_register_seed_candidates", [])
+    import_seed_modules: list[dict[str, str]] = []
+    seeds_by_decode_chunk: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    for seed_index, candidate in enumerate(import_seed_candidates):
+        seeds_by_decode_chunk.setdefault(
+            decode_chunk_by_region[int(candidate["region_index"])], []
+        ).append((seed_index, candidate))
+    for module_index, (decode_chunk_index, selected) in enumerate(
+        sorted(seeds_by_decode_chunk.items())
+    ):
+        module = f"RelationalImportRegisterSeedChunk{module_index}"
+        claims_name = f"importRegisterSeedChunk{module_index}Claims"
+        checked_name = f"importRegisterSeedChunk{module_index}Checked"
+        definitions: list[str] = []
+        theorem_names: list[str] = []
+        for seed_index, candidate in selected:
+            region_index = int(candidate["region_index"])
+            original_normalized = f"importSeed{seed_index}OriginalNormalized"
+            candidate_normalized = f"importSeed{seed_index}CandidateNormalized"
+            claim_name = f"importSeed{seed_index}Claim"
+            proposition_name = f"importSeed{seed_index}Proposition"
+            theorem_name = f"importSeed{seed_index}Checked"
+            theorem_names.append(theorem_name)
+            definitions.extend([
+                f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                f"originalBehavior{region_index}).get (by decide)",
+                f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                f"candidateBehavior{region_index}).get (by decide)",
+                f"def {claim_name} : ImportRegisterSeedClaim := "
+                + _lean_import_register_seed_claim(candidate),
+                f"def {proposition_name} : Prop :=\n"
+                f"  ImportRegisterSeedClosed originalPe candidatePe "
+                f"originalImports candidateImports "
+                f"region{region_index}.inputInvariant {original_normalized} "
+                f"{candidate_normalized} {claim_name}",
+                f"theorem {theorem_name} : {proposition_name} :=\n"
+                f"  importRegisterSeedClosed_of_checked originalPe candidatePe "
+                f"originalImports candidateImports "
+                f"region{region_index}.inputInvariant {original_normalized} "
+                f"{candidate_normalized} {claim_name} (by decide)",
+            ])
+        proof = (
+            "".join(f"And.intro {theorem} (" for theorem in theorem_names)
+            + "True.intro"
+            + ")" * len(theorem_names)
+        )
+        definitions.extend([
+            f"def {claims_name} : List Prop := ["
+            + ", ".join(
+                f"importSeed{seed_index}Proposition"
+                for seed_index, _candidate in selected
+            )
+            + "]",
+            f"theorem {checked_name} : AllInvariantClaims {claims_name} := by\n"
+            f"  exact {proof}",
+        ])
+        source = (
+            "import StageA.RelationalComposition\n"
+            f"import StageA.RelationalProofOriginalDecodeChunk{decode_chunk_index}\n"
+            f"import StageA.RelationalProofCandidateDecodeChunk{decode_chunk_index}\n"
+            + "\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+        import_seed_modules.append({
+            "module": module, "claims": claims_name, "theorem": checked_name,
+        })
+    import_seed_certificate_type = " ∧ ".join(
+        [f"AllInvariantClaims {item['claims']}" for item in import_seed_modules]
+        + ["True"]
+    )
+    import_seed_certificate_proof = (
+        "".join(f"And.intro {item['theorem']} (" for item in import_seed_modules)
+        + "True.intro"
+        + ")" * len(import_seed_modules)
+    )
+    import_seed_certificate_source = (
+        "".join(f"import StageA.{item['module']}\n" for item in import_seed_modules)
+        + "import StageA.RelationalProductGraphContext\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        f"def GeneratedImportRegisterSeedCertificate : Prop := "
+        f"{import_seed_certificate_type}\n\n"
+        "theorem generatedImportRegisterSeedCertificateChecked :\n"
+        "    GeneratedImportRegisterSeedCertificate := by\n"
+        f"  exact {import_seed_certificate_proof}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalImportRegisterSeedCertificate.lean",
+        import_seed_certificate_source,
+    )
+    dynamic_call_candidates = evidence.get(
+        "dynamic_range_indirect_call_candidates", []
+    )
+    dynamic_call_modules: list[dict[str, str]] = []
+    dynamic_calls_by_decode_chunk: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    for call_index, candidate in enumerate(dynamic_call_candidates):
+        source_region_index = int(candidate["source_region_index"])
+        dynamic_calls_by_decode_chunk.setdefault(
+            decode_chunk_by_region[source_region_index], []
+        ).append((call_index, candidate))
+    for module_index, (decode_chunk_index, selected) in enumerate(
+        sorted(dynamic_calls_by_decode_chunk.items())
+    ):
+        module = f"RelationalDynamicRangeIndirectCallChunk{module_index}"
+        claims_name = f"dynamicRangeIndirectCallChunk{module_index}Claims"
+        checked_name = f"dynamicRangeIndirectCallChunk{module_index}Checked"
+        definitions: list[str] = []
+        theorem_names: list[str] = []
+        proposition_names: list[str] = []
+        for call_index, candidate in selected:
+            region_index = int(candidate["source_region_index"])
+            original_normalized = f"dynamicCall{call_index}OriginalNormalized"
+            candidate_normalized = f"dynamicCall{call_index}CandidateNormalized"
+            claim_name = f"dynamicCall{call_index}Claim"
+            proposition_name = f"dynamicCall{call_index}Proposition"
+            theorem_name = f"dynamicCall{call_index}Checked"
+            theorem_names.append(theorem_name)
+            proposition_names.append(proposition_name)
+            definitions.extend([
+                f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                f"originalBehavior{region_index}).get (by decide)",
+                f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                f"candidateBehavior{region_index}).get (by decide)",
+                f"def {claim_name} : DynamicRangeIndirectCallClaim := {{\n"
+                f"  rangeRelation := "
+                f"{_lean_dynamic_range_relation(candidate['range_relation'])}\n"
+                f"  wordOffset := {int(candidate['word_offset'])}\n"
+                f"  continuationTargetId := "
+                f"{int(candidate['continuation_target_id'])}\n"
+                "}",
+                f"def {proposition_name} : Prop :=\n"
+                f"  DynamicRangeIndirectCallTargetsClosed "
+                f"region{region_index}.inputInvariant {original_normalized} "
+                f"{candidate_normalized} {claim_name}",
+                f"theorem {theorem_name} : {proposition_name} :=\n"
+                "  dynamicRangeIndirectCallTargetsClosed_of_checked "
+                f"region{region_index}.inputInvariant {original_normalized} "
+                f"{candidate_normalized} {claim_name} (by decide)",
+            ])
+        proof = (
+            "".join(f"And.intro {theorem} (" for theorem in theorem_names)
+            + "True.intro"
+            + ")" * len(theorem_names)
+        )
+        definitions.extend([
+            f"def {claims_name} : List Prop := ["
+            + ", ".join(proposition_names)
+            + "]",
+            f"theorem {checked_name} : AllInvariantClaims {claims_name} := by\n"
+            f"  exact {proof}",
+        ])
+        source = (
+            "import StageA.RelationalComposition\n"
+            f"import StageA.RelationalProofOriginalDecodeChunk{decode_chunk_index}\n"
+            f"import StageA.RelationalProofCandidateDecodeChunk{decode_chunk_index}\n"
+            + "\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+        dynamic_call_modules.append({
+            "module": module,
+            "claims": claims_name,
+            "theorem": checked_name,
+        })
+    dynamic_call_certificate_type = " ∧ ".join(
+        [f"AllInvariantClaims {item['claims']}" for item in dynamic_call_modules]
+        + ["True"]
+    )
+    dynamic_call_certificate_proof = (
+        "".join(
+            f"And.intro {item['theorem']} (" for item in dynamic_call_modules
+        )
+        + "True.intro"
+        + ")" * len(dynamic_call_modules)
+    )
+    dynamic_call_certificate_source = (
+        "".join(f"import StageA.{item['module']}\n" for item in dynamic_call_modules)
+        + "import StageA.RelationalComposition\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        f"def GeneratedDynamicRangeIndirectCallCertificate : Prop := "
+        f"{dynamic_call_certificate_type}\n\n"
+        "theorem generatedDynamicRangeIndirectCallCertificateChecked :\n"
+        "    GeneratedDynamicRangeIndirectCallCertificate := by\n"
+        f"  exact {dynamic_call_certificate_proof}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalDynamicRangeIndirectCallCertificate.lean",
+        dynamic_call_certificate_source,
+    )
+    dynamic_fanout_by_source: dict[int, dict[str, str]] = {}
+    dynamic_fanout_chunk_size = max(
+        1, int(os.environ.get("WINCR_STAGE_A_DYNAMIC_FANOUT_CHUNK", "32"))
+    )
+    for group in evidence.get("dynamic_range_indirect_call_edge_groups", []):
+        source_node_id = int(group["source_node_id"])
+        candidate_index = int(group["candidate_index"])
+        candidate = dynamic_call_candidates[candidate_index]
+        edge_ids = [int(edge_id) for edge_id in group["edge_ids"]]
+        if not edge_ids:
+            raise StageAInputError(
+                f"dynamic indirect-call node {source_node_id} has an empty fanout"
+            )
+        first_edge_id = edge_ids[0]
+        if edge_ids != list(range(first_edge_id, first_edge_id + len(edge_ids))):
+            raise StageAInputError(
+                f"dynamic indirect-call node {source_node_id} fanout is not contiguous"
+            )
+        claim_name = f"productDynamicCall{candidate_index}Claim"
+        first_edge_name = f"productDynamicCall{candidate_index}FirstEdgeId"
+        node_name = f"productDynamicCall{candidate_index}Node"
+        node_resolved_name = f"productDynamicCall{candidate_index}NodeResolved"
+        predicate = (
+            "(dynamicRangeIndirectCallEdgeAtMatches relationalProductGraph "
+            f"{source_node_id} staticProofContext {claim_name} {first_edge_name})"
+        )
+        context_module = f"RelationalDynamicCallFanoutContext{candidate_index}"
+        context_source = (
+            "import StageA.RelationalProductGraphContext\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            f"def {claim_name} : DynamicRangeIndirectCallClaim := {{\n"
+            f"  rangeRelation := "
+            f"{_lean_dynamic_range_relation(candidate['range_relation'])}\n"
+            f"  wordOffset := {int(candidate['word_offset'])}\n"
+            f"  continuationTargetId := "
+            f"{int(candidate['continuation_target_id'])}\n"
+            "}\n\n"
+            f"def {first_edge_name} : Nat := {first_edge_id}\n\n"
+            "end StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(
+            lean_dir / "StageA" / f"{context_module}.lean", context_source
+        )
+        range_claims: list[tuple[str, str]] = []
+        range_modules: list[str] = []
+        for range_index, (start, size) in enumerate(
+            _static_index_ranges(len(edge_ids), dynamic_fanout_chunk_size)
+        ):
+            module = (
+                f"RelationalDynamicCallFanout{candidate_index}Range{range_index}"
+            )
+            range_modules.append(module)
+            range_name = f"productDynamicCall{candidate_index}Range{range_index}"
+            theorem_name = f"{range_name}Checked"
+            range_source = (
+                f"import StageA.{context_module}\n\n"
+                "namespace StageA.GeneratedRelational\n\n"
+                "open StageA.Formal StageA.Relational\n\n"
+                "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+                + _lean_static_range(range_name, start, size)
+                + "\n\n"
+                f"theorem {theorem_name} :\n"
+                f"    IndexedBoolRangeHolds {predicate} {range_name} :=\n"
+                f"  indexedBoolRangeHolds_of_checked {predicate} {range_name} "
+                "(by decide)\n\n"
+                "end StageA.GeneratedRelational\n"
+            )
+            _write_text_if_changed(
+                lean_dir / "StageA" / f"{module}.lean", range_source
+            )
+            range_claims.append((range_name, theorem_name))
+        certificate_module = (
+            f"RelationalDynamicCallFanoutCertificate{candidate_index}"
+        )
+        certificate_name = f"productDynamicCall{candidate_index}EdgeCertificate"
+        holds_name = f"productDynamicCall{candidate_index}EdgesChecked"
+        match_name = f"productDynamicCall{candidate_index}EdgesMatch"
+        ranges = ", ".join(name for name, _ in range_claims)
+        range_proof = (
+            "".join(f"And.intro {theorem} (" for _, theorem in range_claims)
+            + "True.intro"
+            + ")" * len(range_claims)
+        )
+        certificate_source = (
+            "".join(f"import StageA.{module}\n" for module in range_modules)
+            + f"import StageA.{context_module}\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            f"def {node_name} : RelationalProductNode :=\n"
+            f"  (relationalProductGraph.getNode? {source_node_id}).get (by decide)\n\n"
+            f"theorem {node_resolved_name} :\n"
+            f"    relationalProductGraph.getNode? {source_node_id} = some {node_name} :=\n"
+            "  (Option.some_get (x := relationalProductGraph.getNode? "
+            f"{source_node_id}) (by decide)).symm\n\n"
+            f"def {certificate_name} : IndexedBoolCertificate := "
+            f"{{ ranges := [{ranges}] }}\n\n"
+            f"theorem {holds_name} :\n"
+            f"    {certificate_name}.Holds {predicate} {len(edge_ids)} :=\n"
+            "  IndexedBoolCertificate.holds_of_ranges "
+            f"{predicate} {len(edge_ids)} {certificate_name} (by decide)\n"
+            f"    ({range_proof})\n\n"
+            f"theorem {match_name} :\n"
+            "    DynamicRangeIndirectCallEdgesMatch relationalProductGraph "
+            f"{source_node_id} staticProofContext {claim_name} "
+            f"{first_edge_name} := by\n"
+            "  unfold DynamicRangeIndirectCallEdgesMatch\n"
+            f"  rw [{node_resolved_name}]\n"
+            f"  exact ⟨by decide, {holds_name}⟩\n\n"
+            "end StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(
+            lean_dir / "StageA" / f"{certificate_module}.lean",
+            certificate_source,
+        )
+        dynamic_fanout_by_source[source_node_id] = {
+            "module": certificate_module,
+            "claim": claim_name,
+            "first_edge": first_edge_name,
+            "match": match_name,
+        }
+    decoded_control_candidates = evidence["decoded_control_candidates"]
+    decoded_control_modules: list[str] = []
+    for chunk_index, offset in enumerate(
+        range(0, len(decoded_control_candidates), proof_chunk_size)
+    ):
+        selected = decoded_control_candidates[offset : offset + proof_chunk_size]
+        module = f"RelationalProductDecodedControlChunk{chunk_index}"
+        decoded_control_modules.append(module)
+        definitions: list[str] = []
+        extra_imports: set[str] = set()
+        imported_decode_chunks = sorted({
+            decode_chunk_by_region[int(candidate["region_index"])]
+            for candidate in selected
+        })
+        for candidate in selected:
+            node_id = int(candidate["node_id"])
+            region_index = int(candidate["region_index"])
+            theorem_name = f"productNode{node_id}DecodedControlEdgesComplete"
+            if candidate.get("profile") == "immutable_relocated_function_pointer_call_v1":
+                original_normalized = f"productNode{node_id}OriginalNormalized"
+                candidate_normalized = f"productNode{node_id}CandidateNormalized"
+                claim_name = f"productNode{node_id}ImmutableIndirectCallClaim"
+                closed_name = f"productNode{node_id}ImmutableIndirectCallClosed"
+                original_writes = ", ".join(
+                    _lean_register_offset_write(write)
+                    for write in candidate["original_writes"]
+                )
+                candidate_writes = ", ".join(
+                    _lean_register_offset_write(write)
+                    for write in candidate["candidate_writes"]
+                )
+                definitions.extend([
+                    f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index}).get (by decide)",
+                    f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index}).get (by decide)",
+                    f"def {claim_name} : ImmutableIndirectCallTargetClaim := {{\n"
+                    f"  targetId := {int(candidate['target_id'])}\n"
+                    f"  continuationTargetId := {int(candidate['continuation_target_id'])}\n"
+                    f"  originalAddress := {int(candidate['original_address'])}\n"
+                    f"  candidateAddress := {int(candidate['candidate_address'])}\n"
+                    f"  originalAssembledRead := "
+                    f"{_lean_bool(bool(candidate['original_assembled_read']))}\n"
+                    f"  candidateAssembledRead := "
+                    f"{_lean_bool(bool(candidate['candidate_assembled_read']))}\n"
+                    f"  originalWrites := [{original_writes}]\n"
+                    f"  candidateWrites := [{candidate_writes}]\n"
+                    "}",
+                    f"theorem {closed_name} :\n"
+                    f"    ImmutableIndirectCallTargetsClosed staticProofContext "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} :=\n"
+                    "  immutableIndirectCallTargetsClosed_of_checked staticProofContext "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} (by decide)",
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+                    f"  exact Or.inr (Or.inl ⟨{original_normalized}, {candidate_normalized}, "
+                    f"{claim_name}, ⟨originalBehavior{region_index}CheckedDecoded, "
+                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
+                    f"by decide, {closed_name}⟩⟩)",
+                ])
+            elif candidate.get("profile") == "immutable_relocated_function_pointer_jump_v1":
+                original_normalized = f"productNode{node_id}OriginalNormalized"
+                candidate_normalized = f"productNode{node_id}CandidateNormalized"
+                claim_name = f"productNode{node_id}ImmutableIndirectJumpClaim"
+                closed_name = f"productNode{node_id}ImmutableIndirectJumpClosed"
+                original_writes = ", ".join(
+                    _lean_register_offset_write(write)
+                    for write in candidate["original_writes"]
+                )
+                candidate_writes = ", ".join(
+                    _lean_register_offset_write(write)
+                    for write in candidate["candidate_writes"]
+                )
+                definitions.extend([
+                    f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index}).get (by decide)",
+                    f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index}).get (by decide)",
+                    f"theorem {original_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index} = some {original_normalized} := "
+                    "by decide",
+                    f"theorem {candidate_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index} = some {candidate_normalized} := "
+                    "by decide",
+                    f"theorem {original_normalized}WritesEmpty : "
+                    f"{original_normalized}.writes = [] := by decide",
+                    f"theorem {candidate_normalized}WritesEmpty : "
+                    f"{candidate_normalized}.writes = [] := by decide",
+                    f"theorem {original_normalized}X87 : "
+                    f"{original_normalized}.x87 = "
+                    f"originalBehavior{region_index}.x87 := by decide",
+                    f"theorem {candidate_normalized}X87 : "
+                    f"{candidate_normalized}.x87 = "
+                    f"candidateBehavior{region_index}.x87 := by decide",
+                    f"theorem {original_normalized}Esp : "
+                    f"{original_normalized}.registers.esp = .inputReg .esp := "
+                    "by decide",
+                    f"theorem {candidate_normalized}Esp : "
+                    f"{candidate_normalized}.registers.esp = .inputReg .esp := "
+                    "by decide",
+                    f"theorem {original_normalized}EspGet : "
+                    f"{original_normalized}.registers.get .esp = .inputReg .esp := "
+                    "by decide",
+                    f"theorem {candidate_normalized}EspGet : "
+                    f"{candidate_normalized}.registers.get .esp = .inputReg .esp := "
+                    "by decide",
+                    f"def {claim_name} : ImmutableIndirectJumpTargetClaim := {{\n"
+                    f"  targetId := {int(candidate['target_id'])}\n"
+                    f"  originalAddress := {int(candidate['original_address'])}\n"
+                    f"  candidateAddress := {int(candidate['candidate_address'])}\n"
+                    f"  originalAssembledRead := "
+                    f"{_lean_bool(bool(candidate['original_assembled_read']))}\n"
+                    f"  candidateAssembledRead := "
+                    f"{_lean_bool(bool(candidate['candidate_assembled_read']))}\n"
+                    f"  originalWrites := [{original_writes}]\n"
+                    f"  candidateWrites := [{candidate_writes}]\n"
+                    "}",
+                    f"theorem {closed_name} :\n"
+                    f"    ImmutableIndirectJumpTargetsClosed staticProofContext "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} :=\n"
+                    "  immutableIndirectJumpTargetsClosed_of_checked staticProofContext "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} (by decide)",
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr "
+                    f"⟨{original_normalized}, {candidate_normalized}, {claim_name}, "
+                    f"⟨originalBehavior{region_index}CheckedDecoded, "
+                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
+                    f"by decide, {closed_name}⟩⟩)))",
+                ])
+            elif candidate.get("profile") == "dynamic_range_code_pointer_call_v1":
+                original_normalized = f"productNode{node_id}OriginalNormalized"
+                candidate_normalized = f"productNode{node_id}CandidateNormalized"
+                fanout = dynamic_fanout_by_source[node_id]
+                extra_imports.add(fanout["module"])
+                claim_name = fanout["claim"]
+                first_edge_name = fanout["first_edge"]
+                match_name = fanout["match"]
+                closed_name = f"productNode{node_id}DynamicIndirectCallFiniteTargetsClosed"
+                definitions.extend([
+                    f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index}).get (by decide)",
+                    f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index}).get (by decide)",
+                    f"theorem {closed_name} :\n"
+                    "    DynamicRangeIndirectCallFiniteTargetsClosed "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} :=\n"
+                    "  dynamicRangeIndirectCallFiniteTargetsClosed_of_checked "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} (by decide)",
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+                    f"  exact Or.inr (Or.inr (Or.inr (Or.inl ⟨{original_normalized}, "
+                    f"{candidate_normalized}, {claim_name}, {first_edge_name}, "
+                    f"⟨originalBehavior{region_index}CheckedDecoded, "
+                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
+                    f"{match_name}, {closed_name}⟩⟩)))",
+                ])
+            elif candidate.get("profile") == "inductive_iat_register_call_v1":
+                original_normalized = f"productNode{node_id}OriginalNormalized"
+                candidate_normalized = f"productNode{node_id}CandidateNormalized"
+                claim_name = f"productNode{node_id}ImportIndirectCallClaim"
+                closed_name = f"productNode{node_id}ImportIndirectCallClosed"
+                definitions.extend([
+                    f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index}).get (by decide)",
+                    f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index}).get (by decide)",
+                    f"def {claim_name} : ImportRegisterIndirectCallClaim := {{\n"
+                    f"  imported := {_lean_external_target(candidate['import'])}\n"
+                    f"  originalRegister := .{candidate['original_register']}\n"
+                    f"  candidateRegister := .{candidate['candidate_register']}\n"
+                    f"  continuationTargetId := {int(candidate['continuation_target_id'])}\n"
+                    "}",
+                    f"theorem {closed_name} :\n"
+                    f"    ImportRegisterIndirectCallTargetsClosed "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} :=\n"
+                    "  importRegisterIndirectCallTargetsClosed_of_checked "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} (by decide)",
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+                    f"  exact Or.inr (Or.inr (Or.inl ⟨{original_normalized}, "
+                    f"{candidate_normalized}, {claim_name}, "
+                    f"⟨originalBehavior{region_index}CheckedDecoded, "
+                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
+                    f"by decide, {closed_name}⟩⟩))",
+                ])
+            else:
+                definitions.append(
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} :=\n"
+                    f"  Or.inl ⟨originalBehavior{region_index}CheckedDecoded, "
+                    f"candidateBehavior{region_index}CheckedDecoded, by decide⟩"
+                )
+        source = (
+            "import StageA.RelationalProductGraphContext\n"
+            + "".join(f"import StageA.{item}\n" for item in sorted(extra_imports))
+            + "".join(
+                f"import StageA.RelationalProofOriginalDecodeChunk{index}\n"
+                f"import StageA.RelationalProofCandidateDecodeChunk{index}\n"
+                for index in imported_decode_chunks
+            )
+            + "\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+
+    decoded_control_witnesses = [
+        (
+            f"⟨region{int(candidate['region_index'])}, "
+            f"originalBehavior{int(candidate['region_index'])}, "
+            f"candidateBehavior{int(candidate['region_index'])}, "
+            f"productNode{int(candidate['node_id'])}DecodedControlEdgesComplete⟩"
+        )
+        for candidate in decoded_control_candidates
+    ]
+    decoded_control_proof = (
+        "".join(f"And.intro {witness} (" for witness in decoded_control_witnesses)
+        + "True.intro"
+        + ")" * len(decoded_control_witnesses)
+    )
+    decoded_control_complete = (
+        evidence["decoded_control_complete_node_ids"] == list(range(len(nodes)))
+    )
+    decoded_control_source = (
+        "import StageA.RelationalProductGraphCertificate\n"
+        + "".join(f"import StageA.{module}\n" for module in decoded_control_modules)
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "theorem relationalDecodedControlEvidenceValidChecked :\n"
+        "    relationalDecodedControlEvidence.valid relationalProductGraph = true := by decide\n\n"
+        "theorem relationalDecodedControlEvidenceCompletenessChecked :\n"
+        "    relationalDecodedControlEvidence.complete relationalProductGraph = "
+        f"{_lean_bool(decoded_control_complete)} := by decide\n\n"
+        "theorem allListedDecodedControlNodesCompleteChecked :\n"
+        "    AllListedDecodedControlNodesComplete relationalProductGraph staticProofContext\n"
+        "      relationalDecodedControlEvidence.completeNodeIds := by\n"
+        f"  exact {decoded_control_proof}\n\n"
+        "def GeneratedPartialDecodedControlCompletenessCertificate : Prop :=\n"
+        "  PartialDecodedControlCompletenessCertificate relationalProductGraph "
+        "staticProofContext\n"
+        "    relationalDecodedControlEvidence\n\n"
+        "theorem generatedPartialDecodedControlCompletenessCertificateChecked :\n"
+        "    GeneratedPartialDecodedControlCompletenessCertificate :=\n"
+        "  ⟨relationalDecodedControlEvidenceValidChecked, "
+        "allListedDecodedControlNodesCompleteChecked⟩\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalProductDecodedControlCertificate.lean",
+        decoded_control_source,
+    )
+
+    reachability_modules: list[str] = []
+    reachability_claims: list[tuple[str, str]] = []
+    for chunk_index, (start, size) in enumerate(node_ranges):
+        module = f"RelationalProductReachabilityChunk{chunk_index}"
+        reachability_modules.append(module)
+        range_name = f"productReachabilityNodeRange{chunk_index}"
+        theorem_name = f"productReachabilityNodeRange{chunk_index}Checked"
+        source = (
+            "import StageA.RelationalProductGraphContext\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            + _lean_static_range(range_name, start, size)
+            + "\n\n"
+            + f"theorem {theorem_name} :\n"
+            "    IndexedBoolRangeHolds\n"
+            "      (RelationalProductReachabilityEvidence.nodeClosedAt\n"
+            "        relationalProductGraph relationalProductReachabilityEvidence)\n"
+            f"      {range_name} :=\n"
+            "  indexedBoolRangeHolds_of_checked\n"
+            "    (RelationalProductReachabilityEvidence.nodeClosedAt\n"
+            "      relationalProductGraph relationalProductReachabilityEvidence)\n"
+            f"    {range_name} (by decide)\n\n"
+            "end StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+        reachability_claims.append((range_name, theorem_name))
+
+    reachability_source = (
+        "import StageA.RelationalProductGraphCertificate\n"
+        + "".join(f"import StageA.{module}\n" for module in reachability_modules)
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        + range_certificate_source(
+            "ReachabilityNodes",
+            reachability_claims,
+            "(RelationalProductReachabilityEvidence.nodeClosedAt "
+            "relationalProductGraph relationalProductReachabilityEvidence)",
+            len(nodes),
+        )
+        + "def GeneratedDeclaredGraphReachabilityCertificate : Prop :=\n"
+        "  RelationalProductReachabilityEvidence.SoundlyClosed staticProofContext\n"
+        "    relationalProductGraph relationalProductReachabilityEvidence\n\n"
+        "theorem generatedDeclaredGraphReachabilityCertificateChecked :\n"
+        "    GeneratedDeclaredGraphReachabilityCertificate := by\n"
+        "  unfold GeneratedDeclaredGraphReachabilityCertificate\n"
+        "  exact ⟨relationalProductGraphIndexedValidChecked,\n"
+        "    ⟨by decide, by decide, productReachabilityNodesChecked⟩,\n"
+        "    RelationalProductGraph.infeasibleEdgesSound_of_indexedValid\n"
+        "      staticProofContext relationalProductGraph\n"
+        "      relationalProductGraphIndexedValidChecked⟩\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalProductReachabilityCertificate.lean",
+        reachability_source,
+    )
+
+    segment_module_by_edge = {
+        int(edge_id): str(item["module"])
+        for item in segment_refinement_modules
+        for edge_id in item["edge_ids"]
+    }
+    missing_segment_modules = sorted(
+        set(candidate_by_edge) - set(segment_module_by_edge)
+    )
+    if missing_segment_modules:
+        raise StageAInputError(
+            "segment refinement candidates lack generated Lean modules for edges "
+            + ", ".join(str(edge_id) for edge_id in missing_segment_modules)
+        )
+
+    edge_refinement_modules: list[str] = []
+    edge_module_by_id: dict[int, str] = {}
+    for chunk_index, offset in enumerate(
+        range(0, len(segment_candidates), proof_chunk_size)
+    ):
+        selected = segment_candidates[offset : offset + proof_chunk_size]
+        module = f"RelationalProductEdgeRefinementChunk{chunk_index}"
+        edge_refinement_modules.append(module)
+        definitions: list[str] = []
+        imports = sorted({
+            segment_module_by_edge[int(candidate["edge_index"])]
+            for candidate in selected
+        })
+        for candidate in selected:
+            edge_id = int(candidate["edge_index"])
+            edge_module_by_id[edge_id] = module
+            source_index = int(candidate["source_region_index"])
+            target_index = int(candidate["target_region_index"])
+            resolved_name = f"productEdge{edge_id}Resolved"
+            refined_name = f"productEdge{edge_id}Refined"
+            definitions.extend([
+                (
+                    f"theorem {resolved_name} : relationalProductGraph.getEdge? {edge_id} = "
+                    f"some relationalProductGraph.edges[{edge_id}] := by decide"
+                ),
+                (
+                    f"theorem {refined_name} :\n"
+                    "    RelationalProductEdgeRefinement staticProofContext "
+                    f"relationalProductGraph {edge_id} segmentRefinementEdge{edge_id}Spec\n"
+                    f"      region{source_index}.inputInvariant "
+                    f"region{target_index}.inputInvariant := by\n"
+                    "  unfold RelationalProductEdgeRefinement\n"
+                    f"  rw [{resolved_name}]\n"
+                    f"  exact ⟨rfl, rfl, segmentRefinementEdge{edge_id}Checked⟩"
+                ),
+            ])
+        source = (
+            "import StageA.RelationalProductGraphContext\n"
+            + "".join(f"import StageA.{name}\n" for name in imports)
+            + "\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+
+    edge_witnesses = [
+        (
+            f"⟨segmentRefinementEdge{edge_id}Spec, "
+            f"region{int(candidate_by_edge[edge_id]['source_region_index'])}.inputInvariant, "
+            f"region{int(candidate_by_edge[edge_id]['target_region_index'])}.inputInvariant, "
+            f"productEdge{edge_id}Refined⟩"
+        )
+        for edge_id in evidence["proved_edge_ids"]
+    ]
+    listed_edge_proof = (
+        "".join(f"And.intro {witness} (" for witness in edge_witnesses)
+        + "True.intro"
+        + ")" * len(edge_witnesses)
+    )
+    complete_source = ""
+    if complete:
+        witness_cases: list[str] = []
+        for edge in edges:
+            edge_id = int(edge["id"])
+            candidate = candidate_by_edge[edge_id]
+            source_index = int(candidate["source_region_index"])
+            target_index = int(candidate["target_region_index"])
+            witness_cases.append(
+                f"  by_cases edge{edge_id} : edgeId = {edge_id}\n"
+                f"  · subst edgeId\n"
+                f"    exact ⟨segmentRefinementEdge{edge_id}Spec, "
+                f"region{source_index}.inputInvariant, region{target_index}.inputInvariant, "
+                f"productEdge{edge_id}Refined⟩\n"
+            )
+        complete_source = (
+            "\ntheorem allProductEdgesRefinedChecked :\n"
+            "    AllProductEdgesRefined staticProofContext relationalProductGraph := by\n"
+            "  intro edgeId before\n"
+            f"  have edgeCount : relationalProductGraph.edges.size = {len(edges)} := by decide\n"
+            "  rw [edgeCount] at before\n"
+            + "".join(witness_cases)
+            + "  omega\n\n"
+            "def completeProductEdgeRefinementCertificate :\n"
+            "    CompleteProductEdgeRefinementCertificate staticProofContext "
+            "relationalProductGraph := {\n"
+            "  structurallyValid := relationalProductGraphIndexedValidChecked\n"
+            "  allEdgesRefined := allProductEdgesRefinedChecked\n"
+            "}\n"
+        )
+    edge_certificate_source = (
+        "import StageA.RelationalProductGraphCertificate\n"
+        + "".join(
+            f"import StageA.{module}\n" for module in edge_refinement_modules
+        )
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "theorem allListedProductEdgesRefinedChecked :\n"
+        "    ListedProductEdgesRefined staticProofContext relationalProductGraph\n"
+        "      relationalProductEvidence.provedEdgeIds := by\n"
+        f"  exact {listed_edge_proof}\n\n"
+        "def GeneratedPartialProductEdgeRefinementCertificate : Prop :=\n"
+        "  PartialProductEdgeRefinementCertificate staticProofContext "
+        "relationalProductGraph relationalProductEvidence\n\n"
+        "theorem generatedPartialProductEdgeRefinementCertificateChecked :\n"
+        "    GeneratedPartialProductEdgeRefinementCertificate :=\n"
+        "  ⟨relationalProductEvidenceValidChecked, "
+        "allListedProductEdgesRefinedChecked⟩\n"
+        + complete_source
+        + "\nend StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalProductEdgeRefinementCertificate.lean",
+        edge_certificate_source,
+    )
+
+    coverage_candidates = evidence["coverage_candidates"]
+    node_coverage_modules: list[str] = []
+    for chunk_index, offset in enumerate(
+        range(0, len(coverage_candidates), proof_chunk_size)
+    ):
+        selected = coverage_candidates[offset : offset + proof_chunk_size]
+        module = f"RelationalProductNodeCoverageChunk{chunk_index}"
+        node_coverage_modules.append(module)
+        definitions: list[str] = []
+        imports = sorted({
+            edge_module_by_id[int(coverage["edge_id"])] for coverage in selected
+        })
+        for coverage in selected:
+            node_id = int(coverage["node_id"])
+            edge_id = int(coverage["edge_id"])
+            candidate = candidate_by_edge[edge_id]
+            source_index = int(candidate["source_region_index"])
+            target_index = int(candidate["target_region_index"])
+            resolved_name = f"productNode{node_id}Resolved"
+            theorem_name = f"productNode{node_id}UnconditionalBehaviorCovered"
+            definitions.extend([
+                (
+                    f"theorem {resolved_name} : relationalProductGraph.getNode? {node_id} = "
+                    f"some relationalProductGraph.nodes[{node_id}] := by decide"
+                ),
+                (
+                    f"theorem {theorem_name} :\n"
+                    "    UnconditionalProductNodeBehaviorCovered staticProofContext "
+                    f"relationalProductGraph {node_id} {edge_id} "
+                    f"segmentRefinementEdge{edge_id}Spec\n"
+                    f"      region{source_index}.inputInvariant "
+                    f"region{target_index}.inputInvariant := by\n"
+                    "  unfold UnconditionalProductNodeBehaviorCovered\n"
+                    f"  rw [{resolved_name}, productEdge{edge_id}Resolved]\n"
+                    f"  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, "
+                    f"productEdge{edge_id}Refined⟩"
+                ),
+            ])
+        source = (
+            "import StageA.RelationalProductGraphContext\n"
+            + "".join(f"import StageA.{name}\n" for name in imports)
+            + "\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+
+    coverage_witnesses = []
+    for coverage in coverage_candidates:
+        node_id = int(coverage["node_id"])
+        edge_id = int(coverage["edge_id"])
+        candidate = candidate_by_edge[edge_id]
+        coverage_witnesses.append(
+            f"⟨{edge_id}, segmentRefinementEdge{edge_id}Spec, "
+            f"region{int(candidate['source_region_index'])}.inputInvariant, "
+            f"region{int(candidate['target_region_index'])}.inputInvariant, "
+            f"productNode{node_id}UnconditionalBehaviorCovered⟩"
+        )
+    coverage_proof = (
+        "".join(f"And.intro {witness} (" for witness in coverage_witnesses)
+        + "True.intro"
+        + ")" * len(coverage_witnesses)
+    )
+    coverage_source = (
+        "import StageA.RelationalProductGraphCertificate\n"
+        "import StageA.RelationalProductEdgeRefinementCertificate\n"
+        + "".join(
+            f"import StageA.{module}\n" for module in node_coverage_modules
+        )
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "theorem allCoveredProductNodesChecked :\n"
+        "    AllCoveredProductNodes staticProofContext relationalProductGraph\n"
+        "      relationalProductCoverageEvidence.coveredNodeIds := by\n"
+        f"  exact {coverage_proof}\n\n"
+        "def GeneratedPartialProductNodeCoverageCertificate : Prop :=\n"
+        "  PartialProductNodeCoverageCertificate staticProofContext relationalProductGraph\n"
+        "    relationalProductCoverageEvidence\n\n"
+        "theorem generatedPartialProductNodeCoverageCertificateChecked :\n"
+        "    GeneratedPartialProductNodeCoverageCertificate :=\n"
+        "  ⟨relationalProductCoverageEvidenceValidChecked, "
+        "allCoveredProductNodesChecked⟩\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalProductNodeCoverageCertificate.lean",
+        coverage_source,
+    )
+    return [
+        *modules,
+        *(item["module"] for item in import_seed_modules),
+        *(item["module"] for item in dynamic_call_modules),
+        *decoded_control_modules,
+        *reachability_modules,
+        *edge_refinement_modules,
+        *node_coverage_modules,
+    ]
+
+
+def _write_stack_separation_modules(
+    lean_dir: Path,
+    contract: dict[str, Any],
+    definition_modules: list[str],
+    shard_groups: list[list[int]],
+) -> list[dict[str, str]]:
+    definition_by_region = {
+        region_index: definition_modules[shard_index]
+        for shard_index, region_indices in enumerate(shard_groups)
+        for region_index in region_indices
+    }
+    modules: list[dict[str, str]] = []
+    for region_index, region in enumerate(contract.get("regions", [])):
+        claims = region.get("stack_address_separation_claims", [])
+        if not claims:
+            continue
+        module = f"RelationalStackSeparationRegion{region_index}"
+        claims_name = f"region{region_index}StackSeparationClaims"
+        proposition_name = f"region{region_index}StackSeparationInventory"
+        theorem_name = f"region{region_index}StackSeparationInventoryChecked"
+        claim_rows = ", ".join(
+            _lean_stack_address_separation_claim(claim) for claim in claims
+        )
+        source = (
+            "import StageA.RelationalProofOriginal\n"
+            "import StageA.RelationalProofCandidate\n"
+            f"import StageA.{definition_by_region[region_index]}\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            f"def {claims_name} : List StackAddressSeparationClaim := [{claim_rows}]\n\n"
+            f"def {proposition_name} : Prop :=\n"
+            "  stackAddressSeparationInventoryChecked originalPe candidatePe "
+            f"region{region_index}.inputInvariant {claims_name} = true\n\n"
+            f"theorem {theorem_name} : {proposition_name} := by\n"
+            f"  unfold {proposition_name} {claims_name}\n"
+            "  decide\n\n"
+            "end StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+        modules.append({
+            "module": module,
+            "proposition": proposition_name,
+            "theorem": theorem_name,
+        })
+    return modules
+
+
+def _compact_acceptance_blockers(
+    blockers: list[dict[str, str]], *, example_limit: int = 10
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for blocker in blockers:
+        code = str(blocker["code"])
+        group = grouped.setdefault(code, {
+            "code": code,
+            "count": 0,
+            "message": str(blocker["message"]),
+            "next_action": str(blocker["next_action"]),
+            "examples": [],
+        })
+        group["count"] += 1
+        message = str(blocker["message"])
+        if message not in group["examples"] and len(group["examples"]) < example_limit:
+            group["examples"].append(message)
+    for group in grouped.values():
+        group["omitted_examples"] = max(
+            int(group["count"]) - len(group["examples"]), 0
+        )
+        if int(group["count"]) > 1:
+            group["message"] = (
+                f"{group['count']} whole-program acceptance blockers have code "
+                f"{group['code']}"
+            )
+    return list(grouped.values())
+
+
+def _whole_program_acceptance_plan(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    product_graph: dict[str, Any],
+    register_relations: dict[str, Any],
+    segment_candidates: list[dict[str, Any]],
+    external_site_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Recognize the first fully compositional profile without weakening acceptance."""
+    blockers: list[dict[str, str]] = []
+
+    def block(code: str, message: str, next_action: str) -> None:
+        blockers.append({
+            "code": code,
+            "message": message,
+            "next_action": next_action,
+        })
+
+    nodes = product_graph["nodes"]
+    edges = product_graph["edges"]
+    evidence = product_graph["evidence"]
+    decoded_control_by_node = {
+        int(candidate["node_id"]): candidate
+        for candidate in evidence.get("decoded_control_candidates", [])
+    }
+    regions = contract["regions"]
+    if not evidence.get("reachable_product_local_complete"):
+        block(
+            "reachable_product_local_incomplete",
+            "reachable decoded-control or local edge-refinement evidence is incomplete",
+            "close every reachable decoded-control and local-refinement frontier",
+        )
+    if len(nodes) != len(regions) or len(behaviors) != len(regions):
+        block(
+            "product_region_inventory_mismatch",
+            "the product-node, region, and decoded-behavior inventories differ in size",
+            "regenerate a canonical one-node-per-region product inventory",
+        )
+    roots = [int(node_id) for node_id in product_graph["root_node_ids"]]
+    if len(roots) != 1:
+        block(
+            "console_launch_root_unsupported",
+            "pe32-console-launch-v1 currently requires exactly one checked entry root",
+            "select the PE console entry root and model additional roots separately",
+        )
+    control_states: list[dict[str, Any]] = []
+    control_states_by_node: dict[int, list[dict[str, Any]]] = {}
+    if len(roots) == 1 and len(nodes) == len(behaviors):
+        node_by_target = {
+            int(node["target_id"]): node_id for node_id, node in enumerate(nodes)
+        }
+        pending: list[tuple[int, tuple[int, ...]]] = [(roots[0], ())]
+        seen: set[tuple[int, tuple[int, ...]]] = set()
+        control_incomplete = False
+        while pending and not control_incomplete:
+            node_id, calls = pending.pop(0)
+            key = (node_id, calls)
+            if key in seen:
+                continue
+            if len(seen) >= 512 or len(calls) > 32:
+                block(
+                    "finite_control_profile_exceeded",
+                    "the rooted call-stack control profile is recursive or exceeds its finite bound",
+                    "add an inductive checked control-stack profile for recursion",
+                )
+                control_incomplete = True
+                break
+            seen.add(key)
+            relation_row = register_relations.get("regions", [])[node_id]
+            offsets = list(relation_row.get("return_slot_offsets", []))
+            if len(offsets) != len(calls):
+                block(
+                    "runtime_frame_offset_inventory_incomplete",
+                    f"product node {node_id} has {len(calls)} runtime frames but "
+                    f"{len(offsets)} checked return-slot offsets",
+                    "propagate a checked return-slot offset for every live runtime frame",
+                )
+                control_incomplete = True
+                break
+            state = {
+                "node_id": node_id,
+                "calls": list(calls),
+                "frame_offsets": offsets,
+            }
+            control_states.append(state)
+            control_states_by_node.setdefault(node_id, []).append(state)
+            original_outcome = behaviors[node_id].get("original_ir", {}).get("outcome", {})
+            candidate_outcome = behaviors[node_id].get("candidate_ir", {}).get("outcome", {})
+            operation = original_outcome.get("op")
+            if operation != candidate_outcome.get("op"):
+                block(
+                    "control_profile_outcome_mismatch",
+                    f"product node {node_id} has different original and candidate control outcomes",
+                    "add a paired finite-path normalization certificate",
+                )
+                control_incomplete = True
+                break
+            successor_targets: list[tuple[int, tuple[int, ...]]] = []
+            if operation == "jump":
+                if original_outcome.get("target") != candidate_outcome.get("target"):
+                    control_incomplete = True
+                else:
+                    successor_targets.append((int(original_outcome["target"]), calls))
+            elif operation == "branch":
+                for field in ("taken", "fallthrough"):
+                    if original_outcome.get(field) != candidate_outcome.get(field):
+                        control_incomplete = True
+                        break
+                    successor_targets.append((int(original_outcome[field]), calls))
+            elif operation == "call":
+                if any(
+                    original_outcome.get(field) != candidate_outcome.get(field)
+                    for field in ("target", "continuation")
+                ):
+                    control_incomplete = True
+                else:
+                    successor_targets.append((
+                        int(original_outcome["target"]),
+                        (int(original_outcome["continuation"]), *calls),
+                    ))
+            elif operation == "external_call":
+                if any(
+                    original_outcome.get(field) != candidate_outcome.get(field)
+                    for field in ("import", "continuation")
+                ):
+                    control_incomplete = True
+                else:
+                    successor_targets.append((
+                        int(original_outcome["continuation"]), calls,
+                    ))
+            elif operation == "indirect_jump":
+                decoded_control = decoded_control_by_node.get(node_id, {})
+                if decoded_control.get("profile") != (
+                    "immutable_relocated_function_pointer_jump_v1"
+                ):
+                    block(
+                        "bounded_indirect_control_profile_unmet",
+                        f"product node {node_id} has no checked finite indirect-jump target",
+                        "classify the target by provenance and emit a checked finite target set",
+                    )
+                    control_incomplete = True
+                else:
+                    successor_targets.append((
+                        int(decoded_control["target_id"]), calls,
+                    ))
+            elif operation == "returned":
+                if calls:
+                    successor_targets.append((calls[0], calls[1:]))
+            else:
+                block(
+                    "control_profile_outcome_unsupported",
+                    f"product node {node_id} uses unsupported control outcome {operation!r}",
+                    "add the corresponding checked control-state transition",
+                )
+                control_incomplete = True
+            if control_incomplete:
+                if not any(
+                    item["code"] == "control_profile_outcome_mismatch"
+                    for item in blockers
+                ):
+                    block(
+                        "control_profile_outcome_mismatch",
+                        f"product node {node_id} has mismatched control destinations",
+                        "repair the mapping or add a paired finite-path normalization certificate",
+                    )
+                break
+            for target_id, successor_calls in successor_targets:
+                target_node_id = node_by_target.get(target_id)
+                if target_node_id is None:
+                    block(
+                        "control_profile_target_unmapped",
+                        f"control target {target_id} from product node {node_id} has no product node",
+                        "close the rooted decoded-control mapping frontier",
+                    )
+                    control_incomplete = True
+                    break
+                pending.append((target_node_id, successor_calls))
+
+    candidate_by_edge = {
+        int(candidate["edge_index"]): candidate for candidate in segment_candidates
+    }
+    external_by_edge = {
+        int(candidate["edge_index"]): candidate
+        for candidate in external_site_candidates
+    }
+    register_edge_by_source_target = {
+        (int(edge["source_region_index"]), int(edge["target_region_index"])): edge
+        for edge in register_relations.get("edges", [])
+    }
+    all_node_ids = list(range(len(nodes)))
+    reachable_node_ids = [
+        int(node_id) for node_id in evidence.get("declared_reachable_node_ids", [])
+    ]
+    if reachable_node_ids != all_node_ids:
+        block(
+            "unreachable_region_composition_pending",
+            "the initial acceptance profile requires every canonical product node to be root-reachable",
+            "add checked unreachable-region exclusion or retain all nodes in the rooted simulation",
+        )
+
+    node_steps: list[dict[str, Any]] = []
+    has_guarded_branch = False
+    has_internal_call = False
+    has_internal_return = False
+    has_external_call = False
+    has_bounded_indirect = False
+    has_paired_stack_write = False
+    termination_region_indices: list[int] = []
+    for node_id, node in enumerate(nodes):
+        if int(node.get("id", -1)) != node_id or node_id >= len(regions):
+            block(
+                "noncanonical_product_node_index",
+                f"product node {node_id} is not canonically indexed",
+                "regenerate the indexed product graph",
+            )
+            continue
+        region = regions[node_id]
+        target_id = int(node["target_id"])
+        if int(region.get("numeric_id", -1)) != target_id or target_id != node_id:
+            block(
+                "noncanonical_region_target_index",
+                f"product node {node_id} does not use its canonical region-entry target",
+                "emit an indexed region-to-code-target binding certificate",
+            )
+            continue
+        outgoing = [int(edge_id) for edge_id in node["outgoing_edge_ids"]]
+        if len(outgoing) not in {0, 1, 2}:
+            block(
+                "multi_exit_node_composition_pending",
+                f"reachable product node {node_id} has {len(outgoing)} outgoing edges",
+                "derive guard-exhaustive node steps from all decoded outgoing edges",
+            )
+            continue
+        if any(edge_id >= len(edges) for edge_id in outgoing):
+            block(
+                "product_edge_index_invalid",
+                f"product node {node_id} references a missing outgoing edge",
+                "regenerate the indexed product graph",
+            )
+            continue
+        true_guard = {"op": "bool_constant", "value": True}
+        outcomes = [
+            behaviors[node_id].get("original_ir", {}).get("outcome", {}),
+            behaviors[node_id].get("candidate_ir", {}).get("outcome", {}),
+        ]
+        if not outgoing:
+            relation_row = register_relations.get("regions", [])[node_id]
+            control_rows = control_states_by_node.get(node_id, [])
+            if (
+                any(outcome.get("op") != "returned" for outcome in outcomes)
+                or relation_row.get("return_pop_claim") is None
+                or relation_row.get("return_pop_claim", {}).get("profile")
+                    != "esp_relative_return_pop_v1"
+                or len(control_rows) != 1
+            ):
+                block(
+                    "return_node_profile_unmet",
+                    f"product node {node_id} is not a checked finite-control return",
+                    "emit a return-pop claim, runtime-frame offsets, and one checked control state",
+                )
+                continue
+            calls = list(control_rows[0]["calls"])
+            if calls:
+                if not relation_row.get("return_pop_frame_claims"):
+                    block(
+                        "return_runtime_frame_claim_missing",
+                        f"return node {node_id} lacks a checked live-frame return-slot claim",
+                        "emit a return-pop frame claim for the active continuation",
+                    )
+                    continue
+                continuation_target_id = int(calls[0])
+                target_node_id = next(
+                    (
+                        candidate_id for candidate_id, candidate_node in enumerate(nodes)
+                        if int(candidate_node["target_id"]) == continuation_target_id
+                    ),
+                    -1,
+                )
+                if target_node_id < 0:
+                    block(
+                        "return_continuation_unmapped",
+                        f"return node {node_id} continuation {continuation_target_id} is unmapped",
+                        "add the continuation to the checked product graph",
+                    )
+                    continue
+                stack_transfers = _stack_window_transfer_claims(
+                    region, regions[target_node_id], behaviors[node_id]
+                )
+                if stack_transfers is None:
+                    block(
+                        "return_stack_window_transfer_incomplete",
+                        f"return node {node_id} cannot establish continuation "
+                        f"{target_node_id}'s stack windows",
+                        "strengthen the checked stack windows or support the decoded ESP transfer",
+                    )
+                    continue
+                target_region = regions[target_node_id]
+                target_relation_row = register_relations.get("regions", [
+                ])[target_node_id]
+                target_output_claims = _target_shaped_register_output_claims(
+                    relation_row, target_relation_row
+                )
+                if target_output_claims is None:
+                    block(
+                        "return_register_relation_transfer_incomplete",
+                        f"return node {node_id} cannot establish continuation "
+                        f"{target_node_id}'s register relations",
+                        "emit checked target-shaped register output claims for the continuation",
+                    )
+                    continue
+                unsupported_target_families = [
+                    field for field in (
+                        "bounds",
+                        "address_separations",
+                        "flag_inputs",
+                        "input_import_relations",
+                        "input_dynamic_range_relations",
+                    )
+                    if target_region.get(field)
+                ]
+                if unsupported_target_families:
+                    block(
+                        "return_continuation_invariant_transfer_incomplete",
+                        f"return node {node_id} needs unsupported continuation invariant "
+                        f"families {unsupported_target_families}",
+                        "add checked return transfer claims for these invariant families",
+                    )
+                    continue
+                node_steps.append({
+                    "kind": "return",
+                    "node_id": node_id,
+                    "region_index": node_id,
+                    "target_id": target_id,
+                    "control_state": control_rows[0],
+                    "target_node_id": target_node_id,
+                    "target_region_index": target_node_id,
+                    "target_target_id": continuation_target_id,
+                    "return_pop_claim": relation_row["return_pop_claim"],
+                    "return_frame_claim": relation_row["return_pop_frame_claims"][0],
+                    "output_claims": target_output_claims,
+                    "return_frame_claim_index": 0,
+                    "stack_window_transfers": stack_transfers,
+                    "edges": [],
+                })
+                has_internal_return = True
+            else:
+                unsupported_terminal_families = [
+                    field for field in (
+                        "output_import_relations",
+                        "output_dynamic_range_relations",
+                    )
+                    if region.get(field)
+                ]
+                if unsupported_terminal_families:
+                    block(
+                        "terminal_invariant_family_pending",
+                        f"termination node {node_id} has unsupported terminal families "
+                        f"{unsupported_terminal_families}",
+                        "emit checked terminal transfer witnesses for these relation families",
+                    )
+                    continue
+                node_steps.append({
+                    "kind": "terminate",
+                    "node_id": node_id,
+                    "region_index": node_id,
+                    "target_id": target_id,
+                    "control_state": control_rows[0],
+                    "return_pop_claim": relation_row["return_pop_claim"],
+                    "output_claims": relation_row["output_claims"],
+                    "return_frame_claim_index": 0,
+                    "edges": [],
+                })
+                termination_region_indices.append(node_id)
+            continue
+        if len(outgoing) == 1:
+            edge_id = outgoing[0]
+            edge = edges[edge_id]
+            segment = candidate_by_edge.get(edge_id)
+            jump_profile = (
+                bool(edge.get("infeasible"))
+                or edge.get("kind") != "jump"
+                or edge.get("original_guard") != true_guard
+                or edge.get("candidate_guard") != true_guard
+                or segment is None
+                or segment.get("certificate_profile") not in {
+                    "composable_local_no_write_v1",
+                    "composable_paired_stack_word_write_v1",
+                    "composable_paired_stack_word_writes_v1",
+                }
+            ) is False
+            call_profile = (
+                not bool(edge.get("infeasible"))
+                and edge.get("kind") == "call"
+                and edge.get("original_guard") == true_guard
+                and edge.get("candidate_guard") == true_guard
+                and segment is not None
+                and segment.get("certificate_profile") == "composable_direct_call_v1"
+            )
+            external_site = external_by_edge.get(edge_id)
+            external_profile = (
+                not bool(edge.get("infeasible"))
+                and edge.get("kind") == "externalCall"
+                and edge.get("original_guard") == true_guard
+                and edge.get("candidate_guard") == true_guard
+                and external_site is not None
+            )
+            decoded_control = decoded_control_by_node.get(node_id, {})
+            indirect_jump_profile = (
+                not bool(edge.get("infeasible"))
+                and edge.get("kind") == "jump"
+                and edge.get("original_guard") == true_guard
+                and edge.get("candidate_guard") == true_guard
+                and segment is not None
+                and segment.get("certificate_profile")
+                    == "composable_immutable_indirect_jump_v1"
+                and decoded_control.get("profile")
+                    == "immutable_relocated_function_pointer_jump_v1"
+                and int(decoded_control.get("target_id", -1))
+                    == int(edge.get("target_target_id", -2))
+            )
+            if (
+                not jump_profile and not call_profile and not external_profile
+                and not indirect_jump_profile
+            ):
+                block(
+                    "direct_jump_node_profile_unmet",
+                    f"product node {node_id} is not a checked unconditional jump, call, or external call",
+                    "add the corresponding return, write, indirect-control, or environment composition rule",
+                )
+                continue
+            target_node_id = int(edge["target_node_id"])
+            if not (0 <= target_node_id < len(regions)):
+                block(
+                    "product_target_node_invalid",
+                    f"edge {edge_id} has invalid target node {target_node_id}",
+                    "regenerate the indexed product graph",
+                )
+                continue
+            expected_target = int(regions[target_node_id]["numeric_id"])
+            expected_operation = (
+                "external_call" if external_profile
+                else "call" if call_profile
+                else "indirect_jump" if indirect_jump_profile
+                else "jump"
+            )
+            target_field = "continuation" if external_profile else "target"
+            decoded_outcome_mismatch = (
+                any(outcome.get("op") != expected_operation for outcome in outcomes)
+                if indirect_jump_profile else
+                any(
+                    outcome.get("op") != expected_operation
+                    or int(outcome.get(target_field, -1)) != expected_target
+                    for outcome in outcomes
+                )
+            )
+            if decoded_outcome_mismatch:
+                block(
+                    "decoded_jump_outcome_mismatch",
+                    f"node {node_id} does not decode to the submitted {expected_operation} target on both sides",
+                    "repair the mapping or add a paired finite-path normalization certificate",
+                )
+                continue
+            step = {
+                "kind": expected_operation,
+                "node_id": node_id,
+                "region_index": node_id,
+                "target_id": target_id,
+                "edges": [{
+                    "edge_id": edge_id,
+                    "target_node_id": target_node_id,
+                    "target_region_index": target_node_id,
+                    "target_target_id": int(edge["target_target_id"]),
+                }],
+            }
+            if call_profile:
+                register_edge = register_edge_by_source_target.get(
+                    (node_id, target_node_id), {}
+                )
+                direct_call_claim = register_edge.get("direct_call_push_claim")
+                continuation = int(outcomes[0].get("continuation", -1))
+                control_rows = control_states_by_node.get(node_id, [])
+                if (
+                    direct_call_claim is None
+                    or any(int(outcome.get("continuation", -1)) != continuation for outcome in outcomes)
+                    or len(control_rows) != 1
+                    or control_rows[0]["calls"]
+                    or control_rows[0]["frame_offsets"]
+                ):
+                    block(
+                        "direct_call_control_profile_unmet",
+                        f"call node {node_id} lacks a top-level checked runtime-frame seed",
+                        "close the call push and finite control-state evidence",
+                    )
+                    continue
+                step["control_state"] = control_rows[0]
+                step["continuation_target_id"] = continuation
+                step["direct_call_push_claim"] = direct_call_claim
+                step["source_stack_window"] = segment["source_stack_window"]
+                has_internal_call = True
+            elif external_profile:
+                control_rows = control_states_by_node.get(node_id, [])
+                if (
+                    len(control_rows) != 1
+                    or control_rows[0]["calls"]
+                    or control_rows[0]["frame_offsets"]
+                ):
+                    block(
+                        "nested_external_runtime_frame_preservation_pending",
+                        f"external-call node {node_id} is reached with live internal runtime frames",
+                        "prove the import write footprint disjoint from every live return slot and transfer frame offsets across the call",
+                    )
+                    continue
+                step["kind"] = "external_call"
+                step["control_state"] = control_rows[0]
+                step["external_site"] = external_site
+                step["decoded_import"] = outcomes[0].get("import")
+                has_external_call = True
+            elif indirect_jump_profile:
+                step["decoded_control"] = {
+                    **decoded_control,
+                    "original_target_expression": outcomes[0]["target"],
+                    "candidate_target_expression": outcomes[1]["target"],
+                }
+                has_bounded_indirect = True
+            if (
+                segment is not None
+                and segment.get("certificate_profile")
+                    in {
+                        "composable_paired_stack_word_write_v1",
+                        "composable_paired_stack_word_writes_v1",
+                    }
+            ):
+                has_paired_stack_write = True
+            node_steps.append(step)
+            continue
+
+        edge_rows = [edges[edge_id] for edge_id in outgoing]
+        edge_by_kind = {edge.get("kind"): edge for edge in edge_rows}
+        taken_edge = edge_by_kind.get("branchTaken")
+        fallthrough_edge = edge_by_kind.get("branchFallthrough")
+        if (
+            len(edge_by_kind) != 2
+            or taken_edge is None
+            or fallthrough_edge is None
+            or any(bool(edge.get("infeasible")) for edge in edge_rows)
+            or any(
+                candidate_by_edge.get(int(edge["id"]), {}).get("certificate_profile")
+                    not in {
+                        "composable_local_no_write_v1",
+                        "composable_paired_stack_word_write_v1",
+                        "composable_paired_stack_word_writes_v1",
+                    }
+                for edge in edge_rows
+            )
+        ):
+            block(
+                "guarded_branch_profile_unmet",
+                f"product node {node_id} is not a complete checked two-way branch",
+                "supply taken and fallthrough no-write refinements with exhaustive guards",
+            )
+            continue
+        target_node_ids = [int(edge["target_node_id"]) for edge in edge_rows]
+        if any(not (0 <= target < len(regions)) for target in target_node_ids):
+            block(
+                "product_target_node_invalid",
+                f"branch node {node_id} has an invalid target node",
+                "regenerate the indexed product graph",
+            )
+            continue
+        expected_taken = int(taken_edge["target_target_id"])
+        expected_fallthrough = int(fallthrough_edge["target_target_id"])
+        if any(
+            outcome.get("op") != "branch"
+            or int(outcome.get("taken", -1)) != expected_taken
+            or int(outcome.get("fallthrough", -1)) != expected_fallthrough
+            for outcome in outcomes
+        ):
+            block(
+                "decoded_branch_outcome_mismatch",
+                f"node {node_id} branch destinations do not match its submitted edges",
+                "repair the mapping or add a paired finite-path normalization certificate",
+            )
+            continue
+        original_condition = outcomes[0].get("condition")
+        candidate_condition = outcomes[1].get("condition")
+        if (
+            taken_edge.get("original_guard") != original_condition
+            or taken_edge.get("candidate_guard") != candidate_condition
+            or fallthrough_edge.get("original_guard")
+                != {"op": "not", "value": original_condition}
+            or fallthrough_edge.get("candidate_guard")
+                != {"op": "not", "value": candidate_condition}
+        ):
+            block(
+                "branch_guard_inventory_mismatch",
+                f"node {node_id} guards do not exhaust its decoded branch condition",
+                "regenerate direct decoded-control guards from the exact branch outcome",
+            )
+            continue
+        has_guarded_branch = True
+        has_paired_stack_write = has_paired_stack_write or any(
+            candidate_by_edge.get(int(edge["id"]), {}).get("certificate_profile")
+                in {
+                    "composable_paired_stack_word_write_v1",
+                    "composable_paired_stack_word_writes_v1",
+                }
+            for edge in edge_rows
+        )
+        ordered_edges = [taken_edge, fallthrough_edge]
+        node_steps.append({
+            "kind": "branch",
+            "node_id": node_id,
+            "region_index": node_id,
+            "target_id": target_id,
+            "edges": [{
+                "edge_id": int(edge["id"]),
+                "branch_value": edge.get("kind") == "branchTaken",
+                "target_node_id": int(edge["target_node_id"]),
+                "target_region_index": int(edge["target_node_id"]),
+                "target_target_id": int(edge["target_target_id"]),
+            } for edge in ordered_edges],
+        })
+
+    for step in node_steps:
+        step["control_states"] = control_states_by_node.get(
+            int(step["node_id"]), []
+        )
+
+    if len(termination_region_indices) > 1:
+        block(
+            "multiple_terminal_invariants_pending",
+            "the first terminal profile requires one canonical returned-state invariant",
+            "prove a common terminal invariant or retain distinct terminal execution states",
+        )
+
+    profile = (
+        "representative-compositional-control-v1"
+        if (
+            has_internal_call and has_internal_return and has_external_call
+            and has_guarded_branch and has_bounded_indirect
+        )
+        else "finite-call-return-with-external-v1"
+        if has_internal_call and has_internal_return and has_external_call
+        else "bounded-indirect-control-v1"
+        if has_bounded_indirect
+        else "paired-external-call-v1"
+        if has_external_call
+        else "finite-call-return-v1"
+        if has_internal_call and has_internal_return
+        else "paired-stack-write-control-v1"
+        if has_paired_stack_write
+        else "guarded-no-write-control-v1"
+        if has_guarded_branch
+        else "direct-no-write-jump-v1"
+    )
+    if blockers:
+        compact_blockers = _compact_acceptance_blockers(blockers)
+        return {
+            "format": "stage-a-whole-program-acceptance-v1",
+            "status": "incomplete",
+            "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+            "theorem": None,
+            "profile": profile,
+            "control_states": control_states,
+            "blockers": compact_blockers,
+        }
+    return {
+        "format": "stage-a-whole-program-acceptance-v1",
+        "status": "ready",
+        "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+        "theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+        "profile": profile,
+        "root_node_id": roots[0],
+        "terminal_region_index": (
+            termination_region_indices[0]
+            if termination_region_indices else roots[0]
+        ),
+        "terminal_invariant": (
+            {
+                "register_relations": [
+                    claim["output"]
+                    for step in node_steps if step["kind"] == "terminate"
+                    for claim in step["output_claims"]
+                ],
+                "import_register_relations": [],
+                "dynamic_register_range_relations": [],
+                "bounds": [],
+                "flag_bits": (
+                    regions[termination_region_indices[0]].get("flag_outputs", [])
+                    if termination_region_indices else []
+                ),
+                "address_separations": [],
+                "stack_windows": [],
+            }
+            if termination_region_indices else {
+                "register_relations": [],
+                "import_register_relations": [],
+                "dynamic_register_range_relations": [],
+                "bounds": [],
+                "flag_bits": [],
+                "address_separations": [],
+                "stack_windows": [],
+            }
+        ),
+        "control_states": control_states,
+        "node_steps": node_steps,
+        "blockers": [],
+    }
+
+
+def _lean_all_listed_proof(theorems: list[str]) -> str:
+    return (
+        "".join(f"⟨{theorem}, " for theorem in theorems)
+        + "True.intro"
+        + "⟩" * len(theorems)
+    )
+
+
+def _lean_appended_list(names: list[str]) -> str:
+    if not names:
+        return "[]"
+    result = names[-1]
+    for name in reversed(names[:-1]):
+        result = f"{name} ++ ({result})"
+    return result
+
+
+def _lean_appended_proof(
+    chunks: list[dict[str, str]], theorem: str, arguments: str, proof_key: str
+) -> str:
+    if not chunks:
+        return "True.intro"
+    proof = chunks[-1][proof_key]
+    ids = chunks[-1]["ids"]
+    for chunk in reversed(chunks[:-1]):
+        proof = (
+            f"{theorem} {arguments} {chunk['ids']} ({ids}) "
+            f"{chunk[proof_key]} ({proof})"
+        )
+        ids = f"{chunk['ids']} ++ ({ids})"
+    return proof
+
+
+def _lean_acceptance_outcome(outcome: dict[str, Any]) -> str:
+    operation = outcome.get("op")
+    if operation == "jump":
+        return f"StageA.Relational.NormalizedOutcomeExpr.jump {int(outcome['target'])}"
+    if operation == "branch":
+        return (
+            "StageA.Relational.NormalizedOutcomeExpr.branch "
+            f"({_lean_semantic_bool_expr(outcome['condition'])}) "
+            f"{int(outcome['taken'])} {int(outcome['fallthrough'])}"
+        )
+    if operation == "call":
+        return (
+            "StageA.Relational.NormalizedOutcomeExpr.call "
+            f"{int(outcome['target'])} {int(outcome['continuation'])}"
+        )
+    if operation == "external_call":
+        arguments = ", ".join(
+            _lean_semantic_expr(argument)
+            for argument in outcome.get("arguments", [])
+        )
+        identity = _semantic_external_target_identity(outcome.get("import"))
+        if identity is None:
+            raise ValueError("external acceptance outcome has no import identity")
+        imported: dict[str, Any] = {"dll": identity[0], identity[1]: identity[2]}
+        return (
+            "StageA.Relational.NormalizedOutcomeExpr.externalCall "
+            f"({_lean_external_target(imported)}) [{arguments}] "
+            f"{int(outcome['continuation'])}"
+        )
+    if operation == "indirect_jump":
+        return (
+            "StageA.Relational.NormalizedOutcomeExpr.indirectJump "
+            f"({_lean_semantic_expr(outcome['target'])})"
+        )
+    if operation == "returned":
+        return (
+            "StageA.Relational.NormalizedOutcomeExpr.returned "
+            f"({_lean_semantic_expr(outcome['target'])})"
+        )
+    raise ValueError(f"unsupported acceptance outcome {operation!r}")
+
+
+def _lean_acceptance_empty_stack(node_id: int) -> str:
+    return (
+        "  have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
+        f"      ((acceptanceOriginalNormalizedBehavior{node_id}.eval originalState).nextMachineState\n"
+        "        originalState)\n"
+        f"      ((acceptanceCandidateNormalizedBehavior{node_id}.eval candidateState).nextMachineState\n"
+        "        candidateState) [] [] [] := by\n"
+        "    simp [RelationalRuntimeCallStackHolds]"
+    )
+
+
+def _lean_acceptance_running_target(
+    *, node_id: int, region_index: int, edge: dict[str, Any],
+    frames: str = "[]", calls: str = "[]", frame_offsets: str = "[]",
+    stack_targets_proof: str = "(by simp [RelationalRuntimeCallTargetsReachable])",
+    target_control_proof: str = "(by decide)",
+    observation_proof: str = "True.intro",
+    world_equal_proof: str = "rfl",
+) -> str:
+    target_node_id = int(edge["target_node_id"])
+    target_region_index = int(edge["target_region_index"])
+    target_target_id = int(edge["target_target_id"])
+    return (
+        f"  have targetInvariant : productInvariantTable.nodeInvariants[{target_node_id}]? =\n"
+        f"      some region{target_region_index}.inputInvariant := by decide\n"
+        f"  have targetNodeTarget : relationalProductGraph.nodes[{target_node_id}].targetId =\n"
+        f"      {target_target_id} := by decide\n"
+        f"  refine ⟨{observation_proof}, ?_⟩\n"
+        f"  refine ⟨rfl, rfl, rfl, {world_equal_proof}, {target_node_id},\n"
+        f"    relationalProductGraph.nodes[{target_node_id}],\n"
+        f"    region{target_region_index}.inputInvariant, {frames}, {frame_offsets},\n"
+        f"    (by decide), targetNodeTarget, ?_, targetInvariant, {target_control_proof},\n"
+        f"    stackHoldsNext, {stack_targets_proof}, "
+        "nextStatesRelated⟩\n"
+        "  decide"
+    )
+
+
+def _lean_acceptance_running_node(
+    step: dict[str, Any], *, parameterized_environment: bool = False,
+) -> str:
+    node_id = int(step["node_id"])
+    region_index = int(step["region_index"])
+    target_id = int(step["target_id"])
+    original_behavior = f"acceptanceOriginalNormalizedBehavior{node_id}"
+    candidate_behavior = f"acceptanceCandidateNormalizedBehavior{node_id}"
+    running = f"acceptanceRunningNode{node_id}Refined"
+    original_program = (
+        "(originalWorldProgram originalEnvironment)"
+        if parameterized_environment else "originalWorldProgram"
+    )
+    candidate_program = (
+        "(candidateWorldProgram candidateEnvironment)"
+        if parameterized_environment else "candidateWorldProgram"
+    )
+    environment_binders = (
+        "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+        "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+        "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+        if parameterized_environment else ""
+    )
+    behavior_rewrite_arguments = (
+        " originalEnvironment" if parameterized_environment else ""
+    )
+    candidate_behavior_rewrite_arguments = (
+        " candidateEnvironment" if parameterized_environment else ""
+    )
+    prefix = (
+        f"theorem {running}\n"
+        + environment_binders
+        + ("    " if parameterized_environment else "    :\n")
+        + "    RunningProductNodeStepRefined staticProofContext relationalProductGraph\n"
+        "      productInvariantTable relationalProductReachabilityEvidence\n"
+        "      productControlProfile\n"
+        f"      {original_program} {candidate_program} {node_id} := by\n"
+        "  unfold RunningProductNodeStepRefined\n"
+        f"  have sourceInvariant : productInvariantTable.nodeInvariants[{node_id}]? =\n"
+        f"      some region{region_index}.inputInvariant := by decide\n"
+        f"  rw [(show relationalProductGraph.getNode? {node_id} =\n"
+        f"    some relationalProductGraph.nodes[{node_id}] by decide), sourceInvariant]\n"
+        "  simp only\n"
+        f"  have sourceTarget : relationalProductGraph.nodes[{node_id}].targetId =\n"
+        f"      {target_id} := by decide\n"
+        "  rw [sourceTarget]\n"
+        "  intro frames calls frameOffsets eventIndex world originalState candidateState\n"
+        "    controlAllowed stackHolds stackTargetsReachable statesRelated\n"
+        "  unfold DecodedWorldProgram.transitionSystem\n"
+        "  simp only [stepWorldExecution]\n"
+        f"  rw [originalWorldBehaviorNode{node_id}{behavior_rewrite_arguments}, "
+        f"candidateWorldBehaviorNode{node_id}{candidate_behavior_rewrite_arguments}]\n"
+        "  simp only [transitionFromWorldOutcome, "
+        "NormalizedSymbolicBehavior.eval_outcome,\n"
+        f"    acceptanceOriginalNormalizedOutcome{node_id},\n"
+        f"    acceptanceCandidateNormalizedOutcome{node_id}, NormalizedOutcomeExpr.eval]\n"
+    )
+    empty_control = (
+        "  have callsEmpty : calls = [] := by\n"
+        "    cases calls with\n"
+        "    | nil => rfl\n"
+        "    | cons call tail =>\n"
+        "        simp [productControlProfile, ProductControlProfile.Allows]\n"
+        "          at controlAllowed\n"
+        "  subst calls\n"
+        "  have offsetsEmpty : frameOffsets = [] := by\n"
+        "    simpa [productControlProfile, ProductControlProfile.Allows] using controlAllowed\n"
+        "  subst frameOffsets\n"
+        "  have framesEmpty : frames = [] := by\n"
+        "    cases frames with\n"
+        "    | nil => rfl\n"
+        "    | cons frame tail =>\n"
+        "        simp [RelationalRuntimeCallStackHolds] at stackHolds\n"
+        "  subst frames\n"
+    )
+    if step["kind"] == "call":
+        edge = step["edges"][0]
+        edge_id = int(edge["edge_id"])
+        target_region_index = int(edge["target_region_index"])
+        continuation = int(step["continuation_target_id"])
+        claim = step["direct_call_push_claim"]
+        original_return = int(claim["original_return_address"])
+        candidate_return = int(claim["candidate_return_address"])
+        source_window = _lean_stack_window(step["source_stack_window"])
+        return (
+            prefix
+            + empty_control
+            + f"  let sourceWindow : StackWindowPair := {source_window}\n"
+            f"  have originalBehaviorCommon : {original_behavior} =\n"
+            f"      region{region_index}NormalizedBehavior := by decide\n"
+            f"  have candidateBehaviorCommon : {candidate_behavior} =\n"
+            f"      region{region_index}NormalizedBehavior := by decide\n"
+            "  let runtimeFrame : RelationalRuntimeCallFrame := {\n"
+            f"    continuationTargetId := {continuation}\n"
+            f"    originalReturnAddress := BitVec.ofNat 32 {original_return}\n"
+            f"    candidateReturnAddress := BitVec.ofNat 32 {candidate_return}\n"
+            "    originalStackAddress := originalState.registers.get\n"
+            "      sourceWindow.originalRegister - BitVec.ofNat 32 4\n"
+            "    candidateStackAddress := candidateState.registers.get\n"
+            "      sourceWindow.candidateRegister - BitVec.ofNat 32 4\n"
+            "  }\n"
+            f"  have transition := segmentRefinementEdge{edge_id}TransitionChecked world\n"
+            "    originalState candidateState statesRelated\n"
+            f"  have guardTrue : segmentRefinementEdge{edge_id}Spec.originalGuard.eval\n"
+            "      originalState = true := by\n"
+            f"    simp [segmentRefinementEdge{edge_id}Spec, BoolExpr.eval, Expr.eval]\n"
+            "  have transitioned := transition.2 guardTrue\n"
+            "  have nextStatesRelated : StateRel staticProofContext world\n"
+            f"      region{target_region_index}.inputInvariant\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState\n"
+            "        originalState)\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            "        candidateState) := by\n"
+            "    simpa [originalBehaviorCommon, candidateBehaviorCommon] using\n"
+            "      transitioned.2.2.2\n"
+            "  have frameMemory : runtimeFrame.memoryHolds\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState\n"
+            "        originalState).memory\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            "        candidateState).memory := by\n"
+            "    unfold RelationalRuntimeCallFrame.memoryHolds runtimeFrame\n"
+            "    exact pairedStackWordWriteReadsBack staticProofContext world\n"
+            f"      region{region_index}.inputInvariant sourceWindow\n"
+            f"      (BitVec.ofNat 32 {original_return}) (BitVec.ofNat 32 {candidate_return})\n"
+            "      originalState candidateState\n"
+            f"      ({original_behavior}.eval originalState)\n"
+            f"      ({candidate_behavior}.eval candidateState) statesRelated\n"
+            "      (by decide) (by decide)\n"
+            "      (by simp [originalBehaviorCommon, sourceWindow,\n"
+            f"        region{region_index}NormalizedWrites,\n"
+            f"        originalBehavior{region_index}, evalNormalizedWrites, Expr.eval,\n"
+            "        word_add_ia32_minus_four])\n"
+            "      (by simp [candidateBehaviorCommon, sourceWindow,\n"
+            f"        region{region_index}NormalizedWrites,\n"
+            f"        originalBehavior{region_index}, evalNormalizedWrites, Expr.eval,\n"
+            "        word_add_ia32_minus_four])\n"
+            "  have frameOffsetsHold : ReturnSlotOffsetPair.zero.holds runtimeFrame\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers := by\n"
+            "    simp [ReturnSlotOffsetPair.zero, ReturnSlotOffsetPair.holds, runtimeFrame,\n"
+            "      originalBehaviorCommon, candidateBehaviorCommon, sourceWindow,\n"
+            f"      region{region_index}NormalizedRegisters,\n"
+            f"      originalBehavior{region_index},\n"
+            "      evalNormalizedRegisters, evalNormalizedRegisters_get,\n"
+            "      StageA.Formal.Registers.get, Expr.eval,\n"
+            "      word_add_ia32_minus_four]\n"
+            "  have frameValid : runtimeFrame.toRelationalCallFrame.valid\n"
+            "      staticProofContext = true := by\n"
+            "    change RelationalCallFrame.valid staticProofContext {\n"
+            f"      continuationTargetId := {continuation}\n"
+            f"      originalReturnAddress := BitVec.ofNat 32 {original_return}\n"
+            f"      candidateReturnAddress := BitVec.ofNat 32 {candidate_return}\n"
+            "    } = true\n"
+            "    decide\n"
+            "  have frameResolves : runtimeFrame.toRelationalCallFrame.resolves\n"
+            "      staticProofContext = true := by\n"
+            "    change RelationalCallFrame.resolves staticProofContext {\n"
+            f"      continuationTargetId := {continuation}\n"
+            f"      originalReturnAddress := BitVec.ofNat 32 {original_return}\n"
+            f"      candidateReturnAddress := BitVec.ofNat 32 {candidate_return}\n"
+            "    } = true\n"
+            "    decide\n"
+            "  have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState\n"
+            "        originalState)\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            f"        candidateState) [runtimeFrame] [{continuation}]\n"
+            "      [ReturnSlotOffsetPair.zero] := by\n"
+            "    simp only [RelationalRuntimeCallStackHolds]\n"
+            "    exact ⟨rfl, frameValid, frameResolves, frameMemory, frameOffsetsHold,\n"
+            "      True.intro⟩\n"
+            + _lean_acceptance_running_target(
+                node_id=node_id,
+                region_index=region_index,
+                edge=edge,
+                frames="[runtimeFrame]",
+                calls=f"[{continuation}]",
+                frame_offsets="[ReturnSlotOffsetPair.zero]",
+                stack_targets_proof=(
+                    "(by simp only [RelationalRuntimeCallTargetsReachable]; "
+                    f"exact ⟨⟨{continuation}, relationalProductGraph.nodes[{continuation}], "
+                    "by decide, by decide, by decide⟩, True.intro⟩)"
+                ),
+            )
+        )
+    if step["kind"] == "return":
+        continuation = int(step["target_target_id"])
+        target_node_id = int(step["target_node_id"])
+        target_region_index = int(step["target_region_index"])
+        return_claim = step["return_pop_claim"]
+        frame_claim = step["return_frame_claim"]
+        return_claim_row = (
+            "{ originalStackAddress := "
+            + _lean_semantic_expr(return_claim["original_stack_address"])
+            + ", candidateStackAddress := "
+            + _lean_semantic_expr(return_claim["candidate_stack_address"])
+            + f", popBytes := {int(return_claim['pop_bytes'])} }}"
+        )
+        frame_claim_row = (
+            "{ offsets := "
+            + _lean_return_slot_offset_pair(frame_claim["offsets"])
+            + ", originalSlot := "
+            + _lean_register_offset_witness(frame_claim["original_slot_witness"])
+            + ", candidateSlot := "
+            + _lean_register_offset_witness(frame_claim["candidate_slot_witness"])
+            + " }"
+        )
+        frame_offsets = _lean_return_slot_offset_pair(frame_claim["offsets"])
+        output_claims = ", ".join(
+            _lean_register_output_claim(claim) for claim in step["output_claims"]
+        )
+        stack_transfers = ", ".join(
+            _lean_stack_window_transfer_claim(claim)
+            for claim in step["stack_window_transfers"]
+        )
+        target_edge = {
+            "target_node_id": target_node_id,
+            "target_region_index": target_region_index,
+            "target_target_id": continuation,
+        }
+        return (
+            prefix
+            + "  have controlShape : calls = ["
+            + str(continuation)
+            + "] ∧ frameOffsets = ["
+            + frame_offsets
+            + "] := by\n"
+            "    simpa [productControlProfile, ProductControlProfile.Allows] using\n"
+            "      controlAllowed\n"
+            "  rcases controlShape with ⟨rfl, rfl⟩\n"
+            "  cases frames with\n"
+            "  | nil => simp [RelationalRuntimeCallStackHolds] at stackHolds\n"
+            "  | cons frame tail =>\n"
+            "    have tailEmpty : tail = [] := by\n"
+            "      cases tail with\n"
+            "      | nil => rfl\n"
+            "      | cons next rest =>\n"
+            "          simp [RelationalRuntimeCallStackHolds] at stackHolds\n"
+            "    subst tail\n"
+            "    simp only [RelationalRuntimeCallStackHolds] at stackHolds\n"
+            "    have frameContinuation := stackHolds.1\n"
+            "    have frameResolves := stackHolds.2.2.1\n"
+            "    have frameMemory := stackHolds.2.2.2.1\n"
+            "    have frameOffsetsHold := stackHolds.2.2.2.2.1\n"
+            f"    let returnClaim : ReturnPopClaim := {return_claim_row}\n"
+            f"    let frameClaim : ReturnPopFrameClaim := {frame_claim_row}\n"
+            "    have returnTargets := returnPopTargetsRuntimeFrame_of_checked\n"
+            f"      {original_behavior} {candidate_behavior} returnClaim frameClaim frame\n"
+            "      originalState candidateState (by decide) (by decide)\n"
+            "      frameOffsetsHold frameMemory\n"
+            f"    simp only [acceptanceOriginalNormalizedOutcome{node_id},\n"
+            f"      acceptanceCandidateNormalizedOutcome{node_id},\n"
+            "      NormalizedOutcomeExpr.eval, PureOutcome.returned.injEq]\n"
+            "      at returnTargets\n"
+            "    have relatedForTransfer := statesRelated\n"
+            "    rcases statesRelated with\n"
+            "      ⟨_worldValid, stackRangesValid, _stackMemory, _importsStatic,\n"
+            "        _importsComplete, _importsMemory, _originalImmutable,\n"
+            "        _candidateImmutable, relatedCore, _inputImportRegisters⟩\n"
+            "    rcases relatedCore with\n"
+            "      ⟨_inputRegisters, _inputBounds, _inputSeparations, inputStackWindows,\n"
+            "        _inputMemory, _inputDynamicMemory, _inputUndefined, inputX87,\n"
+            "        _inputFlags, _inputFsBase⟩\n"
+            f"    let outputClaims : List InvariantWP.RegisterOutputClaim := [{output_claims}]\n"
+            "    have outputRegisters : registerRelationsHold\n"
+            "        staticProofContext.originalPe.imageBase\n"
+            "        staticProofContext.candidatePe.imageBase\n"
+            "        staticProofContext.codeMap.entries.toList\n"
+            "        (staticProofContext.relationalValueTargets world)\n"
+            f"        region{target_region_index}.inputInvariant.registerRelations\n"
+            f"        ({original_behavior}.eval originalState).registers\n"
+            f"        ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            f"      rw [RegionRelation.inputInvariant]\n"
+            f"      have inventory : outputClaims.map InvariantWP.RegisterOutputClaim.output =\n"
+            f"          region{target_region_index}.inputRelations := by decide\n"
+            "      rw [← inventory]\n"
+            "      exact InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims\n"
+            f"        staticProofContext world region{region_index} {original_behavior}\n"
+            f"        {candidate_behavior} outputClaims (by decide)\n"
+            "        originalState candidateState relatedForTransfer\n"
+            "    have outputBounds : boundsRelated\n"
+            f"        region{target_region_index}.inputInvariant.bounds\n"
+            f"        ({original_behavior}.eval originalState).registers\n"
+            f"        ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            f"      simp [RegionRelation.inputInvariant, region{target_region_index}, boundsRelated]\n"
+            "    have outputSeparations : addressSeparationsRelated\n"
+            f"        region{target_region_index}.inputInvariant.addressSeparations\n"
+            f"        ({original_behavior}.eval originalState).registers\n"
+            f"        ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            f"      simp [RegionRelation.inputInvariant, region{target_region_index},\n"
+            "        addressSeparationsRelated]\n"
+            f"    let stackTransfers : List StackWindowAffineTransferClaim := [{stack_transfers}]\n"
+            "    have outputStackWindows := stackWindowsRelated_after_affine_of_checked\n"
+            f"      staticProofContext world region{region_index}.inputInvariant\n"
+            f"      region{target_region_index}.inputInvariant {original_behavior}\n"
+            f"      {candidate_behavior} stackTransfers originalState candidateState\n"
+            "      stackRangesValid inputStackWindows (by decide)\n"
+            f"    have originalX87Field : {original_behavior}.x87 =\n"
+            f"        originalBehavior{region_index}.x87 := by decide\n"
+            f"    have candidateX87Field : {candidate_behavior}.x87 =\n"
+            f"        candidateBehavior{region_index}.x87 := by decide\n"
+            "    have outputX87 :\n"
+            f"        (({original_behavior}.eval originalState).nextMachineState\n"
+            "          originalState).x87 =\n"
+            f"        (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            "          candidateState).x87 := by\n"
+            "      rcases originalState with\n"
+            "        ⟨originalRegisters, originalMemory, originalUndefined, originalX87,\n"
+            "          originalFlags, originalFsBase⟩\n"
+            "      rcases candidateState with\n"
+            "        ⟨candidateRegisters, candidateMemory, candidateUndefined, candidateX87,\n"
+            "          candidateFlags, candidateFsBase⟩\n"
+            "      change originalX87 = candidateX87 at inputX87\n"
+            "      subst candidateX87\n"
+            "      simp [originalX87Field, candidateX87Field,\n"
+            f"        originalBehavior{region_index}, candidateBehavior{region_index},\n"
+            "        RelationalBehavior.nextMachineState, evalNormalizedX87,\n"
+            "        X87Expr.eval, Expr.eval]\n"
+            "    have outputFlags : flagsRelated\n"
+            f"        region{target_region_index}.inputInvariant.flagBits\n"
+            f"        ({original_behavior}.eval originalState).eflags\n"
+            f"        ({candidate_behavior}.eval candidateState).eflags = true := by\n"
+            f"      simp [RegionRelation.inputInvariant, region{target_region_index},\n"
+            "        flagsRelated]\n"
+            f"    have originalWritesField : {original_behavior}.writes = [] := by decide\n"
+            f"    have candidateWritesField : {candidate_behavior}.writes = [] := by decide\n"
+            f"    have originalWrites : ({original_behavior}.eval originalState).writes = [] := by\n"
+            "      simp [originalWritesField, evalNormalizedWrites]\n"
+            f"    have candidateWrites : ({candidate_behavior}.eval candidateState).writes = [] := by\n"
+            "      simp [candidateWritesField, evalNormalizedWrites]\n"
+            "    have outputImports : importRegisterRelationsHold world\n"
+            f"        region{target_region_index}.inputInvariant.importRegisterRelations\n"
+            f"        ({original_behavior}.eval originalState).registers\n"
+            f"        ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            f"      simp [RegionRelation.inputInvariant, region{target_region_index},\n"
+            "        importRegisterRelationsHold]\n"
+            "    have outputDynamic : dynamicRegisterRangeRelationsHold world\n"
+            f"        region{target_region_index}.inputInvariant.dynamicRegisterRangeRelations\n"
+            f"        ({original_behavior}.eval originalState).registers\n"
+            f"        ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            f"      simp [RegionRelation.inputInvariant, region{target_region_index},\n"
+            "        dynamicRegisterRangeRelationsHold]\n"
+            "    have nextStatesRelated : StateRel staticProofContext world\n"
+            f"        region{target_region_index}.inputInvariant\n"
+            f"        (({original_behavior}.eval originalState).nextMachineState originalState)\n"
+            f"        (({candidate_behavior}.eval candidateState).nextMachineState candidateState) :=\n"
+            "      StateRel.afterNoWriteEvaluation staticProofContext world\n"
+            f"        region{region_index}.inputInvariant region{target_region_index}.inputInvariant\n"
+            f"        originalState candidateState ({original_behavior}.eval originalState)\n"
+            f"        ({candidate_behavior}.eval candidateState) relatedForTransfer\n"
+            "        originalWrites candidateWrites outputRegisters outputBounds\n"
+            "        outputSeparations outputStackWindows outputX87 outputFlags\n"
+            "        outputImports outputDynamic\n"
+            "    have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
+            f"        (({original_behavior}.eval originalState).nextMachineState originalState)\n"
+            f"        (({candidate_behavior}.eval candidateState).nextMachineState candidateState)\n"
+            "        [] [] [] := by simp [RelationalRuntimeCallStackHolds]\n"
+            "    simp only [RelationalCallFrame.resolves, Bool.and_eq_true, beq_iff_eq]\n"
+            "      at frameResolves\n"
+            "    rw [frameContinuation] at frameResolves\n"
+            "    simp [originalWorldProgram, candidateWorldProgram]\n"
+            "    rw [returnTargets.1, returnTargets.2, frameResolves.1, frameResolves.2]\n"
+            "    simp\n"
+            + "\n".join(
+                "  " + line
+                for line in _lean_acceptance_running_target(
+                    node_id=node_id,
+                    region_index=region_index,
+                    edge=target_edge,
+                ).splitlines()
+            )
+        )
+    if step["kind"] == "external_call":
+        edge = step["edges"][0]
+        edge_id = int(edge["edge_id"])
+        target_region_index = int(edge["target_region_index"])
+        site = step["external_site"]
+        arguments = ", ".join(
+            _lean_semantic_expr(argument)
+            for argument in site.get("argument_expressions", [])
+        )
+        original_arguments = ", ".join(
+            f"({_lean_semantic_expr(argument)}).eval originalState"
+            for argument in site.get("argument_expressions", [])
+        )
+        candidate_arguments = ", ".join(
+            f"({_lean_semantic_expr(argument)}).eval candidateState"
+            for argument in site.get("argument_expressions", [])
+        )
+        imported_identity = _semantic_external_target_identity(
+            step.get("external_site", {}).get("original_import")
+            or step.get("external_site", {}).get("import")
+            or {}
+        )
+        if imported_identity is None:
+            imported_identity = _semantic_external_target_identity(
+                step.get("external_site", {}).get("decoded_import")
+                or {}
+            )
+        if imported_identity is None:
+            imported_identity = _semantic_external_target_identity(
+                step.get("external_site", {}).get("machine_import")
+                or {}
+            )
+        if imported_identity is None:
+            # The candidate carries a contract id, while the exact byte-level target
+            # remains in the decoded outcome used to construct this node step.
+            decoded_import = step.get("decoded_import")
+            imported_identity = _semantic_external_target_identity(decoded_import)
+        if imported_identity is None:
+            raise StageAInputError(
+                f"external acceptance node {node_id} has no decoded import identity"
+            )
+        imported_literal = _lean_external_target({
+            "dll": imported_identity[0], imported_identity[1]: imported_identity[2],
+        })
+        return (
+            prefix
+            + empty_control
+            + f"  have originalBehaviorCommon : {original_behavior} =\n"
+            f"      externalCallEdge{edge_id}OriginalNormalized := by decide\n"
+            f"  have candidateBehaviorCommon : {candidate_behavior} =\n"
+            f"      externalCallEdge{edge_id}CandidateNormalized := by decide\n"
+            f"  have transition := externalCallEdge{edge_id}TransitionChecked world\n"
+            "    originalState candidateState statesRelated\n"
+            f"  have guardTrue : externalCallEdge{edge_id}Spec.originalGuard.eval\n"
+            "      originalState = true := by\n"
+            f"    simp [externalCallEdge{edge_id}Spec, BoolExpr.eval, Expr.eval]\n"
+            "  have closed := transition.2 guardTrue\n"
+            f"  simp only [evalBehavior, externalCallEdge{edge_id}OriginalNormalizedChecked,\n"
+            f"    externalCallEdge{edge_id}CandidateNormalizedChecked, Option.bind_some]\n"
+            "    at closed\n"
+            "  rcases closed with\n"
+            "    ⟨originalCallArguments, candidateCallArguments, originalOutcome,\n"
+            "      candidateOutcome, _edgeExit, _outcomesRelated, boundary⟩\n"
+            f"  have originalArgumentsKnown : [{original_arguments}] =\n"
+            f"      originalCallArguments := by\n"
+            f"    have decomposed := originalOutcome\n"
+            f"    simp only [externalCallEdge{edge_id}OriginalOutcomeChecked,\n"
+            "      NormalizedSymbolicBehavior.eval_outcome, NormalizedOutcomeExpr.eval,\n"
+            "      Expr.eval, PureOutcome.externalCall.injEq] at decomposed\n"
+            "    simpa only [List.map] using decomposed.2.1\n"
+            f"  have candidateArgumentsKnown : [{candidate_arguments}] =\n"
+            f"      candidateCallArguments := by\n"
+            f"    have decomposed := candidateOutcome\n"
+            f"    simp only [externalCallEdge{edge_id}CandidateOutcomeChecked,\n"
+            "      NormalizedSymbolicBehavior.eval_outcome, NormalizedOutcomeExpr.eval,\n"
+            "      Expr.eval, PureOutcome.externalCall.injEq] at decomposed\n"
+            "    simpa only [List.map] using decomposed.2.1\n"
+            "  subst originalCallArguments\n"
+            "  subst candidateCallArguments\n"
+            "  let originalEvent : WorldExternalEvent := {\n"
+            f"    siteId := {edge_id}\n"
+            f"    imported := externalCallEdge{edge_id}MachineContract.imported\n"
+            f"    arguments := [{original_arguments}]\n"
+            f"    state := ({original_behavior}.eval originalState).nextMachineState\n"
+            "      originalState\n"
+            "    world\n"
+            "  }\n"
+            "  let candidateEvent : WorldExternalEvent := {\n"
+            f"    siteId := {edge_id}\n"
+            f"    imported := externalCallEdge{edge_id}MachineContract.imported\n"
+            f"    arguments := [{candidate_arguments}]\n"
+            f"    state := ({candidate_behavior}.eval candidateState).nextMachineState\n"
+            "      candidateState\n"
+            "    world\n"
+            "  }\n"
+            "  have boundaryKnown : ExternalCallBoundaryRelated staticProofContext\n"
+            f"      externalCallSite{edge_id} externalCallEdge{edge_id}MachineContract\n"
+            "      originalEvent candidateEvent := by\n"
+            "    simpa [originalEvent, candidateEvent, originalBehaviorCommon,\n"
+            "      candidateBehaviorCommon] using boundary\n"
+            "  have environmentAt := ExternalEnvironmentRefines.at staticProofContext\n"
+            "    externalCallSites originalEnvironment candidateEnvironment\n"
+            f"    environmentRefines externalCallSite{edge_id}\n"
+            f"    externalCallEdge{edge_id}MachineContract (by decide)\n"
+            f"    externalCallEdge{edge_id}MachineContractResolved\n"
+            "  have results := externalCallResultsRelated staticProofContext\n"
+            f"    externalCallSite{edge_id} externalCallEdge{edge_id}MachineContract\n"
+            "    originalEnvironment candidateEnvironment environmentAt eventIndex\n"
+            "    originalEvent candidateEvent boundaryKnown\n"
+            "  dsimp only at results\n"
+            "  rcases results with\n"
+            "    ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
+            "      nextStatesRelated⟩\n"
+            "  have argumentsRelated := boundaryKnown.2.2.2.2.2.2\n"
+            "  have observationRelated : worldRelationalObservationsRelated\n"
+            "      staticProofContext\n"
+            f"      (some (.external world externalCallEdge{edge_id}MachineContract.imported\n"
+            f"        [{original_arguments}]))\n"
+            f"      (some (.external world externalCallEdge{edge_id}MachineContract.imported\n"
+            f"        [{candidate_arguments}])) := by\n"
+            "    exact ⟨rfl, rfl, argumentsRelated⟩\n"
+            "  have originalSiteResolved : resolveExternalCallSite staticProofContext\n"
+            f"      externalCallSites {target_id}\n"
+            f"      externalCallEdge{edge_id}MachineContract.imported = some {edge_id} := by\n"
+            "    decide\n"
+            "  have candidateSiteResolved : resolveExternalCallSite staticProofContext\n"
+            f"      externalCallSites {target_id}\n"
+            f"      externalCallEdge{edge_id}MachineContract.imported = some {edge_id} := by\n"
+            "    decide\n"
+            "  rw [originalBehaviorCommon, candidateBehaviorCommon]\n"
+            "  simp only [originalWorldProgram, candidateWorldProgram]\n"
+            f"  have importedCommon : ({imported_literal} : ExternalTarget) =\n"
+            f"      externalCallEdge{edge_id}MachineContract.imported := by decide\n"
+            "  rw [importedCommon]\n"
+            "  rw [originalSiteResolved]\n"
+            "  simp only [List.map_nil]\n"
+            "  have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
+            "      (originalEnvironment.result eventIndex originalEvent).state\n"
+            "      (candidateEnvironment.result eventIndex candidateEvent).state\n"
+            "      [] [] [] := by\n"
+            "    simp [RelationalRuntimeCallStackHolds]\n"
+            + _lean_acceptance_running_target(
+                node_id=node_id,
+                region_index=region_index,
+                edge=edge,
+                observation_proof="observationRelated",
+                world_equal_proof="resultWorldsEqual",
+            )
+        )
+    if step["kind"] == "terminate":
+        output_claims = ", ".join(
+            _lean_register_output_claim(claim) for claim in step["output_claims"]
+        )
+        return (
+            prefix
+            + empty_control
+            + "  have relatedForTransfer := statesRelated\n"
+            "  rcases statesRelated with\n"
+            "    ⟨_worldValid, _stackRangesValid, _stackMemory, _importsStatic,\n"
+            "      _importsComplete, _importsMemory, _originalImmutable,\n"
+            "      _candidateImmutable, relatedCore, _inputImportRegisters⟩\n"
+            "  rcases relatedCore with\n"
+            "    ⟨_inputRegisters, _inputBounds, _inputSeparations, _inputStackWindows,\n"
+            "      _inputMemory, _inputDynamicMemory, _inputUndefined, inputX87,\n"
+            "      _inputFlags, _inputFsBase⟩\n"
+            f"  let outputClaims : List InvariantWP.RegisterOutputClaim := [{output_claims}]\n"
+            "  have outputRegisters : registerRelationsHold\n"
+            "      staticProofContext.originalPe.imageBase\n"
+            "      staticProofContext.candidatePe.imageBase\n"
+            "      staticProofContext.codeMap.entries.toList\n"
+            "      (staticProofContext.relationalValueTargets world)\n"
+            "      terminalInvariant.registerRelations\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            "    have inventory : outputClaims.map InvariantWP.RegisterOutputClaim.output =\n"
+            "        terminalInvariant.registerRelations := by decide\n"
+            "    rw [← inventory]\n"
+            "    exact InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims\n"
+            f"      staticProofContext world region{region_index} {original_behavior}\n"
+            f"      {candidate_behavior} outputClaims (by decide) originalState\n"
+            "      candidateState relatedForTransfer\n"
+            "  have outputBounds : boundsRelated\n"
+            "      terminalInvariant.bounds\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            "    simp [terminalInvariant, boundsRelated]\n"
+            "  have outputSeparations : addressSeparationsRelated\n"
+            "      terminalInvariant.addressSeparations\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            "    simp [terminalInvariant, addressSeparationsRelated]\n"
+            "  have outputStackWindows : stackWindowsRelated world\n"
+            "      terminalInvariant.stackWindows\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            "    simp [terminalInvariant, stackWindowsRelated]\n"
+            f"  have originalX87Field : {original_behavior}.x87 =\n"
+            f"      originalBehavior{region_index}.x87 := by decide\n"
+            f"  have candidateX87Field : {candidate_behavior}.x87 =\n"
+            f"      candidateBehavior{region_index}.x87 := by decide\n"
+            "  have outputX87 :\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState\n"
+            "        originalState).x87 =\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            "        candidateState).x87 := by\n"
+            "    rcases originalState with\n"
+            "      ⟨originalRegisters, originalMemory, originalUndefined, originalX87,\n"
+            "        originalFlags, originalFsBase⟩\n"
+            "    rcases candidateState with\n"
+            "      ⟨candidateRegisters, candidateMemory, candidateUndefined, candidateX87,\n"
+            "        candidateFlags, candidateFsBase⟩\n"
+            "    change originalX87 = candidateX87 at inputX87\n"
+            "    subst candidateX87\n"
+            "    simp [originalX87Field, candidateX87Field,\n"
+            f"      originalBehavior{region_index}, candidateBehavior{region_index},\n"
+            "      RelationalBehavior.nextMachineState, evalNormalizedX87,\n"
+            "      X87Expr.eval, Expr.eval]\n"
+            "  have outputFlags : flagsRelated\n"
+            "      terminalInvariant.flagBits\n"
+            f"      ({original_behavior}.eval originalState).eflags\n"
+            f"      ({candidate_behavior}.eval candidateState).eflags = true := by\n"
+            f"    simp [terminalInvariant, region{region_index}, flagsRelated]\n"
+            f"  have originalWritesField : {original_behavior}.writes = [] := by decide\n"
+            f"  have candidateWritesField : {candidate_behavior}.writes = [] := by decide\n"
+            f"  have originalWrites : ({original_behavior}.eval originalState).writes = [] := by\n"
+            "    simp [originalWritesField, evalNormalizedWrites]\n"
+            f"  have candidateWrites : ({candidate_behavior}.eval candidateState).writes = [] := by\n"
+            "    simp [candidateWritesField, evalNormalizedWrites]\n"
+            "  have outputImports : importRegisterRelationsHold world\n"
+            "      terminalInvariant.importRegisterRelations\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            "    simp [terminalInvariant, importRegisterRelationsHold]\n"
+            "  have outputDynamic : dynamicRegisterRangeRelationsHold world\n"
+            "      terminalInvariant.dynamicRegisterRangeRelations\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            "    simp [terminalInvariant, dynamicRegisterRangeRelationsHold]\n"
+            "  have nextStatesRelated : StateRel staticProofContext world\n"
+            "      terminalInvariant\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState originalState)\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState candidateState) :=\n"
+            "    StateRel.afterNoWriteEvaluation staticProofContext world\n"
+            f"      region{region_index}.inputInvariant terminalInvariant\n"
+            f"      originalState candidateState ({original_behavior}.eval originalState)\n"
+            f"      ({candidate_behavior}.eval candidateState) relatedForTransfer\n"
+            "      originalWrites candidateWrites outputRegisters outputBounds\n"
+            "      outputSeparations outputStackWindows outputX87 outputFlags\n"
+            "      outputImports outputDynamic\n"
+            "  simp [originalWorldProgram, candidateWorldProgram,\n"
+            "    transitionFromWorldOutcome]\n"
+            "  constructor\n"
+            "  · rfl\n"
+            "  · exact ⟨rfl, nextStatesRelated⟩\n"
+        )
+    if step["kind"] == "indirect_jump":
+        edge = step["edges"][0]
+        edge_id = int(edge["edge_id"])
+        target_region_index = int(edge["target_region_index"])
+        target_id = int(edge["target_target_id"])
+        original_product_behavior = f"productNode{node_id}OriginalNormalized"
+        candidate_product_behavior = f"productNode{node_id}CandidateNormalized"
+        claim = f"productNode{node_id}ImmutableIndirectJumpClaim"
+        target_closed = f"productNode{node_id}ImmutableIndirectJumpClosed"
+        return (
+            prefix
+            + f"  have originalBehaviorCommon : {original_behavior} =\n"
+            f"      {original_product_behavior} := by decide\n"
+            f"  have candidateBehaviorCommon : {candidate_behavior} =\n"
+            f"      {candidate_product_behavior} := by decide\n"
+            f"  have indirectTargets := {target_closed} world originalState\n"
+            "    candidateState statesRelated\n"
+            "  have originalTargetExpression :\n"
+            f"      ({_lean_semantic_expr(step['decoded_control']['original_target_expression'])}).eval "
+            "originalState =\n"
+            "        BitVec.ofNat 32 (staticProofContext.originalPe.imageBase +\n"
+            f"          staticProofContext.codeMap.entries[{claim}.targetId].originalRva) := by\n"
+            "    rw [← originalBehaviorCommon] at indirectTargets\n"
+            f"    simpa only [acceptanceOriginalNormalizedOutcome{node_id},\n"
+            "      NormalizedOutcomeExpr.eval, PureOutcome.indirectJump.injEq] using\n"
+            "      indirectTargets.1\n"
+            "  have candidateTargetExpression :\n"
+            f"      ({_lean_semantic_expr(step['decoded_control']['candidate_target_expression'])}).eval "
+            "candidateState =\n"
+            "        BitVec.ofNat 32 (staticProofContext.candidatePe.imageBase +\n"
+            f"          staticProofContext.codeMap.entries[{claim}.targetId].candidateRva) := by\n"
+            "    rw [← candidateBehaviorCommon] at indirectTargets\n"
+            f"    simpa only [acceptanceCandidateNormalizedOutcome{node_id},\n"
+            "      NormalizedOutcomeExpr.eval, PureOutcome.indirectJump.injEq] using\n"
+            "      indirectTargets.2\n"
+            "  have originalTargetResolved : resolveMappedCodeTarget false\n"
+            "      staticProofContext.originalPe.imageBase\n"
+            "      staticProofContext.codeMap.entries.toList\n"
+            "      (BitVec.ofNat 32 (staticProofContext.originalPe.imageBase +\n"
+            f"        staticProofContext.codeMap.entries[{claim}.targetId].originalRva)) =\n"
+            f"        some {target_id} := by decide\n"
+            "  have candidateTargetResolved : resolveMappedCodeTarget true\n"
+            "      staticProofContext.candidatePe.imageBase\n"
+            "      staticProofContext.codeMap.entries.toList\n"
+            "      (BitVec.ofNat 32 (staticProofContext.candidatePe.imageBase +\n"
+            f"        staticProofContext.codeMap.entries[{claim}.targetId].candidateRva)) =\n"
+            f"        some {target_id} := by decide\n"
+            f"  have transition := segmentRefinementEdge{edge_id}TransitionChecked world\n"
+            "    originalState candidateState statesRelated\n"
+            f"  have guardTrue : segmentRefinementEdge{edge_id}Spec.originalGuard.eval\n"
+            "      originalState = true := by\n"
+            f"    simp [segmentRefinementEdge{edge_id}Spec, BoolExpr.eval, Expr.eval]\n"
+            "  have transitioned := transition.2 guardTrue\n"
+            "  have nextStatesRelated : StateRel staticProofContext world\n"
+            f"      region{target_region_index}.inputInvariant\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState\n"
+            "        originalState)\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            "        candidateState) := by\n"
+            "    simpa [originalBehaviorCommon, candidateBehaviorCommon] using\n"
+            "      transitioned.2.2.2\n"
+            "  have stackHoldsNext := RelationalRuntimeCallStackHolds.of_memory_eq\n"
+            "    staticProofContext originalState candidateState\n"
+            f"    (({original_behavior}.eval originalState).nextMachineState originalState)\n"
+            f"    (({candidate_behavior}.eval candidateState).nextMachineState candidateState)\n"
+            "    frames calls frameOffsets stackHolds\n"
+            "    (by simp [RelationalBehavior.nextMachineState, originalBehaviorCommon,\n"
+            f"      {original_product_behavior}WritesEmpty, evalNormalizedWrites,\n"
+            "      applyConcreteWrites])\n"
+            "    (by simp [RelationalBehavior.nextMachineState, candidateBehaviorCommon,\n"
+            f"      {candidate_product_behavior}WritesEmpty, evalNormalizedWrites,\n"
+            "      applyConcreteWrites])\n"
+            "    (by\n"
+            "      change (evalNormalizedRegisters originalState\n"
+            f"        {original_product_behavior}.registers).get .esp =\n"
+            "          originalState.registers.get .esp\n"
+            f"      rw [evalNormalizedRegisters_get, "
+            f"{original_product_behavior}EspGet]\n"
+            "      rfl)\n"
+            "    (by\n"
+            "      change (evalNormalizedRegisters candidateState\n"
+            f"        {candidate_product_behavior}.registers).get .esp =\n"
+            "          candidateState.registers.get .esp\n"
+            f"      rw [evalNormalizedRegisters_get, "
+            f"{candidate_product_behavior}EspGet]\n"
+            "      rfl)\n"
+            "  have targetControlAllowed : productControlProfile.Allows\n"
+            f"      {int(edge['target_node_id'])} calls frameOffsets = true := by\n"
+            "    simpa [productControlProfile, ProductControlProfile.Allows] using\n"
+            "      controlAllowed\n"
+            "  rw [originalTargetExpression, candidateTargetExpression]\n"
+            "  simp only [originalWorldProgram, candidateWorldProgram,\n"
+            "    Bool.false_eq_true, if_false, if_true]\n"
+            "  rw [originalTargetResolved, candidateTargetResolved]\n"
+            "  simp only\n"
+            + _lean_acceptance_running_target(
+                node_id=node_id,
+                region_index=region_index,
+                edge=edge,
+                frames="frames",
+                calls="calls",
+                frame_offsets="frameOffsets",
+                stack_targets_proof="stackTargetsReachable",
+                target_control_proof="targetControlAllowed",
+            )
+        )
+    if step["kind"] == "jump":
+        edge = step["edges"][0]
+        edge_id = int(edge["edge_id"])
+        target_region_index = int(edge["target_region_index"])
+        return (
+            prefix
+            + empty_control
+            + f"  have transition := segmentRefinementEdge{edge_id}TransitionChecked world\n"
+            "    originalState candidateState statesRelated\n"
+            f"  have guardTrue : segmentRefinementEdge{edge_id}Spec.originalGuard.eval\n"
+            "      originalState = true := by\n"
+            f"    simp [segmentRefinementEdge{edge_id}Spec, BoolExpr.eval, Expr.eval]\n"
+            "  have transitioned := transition.2 guardTrue\n"
+            "  have nextStatesRelated : StateRel staticProofContext world\n"
+            f"      region{target_region_index}.inputInvariant\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState\n"
+            "        originalState)\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            "        candidateState) := by\n"
+            f"    simpa [{original_behavior}, {candidate_behavior},\n"
+            f"      region{region_index}NormalizedBehavior] using transitioned.2.2.2\n"
+            + _lean_acceptance_empty_stack(node_id)
+            + "\n"
+            + _lean_acceptance_running_target(
+                node_id=node_id, region_index=region_index, edge=edge
+            )
+        )
+
+    taken, fallthrough = step["edges"]
+    taken_id = int(taken["edge_id"])
+    fallthrough_id = int(fallthrough["edge_id"])
+
+    def branch_case(edge: dict[str, Any], condition: bool) -> str:
+        edge_id = int(edge["edge_id"])
+        target_region_index = int(edge["target_region_index"])
+        condition_literal = "true" if condition else "false"
+        original_guard = (
+            f"      change region{region_index}OutcomeCondition.eval originalState = true\n"
+            "      exact originalCondition\n"
+            if condition else
+            f"      change (!region{region_index}OutcomeCondition.eval originalState) = true\n"
+            "      simp [originalCondition]\n"
+        )
+        stack_proof = "\n".join(
+            "  " + line
+            for line in _lean_acceptance_empty_stack(node_id).splitlines()
+        )
+        target_proof = "\n".join(
+            "  " + line
+            for line in _lean_acceptance_running_target(
+                node_id=node_id, region_index=region_index, edge=edge
+            ).splitlines()
+        )
+        return (
+            f"    have originalGuard : segmentRefinementEdge{edge_id}Spec.originalGuard.eval\n"
+            "        originalState = true := by\n"
+            + original_guard
+            + f"    have candidateGuard : segmentRefinementEdge{edge_id}Spec.candidateGuard.eval\n"
+            "        candidateState = true := by\n"
+            f"      rw [← transition{edge_id}.1]\n"
+            "      exact originalGuard\n"
+            f"    have candidateCondition : region{region_index}OutcomeCondition.eval\n"
+            f"        candidateState = {condition_literal} := by\n"
+            "      exact normalizedBranchCondition_eval_of_guard_true\n"
+            f"        region{region_index}OutcomeCondition\n"
+            f"        segmentRefinementEdge{edge_id}Spec.candidateGuard\n"
+            f"        {condition_literal} candidateState (by decide) candidateGuard\n"
+            f"    have transitioned := transition{edge_id}.2 originalGuard\n"
+            "    have nextStatesRelated : StateRel staticProofContext world\n"
+            f"        region{target_region_index}.inputInvariant\n"
+            f"        (({original_behavior}.eval originalState).nextMachineState\n"
+            "          originalState)\n"
+            f"        (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            "          candidateState) := by\n"
+            f"      simpa [{original_behavior}, {candidate_behavior},\n"
+            f"        region{region_index}NormalizedBehavior] using transitioned.2.2.2\n"
+            + stack_proof
+            + "\n"
+            f"    simp only [region{region_index}OutcomeCondition] at "
+            "originalCondition candidateCondition\n"
+            "    simp [originalCondition, candidateCondition]\n"
+            + target_proof
+        )
+
+    return (
+        prefix
+        + empty_control
+        + f"  have transition{taken_id} := segmentRefinementEdge{taken_id}TransitionChecked world\n"
+        "    originalState candidateState statesRelated\n"
+        f"  have transition{fallthrough_id} := segmentRefinementEdge{fallthrough_id}TransitionChecked world\n"
+        "    originalState candidateState statesRelated\n"
+        f"  cases originalCondition : region{region_index}OutcomeCondition.eval originalState with\n"
+        "  | false =>\n"
+        + branch_case(fallthrough, False)
+        + "\n  | true =>\n"
+        + branch_case(taken, True)
+    )
+
+
+def _lean_acceptance_execution_edge(
+    *, step: dict[str, Any], edge: dict[str, Any]
+) -> str:
+    node_id = int(step["node_id"])
+    region_index = int(step["region_index"])
+    target_id = int(step["target_id"])
+    edge_id = int(edge["edge_id"])
+    target_node_id = int(edge["target_node_id"])
+    target_region_index = int(edge["target_region_index"])
+    target_target_id = int(edge["target_target_id"])
+    node_resolution_theorems = [
+        f"(show relationalProductGraph.getNode? {node_id} = "
+        f"some relationalProductGraph.nodes[{node_id}] by decide)"
+    ]
+    if target_node_id != node_id:
+        node_resolution_theorems.append(
+            f"(show relationalProductGraph.getNode? {target_node_id} = "
+            f"some relationalProductGraph.nodes[{target_node_id}] by decide)"
+        )
+    invariant_rewrites = ["sourceInvariant"]
+    if target_node_id != node_id:
+        invariant_rewrites.append("targetInvariant")
+    if step["kind"] == "external_call":
+        return (
+            f"theorem acceptanceExecutionEdge{edge_id}Refined :\n"
+            "    RelationalProductExecutionEdgeRefined staticProofContext\n"
+            "      relationalProductGraph allRegions productInvariantTable "
+            f"{edge_id} := by\n"
+            "  apply Or.inr\n"
+            "  unfold RelationalExternalExecutionEdgeRefined\n"
+            f"  rw [externalCallEdge{edge_id}ProductResolved]\n"
+            "  simp only\n"
+            f"  have edgeSourceNode : relationalProductGraph.edges[{edge_id}].sourceNodeId =\n"
+            f"      {node_id} := by decide\n"
+            f"  have edgeTargetNode : relationalProductGraph.edges[{edge_id}].targetNodeId =\n"
+            f"      {target_node_id} := by decide\n"
+            f"  have edgeSourceTarget : relationalProductGraph.edges[{edge_id}].sourceTargetId =\n"
+            f"      {target_id} := by decide\n"
+            f"  have edgeTargetTarget : relationalProductGraph.edges[{edge_id}].targetTargetId =\n"
+            f"      {target_target_id} := by decide\n"
+            "  rw [edgeSourceNode, edgeTargetNode, edgeSourceTarget, edgeTargetTarget,\n"
+            f"    {', '.join(node_resolution_theorems)}]\n"
+            f"  have regionFound : regionById allRegions {target_id} = "
+            f"some region{region_index} := by decide\n"
+            f"  have sourceInvariant : productInvariantTable.nodeInvariants[{node_id}]? =\n"
+            f"      some region{region_index}.inputInvariant := by decide\n"
+            f"  have targetInvariant : productInvariantTable.nodeInvariants[{target_node_id}]? =\n"
+            f"      some region{target_region_index}.inputInvariant := by decide\n"
+            f"  rw [regionFound, {', '.join(invariant_rewrites)}]\n"
+            f"  refine ⟨externalCallSite{edge_id}, externalCallEdge{edge_id}Spec,\n"
+            f"    ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_,\n"
+            f"    externalCallEdge{edge_id}ProductRefinementChecked⟩\n"
+            "  all_goals decide"
+        )
+    return (
+        f"theorem acceptanceExecutionEdge{edge_id}Refined :\n"
+        "    RelationalProductExecutionEdgeRefined staticProofContext\n"
+        "      relationalProductGraph allRegions productInvariantTable "
+        f"{edge_id} := by\n"
+        "  apply Or.inl\n"
+        "  unfold RelationalInternalExecutionEdgeRefined\n"
+        f"  rw [productEdge{edge_id}Resolved]\n"
+        "  simp only\n"
+        f"  have edgeSourceNode : relationalProductGraph.edges[{edge_id}].sourceNodeId =\n"
+        f"      {node_id} := by decide\n"
+        f"  have edgeTargetNode : relationalProductGraph.edges[{edge_id}].targetNodeId =\n"
+        f"      {target_node_id} := by decide\n"
+        f"  have edgeSourceTarget : relationalProductGraph.edges[{edge_id}].sourceTargetId =\n"
+        f"      {target_id} := by decide\n"
+        f"  have edgeTargetTarget : relationalProductGraph.edges[{edge_id}].targetTargetId =\n"
+        f"      {target_target_id} := by decide\n"
+        "  rw [edgeSourceNode, edgeTargetNode, edgeSourceTarget, edgeTargetTarget,\n"
+        f"    {', '.join(node_resolution_theorems)}]\n"
+        f"  have regionFound : regionById allRegions {target_id} = "
+        f"some region{region_index} := by decide\n"
+        f"  have sourceInvariant : productInvariantTable.nodeInvariants[{node_id}]? =\n"
+        f"      some region{region_index}.inputInvariant := by decide\n"
+        f"  have targetInvariant : productInvariantTable.nodeInvariants[{target_node_id}]? =\n"
+        f"      some region{target_region_index}.inputInvariant := by decide\n"
+        f"  rw [regionFound, {', '.join(invariant_rewrites)}]\n"
+        f"  refine ⟨segmentRefinementEdge{edge_id}Spec, ?_, ?_, ?_, ?_, ?_, ?_,\n"
+        f"    productEdge{edge_id}Refined⟩\n"
+        "  all_goals decide"
+    )
+
+
+def _write_relational_acceptance_modules(
+    lean_dir: Path,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    product_graph: dict[str, Any],
+    register_relations: dict[str, Any],
+    segment_candidates: list[dict[str, Any]],
+    decode_chunk_regions: list[list[int]],
+    external_site_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    stage_a = lean_dir / "StageA"
+    for path in [
+        *stage_a.glob("RelationalAcceptance*.lean"),
+        *stage_a.glob("RelationalAcceptance*.olean"),
+    ]:
+        path.unlink()
+    plan = _whole_program_acceptance_plan(
+        contract, behaviors, product_graph, register_relations, segment_candidates,
+        external_site_candidates,
+    )
+    write_json(lean_dir.parent / "whole-program-acceptance.json", plan)
+    if plan["status"] != "ready":
+        return plan
+
+    nodes = product_graph["nodes"]
+    root_node_id = int(plan["root_node_id"])
+    terminal_region_index = int(plan["terminal_region_index"])
+    terminal_invariant = _lean_state_invariant(plan["terminal_invariant"])
+    parameterized_environment = any(
+        step["kind"] == "external_call" for step in plan["node_steps"]
+    )
+    invariant_rows = ", ".join(
+        f"region{node_id}.inputInvariant" for node_id in range(len(nodes))
+    )
+    control_rows = ", ".join(
+        "{ nodeId := " + str(int(state["node_id"]))
+        + ", calls := [" + ", ".join(str(int(item)) for item in state["calls"])
+        + "], frameOffsets := ["
+        + ", ".join(
+            _lean_return_slot_offset_pair(offsets)
+            for offsets in state["frame_offsets"]
+        )
+        + "] }"
+        for state in plan["control_states"]
+    )
+    world_program_source = (
+        "def originalWorldProgram (environment : WorldExternalEnvironment) : "
+        "DecodedWorldProgram := {\n"
+        "  candidate := false\n  context := staticProofContext\n"
+        "  regions := allRegions\n  externalCallSites\n"
+        "  environment\n}\n\n"
+        "def candidateWorldProgram (environment : WorldExternalEnvironment) : "
+        "DecodedWorldProgram := {\n"
+        "  candidate := true\n  context := staticProofContext\n"
+        "  regions := allRegions\n  externalCallSites\n"
+        "  environment\n}\n\n"
+        if parameterized_environment else
+        "def inertWorldEnvironment : WorldExternalEnvironment := {\n"
+        "  result := fun _ event => { state := event.state, world := event.world }\n"
+        "}\n\n"
+        "def originalWorldProgram : DecodedWorldProgram := {\n"
+        "  candidate := false\n  context := staticProofContext\n"
+        "  regions := allRegions\n  externalCallSites\n"
+        "  environment := inertWorldEnvironment\n}\n\n"
+        "def candidateWorldProgram : DecodedWorldProgram := {\n"
+        "  candidate := true\n  context := staticProofContext\n"
+        "  regions := allRegions\n  externalCallSites\n"
+        "  environment := inertWorldEnvironment\n}\n\n"
+    )
+    context_source = (
+        "import StageA.RelationalBundle\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+        "set_option linter.unusedSimpArgs false\n\n"
+        f"def terminalInvariant : StateInvariant := {terminal_invariant}\n\n"
+        "def productInvariantTable : ProductInvariantTable := {\n"
+        f"  nodeInvariants := #[{invariant_rows}]\n"
+        "  terminalInvariant\n"
+        "}\n\n"
+        "def productControlProfile : ProductControlProfile := {\n"
+        f"  states := [{control_rows}]\n"
+        "}\n\n"
+        "def consoleLaunch : PE32ConsoleLaunchV1 := {\n"
+        f"  rootNodeId := {root_node_id}\n"
+        f"  rootTargetId := {int(nodes[root_node_id]['target_id'])}\n"
+        f"  rootInvariant := region{root_node_id}.inputInvariant\n"
+        "}\n\n"
+        + world_program_source
+        + "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        stage_a / "RelationalAcceptanceContext.lean", context_source
+    )
+
+    decode_chunk_by_region = {
+        region_index: chunk_index
+        for chunk_index, region_indices in enumerate(decode_chunk_regions)
+        for region_index in region_indices
+    }
+    chunk_size = max(
+        1, int(os.environ.get("WINCR_STAGE_A_ACCEPTANCE_CHUNK", "8"))
+    )
+    chunks: list[dict[str, str]] = []
+    steps = plan["node_steps"]
+    for chunk_index, offset in enumerate(range(0, len(steps), chunk_size)):
+        selected = steps[offset : offset + chunk_size]
+        module = f"RelationalAcceptanceChunk{chunk_index}"
+        ids_name = f"acceptanceNodeChunk{chunk_index}Ids"
+        edge_ids_name = f"acceptanceEdgeChunk{chunk_index}Ids"
+        definitions: list[str] = []
+        region_theorems: list[str] = []
+        running_theorems: list[str] = []
+        edge_theorems: list[str] = []
+        for step in selected:
+            node_id = int(step["node_id"])
+            region_index = int(step["region_index"])
+            target_id = int(step["target_id"])
+            decode_chunk = decode_chunk_by_region[region_index]
+            region_match = f"acceptanceRegionNode{node_id}Matches"
+            running = f"acceptanceRunningNode{node_id}Refined"
+            region_theorems.append(region_match)
+            running_theorems.append(
+                f"{running} originalEnvironment candidateEnvironment environmentRefines"
+                if parameterized_environment else running
+            )
+            edge_theorems.extend(
+                f"acceptanceExecutionEdge{int(edge['edge_id'])}Refined"
+                for edge in step["edges"]
+            )
+            definitions.append(
+                f"theorem {region_match} :\n"
+                "    RegionMatchesProductNode staticProofContext relationalProductGraph "
+                f"allRegions {node_id} := by\n"
+                "  unfold RegionMatchesProductNode\n"
+                f"  rw [(show relationalProductGraph.getNode? {node_id} =\n"
+                f"    some relationalProductGraph.nodes[{node_id}] by decide)]\n"
+                "  simp only\n"
+                f"  have nodeTarget : relationalProductGraph.nodes[{node_id}].targetId = "
+                f"{target_id} := by decide\n"
+                "  have codeFound : staticProofContext.codeMap.get? "
+                f"{target_id} = some staticProofContext.codeMap.entries[{target_id}] := by decide\n"
+                f"  have regionFound : regionById allRegions {target_id} = "
+                f"some region{region_index} := by decide\n"
+                "  rw [nodeTarget, codeFound, regionFound]\n"
+                "  exact ⟨by decide, by decide, by decide, by decide⟩"
+            )
+            for side in ("original", "candidate"):
+                side_title = side.capitalize()
+                side_bool = "false" if side == "original" else "true"
+                normalized_name = (
+                    f"acceptance{side_title}NormalizedBehavior{node_id}"
+                )
+                normalized_outcome = (
+                    f"acceptance{side_title}NormalizedOutcome{node_id}"
+                )
+                normalized_checked = (
+                    f"acceptance{side_title}Normalization{node_id}Checked"
+                )
+                environment_name = f"{side}Environment"
+                world_program = (
+                    f"({side}WorldProgram {environment_name})"
+                    if parameterized_environment else f"{side}WorldProgram"
+                )
+                world_behavior_binder = (
+                    f" ({environment_name} : WorldExternalEnvironment)"
+                    if parameterized_environment else ""
+                )
+                definitions.append(
+                    f"def {normalized_name} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior {side_bool} region{region_index}.targets "
+                    f"{side}Behavior{region_index}).get (by decide)\n\n"
+                    f"theorem {normalized_checked} : normalizeSymbolicBehavior {side_bool}\n"
+                    f"    region{region_index}.targets {side}Behavior{region_index} =\n"
+                    f"      some {normalized_name} := by decide\n\n"
+                    f"theorem {normalized_outcome} : {normalized_name}.outcome =\n"
+                    f"    {_lean_acceptance_outcome(behaviors[region_index][side + '_ir']['outcome'])} "
+                    ":= by decide"
+                )
+                definitions.append(
+                    f"theorem {side}WorldBehaviorNode{node_id}{world_behavior_binder} "
+                    "(state : MachineState) :\n"
+                    f"    decodedWorldRegionBehavior {world_program} {target_id} state =\n"
+                    f"      some ({normalized_name}.eval state) := by\n"
+                    f"  have regionFound : regionById allRegions {target_id} = "
+                    f"some region{region_index} := by decide\n"
+                    f"  unfold decodedWorldRegionBehavior {side}WorldProgram\n"
+                    "  rw [regionFound]\n"
+                    f"  change (regionBehaviorWithMachineCallContracts {side}Pe "
+                    f"{side}Imports machineImportCallContracts region{region_index}.{side}).bind\n"
+                    f"      (evalBehavior {side_bool} region{region_index}.targets state) = _\n"
+                    f"  have decoded : regionBehaviorWithMachineCallContracts {side}Pe "
+                    f"{side}Imports machineImportCallContracts region{region_index}.{side} =\n"
+                    f"      some {side}Behavior{region_index} := by\n"
+                    f"    simpa [{side}MachineImportCallContractsChunk{decode_chunk}] using\n"
+                    f"      {side}Behavior{region_index}CheckedDecoded\n"
+                    "  rw [decoded]\n"
+                    f"  simp [evalBehavior, {normalized_checked}]"
+                )
+            definitions.append(_lean_acceptance_running_node(
+                step, parameterized_environment=parameterized_environment,
+            ))
+            definitions.extend(
+                _lean_acceptance_execution_edge(step=step, edge=edge)
+                for edge in step["edges"]
+            )
+        node_ids = [int(step["node_id"]) for step in selected]
+        edge_ids = [
+            int(edge["edge_id"])
+            for step in selected
+            for edge in step["edges"]
+        ]
+        definitions.extend([
+            f"def {ids_name} : List Nat := [{', '.join(map(str, node_ids))}]",
+            f"def {edge_ids_name} : List Nat := [{', '.join(map(str, edge_ids))}]",
+            (
+                f"theorem acceptanceRegionChunk{chunk_index}Checked :\n"
+                "    AllListedRegionsMatchProductGraph staticProofContext\n"
+                f"      relationalProductGraph allRegions {ids_name} := by\n"
+                f"  exact {_lean_all_listed_proof(region_theorems)}"
+            ),
+            (
+                f"theorem acceptanceRunningChunk{chunk_index}Checked"
+                + (
+                    " (originalEnvironment candidateEnvironment : "
+                    "WorldExternalEnvironment)\n"
+                    "    (environmentRefines : ExternalEnvironmentRefines "
+                    "staticProofContext externalCallSites\n"
+                    "      originalEnvironment candidateEnvironment)"
+                    if parameterized_environment else ""
+                )
+                + " :\n"
+                "    AllListedRunningProductNodesRefined staticProofContext\n"
+                "      relationalProductGraph productInvariantTable\n"
+                "      relationalProductReachabilityEvidence productControlProfile\n"
+                + (
+                    "      (originalWorldProgram originalEnvironment)\n"
+                    "      (candidateWorldProgram candidateEnvironment) "
+                    if parameterized_environment else
+                    "      originalWorldProgram\n"
+                    "      candidateWorldProgram "
+                )
+                + f"{ids_name} := by\n"
+                f"  exact {_lean_all_listed_proof(running_theorems)}"
+            ),
+            (
+                f"theorem acceptanceExecutionEdgeChunk{chunk_index}Checked :\n"
+                "    AllListedProductExecutionEdgesRefined staticProofContext\n"
+                "      relationalProductGraph allRegions productInvariantTable\n"
+                f"      {edge_ids_name} := by\n"
+                f"  exact {_lean_all_listed_proof(edge_theorems)}"
+            ),
+        ])
+        source = (
+            "import StageA.RelationalAcceptanceContext\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+            "set_option linter.unusedSimpArgs false\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(stage_a / f"{module}.lean", source)
+        chunks.append({
+            "module": module,
+            "ids": ids_name,
+            "edge_ids": edge_ids_name,
+            "regions": f"acceptanceRegionChunk{chunk_index}Checked",
+            "running": (
+                f"acceptanceRunningChunk{chunk_index}Checked originalEnvironment "
+                "candidateEnvironment environmentRefines"
+                if parameterized_environment else
+                f"acceptanceRunningChunk{chunk_index}Checked"
+            ),
+            "edges": f"acceptanceExecutionEdgeChunk{chunk_index}Checked",
+        })
+
+    node_ids_expr = _lean_appended_list([chunk["ids"] for chunk in chunks])
+    edge_ids_expr = _lean_appended_list([chunk["edge_ids"] for chunk in chunks])
+    region_proof = _lean_appended_proof(
+        chunks, "allListedRegionsMatchProductGraph_append",
+        "staticProofContext relationalProductGraph allRegions", "regions",
+    )
+    acceptance_original_program = (
+        "(originalWorldProgram originalEnvironment)"
+        if parameterized_environment else "originalWorldProgram"
+    )
+    acceptance_candidate_program = (
+        "(candidateWorldProgram candidateEnvironment)"
+        if parameterized_environment else "candidateWorldProgram"
+    )
+    running_proof = _lean_appended_proof(
+        chunks, "allListedRunningProductNodesRefined_append",
+        "staticProofContext relationalProductGraph productInvariantTable "
+        "relationalProductReachabilityEvidence productControlProfile "
+        f"{acceptance_original_program} {acceptance_candidate_program}",
+        "running",
+    )
+    edge_proof = _lean_appended_proof(
+        [dict(chunk, ids=chunk["edge_ids"]) for chunk in chunks],
+        "allListedProductExecutionEdgesRefined_append",
+        "staticProofContext relationalProductGraph allRegions productInvariantTable",
+        "edges",
+    )
+    root_target_id = int(nodes[root_node_id]["target_id"])
+    if parameterized_environment:
+        running_closure_source = (
+            "theorem allAcceptanceRunningNodesListed\n"
+            "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    AllListedRunningProductNodesRefined staticProofContext\n"
+            "      relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      (originalWorldProgram originalEnvironment)\n"
+            "      (candidateWorldProgram candidateEnvironment) allAcceptanceNodeIds := by\n"
+            f"  simpa [allAcceptanceNodeIds] using ({running_proof})\n\n"
+            "theorem allAcceptanceRunningNodesRefined\n"
+            "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    ReachableRunningProductNodesRefined staticProofContext\n"
+            "      relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      (originalWorldProgram originalEnvironment)\n"
+            "      (candidateWorldProgram candidateEnvironment) := by\n"
+            "  apply reachableRunningProductNodesRefined_of_complete_evidence\n"
+            "    staticProofContext relationalProductGraph productInvariantTable\n"
+            "    relationalProductReachabilityEvidence productControlProfile\n"
+            "    (originalWorldProgram originalEnvironment)\n"
+            "    (candidateWorldProgram candidateEnvironment)\n"
+            "    relationalProductLocalEvidence\n"
+            "    relationalProductLocalEvidenceCompleteChecked\n"
+            "  have ids : allAcceptanceNodeIds =\n"
+            "      relationalProductLocalEvidence.decodedNodeIds := by decide\n"
+            "  rw [← ids]\n"
+            "  exact allAcceptanceRunningNodesListed originalEnvironment\n"
+            "    candidateEnvironment environmentRefines\n\n"
+        )
+        acceptance_certificate_source = (
+            "def wholeProgramCertificate\n"
+            "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    WholeProgramCertificate staticProofContext relationalProductGraph\n"
+            "      allRegions productInvariantTable relationalProductReachabilityEvidence\n"
+            "      productControlProfile externalCallSites consoleLaunch\n"
+            "      originalEnvironment candidateEnvironment := {\n"
+            "  staticContextValid := staticProofContextChecked\n"
+            "  productGraphValid := relationalProductGraphIndexedValidChecked\n"
+            "  regionsUseCanonicalContext := allRegionsUseStaticContextChecked\n"
+            "  regionsMatchProductGraph := allRegionsMatchProductGraph\n"
+            "  invariantTableValid := productInvariantTableValid\n"
+            "  reachabilityClosed := generatedDeclaredGraphReachabilityCertificateChecked\n"
+            "  decodedControlComplete := reachableProductLocalCertificate.reachableControlComplete\n"
+            "  reachableEdgesRefined := reachableProductLocalCertificate.reachableEdgesRefined\n"
+            "  reachableExecutionEdgesRefined := allAcceptanceExecutionEdgesRefined\n"
+            "  environmentsRefined := environmentRefines\n"
+            "  launchValid := consoleLaunchValid\n"
+            "  launchControlAllowed := by decide\n"
+            "  runningProductNodesRefined := allAcceptanceRunningNodesRefined\n"
+            "    originalEnvironment candidateEnvironment environmentRefines\n"
+            "}\n\n"
+            "theorem candidatePE32ProgramsEquivalent\n"
+            "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    PE32ProgramsObservationallyEquivalent staticProofContext\n"
+            "      relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile consoleLaunch\n"
+            "      (originalWorldProgram originalEnvironment)\n"
+            "      (candidateWorldProgram candidateEnvironment) := by\n"
+            "  simpa [originalWorldProgram, candidateWorldProgram] using\n"
+            "    pe32ProgramsEquivalent staticProofContext relationalProductGraph allRegions\n"
+            "      productInvariantTable relationalProductReachabilityEvidence productControlProfile\n"
+            "      externalCallSites consoleLaunch originalEnvironment candidateEnvironment\n"
+            "      (wholeProgramCertificate originalEnvironment candidateEnvironment\n"
+            "        environmentRefines)\n\n"
+            "#print axioms candidatePE32ProgramsEquivalent\n\n"
+        )
+    else:
+        running_closure_source = (
+            "theorem allAcceptanceRunningNodesListed :\n"
+            "    AllListedRunningProductNodesRefined staticProofContext\n"
+            "      relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      originalWorldProgram\n"
+            "      candidateWorldProgram allAcceptanceNodeIds := by\n"
+            f"  simpa [allAcceptanceNodeIds] using ({running_proof})\n\n"
+            "theorem allAcceptanceRunningNodesRefined :\n"
+            "    ReachableRunningProductNodesRefined staticProofContext\n"
+            "      relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      originalWorldProgram\n"
+            "      candidateWorldProgram := by\n"
+            "  apply reachableRunningProductNodesRefined_of_complete_evidence\n"
+            "    staticProofContext relationalProductGraph productInvariantTable\n"
+            "    relationalProductReachabilityEvidence productControlProfile\n"
+            "    originalWorldProgram\n"
+            "    candidateWorldProgram relationalProductLocalEvidence\n"
+            "    relationalProductLocalEvidenceCompleteChecked\n"
+            "  have ids : allAcceptanceNodeIds =\n"
+            "      relationalProductLocalEvidence.decodedNodeIds := by decide\n"
+            "  rw [← ids]\n"
+            "  exact allAcceptanceRunningNodesListed\n\n"
+        )
+        acceptance_certificate_source = (
+            "theorem inertEnvironmentRefines :\n"
+            "    ExternalEnvironmentRefines staticProofContext externalCallSites\n"
+            "      inertWorldEnvironment inertWorldEnvironment := by\n"
+            "  unfold ExternalEnvironmentRefines\n"
+            "  refine ⟨by decide, by decide, ?_⟩\n"
+            "  intro site member\n  simp [externalCallSites] at member\n\n"
+            "def wholeProgramCertificate : WholeProgramCertificate staticProofContext\n"
+            "    relationalProductGraph allRegions productInvariantTable\n"
+            "    relationalProductReachabilityEvidence productControlProfile\n"
+            "    externalCallSites consoleLaunch\n"
+            "    inertWorldEnvironment inertWorldEnvironment := {\n"
+            "  staticContextValid := staticProofContextChecked\n"
+            "  productGraphValid := relationalProductGraphIndexedValidChecked\n"
+            "  regionsUseCanonicalContext := allRegionsUseStaticContextChecked\n"
+            "  regionsMatchProductGraph := allRegionsMatchProductGraph\n"
+            "  invariantTableValid := productInvariantTableValid\n"
+            "  reachabilityClosed := generatedDeclaredGraphReachabilityCertificateChecked\n"
+            "  decodedControlComplete := reachableProductLocalCertificate.reachableControlComplete\n"
+            "  reachableEdgesRefined := reachableProductLocalCertificate.reachableEdgesRefined\n"
+            "  reachableExecutionEdgesRefined := allAcceptanceExecutionEdgesRefined\n"
+            "  environmentsRefined := inertEnvironmentRefines\n"
+            "  launchValid := consoleLaunchValid\n"
+            "  launchControlAllowed := by decide\n"
+            "  runningProductNodesRefined := by\n"
+            "    simpa [originalWorldProgram, candidateWorldProgram] using\n"
+            "      allAcceptanceRunningNodesRefined\n"
+            "}\n\n"
+            "theorem candidatePE32ProgramsEquivalent :\n"
+            "    PE32ProgramsObservationallyEquivalent staticProofContext\n"
+            "      relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile consoleLaunch\n"
+            "      originalWorldProgram candidateWorldProgram := by\n"
+            "  simpa [originalWorldProgram, candidateWorldProgram] using\n"
+            "    pe32ProgramsEquivalent staticProofContext relationalProductGraph allRegions\n"
+            "      productInvariantTable relationalProductReachabilityEvidence productControlProfile\n"
+            "      externalCallSites\n"
+            "      consoleLaunch inertWorldEnvironment inertWorldEnvironment\n"
+            "      wholeProgramCertificate\n\n"
+            "#print axioms candidatePE32ProgramsEquivalent\n\n"
+        )
+    final_source = (
+        "".join(f"import StageA.{chunk['module']}\n" for chunk in chunks)
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+        "set_option linter.unusedSimpArgs false\n\n"
+        f"def allAcceptanceNodeIds : List Nat := {node_ids_expr}\n\n"
+        f"def allAcceptanceEdgeIds : List Nat := {edge_ids_expr}\n\n"
+        "theorem allAcceptanceRegionsListed :\n"
+        "    AllListedRegionsMatchProductGraph staticProofContext relationalProductGraph\n"
+        "      allRegions allAcceptanceNodeIds := by\n"
+        f"  simpa [allAcceptanceNodeIds] using ({region_proof})\n\n"
+        "theorem allAcceptanceNodeIdsComplete :\n"
+        "    allAcceptanceNodeIds = List.range relationalProductGraph.nodes.size := by\n"
+        "  decide\n\n"
+        "theorem allRegionsMatchProductGraph :\n"
+        "    RegionsMatchProductGraph staticProofContext relationalProductGraph allRegions := by\n"
+        "  apply regionsMatchProductGraph_of_listed_range\n"
+        "  rw [← allAcceptanceNodeIdsComplete]\n"
+        "  exact allAcceptanceRegionsListed\n\n"
+        + running_closure_source
+        + "theorem allAcceptanceExecutionEdgesListed :\n"
+        "    AllListedProductExecutionEdgesRefined staticProofContext\n"
+        "      relationalProductGraph allRegions productInvariantTable\n"
+        "      allAcceptanceEdgeIds := by\n"
+        f"  simpa [allAcceptanceEdgeIds] using ({edge_proof})\n\n"
+        "theorem allAcceptanceExecutionEdgesRefined :\n"
+        "    ReachableProductExecutionEdgesRefined staticProofContext\n"
+        "      relationalProductGraph allRegions productInvariantTable\n"
+        "      relationalProductReachabilityEvidence := by\n"
+        "  apply reachableProductExecutionEdgesRefined_of_complete_evidence\n"
+        "    staticProofContext relationalProductGraph allRegions productInvariantTable\n"
+        "    relationalProductReachabilityEvidence relationalProductLocalEvidence\n"
+        "    relationalProductLocalEvidenceCompleteChecked\n"
+        "  have ids : allAcceptanceEdgeIds =\n"
+        "      relationalProductLocalEvidence.refinedEdgeIds := by decide\n"
+        "  rw [← ids]\n"
+        "  exact allAcceptanceExecutionEdgesListed\n\n"
+        "theorem productInvariantTableValid :\n"
+        "    productInvariantTable.Valid relationalProductGraph := by\n"
+        "  unfold ProductInvariantTable.Valid\n  decide\n\n"
+        "theorem consoleLaunchValid :\n"
+        "    consoleLaunch.Valid relationalProductGraph productInvariantTable := by\n"
+        f"  refine ⟨relationalProductGraph.nodes[{root_node_id}],\n"
+        "    (by decide), ?_, ?_, ?_, ?_⟩\n"
+        "  all_goals decide\n\n"
+        + acceptance_certificate_source
+        + "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(stage_a / "RelationalAcceptance.lean", final_source)
+    return plan
 
 
 def _write_sharded_relational_proof(
@@ -7289,6 +22544,9 @@ def _write_sharded_relational_proof(
     invariant_synthesis: dict[str, Any],
     memory_contracts: dict[str, Any],
     register_relations: dict[str, Any],
+    product_graph: dict[str, Any],
+    import_register_seeds: list[dict[str, Any]],
+    segment_candidates: list[dict[str, Any]],
     replay: bool,
     certificates: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], int]:
@@ -7317,6 +22575,23 @@ def _write_sharded_relational_proof(
     candidate_alias_coverage = _lean_padding_alias_certificate(
         candidate_padding_items
     )
+    machine_call_contract_rows = ", ".join(
+        _lean_machine_import_call_contract(item)
+        for item in contract.get("machine_import_call_contracts", [])
+    )
+    machine_call_contract_source = (
+        "import StageA.RelationalDecode\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "def machineImportCallContracts : List MachineImportCallContract := "
+        f"[{machine_call_contract_rows}]\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalMachineImportCallContracts.lean",
+        machine_call_contract_source,
+    )
     for side, binary, data in (
         ("original", original_bin, original),
         ("candidate", candidate_bin, candidate),
@@ -7328,13 +22603,24 @@ def _write_sharded_relational_proof(
         )
     base = (
         "import StageA.RelationalProofOriginal\n"
-        "import StageA.RelationalProofCandidate\n\n"
+        "import StageA.RelationalProofCandidate\n"
+        "import StageA.RelationalMachineImportCallContracts\n\n"
         "namespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal\n\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
         "set_option linter.unusedSimpArgs false\n\n"
         "end StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(lean_dir / "StageA" / "RelationalProofBase.lean", base)
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalGlobalMappingContext.lean",
+        _lean_global_mapping_context_source(contract),
+    )
+    static_map_modules = _write_relational_static_context_modules(
+        lean_dir,
+        contract,
+        original_entrypoint_rva=original_bin.entrypoint_rva,
+        candidate_entrypoint_rva=candidate_bin.entrypoint_rva,
+    )
 
     shard_size = max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_PROOF_SHARD", "4")))
     shard_byte_target = max(
@@ -7402,6 +22688,9 @@ def _write_sharded_relational_proof(
         )
         _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", proof_source)
 
+    stack_separation_modules = _write_stack_separation_modules(
+        lean_dir, contract, definition_modules, shard_groups
+    )
     invariant_modules = _write_relational_invariant_modules(
         lean_dir,
         contract,
@@ -7412,7 +22701,7 @@ def _write_sharded_relational_proof(
 
     decode_chunk_count = min(
         len(shard_groups),
-        max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_DECODE_CHUNKS", "32"))),
+        max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_DECODE_CHUNKS", "64"))),
     )
     shards_per_decode_chunk = (
         len(shard_groups) + decode_chunk_count - 1
@@ -7442,19 +22731,24 @@ def _write_sharded_relational_proof(
             module_side = side.capitalize()
             module = f"RelationalProof{module_side}DecodeChunk{chunk_index}"
             decode_modules.append(module)
+            contracts_name = f"{side}MachineImportCallContractsChunk{chunk_index}"
             decode_theorems = "\n\n".join(
                 f"theorem {side}Behavior{index}CheckedDecoded : "
-                f"regionBehaviorWithImports {side}Pe {side}Imports region{index}.{side} = "
+                f"regionBehaviorWithMachineCallContracts {side}Pe {side}Imports "
+                f"{contracts_name} region{index}.{side} = "
                 f"some {side}Behavior{index} := by decide"
                 for index in selected_region_indices
             )
             source = (
                 f"import StageA.RelationalProof{module_side}\n"
+                "import StageA.RelationalMachineImportCallContracts\n"
                 + definition_imports
                 + "\n\nnamespace StageA.GeneratedRelational\n\n"
                 "open StageA.Formal StageA.Relational\n\n"
                 "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
                 "set_option linter.unusedSimpArgs false\n\n"
+                f"def {contracts_name} : List MachineImportCallContract := "
+                "machineImportCallContracts\n\n"
                 + decode_theorems
                 + "\n\nend StageA.GeneratedRelational\n"
             )
@@ -7466,23 +22760,99 @@ def _write_sharded_relational_proof(
     region_chunk_names = [
         f"regionChunk{index}" for index in range(len(decode_chunk_regions))
     ]
-    region_chunks_source = (
-        "\n".join(f"import StageA.{module}" for module in definition_modules)
-        + "\n\nnamespace StageA.GeneratedRelational\n\n"
-        "open StageA.Formal StageA.Relational\n\n"
-        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
-        + "\n\n".join(
+    region_chunk_modules: list[str] = []
+    for chunk_index, (name, indices) in enumerate(zip(
+        region_chunk_names, decode_chunk_regions, strict=True
+    )):
+        module = f"RelationalRegionChunk{chunk_index}"
+        region_chunk_modules.append(module)
+        source = (
+            "\n".join(
+                f"import StageA.{definition_modules[shard_index]}"
+                for shard_index in decode_chunk_shards[chunk_index]
+            )
+            + "\n\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
             f"def {name} : List RegionRelation := ["
             + ", ".join(f"region{index}" for index in indices)
-            + "]"
-            for name, indices in zip(
-                region_chunk_names, decode_chunk_regions, strict=True
-            )
+            + "]\n\nend StageA.GeneratedRelational\n"
         )
-        + "\n\nend StageA.GeneratedRelational\n"
+        _write_text_if_changed(
+            lean_dir / "StageA" / f"{module}.lean", source
+        )
+    region_chunks_source = (
+        "\n".join(f"import StageA.{module}" for module in region_chunk_modules)
+        + "\n\nnamespace StageA.GeneratedRelational\n\n"
+        "end StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(
         lean_dir / "StageA" / "RelationalRegionChunks.lean", region_chunks_source
+    )
+
+    generated_import_register_analysis = _infer_import_register_invariants(
+        contract, behaviors, import_register_seeds
+    )
+    external_call_sites = _external_call_site_candidates(
+        contract, behaviors, register_relations,
+        generated_import_register_analysis["indirect_import_calls"],
+    )
+    external_site_candidates = external_call_sites["candidates"]
+    external_site_region_chunks = sorted({
+        chunk_by_region
+        for site in external_site_candidates
+        for chunk_by_region in (
+            next(
+                index for index, region_indices in enumerate(decode_chunk_regions)
+                if int(site["source_region_index"]) in region_indices
+            ),
+            next(
+                index for index, region_indices in enumerate(decode_chunk_regions)
+                if int(site["target_region_index"]) in region_indices
+            ),
+        )
+    })
+    external_site_definitions = "\n\n".join(
+        f"def externalCallSite{int(site['id'])} : ExternalCallSiteContract := {{\n"
+        f"  id := {int(site['id'])}\n"
+        f"  sourceTargetId := {int(site['source_target_id'])}\n"
+        f"  continuationTargetId := {int(site['continuation_target_id'])}\n"
+        f"  machineContractId := {int(site['machine_contract_id'])}\n"
+        f"  boundaryInvariant := "
+        f"{_lean_state_invariant(site['boundary_invariant'])}\n"
+        f"  targetInvariant := "
+        f"region{int(site['target_region_index'])}.inputInvariant\n"
+        "}"
+        for site in external_site_candidates
+    )
+    external_site_names = [
+        f"externalCallSite{int(site['id'])}" for site in external_site_candidates
+    ]
+    external_site_source = (
+        "import StageA.RelationalEnvironment\n"
+        "import StageA.RelationalStaticContextBase\n"
+        + "".join(
+            f"import StageA.RelationalRegionChunk{chunk_index}\n"
+            for chunk_index in external_site_region_chunks
+        )
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        + external_site_definitions
+        + ("\n\n" if external_site_definitions else "")
+        + "def externalCallSites : List ExternalCallSiteContract := ["
+        + ", ".join(external_site_names)
+        + "]\n\n"
+        "theorem externalCallSitesStructurallyValid :\n"
+        "    externalCallSiteIdsUnique externalCallSites = true ∧\n"
+        "      externalCallSites.all "
+        "(ExternalCallSiteContract.staticValid staticProofContext) = true := by\n"
+        "  decide\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalExternalCallSites.lean",
+        external_site_source,
     )
 
     memory_pullback_modules = _write_relational_memory_pullback_modules(
@@ -7513,8 +22883,8 @@ def _write_sharded_relational_proof(
         direct_region_chunk = region_chunk_names[chunk_index]
         direct_theorems = "\n\n".join(
             f"theorem region{index}CheckedDirect : regionEquivalentWithImports originalPe candidatePe "
-            f"originalImports candidateImports region{index} :=\n"
-            f"  regionEquivalentWithImports_of_decoded originalPe candidatePe originalImports candidateImports "
+            f"originalImports candidateImports machineImportCallContracts region{index} :=\n"
+            f"  regionEquivalentWithImports_of_decoded originalPe candidatePe originalImports candidateImports machineImportCallContracts "
             f"region{index} originalBehavior{index} candidateBehavior{index}\n"
             f"    originalBehavior{index}CheckedDecoded candidateBehavior{index}CheckedDecoded "
             f"region{index}CheckedDirectBehavior"
@@ -7522,7 +22892,7 @@ def _write_sharded_relational_proof(
         )
         direct_chunk_goal = " ∧ ".join(
             [
-                f"regionEquivalentWithImports originalPe candidatePe originalImports candidateImports region{index}"
+                f"regionEquivalentWithImports originalPe candidatePe originalImports candidateImports machineImportCallContracts region{index}"
                 for index in region_indices
             ]
             + ["True"]
@@ -7537,7 +22907,7 @@ def _write_sharded_relational_proof(
         direct_source = (
             f"import StageA.RelationalProofOriginalDecodeChunk{chunk_index}\n"
             f"import StageA.RelationalProofCandidateDecodeChunk{chunk_index}\n\n"
-            "import StageA.RelationalRegionChunks\n"
+            f"import StageA.RelationalRegionChunk{chunk_index}\n"
             + "\n".join(
                 f"import StageA.{shard_modules[shard_index]}"
                 for shard_index in decode_chunk_shards[chunk_index]
@@ -7549,7 +22919,7 @@ def _write_sharded_relational_proof(
             "set_option linter.unusedSimpArgs false\n\n"
             + direct_theorems
             + f"\n\ntheorem directRegionChunk{chunk_index}Checked :\n"
-            f"    allDirectRegionGoals originalPe candidatePe originalImports candidateImports {direct_region_chunk} := by\n"
+            f"    allDirectRegionGoals originalPe candidatePe originalImports candidateImports machineImportCallContracts {direct_region_chunk} := by\n"
             f"  change {direct_chunk_goal}\n"
             f"  exact {direct_chunk_proof}"
             + "\n\nend StageA.GeneratedRelational\n"
@@ -7558,6 +22928,42 @@ def _write_sharded_relational_proof(
             lean_dir / "StageA" / f"{direct_module}.lean",
             direct_source,
         )
+
+    segment_refinement_modules = _write_relational_segment_refinement_modules(
+        lean_dir,
+        contract,
+        behaviors,
+        memory_contracts,
+        register_relations,
+        product_graph,
+        decode_chunk_regions,
+        import_register_seeds,
+        segment_candidates,
+    )
+    product_graph_modules = _write_relational_product_graph_modules(
+        lean_dir,
+        product_graph,
+        segment_candidates,
+        segment_refinement_modules,
+        decode_chunk_regions,
+    )
+    external_call_refinement_modules = (
+        _write_relational_external_call_refinement_modules(
+            lean_dir,
+            contract,
+            behaviors,
+            register_relations,
+            product_graph,
+            decode_chunk_regions,
+            generated_import_register_analysis["indirect_import_calls"],
+        )
+    )
+    _write_reachable_product_local_certificate(
+        lean_dir,
+        product_graph,
+        segment_candidates,
+        external_call_refinement_modules,
+    )
 
     required_input_states: list[list[dict[str, str]]] = [[]]
     for indices in decode_chunk_regions:
@@ -7599,35 +23005,196 @@ def _write_sharded_relational_proof(
             padding_chunk_names[side], padding_groups[side], strict=True
         )
     )
-    closure_data_source = (
-        "import StageA.RelationalProofBase\n"
-        "import StageA.RelationalRegionChunks\n"
-        + "\n\nnamespace StageA.GeneratedRelational\n\n"
-        "open StageA.Formal StageA.Relational\n\n"
-        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
-        "set_option linter.unusedSimpArgs false\n\n"
-        + required_state_definitions
+    data_usage_regions: list[int] = []
+    for target in contract.get("value_targets", []):
+        region_index = next((
+            index for index, region in enumerate(contract["regions"])
+            if target in region.get("values", [])
+        ), None)
+        if region_index is None:
+            raise StageAInputError(
+                f"global data target {target['id']} has no region usage witness"
+            )
+        data_usage_regions.append(region_index)
+    def write_closure_data_module(
+        module: str,
+        imports: list[str],
+        body: str,
+    ) -> None:
+        source = (
+            "".join(f"import StageA.{item}\n" for item in imports)
+            + "\nnamespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+            "set_option linter.unusedSimpArgs false\n\n"
+            + body
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
+
+    write_closure_data_module(
+        "RelationalProofRequiredInputsData",
+        ["Relational"],
+        required_state_definitions
         + "\n\n"
-        + padding_definitions
+        + f"def requiredInputsCertificate : List RegisterPair := "
+        f"requiredInputsState{len(region_chunk_names)}",
+    )
+    write_closure_data_module(
+        "RelationalProofPaddingData",
+        ["RelationalStaticContext"],
+        padding_definitions
         + "\n\n"
-        f"def allRegionIndex : IndexTree RegionRelation := {region_index_literal}\n\n"
-        f"def allRegions : List RegionRelation := {_lean_right_append(region_chunk_names)}\n\n"
-        f"def originalPadding : List Span := {_lean_right_append(padding_chunk_names['original'])}\n\n"
-        f"def candidatePadding : List Span := {_lean_right_append(padding_chunk_names['candidate'])}\n\n"
-        f"def requiredInputsCertificate : List RegisterPair := requiredInputsState{len(region_chunk_names)}\n\n"
+        + f"def originalPadding : List Span := "
+        f"{_lean_right_append(padding_chunk_names['original'])}\n\n"
+        + f"def candidatePadding : List Span := "
+        f"{_lean_right_append(padding_chunk_names['candidate'])}",
+    )
+
+    region_index_chunk_names: list[str] = []
+    region_index_chunks: list[tuple[str, int]] = []
+    for chunk_index, region_indices in enumerate(decode_chunk_regions):
+        module = f"RelationalProofRegionIndexChunk{chunk_index}"
+        name = f"regionIndexChunk{chunk_index}"
+        region_index_chunk_names.append(module)
+        region_index_chunks.append((name, len(region_indices)))
+        write_closure_data_module(
+            module,
+            [f"RelationalRegionChunk{chunk_index}"],
+            f"def {name} : IndexTree RegionRelation := "
+            + _lean_index_tree([f"region{index}" for index in region_indices]),
+        )
+    write_closure_data_module(
+        "RelationalProofRegionIndexData",
+        region_index_chunk_names,
+        "def allRegionIndex : IndexTree RegionRelation := "
+        + _lean_index_tree_join(region_index_chunks),
+    )
+
+    write_closure_data_module(
+        "RelationalProofRegionInventoryData",
+        ["RelationalStaticContext", "RelationalRegionChunks"],
+        f"def allRegions : List RegionRelation := "
+        f"{_lean_right_append(region_chunk_names)}\n\n"
+        + "def staticDataUsageRegions : Array Nat := #["
+        + ", ".join(str(index) for index in data_usage_regions)
+        + "]",
+    )
+
+    static_usage_leaf_size = max(
+        1,
+        int(os.environ.get("WINCR_STAGE_A_RELATIONAL_STATIC_USAGE_CHUNK", "16")),
+    )
+    static_usage_leaf_modules: list[str] = []
+    static_usage_chunk_modules: list[str] = []
+    static_usage_chunk_theorems: list[str] = []
+    static_usage_leaf_index = 0
+    for chunk_index, (chunk_name, region_indices) in enumerate(
+        zip(region_chunk_names, decode_chunk_regions, strict=True)
+    ):
+        leaf_names: list[str] = []
+        leaf_theorems: list[str] = []
+        chunk_leaf_modules: list[str] = []
+        for offset in range(0, len(region_indices), static_usage_leaf_size):
+            leaf_region_indices = region_indices[
+                offset : offset + static_usage_leaf_size
+            ]
+            leaf_module = f"RelationalProofStaticUsageLeaf{static_usage_leaf_index}"
+            leaf_name = f"staticUsageLeaf{static_usage_leaf_index}"
+            leaf_theorem = f"staticUsageLeaf{static_usage_leaf_index}Checked"
+            static_usage_leaf_index += 1
+            static_usage_leaf_modules.append(leaf_module)
+            chunk_leaf_modules.append(leaf_module)
+            leaf_names.append(leaf_name)
+            leaf_theorems.append(leaf_theorem)
+            write_closure_data_module(
+                leaf_module,
+                ["RelationalStaticContext", f"RelationalRegionChunk{chunk_index}"],
+                f"def {leaf_name} : List RegionRelation := ["
+                + ", ".join(f"region{index}" for index in leaf_region_indices)
+                + "]\n\n"
+                + f"theorem {leaf_theorem} :\n"
+                f"    {leaf_name}.all "
+                "(regionUsesStaticContext staticProofContext) = true := by decide",
+            )
+        module = f"RelationalProofStaticUsageChunk{chunk_index}"
+        theorem = f"regionChunk{chunk_index}UsesStaticContextChecked"
+        static_usage_chunk_modules.append(module)
+        static_usage_chunk_theorems.append(theorem)
+        leaf_partition = _lean_right_append(leaf_names)
+        leaf_proof = _lean_all_append_proof(
+            "regionUsesStaticContext staticProofContext",
+            leaf_names,
+            leaf_theorems,
+        )
+        write_closure_data_module(
+            module,
+            [
+                "RelationalStaticContext",
+                f"RelationalRegionChunk{chunk_index}",
+                *chunk_leaf_modules,
+            ],
+            f"theorem regionChunk{chunk_index}StaticUsagePartition :\n"
+            f"    {chunk_name} = {leaf_partition} := by rfl\n\n"
+            f"theorem {theorem} :\n"
+            f"    {chunk_name}.all "
+            "(regionUsesStaticContext staticProofContext) = true := by\n"
+            f"  rw [regionChunk{chunk_index}StaticUsagePartition]\n"
+            f"  exact {leaf_proof}",
+        )
+    static_usage_proof = _lean_all_append_proof(
+        "regionUsesStaticContext staticProofContext",
+        region_chunk_names,
+        static_usage_chunk_theorems,
+    )
+    write_closure_data_module(
+        "RelationalProofStaticUsageCertificate",
+        ["RelationalProofRegionInventoryData", *static_usage_chunk_modules],
+        "theorem allRegionsUseStaticContextChecked :\n"
+        "    RegionsUseStaticContext staticProofContext allRegions := by\n"
+        "  unfold RegionsUseStaticContext regionsUseStaticContext allRegions\n"
+        f"  exact {static_usage_proof}\n\n"
+        "theorem staticDataUsageChecked :\n"
+        "    StaticDataUsageWitnessValid staticProofContext allRegions.toArray\n"
+        "      staticDataUsageRegions :=\n"
+        "  staticDataUsageWitnessValid_of_checked staticProofContext allRegions.toArray\n"
+        "    staticDataUsageRegions (by decide)",
+    )
+
+    write_closure_data_module(
+        "RelationalProofOriginalCoverageData",
+        ["Relational", "RelationalStaticContext"],
         f"def originalCoverage : SortedSpanCertificate := {original_coverage}\n\n"
+        f"def originalAliasCoverage : PaddingAliasCertificate := "
+        f"{original_alias_coverage}",
+    )
+    write_closure_data_module(
+        "RelationalProofCandidateCoverageData",
+        ["Relational", "RelationalStaticContext"],
         f"def candidateCoverage : SortedSpanCertificate := {candidate_coverage}\n\n"
-        f"def originalAliasCoverage : PaddingAliasCertificate := {original_alias_coverage}\n\n"
-        f"def candidateAliasCoverage : PaddingAliasCertificate := {candidate_alias_coverage}\n\n"
+        f"def candidateAliasCoverage : PaddingAliasCertificate := "
+        f"{candidate_alias_coverage}",
+    )
+
+    closure_data_imports = [
+        "RelationalMachineImportCallContracts",
+        "RelationalExternalCallSites",
+        "RelationalProofRequiredInputsData",
+        "RelationalProofPaddingData",
+        "RelationalProofRegionIndexData",
+        "RelationalProofRegionInventoryData",
+        "RelationalProofStaticUsageCertificate",
+        "RelationalProofOriginalCoverageData",
+        "RelationalProofCandidateCoverageData",
+    ]
+    write_closure_data_module(
+        "RelationalProofClosureData",
+        closure_data_imports,
         "def proofBundle : StageA.Relational.ProofBundle := { originalBytes, candidateBytes, "
         "originalImports := originalImportCertificate, candidateImports := candidateImportCertificate, "
+        "machineImportCallContracts, "
         "regions := allRegions, regionIndex := allRegionIndex, originalPadding, candidatePadding, "
-        "originalCoverage, candidateCoverage, originalAliasCoverage, candidateAliasCoverage }\n\n"
-        "end StageA.GeneratedRelational\n"
-    )
-    _write_text_if_changed(
-        lean_dir / "StageA" / "RelationalProofClosureData.lean",
-        closure_data_source,
+        "originalCoverage, candidateCoverage, originalAliasCoverage, candidateAliasCoverage }",
     )
 
     structural_region_modules: list[str] = []
@@ -7635,7 +23202,9 @@ def _write_sharded_relational_proof(
         module = f"RelationalProofStructuralRegionChunk{chunk_index}"
         structural_region_modules.append(module)
         source = (
-            "import StageA.RelationalProofClosureData\n\n"
+            "import StageA.RelationalStaticContext\n"
+            "import StageA.RelationalProofRequiredInputsData\n"
+            "import StageA.RelationalProofRegionIndexData\n\n"
             "namespace StageA.GeneratedRelational\n\n"
             "open StageA.Formal StageA.Relational\n\n"
             "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
@@ -7664,7 +23233,7 @@ def _write_sharded_relational_proof(
             module = f"RelationalProofStructuralPadding{side.capitalize()}Chunk{chunk_index}"
             structural_padding_modules.append(module)
             source = (
-                "import StageA.RelationalProofClosureData\n\n"
+                "import StageA.RelationalProofPaddingData\n\n"
                 "namespace StageA.GeneratedRelational\n\n"
                 "open StageA.Formal StageA.Relational\n\n"
                 "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
@@ -7679,7 +23248,9 @@ def _write_sharded_relational_proof(
         module = f"RelationalProofStructuralCoverage{side.capitalize()}"
         coverage_modules.append(module)
         source = (
-            "import StageA.RelationalProofClosureData\n\n"
+            "import StageA.RelationalProofRegionInventoryData\n"
+            "import StageA.RelationalProofPaddingData\n"
+            f"import StageA.RelationalProof{side.capitalize()}CoverageData\n\n"
             "namespace StageA.GeneratedRelational\n\n"
             "open StageA.Formal StageA.Relational\n\n"
             "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
@@ -7881,8 +23452,82 @@ def _write_sharded_relational_proof(
         + "True.intro"
         + ")" * len(register_relation_modules)
     )
+    segment_refinement_certificate_type = " ∧ ".join(
+        [
+            f"AllInvariantClaims {item['claims']}"
+            for item in segment_refinement_modules
+        ]
+        + ["True"]
+    )
+    segment_refinement_certificate_proof = (
+        "".join(
+            f"And.intro {item['theorem']} ("
+            for item in segment_refinement_modules
+        )
+        + "True.intro"
+        + ")" * len(segment_refinement_modules)
+    )
+    segment_refinement_certificate_source = (
+        "import StageA.RelationalSegment\n"
+        + "".join(
+            f"import StageA.{item['module']}\n"
+            for item in segment_refinement_modules
+        )
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        f"def GeneratedSegmentRefinementCertificate : Prop := "
+        f"{segment_refinement_certificate_type}\n\n"
+        "theorem generatedSegmentRefinementCertificateChecked :\n"
+        "    GeneratedSegmentRefinementCertificate := by\n"
+        f"  exact {segment_refinement_certificate_proof}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalSegmentRefinementCertificate.lean",
+        segment_refinement_certificate_source,
+    )
+    stack_separation_certificate_type = " ∧ ".join(
+        [item["proposition"] for item in stack_separation_modules] + ["True"]
+    )
+    stack_separation_certificate_proof = (
+        "".join(
+            f"And.intro {item['theorem']} (" for item in stack_separation_modules
+        )
+        + "True.intro"
+        + ")" * len(stack_separation_modules)
+    )
+    stack_separation_certificate_source = (
+        "import StageA.Relational\n"
+        + "".join(
+            f"import StageA.{item['module']}\n" for item in stack_separation_modules
+        )
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        f"def GeneratedStackSeparationCertificate : Prop := "
+        f"{stack_separation_certificate_type}\n\n"
+        "theorem generatedStackSeparationCertificateChecked :\n"
+        "    GeneratedStackSeparationCertificate := by\n"
+        f"  exact {stack_separation_certificate_proof}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalStackSeparationCertificate.lean",
+        stack_separation_certificate_source,
+    )
     final = (
+        "import StageA.RelationalCertificates\n"
         "import StageA.RelationalProofClosureBase\n"
+        "import StageA.RelationalSegmentRefinementCertificate\n"
+        "import StageA.RelationalStackSeparationCertificate\n"
+        "import StageA.RelationalProductNodeCoverageCertificate\n"
+        "import StageA.RelationalProductReachabilityCertificate\n"
+        "import StageA.RelationalProductDecodedControlCertificate\n"
+        "import StageA.RelationalReachableProductLocalCertificate\n"
+        "import StageA.RelationalImportRegisterSeedCertificate\n"
+        "import StageA.RelationalDynamicRangeIndirectCallCertificate\n"
+        "import StageA.RelationalExternalCallRefinementCertificate\n"
         + "".join(f"import StageA.{module}\n" for module in direct_modules)
         + "".join(
             f"import StageA.{item['module']}\n" for item in invariant_modules
@@ -7896,7 +23541,7 @@ def _write_sharded_relational_proof(
         + "\n\nnamespace StageA.GeneratedRelational\n\nopen StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
         "set_option linter.unusedSimpArgs false\n\n"
-        "theorem allDirectRegionsChecked : allDirectRegionGoals originalPe candidatePe originalImports candidateImports allRegions := by\n"
+        "theorem allDirectRegionsChecked : allDirectRegionGoals originalPe candidatePe originalImports candidateImports machineImportCallContracts allRegions := by\n"
         "  unfold allRegions\n"
         f"  exact {direct_regions_proof}\n\n"
         "theorem allRegionsChecked : allRegionGoals proofBundle proofBundle.regions := by\n"
@@ -7928,22 +23573,65 @@ def _write_sharded_relational_proof(
         "theorem generatedExactRegisterRelationCertificateChecked :\n"
         "    GeneratedExactRegisterRelationCertificate := by\n"
         f"  exact {register_relation_certificate_proof}\n\n"
-        "theorem candidateRelationalCertificate :\n"
-        "    RelationalImageCertificate proofBundle ∧ GeneratedInvariantCertificate ∧\n"
+        "theorem candidateRelationalImageCertificate :\n"
+        "    StaticProofContext.StructurallyValid staticProofContext ∧\n"
+        "      relationalProductGraph.IndexedValid staticProofContext ∧\n"
+        "      relationalProductEvidence.valid relationalProductGraph = true ∧\n"
+        "      GeneratedImportRegisterSeedCertificate ∧\n"
+        "      GeneratedDynamicRangeIndirectCallCertificate ∧\n"
+        "      GeneratedExternalCallRefinementCertificate ∧\n"
+        "      GeneratedPartialDecodedControlCompletenessCertificate ∧\n"
+        "      GeneratedPartialReachableProductLocalCertificate ∧\n"
+        "      GeneratedDeclaredGraphReachabilityCertificate ∧\n"
+        "      GeneratedPartialProductEdgeRefinementCertificate ∧\n"
+        "      GeneratedPartialProductNodeCoverageCertificate ∧\n"
+        "      RegionsUseStaticContext staticProofContext allRegions ∧\n"
+        "      StaticDataUsageWitnessValid staticProofContext allRegions.toArray\n"
+        "        staticDataUsageRegions ∧\n"
+        "      valueRegionsClosed originalPe candidatePe originalRelocations\n"
+        "        candidateRelocations allRegions = true ∧\n"
+        "      RelationalImageCertificate proofBundle ∧ GeneratedInvariantCertificate ∧\n"
         "      GeneratedMappedRelocationImageCertificate ∧\n"
+        "      GeneratedStackSeparationCertificate ∧\n"
         "      GeneratedOrdinaryMemoryReadPullbackCertificate ∧\n"
         "      GeneratedX87LoadPullbackCertificate ∧\n"
-        "      GeneratedExactRegisterRelationCertificate :=\n"
-        "  ⟨regionalRelationalCertificate, generatedInvariantCertificateChecked,\n"
+        "      GeneratedExactRegisterRelationCertificate ∧\n"
+        "      GeneratedSegmentRefinementCertificate :=\n"
+        "  ⟨staticProofContextChecked, relationalProductGraphIndexedValidChecked,\n"
+        "    relationalProductEvidenceValidChecked,\n"
+        "    generatedImportRegisterSeedCertificateChecked,\n"
+        "    generatedDynamicRangeIndirectCallCertificateChecked,\n"
+        "    generatedExternalCallRefinementCertificateChecked,\n"
+        "    generatedPartialDecodedControlCompletenessCertificateChecked,\n"
+        "    generatedPartialReachableProductLocalCertificateChecked,\n"
+        "    generatedDeclaredGraphReachabilityCertificateChecked,\n"
+        "    generatedPartialProductEdgeRefinementCertificateChecked,\n"
+        "    generatedPartialProductNodeCoverageCertificateChecked,\n"
+        "    allRegionsUseStaticContextChecked,\n"
+        "    staticDataUsageChecked, valueRegionsChecked,\n"
+        "    regionalRelationalCertificate, generatedInvariantCertificateChecked,\n"
         "    generatedMappedRelocationImageCertificateChecked,\n"
+        "    generatedStackSeparationCertificateChecked,\n"
         "    generatedOrdinaryMemoryReadPullbackCertificateChecked,\n"
         "    generatedX87LoadPullbackCertificateChecked,\n"
-        "    generatedExactRegisterRelationCertificateChecked⟩\n\n"
-        "#print axioms candidateRelationalCertificate\n\nend StageA.GeneratedRelational\n"
+        "    generatedExactRegisterRelationCertificateChecked,\n"
+        "    generatedSegmentRefinementCertificateChecked⟩\n\n"
+        "#print axioms candidateRelationalImageCertificate\n\nend StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(lean_dir / "StageA" / "RelationalBundle.lean", final)
+    _write_relational_acceptance_modules(
+        lean_dir,
+        contract,
+        behaviors,
+        product_graph,
+        register_relations,
+        segment_candidates,
+        decode_chunk_regions,
+        external_site_candidates,
+    )
     return (
         shard_modules
+        + [item["module"] for item in stack_separation_modules]
         + [item["module"] for item in invariant_modules]
         + [item["module"] for item in memory_pullback_modules]
         + [item["module"] for item in register_relation_modules],
@@ -8022,9 +23710,10 @@ def _lean_normalized_component_setup(
     flags_copy = "  have flagsRelatedAll := flagsRelated\n" if preserve_flags else ""
     return (
         aliases
-        + "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
+        + "  unfold statesRelated StateRelCore at related\n"
+        "  simp only [registerRelationsHold_exactRegisterRelations] at related\n"
+        "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
         "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
-        "  unfold statesRelated at related\n"
         "  rcases related with ⟨related, boundsSatisfied, separationsSatisfied, memoryRelated, undefinedRelated, x87Related, flagsRelated, fsBaseRelated⟩\n"
         f"  have exactMemory := memoryRelated_without_relocations {original_image_base} {candidate_image_base} "
         f"{name}.targets {name}.values originalMemory candidateMemory (by decide) memoryRelated\n"
@@ -8480,9 +24169,10 @@ def _lean_region_theorem_source(
         )
     )
     direct_state_setup = (
+        "  unfold statesRelated StateRelCore at related\n"
+        "  simp only [registerRelationsHold_exactRegisterRelations] at related\n"
         "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, oebp, oesp⟩, originalMemory, originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
         "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, cebp, cesp⟩, candidateMemory, candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
-        "  unfold statesRelated at related\n"
         "  rcases related with ⟨related, boundsSatisfied, separationsSatisfied, memoryRelated, undefinedRelated, x87Related, flagsRelated, fsBaseRelated⟩\n"
     )
     direct_state_equalities = (
@@ -8584,13 +24274,14 @@ def _lean_region_theorem_source(
             )
             if label == "X87" and x87_state_only:
                 source += (
+                    "  unfold statesRelated StateRelCore at related\n"
+                    "  simp only [registerRelationsHold_exactRegisterRelations] at related\n"
                     "  rcases originalState with ⟨⟨oeax, oebx, oecx, oedx, oesi, oedi, "
                     "oebp, oesp⟩, originalMemory, "
                     "originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
                     "  rcases candidateState with ⟨⟨ceax, cebx, cecx, cedx, cesi, cedi, "
                     "cebp, cesp⟩, candidateMemory, "
                     "candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
-                    "  unfold statesRelated at related\n"
                     "  rcases related with ⟨registersRelated, boundsRelated, "
                     "separationsRelated, memoryRelated, undefinedRelated, x87Related, "
                     "flagsRelated, fsBaseRelated⟩\n"
@@ -8665,6 +24356,46 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
             "prerequisites": prerequisites,
             "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
         }
+    segment_kernel = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalSegment"
+    )
+    prerequisites["relational_segment"] = segment_kernel
+    if segment_kernel.get("status") != "checked":
+        return {
+            **segment_kernel,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    composition_kernel = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalComposition"
+    )
+    prerequisites["relational_composition"] = composition_kernel
+    if composition_kernel.get("status") != "checked":
+        return {
+            **composition_kernel,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    environment_kernel = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalEnvironment"
+    )
+    prerequisites["relational_environment"] = environment_kernel
+    if environment_kernel.get("status") != "checked":
+        return {
+            **environment_kernel,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    global_mapping = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalGlobalMappingContext"
+    )
+    prerequisites["global_mapping_context"] = global_mapping
+    if global_mapping.get("status") != "checked":
+        return {
+            **global_mapping,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
     jobs = min(len(shard_modules), _relational_proof_jobs())
     definition_modules = sorted(
         path.stem
@@ -8696,6 +24427,55 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
         "status": "checked",
         "modules": len(definition_results),
     }
+    pe_attestation_jobs = {
+        "original": lambda: _run_lean_relational_cached(
+            lean_dir, bundle="RelationalProofOriginal"
+        ),
+        "candidate": lambda: _run_lean_relational_cached(
+            lean_dir, bundle="RelationalProofCandidate"
+        ),
+    }
+    with ThreadPoolExecutor(max_workers=len(pe_attestation_jobs)) as executor:
+        futures = {
+            executor.submit(run): name for name, run in pe_attestation_jobs.items()
+        }
+        for future in as_completed(futures):
+            prerequisites[futures[future]] = future.result()
+    failed_attestation = next(
+        (
+            prerequisites[name]
+            for name in pe_attestation_jobs
+            if prerequisites[name].get("status") != "checked"
+        ),
+        None,
+    )
+    if failed_attestation is not None:
+        return {
+            **failed_attestation,
+            "phase": "pe_attestations",
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    machine_call_contracts = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalMachineImportCallContracts"
+    )
+    prerequisites["machine_import_call_contracts"] = machine_call_contracts
+    if machine_call_contracts.get("status") != "checked":
+        return {
+            **machine_call_contracts,
+            "phase": "machine_import_call_contracts",
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    base = _run_lean_relational_cached(lean_dir, bundle="RelationalProofBase")
+    prerequisites["relational_proof_base"] = base
+    if base.get("status") != "checked":
+        return {
+            **base,
+            "phase": "relational_proof_base",
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
     heavy_threshold = max(
         1,
         int(os.environ.get("WINCR_STAGE_A_RELATIONAL_HEAVY_SHARD_BYTES", "500000")),
@@ -8708,7 +24488,15 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
         module: (lean_dir / "StageA" / f"{module}.lean").stat().st_size
         for module in shard_modules
     }
-    pending_modules = sorted(shard_modules, key=lambda module: source_sizes[module], reverse=True)
+    static_context_shards = sorted(
+        module for module in shard_modules
+        if "import StageA.RelationalStaticContext" in
+        (lean_dir / "StageA" / f"{module}.lean").read_text(encoding="utf-8")
+    )
+    pending_modules = sorted(
+        set(shard_modules) - set(static_context_shards),
+        key=lambda module: source_sizes[module], reverse=True,
+    )
     failure_hint_path = _failed_shard_hint_path(lean_dir)
     prioritized_module: str | None = None
     if failure_hint_path is not None:
@@ -8789,46 +24577,173 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
                     result["pipeline_elapsed_seconds"] = round(time.monotonic() - started, 3)
                     return result
             submit_available()
-    pe_attestation_jobs = {
-        "original": lambda: _run_lean_relational_cached(
-            lean_dir, bundle="RelationalProofOriginal"
-        ),
-        "candidate": lambda: _run_lean_relational_cached(
-            lean_dir, bundle="RelationalProofCandidate"
-        ),
-    }
-    with ThreadPoolExecutor(max_workers=len(pe_attestation_jobs)) as executor:
-        futures = {
-            executor.submit(run): name for name, run in pe_attestation_jobs.items()
-        }
-        for future in as_completed(futures):
-            prerequisites[futures[future]] = future.result()
-    failed_attestation = next(
-        (
-            result for name, result in prerequisites.items()
-            if name != "relational_kernel" and result.get("status") != "checked"
-        ),
-        None,
+    static_tree_kernel = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalStaticTree"
     )
-    if failed_attestation is not None:
+    prerequisites["relational_static_tree"] = static_tree_kernel
+    if static_tree_kernel.get("status") != "checked":
         return {
-            **failed_attestation,
+            **static_tree_kernel,
             "prerequisites": prerequisites,
             "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
         }
-    base = _run_lean_relational_cached(lean_dir, bundle="RelationalProofBase")
-    if base.get("status") != "checked":
-        base["prerequisites"] = prerequisites
-        base["pipeline_elapsed_seconds"] = round(time.monotonic() - started, 3)
-        return base
-    region_chunks = _run_lean_relational_cached(
-        lean_dir, bundle="RelationalRegionChunks"
+    static_context_base = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalStaticContextBase"
     )
-    if region_chunks.get("status") != "checked":
-        region_chunks["phase"] = "region_chunks"
-        region_chunks["prerequisites"] = prerequisites
-        region_chunks["pipeline_elapsed_seconds"] = round(time.monotonic() - started, 3)
-        return region_chunks
+    prerequisites["static_context_base"] = static_context_base
+    if static_context_base.get("status") != "checked":
+        return {
+            **static_context_base,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    static_data_context = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalStaticDataContext"
+    )
+    prerequisites["static_data_context"] = static_data_context
+    if static_data_context.get("status") != "checked":
+        return {
+            **static_data_context,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    static_map_modules = sorted(
+        path.stem
+        for path in (lean_dir / "StageA").glob(
+            "RelationalStaticCodeMapChunk*.lean"
+        )
+    )
+    static_map_results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(
+        max_workers=min(jobs, len(static_map_modules) or 1)
+    ) as executor:
+        futures = {
+            executor.submit(
+                _run_lean_relational_cached, lean_dir, bundle=module
+            ): module
+            for module in static_map_modules
+        }
+        for future in as_completed(futures):
+            result = future.result()
+            result["module"] = futures[future]
+            static_map_results.append(result)
+            if result.get("status") != "checked":
+                return {
+                    **result,
+                    "phase": "static_code_map_chunks",
+                    "static_map_results": static_map_results,
+                    "prerequisites": prerequisites,
+                    "pipeline_elapsed_seconds": round(
+                        time.monotonic() - started, 3
+                    ),
+                }
+    prerequisites["static_code_map_chunks"] = {
+        "status": "checked",
+        "modules": len(static_map_results),
+    }
+    static_tree_modules: dict[int, list[str]] = {}
+    for path in (lean_dir / "StageA").glob("RelationalStatic*Tree*Node*.lean"):
+        match = re.search(r"Tree(\d+)Node\d+$", path.stem)
+        if match is not None:
+            static_tree_modules.setdefault(int(match.group(1)), []).append(path.stem)
+    static_tree_results: list[dict[str, Any]] = []
+    for level in sorted(static_tree_modules):
+        level_modules = sorted(static_tree_modules[level])
+        with ThreadPoolExecutor(
+            max_workers=min(jobs, len(level_modules) or 1)
+        ) as executor:
+            futures = {
+                executor.submit(
+                    _run_lean_relational_cached, lean_dir, bundle=module
+                ): module
+                for module in level_modules
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                result["module"] = futures[future]
+                static_tree_results.append(result)
+                if result.get("status") != "checked":
+                    return {
+                        **result,
+                        "phase": "static_code_map_tree",
+                        "static_tree_results": static_tree_results,
+                        "prerequisites": prerequisites,
+                        "pipeline_elapsed_seconds": round(
+                            time.monotonic() - started, 3
+                        ),
+                    }
+    prerequisites["static_code_map_tree"] = {
+        "status": "checked",
+        "modules": len(static_tree_results),
+        "levels": len(static_tree_modules),
+    }
+    static_context = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalStaticContext"
+    )
+    prerequisites["static_context"] = static_context
+    if static_context.get("status") != "checked":
+        return {
+            **static_context,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    deferred_results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(
+        max_workers=min(jobs, len(static_context_shards) or 1)
+    ) as executor:
+        futures = {
+            executor.submit(
+                _run_lean_relational_cached, lean_dir, bundle=module
+            ): module
+            for module in static_context_shards
+        }
+        for future in as_completed(futures):
+            result = future.result()
+            module = futures[future]
+            result["module"] = module
+            result["source_bytes"] = source_sizes[module]
+            deferred_results.append(result)
+            results.append(result)
+            if result.get("status") != "checked":
+                return {
+                    **result,
+                    "phase": "static_context_shards",
+                    "completed_shards": len(results),
+                    "total_shards": len(shard_modules),
+                    "shard_results": results[:-1],
+                    "prerequisites": prerequisites,
+                    "pipeline_elapsed_seconds": round(
+                        time.monotonic() - started, 3
+                    ),
+                }
+    prerequisites["static_context_shards"] = {
+        "status": "checked",
+        "modules": len(deferred_results),
+    }
+    product_graph_context = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalProductGraphContext"
+    )
+    prerequisites["product_graph_context"] = product_graph_context
+    if product_graph_context.get("status") != "checked":
+        return {
+            **product_graph_context,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    reachable_product_local_evidence = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalReachableProductLocalEvidence"
+    )
+    prerequisites["reachable_product_local_evidence"] = (
+        reachable_product_local_evidence
+    )
+    if reachable_product_local_evidence.get("status") != "checked":
+        return {
+            **reachable_product_local_evidence,
+            "phase": "reachable_product_local_evidence",
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+
     def generated_modules(pattern: str) -> list[str]:
         def sort_key(module: str) -> tuple[int, str]:
             match = re.search(r"Chunk(\d+)$", module)
@@ -8869,10 +24784,63 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
                     return phase_results, result
         return phase_results, None
 
+    region_chunk_modules = generated_modules("RelationalRegionChunk[0-9]*.lean")
+    region_chunk_results, failed = run_generated_phase(region_chunk_modules)
+    if failed is not None:
+        return {
+            **failed,
+            "phase": "region_chunk_modules",
+            "region_chunk_results": region_chunk_results[:-1],
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    prerequisites["region_chunk_modules"] = {
+        "status": "checked",
+        "modules": len(region_chunk_results),
+    }
+    region_chunks = _run_lean_relational_cached(
+        lean_dir, bundle="RelationalRegionChunks"
+    )
+    prerequisites["region_chunks"] = region_chunks
+    if region_chunks.get("status") != "checked":
+        return {
+            **region_chunks,
+            "phase": "region_chunks",
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+
     phase_results: dict[str, list[dict[str, Any]]] = {}
     for phase, pattern in (
         ("exact_decode_chunks", "RelationalProof*DecodeChunk*.lean"),
         ("direct_composition_chunks", "RelationalProofDirectChunk*.lean"),
+        ("segment_refinement_chunks", "RelationalSegmentRefinementChunk*.lean"),
+        (
+            "external_call_refinement_edges",
+            "RelationalExternalCallRefinementEdge*.lean",
+        ),
+        ("product_graph_chunks", "RelationalProductGraphChunk*.lean"),
+        ("import_register_seed_chunks", "RelationalImportRegisterSeedChunk*.lean"),
+        (
+            "dynamic_range_indirect_call_chunks",
+            "RelationalDynamicRangeIndirectCallChunk*.lean",
+        ),
+        ("stack_separation_regions", "RelationalStackSeparationRegion*.lean"),
+        ("product_decoded_control_chunks", "RelationalProductDecodedControlChunk*.lean"),
+        ("product_reachability_chunks", "RelationalProductReachabilityChunk*.lean"),
+        (
+            "product_edge_refinement_chunks",
+            "RelationalProductEdgeRefinementChunk*.lean",
+        ),
+        ("product_node_coverage_chunks", "RelationalProductNodeCoverageChunk*.lean"),
+        (
+            "reachable_product_node_chunks",
+            "RelationalReachableProductNodeChunk*.lean",
+        ),
+        (
+            "reachable_product_edge_chunks",
+            "RelationalReachableProductEdgeChunk*.lean",
+        ),
     ):
         modules = generated_modules(pattern)
         phase_results[phase], failed = run_generated_phase(modules)
@@ -8888,6 +24856,273 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
                 "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
             }
 
+    segment_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalSegmentRefinementCertificate",
+    )
+    phase_results["segment_refinement_certificate"] = [segment_certificate]
+    if segment_certificate.get("status") != "checked":
+        return {
+            **segment_certificate,
+            "phase": "segment_refinement_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    external_call_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalExternalCallRefinementCertificate",
+    )
+    phase_results["external_call_refinement_certificate"] = [
+        external_call_certificate
+    ]
+    if external_call_certificate.get("status") != "checked":
+        return {
+            **external_call_certificate,
+            "phase": "external_call_refinement_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    stack_separation_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalStackSeparationCertificate",
+    )
+    phase_results["stack_separation_certificate"] = [stack_separation_certificate]
+    if stack_separation_certificate.get("status") != "checked":
+        return {
+            **stack_separation_certificate,
+            "phase": "stack_separation_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    product_graph_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalProductGraphCertificate",
+    )
+    phase_results["product_graph_certificate"] = [product_graph_certificate]
+    if product_graph_certificate.get("status") != "checked":
+        return {
+            **product_graph_certificate,
+            "phase": "product_graph_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    import_register_seed_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalImportRegisterSeedCertificate",
+    )
+    phase_results["import_register_seed_certificate"] = [
+        import_register_seed_certificate
+    ]
+    if import_register_seed_certificate.get("status") != "checked":
+        return {
+            **import_register_seed_certificate,
+            "phase": "import_register_seed_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    dynamic_range_indirect_call_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalDynamicRangeIndirectCallCertificate",
+    )
+    phase_results["dynamic_range_indirect_call_certificate"] = [
+        dynamic_range_indirect_call_certificate
+    ]
+    if dynamic_range_indirect_call_certificate.get("status") != "checked":
+        return {
+            **dynamic_range_indirect_call_certificate,
+            "phase": "dynamic_range_indirect_call_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    product_decoded_control_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalProductDecodedControlCertificate",
+    )
+    phase_results["product_decoded_control_certificate"] = [
+        product_decoded_control_certificate
+    ]
+    if product_decoded_control_certificate.get("status") != "checked":
+        return {
+            **product_decoded_control_certificate,
+            "phase": "product_decoded_control_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    product_reachability_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalProductReachabilityCertificate",
+    )
+    phase_results["product_reachability_certificate"] = [
+        product_reachability_certificate
+    ]
+    if product_reachability_certificate.get("status") != "checked":
+        return {
+            **product_reachability_certificate,
+            "phase": "product_reachability_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    product_edge_refinement_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalProductEdgeRefinementCertificate",
+    )
+    phase_results["product_edge_refinement_certificate"] = [
+        product_edge_refinement_certificate
+    ]
+    if product_edge_refinement_certificate.get("status") != "checked":
+        return {
+            **product_edge_refinement_certificate,
+            "phase": "product_edge_refinement_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    product_node_coverage_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalProductNodeCoverageCertificate",
+    )
+    phase_results["product_node_coverage_certificate"] = [
+        product_node_coverage_certificate
+    ]
+    if product_node_coverage_certificate.get("status") != "checked":
+        return {
+            **product_node_coverage_certificate,
+            "phase": "product_node_coverage_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    reachable_product_node_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalReachableProductNodeCertificate",
+    )
+    phase_results["reachable_product_node_certificate"] = [
+        reachable_product_node_certificate
+    ]
+    if reachable_product_node_certificate.get("status") != "checked":
+        return {
+            **reachable_product_node_certificate,
+            "phase": "reachable_product_node_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    reachable_product_edge_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalReachableProductEdgeCertificate",
+    )
+    phase_results["reachable_product_edge_certificate"] = [
+        reachable_product_edge_certificate
+    ]
+    if reachable_product_edge_certificate.get("status") != "checked":
+        return {
+            **reachable_product_edge_certificate,
+            "phase": "reachable_product_edge_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    reachable_product_local_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalReachableProductLocalCertificate",
+    )
+    phase_results["reachable_product_local_certificate"] = [
+        reachable_product_local_certificate
+    ]
+    if reachable_product_local_certificate.get("status") != "checked":
+        return {
+            **reachable_product_local_certificate,
+            "phase": "reachable_product_local_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+
+    closure_data_leaves = sorted(set(
+        [
+            "RelationalExternalCallSites",
+            "RelationalProofRequiredInputsData",
+            "RelationalProofPaddingData",
+            "RelationalProofRegionInventoryData",
+            "RelationalProofOriginalCoverageData",
+            "RelationalProofCandidateCoverageData",
+        ]
+        + generated_modules("RelationalProofRegionIndexChunk*.lean")
+        + generated_modules("RelationalProofStaticUsageLeaf*.lean")
+    ))
+    phase_results["structural_data_leaves"], failed = run_generated_phase(
+        closure_data_leaves
+    )
+    if failed is not None:
+        return {
+            **failed,
+            "phase": "structural_data_leaves",
+            "completed_phase_modules": len(
+                phase_results["structural_data_leaves"]
+            ),
+            "total_phase_modules": len(closure_data_leaves),
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    closure_data_aggregates = [
+        "RelationalProofRegionIndexData",
+        *generated_modules("RelationalProofStaticUsageChunk*.lean"),
+    ]
+    phase_results["structural_data_aggregates"], failed = run_generated_phase(
+        closure_data_aggregates
+    )
+    if failed is not None:
+        return {
+            **failed,
+            "phase": "structural_data_aggregates",
+            "completed_phase_modules": len(
+                phase_results["structural_data_aggregates"]
+            ),
+            "total_phase_modules": len(closure_data_aggregates),
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    static_usage_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalProofStaticUsageCertificate",
+    )
+    phase_results["structural_static_usage_certificate"] = [
+        static_usage_certificate
+    ]
+    if static_usage_certificate.get("status") != "checked":
+        return {
+            **static_usage_certificate,
+            "phase": "structural_static_usage_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
     closure_data = _run_lean_relational_cached(
         lean_dir,
         bundle="RelationalProofClosureData",
@@ -8954,7 +25189,22 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
             "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
         }
 
-    final = _run_lean_relational(lean_dir, bundle="RelationalBundle")
+    acceptance_path = lean_dir.parent / "whole-program-acceptance.json"
+    acceptance = (
+        _read_json(acceptance_path) if acceptance_path.is_file() else {}
+    )
+    acceptance_ready = (
+        acceptance.get("status") == "ready"
+        and acceptance.get("theorem") == RELATIONAL_ACCEPTANCE_THEOREM
+    )
+    final_bundle = "RelationalAcceptance" if acceptance_ready else "RelationalBundle"
+    final = _run_lean_relational(lean_dir, bundle=final_bundle)
+    if final.get("status") == "checked":
+        final["theorem"] = (
+            RELATIONAL_ACCEPTANCE_THEOREM
+            if acceptance_ready
+            else "StageA.GeneratedRelational.candidateRelationalImageCertificate"
+        )
     if final.get("status") == "checked" and failure_hint_path is not None:
         failure_hint_path.unlink(missing_ok=True)
     final["shards"] = len(shard_modules)
@@ -9009,25 +25259,43 @@ def _compile_relational_kernel(lean_dir: Path) -> dict[str, Any]:
     formal_result = _compile_formal_kernel(lean_dir)
     if formal_result.get("status") != "checked":
         return formal_result
+    decode_source = lean_dir / "StageA" / "RelationalDecode.lean"
+    decode_output = lean_dir / "StageA" / "RelationalDecode.olean"
+    machine_source = lean_dir / "StageA" / "RelationalMachine.lean"
+    machine_output = lean_dir / "StageA" / "RelationalMachine.olean"
     source = lean_dir / "StageA" / "Relational.lean"
     output = lean_dir / "StageA" / "Relational.olean"
     formal = lean_dir / "StageA" / "Formal.olean"
-    if _lean_output_current(source, output) and _lean_output_current(formal, output):
+    if (
+        _lean_output_current(decode_source, decode_output)
+        and _lean_output_current(formal, decode_output)
+        and _lean_output_current(machine_source, machine_output)
+        and _lean_output_current(decode_output, machine_output)
+        and _lean_output_current(source, output)
+        and _lean_output_current(machine_output, output)
+    ):
         return {"status": "checked", "source": "current_olean"}
     lean = shutil.which("lean")
     if lean is None:
         return {"status": "unavailable", "returncode": None, "stdout": "", "stderr": ""}
     try:
-        completed = subprocess.run(
-            [lean, "-o", "StageA/Relational.olean", "StageA/Relational.lean"],
-            cwd=lean_dir,
-            env={**os.environ, "LEAN_PATH": "."},
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=300,
-            check=False,
-        )
+        stdout = []
+        stderr = []
+        for module in ("RelationalDecode", "RelationalMachine", "Relational"):
+            completed = subprocess.run(
+                [lean, "-o", f"StageA/{module}.olean", f"StageA/{module}.lean"],
+                cwd=lean_dir,
+                env={**os.environ, "LEAN_PATH": "."},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=300,
+                check=False,
+            )
+            stdout.append(completed.stdout)
+            stderr.append(completed.stderr)
+            if completed.returncode != 0:
+                break
     except subprocess.TimeoutExpired as exc:
         return {
             "status": "timeout", "returncode": None,
@@ -9037,8 +25305,8 @@ def _compile_relational_kernel(lean_dir: Path) -> dict[str, Any]:
     return {
         "status": "checked" if completed.returncode == 0 else "failed",
         "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
+        "stdout": "".join(stdout),
+        "stderr": "".join(stderr),
     }
 
 
@@ -9092,21 +25360,17 @@ def _run_lean_relational_cached(
     if bundle in {"RelationalProofOriginal", "RelationalProofCandidate"}:
         dependency_names = ["Formal"]
     elif bundle == "RelationalProofBase":
-        dependency_names = ["RelationalProofOriginal", "RelationalProofCandidate"]
-    elif (
-        bundle.startswith("RelationalProof")
-        or bundle.startswith("RelationalDefinitions")
-        or bundle.startswith("RelationalRegion")
-    ):
+        dependency_names = [
+            "RelationalProofOriginal",
+            "RelationalProofCandidate",
+            "RelationalMachineImportCallContracts",
+        ]
+    else:
         dependency_names = re.findall(
             r"^import StageA\.([A-Za-z0-9_]+)$",
             source.read_text(encoding="utf-8"),
             re.MULTILINE,
         )
-    elif bundle.startswith("RelationalProofShard"):
-        dependency_names = ["Relational"]
-    else:
-        dependency_names = ["Relational", "RelationalProofBase"]
     dependencies = [lean_dir / "StageA" / f"{name}.olean" for name in dependency_names]
     cached_output = _persistent_olean_path(lean_dir, bundle, source, dependencies)
     if _lean_output_current(source, output) and all(
@@ -9151,7 +25415,7 @@ def _persistent_olean_path(
         return None
     lean = shutil.which("lean") or "lean-unavailable"
     key = sha256_bytes(json.dumps({
-        "format": "stage-a-relational-olean-cache-v2",
+        "format": "stage-a-relational-olean-cache-v3",
         "bundle": bundle,
         "source_sha256": sha256_file(source),
         "formal_sha256": sha256_file(lean_dir / "StageA" / "Formal.lean"),
@@ -9159,6 +25423,9 @@ def _persistent_olean_path(
             {
                 "module": dependency.stem,
                 "source_sha256": sha256_file(dependency.with_suffix(".lean")),
+                "olean_sha256": (
+                    sha256_file(dependency) if dependency.exists() else None
+                ),
             }
             for dependency in dependencies
         ],
@@ -9171,17 +25438,23 @@ def _lean_register_pair(pair: dict[str, str]) -> str:
     return f"{{ original := .{pair['original']}, candidate := .{pair['candidate']} }}"
 
 
-def _lean_register_relation_pair(pair: dict[str, str]) -> str:
+def _lean_relation_constructor(relation: str | None) -> str:
+    source_relation = relation
     relation = {
         "exact": "exact",
         "code_pointer": "codePointer",
         "data_pointer": "dataPointer",
         "related_word": "relatedWord",
-    }.get(pair.get("relation"))
+    }.get(relation)
     if relation is None:
         raise StageAInputError(
-            f"unsupported register relation kind {pair.get('relation')!r}"
+            f"unsupported register relation kind {source_relation!r}"
         )
+    return relation
+
+
+def _lean_register_relation_pair(pair: dict[str, str]) -> str:
+    relation = _lean_relation_constructor(pair.get("relation"))
     return (
         f"{{ original := .{pair['original']}, candidate := .{pair['candidate']}, "
         f"relation := .{relation} }}"
@@ -9282,6 +25555,20 @@ def _lean_index_tree(items: list[str]) -> str:
     )
 
 
+def _lean_index_tree_join(items: list[tuple[str, int]]) -> str:
+    if not items:
+        return ".empty"
+    if len(items) == 1:
+        return items[0][0]
+    midpoint = len(items) // 2
+    left = items[:midpoint]
+    right = items[midpoint:]
+    return (
+        f".node {sum(size for _, size in left)} "
+        f"({_lean_index_tree_join(left)}) ({_lean_index_tree_join(right)})"
+    )
+
+
 def _lean_right_append(names: list[str]) -> str:
     if not names:
         return "[]"
@@ -9312,7 +25599,7 @@ def _lean_direct_append_proof(chunks: list[str], facts: list[str]) -> str:
     if len(chunks) == 1:
         return facts[0]
     return (
-        "allDirectRegionGoals_append originalPe candidatePe originalImports candidateImports "
+        "allDirectRegionGoals_append originalPe candidatePe originalImports candidateImports machineImportCallContracts "
         f"{chunks[0]} ({_lean_right_append(chunks[1:])}) {facts[0]} "
         f"({_lean_direct_append_proof(chunks[1:], facts[1:])})"
     )
@@ -9465,24 +25752,74 @@ def _run_lean_relational(
     lean = shutil.which("lean")
     if lean is None:
         return finish({"status": "unavailable", "returncode": None, "stdout": "", "stderr": ""})
+    stage_a_dir = lean_dir / "StageA"
     commands: list[list[str]] = []
-    formal_source = lean_dir / "StageA" / "Formal.lean"
-    formal_output = lean_dir / "StageA" / "Formal.olean"
-    relational_source = lean_dir / "StageA" / "Relational.lean"
-    relational_output = lean_dir / "StageA" / "Relational.olean"
-    needs_relational = bundle not in {
-        "RelationalProofOriginal",
-        "RelationalProofCandidate",
-        "RelationalProofBase",
-    }
-    if not _lean_output_current(formal_source, formal_output):
-        commands.append([lean, "-o", "StageA/Formal.olean", "StageA/Formal.lean"])
-    if needs_relational and (
-        not _lean_output_current(relational_source, relational_output)
-        or not _lean_output_current(formal_output, relational_output)
-    ):
-        commands.append([lean, "-o", "StageA/Relational.olean", "StageA/Relational.lean"])
-    commands.append([lean, "-o", f"StageA/{bundle}.olean", f"StageA/{bundle}.lean"])
+    module_imports: dict[str, list[str]] = {}
+    module_order: list[str] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit_module(module: str) -> None:
+        if module in visited:
+            return
+        if module in visiting:
+            raise StageAInputError(
+                f"cyclic generated Lean import involving StageA.{module}"
+            )
+        source = stage_a_dir / f"{module}.lean"
+        if not source.is_file():
+            raise StageAInputError(
+                f"missing generated Lean module StageA.{module}: {source}"
+            )
+        visiting.add(module)
+        imports = list(dict.fromkeys(re.findall(
+            r"^import StageA\.([A-Za-z0-9_]+)$",
+            source.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )))
+        module_imports[module] = imports
+        for imported in imports:
+            visit_module(imported)
+        visiting.remove(module)
+        visited.add(module)
+        module_order.append(module)
+
+    try:
+        visit_module(bundle)
+    except StageAInputError as error:
+        return finish({
+            "status": "failed",
+            "command": [],
+            "returncode": 1,
+            "stdout": "",
+            "stderr": str(error),
+        })
+
+    scheduled: set[str] = set()
+    for module in module_order:
+        source = stage_a_dir / f"{module}.lean"
+        output = stage_a_dir / f"{module}.olean"
+        dependency_outputs = [
+            stage_a_dir / f"{dependency}.olean"
+            for dependency in module_imports[module]
+        ]
+        dependency_changed = any(
+            dependency in scheduled for dependency in module_imports[module]
+        )
+        dependencies_current = all(
+            _lean_output_current(dependency, output)
+            for dependency in dependency_outputs
+        )
+        if (
+            module == bundle
+            or dependency_changed
+            or not _lean_output_current(source, output)
+            or not dependencies_current
+        ):
+            commands.append([
+                lean, "-o", f"StageA/{module}.olean", f"StageA/{module}.lean",
+            ])
+            scheduled.add(module)
     stdout: list[str] = []
     stderr: list[str] = []
     for command in commands:
@@ -9542,12 +25879,7 @@ def _run_lean_relational(
         stderr.append(completed_stderr)
         if process.returncode != 0:
             return finish({"status": "failed", "command": commands, "failed_command": command, "returncode": process.returncode, "stdout": "".join(stdout), "stderr": "".join(stderr)})
-    checked_sources = [
-        lean_dir / "StageA" / "Formal.lean",
-        lean_dir / "StageA" / f"{bundle}.lean",
-    ]
-    if needs_relational:
-        checked_sources.append(lean_dir / "StageA" / "Relational.lean")
+    checked_sources = [stage_a_dir / f"{module}.lean" for module in module_order]
     unchecked = [
         str(path)
         for path in checked_sources
@@ -9561,7 +25893,9 @@ def _run_lean_relational(
             "stdout": "".join(stdout),
             "stderr": "unchecked Lean marker in: " + ", ".join(unchecked),
         })
-    if bundle in {"RelationalBundle", "RelationalCounterexample"}:
+    if bundle in {
+        "RelationalBundle", "RelationalAcceptance", "RelationalCounterexample",
+    }:
         combined = "".join(stdout) + "\n" + "".join(stderr)
         match = re.search(r"depends on axioms: \[(.*?)\]", combined, re.DOTALL)
         if match is None:
@@ -9600,6 +25934,16 @@ def _collect_certificates(lean_dir: Path, destination: Path) -> list[dict[str, A
 
 
 def _write_relational_verdict(out: Path, started_at: str, original: StageABinary, candidate: StageABinary, contract: dict[str, Any], proof_ir: dict[str, Any], trusted_base: dict[str, Any], verdict: str, lean: dict[str, Any], *, certificates: list[dict[str, Any]], blocker: str | None) -> dict[str, Any]:
+    checked_theorem = str(lean.get("theorem") or "")
+    whole_program_checked = (
+        lean.get("status") == "checked"
+        and checked_theorem == RELATIONAL_ACCEPTANCE_THEOREM
+    )
+    if verdict == "pass" and not whole_program_checked:
+        verdict = "incomplete"
+        blocker = (
+            "pass requires the Lean-checked whole-program acceptance theorem"
+        )
     for entry in certificates:
         index = entry.get("region_index")
         if isinstance(index, int) and 0 <= index < len(contract["regions"]):
@@ -9644,7 +25988,7 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
                 "status": "proved",
                 "evidence": {
                     "kind": "lean_checked_inductive_invariant_family",
-                    "theorem": "StageA.GeneratedRelational.candidateRelationalCertificate",
+                    "theorem": checked_theorem,
                 },
             })
         elif (
@@ -9656,11 +26000,23 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
                 "status": "proved",
                 "evidence": {
                     "kind": "lean_checked_mapped_relocation_image_relation",
-                    "theorem": "StageA.GeneratedRelational.candidateRelationalCertificate",
+                    "theorem": checked_theorem,
                     "lemma": (
                         "StageA.Relational."
                         "allMappedRelocationImageRelations_of_valueRegionsClosed"
                     ),
+                },
+            })
+        elif (
+            lean.get("status") == "checked"
+            and obligation["kind"] == "static_proof_context"
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "evidence": {
+                    "kind": "lean_checked_static_proof_context",
+                    "theorem": "StageA.GeneratedRelational.staticProofContextChecked",
                 },
             })
         elif (
@@ -9674,11 +26030,24 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
                 "status": "proved",
                 "evidence": {
                     "kind": "lean_checked_exact_memory_pullback_transition",
-                    "theorem": "StageA.GeneratedRelational.candidateRelationalCertificate",
+                    "theorem": checked_theorem,
                     "lemma": (
                         "StageA.Relational.InvariantWP."
                         "memoryObservationTransitionClosed_of_exact_pullback_pairs"
                     ),
+                },
+            })
+        elif (
+            lean.get("status") == "checked"
+            and obligation["kind"] == "iat_memory_relation_override"
+        ):
+            finalized_obligations.append({
+                **obligation,
+                "status": "proved",
+                "evidence": {
+                    "kind": "lean_checked_iat_masked_memory_relation",
+                    "theorem": "StageA.GeneratedRelational.candidateRelationalImageCertificate",
+                    "lemma": "StageA.Relational.StateRel.ordinaryMemoryRelation",
                 },
             })
         else:
@@ -9700,10 +26069,21 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         {"family": "executable_coverage", "status": "satisfied"},
         {"family": "roots_and_targets", "status": "satisfied"},
         {
+            "family": "static_proof_context",
+            "status": "satisfied" if lean.get("status") == "checked" else "incomplete",
+        },
+        {
             "family": "relational_regions",
             "status": "satisfied" if lean.get("status") == "checked"
             else "violated" if verdict == "fail"
             else "incomplete",
+        },
+        {
+            "family": "segment_refinement",
+            "status": "incomplete" if any(
+                obligation["kind"] == "relational_segment_refinement"
+                for obligation in assumption_obligations
+            ) else "satisfied",
         },
         {
             "family": "cfg_register_relations",
@@ -9718,6 +26098,10 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
                 obligation["kind"] == "whole_program_bisimulation"
                 for obligation in assumption_obligations
             ) else "satisfied",
+        },
+        {
+            "family": "whole_program_observational_equivalence",
+            "status": "satisfied" if whole_program_checked else "incomplete",
         },
         {
             "family": "cfg_invariants",
@@ -9735,9 +26119,24 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
                 obligation["kind"] in {
                     "mapped_relocation_image_relation",
                     "memory_transition_preservation",
+                    "iat_memory_relation_override",
                 }
                 for obligation in assumption_obligations
             ) else "satisfied",
+        },
+        {
+            "family": "paired_external_environment_refinement",
+            "status": (
+                "incomplete" if any(
+                    obligation["kind"] == "external_call_product_edge_refinement"
+                    for obligation in assumption_obligations
+                ) else
+                "satisfied" if any(
+                    obligation["kind"] == "external_call_product_edge_refinement"
+                    for obligation in finalized_obligations
+                ) else
+                "not_applicable"
+            ),
         },
         {"family": "adversarial_environment", "status": "satisfied"},
     ]
@@ -9759,9 +26158,12 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         "profile": STAGE_A_RELATIONAL_PROFILE_ID,
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "claim_scope": {
-            "kind": "relational_region_certificate",
-            "whole_program_observational_equivalence": False,
-            "acceptance_eligible": False,
+            "kind": (
+                "whole_program_observational_equivalence"
+                if whole_program_checked else "relational_region_certificate"
+            ),
+            "whole_program_observational_equivalence": whole_program_checked,
+            "acceptance_eligible": whole_program_checked,
         },
         "started_at": started_at,
         "completed_at": utc_now(),
@@ -9784,6 +26186,26 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
             if (out / "relational-register-relations.json").is_file()
             else None
         ),
+        "product_graph_sha256": (
+            sha256_file(out / "relational-product-graph.json")
+            if (out / "relational-product-graph.json").is_file()
+            else None
+        ),
+        "whole_program_acceptance_sha256": (
+            sha256_file(out / "whole-program-acceptance.json")
+            if (out / "whole-program-acceptance.json").is_file()
+            else None
+        ),
+        "composition_progress_sha256": (
+            sha256_file(out / "composition-progress.json")
+            if (out / "composition-progress.json").is_file()
+            else None
+        ),
+        "module_graph_sha256": (
+            sha256_file(out / "module-graph.json")
+            if (out / "module-graph.json").is_file()
+            else None
+        ),
         "invariants_sha256": (
             sha256_file(out / "relational-invariants.json")
             if (out / "relational-invariants.json").is_file()
@@ -9798,7 +26220,7 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
             "incomplete_assumptions": len(assumption_obligations),
         },
         "proof": {
-            "theorem": lean.get("theorem", "StageA.GeneratedRelational.candidateRelationalCertificate"),
+            "theorem": checked_theorem,
             "lean": lean,
             "certificate_index": certificate_index,
         },

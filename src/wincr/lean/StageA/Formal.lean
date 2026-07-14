@@ -373,12 +373,23 @@ def readRvaLittleEndian (pe : PE32) (rva size : Nat) : Option Nat := do
   pure (littleEndianValue bytes 0)
 
 def readImmutableImageWord (pe : PE32) (absolute size : Nat) : Option Nat := do
-  if absolute < pe.imageBase || size = 0 then none else
+  if absolute < pe.imageBase || size = 0 || absolute + size > 2^32 then none else
   let rva := absolute - pe.imageBase
+  if rva + size > pe.sizeOfImage then none else
   let _ <- pe.sections.find? fun sec =>
     !sec.writable && sec.virtualAddress <= rva &&
       rva + size <= sec.virtualAddress + sec.mappedSize
   readRvaLittleEndian pe rva size
+
+theorem readImmutableImageWord_bounds (pe : PE32) (absolute size expected : Nat)
+    (checked : readImmutableImageWord pe absolute size = some expected) :
+    pe.imageBase <= absolute ∧ absolute + size <= 2^32 ∧
+      absolute + size <= pe.imageBase + pe.sizeOfImage := by
+  unfold readImmutableImageWord at checked
+  split at checked
+  · simp at checked
+  · simp_all
+    omega
 
 def readCStringRva : PE32 -> Nat -> Nat -> Option Bytes
   | _, _, 0 => none
