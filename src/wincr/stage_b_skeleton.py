@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 
-STAGE_B_PROOF_RULE = "reproducible_stage_b_skeleton_reimplementation_v1"
+STAGE_B_PROOF_RULE = "stage_b_skeleton_reimplementation_contract_v1"
 
 _DECOMPILED_C_RUNTIME_ENTRY_NAMES = frozenset({"WinMainCRTStartup", "___tmainCRTStartup", "mainCRTStartup", "___wgetmainargs"})
 _DECOMPILED_C_RUNTIME_ENTRY_POLICIES = frozenset({"bridge", "mingw-crt"})

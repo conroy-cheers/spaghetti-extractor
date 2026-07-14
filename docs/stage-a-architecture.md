@@ -10,14 +10,10 @@ profile. Only a `stage-a-relational-verdict-v1` report with
 `claim_scope.acceptance_eligible: true` may authorize a faithful
 reimplementation.
 
-The v2 commands (`stage-a-legacy-validate`, `stage-a-legacy-prove`,
-`stage-a-legacy-check-proof`, and `stage-a-legacy-validate-suite`) produce
-useful extraction and regional-refinement evidence. Their reports always carry
-`acceptance_authority: evidence_only` and cannot establish whole-program
-equivalence, even when their local verdict is `pass`. Image, region, segment,
-solver, and composition-progress certificates are likewise intermediate
-evidence. Contract export and focused candidate-validation commands are Stage B
-feedback tools, not acceptance gates.
+Historical v2 validation and regional-refinement reports are not accepted by
+the current command surface. Image, region, segment, solver, and
+composition-progress certificates are intermediate evidence. Contract export
+and candidate-only feedback commands are not acceptance gates.
 
 ## Python Phases
 

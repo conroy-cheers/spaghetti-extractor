@@ -8,8 +8,8 @@ implemented v3 profile and measured progress; where older wording conflicts,
 the architecture document controls.
 
 `x86-pe32-relational-v3` is the authoritative proof profile for equivalent
-PE32/i386 programs whose code layout and instruction selection may differ. It
-may consume v2 evidence but never inherits v2 acceptance. A v3 report embeds the exact original and
+PE32/i386 programs whose code layout and instruction selection may differ.
+Historical v2 evidence is not accepted. A v3 report embeds the exact original and
 candidate bytes, re-parses them in Lean, decodes every classified executable
 region with the reviewed x86 semantics, and proves the declared relations.
 
@@ -48,8 +48,7 @@ wincr stage-a-prove \
 wincr stage-a-check-proof --report report/
 ```
 
-The dedicated aliases `stage-a-prove-relational` and
-`stage-a-check-relational-proof` expose the same profile directly.
+The authoritative commands are `stage-a-prove` and `stage-a-check-proof`.
 
 For large proofs, separate deterministic extraction from Lean compilation:
 

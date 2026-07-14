@@ -10,7 +10,6 @@ from typing import Any
 import capstone
 
 from .stage_binary import (
-    STAGE_A_MODEL_ID,
     BlockSide,
     StageABinary,
     StageAInputError,
@@ -22,10 +21,11 @@ from .stage_binary import (
     _parse_linker_map_functions,
     _parse_stage_a_pe,
 )
+from .stage_b_contract import REFERENCE_CONTRACT_MODEL_ID, stage_b_check_contract
 from .util import sha256_bytes, sha256_file, utc_now, write_json
 
 
-STAGE_B_PROOF_RULE = "reproducible_stage_b_skeleton_reimplementation_v1"
+STAGE_B_PROOF_RULE = "stage_b_skeleton_reimplementation_contract_v1"
 STAGE_B_REQUIRED_FUNCTIONAL_SUITES = {
     "jq": {
         "suite_id": "jq-upstream-integration-tests",
@@ -597,19 +597,15 @@ def stage_b_generate_skeleton(
 
 def stage_b_validate_candidate(
     *,
-    original: Path | None,
     candidate: Path,
-    linker_map_original: Path | None,
     linker_map_candidate: Path,
     skeleton_manifest: Path,
     candidate_provenance: Path,
     target_name: str,
     out: Path,
     functional_report: Path | None = None,
-    reference_contract: Path | None = None,
-    original_flags: str = "",
-    candidate_flags: str = "",
-    model: str = STAGE_A_MODEL_ID,
+    reference_contract: Path,
+    model: str = REFERENCE_CONTRACT_MODEL_ID,
     require_functional_evidence: bool = False,
 ) -> dict[str, Any]:
     out = Path(out)
@@ -620,32 +616,25 @@ def stage_b_validate_candidate(
     map_result: dict[str, Any] | None = None
     binary_evidence: dict[str, Any]
     reference_contract_payload: dict[str, Any] | None = None
-    from .stage_a_legacy import stage_a_generate_map, stage_a_validate, stage_a_validate_contract_candidate
-
-    if reference_contract is not None:
-        try:
-            loaded_contract = _load_json(Path(reference_contract))
-            if not isinstance(loaded_contract, dict) or loaded_contract.get("format") != "stage-a-reference-contract-v1":
-                raise StageAInputError("Stage B reference contract must have format stage-a-reference-contract-v1")
-            reference_contract_payload = loaded_contract
-        except StageAInputError as exc:
-            issues.append(
-                {
-                    "category": "invalid_reference_contract",
-                    "blocker": str(exc),
-                    "next_action": "provide a readable stage-a-reference-contract-v1 JSON artifact",
-                }
-            )
+    try:
+        loaded_contract = _load_json(Path(reference_contract))
+        if not isinstance(loaded_contract, dict) or loaded_contract.get("format") != "stage-a-reference-contract-v1":
+            raise StageAInputError("Stage B reference contract must have format stage-a-reference-contract-v1")
+        reference_contract_payload = loaded_contract
+    except StageAInputError as exc:
+        issues.append(
+            {
+                "category": "invalid_reference_contract",
+                "blocker": str(exc),
+                "next_action": "provide a readable stage-a-reference-contract-v1 JSON artifact",
+            }
+        )
 
     try:
         candidate_bin = _parse_stage_a_pe(Path(candidate))
-        if reference_contract_payload is not None:
-            binary_evidence = _binary_target_evidence_from_reference_contract(reference_contract_payload, candidate_bin)
-        else:
-            if original is None:
-                raise StageAInputError("Stage B validation requires --reference-contract for zero-original validation or --original for legacy pair validation")
-            original_bin = _parse_stage_a_pe(Path(original))
-            binary_evidence = _binary_target_evidence(original_bin, candidate_bin)
+        if reference_contract_payload is None:
+            raise StageAInputError("Stage B candidate validation requires a valid reference contract")
+        binary_evidence = _binary_target_evidence_from_reference_contract(reference_contract_payload, candidate_bin)
         issues.extend(_binary_target_issues(binary_evidence))
     except StageAInputError as exc:
         binary_evidence = {
@@ -664,7 +653,7 @@ def stage_b_validate_candidate(
             {
                 "category": "binary_target_unavailable",
                 "blocker": str(exc),
-                "next_action": "provide supported Windows PE original and candidate binaries for the same architecture and subsystem",
+                "next_action": "provide a supported candidate PE and a matching Stage A reference contract",
             }
         )
 
@@ -702,86 +691,15 @@ def stage_b_validate_candidate(
     stage_a_blocking_preissues = _stage_b_stage_a_blocking_preissues(pre_stage_a_issues)
 
     if not stage_a_blocking_preissues:
-        work = out / "generated"
-        work.mkdir(parents=True, exist_ok=True)
-        functional_coverage = (
-            functional_report_payload.get("coverage")
-            if isinstance(functional_report_payload, dict) and isinstance(functional_report_payload.get("coverage"), dict)
-            else {}
-        )
-        functional_bindings = (
-            functional_report_payload.get("binary_bindings")
-            if isinstance(functional_report_payload, dict) and isinstance(functional_report_payload.get("binary_bindings"), dict)
-            else {}
-        )
-        functional_candidate_binding = functional_bindings.get("candidate") if isinstance(functional_bindings.get("candidate"), dict) else {}
         try:
-            if reference_contract_payload is not None:
-                stage_a_result = stage_a_validate_contract_candidate(
-                    reference_contract=Path(reference_contract),
-                    candidate=Path(candidate),
-                    linker_map_candidate=Path(linker_map_candidate),
-                    skeleton_manifest=Path(skeleton_manifest),
-                    model=model,
-                    out=out / "stage-a",
-                )
-            else:
-                if original is None or linker_map_original is None:
-                    raise StageAInputError(
-                        "Stage B validation requires --reference-contract for zero-original validation "
-                        "or --original and --linker-map-original for legacy pair validation"
-                    )
-                map_result = stage_a_generate_map(
-                    original=Path(original),
-                    candidate=Path(candidate),
-                    linker_map_original=Path(linker_map_original),
-                    linker_map_candidate=Path(linker_map_candidate),
-                    out=work / "block-map.json",
-                    layout_contract_out=work / "layout-contract.json",
-                    original_flags=original_flags,
-                    candidate_flags=candidate_flags,
-                    proof_rule=STAGE_B_PROOF_RULE,
-                    proof_metadata={
-                        "stage_b": {
-                            "checked": True,
-                            "target_name": target_name,
-                            "skeleton_manifest_sha256": sha256_file(Path(skeleton_manifest)),
-                            "candidate_provenance_sha256": sha256_file(Path(candidate_provenance)),
-                            "functional_tests_report_sha256": sha256_file(Path(functional_report)) if functional_report is not None else "",
-                            "upstream_source_access": False,
-                            "manual_behavioral_fixups": [],
-                            "functional_tests_status": "pass",
-                            "functional_tests_suite_id": str(functional_report_payload.get("suite_id") or "")
-                            if isinstance(functional_report_payload, dict)
-                            else "",
-                            "functional_tests_suite_sha256": str(functional_report_payload.get("suite_sha256") or "")
-                            if isinstance(functional_report_payload, dict)
-                            else "",
-                            "functional_tests_suite_case_manifest_sha256": str(functional_report_payload.get("suite_case_manifest_sha256") or "")
-                            if isinstance(functional_report_payload, dict)
-                            else "",
-                            "functional_tests_case_ids_sha256": str(functional_coverage.get("case_ids_sha256") or ""),
-                            "functional_tests_candidate_binary_sha256": str(functional_candidate_binding.get("sha256") or ""),
-                        }
-                    },
-                )
-                stage_a_result = stage_a_validate(
-                    original=Path(original),
-                    candidate=Path(candidate),
-                    mapping=work / "block-map.json",
-                    model=model,
-                    out=out / "stage-a",
-                    layout_contract=work / "layout-contract.json",
-                )
-                if map_result.get("status") != "pass":
-                    issues.append(
-                        {
-                            "category": "stage_a_map_incomplete",
-                            "blocker": "Stage A generated map did not close for the Stage B candidate",
-                            "next_action": "inspect generated/block-map.json and extend the skeleton or mapping generator",
-                            "details": map_result.get("issues", []),
-                        }
-                    )
+            stage_a_result = stage_b_check_contract(
+                reference_contract=Path(reference_contract),
+                candidate=Path(candidate),
+                linker_map_candidate=Path(linker_map_candidate),
+                skeleton_manifest=Path(skeleton_manifest),
+                model=model,
+                out=out / "stage-a",
+            )
             if stage_a_result.get("verdict") != "pass":
                 issues.append(
                     {
@@ -796,7 +714,7 @@ def stage_b_validate_candidate(
                 {
                     "category": "stage_a_input_error",
                     "blocker": str(exc),
-                    "next_action": "provide supported Windows PE binaries, linker maps, and a supported Stage A model",
+                    "next_action": "provide a valid reference contract, candidate PE, linker map, and skeleton manifest",
                 }
             )
 
@@ -1226,14 +1144,12 @@ def stage_b_explain_delta(
     candidate_probe_report: Path | None = None,
     functional_report: Path | None = None,
     candidate_modules: list[dict[str, Any]] | None = None,
-    model: str = STAGE_A_MODEL_ID,
+    model: str = REFERENCE_CONTRACT_MODEL_ID,
     contract_candidate_validation: dict[str, Any] | Path | None = None,
     focus: str | None = None,
     focused_only: bool = False,
     embed_contract_candidate_validation: bool = True,
 ) -> dict[str, Any]:
-    from .stage_a_legacy import stage_a_validate_contract_candidate
-
     if focused_only and focus is None:
         raise StageAInputError("focused_only delta explanation requires --focus")
     out = Path(out)
@@ -1260,7 +1176,7 @@ def stage_b_explain_delta(
     contract_validation_source = "provided"
     if contract_validation is None:
         contract_validation_source = "computed"
-        contract_validation = stage_a_validate_contract_candidate(
+        contract_validation = stage_b_check_contract(
             reference_contract=reference_contract,
             candidate=candidate,
             linker_map_candidate=linker_map_candidate,

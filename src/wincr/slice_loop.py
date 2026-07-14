@@ -12,13 +12,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .stage_a_legacy import (
-    STAGE_A_MODEL_ID,
-    stage_a_extract_work_items,
-    stage_a_semantic_coverage,
+from .relational.reference_contract import (
+    REFERENCE_CONTRACT_MODEL_ID,
     stage_a_smoke_contract,
-    stage_a_validate_contract_candidate,
-    stage_a_validate_unit,
+)
+from .stage_b_contract import (
+    stage_b_extract_work_items,
+    stage_b_contract_coverage,
+    stage_b_check_contract,
+    stage_b_check_unit,
 )
 from .stage_b import stage_b_explain_delta, stage_b_validate_candidate
 from .stage_b_provenance import stage_b_generate_candidate_provenance
@@ -427,12 +429,12 @@ def prepare_workspace(
         write_json(_current_candidate_path(workspace), candidate)
 
     smoke = stage_a_smoke_contract(reference_contract=cached_reference_contract, out=contracts_dir / "contract-smoke.json")
-    semantic = stage_a_semantic_coverage(
+    semantic = stage_b_contract_coverage(
         reference_contract=cached_reference_contract,
         unit_contract_dir=cached_unit_contract_dir,
         out=contracts_dir / "semantic-coverage.json",
     )
-    work_items = stage_a_extract_work_items(
+    work_items = stage_b_extract_work_items(
         reference_contract=cached_reference_contract,
         unit_contract_dir=cached_unit_contract_dir,
         out=contracts_dir / "work-items.json",
@@ -884,7 +886,7 @@ def slice_check(
             check_dir=check_dir,
             reference_contract=paths["reference_contract"],
             candidate_info=candidate_info,
-            model=STAGE_A_MODEL_ID,
+            model=REFERENCE_CONTRACT_MODEL_ID,
             refresh=refresh_validation,
             use_cache=use_cache,
         )
@@ -903,14 +905,14 @@ def slice_check(
         try:
             if contract_candidate_validation is None:
                 raise SliceLoopInputError("Stage A candidate validation was not available for focused unit filtering")
-            unit_validation = stage_a_validate_unit(
+            unit_validation = stage_b_check_unit(
                 reference_contract=paths["reference_contract"],
                 candidate=Path(str(candidate_info["candidate"])),
                 linker_map_candidate=Path(str(candidate_info["linker_map"])),
                 skeleton_manifest=Path(str(candidate_info["skeleton_manifest"])),
                 unit_contract_dir=paths.get("unit_contract_dir"),
                 focus=focus,
-                model=STAGE_A_MODEL_ID,
+                model=REFERENCE_CONTRACT_MODEL_ID,
                 contract_candidate_validation=contract_candidate_validation_input,
                 embed_contract_candidate_validation=False,
                 out=check_dir / "unit",
@@ -926,9 +928,7 @@ def slice_check(
         validation_started = time.monotonic()
         try:
             validation = stage_b_validate_candidate(
-                original=None,
                 candidate=Path(str(candidate_info["candidate"])),
-                linker_map_original=None,
                 linker_map_candidate=Path(str(candidate_info["linker_map"])),
                 skeleton_manifest=Path(str(candidate_info["skeleton_manifest"])),
                 candidate_provenance=candidate_provenance_path,
@@ -960,7 +960,7 @@ def slice_check(
                 candidate_probe_report=candidate_probe_report,
                 functional_report=functional_report,
                 unit_contract_dir=paths.get("unit_contract_dir"),
-                model=STAGE_A_MODEL_ID,
+                model=REFERENCE_CONTRACT_MODEL_ID,
                 contract_candidate_validation=contract_candidate_validation_input,
                 focus=focus,
                 focused_only=bool(focus and not write_full_delta),
@@ -1825,7 +1825,7 @@ def _contract_candidate_validation(
     else:
         cache_dir = check_dir / "stage-a-contract-candidate-cache-disabled"
         out = cache_dir / "stage-a-contract-candidate"
-    validation = stage_a_validate_contract_candidate(
+    validation = stage_b_check_contract(
         reference_contract=reference_contract,
         candidate=candidate,
         linker_map_candidate=linker_map_candidate,

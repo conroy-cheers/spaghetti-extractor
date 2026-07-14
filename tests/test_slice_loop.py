@@ -335,9 +335,9 @@ class SliceLoopTests(unittest.TestCase):
             self._prepared_workspace(root)
 
             with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
-                "wincr.slice_loop.stage_a_validate_contract_candidate", side_effect=self._contract_candidate_validation
+                "wincr.slice_loop.stage_b_check_contract", side_effect=self._contract_candidate_validation
             ) as validate_candidate, patch(
-                "wincr.slice_loop.stage_a_validate_unit", side_effect=self._unit_incomplete
+                "wincr.slice_loop.stage_b_check_unit", side_effect=self._unit_incomplete
             ) as validate_unit, patch("wincr.slice_loop.stage_b_explain_delta", side_effect=self._unrelated_delta) as explain:
                 code = self._run_main(
                     [
@@ -376,9 +376,9 @@ class SliceLoopTests(unittest.TestCase):
             candidate = root / "candidate" / "jq-stage-b-generated-closure-candidate.exe"
 
             with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
-                "wincr.slice_loop.stage_a_validate_contract_candidate", side_effect=self._contract_candidate_validation
+                "wincr.slice_loop.stage_b_check_contract", side_effect=self._contract_candidate_validation
             ) as validate_candidate, patch(
-                "wincr.slice_loop.stage_a_validate_unit", side_effect=self._unit_incomplete
+                "wincr.slice_loop.stage_b_check_unit", side_effect=self._unit_incomplete
             ), patch("wincr.slice_loop.stage_b_explain_delta", side_effect=self._unrelated_delta):
                 self.assertEqual(
                     self._run_main(
@@ -438,7 +438,7 @@ class SliceLoopTests(unittest.TestCase):
             self._prepared_workspace(root)
 
             with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
-                "wincr.slice_loop.stage_a_validate_contract_candidate", side_effect=self._contract_candidate_validation
+                "wincr.slice_loop.stage_b_check_contract", side_effect=self._contract_candidate_validation
             ) as validate_candidate, patch("wincr.slice_loop.stage_b_explain_delta") as explain:
                 code = self._run_main(
                     [
@@ -751,8 +751,8 @@ class SliceLoopTests(unittest.TestCase):
     def _patched_prepare_contracts(self):
         return _PatchGroup(
             patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass),
-            patch("wincr.slice_loop.stage_a_semantic_coverage", side_effect=self._semantic_incomplete),
-            patch("wincr.slice_loop.stage_a_extract_work_items", side_effect=self._work_items),
+            patch("wincr.slice_loop.stage_b_contract_coverage", side_effect=self._semantic_incomplete),
+            patch("wincr.slice_loop.stage_b_extract_work_items", side_effect=self._work_items),
         )
 
     def _smoke_pass(self, *, reference_contract, out):

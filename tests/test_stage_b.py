@@ -9,7 +9,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from wincr.stage_a import STAGE_A_MODEL_ID, STAGE_A_X86_64_MODEL_ID, stage_a_export_reference_contract, stage_a_generate_map, stage_a_validate
+from wincr.relational.mapping import stage_a_generate_map
+from wincr.relational.reference_contract import (
+    REFERENCE_CONTRACT_MODEL_ID,
+    stage_a_export_reference_contract,
+)
 from wincr.stage_b import (
     STAGE_B_PROOF_RULE,
     STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
@@ -37,7 +41,9 @@ from wincr.stage_b_skeleton import (
     stage_b_generate_skeleton,
 )
 from wincr.util import sha256_bytes, sha256_file
-from test_stage_a import _LeanCheckedMock, _pe32_image, _pe32_import_image
+from contract_fixtures import write_relational_report
+from pe_fixtures import pe32_image as _pe32_image
+from pe_fixtures import pe32_import_image as _pe32_import_image
 
 
 class StageBTests(unittest.TestCase):
@@ -3287,18 +3293,16 @@ class StageBTests(unittest.TestCase):
                 generated["build"]["report"]["standalone_link_diagnostic"]["repair_plan"]["status"],
                 "blocked_on_target_import_closure",
             )
-            with _LeanCheckedMock():
-                result = stage_b_validate_candidate(
-                    original=original,
-                    candidate=candidate,
-                    linker_map_original=original_map,
-                    linker_map_candidate=candidate_map,
-                    skeleton_manifest=skeleton_manifest,
-                    candidate_provenance=provenance,
-                    functional_report=functional_report,
-                    target_name="jq",
-                    out=root / "report",
-                )
+            result = stage_b_validate_candidate(
+                candidate=candidate,
+                linker_map_candidate=candidate_map,
+                skeleton_manifest=skeleton_manifest,
+                candidate_provenance=provenance,
+                functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
+                target_name="jq",
+                out=root / "report",
+            )
 
             categories = {issue["category"] for issue in result["issues"]}
             self.assertEqual(result["status"], "incomplete")
@@ -3434,18 +3438,16 @@ class StageBTests(unittest.TestCase):
             )
             self.assertEqual(generated["build"]["report"]["source_dependency_policy"]["status"], "satisfied")
 
-            with _LeanCheckedMock():
-                result = stage_b_validate_candidate(
-                    original=original,
-                    candidate=candidate,
-                    linker_map_original=original_map,
-                    linker_map_candidate=candidate_map,
-                    skeleton_manifest=skeleton_manifest,
-                    candidate_provenance=root / "provenance" / "candidate-provenance.json",
-                    functional_report=functional_report,
-                    target_name="jq",
-                    out=root / "report",
-                )
+            result = stage_b_validate_candidate(
+                candidate=candidate,
+                linker_map_candidate=candidate_map,
+                skeleton_manifest=skeleton_manifest,
+                candidate_provenance=root / "provenance" / "candidate-provenance.json",
+                functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
+                target_name="jq",
+                out=root / "report",
+            )
 
             categories = {issue["category"] for issue in result["issues"]}
             self.assertEqual(result["status"], "incomplete")
@@ -3711,13 +3713,12 @@ class StageBTests(unittest.TestCase):
             self.assertEqual(result["functional_tests"]["suites"][0]["status"], "fail")
 
             validation = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=root / "provenance" / "candidate-provenance.json",
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -8556,43 +8557,6 @@ class StageBTests(unittest.TestCase):
             self.assertIn("stage_b_fn_same_name(void)", source)
             self.assertIn("stage_b_fn_same_name_at_1002(void)", source)
 
-    def test_stage_a_reports_pe32plus_pair_outside_first_formal_profile(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            original = self._write_pe32plus(root / "original.exe", b"\xc3")
-            candidate = self._write_pe32plus(root / "candidate.exe", b"\xc3")
-            mapping = root / "block-map.json"
-            mapping.write_text(
-                json.dumps(
-                    {
-                        "blocks": [
-                            {
-                                "id": "entry",
-                                "kind": "code",
-                                "reachable": True,
-                                "original": {"rva": 0x1000, "size": 1},
-                                "candidate": {"rva": 0x1000, "size": 1},
-                            }
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            with _LeanCheckedMock():
-                result = stage_a_validate(
-                    original=original,
-                    candidate=candidate,
-                    mapping=mapping,
-                    model=STAGE_A_X86_64_MODEL_ID,
-                    out=root / "report",
-                )
-
-            self.assertEqual(result["verdict"], "incomplete")
-            self.assertEqual(result["proof"]["assurance"], "incomplete")
-            obligation = self._obligation(root / "report", "block:entry")
-            self.assertEqual(obligation["proof_rule"], "byte_identical_x86_64_pe32plus_block")
-
     def test_run_functional_suite_compares_process_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -8907,12 +8871,11 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=linker_map,
                 linker_map_candidate=linker_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -8960,34 +8923,26 @@ class StageBTests(unittest.TestCase):
                 out=reference_block_map,
                 layout_contract_out=reference_layout,
             )
-            with _LeanCheckedMock():
-                stage_a_validate(
-                    original=original,
-                    candidate=candidate,
-                    mapping=reference_block_map,
-                    model=STAGE_A_MODEL_ID,
-                    out=reference_report,
-                    layout_contract=reference_layout,
-                )
-                stage_a_export_reference_contract(
-                    original=original,
-                    candidate=candidate,
-                    mapping=reference_block_map,
-                    validation_report=reference_report,
-                    layout_contract=reference_layout,
-                    out=reference_contract,
-                )
-                result = stage_b_validate_candidate(
-                    original=original,
-                    candidate=candidate,
-                    linker_map_original=original_map,
-                    linker_map_candidate=candidate_map,
-                    skeleton_manifest=skeleton_dir / "manifest.json",
-                    candidate_provenance=provenance_dir / "candidate-provenance.json",
-                    reference_contract=reference_contract,
-                    target_name="jq",
-                    out=root / "report",
-                )
+            write_relational_report(
+                reference_report, original=original, candidate=candidate
+            )
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=reference_block_map,
+                validation_report=reference_report,
+                layout_contract=reference_layout,
+                out=reference_contract,
+            )
+            result = stage_b_validate_candidate(
+                candidate=candidate,
+                linker_map_candidate=candidate_map,
+                skeleton_manifest=skeleton_dir / "manifest.json",
+                candidate_provenance=provenance_dir / "candidate-provenance.json",
+                reference_contract=reference_contract,
+                target_name="jq",
+                out=root / "report",
+            )
 
             self.assertEqual(result["status"], "pass")
             self.assertEqual(result["stage_a"]["verdict"], "pass")
@@ -9008,9 +8963,7 @@ class StageBTests(unittest.TestCase):
             self.assertTrue((root / "report" / "stage-a").exists())
 
             final_mode = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance_dir / "candidate-provenance.json",
@@ -9083,13 +9036,12 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -9168,13 +9120,12 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -9247,13 +9198,12 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -9309,13 +9259,12 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -9379,13 +9328,12 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -9439,13 +9387,12 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -9501,13 +9448,12 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -9567,13 +9513,12 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -9642,37 +9587,27 @@ class StageBTests(unittest.TestCase):
             reference_report = root / "reference-stage-a"
             reference_contract = root / "reference-contract.json"
 
-            with _LeanCheckedMock():
-                stage_a_validate(
-                    original=original,
-                    candidate=candidate,
-                    mapping=reference_block_map,
-                    model="x86-pe32-env-v1",
-                    out=reference_report,
-                    layout_contract=reference_layout,
-                )
-                stage_a_export_reference_contract(
-                    original=original,
-                    candidate=candidate,
-                    mapping=reference_block_map,
-                    validation_report=reference_report,
-                    layout_contract=reference_layout,
-                    out=reference_contract,
-                )
-                result = stage_b_validate_candidate(
-                    original=original,
-                    candidate=candidate,
-                    linker_map_original=original_map,
-                    linker_map_candidate=candidate_map,
-                    skeleton_manifest=skeleton_dir / "manifest.json",
-                    candidate_provenance=provenance,
-                    functional_report=functional_report,
-                    reference_contract=reference_contract,
-                    target_name="jq",
-                    out=root / "report",
-                    original_flags="-O2",
-                    candidate_flags="-O2 stage-b",
-                )
+            write_relational_report(
+                reference_report, original=original, candidate=candidate
+            )
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=reference_block_map,
+                validation_report=reference_report,
+                layout_contract=reference_layout,
+                out=reference_contract,
+            )
+            result = stage_b_validate_candidate(
+                candidate=candidate,
+                linker_map_candidate=candidate_map,
+                skeleton_manifest=skeleton_dir / "manifest.json",
+                candidate_provenance=provenance,
+                functional_report=functional_report,
+                reference_contract=reference_contract,
+                target_name="jq",
+                out=root / "report",
+            )
 
             self.assertEqual(result["status"], "pass")
             self.assertEqual(result["stage_a"]["verdict"], "pass")
@@ -9733,23 +9668,17 @@ class StageBTests(unittest.TestCase):
             )
             reference_report = root / "reference-stage-a"
             reference_contract = root / "reference-contract.json"
-            with _LeanCheckedMock():
-                stage_a_validate(
-                    original=original,
-                    candidate=candidate,
-                    mapping=reference_block_map,
-                    model=STAGE_A_MODEL_ID,
-                    out=reference_report,
-                    layout_contract=reference_layout,
-                )
-                stage_a_export_reference_contract(
-                    original=original,
-                    candidate=candidate,
-                    mapping=reference_block_map,
-                    validation_report=reference_report,
-                    layout_contract=reference_layout,
-                    out=reference_contract,
-                )
+            write_relational_report(
+                reference_report, original=original, candidate=candidate
+            )
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=reference_block_map,
+                validation_report=reference_report,
+                layout_contract=reference_layout,
+                out=reference_contract,
+            )
 
             result = stage_b_explain_delta(
                 reference_contract=reference_contract,
@@ -9777,7 +9706,7 @@ class StageBTests(unittest.TestCase):
             reference_contract = root / "reference-contract.json"
             skeleton_manifest = root / "manifest.json"
             reference_contract.write_text(
-                json.dumps({"format": "stage-a-reference-contract-v1", "model": STAGE_A_MODEL_ID, "families": []}),
+                json.dumps({"format": "stage-a-reference-contract-v1", "model": REFERENCE_CONTRACT_MODEL_ID, "families": []}),
                 encoding="utf-8",
             )
             skeleton_manifest.write_text(json.dumps({"format": "stage-b-skeleton-v1", "source_map": {"functions": []}}), encoding="utf-8")
@@ -9806,7 +9735,7 @@ class StageBTests(unittest.TestCase):
                 },
             ]
 
-            with patch("wincr.stage_a.stage_a_validate_contract_candidate") as validate_candidate, patch(
+            with patch("wincr.stage_b.stage_b_check_contract") as validate_candidate, patch(
                 "wincr.stage_b._stage_b_delta_repair_items", return_value=repair_items
             ):
                 result = stage_b_explain_delta(
@@ -9966,24 +9895,18 @@ class StageBTests(unittest.TestCase):
             )
             units = root / "units"
             reference_contract = root / "reference-contract.json"
-            with _LeanCheckedMock():
-                stage_a_validate(
-                    original=original,
-                    candidate=candidate,
-                    mapping=block_map,
-                    model=STAGE_A_MODEL_ID,
-                    out=root / "stage-a",
-                    layout_contract=layout_contract,
-                )
-                stage_a_export_reference_contract(
-                    original=original,
-                    candidate=candidate,
-                    mapping=block_map,
-                    validation_report=root / "stage-a",
-                    layout_contract=layout_contract,
-                    unit_contract_dir=units,
-                    out=reference_contract,
-                )
+            write_relational_report(
+                root / "stage-a", original=original, candidate=candidate
+            )
+            stage_a_export_reference_contract(
+                original=original,
+                candidate=candidate,
+                mapping=block_map,
+                validation_report=root / "stage-a",
+                layout_contract=layout_contract,
+                unit_contract_dir=units,
+                out=reference_contract,
+            )
             repair_units = json.loads((units / "repair-units.json").read_text(encoding="utf-8"))
             repair_units["work_items"] = [
                 {
@@ -12197,7 +12120,7 @@ class StageBTests(unittest.TestCase):
         self.assertEqual(fault_context["classification"], "candidate_fault_address")
         self.assertEqual(fault_context["rva"], 0xE0F3)
 
-    def test_validate_candidate_reports_stage_a_failure_diagnostics(self):
+    def test_validate_candidate_reports_contract_only_failure_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             original = self._write_pe(root / "original.exe", b"\x90\x90\x90\xc3")
@@ -12244,45 +12167,29 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
 
             self.assertEqual(result["status"], "incomplete")
-            self.assertEqual(result["stage_a"]["map_status"], "incomplete")
+            self.assertIsNone(result["stage_a"]["map_status"])
             self.assertNotEqual(result["stage_a"]["verdict"], "pass")
             self.assertTrue(result["stage_a"]["gate"]["ran"])
             diagnostics = result["stage_a"]["diagnostics"]
             self.assertEqual(diagnostics["format"], "stage-b-stage-a-diagnostics-v1")
             self.assertEqual(diagnostics["status"], "incomplete")
-            self.assertEqual(diagnostics["map"]["status"], "incomplete")
-            self.assertEqual(diagnostics["map"]["issue_counts"][0]["category"], "ambiguous_block_match")
-            self.assertEqual(diagnostics["map"]["ambiguous_block_matches"][0]["function"], "tiny")
-            shape_preview = diagnostics["map"]["ambiguous_block_matches"][0]["shape_preview"]
-            self.assertEqual(shape_preview["original_first"]["terminal"]["mnemonic"], "ret")
-            self.assertEqual(shape_preview["candidate_first"]["terminal"]["mnemonic"], "je")
-            self.assertEqual(shape_preview["candidate_first"]["direct_edge_counts"], {"taken": 1, "fallthrough": 1})
+            self.assertEqual(diagnostics["map"]["status"], "not_run")
+            self.assertIsNone(diagnostics["artifacts"]["generated_block_map"])
+            self.assertIsNone(diagnostics["artifacts"]["generated_layout_contract"])
             self.assertEqual(diagnostics["validation"]["status"], result["stage_a"]["verdict"])
-            self.assertTrue(diagnostics["validation"]["obligation_status_counts"])
-            self.assertTrue(diagnostics["validation"]["unresolved_category_counts"])
-            samples_by_category = diagnostics["validation"]["unresolved_samples_by_category"]
-            self.assertTrue(samples_by_category)
-            self.assertEqual(
-                samples_by_category[0]["category"],
-                diagnostics["validation"]["unresolved_category_counts"][0]["category"],
-            )
-            self.assertTrue(samples_by_category[0]["samples"])
-            self.assertEqual(samples_by_category[0]["samples"][0]["category"], samples_by_category[0]["category"])
-            self.assertTrue(diagnostics["validation"]["top_unresolved"])
-            self.assertTrue(diagnostics["next_focus"])
-            self.assertEqual(diagnostics["next_focus"][0]["source"], "map")
+            self.assertTrue((root / "report" / "stage-a" / "verdict.json").is_file())
+            self.assertFalse((root / "report" / "generated" / "block-map.json").exists())
 
     def test_validate_candidate_rejects_candidate_build_output_hash_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -12328,13 +12235,12 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -12390,13 +12296,12 @@ class StageBTests(unittest.TestCase):
             )
 
             result = stage_b_validate_candidate(
-                original=original,
                 candidate=candidate,
-                linker_map_original=original_map,
                 linker_map_candidate=candidate_map,
                 skeleton_manifest=skeleton_dir / "manifest.json",
                 candidate_provenance=provenance,
                 functional_report=functional_report,
+                reference_contract=self._write_static_reference_contract(root / "reference-contract.json", original),
                 target_name="jq",
                 out=root / "report",
             )
@@ -12411,6 +12316,10 @@ class StageBTests(unittest.TestCase):
 
     def _write_pe(self, path: Path, code: bytes) -> Path:
         path.write_bytes(_pe32_image(code))
+        return path
+
+    def _write_static_reference_contract(self, path: Path, original: Path) -> Path:
+        stage_a_export_reference_contract(original=original, out=path)
         return path
 
     def _write_import_pe(self, path: Path, code: bytes, symbol: str) -> Path:

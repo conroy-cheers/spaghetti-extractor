@@ -62,9 +62,8 @@ Retained:
 - `src/wincr/relational/`: authoritative whole-program relational pipeline,
   typed artifact boundaries, analyses, Lean generation, and verdict logic.
 - `src/wincr/stage_a_relational.py`: compatibility import facade only.
-- `src/wincr/stage_a_legacy.py`: evidence-only v2 validation and
-  reference-contract tooling; it cannot authorize whole-program acceptance.
-- `src/wincr/stage_a.py`: compatibility alias for existing v2 Python imports.
+- `src/wincr/contract_tools.py`: untrusted mapping proposals and reusable
+  contract serialization used around the relational proof core.
 - `src/wincr/stage_b*.py`: jq skeleton, provenance, candidate-only delta, and
   public expected-output helpers.
 - `src/wincr/slice_loop.py`: incremental contract-first slice iteration.

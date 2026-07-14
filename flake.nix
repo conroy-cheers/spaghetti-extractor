@@ -93,11 +93,10 @@
           stage-a-jq-candidate = mkStageAJq "candidate" stageAJqCandidateCflags;
           stage-a-fixtures = mingw32.stdenv.mkDerivation {
             pname = "stage-a-fixtures";
-            version = "0.1.0";
+            version = "0.2.0";
             src = ./tools/stage-a-fixtures;
 
             dontConfigure = true;
-            nativeBuildInputs = [ pkgs.python3 ];
 
             buildPhase = ''
               runHook preBuild
@@ -114,108 +113,57 @@
                 -Wl,--section-alignment,0x1000
                 -Wl,--file-alignment,0x200
               )
-              $CC -O0 "''${common_flags[@]}" -DSTAGE_A_NO_EXTERNAL -DSTAGE_A_NO_BRANCH -o stage-a-original.exe stage_a_equivalence.S
-              $CC -O2 "''${common_flags[@]}" -DSTAGE_A_NO_EXTERNAL -DSTAGE_A_NO_BRANCH -DSTAGE_A_VARIANT_B -o stage-a-candidate.exe stage_a_equivalence.S
-              $CC -O2 "''${common_flags[@]}" -DSTAGE_A_NO_EXTERNAL -DSTAGE_A_NO_BRANCH -DSTAGE_A_MUTATION -o stage-a-mutated.exe stage_a_equivalence.S
-              $CC -O0 "''${common_flags[@]}" -o stage-a-calls-original.exe stage_a_calls.S -lkernel32
-              $CC -O2 "''${common_flags[@]}" -DSTAGE_A_VARIANT_B -o stage-a-calls-candidate.exe stage_a_calls.S -lkernel32
               $CC -O0 "''${common_flags[@]}" -o stage-a-loop-original.exe stage_a_loop.S
               $CC -O2 "''${common_flags[@]}" -o stage-a-loop-candidate.exe stage_a_loop.S
-              python3 - stage-a-original.exe stage-a-candidate.exe stage-a-mutated.exe <<'PY'
-              import pathlib
-              import struct
-              import sys
-
-              for name in sys.argv[1:]:
-                  path = pathlib.Path(name)
-                  data = bytearray(path.read_bytes())
-                  pe_offset = struct.unpack_from("<I", data, 0x3c)[0]
-                  import_directory = pe_offset + 24 + 104
-                  data[import_directory : import_directory + 8] = b"\0" * 8
-                  path.write_bytes(data)
-              PY
               runHook postBuild
             '';
 
             installPhase = ''
               runHook preInstall
-              fixture_dir="$out/share/wincr/stage-a-fixtures/symbolic-equivalence"
+              fixture_dir="$out/share/wincr/stage-a-fixtures/relational-v3"
               mkdir -p "$fixture_dir"
-              cp stage-a-original.exe stage-a-candidate.exe stage-a-mutated.exe \
-                stage-a-calls-original.exe stage-a-calls-candidate.exe \
-                stage-a-loop-original.exe stage-a-loop-candidate.exe "$fixture_dir/"
-              cat > "$fixture_dir/block-map.json" <<'JSON'
-              {
-                "blocks": [
-                  { "id": "entry", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1000", "size": 8 }, "candidate": { "rva": "0x1000", "size": 10 } },
-                  { "id": "memory", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1010", "size": 8 }, "candidate": { "rva": "0x1010", "size": 9 } },
-                  { "id": "zero", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1020", "size": 3 }, "candidate": { "rva": "0x1020", "size": 3 } }
-                ],
-                "waivers": [
-                  { "id": "original-entry-padding", "binary": "original", "rva": "0x1008", "size": "0x8", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "candidate-entry-padding", "binary": "candidate", "rva": "0x100a", "size": "0x6", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "original-memory-padding", "binary": "original", "rva": "0x1018", "size": "0x8", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "candidate-memory-padding", "binary": "candidate", "rva": "0x1019", "size": "0x7", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "zero-padding", "binary": "both", "rva": "0x1023", "size": "0xd", "reason": "post-ret alignment padding emitted by the fixture build" }
-                ]
-              }
-              JSON
-              cat > "$fixture_dir/block-map-mutated.json" <<'JSON'
-              {
-                "blocks": [
-                  { "id": "entry", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1000", "size": 8 }, "candidate": { "rva": "0x1000", "size": 8 } },
-                  { "id": "memory", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1010", "size": 8 }, "candidate": { "rva": "0x1010", "size": 8 } },
-                  { "id": "zero", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1020", "size": 3 }, "candidate": { "rva": "0x1020", "size": 6 } }
-                ],
-                "waivers": [
-                  { "id": "entry-padding", "binary": "both", "rva": "0x1008", "size": "0x8", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "memory-padding", "binary": "both", "rva": "0x1018", "size": "0x8", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "original-zero-padding", "binary": "original", "rva": "0x1023", "size": "0xd", "reason": "post-ret alignment padding emitted by the fixture build" },
-                  { "id": "candidate-zero-padding", "binary": "candidate", "rva": "0x1026", "size": "0xa", "reason": "post-ret alignment padding emitted by the fixture build" }
-                ]
-              }
-              JSON
-              cat > "$fixture_dir/block-map-calls.json" <<'JSON'
-              {
-                "blocks": [
-                  { "id": "import-call", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1000", "size": 6 }, "candidate": { "rva": "0x1000", "size": 6 } },
-                  { "id": "import-continuation", "kind": "code", "reachable": true, "original": { "rva": "0x1006", "size": 1 }, "candidate": { "rva": "0x1006", "size": 1 } },
-                  { "id": "internal-caller", "kind": "code", "reachable": true, "root": { "kind": "fixture_function", "checked": true }, "original": { "rva": "0x1010", "size": 5 }, "candidate": { "rva": "0x1010", "size": 5 } },
-                  { "id": "internal-continuation", "kind": "code", "reachable": true, "original": { "rva": "0x1015", "size": 1 }, "candidate": { "rva": "0x1015", "size": 1 } },
-                  { "id": "internal-callee", "kind": "code", "reachable": true, "original": { "rva": "0x1020", "size": 3 }, "candidate": { "rva": "0x1020", "size": 3 } }
-                ],
-                "waivers": [
-                  { "id": "import-call-padding", "binary": "both", "rva": "0x1007", "size": "0x9", "reason": "post-return alignment padding emitted by the fixture build" },
-                  { "id": "internal-caller-padding", "binary": "both", "rva": "0x1016", "size": "0xa", "reason": "post-return alignment padding emitted by the fixture build" },
-                  { "id": "internal-callee-padding", "binary": "both", "rva": "0x1023", "size": "0xd", "reason": "post-return alignment padding emitted by the fixture build" }
-                ]
-              }
-              JSON
+              cp stage-a-loop-original.exe stage-a-loop-candidate.exe "$fixture_dir/"
               cat > "$fixture_dir/block-map-loop.json" <<'JSON'
               {
                 "blocks": [
-                  { "id": "entry-loop", "kind": "code", "reachable": true, "root": { "kind": "pe_entrypoint", "checked": true }, "original": { "rva": "0x1000", "size": 2 }, "candidate": { "rva": "0x1000", "size": 2 } }
+                  {
+                    "id": "entry-loop",
+                    "kind": "code",
+                    "reachable": true,
+                    "root": { "kind": "pe_entrypoint", "checked": true },
+                    "original": { "rva": "0x1000", "size": 2 },
+                    "candidate": { "rva": "0x1000", "size": 2 },
+                    "source": {
+                      "kind": "fixture",
+                      "function": "entry_loop",
+                      "function_block_index": 0
+                    }
+                  }
                 ],
                 "waivers": [
                   { "id": "loop-linker-padding", "binary": "both", "rva": "0x1002", "size": 2, "reason": "verified post-jump NOP alignment emitted by the PE linker" }
                 ]
               }
               JSON
-              cat > "$fixture_dir/stage-a-fixture-lemmas.lean" <<'LEAN'
-              namespace StageAFixture
-
-              theorem fixtureSupplementChecked : True := True.intro
-
-              end StageAFixture
-              LEAN
-              cat > "$fixture_dir/suite.json" <<'JSON'
+              cat > "$fixture_dir/layout-contract.json" <<'JSON'
               {
-                "model": "x86-pe32-env-v1",
-                "cases": [
-                  { "id": "gcc-o0-vs-gcc-o2-symbolic-equivalence", "original": "stage-a-original.exe", "candidate": "stage-a-candidate.exe", "mapping": "block-map.json", "lean_inputs": [ "stage-a-fixture-lemmas.lean" ], "expect": "incomplete" },
-                  { "id": "gcc-o0-vs-mutated-candidate", "original": "stage-a-original.exe", "candidate": "stage-a-mutated.exe", "mapping": "block-map-mutated.json", "lean_inputs": [ "stage-a-fixture-lemmas.lean" ], "expect": "fail" },
-                  { "id": "mingw-import-relocation-call-composition", "original": "stage-a-calls-original.exe", "candidate": "stage-a-calls-candidate.exe", "mapping": "block-map-calls.json", "expect": "pass" }
-                ]
+                "format": "stage-a-layout-contract-v1",
+                "required_facts": [
+                  "matching_architecture",
+                  "matching_section_rvas",
+                  "matching_section_permissions",
+                  "matching_imports",
+                  "all_executable_bytes_classified",
+                  "matching_normalized_executable_section_spans"
+                ],
+                "facts": {
+                  "matching_architecture": true,
+                  "matching_section_rvas": true,
+                  "matching_section_permissions": true,
+                  "matching_imports": true,
+                  "all_executable_bytes_classified": true,
+                  "matching_normalized_executable_section_spans": true
+                }
               }
               JSON
               runHook postInstall
@@ -225,34 +173,47 @@
             {
               nativeBuildInputs = [
                 wincr-tools
+                pkgs.jq
                 pkgs.lean4
               ];
             }
             ''
-              fixture_dir="${stage-a-fixtures}/share/wincr/stage-a-fixtures/symbolic-equivalence"
+              fixture_dir="${stage-a-fixtures}/share/wincr/stage-a-fixtures/relational-v3"
+              work="$TMPDIR/stage-a-v3"
               export WINCR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/stage-a-relational-cache"
-              wincr stage-a-legacy-validate-suite \
-                --suite "$fixture_dir/suite.json" \
-                --model x86-pe32-env-v1 \
-                --out "$TMPDIR/stage-a-suite"
-              wincr stage-a-legacy-check-proof \
-                --report "$TMPDIR/stage-a-suite/cases/mingw-import-relocation-call-composition" \
-                --out "$TMPDIR/stage-a-suite/formal-proof-check-calls.json"
+              mkdir -p "$work"
               wincr stage-a-generate-relation-contract \
                 --original "$fixture_dir/stage-a-loop-original.exe" \
                 --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
                 --mapping "$fixture_dir/block-map-loop.json" \
-                --out "$TMPDIR/stage-a-suite/relational-contract.json"
-              wincr stage-a-prove-relational \
-                  --original "$fixture_dir/stage-a-loop-original.exe" \
-                  --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
-                  --relation-contract "$TMPDIR/stage-a-suite/relational-contract.json" \
-                  --out "$TMPDIR/stage-a-suite/relational-v3"
-              wincr stage-a-check-relational-proof \
-                --report "$TMPDIR/stage-a-suite/relational-v3" \
-                --out "$TMPDIR/stage-a-suite/relational-v3-check.json"
+                --out "$work/relation-contract.json"
+              wincr stage-a-prove \
+                --original "$fixture_dir/stage-a-loop-original.exe" \
+                --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
+                --relation-contract "$work/relation-contract.json" \
+                --out "$work/proof"
+              wincr stage-a-check-proof \
+                --report "$work/proof" \
+                --out "$work/proof-check.json"
+              wincr stage-a-export-reference-contract \
+                --original "$fixture_dir/stage-a-loop-original.exe" \
+                --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
+                --mapping "$fixture_dir/block-map-loop.json" \
+                --validation-report "$work/proof" \
+                --layout-contract "$fixture_dir/layout-contract.json" \
+                --sidecar-dir "$work/contract" \
+                --unit-contract-dir "$work/contract" \
+                --out "$work/contract/reference-contract.json"
+              jq -e '
+                .constraints.validation_report_artifact_binding.status == "satisfied" and
+                .constraints.proof_obligation_inventory.status == "satisfied"
+              ' "$work/contract/reference-contract.json" >/dev/null
+              wincr stage-a-smoke-contract \
+                --reference-contract "$work/contract/reference-contract.json" \
+                --out "$work/contract-smoke.json"
+              jq -e '.status == "pass"' "$work/contract-smoke.json" >/dev/null
               mkdir -p "$out"
-              cp -R "$TMPDIR/stage-a-suite/." "$out/"
+              cp -R "$work/." "$out/"
             '';
           stage-a-fixtures-root = pkgs.writeShellApplication {
             name = "stage-a-fixtures-root";
@@ -322,7 +283,7 @@
                 --out "$work/jq-relation-contract.json" \
                 > "$work/generate-relation.stdout"
               if WINCR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
-                  wincr stage-a-prove-relational \
+                  wincr stage-a-prove \
                     --original "$fixture_dir/jq-original.exe" \
                     --candidate "$fixture_dir/jq-candidate.exe" \
                     --relation-contract "$work/jq-relation-contract.json" \
@@ -338,38 +299,15 @@
               ' "$work/relational-v3/verdict.json" >/dev/null
               jq -e '.status == "incomplete" and .counts.issues > 0' \
                 "$work/relational-v3/semantic-gaps.json" >/dev/null
-              cat > "$work/suite.json" <<JSON
-              {
-                "model": "x86-pe32-env-v1",
-                "cases": [
-                  {
-                    "id": "jq-o2-alignment-windows-x86",
-                    "original": "$fixture_dir/jq-original.exe",
-                    "candidate": "$fixture_dir/jq-candidate.exe",
-                    "mapping": "$work/jq-block-map.json",
-                    "layout_contract": "$work/jq-layout-contract.json",
-                    "expect": "incomplete"
-                  }
-                ]
-              }
-              JSON
-              wincr stage-a-legacy-validate-suite \
-                --suite "$work/suite.json" \
-                --model x86-pe32-env-v1 \
-                --out "$work/suite"
-              jq -e '.status == "pass" and .counts.passed == .counts.cases and .cases[0].actual_verdict == "incomplete"' "$work/suite/suite.json" >/dev/null
               mkdir -p "$out/generated" "$out/report"
-              cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" "$work/jq-relation-contract.json" "$work/suite.json" "$out/report/"
-              cp -R "$work/suite/." "$out/report/suite"
+              cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" "$work/jq-relation-contract.json" "$out/report/"
               cp -R "$work/relational-v3" "$out/report/relational-v3"
-              jq '.proof.lean.failed_formal_pass_attempt.formal_proof.diagnostics' \
-                "$out/report/suite/cases/jq-o2-alignment-windows-x86/verdict.json" \
-                > "$out/generated/jq-formal-gaps.json"
+              cp "$work/relational-v3/semantic-gaps.json" "$out/generated/jq-formal-gaps.json"
               if wincr stage-a-export-reference-contract \
                   --original "$fixture_dir/jq-original.exe" \
                   --candidate "$fixture_dir/jq-candidate.exe" \
                   --mapping "$out/report/jq-block-map.json" \
-                  --validation-report "$out/report/suite/cases/jq-o2-alignment-windows-x86" \
+                  --validation-report "$out/report/relational-v3" \
                   --layout-contract "$out/report/jq-layout-contract.json" \
                   --sidecar-dir "$out/generated" \
                   --unit-contract-dir "$out/generated" \

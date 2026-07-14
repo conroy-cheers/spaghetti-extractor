@@ -6,23 +6,22 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .stage_a_legacy import (
-    STAGE_A_MODEL_ID,
-    StageAInputError,
-    stage_a_check_proof as stage_a_legacy_check_proof,
-    stage_a_audit_contract_shortfalls,
+from .relational.mapping import stage_a_generate_map
+from .relational.reference_contract import (
+    REFERENCE_CONTRACT_MODEL_ID,
     stage_a_diff_obligations,
     stage_a_explain_obligations,
     stage_a_export_reference_contract,
-    stage_a_extract_work_items,
-    stage_a_generate_map,
-    stage_a_semantic_coverage,
     stage_a_smoke_contract,
-    stage_a_validate as stage_a_legacy_validate,
-    stage_a_validate_contract_candidate,
-    stage_a_validate_suite as stage_a_legacy_validate_suite,
-    stage_a_validate_unit,
 )
+from .stage_b_contract import (
+    stage_b_audit_contract,
+    stage_b_extract_work_items,
+    stage_b_contract_coverage,
+    stage_b_check_contract,
+    stage_b_check_unit,
+)
+from .stage_binary import StageAInputError
 from .stage_a_relational import (
     stage_a_build_relational,
     stage_a_check_relational_proof,
@@ -86,20 +85,6 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         )
     )
 
-    validate = subcommands.add_parser(
-        "stage-a-legacy-validate",
-        help="produce evidence-only v2 PE/block-map validation",
-    )
-    validate.add_argument("--original", type=Path, required=True)
-    validate.add_argument("--candidate", type=Path, required=True)
-    validate.add_argument("--mapping", type=Path, required=True)
-    validate.add_argument("--model", default=STAGE_A_MODEL_ID)
-    validate.add_argument("--out", type=Path, required=True)
-    validate.add_argument("--invariants", type=Path)
-    validate.add_argument("--layout-contract", type=Path)
-    validate.add_argument("--lean-input", action="append", default=[], type=Path)
-    validate.set_defaults(func=_cmd_stage_a_legacy_validate)
-
     prove = subcommands.add_parser(
         "stage-a-prove",
         help="generate and replay the whole-program v3 acceptance theorem",
@@ -109,37 +94,6 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     prove.add_argument("--relation-contract", type=Path, required=True)
     prove.add_argument("--out", type=Path, required=True)
     prove.set_defaults(func=_cmd_stage_a_prove)
-
-    legacy_prove = subcommands.add_parser(
-        "stage-a-legacy-prove",
-        help="compatibility alias for evidence-only v2 validation",
-    )
-    legacy_prove.add_argument("--original", type=Path, required=True)
-    legacy_prove.add_argument("--candidate", type=Path, required=True)
-    legacy_prove.add_argument("--mapping", type=Path, required=True)
-    legacy_prove.add_argument("--model", default=STAGE_A_MODEL_ID)
-    legacy_prove.add_argument("--out", type=Path, required=True)
-    legacy_prove.add_argument("--invariants", type=Path)
-    legacy_prove.add_argument("--layout-contract", type=Path)
-    legacy_prove.add_argument("--lean-input", action="append", default=[], type=Path)
-    legacy_prove.set_defaults(func=_cmd_stage_a_legacy_validate)
-
-    prove_relational = subcommands.add_parser(
-        "stage-a-prove-relational",
-        help="generate and replay the whole-program v3 acceptance theorem",
-    )
-    prove_relational.add_argument("--original", type=Path, required=True)
-    prove_relational.add_argument("--candidate", type=Path, required=True)
-    prove_relational.add_argument("--relation-contract", type=Path, required=True)
-    prove_relational.add_argument("--out", type=Path, required=True)
-    prove_relational.set_defaults(
-        func=lambda args: stage_a_prove_relational(
-            original=args.original,
-            candidate=args.candidate,
-            relation_contract=args.relation_contract,
-            out=args.out,
-        )
-    )
 
     prepare_relational = subcommands.add_parser(
         "stage-a-prepare-relational",
@@ -204,33 +158,6 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         func=_cmd_stage_a_check_proof,
     )
 
-    legacy_check = subcommands.add_parser(
-        "stage-a-legacy-check-proof",
-        help="replay an evidence-only v2 proof bundle",
-    )
-    legacy_check.add_argument("--report", type=Path, required=True)
-    legacy_check.add_argument("--original", type=Path)
-    legacy_check.add_argument("--candidate", type=Path)
-    legacy_check.add_argument("--out", type=Path)
-    legacy_check.set_defaults(
-        func=lambda args: stage_a_legacy_check_proof(
-            report=args.report,
-            original=args.original,
-            candidate=args.candidate,
-            out=args.out,
-        )
-    )
-
-    check_relational = subcommands.add_parser(
-        "stage-a-check-relational-proof",
-        help="independently replay the v3 whole-program acceptance theorem",
-    )
-    check_relational.add_argument("--report", type=Path, required=True)
-    check_relational.add_argument("--out", type=Path)
-    check_relational.set_defaults(
-        func=lambda args: stage_a_check_relational_proof(report=args.report, out=args.out)
-    )
-
     generate_relation = subcommands.add_parser(
         "stage-a-generate-relation-contract",
         help="project a block map into an explicit v3 relation contract",
@@ -245,21 +172,6 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
             candidate=args.candidate,
             mapping=args.mapping,
             out=args.out,
-        )
-    )
-
-    suite = subcommands.add_parser(
-        "stage-a-legacy-validate-suite",
-        help="run an evidence-only v2 validation suite manifest",
-    )
-    suite.add_argument("--suite", type=Path, required=True)
-    suite.add_argument("--out", type=Path, required=True)
-    suite.add_argument("--model")
-    suite.set_defaults(
-        func=lambda args: stage_a_legacy_validate_suite(
-            suite=args.suite,
-            out=args.out,
-            model=args.model,
         )
     )
 
@@ -286,7 +198,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     contract.add_argument("--layout-contract", type=Path)
     contract.add_argument("--sidecar-dir", type=Path)
     contract.add_argument("--unit-contract-dir", type=Path)
-    contract.add_argument("--model", default=STAGE_A_MODEL_ID)
+    contract.add_argument("--model", default=REFERENCE_CONTRACT_MODEL_ID)
     contract.set_defaults(func=_cmd_stage_a_export_reference_contract)
 
     smoke = subcommands.add_parser("stage-a-smoke-contract", help="run the cheap Stage A contract sanity gate")
@@ -295,20 +207,20 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     smoke.set_defaults(func=lambda args: stage_a_smoke_contract(reference_contract=args.reference_contract, out=args.out))
 
     contract_candidate = subcommands.add_parser(
-        "stage-a-validate-contract-candidate",
-        help="evaluate non-authoritative candidate evidence against a reference contract",
+        "stage-b-check-contract",
+        help="evaluate candidate-only evidence against a Stage A reference contract",
     )
     contract_candidate.add_argument("--reference-contract", type=Path, required=True)
     contract_candidate.add_argument("--candidate", type=Path, required=True)
     contract_candidate.add_argument("--linker-map-candidate", type=Path, required=True)
     contract_candidate.add_argument("--out", type=Path, required=True)
-    contract_candidate.add_argument("--model", default=STAGE_A_MODEL_ID)
+    contract_candidate.add_argument("--model", default=REFERENCE_CONTRACT_MODEL_ID)
     contract_candidate.add_argument("--skeleton-manifest", type=Path)
-    contract_candidate.set_defaults(func=_cmd_stage_a_validate_contract_candidate)
+    contract_candidate.set_defaults(func=_cmd_stage_b_check_contract)
 
     audit_shortfalls = subcommands.add_parser(
-        "stage-a-audit-contract-shortfalls",
-        help="audit underconstrained Stage A generated-candidate contract evidence",
+        "stage-b-audit-contract",
+        help="audit underconstrained candidate repair evidence",
     )
     audit_shortfalls.add_argument("--reference-contract", type=Path, required=True)
     audit_shortfalls.add_argument("--out", type=Path, required=True)
@@ -319,24 +231,24 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     audit_shortfalls.add_argument("--candidate-crash-report", type=Path)
     audit_shortfalls.add_argument("--unit-contract-dir", type=Path)
     audit_shortfalls.add_argument("--target-name")
-    audit_shortfalls.add_argument("--model", default=STAGE_A_MODEL_ID)
-    audit_shortfalls.set_defaults(func=_cmd_stage_a_audit_contract_shortfalls)
+    audit_shortfalls.add_argument("--model", default=REFERENCE_CONTRACT_MODEL_ID)
+    audit_shortfalls.set_defaults(func=_cmd_stage_b_audit_contract)
 
-    work_items = subcommands.add_parser("stage-a-extract-work-items", help="extract ranked unit work from a reference contract")
+    work_items = subcommands.add_parser("stage-b-extract-work-items", help="extract ranked candidate repair work from a reference contract")
     work_items.add_argument("--reference-contract", type=Path, required=True)
     work_items.add_argument("--out", type=Path, required=True)
     work_items.add_argument("--unit-contract-dir", type=Path)
-    work_items.set_defaults(func=_cmd_stage_a_extract_work_items)
+    work_items.set_defaults(func=_cmd_stage_b_extract_work_items)
 
-    semantic = subcommands.add_parser("stage-a-semantic-coverage", help="summarize implementable unit-contract coverage")
+    semantic = subcommands.add_parser("stage-b-contract-coverage", help="summarize implementable candidate contract coverage")
     semantic.add_argument("--reference-contract", type=Path, required=True)
     semantic.add_argument("--out", type=Path, required=True)
     semantic.add_argument("--unit-contract-dir", type=Path)
-    semantic.set_defaults(func=_cmd_stage_a_semantic_coverage)
+    semantic.set_defaults(func=_cmd_stage_b_contract_coverage)
 
     validate_unit = subcommands.add_parser(
-        "stage-a-validate-unit",
-        help="run focused non-authoritative contract validation for one region",
+        "stage-b-check-unit",
+        help="run focused candidate-only contract validation for one region",
     )
     validate_unit.add_argument("--reference-contract", type=Path, required=True)
     validate_unit.add_argument("--candidate", type=Path, required=True)
@@ -345,10 +257,10 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     validate_unit.add_argument("--focus", required=True)
     validate_unit.add_argument("--out", type=Path, required=True)
     validate_unit.add_argument("--unit-contract-dir", type=Path)
-    validate_unit.add_argument("--model", default=STAGE_A_MODEL_ID)
+    validate_unit.add_argument("--model", default=REFERENCE_CONTRACT_MODEL_ID)
     validate_unit.add_argument("--contract-candidate-validation", type=Path)
     validate_unit.add_argument("--no-embed-contract-candidate-validation", action="store_true")
-    validate_unit.set_defaults(func=_cmd_stage_a_validate_unit)
+    validate_unit.set_defaults(func=_cmd_stage_b_check_unit)
 
     explain = subcommands.add_parser("stage-a-explain-obligations", help="explain contract obligations by focus")
     explain.add_argument("--reference-contract", type=Path, required=True)
@@ -444,13 +356,9 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     validate_candidate.add_argument("--candidate-provenance", type=Path, required=True)
     validate_candidate.add_argument("--target-name", required=True)
     validate_candidate.add_argument("--out", type=Path, required=True)
-    validate_candidate.add_argument("--reference-contract", type=Path)
-    validate_candidate.add_argument("--original", type=Path)
-    validate_candidate.add_argument("--linker-map-original", type=Path)
+    validate_candidate.add_argument("--reference-contract", type=Path, required=True)
     validate_candidate.add_argument("--functional-report", type=Path)
-    validate_candidate.add_argument("--original-flags", default="")
-    validate_candidate.add_argument("--candidate-flags", default="")
-    validate_candidate.add_argument("--model", default=STAGE_A_MODEL_ID)
+    validate_candidate.add_argument("--model", default=REFERENCE_CONTRACT_MODEL_ID)
     validate_candidate.add_argument("--require-functional-evidence", action="store_true")
     validate_candidate.set_defaults(func=_cmd_stage_b_validate_candidate)
 
@@ -465,7 +373,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     delta.add_argument("--candidate-probe-report", type=Path)
     delta.add_argument("--functional-report", type=Path)
     delta.add_argument("--candidate-module", action="append", default=[])
-    delta.add_argument("--model", default=STAGE_A_MODEL_ID)
+    delta.add_argument("--model", default=REFERENCE_CONTRACT_MODEL_ID)
     delta.add_argument("--contract-candidate-validation", type=Path)
     delta.add_argument("--focus")
     delta.add_argument("--focused-only", action="store_true")
@@ -479,19 +387,6 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     delta_diff.set_defaults(func=lambda args: stage_b_diff_delta(before=args.before, after=args.after, out=args.out))
 
     return parser
-
-
-def _cmd_stage_a_legacy_validate(args: Any) -> dict[str, Any]:
-    return stage_a_legacy_validate(
-        original=args.original,
-        candidate=args.candidate,
-        mapping=args.mapping,
-        model=args.model,
-        out=args.out,
-        invariants=args.invariants,
-        layout_contract=args.layout_contract,
-        lean_inputs=args.lean_input,
-    )
 
 
 def _cmd_stage_a_prove(args: Any) -> dict[str, Any]:
@@ -511,8 +406,7 @@ def _cmd_stage_a_check_proof(args: Any) -> dict[str, Any]:
         raise StageAInputError(f"cannot read {verdict_path}: {exc}") from exc
     if verdict.get("profile") != "x86-pe32-lean-relational-v3":
         raise StageAInputError(
-            "stage-a-check-proof accepts only relational v3 reports; use "
-            "stage-a-legacy-check-proof for evidence-only v2 reports"
+            "stage-a-check-proof accepts only relational v3 reports"
         )
     if args.original is not None or args.candidate is not None:
         raise StageAInputError("relational v3 replay uses the binaries embedded in the report")
@@ -548,8 +442,8 @@ def _cmd_stage_a_export_reference_contract(args: Any) -> dict[str, Any]:
     )
 
 
-def _cmd_stage_a_validate_contract_candidate(args: Any) -> dict[str, Any]:
-    return stage_a_validate_contract_candidate(
+def _cmd_stage_b_check_contract(args: Any) -> dict[str, Any]:
+    return stage_b_check_contract(
         reference_contract=args.reference_contract,
         candidate=args.candidate,
         linker_map_candidate=args.linker_map_candidate,
@@ -559,8 +453,8 @@ def _cmd_stage_a_validate_contract_candidate(args: Any) -> dict[str, Any]:
     )
 
 
-def _cmd_stage_a_audit_contract_shortfalls(args: Any) -> dict[str, Any]:
-    return stage_a_audit_contract_shortfalls(
+def _cmd_stage_b_audit_contract(args: Any) -> dict[str, Any]:
+    return stage_b_audit_contract(
         reference_contract=args.reference_contract,
         out=args.out,
         contract_candidate_validation=args.contract_candidate_validation,
@@ -574,24 +468,24 @@ def _cmd_stage_a_audit_contract_shortfalls(args: Any) -> dict[str, Any]:
     )
 
 
-def _cmd_stage_a_extract_work_items(args: Any) -> dict[str, Any]:
-    return stage_a_extract_work_items(
+def _cmd_stage_b_extract_work_items(args: Any) -> dict[str, Any]:
+    return stage_b_extract_work_items(
         reference_contract=args.reference_contract,
         out=args.out,
         unit_contract_dir=args.unit_contract_dir,
     )
 
 
-def _cmd_stage_a_semantic_coverage(args: Any) -> dict[str, Any]:
-    return stage_a_semantic_coverage(
+def _cmd_stage_b_contract_coverage(args: Any) -> dict[str, Any]:
+    return stage_b_contract_coverage(
         reference_contract=args.reference_contract,
         out=args.out,
         unit_contract_dir=args.unit_contract_dir,
     )
 
 
-def _cmd_stage_a_validate_unit(args: Any) -> dict[str, Any]:
-    return stage_a_validate_unit(
+def _cmd_stage_b_check_unit(args: Any) -> dict[str, Any]:
+    return stage_b_check_unit(
         reference_contract=args.reference_contract,
         candidate=args.candidate,
         linker_map_candidate=args.linker_map_candidate,
@@ -701,9 +595,7 @@ def _cmd_stage_b_extract_candidate_crash(args: Any) -> dict[str, Any]:
 
 def _cmd_stage_b_validate_candidate(args: Any) -> dict[str, Any]:
     return stage_b_validate_candidate(
-        original=args.original,
         candidate=args.candidate,
-        linker_map_original=args.linker_map_original,
         linker_map_candidate=args.linker_map_candidate,
         skeleton_manifest=args.skeleton_manifest,
         candidate_provenance=args.candidate_provenance,
@@ -711,8 +603,6 @@ def _cmd_stage_b_validate_candidate(args: Any) -> dict[str, Any]:
         out=args.out,
         functional_report=args.functional_report,
         reference_contract=args.reference_contract,
-        original_flags=args.original_flags,
-        candidate_flags=args.candidate_flags,
         model=args.model,
         require_functional_evidence=args.require_functional_evidence,
     )

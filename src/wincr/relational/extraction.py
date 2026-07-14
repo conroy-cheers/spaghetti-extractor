@@ -18,6 +18,7 @@ from .contract import _import_identity, _raw_base_relocations
 from .executor import _relational_cache_dir, _run_lean_relational
 from .lean.definitions import _lean_extraction_source
 from .model import PURE_SEMANTIC_EXPR_OPERATIONS
+from .preflight import side_diagnostics
 from .schema import STAGE_A_RELATIONAL_MODEL_ID
 
 
@@ -25,8 +26,6 @@ _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
 
 
 def _relational_semantic_preflight(original: Path, candidate: Path, contract: dict[str, Any]) -> dict[str, Any]:
-    from ..stage_a import _formal_profile_side_diagnostics
-
     mapping_contract = {
         "blocks": [
             {
@@ -38,8 +37,8 @@ def _relational_semantic_preflight(original: Path, candidate: Path, contract: di
             for region in contract["regions"]
         ]
     }
-    issues = _formal_profile_side_diagnostics("original", original, mapping_contract, issue_limit=None)
-    issues += _formal_profile_side_diagnostics("candidate", candidate, mapping_contract, issue_limit=None)
+    issues = side_diagnostics("original", original, mapping_contract)
+    issues += side_diagnostics("candidate", candidate, mapping_contract)
     for rank, issue in enumerate(issues, start=1):
         identity = {
             "category": issue.get("category"),
@@ -144,14 +143,9 @@ def _extract_relational_behaviors(
     lean_root = _LEAN_SOURCE_ROOT
     formal_sha256 = sha256_file(lean_root / "Formal.lean")
     decode_path = lean_root / "RelationalDecode.lean"
-    relational_path = lean_root / "Relational.lean"
     extraction_semantics_sha256 = _relational_extraction_semantics_sha256(
         decode_path
     )
-    legacy_extraction_semantics_sha256 = (
-        _relational_legacy_extraction_semantics_sha256(decode_path)
-    )
-    legacy_relational_sha256 = sha256_file(relational_path)
     for index, region in enumerate(contract["regions"]):
         for side in ("original", "candidate"):
             key = _behavior_cache_key(
@@ -167,48 +161,7 @@ def _extract_relational_behaviors(
             cache_keys[(side, index)] = key
             if cache_dir is not None:
                 cached = _read_behavior_cache(cache_dir / f"{key}.json")
-                migrated = cached is None
-                if cached is None:
-                    legacy_extraction_key = _legacy_extraction_behavior_cache_key(
-                        binaries[side],
-                        region[side],
-                        side=side,
-                        targets=region.get("code_targets", []),
-                        formal_sha256=formal_sha256,
-                        extraction_semantics_sha256=(
-                            legacy_extraction_semantics_sha256
-                        ),
-                    )
-                    cached = _read_behavior_cache(
-                        cache_dir / f"{legacy_extraction_key}.json"
-                    )
-                if cached is None:
-                    legacy_key = _legacy_behavior_cache_key(
-                        binaries[side],
-                        region[side],
-                        side=side,
-                        targets=region.get("code_targets", []),
-                        formal_sha256=formal_sha256,
-                        relational_sha256=legacy_relational_sha256,
-                    )
-                    cached = _read_behavior_cache(cache_dir / f"{legacy_key}.json")
-                if (
-                    cached is not None
-                    and migrated
-                    and _cached_behavior_affected_by_machine_contracts(
-                        cached, contract.get("machine_import_call_contracts", [])
-                    )
-                ):
-                    cached = None
                 if cached is not None:
-                    if migrated:
-                        write_json(
-                            cache_dir / f"{key}.json",
-                            {
-                                "format": "stage-a-relational-behavior-cache-v2",
-                                **cached,
-                            },
-                        )
                     values[(side, index)] = cached
     missing = {
         (side, index)
@@ -1027,65 +980,12 @@ def _behavior_cache_key(
     }
     return sha256_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
 
-def _legacy_behavior_cache_key(
-    binary: StageABinary,
-    span: dict[str, Any],
-    *,
-    side: str,
-    targets: list[dict[str, Any]],
-    formal_sha256: str,
-    relational_sha256: str,
-) -> str:
-    payload = {
-        "format": "stage-a-relational-behavior-cache-key-v3",
-        "binary_sha256": binary.sha256,
-        "span": {"rva_start": span["rva_start"], "size": span["size"]},
-        "side": side,
-        "targets": targets,
-        "formal_sha256": formal_sha256,
-        "relational_sha256": relational_sha256,
-    }
-    return sha256_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
-
-def _legacy_extraction_behavior_cache_key(
-    binary: StageABinary,
-    span: dict[str, Any],
-    *,
-    side: str,
-    targets: list[dict[str, Any]],
-    formal_sha256: str,
-    extraction_semantics_sha256: str,
-) -> str:
-    payload = {
-        "format": "stage-a-relational-behavior-cache-key-v4",
-        "binary_sha256": binary.sha256,
-        "span": {"rva_start": span["rva_start"], "size": span["size"]},
-        "side": side,
-        "targets": targets,
-        "formal_sha256": formal_sha256,
-        "extraction_semantics_sha256": extraction_semantics_sha256,
-    }
-    return sha256_bytes(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    )
-
 def _relational_extraction_semantics_sha256(path: Path) -> str:
     if path.name != "RelationalDecode.lean":
         raise StageAInputError(
             "relational extraction semantics must come from RelationalDecode.lean"
         )
     return sha256_file(path)
-
-def _relational_legacy_extraction_semantics_sha256(path: Path) -> str:
-    source = path.read_text(encoding="utf-8")
-    marker = "-- STAGE_A_EXTRACTION_SEMANTICS_END"
-    boundary = source.find(marker)
-    if boundary < 0:
-        raise StageAInputError(
-            "RelationalDecode.lean is missing the legacy extraction cache boundary"
-        )
-    boundary += len(marker)
-    return sha256_bytes(source[:boundary].encode("utf-8"))
 
 def _read_behavior_cache(path: Path) -> dict[str, Any] | None:
     try:
