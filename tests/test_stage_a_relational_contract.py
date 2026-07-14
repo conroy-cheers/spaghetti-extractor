@@ -665,6 +665,27 @@ class StageARelationalContractTests(StageARelationalTestBase):
         self.assertIsNone(claims)
         self.assertIn("lacks one checked source stack-window relation", blocker)
 
+        negative_address = {
+            "op": "sub",
+            "left": {"op": "input_reg", "reg": "esp"},
+            "right": {"op": "constant", "value": 8},
+        }
+        negative_read = {"op": "read32", "address": negative_address}
+        claims, blocker = _external_argument_relation_claims(
+            {"stack_windows": [{**window, "bytes_below": 4}]},
+            [negative_read], [negative_read],
+        )
+        self.assertIsNone(claims)
+        self.assertIn("lacks one unambiguous source dynamic-range relation", blocker)
+
+        claims, blocker = _external_argument_relation_claims(
+            {"stack_windows": [{**window, "bytes_below": 8}]},
+            [negative_read], [negative_read],
+        )
+        self.assertIsNone(blocker)
+        self.assertEqual(claims[0]["kind"], "stack_word_read")
+        self.assertEqual(claims[0]["offset"], -8)
+
     def test_persistent_olean_cache_tracks_compiled_dependency_closure(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

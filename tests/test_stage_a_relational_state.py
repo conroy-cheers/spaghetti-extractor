@@ -217,6 +217,84 @@ class StageARelationalStateTests(StageARelationalTestBase):
             (0, 4),
         )
 
+    def test_stack_window_seed_recovers_nested_negative_accesses(self):
+        binary = SimpleNamespace(
+            image_base=0x400000,
+            pe=SimpleNamespace(
+                OPTIONAL_HEADER=SimpleNamespace(SizeOfImage=0x10000),
+            ),
+        )
+        esp = {"op": "input_reg", "reg": "esp"}
+        nested = {
+            "op": "sub",
+            "left": {
+                "op": "add",
+                "left": esp,
+                "right": {"op": "constant", "value": 0xFFFFFFFC},
+            },
+            "right": {"op": "constant", "value": 24},
+        }
+        behavior = {
+            "original_ir": {
+                "registers": {"esp": esp},
+                "writes": [{
+                    "address": nested,
+                    "value": {"op": "constant", "value": 7},
+                }],
+            },
+            "candidate_ir": {
+                "registers": {"esp": esp},
+                "writes": [{
+                    "address": nested,
+                    "value": {"op": "constant", "value": 7},
+                }],
+            },
+        }
+        refined, analysis = _attach_stack_window_invariants(
+            {"regions": [{"id": "negative-write", "address_separations": []}]},
+            [behavior], {"edges": []}, binary, binary,
+        )
+        self.assertEqual(analysis["windows"], 1)
+        self.assertEqual(
+            refined["regions"][0]["stack_windows"][0],
+            {
+                "range_id": 0,
+                "original_register": "esp",
+                "candidate_register": "esp",
+                "bytes_below": 28,
+                "bytes_above": 1,
+                "source": "paired_memory_write_seed",
+            },
+        )
+        self.assertEqual(
+            analysis["frontier"],
+            [{
+                "region_index": 0,
+                "original_register": "esp",
+                "candidate_register": "esp",
+                "bytes_below": 28,
+                "bytes_above": 1,
+                "reason": "no_checked_incoming_edge",
+            }],
+        )
+        transfer_behavior = json.loads(json.dumps(behavior))
+        transfer_behavior["original_ir"]["registers"]["esp"] = nested
+        transfer_behavior["candidate_ir"]["registers"]["esp"] = nested
+        transfer = _stack_window_transfer_claims(
+            refined["regions"][0],
+            {"stack_windows": [{
+                "range_id": 0,
+                "original_register": "esp",
+                "candidate_register": "esp",
+                "bytes_below": 0,
+                "bytes_above": 29,
+            }]},
+            transfer_behavior,
+        )
+        self.assertEqual(transfer[0]["adjustment"], {
+            "kind": "subtract", "amount": 28,
+        })
+
     def test_stack_windows_propagate_across_machine_call_stack_cleanup(self):
         binary = SimpleNamespace(
             image_base=0x400000,
@@ -600,6 +678,70 @@ class StageARelationalStateTests(StageARelationalTestBase):
         )
         self.assertEqual(analysis["candidates"][0]["argument_values"], [7])
 
+        multi_contract = json.loads(json.dumps(contract))
+        multi_contract["machine_import_call_contracts"][0][
+            "stack_argument_offsets"
+        ] = [0, 4]
+        multi_contract["regions"][0]["stack_windows"] = [{
+            "range_id": 0,
+            "original_register": "esp",
+            "candidate_register": "esp",
+            "bytes_below": 4,
+            "bytes_above": 8,
+        }]
+        multi = _external_call_site_candidates(
+            multi_contract,
+            [{"original_ir": behavior, "candidate_ir": behavior}],
+            relations,
+            [call],
+        )
+        self.assertEqual(multi["counts"], {"candidates": 1, "gaps": 0})
+        self.assertEqual(
+            [
+                claim["kind"]
+                for claim in multi["candidates"][0]["argument_relation_claims"]
+            ],
+            ["self", "stack_word_read"],
+        )
+        self.assertEqual(
+            multi["candidates"][0]["argument_values"], [7, None]
+        )
+
+        overlapping_behavior = json.loads(json.dumps(behavior))
+        overlapping_behavior["writes"].insert(1, {
+            "address": {
+                "op": "add",
+                "left": stack,
+                "right": {"op": "constant", "value": 5},
+            },
+            "value": {"op": "constant", "value": 9},
+        })
+        overlapping = _external_call_site_candidates(
+            multi_contract,
+            [{
+                "original_ir": overlapping_behavior,
+                "candidate_ir": overlapping_behavior,
+            }],
+            relations,
+            [call],
+        )
+        self.assertEqual(overlapping["counts"], {"candidates": 0, "gaps": 1})
+        self.assertIn("stack-argument shape", overlapping["gaps"][0]["reason"])
+
+        missing_window_contract = json.loads(json.dumps(multi_contract))
+        missing_window_contract["regions"][0].pop("stack_windows")
+        missing_window = _external_call_site_candidates(
+            missing_window_contract,
+            [{"original_ir": behavior, "candidate_ir": behavior}],
+            relations,
+            [call],
+        )
+        self.assertEqual(missing_window["counts"], {"candidates": 0, "gaps": 1})
+        self.assertIn(
+            "source dynamic-range relation",
+            missing_window["gaps"][0]["reason"],
+        )
+
         missing_target = _external_call_site_candidates(
             contract,
             [{"original_ir": behavior, "candidate_ir": behavior}],
@@ -609,6 +751,77 @@ class StageARelationalStateTests(StageARelationalTestBase):
         self.assertEqual(missing_target["counts"], {"candidates": 0, "gaps": 1})
         self.assertIn("unambiguous checked import-register target",
                       missing_target["gaps"][0]["reason"])
+
+    def test_register_import_call_seeds_full_abi_argument_stack_span(self):
+        binary = SimpleNamespace(
+            image_base=0x400000,
+            pe=SimpleNamespace(
+                OPTIONAL_HEADER=SimpleNamespace(SizeOfImage=0x10000),
+            ),
+        )
+        stack = {"op": "input_reg", "reg": "esp"}
+        pushed_stack = {
+            "op": "add", "left": stack,
+            "right": {"op": "constant", "value": 2**32 - 4},
+        }
+        imported = {"dll": "kernel32.dll", "symbol": "VirtualProtect"}
+        behavior = {
+            "registers": {
+                "esp": pushed_stack,
+                "ebx": {"op": "input_reg", "reg": "ebx"},
+            },
+            "writes": [{
+                "address": pushed_stack,
+                "value": {"op": "constant", "value": 0x401234},
+            }],
+            "outcome": {
+                "op": "indirect_call",
+                "target": {"op": "input_reg", "reg": "ebx"},
+                "continuation": 1,
+            },
+        }
+        contract = {
+            "machine_import_call_contracts": [{
+                "import": imported,
+                "stack_argument_offsets": [0, 4, 8, 12],
+            }],
+            "regions": [
+                {
+                    "id": "call",
+                    "address_separations": [],
+                    "input_import_relations": [{
+                        "original": "ebx", "candidate": "ebx",
+                        "import": imported,
+                    }],
+                },
+                {
+                    "id": "unrelated-trailing-region",
+                    "address_separations": [],
+                    "input_import_relations": [],
+                },
+            ],
+        }
+        refined, analysis = _attach_stack_window_invariants(
+            contract,
+            [{"original_ir": behavior, "candidate_ir": behavior}],
+            {"edges": []},
+            binary,
+            binary,
+        )
+        self.assertEqual(analysis["windows"], 1)
+        self.assertEqual(
+            refined["regions"][0]["stack_windows"][0],
+            {
+                "range_id": 0,
+                "original_register": "esp",
+                "candidate_register": "esp",
+                "bytes_below": 4,
+                "bytes_above": 16,
+                "source": (
+                    "paired_memory_write_seed+register_import_argument_seed"
+                ),
+            },
+        )
 
     def test_iat_read_classification_fails_closed(self):
         binary = SimpleNamespace(
@@ -1953,4 +2166,3 @@ class StageARelationalStateTests(StageARelationalTestBase):
             {"inputs": [{"original": "esp", "candidate": "ebp"}]},
             behaviors,
         ))
-

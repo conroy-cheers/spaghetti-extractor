@@ -299,7 +299,7 @@
                 .composition_progress.counts.rooted_reachable_feasible_edges > 0 and
                 .composition_progress.counts.rooted_external_refinement_candidates == 9 and
                 .composition_progress.counts.rooted_external_contract_gap_edges == 3 and
-                .composition_progress.counts.rooted_refined_segments == 48 and
+                .composition_progress.counts.rooted_refined_segments == 52 and
                 .composition_progress.counts.unsupported_instructions == 0
               ' "$work/relational-v3/prepared-proof.json" >/dev/null
               jq -e '.status == "supported" and .counts.issues == 0' \

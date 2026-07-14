@@ -215,18 +215,35 @@ def _attach_stack_window_invariants(
             return None
         if expression.get("op") == "input_reg":
             return str(expression.get("reg")), 0
-        if expression.get("op") != "add":
+        operation = expression.get("op")
+        if operation not in {"add", "sub"}:
             return None
         left = expression.get("left") or {}
         right = expression.get("right") or {}
-        if left.get("op") == "constant":
+        if operation == "add" and left.get("op") == "constant":
             left, right = right, left
-        if left.get("op") != "input_reg" or right.get("op") != "constant":
+        if right.get("op") != "constant":
             return None
-        offset = int(right.get("value", -1))
-        if not 0 <= offset < 2**31:
+        value = int(right.get("value", -1))
+        if not 0 <= value < 2**32:
             return None
-        return str(left.get("reg")), offset
+        prior = register_offset(left)
+        if prior is None:
+            return None
+        register, prior_offset = prior
+        word_offset = (
+            prior_offset + value if operation == "add" else prior_offset - value
+        ) % 2**32
+        signed_offset = (
+            word_offset if word_offset < 2**31 else word_offset - 2**32
+        )
+        return register, signed_offset
+
+    def access_window(offset: int, width: int) -> tuple[int, int] | None:
+        end = offset + width
+        if width <= 0 or not -(2**31) < offset < 2**31 or not -(2**31) < end < 2**31:
+            return None
+        return max(-offset, 0), max(end, 0)
 
     def add_requirement(
         region_index: int, original_register: str, candidate_register: str,
@@ -251,23 +268,19 @@ def _attach_stack_window_invariants(
         seed_sources.setdefault(key, set()).add(source)
 
     def stack_delta(expression: Any, register: str) -> int | None:
-        if expression == {"op": "input_reg", "reg": register}:
-            return 0
-        if not isinstance(expression, dict) or expression.get("op") not in {"add", "sub"}:
+        affine = register_offset(expression)
+        if affine is None or affine[0] != register:
             return None
-        left = expression.get("left") or {}
-        right = expression.get("right") or {}
-        if (
-            left != {"op": "input_reg", "reg": register}
-            or right.get("op") != "constant"
-        ):
-            return None
-        constant = int(right.get("value", -1))
-        if not 0 <= constant < 2**32:
-            return None
-        signed = constant if constant < 2**31 else constant - 2**32
-        delta = signed if expression["op"] == "add" else -signed
-        return delta if -(2**31) < delta < 2**31 else None
+        return affine[1]
+
+    machine_contracts_by_target = {
+        (
+            str(item["import"]["dll"]).lower(),
+            "symbol" if "symbol" in item["import"] else "ordinal",
+            item["import"].get("symbol", item["import"].get("ordinal")),
+        ): item
+        for item in refined.get("machine_import_call_contracts", [])
+    }
 
     for region_index, region in enumerate(regions):
         for separation in region.get("address_separations", []):
@@ -293,6 +306,7 @@ def _attach_stack_window_invariants(
             seed_sources.setdefault(key, set()).add("address_separation_seed")
 
     for region_index, behavior in enumerate(behaviors):
+        region = regions[region_index]
         original_reads = {
             tuple(read["path"]): read
             for read in _semantic_memory_reads(behavior["original_ir"])
@@ -311,13 +325,78 @@ def _attach_stack_window_invariants(
             candidate_address = register_offset(candidate_read.get("address"))
             if original_address is None or candidate_address is None:
                 continue
+            original_window = access_window(original_address[1], width)
+            candidate_window = access_window(candidate_address[1], width)
+            if original_window is None or candidate_window is None:
+                continue
             add_requirement(
                 region_index, original_address[0], candidate_address[0],
-                max(original_address[1], candidate_address[1]) + width,
+                max(original_window[1], candidate_window[1]),
                 "paired_memory_read_seed",
+                max(original_window[0], candidate_window[0]),
             )
         original_outcome = behavior["original_ir"].get("outcome") or {}
         candidate_outcome = behavior["candidate_ir"].get("outcome") or {}
+        if (
+            original_outcome.get("op") == "indirect_call"
+            and candidate_outcome.get("op") == "indirect_call"
+        ):
+            original_target = original_outcome.get("target") or {}
+            candidate_target = candidate_outcome.get("target") or {}
+            import_matches = [
+                relation for relation in region.get("input_import_relations", [])
+                if original_target == {
+                    "op": "input_reg", "reg": relation["original"],
+                }
+                and candidate_target == {
+                    "op": "input_reg", "reg": relation["candidate"],
+                }
+            ]
+            if len(import_matches) == 1:
+                imported = import_matches[0]["import"]
+                identity = (
+                    str(imported["dll"]).lower(),
+                    "symbol" if "symbol" in imported else "ordinal",
+                    imported.get("symbol", imported.get("ordinal")),
+                )
+                machine_contract = machine_contracts_by_target.get(identity)
+                original_delta = stack_delta(
+                    (behavior["original_ir"].get("registers") or {}).get("esp"),
+                    "esp",
+                )
+                candidate_delta = stack_delta(
+                    (behavior["candidate_ir"].get("registers") or {}).get("esp"),
+                    "esp",
+                )
+                if (
+                    machine_contract is not None
+                    and original_delta is not None
+                    and original_delta == candidate_delta
+                ):
+                    restored_delta = original_delta + 4
+                    argument_windows = [
+                        access_window(restored_delta + int(offset), 4)
+                        for offset in machine_contract.get(
+                            "stack_argument_offsets", []
+                        )
+                    ]
+                    if all(window is not None for window in argument_windows):
+                        add_requirement(
+                            region_index,
+                            "esp",
+                            "esp",
+                            max(
+                                (window[1] for window in argument_windows
+                                 if window is not None),
+                                default=1,
+                            ),
+                            "register_import_argument_seed",
+                            max(
+                                (window[0] for window in argument_windows
+                                 if window is not None),
+                                default=0,
+                            ),
+                        )
         if original_outcome.get("op") == candidate_outcome.get("op") == "returned":
             original_delta = stack_delta(
                 (behavior["original_ir"].get("registers") or {}).get("esp"), "esp"
@@ -344,23 +423,20 @@ def _attach_stack_window_invariants(
                 candidate_address = register_offset(candidate_write.get("address"))
                 if original_address is None or candidate_address is None:
                     continue
+                original_window = access_window(original_address[1], 4)
+                candidate_window = access_window(candidate_address[1], 4)
+                if original_window is None or candidate_window is None:
+                    continue
                 add_requirement(
                     region_index, original_address[0], candidate_address[0],
-                    max(original_address[1], candidate_address[1]) + 4,
+                    max(original_window[1], candidate_window[1]),
                     "paired_memory_write_seed",
+                    max(original_window[0], candidate_window[0]),
                 )
 
     incoming: dict[int, list[dict[str, Any]]] = {}
     for edge in register_relations.get("edges", []):
         incoming.setdefault(int(edge["target_region_index"]), []).append(edge)
-    machine_contracts_by_target = {
-        (
-            str(item["import"]["dll"]).lower(),
-            "symbol" if "symbol" in item["import"] else "ordinal",
-            item["import"].get("symbol", item["import"].get("ordinal")),
-        ): item
-        for item in refined.get("machine_import_call_contracts", [])
-    }
     region_index_by_target_id = {
         int(region.get("numeric_id", index)): index
         for index, region in enumerate(regions)

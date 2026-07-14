@@ -145,11 +145,22 @@ def _semantic_externalize_register_import_call(
     prior_writes = writes[:-1]
     arguments: list[dict[str, Any]] = []
     for offset in machine_contract.get("stack_argument_offsets", []):
+        argument_address = _semantic_add_word_offset(restored_stack, int(offset))
         argument = _semantic_exact_stack_argument(
             restored_stack, prior_writes, int(offset)
         )
         if argument is None:
-            return None
+            if not all(
+                _semantic_word_writes_disjoint(
+                    argument_address, write.get("address")
+                )
+                for write in prior_writes
+            ):
+                return None
+            argument = {
+                "op": "read32",
+                "address": argument_address,
+            }
         arguments.append(argument)
     externalized = json.loads(json.dumps(behavior))
     externalized["registers"]["esp"] = restored_stack
@@ -168,7 +179,11 @@ def _semantic_input_register_offset(
     for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"):
         witness = _register_offset_witness(expression, register)
         if witness is not None:
-            return register, int(witness[1])
+            word_offset = int(witness[1])
+            signed_offset = (
+                word_offset if word_offset < 2**31 else word_offset - 2**32
+            )
+            return register, signed_offset
     return None
 
 def _semantic_affine_word_read(
@@ -296,6 +311,7 @@ def _external_argument_relation_claims(
             if str(window["original_register"]) == original_address[0]
             and str(window["candidate_register"]) == candidate_address[0]
             and original_address[1] == candidate_address[1]
+            and original_address[1] >= -int(window.get("bytes_below", 0))
             and original_address[1] + 4 <= int(window.get("bytes_above", 0))
         ]
         if len(stack_matches) == 1:

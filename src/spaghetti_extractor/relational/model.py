@@ -78,22 +78,32 @@ def _stack_window_transfer_claims(
     candidate_registers = behavior["candidate_ir"].get("registers") or {}
 
     def adjustment(expression: Any, register: str) -> dict[str, Any] | None:
-        if expression == {"op": "input_reg", "reg": register}:
-            return {"kind": "identity", "amount": 0}
-        if not isinstance(expression, dict) or expression.get("op") not in {"add", "sub"}:
+        def offset(node: Any) -> int | None:
+            if node == {"op": "input_reg", "reg": register}:
+                return 0
+            if not isinstance(node, dict) or node.get("op") not in {"add", "sub"}:
+                return None
+            operation = str(node["op"])
+            left = node.get("left") or {}
+            right = node.get("right") or {}
+            if operation == "add" and left.get("op") == "constant":
+                left, right = right, left
+            if right.get("op") != "constant":
+                return None
+            value = int(right.get("value", -1))
+            if not 0 <= value < 2**32:
+                return None
+            prior = offset(left)
+            if prior is None:
+                return None
+            word_offset = (
+                prior + value if operation == "add" else prior - value
+            ) % 2**32
+            return word_offset if word_offset < 2**31 else word_offset - 2**32
+
+        delta = offset(expression)
+        if delta is None:
             return None
-        left = expression.get("left") or {}
-        right = expression.get("right") or {}
-        if (
-            left != {"op": "input_reg", "reg": register}
-            or right.get("op") != "constant"
-        ):
-            return None
-        amount = int(right.get("value", -1))
-        if not 0 <= amount < 2**32:
-            return None
-        signed = amount if amount < 2**31 else amount - 2**32
-        delta = signed if expression["op"] == "add" else -signed
         if not -(2**31) < delta < 2**31 or delta % 4 != 0:
             return None
         if delta == 0:
