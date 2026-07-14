@@ -106,10 +106,9 @@ def _assign_region_targets(
     original: StageABinary,
     candidate: StageABinary,
 ) -> None:
-    value_target_ids_by_key: dict[tuple[int, int, int, int, int], int] = {
+    value_target_ids_by_key: dict[tuple[int, int, int], int] = {
         (
             target["original_value"], target["candidate_value"],
-            target["original_relocation_rva"], target["candidate_relocation_rva"],
             target.get("mapped_size", 0),
         ): target["id"]
         for target in value_targets
@@ -125,8 +124,6 @@ def _assign_region_targets(
         key = (
             original_value & 0xFFFFFFFF,
             candidate_value & 0xFFFFFFFF,
-            original_relocation_rva,
-            candidate_relocation_rva,
             mapped_size,
         )
         existing = value_target_ids_by_key.get(key)
@@ -139,7 +136,7 @@ def _assign_region_targets(
             "candidate_value": key[1],
             "original_relocation_rva": original_relocation_rva,
             "candidate_relocation_rva": candidate_relocation_rva,
-            "mapped_size": mapped_size,
+            "mapped_size": key[2],
         })
         value_target_ids_by_key[key] = value_id
         return value_id
@@ -357,12 +354,14 @@ def _assign_region_targets(
                         candidate_value, candidate_relocation_rva, candidate_size,
                         candidate_base, candidate_index, candidate_scale,
                     ) = candidate_memory[operand_index]
-                    if original_size <= 0 or original_size != candidate_size or original_value == candidate_value:
+                    if original_size <= 0 or original_size != candidate_size:
                         continue
                     if immutable_equal_span(original_value, candidate_value, original_size):
                         continue
                     mapped_size = original_size
                     table = relocation_pointer_table(original_value, candidate_value)
+                    if original_value == candidate_value and table is None:
+                        continue
                     if table is not None and table[0] >= original_size:
                         mapped_size, table_targets, table_values = table
                         target_ids.update(table_targets)

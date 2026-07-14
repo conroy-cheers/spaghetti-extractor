@@ -1702,6 +1702,61 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 [],
             )
 
+    def test_equal_address_writable_relocation_table_is_mapped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_image_with_immutable_indirect_call(
+                0x2000, callee_rva=0x1030, writable=True,
+            ))
+            candidate.write_bytes(_pe32_image_with_immutable_indirect_call(
+                0x2000, callee_rva=0x1040, writable=True,
+            ))
+            mapping = root / "mapping.json"
+            mapping.write_text(json.dumps({"blocks": [
+                {
+                    "id": "indirect-call",
+                    "kind": "code",
+                    "original": {"rva": 0x1000, "size": 29},
+                    "candidate": {"rva": 0x1000, "size": 29},
+                },
+                {
+                    "id": "continuation",
+                    "kind": "code",
+                    "original": {"rva": 0x101D, "size": 2},
+                    "candidate": {"rva": 0x101D, "size": 2},
+                },
+                {
+                    "id": "callee",
+                    "kind": "code",
+                    "original": {"rva": 0x1030, "size": 1},
+                    "candidate": {"rva": 0x1040, "size": 1},
+                },
+                {
+                    "id": "alignment-padding",
+                    "kind": "padding",
+                    "original": {"rva": 0x101F, "size": 17},
+                    "candidate": {"rva": 0x101F, "size": 33},
+                },
+            ]}), encoding="utf-8")
+            contract = root / "relation.json"
+
+            generated = stage_a_generate_relation_contract(
+                original=original, candidate=candidate, mapping=mapping, out=contract,
+            )
+
+            self.assertEqual(generated["status"], "generated", generated)
+            payload = json.loads(contract.read_text(encoding="utf-8"))
+            self.assertEqual(len(payload["value_targets"]), 1, payload)
+            value = payload["value_targets"][0]
+            self.assertEqual(value["original_value"], 0x402000)
+            self.assertEqual(value["candidate_value"], 0x402000)
+            self.assertEqual(value["mapped_size"], 4)
+            self.assertEqual(value["relocation_offsets"], [0])
+            self.assertIn(value["id"], payload["regions"][0]["value_target_ids"])
+            self.assertIn(2, payload["regions"][0]["target_ids"])
+
     def test_relocated_readonly_function_pointer_jump_emits_checked_certificate(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

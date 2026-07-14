@@ -991,6 +991,7 @@ def _reference_validation_report_artifact(path: Path) -> dict[str, Any]:
         files = {}
         for name in (
             "verdict.json",
+            "prepared-proof.json",
             "relational-proof-ir.json",
             "relation-contract.json",
             "relational-semantic-ir.json",
@@ -2731,7 +2732,7 @@ def _unit_contract_obligation_lookup(
     cluster_contracts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     by_key: dict[str, set[str]] = {}
-    fallback_rows: list[tuple[str, dict[str, Any]]] = []
+    fallback_rows: list[tuple[str, str]] = []
 
     def add_key(key: Any, unit_id: str) -> None:
         if key is None:
@@ -2758,7 +2759,10 @@ def _unit_contract_obligation_lookup(
             function = row.get("function")
             if isinstance(function, str) and function:
                 add_key(f"function:{function}", unit_id)
-            fallback_rows.append((unit_id, row))
+            fallback_rows.append((
+                unit_id,
+                json.dumps(row, sort_keys=True, default=str).lower(),
+            ))
     return {"by_key": by_key, "fallback_rows": fallback_rows}
 
 def _unit_contract_ids_for_obligation(obligation_id: str, lookup: dict[str, Any]) -> list[str]:
@@ -2774,26 +2778,47 @@ def _unit_contract_ids_for_obligation(obligation_id: str, lookup: dict[str, Any]
     add_lookup(text)
     parts = obligation_id.split(":")
     known_prefix = parts[0] if parts else ""
-    if len(parts) >= 2 and known_prefix in {"block", "edge", "reachability", "indirect-edge"}:
-        block_id = parts[1]
-        add_lookup(block_id)
-        add_lookup(f"block:{block_id}")
-        add_lookup(f"reachability:{block_id}")
-    elif len(parts) >= 2 and known_prefix == "function":
-        add_lookup(parts[1])
-        add_lookup(f"function:{parts[1]}")
+    location_prefixes = {
+        "address-separation",
+        "block",
+        "direct-call-push",
+        "edge",
+        "external-call-edge",
+        "function",
+        "import-register-invariant",
+        "import-register-seed",
+        "indirect-edge",
+        "indirect-import-call",
+        "machine-import-call",
+        "memory",
+        "memory-transition",
+        "reachability",
+        "relational",
+        "return-pop",
+        "return-slot-call-summary",
+        "return-slot-frame",
+        "return-slot-transfer",
+        "segment",
+        "stack-separation-inventory",
+        "stack-window-frontier",
+        "waiver",
+    }
+    if len(parts) >= 2 and known_prefix in location_prefixes:
+        for location in parts[1:]:
+            add_lookup(location)
+            add_lookup(f"block:{location}")
+            add_lookup(f"reachability:{location}")
+            add_lookup(f"function:{location}")
 
     if ids:
         return sorted(ids)
-    if known_prefix in {"block", "edge", "reachability", "indirect-edge", "function", "waiver"}:
+    if known_prefix in location_prefixes:
         return []
 
     fallback_rows = lookup.get("fallback_rows") if isinstance(lookup.get("fallback_rows"), list) else []
     return sorted(
         {
-            unit_id
-            for unit_id, row in fallback_rows
-            if text in json.dumps(row, sort_keys=True, default=str).lower()
+            unit_id for unit_id, serialized in fallback_rows if text in serialized
         }
     )
 
@@ -6659,23 +6684,73 @@ def _load_stage_a_validation_report(path: Path | None) -> dict[str, Any] | None:
     if path is None:
         return None
     report = path if path.is_dir() else path.parent
-    verdict_path = report / "verdict.json" if path.is_dir() else path
+    explicit_prepared = path.is_file() and path.name == "prepared-proof.json"
+    if explicit_prepared:
+        verdict_path = report / "verdict.json"
+        prepared_path = path
+    else:
+        verdict_path = report / "verdict.json" if path.is_dir() else path
+        prepared_path = report / "prepared-proof.json"
     proof_ir_path = report / "relational-proof-ir.json"
-    if not verdict_path.is_file() or not proof_ir_path.is_file():
+    if not proof_ir_path.is_file():
         raise StageAInputError(
-            "Stage A report must contain relational v3 verdict.json and "
-            "relational-proof-ir.json"
+            "relational v3 Stage A report must contain relational-proof-ir.json"
         )
-    verdict = _load_json(verdict_path)
     proof_ir = _load_json(proof_ir_path)
+    report_kind = "relational_v3"
+    if verdict_path.is_file() and not explicit_prepared:
+        verdict = _load_json(verdict_path)
+        report_manifest_sha256 = sha256_file(verdict_path)
+    elif prepared_path.is_file():
+        prepared = _load_json(prepared_path)
+        if (
+            prepared.get("format") != "stage-a-prepared-relational-v1"
+            or prepared.get("status") != "prepared"
+            or prepared.get("profile") != "x86-pe32-lean-relational-v3"
+            or prepared.get("model") != REFERENCE_CONTRACT_MODEL_ID
+        ):
+            raise StageAInputError(
+                "reference contracts require a relational v3 prepared proof"
+            )
+        report_kind = "relational_v3_prepared"
+        report_manifest_sha256 = sha256_file(prepared_path)
+        verdict = {
+            "format": "stage-a-relational-prepared-verdict-v1",
+            "verdict": "incomplete",
+            "profile": prepared["profile"],
+            "model": prepared["model"],
+            "acceptance_authority": False,
+            "claim_scope": {
+                "kind": "whole_program_observational_equivalence",
+                "whole_program_observational_equivalence": False,
+                "acceptance_eligible": False,
+            },
+            "original": {"sha256": prepared.get("original_sha256")},
+            "candidate": {"sha256": prepared.get("candidate_sha256")},
+            "proof_ir_sha256": prepared.get("proof_ir_sha256"),
+            "relation_contract_sha256": prepared.get("relation_contract_sha256"),
+            "semantic_ir_sha256": prepared.get("semantic_ir_sha256"),
+            "product_graph_sha256": prepared.get("product_graph_sha256"),
+            "whole_program_acceptance_sha256": prepared.get(
+                "whole_program_acceptance_sha256"
+            ),
+            "composition_progress_sha256": prepared.get(
+                "composition_progress_sha256"
+            ),
+            "proof": {"theorem": None, "lean": {"status": "not_built"}},
+        }
+    else:
+        raise StageAInputError(
+            "Stage A report must contain verdict.json or prepared-proof.json"
+        )
     if verdict.get("profile") != "x86-pe32-lean-relational-v3":
         raise StageAInputError("reference contracts require a relational v3 Stage A report")
     payload: dict[str, Any] = {
-        "kind": "relational_v3",
+        "kind": report_kind,
         "path": str(report),
         "verdict": verdict,
         "proof_ir": proof_ir,
-        "verdict_file_sha256": sha256_file(verdict_path),
+        "report_manifest_sha256": report_manifest_sha256,
         "proof_ir_file_sha256": sha256_file(proof_ir_path),
         "artifacts": {},
     }
@@ -6828,6 +6903,7 @@ def _reference_validation_report_binding_constraint(
         "status": "satisfied" if not issues else "incomplete",
         "evidence_kind": "relational-v3-artifact-binding",
         "report": payload.get("path"),
+        "report_kind": payload.get("kind"),
         "profile": verdict.get("profile"),
         "model": verdict.get("model"),
         "verdict": verdict.get("verdict"),
@@ -9734,6 +9810,7 @@ def _import_thunk_block_entry(
             "kind": "import_thunk",
             "function": name,
             "candidate_function": str(candidate_function["name"]),
+            "function_block_index": 0,
             "function_match_key": match_key,
             "import_signature": _import_signature_report(original["import"]),
             "original_instruction": original["instruction"],

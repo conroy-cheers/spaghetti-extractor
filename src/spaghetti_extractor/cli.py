@@ -22,6 +22,7 @@ from .stage_b_contract import (
     stage_b_check_unit,
 )
 from .stage_binary import StageAInputError
+from .util import sha256_file
 from .stage_a_relational import (
     stage_a_build_relational,
     stage_a_check_relational_proof,
@@ -429,7 +430,7 @@ def _cmd_stage_a_generate_map(args: Any) -> dict[str, Any]:
 
 
 def _cmd_stage_a_export_reference_contract(args: Any) -> dict[str, Any]:
-    return stage_a_export_reference_contract(
+    contract = stage_a_export_reference_contract(
         original=args.original,
         out=args.out,
         candidate=args.candidate,
@@ -440,6 +441,14 @@ def _cmd_stage_a_export_reference_contract(args: Any) -> dict[str, Any]:
         unit_contract_dir=args.unit_contract_dir,
         model=args.model,
     )
+    return {
+        "format": "stage-a-reference-contract-export-v1",
+        "status": contract.get("status"),
+        "out": str(args.out),
+        "sha256": sha256_file(args.out),
+        "model": contract.get("model"),
+        "counts": contract.get("counts", {}),
+    }
 
 
 def _cmd_stage_b_check_contract(args: Any) -> dict[str, Any]:

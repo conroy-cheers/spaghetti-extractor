@@ -282,22 +282,23 @@
                 --mapping "$work/jq-block-map.json" \
                 --out "$work/jq-relation-contract.json" \
                 > "$work/generate-relation.stdout"
-              if SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
-                  spaghetti-extractor stage-a-prove \
-                    --original "$fixture_dir/jq-original.exe" \
-                    --candidate "$fixture_dir/jq-candidate.exe" \
-                    --relation-contract "$work/jq-relation-contract.json" \
-                    --out "$work/relational-v3" \
-                    > "$work/relational-v3.stdout"; then
-                echo "jq relational v3 unexpectedly claimed completion" >&2
-                exit 1
-              fi
+              SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
+                spaghetti-extractor stage-a-prepare-relational \
+                  --original "$fixture_dir/jq-original.exe" \
+                  --candidate "$fixture_dir/jq-candidate.exe" \
+                  --relation-contract "$work/jq-relation-contract.json" \
+                  --out "$work/relational-v3" \
+                  > "$work/relational-v3.stdout"
               jq -e '
-                .verdict == "incomplete" and
-                .claim_scope.acceptance_eligible == false and
-                .diagnostic.category == "semantic_preflight_incomplete"
-              ' "$work/relational-v3/verdict.json" >/dev/null
-              jq -e '.status == "incomplete" and .counts.issues > 0' \
+                .status == "prepared" and
+                .acceptance.status == "incomplete" and
+                .acceptance.theorem == null and
+                .composition_progress.status == "incomplete" and
+                .composition_progress.counts.rooted_reachable_nodes > 0 and
+                .composition_progress.counts.rooted_reachable_feasible_edges > 0 and
+                .composition_progress.counts.unsupported_instructions == 0
+              ' "$work/relational-v3/prepared-proof.json" >/dev/null
+              jq -e '.status == "supported" and .counts.issues == 0' \
                 "$work/relational-v3/semantic-gaps.json" >/dev/null
               mkdir -p "$out/generated" "$out/report"
               cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" "$work/jq-relation-contract.json" "$out/report/"
