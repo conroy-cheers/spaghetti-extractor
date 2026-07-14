@@ -75,6 +75,7 @@ from .definitions import (
 )
 from .segments import (
     _write_relational_external_call_refinement_modules,
+    _write_relational_external_jump_refinement_modules,
     _write_relational_invariant_modules,
     _write_relational_memory_pullback_modules,
     _write_relational_register_relation_modules,
@@ -583,6 +584,14 @@ def _write_sharded_relational_proof(
             decode_chunk_regions,
             import_register_analysis["indirect_import_calls"],
         )
+    )
+    _write_relational_external_jump_refinement_modules(
+        lean_dir,
+        contract,
+        behaviors,
+        register_relations,
+        decode_chunk_regions,
+        import_register_analysis["indirect_import_calls"],
     )
     _write_reachable_product_local_certificate(
         lean_dir,
@@ -1158,6 +1167,7 @@ def _write_sharded_relational_proof(
         "import StageA.RelationalImportRegisterSeedCertificate\n"
         "import StageA.RelationalDynamicRangeIndirectCallCertificate\n"
         "import StageA.RelationalExternalCallRefinementCertificate\n"
+        "import StageA.RelationalExternalJumpRefinementCertificate\n"
         + "".join(f"import StageA.{module}\n" for module in direct_modules)
         + "".join(
             f"import StageA.{item['module']}\n" for item in invariant_modules

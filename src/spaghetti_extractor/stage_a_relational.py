@@ -65,6 +65,7 @@ from .relational.analyses.external import (
     _semantic_affine_base_offset,
     _external_argument_relation_claims,
     _external_call_site_candidates,
+    _direct_import_thunk_call_candidates,
     _register_offset_witness,
     _semantic_add_word_offset,
     _semantic_affine_word_read,

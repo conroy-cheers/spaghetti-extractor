@@ -338,6 +338,61 @@ def _attach_stack_window_invariants(
         original_outcome = behavior["original_ir"].get("outcome") or {}
         candidate_outcome = behavior["candidate_ir"].get("outcome") or {}
         if (
+            original_outcome.get("op") == "external_jump"
+            and candidate_outcome.get("op") == "external_jump"
+        ):
+            original_target = _semantic_external_target_identity(
+                original_outcome.get("import")
+            )
+            candidate_target = _semantic_external_target_identity(
+                candidate_outcome.get("import")
+            )
+            machine_contract = machine_contracts_by_target.get(original_target)
+            if (
+                original_target is not None
+                and original_target == candidate_target
+                and machine_contract is not None
+            ):
+                argument_windows = [
+                    access_window(4 + int(offset), 4)
+                    for offset in machine_contract.get(
+                        "stack_argument_offsets", []
+                    )
+                ]
+                if all(window is not None for window in argument_windows):
+                    add_requirement(
+                        region_index,
+                        "esp",
+                        "esp",
+                        max(
+                            (
+                                window[1] for window in argument_windows
+                                if window is not None
+                            ),
+                            default=0,
+                        ),
+                        "import_thunk_boundary_seed",
+                        max(
+                            (
+                                window[0] for window in argument_windows
+                                if window is not None
+                            ),
+                            default=0,
+                        ),
+                    )
+                    # The normalized call boundary advances ESP past the saved
+                    # return address. Retain one byte of headroom above that
+                    # boundary so the checked affine transfer also proves that
+                    # the 32-bit addition cannot wrap.
+                    add_requirement(
+                        region_index,
+                        "esp",
+                        "esp",
+                        5,
+                        "import_thunk_return_slot_seed",
+                        0,
+                    )
+        if (
             original_outcome.get("op") == "indirect_call"
             and candidate_outcome.get("op") == "indirect_call"
         ):
@@ -891,6 +946,76 @@ def _direct_call_push_claim(
         "candidate_stack_address": candidate_stack,
     }
 
+
+def _indirect_call_push_claim(
+    region: dict[str, Any],
+    behavior_pair: dict[str, Any],
+    *,
+    original_image_base: int,
+    candidate_image_base: int,
+) -> dict[str, Any] | None:
+    original = behavior_pair.get("original_ir") or {}
+    candidate = behavior_pair.get("candidate_ir") or {}
+    original_outcome = original.get("outcome") or {}
+    candidate_outcome = candidate.get("outcome") or {}
+    if (
+        original_outcome.get("op") != "indirect_call"
+        or candidate_outcome.get("op") != "indirect_call"
+        or original_outcome.get("continuation")
+            != candidate_outcome.get("continuation")
+    ):
+        return None
+    continuation_id = int(original_outcome["continuation"])
+    continuations = [
+        item for item in region.get("code_targets", [])
+        if int(item["id"]) == continuation_id
+    ]
+    if len(continuations) != 1:
+        return None
+    original_writes = original.get("writes", [])
+    candidate_writes = candidate.get("writes", [])
+    if not original_writes or not candidate_writes:
+        return None
+    original_last = original_writes[-1]
+    candidate_last = candidate_writes[-1]
+    original_stack = (original.get("registers") or {}).get("esp")
+    candidate_stack = (candidate.get("registers") or {}).get("esp")
+    continuation = continuations[0]
+    original_return = original_last.get("value")
+    candidate_return = candidate_last.get("value")
+    original_rvas = {
+        int(continuation["original_rva"]),
+        *(int(rva) for rva in continuation.get("original_aliases", [])),
+    }
+    candidate_rvas = {
+        int(continuation["candidate_rva"]),
+        *(int(rva) for rva in continuation.get("candidate_aliases", [])),
+    }
+    if (
+        original_stack is None
+        or candidate_stack is None
+        or original_last.get("address") != original_stack
+        or candidate_last.get("address") != candidate_stack
+        or not isinstance(original_return, dict)
+        or original_return.get("op") != "constant"
+        or int(original_return.get("value", -1)) - original_image_base
+            not in original_rvas
+        or not isinstance(candidate_return, dict)
+        or candidate_return.get("op") != "constant"
+        or int(candidate_return.get("value", -1)) - candidate_image_base
+            not in candidate_rvas
+    ):
+        return None
+    return {
+        "profile": "mapped_indirect_call_push_v1",
+        "continuation_target_id": continuation_id,
+        "continuation_region_index": int(continuation["region_index"]),
+        "original_return_address": int(original_return["value"]),
+        "candidate_return_address": int(candidate_return["value"]),
+        "original_stack_address": original_stack,
+        "candidate_stack_address": candidate_stack,
+    }
+
 def _semantic_read8_after_writes(
     address: dict[str, Any], writes: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -1211,81 +1336,178 @@ def _attach_return_slot_contracts(
     *,
     disjunction_budget: int = 8,
 ) -> dict[str, Any]:
-    offsets: list[set[tuple[int, int]]] = [set() for _ in relation_rows]
+    FrameLocation = tuple[str, int, str, int]
+
+    def location_payload(location: FrameLocation) -> dict[str, Any]:
+        original_register, original_offset, candidate_register, candidate_offset = location
+        return {
+            "original_register": original_register,
+            "original": original_offset,
+            "candidate_register": candidate_register,
+            "candidate": candidate_offset,
+        }
+
+    locations: list[set[FrameLocation]] = [set() for _ in relation_rows]
     overflow_regions: set[int] = set()
     seed_edges = 0
     for edge in edges:
         edge["return_slot_seed"] = None
         edge["return_slot_transfer_claims"] = []
         edge["return_slot_call_summary_claims"] = []
-        if edge.get("direct_call_push_claim") is None:
+        push_claim = (
+            edge.get("direct_call_push_claim")
+            or edge.get("indirect_call_push_claim")
+        )
+        if push_claim is None:
             continue
         target_index = int(edge["target_region_index"])
-        offsets[target_index].add((0, 0))
+        zero_location: FrameLocation = ("esp", 0, "esp", 0)
+        locations[target_index].add(zero_location)
         edge["return_slot_seed"] = {
-            "profile": "direct_call_runtime_frame_seed_v1",
+            "profile": (
+                "direct_call_runtime_frame_seed_v1"
+                if edge.get("direct_call_push_claim") is not None
+                else "indirect_call_runtime_frame_seed_v1"
+            ),
             "target_region_index": target_index,
-            "offsets": {"original": 0, "candidate": 0},
+            "offsets": location_payload(zero_location),
         }
         seed_edges += 1
 
-    def transfer_witnesses(edge: dict[str, Any]) -> tuple[
-        dict[str, Any], int, dict[str, Any], int,
-    ] | None:
+    def behavior_transfer_witnesses(
+        source: int, source_location: FrameLocation,
+    ) -> list[tuple[FrameLocation, dict[str, Any], dict[str, Any]]]:
+        original_source_register, original_source_offset, \
+            candidate_source_register, candidate_source_offset = source_location
+        transfers = []
+        for rule in behavior_transfer_rules(source):
+            if (
+                rule["original_source_register"] != original_source_register
+                or rule["candidate_source_register"] != candidate_source_register
+            ):
+                continue
+            target_location: FrameLocation = (
+                str(rule["original_target_register"]),
+                (original_source_offset - int(rule["original_delta"])) % 2**32,
+                str(rule["candidate_target_register"]),
+                (candidate_source_offset - int(rule["candidate_delta"])) % 2**32,
+            )
+            transfers.append((
+                target_location,
+                rule["original_output_witness"],
+                rule["candidate_output_witness"],
+            ))
+        return transfers
+
+    transfer_rule_cache: dict[int, list[dict[str, Any]]] = {}
+
+    def behavior_transfer_rules(source: int) -> list[dict[str, Any]]:
+        cached = transfer_rule_cache.get(source)
+        if cached is not None:
+            return cached
+        original = behaviors[source].get("original_ir") or {}
+        candidate = behaviors[source].get("candidate_ir") or {}
+        rules: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        source_relations: list[dict[str, Any]] = []
+        source_pairs: set[tuple[str, str]] = set()
+        for family in ("inputs", "outputs"):
+            for relation in relation_rows[source].get(family, []):
+                pair = (str(relation["original"]), str(relation["candidate"]))
+                if pair in source_pairs:
+                    continue
+                source_pairs.add(pair)
+                source_relations.append(relation)
+        for input_relation in source_relations:
+            original_source_register = str(input_relation["original"])
+            candidate_source_register = str(input_relation["candidate"])
+            for output_relation in relation_rows[source].get("outputs", []):
+                original_target_register = str(output_relation["original"])
+                candidate_target_register = str(output_relation["candidate"])
+                key = (
+                    original_source_register, candidate_source_register,
+                    original_target_register, candidate_target_register,
+                )
+                if key in seen:
+                    continue
+                original_result = _register_offset_witness(
+                    (original.get("registers") or {}).get(
+                        original_target_register
+                    ),
+                    original_source_register,
+                )
+                candidate_result = _register_offset_witness(
+                    (candidate.get("registers") or {}).get(
+                        candidate_target_register
+                    ),
+                    candidate_source_register,
+                )
+                if original_result is None or candidate_result is None:
+                    continue
+                seen.add(key)
+                original_witness, original_delta = original_result
+                candidate_witness, candidate_delta = candidate_result
+                rules.append({
+                    "profile": "return_slot_affine_transfer_rule_v1",
+                    "original_source_register": original_source_register,
+                    "candidate_source_register": candidate_source_register,
+                    "original_target_register": original_target_register,
+                    "candidate_target_register": candidate_target_register,
+                    "original_output_witness": original_witness,
+                    "candidate_output_witness": candidate_witness,
+                    "original_delta": original_delta,
+                    "candidate_delta": candidate_delta,
+                })
+        transfer_rule_cache[source] = rules
+        return rules
+
+    def transfer_witnesses(
+        edge: dict[str, Any], source_location: FrameLocation,
+    ) -> list[tuple[FrameLocation, dict[str, Any], dict[str, Any]]]:
+        has_checked_call_push = (
+            edge.get("direct_call_push_claim") is not None
+            or edge.get("indirect_call_push_claim") is not None
+        )
         if (
             edge["environment_barrier"]
             or edge["requires_call_stack_proof"]
-            or edge["kind"] == "call"
-            or edge.get("indirect_target_profile")
+            or (edge["kind"] == "call" and not has_checked_call_push)
+            or (edge.get("indirect_target_profile") and not has_checked_call_push)
         ):
-            return None
-        source = int(edge["source_region_index"])
-        original = behaviors[source].get("original_ir") or {}
-        candidate = behaviors[source].get("candidate_ir") or {}
-        original_result = _register_offset_witness(
-            (original.get("registers") or {}).get("esp")
-        )
-        candidate_result = _register_offset_witness(
-            (candidate.get("registers") or {}).get("esp")
-        )
-        if original_result is None or candidate_result is None:
-            return None
-        original_witness, original_delta = original_result
-        candidate_witness, candidate_delta = candidate_result
-        return (
-            original_witness, original_delta,
-            candidate_witness, candidate_delta,
+            return []
+        return behavior_transfer_witnesses(
+            int(edge["source_region_index"]), source_location
         )
 
-    witnesses = [transfer_witnesses(edge) for edge in edges]
-    max_iterations = max(1, len(relation_rows) * (disjunction_budget + 1))
-    converged = False
-    for iteration in range(max_iterations):
+    def propagate_ordinary_once() -> bool:
         changed = False
-        for edge, witness_pair in zip(edges, witnesses, strict=True):
-            if witness_pair is None:
-                continue
+        for edge in edges:
             source = int(edge["source_region_index"])
             target = int(edge["target_region_index"])
-            if source in overflow_regions or not offsets[source]:
+            if source in overflow_regions or not locations[source]:
                 continue
-            _, original_delta, _, candidate_delta = witness_pair
             proposed = {
-                (
-                    (original_source - original_delta) % 2**32,
-                    (candidate_source - candidate_delta) % 2**32,
+                target_location
+                for source_location in locations[source]
+                for target_location, _, _ in transfer_witnesses(
+                    edge, source_location
                 )
-                for original_source, candidate_source in offsets[source]
             }
-            joined = offsets[target] | proposed
+            joined = locations[target] | proposed
             if len(joined) > disjunction_budget:
                 if target not in overflow_regions:
                     overflow_regions.add(target)
                     changed = True
                 continue
-            if joined != offsets[target]:
-                offsets[target] = joined
+            if joined != locations[target]:
+                locations[target] = joined
                 changed = True
+        return changed
+
+    max_iterations = max(1, len(relation_rows) * (disjunction_budget + 1))
+    converged = False
+    for iteration in range(max_iterations):
+        changed = propagate_ordinary_once()
         if not changed:
             converged = True
             break
@@ -1329,10 +1551,12 @@ def _attach_return_slot_contracts(
             if return_claim is None:
                 return None
             expected = (
+                "esp",
                 int(return_claim["original_stack_offset"]),
+                "esp",
                 int(return_claim["candidate_stack_offset"]),
             )
-            if offsets[int(return_index)] != {expected}:
+            if expected not in locations[int(return_index)]:
                 return None
             delta = (
                 (
@@ -1366,55 +1590,69 @@ def _attach_return_slot_contracts(
         summary_rounds += 1
         summary_changed = False
         for summary in call_summary_analysis["summaries"]:
+            if summary["closed"]:
+                continuation = int(summary["continuation_region_index"])
+                nested_return_targets: set[FrameLocation] = set()
+                for return_index_value in summary["return_region_indices"]:
+                    return_index = int(return_index_value)
+                    return_claim = relation_rows[return_index].get(
+                        "return_pop_claim"
+                    )
+                    if return_claim is None:
+                        continue
+                    active_location: FrameLocation = (
+                        "esp",
+                        int(return_claim["original_stack_offset"]),
+                        "esp",
+                        int(return_claim["candidate_stack_offset"]),
+                    )
+                    for source_location in locations[return_index]:
+                        if source_location == active_location:
+                            continue
+                        nested_return_targets.update(
+                            target_location
+                            for target_location, _, _ in
+                                behavior_transfer_witnesses(
+                                    return_index, source_location
+                                )
+                        )
+                joined_nested = locations[continuation] | nested_return_targets
+                if len(joined_nested) > disjunction_budget:
+                    overflow_regions.add(continuation)
+                elif joined_nested != locations[continuation]:
+                    locations[continuation] = joined_nested
+                    summary_changed = True
             replay = replayable_call_summary(summary)
             if replay is None:
                 continue
             callsite = int(summary["callsite_region_index"])
             continuation = int(summary["continuation_region_index"])
-            if callsite in overflow_regions or not offsets[callsite]:
+            if callsite in overflow_regions or not locations[callsite]:
                 continue
             original_delta = int(replay["summary_delta"]["original"])
             candidate_delta = int(replay["summary_delta"]["candidate"])
             proposed = {
                 (
+                    "esp",
                     (original_source - original_delta) % 2**32,
+                    "esp",
                     (candidate_source - candidate_delta) % 2**32,
                 )
-                for original_source, candidate_source in offsets[callsite]
+                for original_register, original_source,
+                    candidate_register, candidate_source in locations[callsite]
+                if original_register == "esp" and candidate_register == "esp"
             }
-            joined = offsets[continuation] | proposed
+            joined = locations[continuation] | proposed
             if len(joined) > disjunction_budget:
                 overflow_regions.add(continuation)
                 continue
-            if joined != offsets[continuation]:
-                offsets[continuation] = joined
+            if joined != locations[continuation]:
+                locations[continuation] = joined
                 summary_changed = True
         if not summary_changed:
             break
         for ordinary_iteration in range(max_iterations):
-            ordinary_changed = False
-            for edge, witness_pair in zip(edges, witnesses, strict=True):
-                if witness_pair is None:
-                    continue
-                source = int(edge["source_region_index"])
-                target = int(edge["target_region_index"])
-                if source in overflow_regions or not offsets[source]:
-                    continue
-                _, original_delta, _, candidate_delta = witness_pair
-                proposed = {
-                    (
-                        (original_source - original_delta) % 2**32,
-                        (candidate_source - candidate_delta) % 2**32,
-                    )
-                    for original_source, candidate_source in offsets[source]
-                }
-                joined = offsets[target] | proposed
-                if len(joined) > disjunction_budget:
-                    overflow_regions.add(target)
-                    continue
-                if joined != offsets[target]:
-                    offsets[target] = joined
-                    ordinary_changed = True
+            ordinary_changed = propagate_ordinary_once()
             total_iterations += 1
             if not ordinary_changed:
                 break
@@ -1431,26 +1669,29 @@ def _attach_return_slot_contracts(
         continuation = int(summary["continuation_region_index"])
         call_edge = direct_call_edge_by_source[callsite]
         claims = []
-        for original_source, candidate_source in sorted(offsets[callsite]):
-            target_pair = {
-                "original": (
+        for source_location in sorted(locations[callsite]):
+            original_register, original_source, candidate_register, \
+                candidate_source = source_location
+            if original_register != "esp" or candidate_register != "esp":
+                continue
+            target_location: FrameLocation = (
+                "esp",
+                (
                     original_source - int(replay["summary_delta"]["original"])
                 ) % 2**32,
-                "candidate": (
+                "esp",
+                (
                     candidate_source - int(replay["summary_delta"]["candidate"])
                 ) % 2**32,
-            }
-            if (target_pair["original"], target_pair["candidate"]) not in offsets[continuation]:
+            )
+            if target_location not in locations[continuation]:
                 continue
             for return_row in replay["returns"]:
                 return_claim = return_row["return_claim"]
                 claims.append({
                     "profile": "return_slot_call_summary_v1",
-                    "source": {
-                        "original": original_source,
-                        "candidate": candidate_source,
-                    },
-                    "target": target_pair,
+                    "source": location_payload(source_location),
+                    "target": location_payload(target_location),
                     "return_region_index": return_row["return_region_index"],
                     "original_call_witness": replay["original_call_witness"],
                     "candidate_call_witness": replay["candidate_call_witness"],
@@ -1476,44 +1717,69 @@ def _attach_return_slot_contracts(
             replayable_call_summaries += 1
 
     transfer_claim_count = 0
-    for edge, witness_pair in zip(edges, witnesses, strict=True):
-        if witness_pair is None:
-            continue
+    transfer_rule_count = 0
+    for edge in edges:
         source = int(edge["source_region_index"])
-        target = int(edge["target_region_index"])
-        if source in overflow_regions or target in overflow_regions:
-            continue
-        original_witness, original_delta, candidate_witness, candidate_delta = witness_pair
+        has_checked_call_push = (
+            edge.get("direct_call_push_claim") is not None
+            or edge.get("indirect_call_push_claim") is not None
+        )
+        edge["return_slot_transfer_rules"] = (
+            behavior_transfer_rules(source)
+            if not edge["environment_barrier"]
+            and not edge["requires_call_stack_proof"]
+            and (edge["kind"] != "call" or has_checked_call_push)
+            and (not edge.get("indirect_target_profile") or has_checked_call_push)
+            else []
+        )
+        transfer_rule_count += len(edge["return_slot_transfer_rules"])
         claims = []
-        for original_source, candidate_source in sorted(offsets[source]):
-            target_pair = (
-                (original_source - original_delta) % 2**32,
-                (candidate_source - candidate_delta) % 2**32,
-            )
-            if target_pair not in offsets[target]:
-                continue
-            claims.append({
-                "profile": "return_slot_affine_transfer_v1",
-                "source": {
-                    "original": original_source,
-                    "candidate": candidate_source,
-                },
-                "target": {
-                    "original": target_pair[0],
-                    "candidate": target_pair[1],
-                },
-                "original_esp_witness": original_witness,
-                "candidate_esp_witness": candidate_witness,
-            })
+        for source_location in sorted(locations[source]):
+            for target_location, original_witness, candidate_witness in \
+                    transfer_witnesses(edge, source_location):
+                claims.append({
+                    "profile": "return_slot_affine_transfer_v2",
+                    "source": location_payload(source_location),
+                    "target": location_payload(target_location),
+                    "original_output_witness": original_witness,
+                    "candidate_output_witness": candidate_witness,
+                })
         edge["return_slot_transfer_claims"] = claims
         transfer_claim_count += len(claims)
+
+    return_transfer_claim_count = 0
+    return_transfer_rule_count = 0
+    for region_index, row in enumerate(relation_rows):
+        row["return_slot_return_transfer_claims"] = []
+        row["return_slot_return_transfer_rules"] = []
+        if row.get("return_pop_claim") is None:
+            continue
+        row["return_slot_return_transfer_rules"] = behavior_transfer_rules(
+            region_index
+        )
+        return_transfer_rule_count += len(
+            row["return_slot_return_transfer_rules"]
+        )
+        claims = []
+        for source_location in sorted(locations[region_index]):
+            for target_location, original_witness, candidate_witness in \
+                    behavior_transfer_witnesses(region_index, source_location):
+                claims.append({
+                    "profile": "return_slot_return_affine_transfer_v1",
+                    "source": location_payload(source_location),
+                    "target": location_payload(target_location),
+                    "original_output_witness": original_witness,
+                    "candidate_output_witness": candidate_witness,
+                })
+        row["return_slot_return_transfer_claims"] = claims
+        return_transfer_claim_count += len(claims)
 
     aligned_returns = 0
     partially_aligned_returns = 0
     for region_index, row in enumerate(relation_rows):
         row["return_slot_offsets"] = [
-            {"original": original, "candidate": candidate}
-            for original, candidate in sorted(offsets[region_index])
+            location_payload(location)
+            for location in sorted(locations[region_index])
         ]
         row["return_pop_frame_claims"] = []
         row["return_slot_status"] = (
@@ -1527,25 +1793,24 @@ def _attach_return_slot_contracts(
                 row["return_slot_status"] = "incomplete_return_pop"
             continue
         expected = (
+            "esp",
             int(return_claim["original_stack_offset"]),
+            "esp",
             int(return_claim["candidate_stack_offset"]),
         )
-        if expected in offsets[region_index]:
+        if expected in locations[region_index]:
             row["return_pop_frame_claims"] = [{
                 "profile": "return_pop_runtime_frame_v1",
-                "offsets": {
-                    "original": expected[0],
-                    "candidate": expected[1],
-                },
+                "offsets": location_payload(expected),
                 "original_slot_witness": return_claim["original_stack_witness"],
                 "candidate_slot_witness": return_claim["candidate_stack_witness"],
             }]
-        if not offsets[region_index]:
+        if not locations[region_index]:
             row["return_slot_status"] = "incomplete_no_checked_call_path"
-        elif offsets[region_index] == {expected}:
+        elif locations[region_index] == {expected}:
             row["return_slot_status"] = "satisfied"
             aligned_returns += 1
-        elif expected in offsets[region_index]:
+        elif expected in locations[region_index]:
             row["return_slot_status"] = "incomplete_ambiguous_path_offsets"
             partially_aligned_returns += 1
         else:
@@ -1583,7 +1848,10 @@ def _attach_return_slot_contracts(
         "iterations": total_iterations,
         "seed_edges": seed_edges,
         "transfer_claims": transfer_claim_count,
-        "regions_with_offsets": sum(bool(items) for items in offsets),
+        "transfer_rules": transfer_rule_count,
+        "return_transfer_claims": return_transfer_claim_count,
+        "return_transfer_rules": return_transfer_rule_count,
+        "regions_with_offsets": sum(bool(items) for items in locations),
         "overflow_regions": sorted(overflow_regions),
         "aligned_returns": aligned_returns,
         "partially_aligned_returns": partially_aligned_returns,
@@ -1595,7 +1863,7 @@ def _attach_return_slot_contracts(
         "trust": {
             "role": "analysis_and_certificate_proposal_only",
             "acceptance_rule": (
-                "Lean must reconstruct every affine ESP expression and prove each seed, "
+                "Lean must reconstruct every affine register expression and prove each seed, "
                 "transfer, and return-slot use against decoded behavior"
             ),
         },

@@ -236,6 +236,15 @@ def MachineImportCallContract.arguments
   contract.stackArgumentOffsets.map fun offset =>
     machineCallStackArgument behavior offset
 
+def MachineImportCallContract.thunkArguments?
+    (contract : MachineImportCallContract) (behavior : SymbolicBehavior) :
+    Option (List Expr) :=
+  if contract.stackArgumentOffsets.all fun offset => offset + 8 <= 2^32 then
+    some (contract.stackArgumentOffsets.map fun offset =>
+      machineCallStackArgument behavior (offset + 4))
+  else
+    none
+
 def ExternalTarget.syntheticImport (target : ExternalTarget) : PEImport := {
   dll := target.dll
   name := target.name
@@ -293,10 +302,11 @@ def applyMachineImportCallContracts
   | some (.externalJump imported _) =>
       match contracts.filter (·.matchesImport imported) with
       | [] => some behavior
-      | [contract] => some {
-          behavior with outcome := some (.externalJump imported
-            (contract.arguments behavior))
-        }
+      | [contract] => do
+          let arguments <- contract.thunkArguments? behavior
+          some {
+            behavior with outcome := some (.externalJump imported arguments)
+          }
       | _ => none
   | _ => some behavior
 

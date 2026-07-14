@@ -144,9 +144,11 @@ def _lean_register_offset_witness(witness: dict[str, Any]) -> str:
 
 def _lean_return_slot_offset_pair(offsets: dict[str, Any]) -> str:
     return (
-        "{ originalOffset := BitVec.ofNat 32 "
+        "{ originalRegister := ."
+        f"{str(offsets.get('original_register', 'esp'))}, originalOffset := BitVec.ofNat 32 "
         f"{int(offsets['original'])}, candidateOffset := BitVec.ofNat 32 "
-        f"{int(offsets['candidate'])} }}"
+        f"{int(offsets['candidate'])}, candidateRegister := ."
+        f"{str(offsets.get('candidate_register', 'esp'))} }}"
     )
 
 def _lean_register_offset_write(write: dict[str, Any]) -> str:

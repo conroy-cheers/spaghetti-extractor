@@ -31,6 +31,7 @@ from spaghetti_extractor.stage_a_relational import (
     _composition_progress,
     _direct_call_push_claim,
     _direct_call_stack_amount,
+    _direct_import_thunk_call_candidates,
     _dynamic_range_indirect_call_candidates,
     _dynamic_pointer_traversal_diagnostic,
     _dynamic_range_register_output_claims,

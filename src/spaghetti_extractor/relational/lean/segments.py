@@ -670,10 +670,20 @@ def _write_relational_register_relation_modules(
             if edge["source_region_index"] in region_indices
             and edge.get("direct_call_push_claim") is not None
         ]
+        indirect_call_push_edges = [
+            edge for edge in register_relations["edges"]
+            if edge["source_region_index"] in region_indices
+            and edge.get("indirect_call_push_claim") is not None
+        ]
         return_slot_edges = [
             edge for edge in register_relations["edges"]
             if edge["source_region_index"] in region_indices
             and edge.get("return_slot_transfer_claims")
+        ]
+        return_slot_rule_edges = [
+            edge for edge in register_relations["edges"]
+            if edge["source_region_index"] in region_indices
+            and edge.get("return_slot_transfer_rules")
         ]
         call_summary_edges = [
             edge for edge in register_relations["edges"]
@@ -691,7 +701,11 @@ def _write_relational_register_relation_modules(
         } | {
             int(edge["source_region_index"]) for edge in call_push_edges
         } | {
+            int(edge["source_region_index"]) for edge in indirect_call_push_edges
+        } | {
             int(edge["source_region_index"]) for edge in return_slot_edges
+        } | {
+            int(edge["source_region_index"]) for edge in return_slot_rule_edges
         } | {
             int(edge["source_region_index"]) for edge in call_summary_edges
         })
@@ -1193,10 +1207,101 @@ def _write_relational_register_relation_modules(
                     f"def {claim_name} : ReturnSlotTransferClaim := {{\n"
                     f"  source := {_lean_return_slot_offset_pair(claim['source'])}\n"
                     f"  target := {_lean_return_slot_offset_pair(claim['target'])}\n"
-                    "  originalEsp := "
-                    f"{_lean_register_offset_witness(claim['original_esp_witness'])}\n"
-                    "  candidateEsp := "
-                    f"{_lean_register_offset_witness(claim['candidate_esp_witness'])}\n"
+                    "  originalOutput := "
+                    f"{_lean_register_offset_witness(claim['original_output_witness'])}\n"
+                    "  candidateOutput := "
+                    f"{_lean_register_offset_witness(claim['candidate_output_witness'])}\n"
+                    "}"
+                )
+                definitions.append(
+                    f"def {proposition_name} : Prop :=\n"
+                    f"  ReturnSlotTransferClosed {original_name} {candidate_name} "
+                    f"{claim_name}"
+                )
+                definitions.append(
+                    f"theorem {theorem_name} : {proposition_name} := by\n"
+                    "  apply returnSlotTransferClosed_of_checked\n"
+                    "  decide"
+                )
+                theorem_names.append(theorem_name)
+                proposition_names.append(proposition_name)
+        transfer_rules_by_source: dict[int, dict[str, dict[str, Any]]] = {}
+        for edge in return_slot_rule_edges:
+            source_index = int(edge["source_region_index"])
+            bucket = transfer_rules_by_source.setdefault(source_index, {})
+            for rule in edge["return_slot_transfer_rules"]:
+                bucket[json.dumps(rule, sort_keys=True)] = rule
+        for source_index in selected:
+            bucket = transfer_rules_by_source.setdefault(source_index, {})
+            for rule in relation_by_region[source_index].get(
+                "return_slot_return_transfer_rules", []
+            ):
+                bucket[json.dumps(rule, sort_keys=True)] = rule
+        for source_index, rule_map in sorted(transfer_rules_by_source.items()):
+            original_name = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{source_index}"
+            )
+            candidate_name = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{source_index}"
+            )
+            for rule_index, rule in enumerate(rule_map.values()):
+                rule_name = (
+                    f"registerRelationChunk{chunk_index}Region{source_index}"
+                    f"ReturnSlotTransferRule{rule_index}"
+                )
+                proposition_name = f"{rule_name}Closed"
+                theorem_name = f"{rule_name}Checked"
+                definitions.append(
+                    f"def {rule_name} : ReturnSlotTransferRule := {{\n"
+                    f"  originalSourceRegister := .{rule['original_source_register']}\n"
+                    f"  candidateSourceRegister := .{rule['candidate_source_register']}\n"
+                    f"  originalTargetRegister := .{rule['original_target_register']}\n"
+                    f"  candidateTargetRegister := .{rule['candidate_target_register']}\n"
+                    "  originalOutput := "
+                    f"{_lean_register_offset_witness(rule['original_output_witness'])}\n"
+                    "  candidateOutput := "
+                    f"{_lean_register_offset_witness(rule['candidate_output_witness'])}\n"
+                    f"  originalDelta := BitVec.ofNat 32 {int(rule['original_delta'])}\n"
+                    f"  candidateDelta := BitVec.ofNat 32 {int(rule['candidate_delta'])}\n"
+                    "}"
+                )
+                definitions.append(
+                    f"def {proposition_name} : Prop :=\n"
+                    f"  ReturnSlotTransferRuleClosed {original_name} {candidate_name} "
+                    f"{rule_name}"
+                )
+                definitions.append(
+                    f"theorem {theorem_name} : {proposition_name} := by\n"
+                    "  apply returnSlotTransferRuleClosed_of_checked\n"
+                    "  decide"
+                )
+                theorem_names.append(theorem_name)
+                proposition_names.append(proposition_name)
+        for source_index in selected:
+            row = relation_by_region[source_index]
+            original_name = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{source_index}"
+            )
+            candidate_name = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{source_index}"
+            )
+            for claim_index, claim in enumerate(
+                row.get("return_slot_return_transfer_claims", [])
+            ):
+                claim_name = (
+                    f"registerRelationChunk{chunk_index}Region{source_index}"
+                    f"ReturnSlotTransferClaim{claim_index}"
+                )
+                proposition_name = f"{claim_name}Closed"
+                theorem_name = f"{claim_name}Checked"
+                definitions.append(
+                    f"def {claim_name} : ReturnSlotTransferClaim := {{\n"
+                    f"  source := {_lean_return_slot_offset_pair(claim['source'])}\n"
+                    f"  target := {_lean_return_slot_offset_pair(claim['target'])}\n"
+                    "  originalOutput := "
+                    f"{_lean_register_offset_witness(claim['original_output_witness'])}\n"
+                    "  candidateOutput := "
+                    f"{_lean_register_offset_witness(claim['candidate_output_witness'])}\n"
                     "}"
                 )
                 definitions.append(
@@ -1251,6 +1356,47 @@ def _write_relational_register_relation_modules(
             definitions.append(
                 f"theorem {theorem_name} : {proposition_name} := by\n"
                 "  apply directCallPushClosed_of_checked\n"
+                "  decide"
+            )
+            theorem_names.append(theorem_name)
+            proposition_names.append(proposition_name)
+        for edge_index, edge in enumerate(indirect_call_push_edges):
+            source_index = int(edge["source_region_index"])
+            claim = edge["indirect_call_push_claim"]
+            original_name = (
+                f"registerRelationChunk{chunk_index}OriginalBehavior{source_index}"
+            )
+            candidate_name = (
+                f"registerRelationChunk{chunk_index}CandidateBehavior{source_index}"
+            )
+            claim_name = (
+                f"registerRelationChunk{chunk_index}IndirectCallPushEdge{edge_index}Claim"
+            )
+            proposition_name = (
+                f"registerRelationChunk{chunk_index}IndirectCallPushEdge{edge_index}Closed"
+            )
+            theorem_name = (
+                f"registerRelationChunk{chunk_index}IndirectCallPushEdge{edge_index}Checked"
+            )
+            definitions.append(
+                f"def {claim_name} : IndirectCallPushClaim := {{\n"
+                f"  continuationTargetId := {int(claim['continuation_target_id'])}\n"
+                f"  originalReturnAddress := {int(claim['original_return_address'])}\n"
+                f"  candidateReturnAddress := {int(claim['candidate_return_address'])}\n"
+                "  originalStackAddress := "
+                f"{_lean_semantic_expr(claim['original_stack_address'])}\n"
+                "  candidateStackAddress := "
+                f"{_lean_semantic_expr(claim['candidate_stack_address'])}\n"
+                "}"
+            )
+            definitions.append(
+                f"def {proposition_name} : Prop :=\n"
+                f"  IndirectCallPushClosed staticProofContext {original_name} "
+                f"{candidate_name} {claim_name}"
+            )
+            definitions.append(
+                f"theorem {theorem_name} : {proposition_name} := by\n"
+                "  apply indirectCallPushClosed_of_checked\n"
                 "  decide"
             )
             theorem_names.append(theorem_name)
@@ -1363,6 +1509,15 @@ def _write_relational_register_relation_modules(
             "return_slot_transfer_claims": str(sum(
                 len(edge["return_slot_transfer_claims"])
                 for edge in return_slot_edges
+            )),
+            "return_slot_transfer_rules": str(sum(
+                len(rules) for rules in transfer_rules_by_source.values()
+            )),
+            "return_slot_return_transfer_claims": str(sum(
+                len(relation_by_region[index].get(
+                    "return_slot_return_transfer_claims", []
+                ))
+                for index in selected
             )),
             "return_slot_call_summary_claims": str(sum(
                 len(edge["return_slot_call_summary_claims"])
@@ -2554,6 +2709,8 @@ def _write_relational_external_call_refinement_modules(
     }
     modules: list[dict[str, Any]] = []
     for site in analysis["candidates"]:
+        if site.get("site_kind") == "direct_import_thunk":
+            continue
         edge_id = int(site["edge_index"])
         source_index = int(site["source_region_index"])
         target_index = int(site["target_region_index"])
@@ -3118,6 +3275,398 @@ def _write_relational_external_call_refinement_modules(
     )
     _write_text_if_changed(
         lean_dir / "StageA" / "RelationalExternalCallRefinementCertificate.lean",
+        certificate_source,
+    )
+    return modules
+
+
+def _write_relational_external_jump_refinement_modules(
+    lean_dir: Path,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+    decode_chunk_regions: list[list[int]],
+    import_call_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    analysis = _external_call_site_candidates(
+        contract, behaviors, register_relations, import_call_candidates
+    )
+    chunk_by_region = {
+        region_index: chunk_index
+        for chunk_index, region_indices in enumerate(decode_chunk_regions)
+        for region_index in region_indices
+    }
+    contracts_by_id = {
+        int(item["id"]): item
+        for item in contract.get("machine_import_call_contracts", [])
+    }
+    modules: list[dict[str, Any]] = []
+    for site in analysis["candidates"]:
+        if site.get("site_kind") != "direct_import_thunk":
+            continue
+        site_id = int(site["id"])
+        source_index = int(site["source_region_index"])
+        machine_contract = contracts_by_id.get(int(site["machine_contract_id"]))
+        if machine_contract is None:
+            raise StageAInputError(
+                f"external jump site {site_id} has no machine contract"
+            )
+        chunk_index = chunk_by_region[source_index]
+        prefix = f"externalJumpSite{site_id}"
+        contract_name = f"{prefix}MachineContract"
+        original_normalized = f"{prefix}OriginalNormalized"
+        candidate_normalized = f"{prefix}CandidateNormalized"
+        original_boundary = f"{prefix}OriginalBoundaryNormalized"
+        candidate_boundary = f"{prefix}CandidateBoundaryNormalized"
+        output_claims_name = f"{prefix}RegisterOutputClaims"
+        contract_resolved = f"{prefix}MachineContractResolved"
+        original_normalized_checked = f"{prefix}OriginalNormalizedChecked"
+        candidate_normalized_checked = f"{prefix}CandidateNormalizedChecked"
+        original_x87_checked = f"{prefix}OriginalX87Checked"
+        candidate_x87_checked = f"{prefix}CandidateX87Checked"
+        original_outcome_checked = f"{prefix}OriginalOutcomeChecked"
+        candidate_outcome_checked = f"{prefix}CandidateOutcomeChecked"
+        original_decoded = f"{prefix}OriginalDecoded"
+        candidate_decoded = f"{prefix}CandidateDecoded"
+        shape_name = f"{prefix}ShapeChecked"
+        boundary_name = f"{prefix}BoundaryTransferChecked"
+        transition_name = f"{prefix}TransitionChecked"
+        refinement_name = f"{prefix}RefinementChecked"
+        original_argument_words = "[" + ", ".join(
+            f"({_lean_semantic_expr(expression)}).eval originalState"
+            for expression in site["argument_expressions"]
+        ) + "]"
+        candidate_argument_words = "[" + ", ".join(
+            f"({_lean_semantic_expr(expression)}).eval candidateState"
+            for expression in site["argument_expressions"]
+        ) + "]"
+        argument_expressions = "[" + ", ".join(
+            _lean_semantic_expr(expression)
+            for expression in site["argument_expressions"]
+        ) + "]"
+        output_claims = ", ".join(
+            _lean_register_output_claim(claim)
+            for claim in site["register_output_claims"]
+        )
+        stack_claims = ", ".join(
+            _lean_stack_window_transfer_claim(claim)
+            for claim in site["stack_transfer_claims"]
+        )
+
+        argument_claim_definitions: list[str] = []
+        argument_fact_rows: list[str] = []
+        argument_fact_names: list[str] = []
+        for argument_index, claim in enumerate(site["argument_relation_claims"]):
+            claim_name = f"{prefix}ArgumentClaim{argument_index}"
+            fact_name = f"{prefix}ArgumentRelated{argument_index}"
+            argument_fact_names.append(fact_name)
+            if claim["kind"] == "dynamic_related_word_read":
+                argument_claim_definitions.append(
+                    f"def {claim_name} : DynamicRangeArgumentClaim := "
+                    f"{_lean_dynamic_range_argument_claim(claim)}"
+                )
+                argument_fact_rows.append(
+                    f"  have {fact_name} := dynamicRangeArgumentWordsRelated_of_checked\n"
+                    f"    staticProofContext world region{source_index}.inputInvariant\n"
+                    f"    ({_lean_semantic_expr(claim['original_expression'])})\n"
+                    f"    ({_lean_semantic_expr(claim['candidate_expression'])}) "
+                    f"{claim_name} (by decide) originalState candidateState related"
+                )
+            elif claim["kind"] == "stack_word_read":
+                argument_claim_definitions.append(
+                    f"def {claim_name} : StackWindowArgumentClaim := "
+                    f"{_lean_stack_window_argument_claim(claim)}"
+                )
+                argument_fact_rows.append(
+                    f"  have {fact_name} := stackWindowArgumentWordsRelated_of_checked\n"
+                    f"    staticProofContext world region{source_index}.inputInvariant\n"
+                    f"    ({_lean_semantic_expr(claim['original_expression'])})\n"
+                    f"    ({_lean_semantic_expr(claim['candidate_expression'])}) "
+                    f"{claim_name} (by decide) originalState candidateState related"
+                )
+            elif claim["kind"] == "register_word":
+                argument_claim_definitions.append(
+                    f"def {claim_name} : RegisterArgumentClaim := "
+                    f"{_lean_register_argument_claim(claim)}"
+                )
+                argument_fact_rows.append(
+                    f"  have {fact_name} := registerArgumentWordsRelated_of_checked\n"
+                    f"    staticProofContext world region{source_index}.inputInvariant\n"
+                    f"    ({_lean_semantic_expr(claim['original_expression'])})\n"
+                    f"    ({_lean_semantic_expr(claim['candidate_expression'])}) "
+                    f"{claim_name} (by decide) originalState candidateState related"
+                )
+            elif claim["kind"] == "self":
+                argument_fact_rows.append(
+                    f"  have {fact_name} :\n"
+                    "      wordRelated staticProofContext.originalPe.imageBase\n"
+                    "        staticProofContext.candidatePe.imageBase\n"
+                    "        staticProofContext.codeMap.entries.toList\n"
+                    "        (staticProofContext.relationalValueTargets world)\n"
+                    f"        (({_lean_semantic_expr(claim['original_expression'])}).eval "
+                    "originalState)\n"
+                    f"        (({_lean_semantic_expr(claim['candidate_expression'])}).eval "
+                    "candidateState) = true := by\n"
+                    "    simp [StageA.Formal.Expr.eval]"
+                )
+            else:
+                raise StageAInputError(
+                    f"external jump site {site_id} has unsupported argument relation "
+                    f"{claim['kind']}"
+                )
+        argument_list_proof = "(by rfl)"
+        for fact_name in reversed(argument_fact_names):
+            argument_list_proof = (
+                f"wordsRelated_cons_of_true {fact_name} ({argument_list_proof})"
+            )
+        argument_setup = (
+            ("\n".join(argument_fact_rows) + "\n")
+            + "  have argumentWordsRelated :\n"
+            "      wordsRelated staticProofContext.originalPe.imageBase\n"
+            "        staticProofContext.candidatePe.imageBase\n"
+            "        staticProofContext.codeMap.entries.toList\n"
+            "        (staticProofContext.relationalValueTargets world)\n"
+            f"        {original_argument_words} {candidate_argument_words} = true := by\n"
+            f"    exact {argument_list_proof}\n"
+        )
+        support_definitions = "\n\n".join(argument_claim_definitions)
+        if support_definitions:
+            support_definitions += "\n\n"
+        original_x87 = _lean_symbolic_x87_state(
+            behaviors[source_index]["original_ir"]["x87"]
+        )
+        candidate_x87 = _lean_symbolic_x87_state(
+            behaviors[source_index]["candidate_ir"]["x87"]
+        )
+        flag_bits = site["boundary_invariant"].get("flag_bits", [])
+        if flag_bits == []:
+            flag_proof = "  · rfl\n"
+        elif flag_bits == [10]:
+            flag_proof = (
+                "  · apply flagsRelated_cons_of_eq\n"
+                "    · simp only [normalizeImportReturnSlotState, "
+                "RelationalBehavior.nextMachineState, "
+                "NormalizedSymbolicBehavior.eval_eflags]\n"
+                "      rw [evalNormalizedFlags_extract_df, "
+                "evalNormalizedFlags_extract_df]\n"
+                f"      exact flagsRelated_of_contains region{source_index}.flagInputs "
+                "originalState.eflags candidateState.eflags inputFlags (by decide)\n"
+                "    · rfl\n"
+            )
+        else:
+            raise StageAInputError(
+                f"external jump site {site_id} has unsupported boundary flags"
+            )
+
+        source_text = (
+            "import StageA.RelationalExternalCallSites\n"
+            f"import StageA.RelationalRegisterRelationsChunk{chunk_index}\n"
+            f"import StageA.RelationalProofOriginalDecodeChunk{chunk_index}\n"
+            f"import StageA.RelationalProofCandidateDecodeChunk{chunk_index}\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+            "set_option linter.unusedSimpArgs false\n\n"
+            f"def {contract_name} : MachineImportCallContract := "
+            f"{_lean_machine_import_call_contract(machine_contract)}\n\n"
+            + support_definitions
+            + f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+            f"  (normalizeSymbolicBehavior false region{source_index}.targets "
+            f"originalBehavior{source_index}).get (by decide)\n\n"
+            f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+            f"  (normalizeSymbolicBehavior true region{source_index}.targets "
+            f"candidateBehavior{source_index}).get (by decide)\n\n"
+            f"def {original_boundary} : NormalizedSymbolicBehavior := {{\n"
+            f"  {original_normalized} with\n"
+            f"  registers := {original_normalized}.registers.set .esp\n"
+            f"    ({original_normalized}.registers.esp.offset 4)\n"
+            "}\n\n"
+            f"def {candidate_boundary} : NormalizedSymbolicBehavior := {{\n"
+            f"  {candidate_normalized} with\n"
+            f"  registers := {candidate_normalized}.registers.set .esp\n"
+            f"    ({candidate_normalized}.registers.esp.offset 4)\n"
+            "}\n\n"
+            f"def {output_claims_name} : List InvariantWP.RegisterOutputClaim := "
+            f"[{output_claims}]\n\n"
+            f"theorem {contract_resolved} :\n"
+            "    machineImportCallContractById? staticProofContext "
+            f"{int(site['machine_contract_id'])} = some {contract_name} := by decide\n\n"
+            f"theorem {original_normalized_checked} :\n"
+            f"    normalizeSymbolicBehavior false region{source_index}.targets "
+            f"originalBehavior{source_index} = some {original_normalized} := by decide\n\n"
+            f"theorem {candidate_normalized_checked} :\n"
+            f"    normalizeSymbolicBehavior true region{source_index}.targets "
+            f"candidateBehavior{source_index} = some {candidate_normalized} := by decide\n\n"
+            f"theorem {original_x87_checked} :\n"
+            f"    {original_normalized}.x87 = originalBehavior{source_index}.x87 := by "
+            "decide\n\n"
+            f"theorem {candidate_x87_checked} :\n"
+            f"    {candidate_normalized}.x87 = candidateBehavior{source_index}.x87 := by "
+            "decide\n\n"
+            f"theorem {original_outcome_checked} :\n"
+            f"    {original_normalized}.outcome = .externalJump "
+            f"{contract_name}.imported {argument_expressions} := by decide\n\n"
+            f"theorem {candidate_outcome_checked} :\n"
+            f"    {candidate_normalized}.outcome = .externalJump "
+            f"{contract_name}.imported {argument_expressions} := by decide\n\n"
+            f"theorem {original_decoded} :\n"
+            "    regionBehaviorWithMachineCallContracts staticProofContext.originalPe "
+            "staticProofContext.originalImports staticProofContext.machineImportCallContracts "
+            f"region{source_index}.original = some originalBehavior{source_index} := by\n"
+            f"  simpa [staticProofContext, originalMachineImportCallContractsChunk{chunk_index}] "
+            f"using originalBehavior{source_index}CheckedDecoded\n\n"
+            f"theorem {candidate_decoded} :\n"
+            "    regionBehaviorWithMachineCallContracts staticProofContext.candidatePe "
+            "staticProofContext.candidateImports staticProofContext.machineImportCallContracts "
+            f"region{source_index}.candidate = some candidateBehavior{source_index} := by\n"
+            f"  simpa [staticProofContext, candidateMachineImportCallContractsChunk{chunk_index}] "
+            f"using candidateBehavior{source_index}CheckedDecoded\n\n"
+            f"theorem {shape_name} :\n"
+            f"    ExternalJumpShapeClosed staticProofContext externalCallSite{site_id} "
+            f"{contract_name} region{source_index} originalBehavior{source_index} "
+            f"candidateBehavior{source_index} := by\n"
+            "  unfold ExternalJumpShapeClosed\n"
+            "  intro world originalState candidateState related\n"
+            + argument_setup
+            + f"  simp only [evalBehavior, {original_normalized_checked}, "
+            f"{candidate_normalized_checked}, Option.bind_some]\n"
+            f"  refine ⟨{original_argument_words}, {candidate_argument_words}, ?_, ?_, ?_⟩\n"
+            f"  · simp only [NormalizedSymbolicBehavior.eval_outcome, "
+            f"{original_outcome_checked}, NormalizedOutcomeExpr.eval, "
+            "StageA.Formal.Expr.eval, List.map_cons, List.map_nil]\n"
+            f"  · simp only [NormalizedSymbolicBehavior.eval_outcome, "
+            f"{candidate_outcome_checked}, NormalizedOutcomeExpr.eval, "
+            "StageA.Formal.Expr.eval, List.map_cons, List.map_nil]\n"
+            "  · unfold externalCallArgumentsRelated\n"
+            "    exact argumentWordsRelated\n\n"
+            f"theorem {boundary_name} :\n"
+            f"    ExternalJumpBoundaryTransferClosed staticProofContext "
+            f"externalCallSite{site_id} region{source_index} originalBehavior{source_index} "
+            f"candidateBehavior{source_index} := by\n"
+            "  unfold ExternalJumpBoundaryTransferClosed\n"
+            "  intro world originalState candidateState originalResult candidateResult related\n"
+            "    originalEval candidateEval\n"
+            f"  simp [evalBehavior, {original_normalized_checked}] at originalEval\n"
+            f"  simp [evalBehavior, {candidate_normalized_checked}] at candidateEval\n"
+            "  subst originalResult\n"
+            "  subst candidateResult\n"
+            "  have relatedForRegisterTransfer := related\n"
+            "  rcases related with ⟨worldValid, stackRangesValid, _stackMemory, "
+            "_importsStatic, _importsComplete, _importsMemory, _originalImmutable, "
+            "_candidateImmutable, relatedCore, _importDynamic⟩\n"
+            "  rcases relatedCore with ⟨_inputRegisters, _inputBounds, "
+            "_inputSeparations, inputStackWindows, _inputMemory, _inputDynamicWords, "
+            "inputUndefined, inputX87, inputFlags, inputFsBase⟩\n"
+            "  have outputRegistersRaw := "
+            "InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims\n"
+            f"    staticProofContext world region{source_index} {original_boundary} "
+            f"{candidate_boundary} {output_claims_name} (by decide)\n"
+            "    originalState candidateState relatedForRegisterTransfer\n"
+            "  have outputRegisters : registerRelationsHold\n"
+            "      staticProofContext.originalPe.imageBase\n"
+            "      staticProofContext.candidatePe.imageBase\n"
+            "      staticProofContext.codeMap.entries.toList\n"
+            "      (staticProofContext.relationalValueTargets world)\n"
+            f"      externalCallSite{site_id}.boundaryInvariant.registerRelations\n"
+            f"      (normalizeImportReturnSlotState (({original_normalized}.eval "
+            "        originalState).nextMachineState originalState)).registers\n"
+            f"      (normalizeImportReturnSlotState (({candidate_normalized}.eval "
+            "        candidateState).nextMachineState candidateState)).registers = true := by\n"
+            f"    simpa [{original_boundary}, {candidate_boundary}, "
+            "normalizeImportReturnSlotState, RelationalBehavior.nextMachineState, "
+            "NormalizedSymbolicBehavior.eval, evalNormalizedRegisters, "
+            "Registers.set, StageA.Formal.Expr.eval] using outputRegistersRaw\n"
+            "  have outputStackWindowsRaw := "
+            "stackWindowsRelated_after_affine_of_checked staticProofContext world "
+            f"region{source_index}.inputInvariant "
+            f"externalCallSite{site_id}.boundaryInvariant {original_boundary} "
+            f"{candidate_boundary} [{stack_claims}] originalState candidateState "
+            "stackRangesValid inputStackWindows (by decide)\n"
+            "  have outputStackWindows : stackWindowsRelated world\n"
+            f"      externalCallSite{site_id}.boundaryInvariant.stackWindows\n"
+            f"      (normalizeImportReturnSlotState (({original_normalized}.eval "
+            "        originalState).nextMachineState originalState)).registers\n"
+            f"      (normalizeImportReturnSlotState (({candidate_normalized}.eval "
+            "        candidateState).nextMachineState candidateState)).registers = true := by\n"
+            f"    simpa [{original_boundary}, {candidate_boundary}, "
+            "normalizeImportReturnSlotState, RelationalBehavior.nextMachineState, "
+            "NormalizedSymbolicBehavior.eval, evalNormalizedRegisters, "
+            "Registers.set, StageA.Formal.Expr.eval] using outputStackWindowsRaw\n"
+            "  refine ⟨worldValid, stackRangesValid, outputRegisters, ?_, ?_, "
+            "outputStackWindows, ?_, ?_, ?_, ?_, ?_, ?_⟩\n"
+            f"  · simp [externalCallSite{site_id}, boundsRelated]\n"
+            f"  · simp [externalCallSite{site_id}, addressSeparationsRelated]\n"
+            "  · simpa [normalizeImportReturnSlotState, "
+            "RelationalBehavior.nextMachineState] using inputUndefined\n"
+            "  · rcases originalState with ⟨originalRegisters, originalMemory, "
+            "originalUndefined, originalX87, originalFlags, originalFsBase⟩\n"
+            "    rcases candidateState with ⟨candidateRegisters, candidateMemory, "
+            "candidateUndefined, candidateX87, candidateFlags, candidateFsBase⟩\n"
+            "    change originalX87 = candidateX87 at inputX87\n"
+            "    subst candidateX87\n"
+            "    simp only [normalizeImportReturnSlotState, "
+            "RelationalBehavior.nextMachineState, NormalizedSymbolicBehavior.eval_x87, "
+            f"{original_x87_checked}, {candidate_x87_checked}]\n"
+            f"    simp [evalNormalizedX87, originalBehavior{source_index}, "
+            f"candidateBehavior{source_index}, "
+            "StageA.Formal.X87Expr.eval, StageA.Formal.Expr.eval]\n"
+            + flag_proof
+            + "  · simpa [normalizeImportReturnSlotState, "
+            "RelationalBehavior.nextMachineState] using inputFsBase\n"
+            f"  · simp [externalCallSite{site_id}, importRegisterRelationsHold]\n"
+            f"  · simp [externalCallSite{site_id}, dynamicRegisterRangeRelationsHold]\n\n"
+            f"theorem {transition_name} :\n"
+            f"    ExternalJumpTransitionClosed staticProofContext "
+            f"externalCallSite{site_id} {contract_name} region{source_index} "
+            f"originalBehavior{source_index} candidateBehavior{source_index} :=\n"
+            "  externalJumpTransitionClosed_of_shape_and_transfer staticProofContext "
+            f"externalCallSite{site_id} {contract_name} region{source_index} "
+            f"originalBehavior{source_index} candidateBehavior{source_index} "
+            f"{shape_name} {boundary_name}\n\n"
+            f"theorem {refinement_name} :\n"
+            f"    RelationalExternalJumpRefinement staticProofContext "
+            f"externalCallSite{site_id} region{source_index} := by\n"
+            "  unfold RelationalExternalJumpRefinement\n"
+            f"  exact ⟨{contract_name}, originalBehavior{source_index}, "
+            f"candidateBehavior{source_index}, {contract_resolved}, rfl, "
+            f"{original_decoded}, {candidate_decoded}, {transition_name}⟩\n\n"
+            "end StageA.GeneratedRelational\n"
+        )
+        module = f"RelationalExternalJumpRefinementSite{site_id}"
+        _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source_text)
+        modules.append({
+            "module": module,
+            "site_id": site_id,
+            "source_region_index": source_index,
+            "theorem": refinement_name,
+            "proposition": (
+                "RelationalExternalJumpRefinement staticProofContext "
+                f"externalCallSite{site_id} region{source_index}"
+            ),
+        })
+
+    certificate_type = " ∧ ".join(
+        [item["proposition"] for item in modules] + ["True"]
+    )
+    certificate_proof = (
+        "".join(f"And.intro {item['theorem']} (" for item in modules)
+        + "True.intro"
+        + ")" * len(modules)
+    )
+    certificate_source = (
+        "".join(f"import StageA.{item['module']}\n" for item in modules)
+        + "import StageA.RelationalEnvironment\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        f"def GeneratedExternalJumpRefinementCertificate : Prop := {certificate_type}\n\n"
+        "theorem generatedExternalJumpRefinementCertificateChecked :\n"
+        "    GeneratedExternalJumpRefinementCertificate := by\n"
+        f"  exact {certificate_proof}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalExternalJumpRefinementCertificate.lean",
         certificate_source,
     )
     return modules

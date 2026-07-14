@@ -54,6 +54,15 @@ def machineImportArgumentsAtState (contract : MachineImportCallContract)
     Memory.read32 state.memory
       (state.registers.esp + BitVec.ofNat 32 offset)
 
+def machineImportThunkArgumentsAtState? (contract : MachineImportCallContract)
+    (state : MachineState) : Option (List Word) :=
+  if contract.stackArgumentOffsets.all fun offset => offset + 8 <= 2^32 then
+    some (contract.stackArgumentOffsets.map fun offset =>
+      Memory.read32 state.memory
+        (state.registers.esp + BitVec.ofNat 32 (offset + 4)))
+  else
+    none
+
 def resolveWorldImportCall (candidate : Bool) (context : StaticProofContext)
     (world : RelationalWorld) (target : Word) (state : MachineState) :
     Option (Prod ExternalTarget (List Word)) := do
@@ -61,13 +70,15 @@ def resolveWorldImportCall (candidate : Bool) (context : StaticProofContext)
     (if candidate then binding.candidateAddress else binding.originalAddress) == target
   let contract <- context.machineImportCallContracts.find? fun contract =>
     contract.imported == binding.imported
-  pure (binding.imported, machineImportArgumentsAtState contract state)
+  let arguments <- machineImportThunkArgumentsAtState? contract state
+  pure (binding.imported, arguments)
 
 def resolveExternalCallSite (context : StaticProofContext)
     (sites : List ExternalCallSiteContract) (sourceTargetId : Nat)
-    (imported : ExternalTarget) : Option Nat := do
+    (continuationTargetId : Nat) (imported : ExternalTarget) : Option Nat := do
   let site <- sites.find? fun site =>
     site.sourceTargetId == sourceTargetId &&
+      site.continuationTargetId == continuationTargetId &&
       match machineImportCallContractById? context site.machineContractId with
       | none => false
       | some contract => contract.imported == imported
@@ -110,7 +121,7 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
         observation := none }
   | .externalCall imported arguments continuation =>
       match resolveExternalCallSite program.context program.externalCallSites
-          sourceTargetId imported with
+          sourceTargetId continuation imported with
       | none => { next := .fault, observation := some .fault }
       | some siteId =>
           let event : WorldExternalEvent := {
@@ -125,24 +136,24 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
               result.world,
             observation := some (.external world imported arguments) }
   | .externalJump imported arguments =>
-      match resolveExternalCallSite program.context program.externalCallSites
-          sourceTargetId imported with
-      | none => { next := .fault, observation := some .fault }
-      | some siteId =>
-          let event : WorldExternalEvent := {
-            siteId
-            imported
-            arguments
-            state
-            world
-          }
-          let result := program.environment.result eventIndex event
-          let next := match calls with
-            | [] => WorldExecution.returned result.state result.world
-            | continuation :: tail =>
-                WorldExecution.running continuation result.state tail
-                  (eventIndex + 1) result.world
-          { next, observation := some (.external world imported arguments) }
+      match calls with
+      | [] => { next := .fault, observation := some .fault }
+      | continuation :: tail =>
+          match resolveExternalCallSite program.context program.externalCallSites
+              sourceTargetId continuation imported with
+          | none => { next := .fault, observation := some .fault }
+          | some siteId =>
+              let event : WorldExternalEvent := {
+                siteId
+                imported
+                arguments
+                state := normalizeImportReturnSlotState state
+                world
+              }
+              let result := program.environment.result eventIndex event
+              { next := .running continuation result.state tail
+                    (eventIndex + 1) result.world,
+                observation := some (.external world imported arguments) }
   | .bulkCopy destination source count direction continuation =>
       let memory := Memory.bulkCopyDwords state.memory destination source direction
         count.toNat
@@ -161,14 +172,14 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
           | none => { next := .fault, observation := some .fault }
           | some (imported, arguments) =>
               match resolveExternalCallSite program.context program.externalCallSites
-                  sourceTargetId imported with
+                  sourceTargetId continuation imported with
               | none => { next := .fault, observation := some .fault }
               | some siteId =>
                   let event : WorldExternalEvent := {
                     siteId
                     imported
                     arguments
-                    state
+                    state := normalizeImportReturnSlotState state
                     world
                   }
                   let result := program.environment.result eventIndex event
@@ -184,27 +195,27 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
           { next := .running resolved state calls eventIndex world,
             observation := none }
       | none =>
-          match resolveWorldImportCall program.candidate program.context world target state with
-          | none => { next := .fault, observation := some .fault }
-          | some (imported, arguments) =>
-              match resolveExternalCallSite program.context program.externalCallSites
-                  sourceTargetId imported with
+          match calls with
+          | [] => { next := .fault, observation := some .fault }
+          | continuation :: tail =>
+              match resolveWorldImportCall program.candidate program.context world target state with
               | none => { next := .fault, observation := some .fault }
-              | some siteId =>
-                  let event : WorldExternalEvent := {
-                    siteId
-                    imported
-                    arguments
-                    state
-                    world
-                  }
-                  let result := program.environment.result eventIndex event
-                  let next := match calls with
-                    | [] => WorldExecution.returned result.state result.world
-                    | continuation :: tail =>
-                        WorldExecution.running continuation result.state tail
-                          (eventIndex + 1) result.world
-                  { next, observation := some (.external world imported arguments) }
+              | some (imported, arguments) =>
+                  match resolveExternalCallSite program.context program.externalCallSites
+                      sourceTargetId continuation imported with
+                  | none => { next := .fault, observation := some .fault }
+                  | some siteId =>
+                      let event : WorldExternalEvent := {
+                        siteId
+                        imported
+                        arguments
+                        state := normalizeImportReturnSlotState state
+                        world
+                      }
+                      let result := program.environment.result eventIndex event
+                      { next := .running continuation result.state tail
+                            (eventIndex + 1) result.world,
+                        observation := some (.external world imported arguments) }
   | .checkedContinue valid continuation =>
       if valid then
         { next := .running continuation state calls eventIndex world,
@@ -265,8 +276,10 @@ theorem RelationalRuntimeCallStackHolds.of_memory_eq
       frames continuations offsets)
     (originalMemory : afterOriginal.memory = beforeOriginal.memory)
     (candidateMemory : afterCandidate.memory = beforeCandidate.memory)
-    (originalEsp : afterOriginal.registers.get .esp = beforeOriginal.registers.get .esp)
-    (candidateEsp : afterCandidate.registers.get .esp = beforeCandidate.registers.get .esp) :
+    (originalRegisters : ∀ register,
+      afterOriginal.registers.get register = beforeOriginal.registers.get register)
+    (candidateRegisters : ∀ register,
+      afterCandidate.registers.get register = beforeCandidate.registers.get register) :
     RelationalRuntimeCallStackHolds context afterOriginal afterCandidate
       frames continuations offsets := by
   induction frames generalizing continuations offsets with
@@ -287,7 +300,8 @@ theorem RelationalRuntimeCallStackHolds.of_memory_eq
                   candidateMemory] using holds.2.2.2.1,
                 by
                   unfold ReturnSlotOffsetPair.holds
-                  rw [originalEsp, candidateEsp]
+                  rw [originalRegisters offset.originalRegister,
+                    candidateRegisters offset.candidateRegister]
                   exact holds.2.2.2.2.1,
                 ih continuations offsets holds.2.2.2.2.2⟩
 

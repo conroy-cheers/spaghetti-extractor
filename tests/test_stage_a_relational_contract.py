@@ -1654,6 +1654,48 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 indirect[0]["source_region_index"],
                 graph["evidence"]["decoded_control_complete_node_ids"],
             )
+            register_relations = json.loads(
+                (report / "relational-register-relations.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            indirect_edges = [
+                edge for edge in register_relations["edges"]
+                if edge.get("indirect_target_profile") ==
+                    "immutable_relocated_function_pointer_call_v1"
+            ]
+            self.assertEqual(len(indirect_edges), 1)
+            indirect_edge = indirect_edges[0]
+            self.assertEqual(
+                indirect_edge["indirect_call_push_claim"]["profile"],
+                "mapped_indirect_call_push_v1",
+            )
+            self.assertEqual(
+                indirect_edge["return_slot_seed"],
+                {
+                    "profile": "indirect_call_runtime_frame_seed_v1",
+                    "target_region_index": indirect[0]["target_region_index"],
+                    "offsets": {
+                        "original_register": "esp", "original": 0,
+                        "candidate_register": "esp", "candidate": 0,
+                    },
+                },
+            )
+            self.assertEqual(
+                register_relations["counts"]["checked_indirect_call_pushes"], 1
+            )
+            proof_ir = json.loads(
+                (report / "relational-proof-ir.json").read_text(encoding="utf-8")
+            )
+            indirect_push_obligations = [
+                obligation for obligation in proof_ir["obligations"]
+                if obligation["kind"] == "indirect_call_push"
+            ]
+            self.assertEqual(len(indirect_push_obligations), 1)
+            self.assertEqual(
+                indirect_push_obligations[0]["status"],
+                "candidate_requires_lean_replay",
+            )
             generated = "\n".join(
                 path.read_text(encoding="utf-8")
                 for path in (report / "lean" / "StageA").glob(
@@ -1662,6 +1704,15 @@ class StageARelationalContractTests(StageARelationalTestBase):
             )
             self.assertIn("immutableIndirectCallTargetsClosed_of_checked", generated)
             self.assertIn("ImmutableIndirectCallTargetsClosed", generated)
+            generated_registers = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in (report / "lean" / "StageA").glob(
+                    "RelationalRegisterRelationsChunk*.lean"
+                )
+            )
+            self.assertIn("IndirectCallPushClaim", generated_registers)
+            self.assertIn("IndirectCallPushClosed staticProofContext", generated_registers)
+            self.assertIn("apply indirectCallPushClosed_of_checked", generated_registers)
             dynamic_certificate = (
                 report
                 / "lean"

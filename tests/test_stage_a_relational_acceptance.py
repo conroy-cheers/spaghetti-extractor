@@ -806,7 +806,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                     {
                         "node_id": 2,
                         "calls": [1],
-                        "frame_offsets": [{"original": 0, "candidate": 0}],
+                        "frame_offsets": [{
+                            "original_register": "esp", "original": 0,
+                            "candidate_register": "esp", "candidate": 0,
+                        }],
                     },
                     {"node_id": 1, "calls": [], "frame_offsets": []},
                 ],
@@ -940,6 +943,97 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(
                 [step["kind"] for step in result["acceptance"]["node_steps"]],
                 ["external_call", "jump"],
+            )
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for import-thunk proofs")
+    def test_direct_import_thunk_checks_runtime_frame_and_environment_end_to_end(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            iat_address = 0x400000 + 0x2000 + 0x40
+            code = (
+                b"\xe8\x02\x00\x00\x00"
+                b"\xeb\xfe"
+                b"\xff\x25" + struct.pack("<I", iat_address)
+            )
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_import_image(code, symbol="GetTickCount"))
+            candidate.write_bytes(_pe32_import_image(code, symbol="GetTickCount"))
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": 0, "original_rva": 0x1000, "candidate_rva": 0x1000},
+                    {"id": 1, "original_rva": 0x1005, "candidate_rva": 0x1005},
+                    {"id": 2, "original_rva": 0x1007, "candidate_rva": 0x1007},
+                ],
+                "regions": [
+                    {
+                        "id": "caller", "root": True,
+                        "original": {"rva": 0x1000, "size": 5},
+                        "candidate": {"rva": 0x1000, "size": 5},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "continuation-loop", "root": False,
+                        "original": {"rva": 0x1005, "size": 2},
+                        "candidate": {"rva": 0x1005, "size": 2},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "get-tick-count-import-thunk", "root": False,
+                        "original": {"rva": 0x1007, "size": 6},
+                        "candidate": {"rva": 0x1007, "size": 6},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                ],
+                "machine_import_call_contracts": [{
+                    "id": 0,
+                    "import": {"dll": "kernel32.dll", "symbol": "GetTickCount"},
+                    "abi_template": "pe32-stdcall-v1",
+                    "argument_words": 0,
+                    "memory_effect": "none",
+                    "memory_footprints": [],
+                    "world_effect": "none",
+                }],
+                "padding": [],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                [step["kind"] for step in result["acceptance"]["node_steps"]],
+                ["call", "jump", "external_jump"],
+            )
+            sites = json.loads(
+                (prepared / "relational-external-call-sites.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(sites["counts"], {"candidates": 1, "gaps": 0})
+            self.assertEqual(
+                sites["candidates"][0]["dispatch_profile"],
+                "checked_direct_import_thunk",
             )
             lean = _run_lean_relational(
                 prepared / "lean", bundle="RelationalAcceptance"

@@ -514,6 +514,7 @@ def _relational_product_graph(
     external_proved_edge_ids = sorted({
         int(candidate["edge_index"])
         for candidate in (external_call_candidates or [])
+        if "edge_index" in candidate
     })
     locally_refined_edge_ids = sorted(
         set(proved_edge_ids).union(external_proved_edge_ids)
@@ -660,6 +661,7 @@ def _composition_progress(
     reachable_node_ids = [
         int(node_id) for node_id in evidence["declared_reachable_node_ids"]
     ]
+    reachable_node_id_set = set(reachable_node_ids)
     reachable_edge_ids = [
         int(edge_id) for edge_id in evidence["reachable_feasible_edge_ids"]
     ]
@@ -672,9 +674,11 @@ def _composition_progress(
     ]
     external_candidate_edge_ids = {
         int(site["edge_index"]) for site in external_call_sites["candidates"]
+        if "edge_index" in site
     }
     external_gap_edge_ids = {
         int(site["edge_index"]) for site in external_call_sites["gaps"]
+        if "edge_index" in site
     }
     reachable_external_candidate_edge_ids = sorted(
         set(reachable_external_edge_ids).intersection(external_candidate_edge_ids)
@@ -682,6 +686,16 @@ def _composition_progress(
     reachable_external_gap_edge_ids = sorted(
         set(reachable_external_edge_ids).intersection(external_gap_edge_ids)
     )
+    reachable_external_thunk_candidates = [
+        site for site in external_call_sites["candidates"]
+        if site.get("site_kind") == "direct_import_thunk"
+        and int(site["source_region_index"]) in reachable_node_id_set
+    ]
+    reachable_external_thunk_gaps = [
+        gap for gap in external_call_sites["gaps"]
+        if gap.get("site_kind") == "direct_import_thunk"
+        and int(gap["source_region_index"]) in reachable_node_id_set
+    ]
     environment_frontier_edge_ids = (
         []
         if acceptance.get("status") == "ready"
@@ -812,6 +826,22 @@ def _composition_progress(
                 "contract and paired environment refinement"
             ),
         })
+    if reachable_external_thunk_gaps:
+        next_work.append({
+            "category": "external_thunk_contract_frontier",
+            "count": len(reachable_external_thunk_gaps),
+            "example_ids": [
+                int(gap["source_region_index"])
+                for gap in reachable_external_thunk_gaps[:10]
+            ],
+            "reason_counts": dict(sorted(Counter(
+                str(gap["reason"]) for gap in reachable_external_thunk_gaps
+            ).items())),
+            "next_action": (
+                "close the first rooted direct import thunk with one matching "
+                "machine-level contract, ABI argument proof, and continuation-specific site"
+            ),
+        })
     if unsupported_instruction_issues:
         next_work.append({
             "category": "unsupported_instruction",
@@ -882,6 +912,12 @@ def _composition_progress(
             "rooted_external_contract_gap_edges": len(
                 reachable_external_gap_edge_ids
             ),
+            "rooted_external_thunk_refinement_candidates": len(
+                reachable_external_thunk_candidates
+            ),
+            "rooted_external_thunk_contract_gaps": len(
+                reachable_external_thunk_gaps
+            ),
             "rooted_environment_frontier_edges": len(
                 environment_frontier_edge_ids
             ),
@@ -909,7 +945,10 @@ def _composition_progress(
             "external_edge_ids": environment_frontier_edge_ids,
             "external_contract_gaps": [
                 gap for gap in external_call_sites["gaps"]
-                if int(gap["edge_index"]) in reachable_external_gap_edge_ids
+                if (
+                    "edge_index" in gap
+                    and int(gap["edge_index"]) in reachable_external_gap_edge_ids
+                ) or gap in reachable_external_thunk_gaps
             ],
             "acceptance_blockers": acceptance_blockers,
         },

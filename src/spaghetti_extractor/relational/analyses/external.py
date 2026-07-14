@@ -374,6 +374,281 @@ def _external_argument_relation_claims(
         })
     return claims, None
 
+
+def _direct_import_thunk_call_candidates(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+    *,
+    first_site_id: int,
+) -> dict[str, Any]:
+    contract_groups: dict[tuple[str, str, str | int], list[dict[str, Any]]] = {}
+    for item in contract.get("machine_import_call_contracts", []):
+        imported = item.get("import") or {}
+        identity = (
+            str(imported.get("dll", "")).lower(),
+            "symbol" if "symbol" in imported else "ordinal",
+            imported.get("symbol", imported.get("ordinal")),
+        )
+        contract_groups.setdefault(identity, []).append(item)
+
+    regions = contract.get("regions", [])
+    region_by_target = {
+        int(region.get("numeric_id", index)): index
+        for index, region in enumerate(regions)
+    }
+    candidates: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    seen_sites: set[tuple[int, int, tuple[str, str, str | int]]] = set()
+
+    def gap(
+        *,
+        call_edge_index: int,
+        caller_index: int,
+        thunk_index: int,
+        continuation_index: int | None,
+        reason: str,
+        imported: tuple[str, str, str | int] | None = None,
+    ) -> None:
+        imported_value = None
+        if imported is not None:
+            imported_value = {"dll": imported[0], imported[1]: imported[2]}
+        gaps.append({
+            "site_kind": "direct_import_thunk",
+            "call_edge_index": call_edge_index,
+            "source_region_index": thunk_index,
+            "caller_region_index": caller_index,
+            "target_region_index": continuation_index,
+            "reason": reason,
+            "original_import": imported_value,
+            "candidate_import": imported_value,
+            "dispatch_profile": "checked_direct_import_thunk",
+        })
+
+    for call_edge_index, edge in enumerate(register_relations.get("edges", [])):
+        if edge.get("direct_call_push_claim") is None:
+            continue
+        caller_index = int(edge["source_region_index"])
+        thunk_index = int(edge["target_region_index"])
+        if not (
+            0 <= caller_index < len(behaviors)
+            and 0 <= thunk_index < len(behaviors)
+            and thunk_index < len(regions)
+        ):
+            gap(
+                call_edge_index=call_edge_index,
+                caller_index=caller_index,
+                thunk_index=thunk_index,
+                continuation_index=None,
+                reason="direct import-thunk call references an invalid region",
+            )
+            continue
+        caller_original = behaviors[caller_index].get("original_ir") or {}
+        caller_candidate = behaviors[caller_index].get("candidate_ir") or {}
+        caller_original_outcome = caller_original.get("outcome") or {}
+        caller_candidate_outcome = caller_candidate.get("outcome") or {}
+        expected_thunk_target = int(regions[thunk_index].get("numeric_id", thunk_index))
+        if (
+            caller_original_outcome.get("op") != "call"
+            or caller_candidate_outcome.get("op") != "call"
+            or caller_original_outcome.get("target") != expected_thunk_target
+            or caller_candidate_outcome.get("target") != expected_thunk_target
+            or caller_original_outcome.get("continuation")
+                != caller_candidate_outcome.get("continuation")
+        ):
+            continue
+        continuation_target = _integer(caller_original_outcome.get("continuation"))
+        continuation_index = (
+            region_by_target.get(continuation_target)
+            if continuation_target is not None else None
+        )
+        if continuation_index is None:
+            gap(
+                call_edge_index=call_edge_index,
+                caller_index=caller_index,
+                thunk_index=thunk_index,
+                continuation_index=None,
+                reason="direct import-thunk continuation is not mapped",
+            )
+            continue
+
+        original = behaviors[thunk_index].get("original_ir") or {}
+        candidate = behaviors[thunk_index].get("candidate_ir") or {}
+        original_outcome = original.get("outcome") or {}
+        candidate_outcome = candidate.get("outcome") or {}
+        original_target = _semantic_external_target_identity(
+            original_outcome.get("import")
+        )
+        candidate_target = _semantic_external_target_identity(
+            candidate_outcome.get("import")
+        )
+        if (
+            original_outcome.get("op") != "external_jump"
+            or candidate_outcome.get("op") != "external_jump"
+        ):
+            continue
+        if original_target is None or original_target != candidate_target:
+            gap(
+                call_edge_index=call_edge_index,
+                caller_index=caller_index,
+                thunk_index=thunk_index,
+                continuation_index=continuation_index,
+                reason="original and candidate import-thunk identities do not match",
+                imported=original_target,
+            )
+            continue
+        machine_contracts = contract_groups.get(original_target, [])
+        if len(machine_contracts) != 1:
+            gap(
+                call_edge_index=call_edge_index,
+                caller_index=caller_index,
+                thunk_index=thunk_index,
+                continuation_index=continuation_index,
+                reason="no unique machine import call contract matches the thunk",
+                imported=original_target,
+            )
+            continue
+        machine_contract = machine_contracts[0]
+        site_key = (thunk_index, continuation_index, original_target)
+        if site_key in seen_sites:
+            continue
+        seen_sites.add(site_key)
+
+        blocker = None
+        if original.get("writes", []) or candidate.get("writes", []):
+            blocker = "import thunk performs memory writes before external dispatch"
+        elif original_outcome.get("arguments") != candidate_outcome.get("arguments"):
+            blocker = "original and candidate import-thunk arguments differ"
+        elif original.get("x87") != candidate.get("x87"):
+            blocker = "import thunk has differing x87 transformations"
+        elif original.get("flags") != candidate.get("flags"):
+            blocker = "import thunk has differing flag transformations"
+        source = regions[thunk_index]
+        if source.get("bounds") or source.get("address_separations"):
+            blocker = blocker or (
+                "import-thunk boundary bounds or address separations require an "
+                "explicit normalized-stack transfer"
+            )
+        if source.get("input_import_relations") or source.get(
+            "input_dynamic_range_relations"
+        ):
+            blocker = blocker or (
+                "import-thunk boundary import or dynamic register transfer is not implemented"
+            )
+
+        argument_claims = None
+        if blocker is None:
+            argument_claims, blocker = _external_argument_relation_claims(
+                source,
+                original_outcome.get("arguments", []),
+                candidate_outcome.get("arguments", []),
+            )
+
+        boundary_windows = [
+            {
+                "range_id": int(window["range_id"]),
+                "original_register": str(window["original_register"]),
+                "candidate_register": str(window["candidate_register"]),
+                "bytes_below": int(window.get("bytes_below", 0)) + 4,
+                "bytes_above": int(window.get("bytes_above", 0)) - 4,
+                "source": "import_thunk_return_slot_normalization",
+            }
+            for window in source.get("stack_windows", [])
+            if int(window.get("bytes_above", 0)) >= 4
+        ]
+        boundary_invariant = {
+            "register_relations": [
+                relation for relation in source.get("input_relations", [])
+                if str(relation.get("original")) != "esp"
+                and str(relation.get("candidate")) != "esp"
+            ],
+            "import_register_relations": [],
+            "dynamic_register_range_relations": [],
+            "bounds": [],
+            "flag_bits": source.get("flag_inputs", []),
+            "address_separations": [],
+            "stack_windows": boundary_windows,
+        }
+        boundary_original = json.loads(json.dumps(original))
+        boundary_candidate = json.loads(json.dumps(candidate))
+        for boundary in (boundary_original, boundary_candidate):
+            registers = boundary.setdefault("registers", {})
+            esp = registers.get("esp")
+            if not isinstance(esp, dict):
+                blocker = blocker or "import-thunk ESP is not a symbolic expression"
+                continue
+            registers["esp"] = _semantic_add_word_offset(esp, 4)
+        stack_transfer_claims = None
+        if blocker is None:
+            stack_transfer_claims = _stack_window_transfer_claims(
+                source,
+                {"stack_windows": boundary_windows},
+                {
+                    "original_ir": boundary_original,
+                    "candidate_ir": boundary_candidate,
+                },
+            )
+            if stack_transfer_claims is None:
+                blocker = "import-thunk stack window cannot cross return-slot normalization"
+
+        selected_output_claims: list[dict[str, Any]] = []
+        if blocker is None:
+            output_claims = register_relations.get("regions", [])[thunk_index].get(
+                "output_claims", []
+            )
+            for relation in boundary_invariant["register_relations"]:
+                matches = [
+                    claim for claim in output_claims
+                    if claim.get("output") == relation
+                    and claim.get("kind") != "exact_memory"
+                ]
+                if len(matches) != 1:
+                    blocker = (
+                        "import-thunk boundary register relation lacks one "
+                        "non-memory output claim"
+                    )
+                    break
+                selected_output_claims.append(matches[0])
+
+        if blocker is not None:
+            gap(
+                call_edge_index=call_edge_index,
+                caller_index=caller_index,
+                thunk_index=thunk_index,
+                continuation_index=continuation_index,
+                reason=blocker,
+                imported=original_target,
+            )
+            continue
+
+        site_id = first_site_id + len(candidates)
+        candidates.append({
+            "id": site_id,
+            "site_kind": "direct_import_thunk",
+            "call_edge_index": call_edge_index,
+            "source_region_index": thunk_index,
+            "caller_region_index": caller_index,
+            "target_region_index": continuation_index,
+            "source_target_id": int(source.get("numeric_id", thunk_index)),
+            "continuation_target_id": int(continuation_target),
+            "machine_contract_id": int(machine_contract["id"]),
+            "dispatch_profile": "checked_direct_import_thunk",
+            "argument_relation_claims": argument_claims,
+            "import_transfer_claims": [],
+            "dynamic_transfer_claims": [],
+            "boundary_invariant": boundary_invariant,
+            "register_output_claims": selected_output_claims,
+            "stack_transfer_claims": stack_transfer_claims,
+            "argument_values": [
+                _semantic_constant_word(argument)
+                for argument in original_outcome.get("arguments", [])
+            ],
+            "argument_expressions": original_outcome.get("arguments", []),
+            "proof_profile": "paired_direct_import_thunk_v1",
+            "status": "candidate_requires_lean_replay",
+        })
+    return {"candidates": candidates, "gaps": gaps}
+
 def _external_call_site_candidates(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
@@ -733,6 +1008,14 @@ def _external_call_site_candidates(
             ),
             "status": "candidate_requires_lean_replay",
         })
+    thunk_sites = _direct_import_thunk_call_candidates(
+        contract,
+        behaviors,
+        register_relations,
+        first_site_id=len(register_relations.get("edges", [])),
+    )
+    candidates.extend(thunk_sites["candidates"])
+    gaps.extend(thunk_sites["gaps"])
     return {
         "format": "stage-a-relational-external-call-sites-v1",
         "status": "incomplete" if gaps else "candidate_requires_lean_replay",
@@ -939,28 +1222,42 @@ def _attach_machine_import_call_contract_analysis(
 def _attach_external_call_site_analysis(
     proof_ir: dict[str, Any], analysis: dict[str, Any]
 ) -> dict[str, Any]:
-    obligations = [
-        {
-            "id": f"external-call-edge:{site['edge_index']}",
-            "kind": "external_call_product_edge_refinement",
+    obligations = []
+    for site in analysis["candidates"]:
+        is_thunk = site.get("site_kind") == "direct_import_thunk"
+        obligation = {
+            "id": (
+                f"external-jump-site:{site['id']}" if is_thunk
+                else f"external-call-edge:{site['edge_index']}"
+            ),
+            "kind": (
+                "external_jump_control_refinement" if is_thunk
+                else "external_call_product_edge_refinement"
+            ),
             "status": "pending_lean",
-            "edge_id": int(site["edge_index"]),
             "source_region_index": int(site["source_region_index"]),
             "target_region_index": int(site["target_region_index"]),
             "machine_contract_id": int(site["machine_contract_id"]),
             "repair_class": "paired_external_call_refinement",
             "blocker": (
+                "the generated import-thunk boundary and paired-environment refinement "
+                "theorems have not yet been replayed by Lean"
+                if is_thunk else
                 "the generated local call-boundary and paired-environment refinement "
                 "theorems have not yet been replayed by Lean"
             ),
             "next_action": (
+                "build the generated external-jump site theorem, then use it in the "
+                "checked runtime-frame continuation step"
+                if is_thunk else
                 "build the generated external-call edge theorem, then include its "
                 "product-edge refinement in the checked external-call certificate"
             ),
             "analysis": site,
         }
-        for site in analysis["candidates"]
-    ]
+        if not is_thunk:
+            obligation["edge_id"] = int(site["edge_index"])
+        obligations.append(obligation)
     gap_actions = {
         "no unique machine import call contract matches the call": (
             "declare one machine-level contract for the matched import, including "
@@ -1008,21 +1305,31 @@ def _attach_external_call_site_analysis(
             )
         return "supply the missing machine-level external-call evidence and regenerate"
 
-    obligations.extend(
-        {
-            "id": f"external-call-edge:{gap['edge_index']}",
-            "kind": "external_call_product_edge_refinement",
+    for gap_index, gap in enumerate(analysis["gaps"]):
+        is_thunk = gap.get("site_kind") == "direct_import_thunk"
+        obligation = {
+            "id": (
+                f"external-jump-gap:{gap_index}:{gap.get('call_edge_index', -1)}"
+                if is_thunk else f"external-call-edge:{gap['edge_index']}"
+            ),
+            "kind": (
+                "external_jump_control_refinement" if is_thunk
+                else "external_call_product_edge_refinement"
+            ),
             "status": "incomplete",
-            "edge_id": int(gap["edge_index"]),
             "source_region_index": int(gap["source_region_index"]),
-            "target_region_index": int(gap["target_region_index"]),
+            "target_region_index": (
+                int(gap["target_region_index"])
+                if gap.get("target_region_index") is not None else None
+            ),
             "repair_class": "external_call_contract_gap",
             "blocker": str(gap["reason"]),
             "next_action": gap_next_action(gap),
             "analysis": gap,
         }
-        for gap in analysis["gaps"]
-    )
+        if not is_thunk:
+            obligation["edge_id"] = int(gap["edge_index"])
+        obligations.append(obligation)
     attached = dict(proof_ir)
     attached["external_call_sites"] = analysis
     attached["external_call_summary"] = analysis["counts"]

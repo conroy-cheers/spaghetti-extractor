@@ -18,6 +18,12 @@ structure WorldExternalResult where
 structure WorldExternalEnvironment where
   result : Nat -> WorldExternalEvent -> WorldExternalResult
 
+def normalizeImportReturnSlotState (state : MachineState) : MachineState := {
+  state with
+  registers := state.registers.set .esp
+    (state.registers.esp + BitVec.ofNat 32 4)
+}
+
 structure ExternalCallSiteContract where
   id : Nat
   sourceTargetId : Nat
@@ -399,6 +405,110 @@ def RelationalRegisterExternalCallRefinement (context : StaticProofContext)
           some candidateExternalized ∧
         ExternalCallTransitionClosed context site contract edge sourceInvariant
           originalExternalized candidateExternalized
+
+def ExternalJumpShapeClosed (context : StaticProofContext)
+    (site : ExternalCallSiteContract) (contract : MachineImportCallContract)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : SymbolicBehavior) : Prop :=
+  forall world originalState candidateState,
+    StateRel context world region.inputInvariant originalState candidateState ->
+    match evalBehavior false region.targets originalState originalBehavior,
+        evalBehavior true region.targets candidateState candidateBehavior with
+    | some originalResult, some candidateResult =>
+        exists originalArguments candidateArguments,
+          originalResult.outcome = .externalJump contract.imported originalArguments ∧
+          candidateResult.outcome = .externalJump contract.imported candidateArguments ∧
+          externalCallArgumentsRelated context world
+            originalArguments candidateArguments = true
+    | _, _ => False
+
+def ExternalJumpBoundaryTransferClosed (context : StaticProofContext)
+    (site : ExternalCallSiteContract) (region : RegionRelation)
+    (originalBehavior candidateBehavior : SymbolicBehavior) : Prop :=
+  forall world originalState candidateState originalResult candidateResult,
+    StateRel context world region.inputInvariant originalState candidateState ->
+    evalBehavior false region.targets originalState originalBehavior =
+      some originalResult ->
+    evalBehavior true region.targets candidateState candidateBehavior =
+      some candidateResult ->
+    ExternalBoundaryStateRel context world site.boundaryInvariant
+      (normalizeImportReturnSlotState
+        (originalResult.nextMachineState originalState))
+      (normalizeImportReturnSlotState
+        (candidateResult.nextMachineState candidateState))
+
+def ExternalJumpTransitionClosed (context : StaticProofContext)
+    (site : ExternalCallSiteContract) (contract : MachineImportCallContract)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : SymbolicBehavior) : Prop :=
+  forall world originalState candidateState,
+    StateRel context world region.inputInvariant originalState candidateState ->
+    match evalBehavior false region.targets originalState originalBehavior,
+        evalBehavior true region.targets candidateState candidateBehavior with
+    | some originalResult, some candidateResult =>
+        exists originalArguments candidateArguments,
+          originalResult.outcome = .externalJump contract.imported originalArguments ∧
+          candidateResult.outcome = .externalJump contract.imported candidateArguments ∧
+          ExternalCallBoundaryRelated context site contract
+            {
+              siteId := site.id
+              imported := contract.imported
+              arguments := originalArguments
+              state := normalizeImportReturnSlotState
+                (originalResult.nextMachineState originalState)
+              world
+            }
+            {
+              siteId := site.id
+              imported := contract.imported
+              arguments := candidateArguments
+              state := normalizeImportReturnSlotState
+                (candidateResult.nextMachineState candidateState)
+              world
+            }
+    | _, _ => False
+
+theorem externalJumpTransitionClosed_of_shape_and_transfer
+    (context : StaticProofContext)
+    (site : ExternalCallSiteContract) (contract : MachineImportCallContract)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (shape : ExternalJumpShapeClosed context site contract region
+      originalBehavior candidateBehavior)
+    (transfer : ExternalJumpBoundaryTransferClosed context site region
+      originalBehavior candidateBehavior) :
+    ExternalJumpTransitionClosed context site contract region
+      originalBehavior candidateBehavior := by
+  intro world originalState candidateState related
+  have shaped := shape world originalState candidateState related
+  cases originalEval : evalBehavior false region.targets originalState
+      originalBehavior with
+  | none => simp [originalEval] at shaped
+  | some originalResult =>
+      cases candidateEval : evalBehavior true region.targets candidateState
+          candidateBehavior with
+      | none => simp [originalEval, candidateEval] at shaped
+      | some candidateResult =>
+          simp only [originalEval, candidateEval] at shaped ⊢
+          rcases shaped with
+            ⟨originalArguments, candidateArguments, originalOutcome,
+              candidateOutcome, argumentsRelated⟩
+          refine ⟨originalArguments, candidateArguments, originalOutcome,
+            candidateOutcome, rfl, rfl, rfl, rfl, rfl, ?_, argumentsRelated⟩
+          exact transfer world originalState candidateState originalResult
+            candidateResult related originalEval candidateEval
+
+def RelationalExternalJumpRefinement (context : StaticProofContext)
+    (site : ExternalCallSiteContract) (region : RegionRelation) : Prop :=
+  exists contract originalBehavior candidateBehavior,
+    machineImportCallContractById? context site.machineContractId = some contract ∧
+    site.sourceTargetId = region.id ∧
+    regionBehaviorWithMachineCallContracts context.originalPe context.originalImports
+      context.machineImportCallContracts region.original = some originalBehavior ∧
+    regionBehaviorWithMachineCallContracts context.candidatePe context.candidateImports
+      context.machineImportCallContracts region.candidate = some candidateBehavior ∧
+    ExternalJumpTransitionClosed context site contract region
+      originalBehavior candidateBehavior
 
 def RelationalExternalProductEdgeRefinement (context : StaticProofContext)
     (graph : RelationalProductGraph) (edgeId : Nat)

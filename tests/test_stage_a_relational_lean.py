@@ -50,6 +50,15 @@ def behavior : SymbolicBehavior := {
   outcome := some (.externalCall imported [] 8192)
 }
 
+def thunkBehavior : SymbolicBehavior := {
+  initialSymbolic with
+  writes := [
+    (.inputReg .esp, .constant 4202496),
+    ((Expr.inputReg .esp).offset 4, .constant 4259940)
+  ]
+  outcome := some (.externalJump imported [])
+}
+
 def indirectBehavior : SymbolicBehavior := {
   initialSymbolic with
   registers := initialSymbolic.registers.set .esp
@@ -87,6 +96,13 @@ def recoveredArgumentIsDirectWord : Bool :=
       arguments == [.constant 4259940]
   | _ => false
 
+def recoveredThunkArgumentSkipsReturnSlot : Bool :=
+  match applyMachineImportCallContracts [contract] thunkBehavior with
+  | some { outcome := some (.externalJump recoveredImport arguments), .. } =>
+      normalizeImport recoveredImport == contract.imported &&
+        arguments == [.constant 4259940]
+  | _ => false
+
 def indirectCallExternalized : Bool :=
   match externalizeRegisterImportCall contract .ebp indirectBehavior with
   | some externalized =>
@@ -99,6 +115,11 @@ def indirectCallExternalized : Bool :=
 example : contract.shapeValid = true := by decide
 example : recoveredArgumentChecked = true := by decide
 example : recoveredArgumentIsDirectWord = true := by decide
+example : recoveredThunkArgumentSkipsReturnSlot = true := by decide
+example :
+    applyMachineImportCallContracts
+      [{ contract with stackArgumentOffsets := [2^32 - 4] }] thunkBehavior = none := by
+  decide
 example : applyMachineImportCallContracts [contract, contract] behavior = none := by decide
 example : indirectCallExternalized = true := by decide
 example : externalizeRegisterImportCall contract .edi indirectBehavior = none := by decide
@@ -117,6 +138,55 @@ end StageA.MachineCallBoundary
             self.assertEqual(decode["status"], "checked", decode)
             result = _run_lean_relational(
                 lean_dir, bundle="MachineCallBoundary"
+            )
+            self.assertEqual(result["status"], "checked", result)
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for import-thunk proofs")
+    def test_import_thunk_boundary_is_checked_by_lean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lean_dir = Path(temporary)
+            stage_a = lean_dir / "StageA"
+            stage_a.mkdir()
+            source_root = (
+                Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
+            )
+            for module in RELATIONAL_KERNEL_MODULES:
+                shutil.copyfile(
+                    source_root / f"{module}.lean",
+                    stage_a / f"{module}.lean",
+                )
+            (stage_a / "ImportThunkBoundary.lean").write_text(
+                """import StageA.RelationalCertificates
+
+namespace StageA.ImportThunkBoundary
+
+open StageA.Formal StageA.Relational
+
+example (state : MachineState) :
+    (normalizeImportReturnSlotState state).registers.esp =
+      state.registers.esp + BitVec.ofNat 32 4 := by
+  rfl
+
+example (context : StaticProofContext) (site : ExternalCallSiteContract)
+    (continuation : Nat) (imported : ExternalTarget)
+    (different : Not (site.continuationTargetId = continuation)) :
+    resolveExternalCallSite context [site] site.sourceTargetId continuation imported =
+      none := by
+  simp [resolveExternalCallSite, different]
+
+example (program : DecodedWorldProgram) (source : Nat) (state : MachineState)
+    (eventIndex : Nat) (world : RelationalWorld) (imported : ExternalTarget)
+    (arguments : List Word) :
+    (transitionFromWorldOutcome program source state [] eventIndex world
+      (.externalJump imported arguments)).next = .fault := by
+  rfl
+
+end StageA.ImportThunkBoundary
+""",
+                encoding="utf-8",
+            )
+            result = _run_lean_relational(
+                lean_dir, bundle="ImportThunkBoundary"
             )
             self.assertEqual(result["status"], "checked", result)
 

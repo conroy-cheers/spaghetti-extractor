@@ -495,6 +495,7 @@ class StageARelationalStateTests(StageARelationalTestBase):
             "machine_import_call_contracts": [{
                 "id": 0,
                 "import": {"dll": "msvcrt.dll", "symbol": "opaque_leaf"},
+                "stack_argument_offsets": [0, 4],
                 "stack_result_delta": 0,
             }],
             "regions": [
@@ -564,7 +565,15 @@ class StageARelationalStateTests(StageARelationalTestBase):
             (region["stack_windows"][0]["bytes_below"],
              region["stack_windows"][0]["bytes_above"])
             for region in refined["regions"]
-        ], [(16, 1), (0, 4), (0, 8)])
+        ], [(16, 1), (0, 4), (0, 12)])
+        self.assertIn(
+            "import_thunk_boundary_seed",
+            refined["regions"][2]["stack_windows"][0]["source"],
+        )
+        self.assertIn(
+            "import_thunk_return_slot_seed",
+            refined["regions"][2]["stack_windows"][0]["source"],
+        )
         self.assertNotIn(
             "direct_call_window_requires_return_summary",
             {row["reason"] for row in analysis["frontier"]},
@@ -580,6 +589,160 @@ class StageARelationalStateTests(StageARelationalTestBase):
             "direct_call_window_requires_return_summary",
             {row["reason"] for row in stopped_analysis["frontier"]},
         )
+
+    def test_direct_import_thunk_sites_are_continuation_specific_and_fail_closed(self):
+        stack = {"op": "input_reg", "reg": "esp"}
+        argument = {
+            "op": "read32",
+            "address": {
+                "op": "add", "left": stack,
+                "right": {"op": "constant", "value": 4},
+            },
+        }
+        imported = {
+            "dll": list(b"kernel32.dll"),
+            "name": {"op": "symbol", "bytes": list(b"GetLastError")},
+        }
+        relations = [
+            {"original": register, "candidate": register,
+             "relation": "related_word"}
+            for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+        ]
+        contract = {
+            "machine_import_call_contracts": [{
+                "id": 7,
+                "import": {"dll": "kernel32.dll", "symbol": "GetLastError"},
+                "stack_argument_offsets": [0],
+                "stack_result_delta": 0,
+                "preserved_registers": ["ebx", "esi", "edi", "ebp"],
+                "clobbered_registers": ["eax", "ecx", "edx"],
+                "memory_effect": "none",
+                "world_effect": "none",
+            }],
+            "regions": [
+                {"id": "caller", "numeric_id": 0},
+                {"id": "continuation", "numeric_id": 1},
+                {
+                    "id": "import-thunk", "numeric_id": 2,
+                    "input_relations": relations,
+                    "input_import_relations": [],
+                    "input_dynamic_range_relations": [],
+                    "bounds": [], "address_separations": [], "flag_inputs": [],
+                    "stack_windows": [{
+                        "range_id": 0,
+                        "original_register": "esp",
+                        "candidate_register": "esp",
+                        "bytes_below": 0,
+                        "bytes_above": 12,
+                    }],
+                },
+            ],
+        }
+        caller = {
+            "registers": {"esp": stack},
+            "writes": [],
+            "outcome": {"op": "call", "target": 2, "continuation": 1},
+        }
+        thunk = {
+            "registers": {
+                register: {"op": "input_reg", "reg": register}
+                for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+            },
+            "writes": [], "x87": {}, "flags": {},
+            "outcome": {
+                "op": "external_jump", "import": imported,
+                "arguments": [argument],
+            },
+        }
+        behaviors = [
+            {"original_ir": caller, "candidate_ir": caller},
+            {"original_ir": {}, "candidate_ir": {}},
+            {"original_ir": thunk, "candidate_ir": thunk},
+        ]
+        output_claims = [
+            {"kind": "identity", "input": relation, "output": relation}
+            for relation in relations
+        ]
+        register_relations = {
+            "edges": [{
+                "source_region_index": 0,
+                "target_region_index": 2,
+                "direct_call_push_claim": {
+                    "profile": "mapped_direct_call_push_v1",
+                },
+            }],
+            "regions": [{}, {}, {"output_claims": output_claims}],
+        }
+
+        analysis = _direct_import_thunk_call_candidates(
+            contract, behaviors, register_relations, first_site_id=10
+        )
+        self.assertEqual(len(analysis["candidates"]), 1)
+        self.assertEqual(analysis["gaps"], [])
+        site = analysis["candidates"][0]
+        self.assertEqual(
+            (site["id"], site["source_target_id"], site["continuation_target_id"]),
+            (10, 2, 1),
+        )
+        self.assertEqual(
+            site["argument_relation_claims"][0]["kind"], "stack_word_read"
+        )
+        self.assertEqual(
+            site["boundary_invariant"]["stack_windows"][0]["bytes_below"], 4
+        )
+        self.assertEqual(
+            site["boundary_invariant"]["stack_windows"][0]["bytes_above"], 8
+        )
+
+        missing_contract = json.loads(json.dumps(contract))
+        missing_contract["machine_import_call_contracts"] = []
+        incomplete = _direct_import_thunk_call_candidates(
+            missing_contract, behaviors, register_relations, first_site_id=10
+        )
+        self.assertEqual(incomplete["candidates"], [])
+        self.assertIn("no unique machine import call contract", incomplete["gaps"][0]["reason"])
+
+        mismatched = json.loads(json.dumps(behaviors))
+        mismatched[2]["candidate_ir"]["outcome"]["import"]["name"]["bytes"] = list(
+            b"SetLastError"
+        )
+        identity_gap = _direct_import_thunk_call_candidates(
+            contract, mismatched, register_relations, first_site_id=10
+        )
+        self.assertEqual(identity_gap["candidates"], [])
+        self.assertIn("identities do not match", identity_gap["gaps"][0]["reason"])
+
+        differing_arguments = json.loads(json.dumps(behaviors))
+        differing_arguments[2]["candidate_ir"]["outcome"]["arguments"][0][
+            "address"
+        ]["right"]["value"] = 8
+        argument_gap = _direct_import_thunk_call_candidates(
+            contract, differing_arguments, register_relations, first_site_id=10
+        )
+        self.assertEqual(argument_gap["candidates"], [])
+        self.assertIn("arguments differ", argument_gap["gaps"][0]["reason"])
+
+        unmapped_continuation = json.loads(json.dumps(behaviors))
+        for side in ("original_ir", "candidate_ir"):
+            unmapped_continuation[0][side]["outcome"]["continuation"] = 99
+        continuation_gap = _direct_import_thunk_call_candidates(
+            contract, unmapped_continuation, register_relations, first_site_id=10
+        )
+        self.assertEqual(continuation_gap["candidates"], [])
+        self.assertIn(
+            "continuation is not mapped", continuation_gap["gaps"][0]["reason"]
+        )
+
+        ambiguous_abi = json.loads(json.dumps(contract))
+        ambiguous_abi["machine_import_call_contracts"].append(
+            json.loads(json.dumps(ambiguous_abi["machine_import_call_contracts"][0]))
+        )
+        ambiguous_abi["machine_import_call_contracts"][1]["id"] = 8
+        abi_gap = _direct_import_thunk_call_candidates(
+            ambiguous_abi, behaviors, register_relations, first_site_id=10
+        )
+        self.assertEqual(abi_gap["candidates"], [])
+        self.assertIn("no unique machine import call contract", abi_gap["gaps"][0]["reason"])
 
     def test_register_import_call_is_externalized_only_with_checked_target(self):
         stack = {"op": "input_reg", "reg": "esp"}
@@ -1458,10 +1621,13 @@ class StageARelationalStateTests(StageARelationalTestBase):
             return_behavior,
         ]
         rows = [
-            {"region_index": 0, "is_return": False, "return_pop_claim": None},
-            {"region_index": 1, "is_return": False, "return_pop_claim": None},
+            {"region_index": 0, "is_return": False, "return_pop_claim": None,
+             "outputs": [{"original": "esp", "candidate": "esp"}]},
+            {"region_index": 1, "is_return": False, "return_pop_claim": None,
+             "outputs": [{"original": "esp", "candidate": "esp"}]},
             {"region_index": 2, "is_return": True,
-             "return_pop_claim": _return_pop_claim(return_behavior)},
+             "return_pop_claim": _return_pop_claim(return_behavior),
+             "outputs": [{"original": "esp", "candidate": "esp"}]},
         ]
         edges = [
             {
@@ -1485,14 +1651,187 @@ class StageARelationalStateTests(StageARelationalTestBase):
         self.assertTrue(analysis["converged"])
         self.assertEqual(analysis["seed_edges"], 1)
         self.assertEqual(rows[1]["return_slot_offsets"], [
-            {"original": 0, "candidate": 0},
+            {
+                "original_register": "esp", "original": 0,
+                "candidate_register": "esp", "candidate": 0,
+            },
         ])
         self.assertEqual(rows[2]["return_slot_offsets"], [
-            {"original": 8, "candidate": 8},
+            {
+                "original_register": "esp", "original": 8,
+                "candidate_register": "esp", "candidate": 8,
+            },
         ])
         self.assertEqual(rows[2]["return_slot_status"], "satisfied")
         self.assertEqual(len(edges[1]["return_slot_transfer_claims"]), 1)
         self.assertEqual(len(rows[2]["return_pop_frame_claims"]), 1)
+
+    def test_return_slot_contracts_preserve_outer_frame_on_nested_call(self):
+        def offset(value):
+            operation = "add" if value >= 0 else "sub"
+            return {
+                "op": operation,
+                "left": {"op": "input_reg", "reg": "esp"},
+                "right": {"op": "constant", "value": abs(value)},
+            }
+
+        behaviors = [
+            {
+                "original_ir": {"registers": {"esp": offset(-4)}},
+                "candidate_ir": {"registers": {"esp": offset(-4)}},
+            },
+            {
+                "original_ir": {"registers": {"esp": offset(-4)}},
+                "candidate_ir": {"registers": {"esp": offset(-4)}},
+            },
+            {
+                "original_ir": {"registers": {"esp": offset(0)}},
+                "candidate_ir": {"registers": {"esp": offset(0)}},
+            },
+        ]
+        rows = [
+            {"region_index": index, "is_return": False,
+             "return_pop_claim": None,
+             "outputs": [{"original": "esp", "candidate": "esp"}]}
+            for index in range(3)
+        ]
+        edges = [
+            {
+                "source_region_index": 0, "target_region_index": 1,
+                "kind": "call", "environment_barrier": False,
+                "requires_call_stack_proof": False,
+                "direct_call_push_claim": {
+                    "continuation_region_index": 0,
+                },
+            },
+            {
+                "source_region_index": 1, "target_region_index": 2,
+                "kind": "call", "environment_barrier": False,
+                "requires_call_stack_proof": False,
+                "direct_call_push_claim": {
+                    "continuation_region_index": 1,
+                },
+            },
+        ]
+
+        analysis = _attach_return_slot_contracts(behaviors, rows, edges)
+
+        self.assertTrue(analysis["converged"])
+        self.assertEqual(rows[1]["return_slot_offsets"], [
+            {
+                "original_register": "esp", "original": 0,
+                "candidate_register": "esp", "candidate": 0,
+            },
+        ])
+        self.assertEqual(rows[2]["return_slot_offsets"], [
+            {
+                "original_register": "esp", "original": 0,
+                "candidate_register": "esp", "candidate": 0,
+            },
+            {
+                "original_register": "esp", "original": 4,
+                "candidate_register": "esp", "candidate": 4,
+            },
+        ])
+        self.assertEqual(edges[1]["return_slot_transfer_claims"], [{
+            "profile": "return_slot_affine_transfer_v2",
+            "source": {
+                "original_register": "esp", "original": 0,
+                "candidate_register": "esp", "candidate": 0,
+            },
+            "target": {
+                "original_register": "esp", "original": 4,
+                "candidate_register": "esp", "candidate": 4,
+            },
+            "original_output_witness": {
+                "kind": "sub_right", "prior": {"kind": "input"}, "value": 4,
+            },
+            "candidate_output_witness": {
+                "kind": "sub_right", "prior": {"kind": "input"}, "value": 4,
+            },
+        }])
+
+    def test_return_slot_contracts_follow_frame_pointer_round_trip(self):
+        def input_register(register):
+            return {"op": "input_reg", "reg": register}
+
+        behaviors = [
+            {
+                "original_ir": {"registers": {"esp": input_register("esp")}},
+                "candidate_ir": {"registers": {"esp": input_register("esp")}},
+            },
+            {
+                "original_ir": {"registers": {
+                    "esp": input_register("esp"), "ebp": input_register("esp"),
+                }},
+                "candidate_ir": {"registers": {
+                    "esp": input_register("esp"), "ebp": input_register("esp"),
+                }},
+            },
+            {
+                "original_ir": {"registers": {
+                    "esp": input_register("ebp"), "ebp": input_register("ebp"),
+                }},
+                "candidate_ir": {"registers": {
+                    "esp": input_register("ebp"), "ebp": input_register("ebp"),
+                }},
+            },
+            {
+                "original_ir": {"registers": {
+                    "esp": input_register("esp"), "ebp": input_register("ebp"),
+                }},
+                "candidate_ir": {"registers": {
+                    "esp": input_register("esp"), "ebp": input_register("ebp"),
+                }},
+            },
+        ]
+        rows = [{
+            "region_index": index,
+            "is_return": False,
+            "return_pop_claim": None,
+            "outputs": [
+                {"original": "esp", "candidate": "esp"},
+                {"original": "ebp", "candidate": "ebp"},
+            ],
+        } for index in range(4)]
+        edges = [
+            {
+                "source_region_index": 0, "target_region_index": 1,
+                "kind": "call", "environment_barrier": False,
+                "requires_call_stack_proof": False,
+                "direct_call_push_claim": {"continuation_region_index": 0},
+            },
+            {
+                "source_region_index": 1, "target_region_index": 2,
+                "kind": "jump", "environment_barrier": False,
+                "requires_call_stack_proof": False,
+                "direct_call_push_claim": None,
+            },
+            {
+                "source_region_index": 2, "target_region_index": 3,
+                "kind": "jump", "environment_barrier": False,
+                "requires_call_stack_proof": False,
+                "direct_call_push_claim": None,
+            },
+        ]
+
+        analysis = _attach_return_slot_contracts(behaviors, rows, edges)
+
+        self.assertTrue(analysis["converged"])
+        self.assertIn({
+            "original_register": "ebp", "original": 0,
+            "candidate_register": "ebp", "candidate": 0,
+        }, rows[3]["return_slot_offsets"])
+        self.assertIn({
+            "original_register": "esp", "original": 0,
+            "candidate_register": "esp", "candidate": 0,
+        }, rows[3]["return_slot_offsets"])
+        frame_pointer_claims = [
+            claim for claim in edges[2]["return_slot_transfer_claims"]
+            if claim["source"]["original_register"] == "ebp"
+            and claim["target"]["original_register"] == "esp"
+        ]
+        self.assertEqual(len(frame_pointer_claims), 1)
 
     def test_exact_memory_register_claim_requires_empty_global_value_map(self):
         registers = {

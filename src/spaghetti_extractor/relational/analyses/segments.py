@@ -286,6 +286,36 @@ def _attach_register_relation_analysis(
         for edge in register_relations["edges"]
         if edge["kind"] == "call" and not edge.get("indirect_target_profile")
     ]
+    indirect_call_push_obligations = [
+        {
+            "id": (
+                "indirect-call-push:"
+                f"{edge['source_region_index']}:{edge['target_region_index']}"
+            ),
+            "kind": "indirect_call_push",
+            "status": (
+                "candidate_requires_lean_replay"
+                if edge.get("indirect_call_push_claim") is not None
+                else "incomplete"
+            ),
+            "source_region_index": edge["source_region_index"],
+            "callee_region_index": edge["target_region_index"],
+            "claim": edge.get("indirect_call_push_claim"),
+            "blocker": (
+                None if edge.get("indirect_call_push_claim") is not None else
+                "decoded indirect call lacks one mapped continuation and final "
+                "ESP-relative mapped return-address write"
+            ),
+            "next_action": (
+                "replay IndirectCallPushClaim.checked in Lean"
+                if edge.get("indirect_call_push_claim") is not None else
+                "inspect the continuation map, final ESP expression, and last stack write"
+            ),
+        }
+        for edge in register_relations["edges"]
+        if edge.get("indirect_target_profile") ==
+            "immutable_relocated_function_pointer_call_v1"
+    ]
     return_pop_obligations = [
         {
             "id": f"return-pop:{region['region_index']}",
@@ -338,6 +368,24 @@ def _attach_register_relation_analysis(
         for edge in register_relations["edges"]
         for claim_index, claim in enumerate(
             edge.get("return_slot_transfer_claims", [])
+        )
+    ]
+    return_slot_return_transfer_obligations = [
+        {
+            "id": (
+                f"return-slot-return-transfer:{region['region_index']}:"
+                f"{claim_index}"
+            ),
+            "kind": "return_slot_return_affine_transfer",
+            "status": "candidate_requires_lean_replay",
+            "source_region_index": region["region_index"],
+            "claim": claim,
+            "blocker": None,
+            "next_action": "replay ReturnSlotTransferClosed in Lean",
+        }
+        for region in register_relations["regions"]
+        for claim_index, claim in enumerate(
+            region.get("return_slot_return_transfer_claims", [])
         )
     ]
     return_slot_frame_obligations = [
@@ -394,8 +442,12 @@ def _attach_register_relation_analysis(
         "unclaimed_register_outputs": unclaimed_outputs,
         "call_return_obligations": len(call_return_obligations),
         "direct_call_push_obligations": len(direct_call_push_obligations),
+        "indirect_call_push_obligations": len(indirect_call_push_obligations),
         "return_pop_obligations": len(return_pop_obligations),
         "return_slot_transfer_obligations": len(return_slot_transfer_obligations),
+        "return_slot_return_transfer_obligations": len(
+            return_slot_return_transfer_obligations
+        ),
         "return_slot_frame_obligations": len(return_slot_frame_obligations),
         "return_slot_call_summary_obligations": len(
             return_slot_call_summary_obligations
@@ -406,8 +458,10 @@ def _attach_register_relation_analysis(
         obligation,
         *call_return_obligations,
         *direct_call_push_obligations,
+        *indirect_call_push_obligations,
         *return_pop_obligations,
         *return_slot_transfer_obligations,
+        *return_slot_return_transfer_obligations,
         *return_slot_frame_obligations,
         *return_slot_call_summary_obligations,
     ]

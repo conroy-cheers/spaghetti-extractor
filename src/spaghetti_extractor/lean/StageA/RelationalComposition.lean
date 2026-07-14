@@ -127,6 +127,88 @@ theorem directCallPushClosed_of_checked (context : StaticProofContext)
           simp only [calleeResult, frameResult] at checked
           simpa only [Bool.and_eq_true, beq_iff_eq] using checked
 
+structure IndirectCallPushClaim where
+  continuationTargetId : Nat
+  originalReturnAddress : Nat
+  candidateReturnAddress : Nat
+  originalStackAddress : Expr
+  candidateStackAddress : Expr
+deriving Repr, DecidableEq
+
+def IndirectCallPushClaim.frame (context : StaticProofContext)
+    (claim : IndirectCallPushClaim) : Option RelationalCallFrame := do
+  let _continuation <- context.codeMap.get? claim.continuationTargetId
+  pure {
+    continuationTargetId := claim.continuationTargetId
+    originalReturnAddress := BitVec.ofNat 32 claim.originalReturnAddress
+    candidateReturnAddress := BitVec.ofNat 32 claim.candidateReturnAddress
+  }
+
+def IndirectCallPushClaim.runtimeFrame (context : StaticProofContext)
+    (claim : IndirectCallPushClaim) (original candidate : MachineState) :
+    Option RelationalRuntimeCallFrame := do
+  let frame <- claim.frame context
+  pure {
+    toRelationalCallFrame := frame
+    originalStackAddress := claim.originalStackAddress.eval original
+    candidateStackAddress := claim.candidateStackAddress.eval candidate
+  }
+
+def indirectCallContinuationMatches (outcome : NormalizedOutcomeExpr)
+    (continuationTargetId : Nat) : Bool :=
+  match outcome with
+  | .indirectCall _ continuation => continuation == continuationTargetId
+  | _ => false
+
+def IndirectCallPushClaim.checked (context : StaticProofContext)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : IndirectCallPushClaim) : Bool :=
+  match claim.frame context with
+  | some frame =>
+      frame.valid context &&
+      indirectCallContinuationMatches originalBehavior.outcome
+        claim.continuationTargetId &&
+      indirectCallContinuationMatches candidateBehavior.outcome
+        claim.continuationTargetId &&
+      originalBehavior.registers.esp == claim.originalStackAddress &&
+      candidateBehavior.registers.esp == claim.candidateStackAddress &&
+      originalBehavior.writes.reverse.head? == some
+        (claim.originalStackAddress, .constant frame.originalReturnAddress.toNat) &&
+      candidateBehavior.writes.reverse.head? == some
+        (claim.candidateStackAddress, .constant frame.candidateReturnAddress.toNat)
+  | none => false
+
+def IndirectCallPushClosed (context : StaticProofContext)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : IndirectCallPushClaim) : Prop :=
+  match claim.frame context with
+  | some frame =>
+      (((((frame.valid context = true ∧
+        indirectCallContinuationMatches originalBehavior.outcome
+          claim.continuationTargetId = true) ∧
+        indirectCallContinuationMatches candidateBehavior.outcome
+          claim.continuationTargetId = true) ∧
+        originalBehavior.registers.esp = claim.originalStackAddress) ∧
+        candidateBehavior.registers.esp = claim.candidateStackAddress) ∧
+        originalBehavior.writes.reverse.head? = some
+          (claim.originalStackAddress, .constant frame.originalReturnAddress.toNat)) ∧
+        candidateBehavior.writes.reverse.head? = some
+          (claim.candidateStackAddress, .constant frame.candidateReturnAddress.toNat)
+  | none => False
+
+theorem indirectCallPushClosed_of_checked (context : StaticProofContext)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : IndirectCallPushClaim)
+    (checked : claim.checked context originalBehavior candidateBehavior = true) :
+    IndirectCallPushClosed context originalBehavior candidateBehavior claim := by
+  unfold IndirectCallPushClaim.checked at checked
+  unfold IndirectCallPushClosed
+  cases frameResult : claim.frame context with
+  | none => simp [frameResult] at checked
+  | some frame =>
+      simp only [frameResult] at checked
+      simpa only [Bool.and_eq_true, beq_iff_eq] using checked
+
 def _root_.StageA.Formal.Expr.registerOffset? (register : Reg) : Expr → Option Word
   | .inputReg source =>
       if source == register then some (BitVec.ofNat 32 0) else none
@@ -161,6 +243,11 @@ theorem word_add_left_comm (left middle right : Word) :
     left + (middle + right) = middle + (left + right) := by
   rw [← BitVec.add_assoc, BitVec.add_comm left middle, BitVec.add_assoc]
 
+theorem word_add_delta_sub (base delta offset : Word) :
+    base + delta + (offset - delta) = base + offset := by
+  rw [BitVec.add_assoc, BitVec.add_comm delta (offset - delta),
+    BitVec.sub_add_cancel]
+
 theorem RegisterOffsetWitness.eval_expression (witness : RegisterOffsetWitness)
     (register : Reg) (state : MachineState) :
     (witness.expression register).eval state =
@@ -170,18 +257,24 @@ theorem RegisterOffsetWitness.eval_expression (witness : RegisterOffsetWitness)
       BitVec.sub_eq_add_neg, BitVec.add_assoc, word_add_left_comm]
 
 structure ReturnSlotOffsetPair where
+  originalRegister : Reg := .esp
   originalOffset : Word
+  candidateRegister : Reg := .esp
   candidateOffset : Word
 deriving Repr, DecidableEq
 
 def ReturnSlotOffsetPair.holds (offsets : ReturnSlotOffsetPair)
     (frame : RelationalRuntimeCallFrame)
     (original candidate : Registers Word) : Prop :=
-  original.get .esp + offsets.originalOffset = frame.originalStackAddress ∧
-    candidate.get .esp + offsets.candidateOffset = frame.candidateStackAddress
+  original.get offsets.originalRegister + offsets.originalOffset =
+      frame.originalStackAddress ∧
+    candidate.get offsets.candidateRegister + offsets.candidateOffset =
+      frame.candidateStackAddress
 
 def ReturnSlotOffsetPair.zero : ReturnSlotOffsetPair := {
+  originalRegister := .esp
   originalOffset := BitVec.ofNat 32 0
+  candidateRegister := .esp
   candidateOffset := BitVec.ofNat 32 0
 }
 
@@ -225,26 +318,70 @@ theorem directCallPushEntryReturnSlot_of_checked
               claim.candidateStackAddress.eval candidateState
             rw [candidateEsp]
 
+theorem indirectCallPushEntryReturnSlot_of_checked
+    (context : StaticProofContext)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : IndirectCallPushClaim) (frame : RelationalRuntimeCallFrame)
+    (originalState candidateState : MachineState)
+    (checked : claim.checked context originalBehavior candidateBehavior = true)
+    (frameResult : claim.runtimeFrame context originalState candidateState = some frame) :
+    ReturnSlotOffsetPair.zero.holds frame
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers := by
+  have closed := indirectCallPushClosed_of_checked context originalBehavior
+    candidateBehavior claim checked
+  unfold IndirectCallPushClosed at closed
+  cases baseFrameResult : claim.frame context with
+  | none => simp [baseFrameResult] at closed
+  | some baseFrame =>
+      simp only [baseFrameResult] at closed
+      have originalEsp := closed.1.1.1.2
+      have candidateEsp := closed.1.1.2
+      unfold IndirectCallPushClaim.runtimeFrame at frameResult
+      simp only [baseFrameResult, Option.bind_some] at frameResult
+      cases frameResult
+      constructor
+      · simp only [ReturnSlotOffsetPair.zero, ReturnSlotOffsetPair.holds,
+          NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get,
+          BitVec.add_zero]
+        change originalBehavior.registers.esp.eval originalState =
+          claim.originalStackAddress.eval originalState
+        rw [originalEsp]
+      · simp only [ReturnSlotOffsetPair.zero, ReturnSlotOffsetPair.holds,
+          NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get,
+          BitVec.add_zero]
+        change candidateBehavior.registers.esp.eval candidateState =
+          claim.candidateStackAddress.eval candidateState
+        rw [candidateEsp]
+
 structure ReturnSlotTransferClaim where
   source : ReturnSlotOffsetPair
   target : ReturnSlotOffsetPair
-  originalEsp : RegisterOffsetWitness
-  candidateEsp : RegisterOffsetWitness
+  originalOutput : RegisterOffsetWitness
+  candidateOutput : RegisterOffsetWitness
 deriving Repr, DecidableEq
 
 def ReturnSlotTransferClaim.checked (originalBehavior candidateBehavior :
     NormalizedSymbolicBehavior) (claim : ReturnSlotTransferClaim) : Bool :=
-  claim.originalEsp.expression .esp == originalBehavior.registers.esp &&
-    claim.candidateEsp.expression .esp == candidateBehavior.registers.esp &&
-    claim.originalEsp.offset + claim.target.originalOffset == claim.source.originalOffset &&
-    claim.candidateEsp.offset + claim.target.candidateOffset == claim.source.candidateOffset
+  claim.originalOutput.expression claim.source.originalRegister ==
+      originalBehavior.registers.get claim.target.originalRegister &&
+    claim.candidateOutput.expression claim.source.candidateRegister ==
+      candidateBehavior.registers.get claim.target.candidateRegister &&
+    claim.originalOutput.offset + claim.target.originalOffset ==
+      claim.source.originalOffset &&
+    claim.candidateOutput.offset + claim.target.candidateOffset ==
+      claim.source.candidateOffset
 
 def ReturnSlotTransferClosed (originalBehavior candidateBehavior :
     NormalizedSymbolicBehavior) (claim : ReturnSlotTransferClaim) : Prop :=
-  claim.originalEsp.expression .esp = originalBehavior.registers.esp ∧
-    claim.candidateEsp.expression .esp = candidateBehavior.registers.esp ∧
-    claim.originalEsp.offset + claim.target.originalOffset = claim.source.originalOffset ∧
-    claim.candidateEsp.offset + claim.target.candidateOffset = claim.source.candidateOffset
+  claim.originalOutput.expression claim.source.originalRegister =
+      originalBehavior.registers.get claim.target.originalRegister ∧
+    claim.candidateOutput.expression claim.source.candidateRegister =
+      candidateBehavior.registers.get claim.target.candidateRegister ∧
+    claim.originalOutput.offset + claim.target.originalOffset =
+      claim.source.originalOffset ∧
+    claim.candidateOutput.offset + claim.target.candidateOffset =
+      claim.source.candidateOffset
 
 theorem returnSlotTransferClosed_of_checked
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
@@ -270,31 +407,129 @@ theorem returnSlotTransferHolds_of_checked
   rcases sourceHolds with ⟨originalSource, candidateSource⟩
   constructor
   · simp only [NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get]
-    change originalBehavior.registers.esp.eval originalState +
+    change (originalBehavior.registers.get claim.target.originalRegister).eval originalState +
       claim.target.originalOffset = frame.originalStackAddress
-    rw [← originalExpression, claim.originalEsp.eval_expression]
+    rw [← originalExpression, claim.originalOutput.eval_expression]
     calc
-      originalState.registers.get .esp + claim.originalEsp.offset +
+      originalState.registers.get claim.source.originalRegister +
+          claim.originalOutput.offset +
           claim.target.originalOffset =
-          originalState.registers.get .esp +
-            (claim.originalEsp.offset + claim.target.originalOffset) :=
+          originalState.registers.get claim.source.originalRegister +
+            (claim.originalOutput.offset + claim.target.originalOffset) :=
         BitVec.add_assoc _ _ _
-      _ = originalState.registers.get .esp + claim.source.originalOffset := by
+      _ = originalState.registers.get claim.source.originalRegister +
+          claim.source.originalOffset := by
         rw [originalOffset]
       _ = frame.originalStackAddress := originalSource
   · simp only [NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get]
-    change candidateBehavior.registers.esp.eval candidateState +
+    change (candidateBehavior.registers.get claim.target.candidateRegister).eval
+      candidateState +
       claim.target.candidateOffset = frame.candidateStackAddress
-    rw [← candidateExpression, claim.candidateEsp.eval_expression]
+    rw [← candidateExpression, claim.candidateOutput.eval_expression]
     calc
-      candidateState.registers.get .esp + claim.candidateEsp.offset +
+      candidateState.registers.get claim.source.candidateRegister +
+          claim.candidateOutput.offset +
           claim.target.candidateOffset =
-          candidateState.registers.get .esp +
-            (claim.candidateEsp.offset + claim.target.candidateOffset) :=
+          candidateState.registers.get claim.source.candidateRegister +
+            (claim.candidateOutput.offset + claim.target.candidateOffset) :=
         BitVec.add_assoc _ _ _
-      _ = candidateState.registers.get .esp + claim.source.candidateOffset := by
+      _ = candidateState.registers.get claim.source.candidateRegister +
+          claim.source.candidateOffset := by
         rw [candidateOffset]
       _ = frame.candidateStackAddress := candidateSource
+
+structure ReturnSlotTransferRule where
+  originalSourceRegister : Reg
+  candidateSourceRegister : Reg
+  originalTargetRegister : Reg
+  candidateTargetRegister : Reg
+  originalOutput : RegisterOffsetWitness
+  candidateOutput : RegisterOffsetWitness
+  originalDelta : Word
+  candidateDelta : Word
+deriving Repr, DecidableEq
+
+def ReturnSlotTransferRule.checked (originalBehavior candidateBehavior :
+    NormalizedSymbolicBehavior) (rule : ReturnSlotTransferRule) : Bool :=
+  rule.originalOutput.expression rule.originalSourceRegister ==
+      originalBehavior.registers.get rule.originalTargetRegister &&
+    rule.candidateOutput.expression rule.candidateSourceRegister ==
+      candidateBehavior.registers.get rule.candidateTargetRegister &&
+    rule.originalOutput.offset == rule.originalDelta &&
+    rule.candidateOutput.offset == rule.candidateDelta
+
+def ReturnSlotTransferRuleClosed (originalBehavior candidateBehavior :
+    NormalizedSymbolicBehavior) (rule : ReturnSlotTransferRule) : Prop :=
+  rule.originalOutput.expression rule.originalSourceRegister =
+      originalBehavior.registers.get rule.originalTargetRegister ∧
+    rule.candidateOutput.expression rule.candidateSourceRegister =
+      candidateBehavior.registers.get rule.candidateTargetRegister ∧
+    rule.originalOutput.offset = rule.originalDelta ∧
+    rule.candidateOutput.offset = rule.candidateDelta
+
+theorem returnSlotTransferRuleClosed_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (rule : ReturnSlotTransferRule)
+    (checked : rule.checked originalBehavior candidateBehavior = true) :
+    ReturnSlotTransferRuleClosed originalBehavior candidateBehavior rule := by
+  simp only [ReturnSlotTransferRule.checked, Bool.and_eq_true, beq_iff_eq] at checked
+  exact ⟨checked.1.1.1, checked.1.1.2, checked.1.2, checked.2⟩
+
+def ReturnSlotTransferRule.apply (rule : ReturnSlotTransferRule)
+    (source : ReturnSlotOffsetPair) : Option ReturnSlotOffsetPair :=
+  if source.originalRegister == rule.originalSourceRegister &&
+      source.candidateRegister == rule.candidateSourceRegister then
+    some {
+      originalRegister := rule.originalTargetRegister
+      originalOffset := source.originalOffset - rule.originalDelta
+      candidateRegister := rule.candidateTargetRegister
+      candidateOffset := source.candidateOffset - rule.candidateDelta
+    }
+  else none
+
+theorem returnSlotTransferRuleHolds_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (rule : ReturnSlotTransferRule) (source target : ReturnSlotOffsetPair)
+    (frame : RelationalRuntimeCallFrame) (originalState candidateState : MachineState)
+    (checked : rule.checked originalBehavior candidateBehavior = true)
+    (applied : rule.apply source = some target)
+    (sourceHolds : source.holds frame originalState.registers candidateState.registers) :
+    target.holds frame (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers := by
+  have closed := returnSlotTransferRuleClosed_of_checked originalBehavior
+    candidateBehavior rule checked
+  unfold ReturnSlotTransferRule.apply at applied
+  split at applied
+  next registersMatch =>
+    simp only [Bool.and_eq_true, beq_iff_eq] at registersMatch
+    cases applied
+    rcases closed with ⟨originalExpression, candidateExpression,
+      originalDelta, candidateDelta⟩
+    rcases sourceHolds with ⟨originalSource, candidateSource⟩
+    constructor
+    · simp only [ReturnSlotOffsetPair.holds,
+        NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get]
+      rw [← originalExpression, rule.originalOutput.eval_expression,
+        originalDelta, ← registersMatch.1]
+      calc
+        originalState.registers.get source.originalRegister + rule.originalDelta +
+            (source.originalOffset - rule.originalDelta) =
+            originalState.registers.get source.originalRegister +
+              source.originalOffset := by
+          exact word_add_delta_sub _ _ _
+        _ = frame.originalStackAddress := originalSource
+    · simp only [ReturnSlotOffsetPair.holds,
+        NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get]
+      rw [← candidateExpression, rule.candidateOutput.eval_expression,
+        candidateDelta, ← registersMatch.2]
+      calc
+        candidateState.registers.get source.candidateRegister + rule.candidateDelta +
+            (source.candidateOffset - rule.candidateDelta) =
+            candidateState.registers.get source.candidateRegister +
+              source.candidateOffset := by
+          exact word_add_delta_sub _ _ _
+        _ = frame.candidateStackAddress := candidateSource
+  next registersMismatch => simp at applied
 
 structure ReturnSlotCallSummaryClaim where
   source : ReturnSlotOffsetPair
@@ -317,7 +552,11 @@ def ReturnSlotCallSummaryClosed
     (originalCallBehavior candidateCallBehavior
       originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
     (callClaim : DirectCallPushClaim) (claim : ReturnSlotCallSummaryClaim) : Prop :=
-  claim.popBytes ≤ 65535 ∧
+  ((((claim.source.originalRegister = .esp ∧
+    claim.source.candidateRegister = .esp) ∧
+    claim.target.originalRegister = .esp) ∧
+    claim.target.candidateRegister = .esp) ∧
+    claim.popBytes ≤ 65535) ∧
   claim.originalCallEsp.expression .esp = callClaim.originalStackAddress ∧
   claim.candidateCallEsp.expression .esp = callClaim.candidateStackAddress ∧
   returnStackAddressMatches originalReturnBehavior
@@ -339,6 +578,10 @@ def ReturnSlotCallSummaryClaim.checked
     (originalCallBehavior candidateCallBehavior
       originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
     (callClaim : DirectCallPushClaim) (claim : ReturnSlotCallSummaryClaim) : Bool :=
+  claim.source.originalRegister == .esp &&
+  claim.source.candidateRegister == .esp &&
+  claim.target.originalRegister == .esp &&
+  claim.target.candidateRegister == .esp &&
   decide (claim.popBytes ≤ 65535) &&
   (claim.originalCallEsp.expression .esp == callClaim.originalStackAddress &&
   (claim.candidateCallEsp.expression .esp == callClaim.candidateStackAddress &&
@@ -393,11 +636,18 @@ theorem returnSlotCallSummaryHolds_of_checked
       (candidateReturnBehavior.eval candidateReturnState).registers := by
   have closed := returnSlotCallSummaryClosed_of_checked originalCallBehavior
     candidateCallBehavior originalReturnBehavior candidateReturnBehavior callClaim claim checked
-  rcases closed with ⟨_popBytesBound, originalCallExpression, candidateCallExpression,
+  rcases closed with ⟨registersAndPop, originalCallExpression, candidateCallExpression,
     _originalReturnSlotExpression, _candidateReturnSlotExpression,
     originalReturnOutputExpression, candidateReturnOutputExpression,
     originalOutputOffset, candidateOutputOffset, originalSummaryOffset,
     candidateSummaryOffset⟩
+  have originalSourceRegister := registersAndPop.1.1.1.1
+  have candidateSourceRegister := registersAndPop.1.1.1.2
+  have originalTargetRegister := registersAndPop.1.1.2
+  have candidateTargetRegister := registersAndPop.1.2
+  unfold ReturnSlotOffsetPair.holds at outerSource ⊢
+  simp only [originalSourceRegister, candidateSourceRegister] at outerSource
+  simp only [originalTargetRegister, candidateTargetRegister]
   rcases outerSource with ⟨originalOuter, candidateOuter⟩
   rcases nestedSlots with ⟨originalNested, candidateNested⟩
   unfold DirectCallPushClaim.runtimeFrame at nestedFrameResult
@@ -556,6 +806,8 @@ deriving Repr, DecidableEq
 
 def ReturnPopFrameClaim.checked (returnClaim : ReturnPopClaim)
     (claim : ReturnPopFrameClaim) : Bool :=
+  claim.offsets.originalRegister == .esp &&
+    claim.offsets.candidateRegister == .esp &&
   claim.originalSlot.expression .esp == returnClaim.originalStackAddress &&
     claim.candidateSlot.expression .esp == returnClaim.candidateStackAddress &&
     claim.originalSlot.offset == claim.offsets.originalOffset &&
@@ -563,6 +815,8 @@ def ReturnPopFrameClaim.checked (returnClaim : ReturnPopClaim)
 
 def ReturnPopFrameClaimClosed (returnClaim : ReturnPopClaim)
     (claim : ReturnPopFrameClaim) : Prop :=
+  claim.offsets.originalRegister = .esp ∧
+    claim.offsets.candidateRegister = .esp ∧
   claim.originalSlot.expression .esp = returnClaim.originalStackAddress ∧
     claim.candidateSlot.expression .esp = returnClaim.candidateStackAddress ∧
     claim.originalSlot.offset = claim.offsets.originalOffset ∧
@@ -573,7 +827,8 @@ theorem returnPopFrameClaimClosed_of_checked
     (checked : claim.checked returnClaim = true) :
     ReturnPopFrameClaimClosed returnClaim claim := by
   simp only [ReturnPopFrameClaim.checked, Bool.and_eq_true, beq_iff_eq] at checked
-  exact ⟨checked.1.1.1, checked.1.1.2, checked.1.2, checked.2⟩
+  exact ⟨checked.1.1.1.1.1, checked.1.1.1.1.2, checked.1.1.1.2,
+    checked.1.1.2, checked.1.2, checked.2⟩
 
 theorem returnPopFrameInvariant_of_checked
     (returnClaim : ReturnPopClaim) (claim : ReturnPopFrameClaim)
@@ -582,11 +837,11 @@ theorem returnPopFrameInvariant_of_checked
     (offsetsHold : claim.offsets.holds frame originalState.registers
       candidateState.registers) :
     ReturnPopFrameInvariant returnClaim frame originalState candidateState := by
-  simp only [ReturnPopFrameClaim.checked, Bool.and_eq_true, beq_iff_eq] at checked
-  have originalExpression := checked.1.1.1
-  have candidateExpression := checked.1.1.2
-  have originalOffset := checked.1.2
-  have candidateOffset := checked.2
+  have closed := returnPopFrameClaimClosed_of_checked returnClaim claim checked
+  rcases closed with ⟨originalRegister, candidateRegister, originalExpression,
+    candidateExpression, originalOffset, candidateOffset⟩
+  unfold ReturnSlotOffsetPair.holds at offsetsHold
+  simp only [originalRegister, candidateRegister] at offsetsHold
   rcases offsetsHold with ⟨originalHolds, candidateHolds⟩
   constructor
   · rw [← originalExpression, claim.originalSlot.eval_expression]
@@ -698,6 +953,8 @@ def ReturnPopAfterWritesFrameInvariant (claim : ReturnPopAfterWritesClaim)
 
 def ReturnPopFrameClaim.checkedAfterWrites (returnClaim : ReturnPopAfterWritesClaim)
     (claim : ReturnPopFrameClaim) : Bool :=
+  claim.offsets.originalRegister == .esp &&
+    claim.offsets.candidateRegister == .esp &&
   claim.originalSlot.expression .esp == returnClaim.originalStack.expression .esp &&
     claim.candidateSlot.expression .esp == returnClaim.candidateStack.expression .esp &&
     claim.originalSlot.offset == claim.offsets.originalOffset &&
@@ -705,6 +962,8 @@ def ReturnPopFrameClaim.checkedAfterWrites (returnClaim : ReturnPopAfterWritesCl
 
 def ReturnPopAfterWritesFrameClaimClosed (returnClaim : ReturnPopAfterWritesClaim)
     (claim : ReturnPopFrameClaim) : Prop :=
+  claim.offsets.originalRegister = .esp ∧
+    claim.offsets.candidateRegister = .esp ∧
   claim.originalSlot.expression .esp = returnClaim.originalStack.expression .esp ∧
     claim.candidateSlot.expression .esp = returnClaim.candidateStack.expression .esp ∧
     claim.originalSlot.offset = claim.offsets.originalOffset ∧
@@ -716,7 +975,8 @@ theorem returnPopAfterWritesFrameClaimClosed_of_checked
     ReturnPopAfterWritesFrameClaimClosed returnClaim claim := by
   simp only [ReturnPopFrameClaim.checkedAfterWrites, Bool.and_eq_true,
     beq_iff_eq] at checked
-  exact ⟨checked.1.1.1, checked.1.1.2, checked.1.2, checked.2⟩
+  exact ⟨checked.1.1.1.1.1, checked.1.1.1.1.2, checked.1.1.1.2,
+    checked.1.1.2, checked.1.2, checked.2⟩
 
 theorem returnPopAfterWritesFrameInvariant_of_checked
     (returnClaim : ReturnPopAfterWritesClaim) (claim : ReturnPopFrameClaim)
@@ -725,13 +985,16 @@ theorem returnPopAfterWritesFrameInvariant_of_checked
     (offsetsHold : claim.offsets.holds frame originalState.registers
       candidateState.registers) :
     ReturnPopAfterWritesFrameInvariant returnClaim frame originalState candidateState := by
-  simp only [ReturnPopFrameClaim.checkedAfterWrites, Bool.and_eq_true,
-    beq_iff_eq] at checked
+  have closed := returnPopAfterWritesFrameClaimClosed_of_checked returnClaim claim checked
+  rcases closed with ⟨originalRegister, candidateRegister, originalExpression,
+    candidateExpression, originalOffset, candidateOffset⟩
+  unfold ReturnSlotOffsetPair.holds at offsetsHold
+  simp only [originalRegister, candidateRegister] at offsetsHold
   rcases offsetsHold with ⟨originalHolds, candidateHolds⟩
   constructor
-  · rw [← checked.1.1.1, claim.originalSlot.eval_expression, checked.1.2]
+  · rw [← originalExpression, claim.originalSlot.eval_expression, originalOffset]
     exact originalHolds
-  · rw [← checked.1.1.2, claim.candidateSlot.eval_expression, checked.2]
+  · rw [← candidateExpression, claim.candidateSlot.eval_expression, candidateOffset]
     exact candidateHolds
 
 theorem returnPopAfterWritesTargetsRuntimeFrame_of_checked

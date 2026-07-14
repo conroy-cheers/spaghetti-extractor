@@ -15,7 +15,12 @@ from ..schema import STAGE_A_RELATIONAL_MODEL_ID
 from .control import _constant_read32_address
 from .invariants import _semantic_edges
 from .segments import _semantic_expr_registers
-from .stack import _attach_return_slot_contracts, _direct_call_push_claim, _return_pop_claim
+from .stack import (
+    _attach_return_slot_contracts,
+    _direct_call_push_claim,
+    _indirect_call_push_claim,
+    _return_pop_claim,
+)
 
 
 def _target_shaped_register_output_claims(
@@ -737,6 +742,16 @@ def _synthesize_register_relations(
             original_image_base=original_image_base,
             candidate_image_base=candidate_image_base,
         ) if edge["kind"] == "call" else None
+        edge["indirect_call_push_claim"] = _indirect_call_push_claim(
+            regions[int(edge["source_region_index"])],
+            behaviors[int(edge["source_region_index"])],
+            original_image_base=original_image_base,
+            candidate_image_base=candidate_image_base,
+        ) if (
+            edge["kind"] == "call"
+            and edge.get("indirect_target_profile") ==
+                "immutable_relocated_function_pointer_call_v1"
+        ) else None
 
     register_order = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
     input_kinds = [
@@ -1048,6 +1063,9 @@ def _synthesize_register_relations(
         "checked_direct_call_pushes": sum(
             edge["direct_call_push_claim"] is not None for edge in edges
         ),
+        "checked_indirect_call_pushes": sum(
+            edge.get("indirect_call_push_claim") is not None for edge in edges
+        ),
         "return_regions": sum(
             (behavior["original_ir"].get("outcome") or {}).get("op") == "returned"
             and (behavior["candidate_ir"].get("outcome") or {}).get("op") == "returned"
@@ -1058,6 +1076,13 @@ def _synthesize_register_relations(
         ),
         "return_slot_seed_edges": int(return_slot_analysis["seed_edges"]),
         "return_slot_transfer_claims": int(return_slot_analysis["transfer_claims"]),
+        "return_slot_transfer_rules": int(return_slot_analysis["transfer_rules"]),
+        "return_slot_return_transfer_claims": int(
+            return_slot_analysis["return_transfer_claims"]
+        ),
+        "return_slot_return_transfer_rules": int(
+            return_slot_analysis["return_transfer_rules"]
+        ),
         "return_slot_call_summary_claims": int(
             return_slot_analysis["call_summary_claims"]
         ),

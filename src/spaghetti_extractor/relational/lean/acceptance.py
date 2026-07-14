@@ -16,7 +16,7 @@ from ..analyses.registers import _target_shaped_register_output_claims
 from ..analyses.stack import _stack_window_transfer_claims
 from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..contract import _raw_base_relocations
-from ..model import _semantic_hash
+from ..model import _semantic_constant_bool, _semantic_hash
 from ..schema import (
     FLAG_BITS,
     RELATIONAL_ACCEPTANCE_THEOREM,
@@ -120,12 +120,155 @@ def _whole_program_acceptance_plan(
         node_by_target = {
             int(node["target_id"]): node_id for node_id, node in enumerate(nodes)
         }
-        pending: list[tuple[int, tuple[int, ...]]] = [(roots[0], ())]
-        seen: set[tuple[int, tuple[int, ...]]] = set()
+        register_edges_by_pair: dict[tuple[int, int], list[dict[str, Any]]] = {}
+        for edge in register_relations.get("edges", []):
+            register_edges_by_pair.setdefault((
+                int(edge["source_region_index"]),
+                int(edge["target_region_index"]),
+            ), []).append(edge)
+
+        def location_key(location: dict[str, Any]) -> tuple[str, int, str, int]:
+            return (
+                str(location.get("original_register", "esp")),
+                int(location["original"]),
+                str(location.get("candidate_register", "esp")),
+                int(location["candidate"]),
+            )
+
+        def location_payload(
+            location: tuple[str, int, str, int],
+        ) -> dict[str, Any]:
+            return {
+                "original_register": location[0],
+                "original": location[1],
+                "candidate_register": location[2],
+                "candidate": location[3],
+            }
+
+        def return_frame_claim_for_location(
+            relation_row: dict[str, Any],
+            location: tuple[str, int, str, int],
+        ) -> dict[str, Any] | None:
+            for claim in relation_row.get("return_pop_frame_claims", []):
+                if location_key(claim["offsets"]) == location:
+                    return claim
+            return_claim = relation_row.get("return_pop_claim") or {}
+            if (
+                location[0] != "esp"
+                or location[2] != "esp"
+                or location[1] != int(
+                    return_claim.get("original_stack_offset", -1)
+                )
+                or location[3] != int(
+                    return_claim.get("candidate_stack_offset", -1)
+                )
+                or return_claim.get("original_stack_witness") is None
+                or return_claim.get("candidate_stack_witness") is None
+            ):
+                return None
+            return {
+                "profile": "return_pop_runtime_frame_v1",
+                "offsets": location_payload(location),
+                "original_slot_witness": return_claim[
+                    "original_stack_witness"
+                ],
+                "candidate_slot_witness": return_claim[
+                    "candidate_stack_witness"
+                ],
+            }
+
+        def location_rank(
+            source: tuple[str, int, str, int],
+            target: tuple[str, int, str, int],
+        ) -> tuple[Any, ...]:
+            return (
+                0 if (
+                    source[0] in {"esp", "ebp"}
+                    and source[2] in {"esp", "ebp"}
+                    and target[0] in {"esp", "ebp"}
+                    and target[2] in {"esp", "ebp"}
+                    and target[0] != source[0]
+                    and target[2] != source[2]
+                ) else 1,
+                0 if target[0] == source[0] and target[2] == source[2] else 1,
+                0 if target[0] == "ebp" and target[2] == "ebp" else 1,
+                0 if target[0] == "esp" and target[2] == "esp" else 1,
+                target,
+            )
+
+        def choose_location_transfers(
+            *, source_node_id: int, target_description: str,
+            source_locations: tuple[tuple[str, int, str, int], ...],
+            claims: list[dict[str, Any]],
+            rules: list[dict[str, Any]],
+        ) -> tuple[tuple[str, int, str, int], ...] | None:
+            transferred = []
+            for source_location in source_locations:
+                candidates = [
+                    location_key(claim["target"])
+                    for claim in claims
+                    if location_key(claim["source"]) == source_location
+                ]
+                candidates.extend(
+                    (
+                        str(rule["original_target_register"]),
+                        (source_location[1] - int(rule["original_delta"]))
+                            % 2**32,
+                        str(rule["candidate_target_register"]),
+                        (source_location[3] - int(rule["candidate_delta"]))
+                            % 2**32,
+                    )
+                    for rule in rules
+                    if rule["original_source_register"] == source_location[0]
+                    and rule["candidate_source_register"] == source_location[2]
+                )
+                if not candidates:
+                    block(
+                        "runtime_frame_location_transfer_incomplete",
+                        f"product {target_description} from {source_node_id} has no "
+                        f"checked transfer for frame location {source_location}",
+                        "emit an affine register-location witness for every live runtime frame",
+                    )
+                    return None
+                transferred.append(sorted(
+                    set(candidates),
+                    key=lambda target: location_rank(source_location, target),
+                )[0])
+            return tuple(transferred)
+
+        def transfer_locations(
+            source_node_id: int, target_node_id: int,
+            source_locations: tuple[tuple[str, int, str, int], ...],
+        ) -> tuple[tuple[str, int, str, int], ...] | None:
+            matching_edges = register_edges_by_pair.get(
+                (source_node_id, target_node_id), []
+            )
+            if len(matching_edges) != 1:
+                block(
+                    "runtime_frame_transfer_edge_ambiguous",
+                    f"product transition {source_node_id}->{target_node_id} has "
+                    f"{len(matching_edges)} register-relation edges",
+                    "emit one canonical register-relation edge for the decoded transition",
+                )
+                return None
+            return choose_location_transfers(
+                source_node_id=source_node_id,
+                target_description=f"transition {source_node_id}->{target_node_id}",
+                source_locations=source_locations,
+                claims=matching_edges[0].get("return_slot_transfer_claims", []),
+                rules=matching_edges[0].get("return_slot_transfer_rules", []),
+            )
+
+        pending: list[tuple[
+            int, tuple[int, ...], tuple[tuple[str, int, str, int], ...],
+        ]] = [(roots[0], (), ())]
+        seen: set[tuple[
+            int, tuple[int, ...], tuple[tuple[str, int, str, int], ...],
+        ]] = set()
         control_incomplete = False
         while pending and not control_incomplete:
-            node_id, calls = pending.pop(0)
-            key = (node_id, calls)
+            node_id, calls, frame_locations = pending.pop(0)
+            key = (node_id, calls, frame_locations)
             if key in seen:
                 continue
             if len(seen) >= 512 or len(calls) > 32:
@@ -137,13 +280,11 @@ def _whole_program_acceptance_plan(
                 control_incomplete = True
                 break
             seen.add(key)
-            relation_row = register_relations.get("regions", [])[node_id]
-            offsets = list(relation_row.get("return_slot_offsets", []))
-            if len(offsets) != len(calls):
+            if len(frame_locations) != len(calls):
                 block(
                     "runtime_frame_offset_inventory_incomplete",
                     f"product node {node_id} has {len(calls)} runtime frames but "
-                    f"{len(offsets)} checked return-slot offsets",
+                    f"{len(frame_locations)} checked return-slot locations",
                     "propagate a checked return-slot offset for every live runtime frame",
                 )
                 control_incomplete = True
@@ -151,7 +292,9 @@ def _whole_program_acceptance_plan(
             state = {
                 "node_id": node_id,
                 "calls": list(calls),
-                "frame_offsets": offsets,
+                "frame_offsets": [
+                    location_payload(location) for location in frame_locations
+                ],
             }
             control_states.append(state)
             control_states_by_node.setdefault(node_id, []).append(state)
@@ -166,18 +309,37 @@ def _whole_program_acceptance_plan(
                 )
                 control_incomplete = True
                 break
-            successor_targets: list[tuple[int, tuple[int, ...]]] = []
+            successor_targets: list[tuple[
+                int, tuple[int, ...], str,
+            ]] = []
             if operation == "jump":
                 if original_outcome.get("target") != candidate_outcome.get("target"):
                     control_incomplete = True
                 else:
-                    successor_targets.append((int(original_outcome["target"]), calls))
+                    successor_targets.append((
+                        int(original_outcome["target"]), calls, "transfer",
+                    ))
             elif operation == "branch":
-                for field in ("taken", "fallthrough"):
+                original_condition = original_outcome.get("condition") or {}
+                candidate_condition = candidate_outcome.get("condition") or {}
+                original_constant = _semantic_constant_bool(original_condition)
+                candidate_constant = _semantic_constant_bool(candidate_condition)
+                if original_constant != candidate_constant:
+                    control_incomplete = True
+                    fields = ()
+                elif original_constant is True:
+                    fields = ("taken",)
+                elif original_constant is False:
+                    fields = ("fallthrough",)
+                else:
+                    fields = ("taken", "fallthrough")
+                for field in fields:
                     if original_outcome.get(field) != candidate_outcome.get(field):
                         control_incomplete = True
                         break
-                    successor_targets.append((int(original_outcome[field]), calls))
+                    successor_targets.append((
+                        int(original_outcome[field]), calls, "transfer",
+                    ))
             elif operation == "call":
                 if any(
                     original_outcome.get(field) != candidate_outcome.get(field)
@@ -188,6 +350,7 @@ def _whole_program_acceptance_plan(
                     successor_targets.append((
                         int(original_outcome["target"]),
                         (int(original_outcome["continuation"]), *calls),
+                        "call",
                     ))
             elif operation == "external_call":
                 if any(
@@ -198,6 +361,52 @@ def _whole_program_acceptance_plan(
                 else:
                     successor_targets.append((
                         int(original_outcome["continuation"]), calls,
+                        "external",
+                    ))
+            elif operation in {"bulk_copy", "atomic_compare_exchange"}:
+                if original_outcome.get("continuation") != candidate_outcome.get(
+                    "continuation"
+                ):
+                    control_incomplete = True
+                else:
+                    successor_targets.append((
+                        int(original_outcome["continuation"]), calls,
+                        "external",
+                    ))
+            elif operation == "external_jump":
+                if original_outcome.get("import") != candidate_outcome.get("import"):
+                    control_incomplete = True
+                elif not calls:
+                    block(
+                        "top_level_external_jump_unsupported",
+                        f"product node {node_id} reaches an import jump without a checked return frame",
+                        "map the importing call and propagate its runtime continuation frame",
+                    )
+                    control_incomplete = True
+                else:
+                    successor_targets.append((
+                        calls[0], calls[1:], "external_pop",
+                    ))
+            elif operation == "indirect_call":
+                decoded_control = decoded_control_by_node.get(node_id, {})
+                if (
+                    decoded_control.get("profile") !=
+                        "immutable_relocated_function_pointer_call_v1"
+                    or original_outcome.get("continuation") !=
+                        candidate_outcome.get("continuation")
+                ):
+                    block(
+                        "bounded_indirect_control_profile_unmet",
+                        f"product node {node_id} has no checked finite indirect-call target",
+                        "classify the target by provenance and emit a checked finite target set",
+                    )
+                    control_incomplete = True
+                else:
+                    continuation = int(original_outcome["continuation"])
+                    successor_targets.append((
+                        int(decoded_control["target_id"]),
+                        (continuation, *calls),
+                        "call",
                     ))
             elif operation == "indirect_jump":
                 decoded_control = decoded_control_by_node.get(node_id, {})
@@ -213,10 +422,11 @@ def _whole_program_acceptance_plan(
                 else:
                     successor_targets.append((
                         int(decoded_control["target_id"]), calls,
+                        "transfer",
                     ))
             elif operation == "returned":
                 if calls:
-                    successor_targets.append((calls[0], calls[1:]))
+                    successor_targets.append((calls[0], calls[1:], "return_pop"))
             else:
                 block(
                     "control_profile_outcome_unsupported",
@@ -235,7 +445,7 @@ def _whole_program_acceptance_plan(
                         "repair the mapping or add a paired finite-path normalization certificate",
                     )
                 break
-            for target_id, successor_calls in successor_targets:
+            for target_id, successor_calls, frame_operation in successor_targets:
                 target_node_id = node_by_target.get(target_id)
                 if target_node_id is None:
                     block(
@@ -245,7 +455,90 @@ def _whole_program_acceptance_plan(
                     )
                     control_incomplete = True
                     break
-                pending.append((target_node_id, successor_calls))
+                if frame_operation == "transfer":
+                    successor_locations = transfer_locations(
+                        node_id, target_node_id, frame_locations
+                    )
+                    if successor_locations is None:
+                        control_incomplete = True
+                        break
+                elif frame_operation == "call":
+                    transferred_outer = transfer_locations(
+                        node_id, target_node_id, frame_locations
+                    )
+                    if transferred_outer is None:
+                        control_incomplete = True
+                        break
+                    matching_edges = register_edges_by_pair.get(
+                        (node_id, target_node_id), []
+                    )
+                    seed = (
+                        matching_edges[0].get("return_slot_seed")
+                        if len(matching_edges) == 1 else None
+                    )
+                    if seed is None:
+                        block(
+                            "runtime_frame_call_seed_missing",
+                            f"call transition {node_id}->{target_node_id} lacks a "
+                            "checked runtime-frame seed",
+                            "emit a decoded call-push claim and zero-offset frame location",
+                        )
+                        control_incomplete = True
+                        break
+                    successor_locations = (
+                        location_key(seed["offsets"]), *transferred_outer,
+                    )
+                elif frame_operation == "return_pop":
+                    return_row = register_relations.get("regions", [])[node_id]
+                    active_location = frame_locations[0]
+                    if return_frame_claim_for_location(
+                        return_row, active_location
+                    ) is None:
+                        block(
+                            "return_active_frame_location_unchecked",
+                            f"return node {node_id} does not read the active frame at "
+                            f"{active_location}",
+                            "emit a checked return-pop frame claim for the active location",
+                        )
+                        control_incomplete = True
+                        break
+                    successor_locations = choose_location_transfers(
+                        source_node_id=node_id,
+                        target_description=f"return to {target_node_id}",
+                        source_locations=frame_locations[1:],
+                        claims=return_row.get(
+                            "return_slot_return_transfer_claims", []
+                        ),
+                        rules=return_row.get(
+                            "return_slot_return_transfer_rules", []
+                        ),
+                    )
+                    if successor_locations is None:
+                        control_incomplete = True
+                        break
+                elif frame_operation == "external_pop":
+                    if len(frame_locations) != 1:
+                        block(
+                            "nested_external_runtime_frame_preservation_pending",
+                            f"external jump {node_id}->{target_node_id} must preserve "
+                            f"{len(frame_locations) - 1} outer runtime frames",
+                            "prove the external footprint and result registers preserve each outer frame location",
+                        )
+                        control_incomplete = True
+                        break
+                    successor_locations = ()
+                else:
+                    if frame_locations:
+                        block(
+                            "nested_external_runtime_frame_preservation_pending",
+                            f"external transition {node_id}->{target_node_id} must preserve "
+                            f"{len(frame_locations)} runtime frames",
+                            "prove the external footprint and register effects preserve each frame location",
+                        )
+                        control_incomplete = True
+                        break
+                    successor_locations = ()
+                pending.append((target_node_id, successor_calls, successor_locations))
 
     candidate_by_edge = {
         int(candidate["edge_index"]): candidate for candidate in segment_candidates
@@ -253,6 +546,17 @@ def _whole_program_acceptance_plan(
     external_by_edge = {
         int(candidate["edge_index"]): candidate
         for candidate in external_site_candidates
+        if "edge_index" in candidate
+    }
+    external_thunk_by_source_continuation = {
+        (int(candidate["source_region_index"]),
+         int(candidate["continuation_target_id"])): candidate
+        for candidate in external_site_candidates
+        if candidate.get("site_kind") == "direct_import_thunk"
+    }
+    machine_contract_by_id = {
+        int(item["id"]): item
+        for item in contract.get("machine_import_call_contracts", [])
     }
     register_edge_by_source_target = {
         (int(edge["source_region_index"]), int(edge["target_region_index"])): edge
@@ -317,6 +621,72 @@ def _whole_program_acceptance_plan(
         if not outgoing:
             relation_row = register_relations.get("regions", [])[node_id]
             control_rows = control_states_by_node.get(node_id, [])
+            if all(outcome.get("op") == "external_jump" for outcome in outcomes):
+                if len(control_rows) != 1 or len(control_rows[0]["calls"]) != 1:
+                    block(
+                        "external_jump_control_profile_unmet",
+                        f"import-thunk node {node_id} does not have one checked caller frame",
+                        "generate continuation-specific external-jump cases for every allowed runtime frame",
+                    )
+                    continue
+                continuation_target_id = int(control_rows[0]["calls"][0])
+                external_site = external_thunk_by_source_continuation.get(
+                    (node_id, continuation_target_id)
+                )
+                if external_site is None:
+                    block(
+                        "external_jump_site_missing",
+                        f"import-thunk node {node_id} continuation {continuation_target_id} lacks a checked site",
+                        "close the thunk identity, ABI argument, boundary, and continuation evidence",
+                    )
+                    continue
+                if len(control_rows[0]["frame_offsets"]) != 1:
+                    block(
+                        "external_jump_frame_offset_missing",
+                        f"import-thunk node {node_id} lacks one checked return-slot offset",
+                        "propagate the caller return slot into the thunk control state",
+                    )
+                    continue
+                target_node_id = next(
+                    (
+                        candidate_id for candidate_id, candidate_node in enumerate(nodes)
+                        if int(candidate_node["target_id"]) == continuation_target_id
+                    ),
+                    -1,
+                )
+                if target_node_id < 0:
+                    block(
+                        "external_jump_continuation_unmapped",
+                        f"import-thunk node {node_id} continuation {continuation_target_id} is unmapped",
+                        "add the continuation to the checked product graph",
+                    )
+                    continue
+                machine_contract = machine_contract_by_id.get(
+                    int(external_site["machine_contract_id"])
+                )
+                if machine_contract is None:
+                    block(
+                        "external_jump_machine_contract_missing",
+                        f"import-thunk node {node_id} has no resolved machine contract",
+                        "declare one complete machine-level import contract",
+                    )
+                    continue
+                node_steps.append({
+                    "kind": "external_jump",
+                    "node_id": node_id,
+                    "region_index": node_id,
+                    "target_id": target_id,
+                    "control_state": control_rows[0],
+                    "target_node_id": target_node_id,
+                    "target_region_index": target_node_id,
+                    "target_target_id": continuation_target_id,
+                    "external_site": external_site,
+                    "machine_contract": machine_contract,
+                    "decoded_import": outcomes[0].get("import"),
+                    "edges": [],
+                })
+                has_external_call = True
+                continue
             if (
                 any(outcome.get("op") != "returned" for outcome in outcomes)
                 or relation_row.get("return_pop_claim") is None
@@ -332,7 +702,13 @@ def _whole_program_acceptance_plan(
                 continue
             calls = list(control_rows[0]["calls"])
             if calls:
-                if not relation_row.get("return_pop_frame_claims"):
+                active_location = location_key(
+                    control_rows[0]["frame_offsets"][0]
+                )
+                return_frame_claim = return_frame_claim_for_location(
+                    relation_row, active_location
+                )
+                if return_frame_claim is None:
                     block(
                         "return_runtime_frame_claim_missing",
                         f"return node {node_id} lacks a checked live-frame return-slot claim",
@@ -407,7 +783,7 @@ def _whole_program_acceptance_plan(
                     "target_region_index": target_node_id,
                     "target_target_id": continuation_target_id,
                     "return_pop_claim": relation_row["return_pop_claim"],
-                    "return_frame_claim": relation_row["return_pop_frame_claims"][0],
+                    "return_frame_claim": return_frame_claim,
                     "output_claims": target_output_claims,
                     "return_frame_claim_index": 0,
                     "stack_window_transfers": stack_transfers,
@@ -1239,6 +1615,154 @@ def _lean_acceptance_running_node(
                 ).splitlines()
             )
         )
+    if step["kind"] == "external_jump":
+        site = step["external_site"]
+        site_id = int(site["id"])
+        continuation = int(step["target_target_id"])
+        target_node_id = int(step["target_node_id"])
+        target_region_index = int(step["target_region_index"])
+        decoded_import_identity = _semantic_external_target_identity(
+            step.get("decoded_import") or {}
+        )
+        if decoded_import_identity is None:
+            raise StageAInputError(
+                f"external-jump acceptance node {node_id} has no decoded import identity"
+            )
+        decoded_import_literal = _lean_external_target({
+            "dll": decoded_import_identity[0],
+            decoded_import_identity[1]: decoded_import_identity[2],
+        })
+        frame_offset = _lean_return_slot_offset_pair(
+            step["control_state"]["frame_offsets"][0]
+        )
+        original_arguments = ", ".join(
+            f"({_lean_semantic_expr(argument)}).eval originalState"
+            for argument in site.get("argument_expressions", [])
+        )
+        candidate_arguments = ", ".join(
+            f"({_lean_semantic_expr(argument)}).eval candidateState"
+            for argument in site.get("argument_expressions", [])
+        )
+        target_edge = {
+            "target_node_id": target_node_id,
+            "target_region_index": target_region_index,
+            "target_target_id": continuation,
+        }
+        return (
+            prefix
+            + f"  have controlShape : calls = [{continuation}] ∧ "
+            f"frameOffsets = [{frame_offset}] := by\n"
+            "    simpa [productControlProfile, ProductControlProfile.Allows] using\n"
+            "      controlAllowed\n"
+            "  rcases controlShape with ⟨rfl, rfl⟩\n"
+            "  cases frames with\n"
+            "  | nil => simp [RelationalRuntimeCallStackHolds] at stackHolds\n"
+            "  | cons frame tail =>\n"
+            "    have tailEmpty : tail = [] := by\n"
+            "      cases tail with\n"
+            "      | nil => rfl\n"
+            "      | cons next rest =>\n"
+            "          simp [RelationalRuntimeCallStackHolds] at stackHolds\n"
+            "    subst tail\n"
+            f"    have originalBehaviorCommon : {original_behavior} =\n"
+            f"        externalJumpSite{site_id}OriginalNormalized := by decide\n"
+            f"    have candidateBehaviorCommon : {candidate_behavior} =\n"
+            f"        externalJumpSite{site_id}CandidateNormalized := by decide\n"
+            f"    have closed := externalJumpSite{site_id}TransitionChecked world\n"
+            "      originalState candidateState statesRelated\n"
+            f"    simp only [evalBehavior, externalJumpSite{site_id}OriginalNormalizedChecked,\n"
+            f"      externalJumpSite{site_id}CandidateNormalizedChecked, Option.bind_some]\n"
+            "      at closed\n"
+            "    rcases closed with\n"
+            "      ⟨originalCallArguments, candidateCallArguments, originalOutcome,\n"
+            "        candidateOutcome, boundary⟩\n"
+            f"    have originalArgumentsKnown : [{original_arguments}] =\n"
+            "        originalCallArguments := by\n"
+            "      have decomposed := originalOutcome\n"
+            f"      simp only [externalJumpSite{site_id}OriginalOutcomeChecked,\n"
+            "        NormalizedSymbolicBehavior.eval_outcome, NormalizedOutcomeExpr.eval,\n"
+            "        Expr.eval, PureOutcome.externalJump.injEq] at decomposed\n"
+            "      simpa only [List.map] using decomposed.2\n"
+            f"    have candidateArgumentsKnown : [{candidate_arguments}] =\n"
+            "        candidateCallArguments := by\n"
+            "      have decomposed := candidateOutcome\n"
+            f"      simp only [externalJumpSite{site_id}CandidateOutcomeChecked,\n"
+            "        NormalizedSymbolicBehavior.eval_outcome, NormalizedOutcomeExpr.eval,\n"
+            "        Expr.eval, PureOutcome.externalJump.injEq] at decomposed\n"
+            "      simpa only [List.map] using decomposed.2\n"
+            "    subst originalCallArguments\n"
+            "    subst candidateCallArguments\n"
+            "    let originalEvent : WorldExternalEvent := {\n"
+            f"      siteId := {site_id}\n"
+            f"      imported := externalJumpSite{site_id}MachineContract.imported\n"
+            f"      arguments := [{original_arguments}]\n"
+            "      state := normalizeImportReturnSlotState\n"
+            f"        (({original_behavior}.eval originalState).nextMachineState originalState)\n"
+            "      world\n"
+            "    }\n"
+            "    let candidateEvent : WorldExternalEvent := {\n"
+            f"      siteId := {site_id}\n"
+            f"      imported := externalJumpSite{site_id}MachineContract.imported\n"
+            f"      arguments := [{candidate_arguments}]\n"
+            "      state := normalizeImportReturnSlotState\n"
+            f"        (({candidate_behavior}.eval candidateState).nextMachineState candidateState)\n"
+            "      world\n"
+            "    }\n"
+            "    have boundaryKnown : ExternalCallBoundaryRelated staticProofContext\n"
+            f"        externalCallSite{site_id} externalJumpSite{site_id}MachineContract\n"
+            "        originalEvent candidateEvent := by\n"
+            "      simpa [originalEvent, candidateEvent, originalBehaviorCommon,\n"
+            "        candidateBehaviorCommon] using boundary\n"
+            "    have environmentAt := ExternalEnvironmentRefines.at staticProofContext\n"
+            "      externalCallSites originalEnvironment candidateEnvironment\n"
+            f"      environmentRefines externalCallSite{site_id}\n"
+            f"      externalJumpSite{site_id}MachineContract (by decide)\n"
+            f"      externalJumpSite{site_id}MachineContractResolved\n"
+            "    have results := externalCallResultsRelated staticProofContext\n"
+            f"      externalCallSite{site_id} externalJumpSite{site_id}MachineContract\n"
+            "      originalEnvironment candidateEnvironment environmentAt eventIndex\n"
+            "      originalEvent candidateEvent boundaryKnown\n"
+            "    dsimp only at results\n"
+            "    rcases results with\n"
+            "      ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
+            "        nextStatesRelated⟩\n"
+            "    have argumentsRelated := boundaryKnown.2.2.2.2.2.2\n"
+            "    have observationRelated : worldRelationalObservationsRelated\n"
+            "        staticProofContext\n"
+            f"        (some (.external world externalJumpSite{site_id}MachineContract.imported\n"
+            f"          [{original_arguments}]))\n"
+            f"        (some (.external world externalJumpSite{site_id}MachineContract.imported\n"
+            f"          [{candidate_arguments}])) := by\n"
+            "      exact ⟨rfl, rfl, argumentsRelated⟩\n"
+            "    have originalSiteResolved : resolveExternalCallSite staticProofContext\n"
+            f"        externalCallSites {target_id} {continuation}\n"
+            f"        externalJumpSite{site_id}MachineContract.imported = some {site_id} := by\n"
+            "      decide\n"
+            "    have candidateSiteResolved : resolveExternalCallSite staticProofContext\n"
+            f"        externalCallSites {target_id} {continuation}\n"
+            f"        externalJumpSite{site_id}MachineContract.imported = some {site_id} := by\n"
+            "      decide\n"
+            "    have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
+            "        (originalEnvironment.result eventIndex originalEvent).state\n"
+            "        (candidateEnvironment.result eventIndex candidateEvent).state\n"
+            "        [] [] [] := by simp [RelationalRuntimeCallStackHolds]\n"
+            "    rw [originalBehaviorCommon, candidateBehaviorCommon]\n"
+            "    simp only [originalWorldProgram, candidateWorldProgram]\n"
+            f"    have importedCommon : ({decoded_import_literal} : ExternalTarget) =\n"
+            f"        externalJumpSite{site_id}MachineContract.imported := by decide\n"
+            "    rw [importedCommon, originalSiteResolved]\n"
+            "    simp only\n"
+            + "\n".join(
+                "  " + line
+                for line in _lean_acceptance_running_target(
+                    node_id=node_id,
+                    region_index=region_index,
+                    edge=target_edge,
+                    observation_proof="observationRelated",
+                    world_equal_proof="resultWorldsEqual",
+                ).splitlines()
+            )
+        )
     if step["kind"] == "external_call":
         edge = step["edges"][0]
         edge_id = int(edge["edge_id"])
@@ -1362,10 +1886,12 @@ def _lean_acceptance_running_node(
             "    exact ⟨rfl, rfl, argumentsRelated⟩\n"
             "  have originalSiteResolved : resolveExternalCallSite staticProofContext\n"
             f"      externalCallSites {target_id}\n"
+            f"      {int(site['continuation_target_id'])}\n"
             f"      externalCallEdge{edge_id}MachineContract.imported = some {edge_id} := by\n"
             "    decide\n"
             "  have candidateSiteResolved : resolveExternalCallSite staticProofContext\n"
             f"      externalCallSites {target_id}\n"
+            f"      {int(site['continuation_target_id'])}\n"
             f"      externalCallEdge{edge_id}MachineContract.imported = some {edge_id} := by\n"
             "    decide\n"
             "  rw [originalBehaviorCommon, candidateBehaviorCommon]\n"
@@ -1812,7 +2338,8 @@ def _write_relational_acceptance_modules(
     terminal_region_index = int(plan["terminal_region_index"])
     terminal_invariant = _lean_state_invariant(plan["terminal_invariant"])
     parameterized_environment = any(
-        step["kind"] == "external_call" for step in plan["node_steps"]
+        step["kind"] in {"external_call", "external_jump"}
+        for step in plan["node_steps"]
     )
     invariant_rows = ", ".join(
         f"region{node_id}.inputInvariant" for node_id in range(len(nodes))
