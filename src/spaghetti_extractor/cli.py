@@ -65,8 +65,8 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
 
 def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog=prog or "wincr",
-        description="Windows PE Stage A/B reimplementation tooling.",
+        prog=prog or "spaghetti-extractor",
+        description="Spaghetti Extractor binary reimplementation and equivalence-proof tooling.",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 

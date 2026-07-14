@@ -1785,7 +1785,7 @@ class StageARelationalStateTests(StageARelationalTestBase):
             contract = root / "relation.json"
             contract.write_text(json.dumps(payload), encoding="utf-8")
 
-            with patch.dict(os.environ, {"WINCR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}):
+            with patch.dict(os.environ, {"SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}):
                 result = stage_a_prove_relational(
                     original=original,
                     candidate=candidate,

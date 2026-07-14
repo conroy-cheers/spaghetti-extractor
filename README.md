@@ -1,7 +1,7 @@
-# wincr
+# Spaghetti Extractor
 
-`wincr` is a Windows PE Stage A/B reimplementation toolkit currently focused on
-`jq.exe` for 32-bit MinGW Windows.
+Spaghetti Extractor is a binary reimplementation and equivalence-proof toolkit.
+Its current validation target is `jq.exe` for 32-bit MinGW Windows.
 
 The active workflow is whole-program-proof-first:
 
@@ -22,7 +22,7 @@ fails public behavior checks, that is a Stage A/toolchain problem to investigate
 Build the Python tools:
 
 ```sh
-nix build .#wincr-tools --no-link
+nix build .#spaghetti-extractor --no-link
 ```
 
 Run the compact Stage A fixture suite:
@@ -47,27 +47,27 @@ nix build .#stage-b-jq-skeleton --no-link
 Prepare a local slice workspace from the canonical jq Stage A contract:
 
 ```sh
-nix run .#wincr-slice -- --work-dir build/wincr-slices prepare jq --realize-nix
-nix run .#wincr-slice -- --work-dir build/wincr-slices next jq --top-k 10
+nix run .#spaghetti-extractor-slice -- --work-dir build/spaghetti-extractor-slices prepare jq --realize-nix
+nix run .#spaghetti-extractor-slice -- --work-dir build/spaghetti-extractor-slices next jq --top-k 10
 ```
 
-For the hot loop, pass local candidate outputs to `wincr-slice check` or build
-them with `wincr-slice build`. This avoids rebuilding Ghidra exports or Nix
+For the hot loop, pass local candidate outputs to `spaghetti-extractor-slice check` or build
+them with `spaghetti-extractor-slice build`. This avoids rebuilding Ghidra exports or Nix
 candidate artifacts when only a small source slice changed.
 
 ## Current Surface
 
 Retained:
 
-- `src/wincr/relational/`: authoritative whole-program relational pipeline,
+- `src/spaghetti_extractor/relational/`: authoritative whole-program relational pipeline,
   typed artifact boundaries, analyses, Lean generation, and verdict logic.
-- `src/wincr/stage_a_relational.py`: compatibility import facade only.
-- `src/wincr/contract_tools.py`: untrusted mapping proposals and reusable
+- `src/spaghetti_extractor/stage_a_relational.py`: compatibility import facade only.
+- `src/spaghetti_extractor/contract_tools.py`: untrusted mapping proposals and reusable
   contract serialization used around the relational proof core.
-- `src/wincr/stage_b*.py`: jq skeleton, provenance, candidate-only delta, and
+- `src/spaghetti_extractor/stage_b*.py`: jq skeleton, provenance, candidate-only delta, and
   public expected-output helpers.
-- `src/wincr/slice_loop.py`: incremental contract-first slice iteration.
-- `tools/ghidra/WincrStageBExport.java`: optional cold bootstrap exporter.
+- `src/spaghetti_extractor/slice_loop.py`: incremental contract-first slice iteration.
+- `tools/ghidra/SpaghettiExtractorStageBExport.java`: optional cold bootstrap exporter.
 - `tools/stage-a-fixtures/`: compact Stage A regression fixtures.
 
 Removed:

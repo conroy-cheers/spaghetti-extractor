@@ -1,13 +1,13 @@
 import unittest
 
-from wincr.relational.ir import (
+from spaghetti_extractor.relational.ir import (
     CompositionProgressIR,
     ProductGraphIR,
     RelationalProofIR,
     WholeProgramAcceptanceIR,
 )
-from wincr.relational.phases import AnalysisArtifact, ExtractedProgramPair
-from wincr.relational.schema import SchemaError
+from spaghetti_extractor.relational.phases import AnalysisArtifact, ExtractedProgramPair
+from spaghetti_extractor.relational.schema import SchemaError
 
 
 class RelationalIRTests(unittest.TestCase):

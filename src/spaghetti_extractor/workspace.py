@@ -77,7 +77,7 @@ def workspace_prune(
         for row in rows:
             shutil.rmtree(root / row["path"])
     return {
-        "format": "wincr-workspace-prune-v1",
+        "format": "spaghetti-extractor-workspace-prune-v1",
         "status": "pruned" if apply else "dry_run",
         "root": str(root),
         "entries": rows,
@@ -86,4 +86,3 @@ def workspace_prune(
             "bytes": sum(row["bytes"] for row in rows),
         },
     }
-

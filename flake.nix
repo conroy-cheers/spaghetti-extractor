@@ -1,5 +1,5 @@
 {
-  description = "jq Stage A/B Windows PE reimplementation tooling";
+  description = "Spaghetti Extractor binary reimplementation and equivalence-proof tooling";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -29,8 +29,8 @@
               z3-solver
             ]
           );
-          wincr-tools = pkgs.python3Packages.buildPythonApplication {
-            pname = "wincr-tools";
+          spaghetti-extractor = pkgs.python3Packages.buildPythonApplication {
+            pname = "spaghetti-extractor";
             version = "0.1.0";
             src = ./.;
             pyproject = true;
@@ -46,7 +46,7 @@
             ];
 
             doCheck = false;
-            pythonImportsCheck = [ "wincr" ];
+            pythonImportsCheck = [ "spaghetti_extractor" ];
           };
           stageAJqCommonCflags = "-g0 -fno-asynchronous-unwind-tables -fno-ident -fno-inline -fno-inline-functions -fno-inline-small-functions -fno-ipa-cp -fno-ipa-sra -fno-ipa-icf";
           stageAJqOriginalCflags = "-O2 -fno-align-functions -fno-align-labels -fno-align-loops -fno-align-jumps ${stageAJqCommonCflags}";
@@ -81,9 +81,9 @@
                       echo "missing jq-${label}.map" >&2
                       exit 1
                     fi
-                    mkdir -p "$out/share/wincr/stage-a-jq-fixtures/${label}"
-                    cp "$map_path" "$out/share/wincr/stage-a-jq-fixtures/${label}/jq.map"
-                    cp "$out/bin/jq.exe" "$out/share/wincr/stage-a-jq-fixtures/${label}/jq.exe"
+                    mkdir -p "$out/share/spaghetti-extractor/stage-a-jq-fixtures/${label}"
+                    cp "$map_path" "$out/share/spaghetti-extractor/stage-a-jq-fixtures/${label}/jq.map"
+                    cp "$out/bin/jq.exe" "$out/share/spaghetti-extractor/stage-a-jq-fixtures/${label}/jq.exe"
                   '';
                 meta = (old.meta or { }) // {
                   platforms = (old.meta.platforms or [ ]) ++ [ "i686-windows" ];
@@ -120,7 +120,7 @@
 
             installPhase = ''
               runHook preInstall
-              fixture_dir="$out/share/wincr/stage-a-fixtures/relational-v3"
+              fixture_dir="$out/share/spaghetti-extractor/stage-a-fixtures/relational-v3"
               mkdir -p "$fixture_dir"
               cp stage-a-loop-original.exe stage-a-loop-candidate.exe "$fixture_dir/"
               cat > "$fixture_dir/block-map-loop.json" <<'JSON'
@@ -172,30 +172,30 @@
           stage-a-fixtures-check = pkgs.runCommand "stage-a-fixtures-check"
             {
               nativeBuildInputs = [
-                wincr-tools
+                spaghetti-extractor
                 pkgs.jq
                 pkgs.lean4
               ];
             }
             ''
-              fixture_dir="${stage-a-fixtures}/share/wincr/stage-a-fixtures/relational-v3"
+              fixture_dir="${stage-a-fixtures}/share/spaghetti-extractor/stage-a-fixtures/relational-v3"
               work="$TMPDIR/stage-a-v3"
-              export WINCR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/stage-a-relational-cache"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/stage-a-relational-cache"
               mkdir -p "$work"
-              wincr stage-a-generate-relation-contract \
+              spaghetti-extractor stage-a-generate-relation-contract \
                 --original "$fixture_dir/stage-a-loop-original.exe" \
                 --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
                 --mapping "$fixture_dir/block-map-loop.json" \
                 --out "$work/relation-contract.json"
-              wincr stage-a-prove \
+              spaghetti-extractor stage-a-prove \
                 --original "$fixture_dir/stage-a-loop-original.exe" \
                 --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
                 --relation-contract "$work/relation-contract.json" \
                 --out "$work/proof"
-              wincr stage-a-check-proof \
+              spaghetti-extractor stage-a-check-proof \
                 --report "$work/proof" \
                 --out "$work/proof-check.json"
-              wincr stage-a-export-reference-contract \
+              spaghetti-extractor stage-a-export-reference-contract \
                 --original "$fixture_dir/stage-a-loop-original.exe" \
                 --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
                 --mapping "$fixture_dir/block-map-loop.json" \
@@ -208,7 +208,7 @@
                 .constraints.validation_report_artifact_binding.status == "satisfied" and
                 .constraints.proof_obligation_inventory.status == "satisfied"
               ' "$work/contract/reference-contract.json" >/dev/null
-              wincr stage-a-smoke-contract \
+              spaghetti-extractor stage-a-smoke-contract \
                 --reference-contract "$work/contract/reference-contract.json" \
                 --out "$work/contract-smoke.json"
               jq -e '.status == "pass"' "$work/contract-smoke.json" >/dev/null
@@ -226,12 +226,12 @@
               nativeBuildInputs = [ pkgs.jq ];
             }
             ''
-              fixture_dir="$out/share/wincr/stage-a-fixtures/jq-o2-alignment"
+              fixture_dir="$out/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
               mkdir -p "$fixture_dir"
-              cp "${stage-a-jq-original}/share/wincr/stage-a-jq-fixtures/original/jq.exe" "$fixture_dir/jq-original.exe"
-              cp "${stage-a-jq-candidate}/share/wincr/stage-a-jq-fixtures/candidate/jq.exe" "$fixture_dir/jq-candidate.exe"
-              cp "${stage-a-jq-original}/share/wincr/stage-a-jq-fixtures/original/jq.map" "$fixture_dir/jq-original.map"
-              cp "${stage-a-jq-candidate}/share/wincr/stage-a-jq-fixtures/candidate/jq.map" "$fixture_dir/jq-candidate.map"
+              cp "${stage-a-jq-original}/share/spaghetti-extractor/stage-a-jq-fixtures/original/jq.exe" "$fixture_dir/jq-original.exe"
+              cp "${stage-a-jq-candidate}/share/spaghetti-extractor/stage-a-jq-fixtures/candidate/jq.exe" "$fixture_dir/jq-candidate.exe"
+              cp "${stage-a-jq-original}/share/spaghetti-extractor/stage-a-jq-fixtures/original/jq.map" "$fixture_dir/jq-original.map"
+              cp "${stage-a-jq-candidate}/share/spaghetti-extractor/stage-a-jq-fixtures/candidate/jq.map" "$fixture_dir/jq-candidate.map"
               for path in "${stage-a-jq-original}"/bin/*.dll "${stage-a-jq-candidate}"/bin/*.dll; do
                 [ -e "$path" ] || continue
                 name="$(basename "$path")"
@@ -257,16 +257,16 @@
           stage-a-jq-fixtures-check = pkgs.runCommand "stage-a-jq-fixtures-check"
             {
               nativeBuildInputs = [
-                wincr-tools
+                spaghetti-extractor
                 pkgs.jq
                 pkgs.lean4
               ];
             }
             ''
-              fixture_dir="${stage-a-jq-fixtures}/share/wincr/stage-a-fixtures/jq-o2-alignment"
+              fixture_dir="${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
               work="$TMPDIR/stage-a-jq"
               mkdir -p "$work"
-              wincr stage-a-generate-map \
+              spaghetti-extractor stage-a-generate-map \
                 --original "$fixture_dir/jq-original.exe" \
                 --candidate "$fixture_dir/jq-candidate.exe" \
                 --linker-map-original "$fixture_dir/jq-original.map" \
@@ -276,14 +276,14 @@
                 --out "$work/jq-block-map.json" \
                 --layout-contract-out "$work/jq-layout-contract.json" \
                 > "$work/generate-map.stdout"
-              wincr stage-a-generate-relation-contract \
+              spaghetti-extractor stage-a-generate-relation-contract \
                 --original "$fixture_dir/jq-original.exe" \
                 --candidate "$fixture_dir/jq-candidate.exe" \
                 --mapping "$work/jq-block-map.json" \
                 --out "$work/jq-relation-contract.json" \
                 > "$work/generate-relation.stdout"
-              if WINCR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
-                  wincr stage-a-prove \
+              if SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
+                  spaghetti-extractor stage-a-prove \
                     --original "$fixture_dir/jq-original.exe" \
                     --candidate "$fixture_dir/jq-candidate.exe" \
                     --relation-contract "$work/jq-relation-contract.json" \
@@ -303,7 +303,7 @@
               cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" "$work/jq-relation-contract.json" "$out/report/"
               cp -R "$work/relational-v3" "$out/report/relational-v3"
               cp "$work/relational-v3/semantic-gaps.json" "$out/generated/jq-formal-gaps.json"
-              if wincr stage-a-export-reference-contract \
+              if spaghetti-extractor stage-a-export-reference-contract \
                   --original "$fixture_dir/jq-original.exe" \
                   --candidate "$fixture_dir/jq-candidate.exe" \
                   --mapping "$out/report/jq-block-map.json" \
@@ -317,7 +317,7 @@
                 exit 1
               fi
               jq -e '.status == "incomplete"' "$out/generated/jq-reference-contract.json" >/dev/null
-              wincr stage-a-smoke-contract \
+              spaghetti-extractor stage-a-smoke-contract \
                 --reference-contract "$out/generated/jq-reference-contract.json" \
                 --out "$out/generated/contract-smoke.json" \
                 > "$work/smoke.stdout"
@@ -331,13 +331,13 @@
           };
           stage-b-jq-skeleton = pkgs.runCommand "stage-b-jq-skeleton"
             {
-              nativeBuildInputs = [ wincr-tools ];
+              nativeBuildInputs = [ spaghetti-extractor ];
             }
             ''
-              fixture_dir="${stage-a-jq-fixtures}/share/wincr/stage-a-fixtures/jq-o2-alignment"
+              fixture_dir="${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
               work="$TMPDIR/stage-b-jq-skeleton"
               mkdir -p "$work"
-              wincr stage-b-generate-skeleton \
+              spaghetti-extractor stage-b-generate-skeleton \
                 --original "$fixture_dir/jq-original.exe" \
                 --reference-contract "${stage-a-jq-fixtures-check}/generated/jq-reference-contract.json" \
                 --target-name jq \
@@ -345,21 +345,21 @@
                 --implementation-mode contract-guided-c \
                 --out-dir "$work/skeleton" \
                 > "$work/skeleton.stdout"
-              out_dir="$out/share/wincr/stage-b/jq/skeleton"
+              out_dir="$out/share/spaghetti-extractor/stage-b/jq/skeleton"
               mkdir -p "$out_dir"
               cp -R "$work/skeleton/." "$out_dir/"
             '';
           stage-b-jq-skeleton-root = pkgs.writeShellApplication {
             name = "stage-b-jq-skeleton-root";
             text = ''
-              printf '%s\n' "${stage-b-jq-skeleton}/share/wincr/stage-b/jq/skeleton"
+              printf '%s\n' "${stage-b-jq-skeleton}/share/spaghetti-extractor/stage-b/jq/skeleton"
             '';
           };
         in
         {
-          default = wincr-tools;
+          default = spaghetti-extractor;
           inherit
-            wincr-tools
+            spaghetti-extractor
             stage-a-fixtures
             stage-a-fixtures-check
             stage-a-fixtures-root
@@ -380,15 +380,15 @@
         {
           default = {
             type = "app";
-            program = "${packages.wincr-tools}/bin/wincr";
+            program = "${packages.spaghetti-extractor}/bin/spaghetti-extractor";
           };
-          wincr = {
+          spaghetti-extractor = {
             type = "app";
-            program = "${packages.wincr-tools}/bin/wincr";
+            program = "${packages.spaghetti-extractor}/bin/spaghetti-extractor";
           };
-          wincr-slice = {
+          spaghetti-extractor-slice = {
             type = "app";
-            program = "${packages.wincr-tools}/bin/wincr-slice";
+            program = "${packages.spaghetti-extractor}/bin/spaghetti-extractor-slice";
           };
           stage-a-fixtures-root = {
             type = "app";
@@ -412,7 +412,7 @@
         in
         {
           inherit (packages)
-            wincr-tools
+            spaghetti-extractor
             stage-a-fixtures-check
             stage-a-jq-fixtures-check
             stage-b-jq-skeleton
@@ -438,7 +438,7 @@
           default = pkgs.mkShell {
             packages = [
               pythonEnv
-              packages.wincr-tools
+              packages.spaghetti-extractor
               pkgs.jq
               pkgs.lean4
               pkgs.nix

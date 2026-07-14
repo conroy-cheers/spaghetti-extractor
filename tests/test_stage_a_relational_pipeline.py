@@ -391,7 +391,7 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             lean_dir = Path(temporary)
             stage_a = lean_dir / "StageA"
             stage_a.mkdir()
-            source_root = Path(__file__).parents[1] / "src" / "wincr" / "lean" / "StageA"
+            source_root = Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
             for name in ("Formal.lean",):
                 shutil.copyfile(source_root / name, stage_a / name)
             (stage_a / "FlagsCompose.lean").write_text(

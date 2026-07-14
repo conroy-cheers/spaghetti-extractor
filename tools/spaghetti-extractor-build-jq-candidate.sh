@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root=${WINCR_SLICE_REPO_ROOT:-}
+repo_root=${SPAGHETTI_EXTRACTOR_SLICE_REPO_ROOT:-}
 if [[ -z "$repo_root" ]]; then
   repo_root=$(git rev-parse --show-toplevel)
 fi
 export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
-wincr_cmd=(python -m wincr)
+spaghetti_extractor_cmd=(python -m spaghetti_extractor)
 
 abs_path() {
   case "$1" in
@@ -15,14 +15,14 @@ abs_path() {
   esac
 }
 
-workspace=$(abs_path "${WINCR_SLICE_WORKSPACE:?WINCR_SLICE_WORKSPACE is required}")
-build_dir=$(abs_path "${WINCR_SLICE_BUILD_DIR:?WINCR_SLICE_BUILD_DIR is required}")
-out_dir=$(abs_path "${WINCR_SLICE_OUT_DIR:?WINCR_SLICE_OUT_DIR is required}")
-source_dir=$(abs_path "${WINCR_SLICE_SOURCE_DIR:?WINCR_SLICE_SOURCE_DIR is required}")
-target=${WINCR_SLICE_TARGET:-jq}
+workspace=$(abs_path "${SPAGHETTI_EXTRACTOR_SLICE_WORKSPACE:?SPAGHETTI_EXTRACTOR_SLICE_WORKSPACE is required}")
+build_dir=$(abs_path "${SPAGHETTI_EXTRACTOR_SLICE_BUILD_DIR:?SPAGHETTI_EXTRACTOR_SLICE_BUILD_DIR is required}")
+out_dir=$(abs_path "${SPAGHETTI_EXTRACTOR_SLICE_OUT_DIR:?SPAGHETTI_EXTRACTOR_SLICE_OUT_DIR is required}")
+source_dir=$(abs_path "${SPAGHETTI_EXTRACTOR_SLICE_SOURCE_DIR:?SPAGHETTI_EXTRACTOR_SLICE_SOURCE_DIR is required}")
+target=${SPAGHETTI_EXTRACTOR_SLICE_TARGET:-jq}
 
 if [[ "$target" != "jq" ]]; then
-  echo "wincr-build-jq-candidate only supports target jq, got: $target" >&2
+  echo "spaghetti-extractor-build-jq-candidate only supports target jq, got: $target" >&2
   exit 2
 fi
 
@@ -127,7 +127,7 @@ i686-w64-mingw32-gcc -std=gnu11 -Os \
   >"$build_dir/compile.stdout.txt" 2>"$build_dir/compile.stderr.txt"
 
 set +e
-"${wincr_cmd[@]}" stage-b-generate-link-roots \
+"${spaghetti_extractor_cmd[@]}" stage-b-generate-link-roots \
   --original "$original" \
   --reference-contract "$reference_contract" \
   --skeleton-functions "$skeleton_functions" \
@@ -362,7 +362,7 @@ Path(report_path).write_text(json.dumps(report, indent=2, sort_keys=True), encod
 PY
 
 set +e
-wincr stage-b-generate-candidate-provenance \
+"${spaghetti_extractor_cmd[@]}" stage-b-generate-candidate-provenance \
   --target-name jq \
   --skeleton-manifest "$out_manifest" \
   --candidate "$candidate_exe" \

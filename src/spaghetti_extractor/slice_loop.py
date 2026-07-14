@@ -27,18 +27,18 @@ from .stage_b_provenance import stage_b_generate_candidate_provenance
 from .util import sha256_file, write_json, utc_now
 
 
-WORKSPACE_FORMAT = "wincr-slice-workspace-v1"
-PREPARE_FORMAT = "wincr-slice-prepare-v1"
-NEXT_FORMAT = "wincr-slice-next-v1"
-BUILD_FORMAT = "wincr-slice-build-v1"
-CHECK_FORMAT = "wincr-slice-check-v1"
-FOCUSED_DELTA_FORMAT = "wincr-slice-focused-delta-v1"
-CANDIDATE_VALIDATION_FINGERPRINT_FORMAT = "wincr-slice-candidate-validation-fingerprint-v1"
-CANDIDATE_VALIDATION_CACHE_FORMAT = "wincr-slice-candidate-validation-cache-v1"
-SLICE_PACKET_FORMAT = "wincr-slice-packet-v1"
-SLICE_PACKET_INDEX_FORMAT = "wincr-slice-packet-index-v1"
+WORKSPACE_FORMAT = "spaghetti-extractor-slice-workspace-v1"
+PREPARE_FORMAT = "spaghetti-extractor-slice-prepare-v1"
+NEXT_FORMAT = "spaghetti-extractor-slice-next-v1"
+BUILD_FORMAT = "spaghetti-extractor-slice-build-v1"
+CHECK_FORMAT = "spaghetti-extractor-slice-check-v1"
+FOCUSED_DELTA_FORMAT = "spaghetti-extractor-slice-focused-delta-v1"
+CANDIDATE_VALIDATION_FINGERPRINT_FORMAT = "spaghetti-extractor-slice-candidate-validation-fingerprint-v1"
+CANDIDATE_VALIDATION_CACHE_FORMAT = "spaghetti-extractor-slice-candidate-validation-cache-v1"
+SLICE_PACKET_FORMAT = "spaghetti-extractor-slice-packet-v1"
+SLICE_PACKET_INDEX_FORMAT = "spaghetti-extractor-slice-packet-index-v1"
 
-DEFAULT_WORK_DIR = Path("build/wincr-slices")
+DEFAULT_WORK_DIR = Path("build/spaghetti-extractor-slices")
 CONCRETE_SOURCE_KINDS = frozenset(
     {
         "decompiled_function",
@@ -64,8 +64,8 @@ TARGET_DEFAULTS: dict[str, dict[str, Any]] = {
         ],
         "stage_a_check_reference_contract": Path("generated/jq-reference-contract.json"),
         "stage_a_check_unit_contract_dir": Path("generated"),
-        "skeleton_root_dir": Path("share/wincr/stage-b/jq/skeleton"),
-        "candidate_root_dir": Path("share/wincr/stage-b/jq/generated-closure-candidate"),
+        "skeleton_root_dir": Path("share/spaghetti-extractor/stage-b/jq/skeleton"),
+        "candidate_root_dir": Path("share/spaghetti-extractor/stage-b/jq/generated-closure-candidate"),
         "candidate_exe": "jq-stage-b-generated-closure-candidate.exe",
         "candidate_map": "jq-stage-b-generated-closure-candidate.map",
         "skeleton_manifest": "skeleton-manifest.json",
@@ -76,7 +76,7 @@ TARGET_DEFAULTS: dict[str, dict[str, Any]] = {
         "build_command_json": [
             "bash",
             "-lc",
-            'exec "$WINCR_SLICE_REPO_ROOT/tools/wincr-build-jq-candidate.sh"',
+            'exec "$SPAGHETTI_EXTRACTOR_SLICE_REPO_ROOT/tools/spaghetti-extractor-build-jq-candidate.sh"',
         ],
         "candidate_modules": [
             {
@@ -96,7 +96,7 @@ class SliceLoopInputError(Exception):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="wincr-slice",
+        prog="spaghetti-extractor-slice",
         description="Local Stage B slice iteration loop backed by cached Stage A contracts.",
     )
     parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK_DIR, help="local hot-loop workspace root")
@@ -111,8 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--unit-contract-dir", type=Path, help="explicit Stage A unit-contract sidecar directory")
     prepare.add_argument("--candidate-dir", type=Path, help="explicit candidate artifact directory")
     prepare.add_argument("--target-closure-manifest", type=Path, help="optional target closure manifest for regenerated provenance")
-    prepare.add_argument("--build-command", help="shell command used by wincr-slice build")
-    prepare.add_argument("--build-command-json", help="JSON argv list used by wincr-slice build")
+    prepare.add_argument("--build-command", help="shell command used by spaghetti-extractor-slice build")
+    prepare.add_argument("--build-command-json", help="JSON argv list used by spaghetti-extractor-slice build")
     prepare.add_argument("--nix-flake", default=".", help="flake reference used with --realize-nix")
     prepare.add_argument("--realize-nix", action="store_true", help="realize canonical roots with nix build --no-link")
     prepare.add_argument("--force", action="store_true", help="replace local copied candidate source")
@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except SliceLoopInputError as exc:
-        print(f"wincr-slice: {exc}", file=sys.stderr)
+        print(f"spaghetti-extractor-slice: {exc}", file=sys.stderr)
         return 2
 
 
@@ -478,7 +478,7 @@ def prepare_workspace(
             "count": packet_index.get("counts", {}).get("packets", 0),
             "by_pattern_family": packet_index.get("counts", {}).get("by_pattern_family", {}),
         },
-        "next_action": "run wincr-slice next or wincr-slice check --region <id>",
+        "next_action": "run spaghetti-extractor-slice next or spaghetti-extractor-slice check --region <id>",
     }
     write_json(workspace / "prepare.json", result)
     return result
@@ -616,7 +616,7 @@ def slice_build(
             "out_dir": str(out_dir),
             "command": command_info,
             "blocker": "no local build command configured",
-            "next_action": "rerun prepare with --build-command-json or pass wincr-slice build --command-json",
+            "next_action": "rerun prepare with --build-command-json or pass spaghetti-extractor-slice build --command-json",
         }
         write_json(report_path, result)
         return result
@@ -624,13 +624,13 @@ def slice_build(
     env = os.environ.copy()
     env.update(
         {
-            "WINCR_SLICE_TARGET": target,
-            "WINCR_SLICE_FOCUS": focus,
-            "WINCR_SLICE_WORKSPACE": str(workspace),
-            "WINCR_SLICE_BUILD_DIR": str(build_dir),
-            "WINCR_SLICE_OUT_DIR": str(out_dir),
-            "WINCR_SLICE_SOURCE_DIR": str(workspace / "candidate" / "src"),
-            "WINCR_SLICE_REPO_ROOT": str(manifest.get("repo_root") or Path.cwd()),
+            "SPAGHETTI_EXTRACTOR_SLICE_TARGET": target,
+            "SPAGHETTI_EXTRACTOR_SLICE_FOCUS": focus,
+            "SPAGHETTI_EXTRACTOR_SLICE_WORKSPACE": str(workspace),
+            "SPAGHETTI_EXTRACTOR_SLICE_BUILD_DIR": str(build_dir),
+            "SPAGHETTI_EXTRACTOR_SLICE_OUT_DIR": str(out_dir),
+            "SPAGHETTI_EXTRACTOR_SLICE_SOURCE_DIR": str(workspace / "candidate" / "src"),
+            "SPAGHETTI_EXTRACTOR_SLICE_REPO_ROOT": str(manifest.get("repo_root") or Path.cwd()),
         }
     )
     if dry_run:
@@ -715,7 +715,7 @@ def slice_build(
         "stderr": str(stderr_path),
         "candidate": candidate_info,
         "missing_outputs": missing,
-        "next_action": "run wincr-slice check --region <id>" if status == "pass" else "fix the local build outputs before running contract checks",
+        "next_action": "run spaghetti-extractor-slice check --region <id>" if status == "pass" else "fix the local build outputs before running contract checks",
     }
     write_json(report_path, result)
     return result
@@ -800,7 +800,7 @@ def slice_check(
             ],
             early_exit=True,
         )
-        write_json(check_dir / "wincr-slice-check.json", result)
+        write_json(check_dir / "spaghetti-extractor-slice-check.json", result)
         return result
 
     missing_candidate = [
@@ -827,12 +827,12 @@ def slice_check(
                 {
                     "category": "missing_candidate_artifacts",
                     "blocker": f"missing candidate artifact(s): {', '.join(missing_candidate)}",
-                    "next_action": "run wincr-slice build or pass explicit candidate paths",
+                    "next_action": "run spaghetti-extractor-slice build or pass explicit candidate paths",
                 }
             ],
             early_exit=True,
         )
-        write_json(check_dir / "wincr-slice-check.json", result)
+        write_json(check_dir / "spaghetti-extractor-slice-check.json", result)
         return result
 
     candidate_provenance_path = Path(str(candidate_info["candidate_provenance"])) if candidate_info.get("candidate_provenance") else None
@@ -842,7 +842,7 @@ def slice_check(
                 {
                     "category": "missing_candidate_provenance",
                     "blocker": "no candidate provenance or build report is available",
-                    "next_action": "run wincr-slice build with a build report or pass --candidate-provenance",
+                    "next_action": "run spaghetti-extractor-slice build with a build report or pass --candidate-provenance",
                 }
             )
         else:
@@ -1035,7 +1035,7 @@ def slice_check(
         focused_delta=focused_delta,
         nix_gates=nix_gates,
     )
-    write_json(check_dir / "wincr-slice-check.json", result)
+    write_json(check_dir / "spaghetti-extractor-slice-check.json", result)
     return result
 
 
@@ -1072,7 +1072,7 @@ def _check_result(
         "policy": {
             "stage_a_contract_first": True,
             "original_runtime_tracing": False,
-            "runtime_tests": "not_run_by_wincr_slice_check",
+            "runtime_tests": "not_run_by_spaghetti_extractor_slice_check",
             "acceptance": "full compliance still requires canonical Stage A pass",
         },
         "early_exit": early_exit,
@@ -1195,7 +1195,7 @@ def _slice_source_progress(
     omitted = sum(1 for anchor in anchors if _source_kind_progress_class(str(anchor.get("source_kind") or "")) == "omitted")
     return (
         {
-            "format": "wincr-slice-source-progress-v1",
+            "format": "spaghetti-extractor-slice-source-progress-v1",
             "status": "available",
             "workspace": str(workspace),
             "skeleton_manifest": str(path),
@@ -1217,7 +1217,7 @@ def _slice_source_progress(
 
 def _empty_slice_source_progress(status: str, reason: str) -> dict[str, Any]:
     return {
-        "format": "wincr-slice-source-progress-v1",
+        "format": "spaghetti-extractor-slice-source-progress-v1",
         "status": status,
         "reason": reason,
         "counts": {
@@ -2064,7 +2064,7 @@ def _contract_paths(manifest: dict[str, Any], workspace: Path) -> dict[str, Path
 def _load_manifest(workspace: Path) -> dict[str, Any]:
     manifest_path = _manifest_path(workspace)
     if not manifest_path.exists():
-        raise SliceLoopInputError(f"workspace is not prepared at {workspace}; run wincr-slice prepare first")
+        raise SliceLoopInputError(f"workspace is not prepared at {workspace}; run spaghetti-extractor-slice prepare first")
     manifest = _load_json(manifest_path)
     if not isinstance(manifest, dict) or manifest.get("format") != WORKSPACE_FORMAT:
         raise SliceLoopInputError(f"{manifest_path} is not a {WORKSPACE_FORMAT} manifest")
@@ -2351,7 +2351,7 @@ def _slice_env_summary(env: dict[str, str]) -> dict[str, str]:
     return {
         key: value
         for key, value in sorted(env.items())
-        if key.startswith("WINCR_SLICE_")
+        if key.startswith("SPAGHETTI_EXTRACTOR_SLICE_")
     }
 
 

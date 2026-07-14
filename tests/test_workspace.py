@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from wincr.workspace import workspace_prune
+from spaghetti_extractor.workspace import workspace_prune
 
 
 class WorkspacePruneTests(unittest.TestCase):

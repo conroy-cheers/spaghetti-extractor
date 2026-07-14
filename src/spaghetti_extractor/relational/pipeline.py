@@ -1147,11 +1147,11 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
         }
     heavy_threshold = max(
         1,
-        int(os.environ.get("WINCR_STAGE_A_RELATIONAL_HEAVY_SHARD_BYTES", "500000")),
+        int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_HEAVY_SHARD_BYTES", "500000")),
     )
     heavy_jobs = min(
         jobs,
-        max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_HEAVY_JOBS", "1"))),
+        max(1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_HEAVY_JOBS", "1"))),
     )
     source_sizes = {
         module: (lean_dir / "StageA" / f"{module}.lean").stat().st_size

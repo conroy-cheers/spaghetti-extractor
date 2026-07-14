@@ -250,10 +250,10 @@ def _write_sharded_relational_proof(
         candidate_entrypoint_rva=candidate_bin.entrypoint_rva,
     )
 
-    shard_size = max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_PROOF_SHARD", "4")))
+    shard_size = max(1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PROOF_SHARD", "4")))
     shard_byte_target = max(
         1,
-        int(os.environ.get("WINCR_STAGE_A_RELATIONAL_PROOF_SHARD_BYTES", "49152")),
+        int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PROOF_SHARD_BYTES", "49152")),
     )
     estimated_region_bytes: list[int] = []
     for index, region in enumerate(contract["regions"]):
@@ -329,7 +329,7 @@ def _write_sharded_relational_proof(
 
     decode_chunk_count = min(
         len(shard_groups),
-        max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_DECODE_CHUNKS", "64"))),
+        max(1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_DECODE_CHUNKS", "64"))),
     )
     shards_per_decode_chunk = (
         len(shard_groups) + decode_chunk_count - 1
@@ -606,7 +606,7 @@ def _write_sharded_relational_proof(
         for index, state in enumerate(required_input_states)
     )
     padding_chunk_size = max(
-        1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_PADDING_CHUNK", "128"))
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PADDING_CHUNK", "128"))
     )
     padding_groups = {
         "original": [
@@ -709,7 +709,7 @@ def _write_sharded_relational_proof(
 
     static_usage_leaf_size = max(
         1,
-        int(os.environ.get("WINCR_STAGE_A_RELATIONAL_STATIC_USAGE_CHUNK", "16")),
+        int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_USAGE_CHUNK", "16")),
     )
     static_usage_leaf_modules: list[str] = []
     static_usage_chunk_modules: list[str] = []

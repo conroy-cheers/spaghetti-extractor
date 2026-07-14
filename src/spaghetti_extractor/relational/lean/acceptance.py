@@ -1884,7 +1884,7 @@ def _write_relational_acceptance_modules(
         for region_index in region_indices
     }
     chunk_size = max(
-        1, int(os.environ.get("WINCR_STAGE_A_ACCEPTANCE_CHUNK", "8"))
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_ACCEPTANCE_CHUNK", "8"))
     )
     chunks: list[dict[str, str]] = []
     steps = plan["node_steps"]

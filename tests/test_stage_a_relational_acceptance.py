@@ -11,7 +11,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             contract = self._write_contract(root / "relation.json")
             report = root / "report"
 
-            with patch.dict(os.environ, {"WINCR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}):
+            with patch.dict(os.environ, {"SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}):
                 result = stage_a_prove_relational(
                     original=original,
                     candidate=candidate,
@@ -464,7 +464,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             stage_a = lean_dir / "StageA"
             stage_a.mkdir()
             source_root = (
-                Path(__file__).parents[1] / "src" / "wincr" / "lean" / "StageA"
+                Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
             )
             for module in RELATIONAL_KERNEL_MODULES:
                 shutil.copyfile(
@@ -1613,7 +1613,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             report = root / "report"
 
             with patch.dict(
-                os.environ, {"WINCR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}
+                os.environ, {"SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}
             ):
                 result = stage_a_prove_relational(
                     original=original,
@@ -1719,7 +1719,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(generated["status"], "generated", generated)
 
             with patch.dict(
-                os.environ, {"WINCR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}
+                os.environ, {"SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_SHARD_THRESHOLD": "1"}
             ):
                 result = stage_a_prove_relational(
                     original=original,
@@ -1786,8 +1786,8 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             ))
 
     @unittest.skipUnless(
-        shutil.which("lean") and shutil.which("nix") and os.environ.get("WINCR_RUN_NIX_INTEGRATION") == "1",
-        "set WINCR_RUN_NIX_INTEGRATION=1 to run the Nix derivation graph",
+        shutil.which("lean") and shutil.which("nix") and os.environ.get("SPAGHETTI_EXTRACTOR_RUN_NIX_INTEGRATION") == "1",
+        "set SPAGHETTI_EXTRACTOR_RUN_NIX_INTEGRATION=1 to run the Nix derivation graph",
     )
     def test_nix_executor_builds_and_trust_zero_audits_prepared_graph(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1835,7 +1835,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             lean_dir = Path(temporary)
             stage_a = lean_dir / "StageA"
             stage_a.mkdir()
-            source_root = Path(__file__).parents[1] / "src" / "wincr" / "lean" / "StageA"
+            source_root = Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
             for module in RELATIONAL_KERNEL_MODULES:
                 shutil.copyfile(
                     source_root / f"{module}.lean",

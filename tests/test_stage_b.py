@@ -9,12 +9,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from wincr.relational.mapping import stage_a_generate_map
-from wincr.relational.reference_contract import (
+from spaghetti_extractor.relational.mapping import stage_a_generate_map
+from spaghetti_extractor.relational.reference_contract import (
     REFERENCE_CONTRACT_MODEL_ID,
     stage_a_export_reference_contract,
 )
-from wincr.stage_b import (
+from spaghetti_extractor.stage_b import (
     STAGE_B_PROOF_RULE,
     STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
     stage_b_diff_delta,
@@ -27,9 +27,9 @@ from wincr.stage_b import (
     _stage_b_delta_repair_items,
     _stage_b_semantic_contract_repair_items,
 )
-from wincr.stage_b_functional import stage_b_materialize_upstream_suite, stage_b_run_functional_suite
-from wincr.stage_b_provenance import stage_b_generate_candidate_provenance
-from wincr.stage_b_skeleton import (
+from spaghetti_extractor.stage_b_functional import stage_b_materialize_upstream_suite, stage_b_run_functional_suite
+from spaghetti_extractor.stage_b_provenance import stage_b_generate_candidate_provenance
+from spaghetti_extractor.stage_b_skeleton import (
     _decompiled_c_contract_direct_call_target_is_asm_linkable,
     _decompiled_c_contract_flow_call_lines,
     _decompiled_c_section_gap_callsite_is_asm_anchorable,
@@ -40,7 +40,7 @@ from wincr.stage_b_skeleton import (
     stage_b_generate_link_roots,
     stage_b_generate_skeleton,
 )
-from wincr.util import sha256_bytes, sha256_file
+from spaghetti_extractor.util import sha256_bytes, sha256_file
 from contract_fixtures import write_relational_report
 from pe_fixtures import pe32_image as _pe32_image
 from pe_fixtures import pe32_import_image as _pe32_import_image
@@ -54,9 +54,9 @@ class StageBTests(unittest.TestCase):
                 "-c",
                 (
                     "import sys; "
-                    "import wincr.stage_b; "
-                    "print('stage_a_loaded=' + str('wincr.stage_a' in sys.modules)); "
-                    "print('stage_binary_loaded=' + str('wincr.stage_binary' in sys.modules))"
+                    "import spaghetti_extractor.stage_b; "
+                    "print('stage_a_loaded=' + str('spaghetti_extractor.stage_a' in sys.modules)); "
+                    "print('stage_binary_loaded=' + str('spaghetti_extractor.stage_binary' in sys.modules))"
                 ),
             ],
             check=True,
@@ -2922,7 +2922,7 @@ class StageBTests(unittest.TestCase):
             original = self._write_pe(root / "jq.exe", b"\xc3")
             script_path = root / "tools" / "ghidra"
             script_path.mkdir(parents=True)
-            (script_path / "WincrStageBExport.java").write_text("// test exporter\n", encoding="utf-8")
+            (script_path / "SpaghettiExtractorStageBExport.java").write_text("// test exporter\n", encoding="utf-8")
             calls = []
 
             class Proc:
@@ -2956,7 +2956,7 @@ class StageBTests(unittest.TestCase):
                 )
                 return Proc()
 
-            with patch("wincr.stage_b.subprocess.run", side_effect=fake_run):
+            with patch("spaghetti_extractor.stage_b.subprocess.run", side_effect=fake_run):
                 result = stage_b_export_decompiler(
                     original=original,
                     target_name="jq",
@@ -2972,7 +2972,7 @@ class StageBTests(unittest.TestCase):
             command, kwargs = calls[0]
             self.assertEqual(command[0], "/ghidra/support/analyzeHeadless")
             self.assertIn(str(original), command)
-            self.assertEqual(command[command.index("-postScript") + 1], "WincrStageBExport.java")
+            self.assertEqual(command[command.index("-postScript") + 1], "SpaghettiExtractorStageBExport.java")
             self.assertEqual(command[command.index("-postScript") + 3], sha256_file(original))
             self.assertEqual(kwargs["timeout"], 45)
             self.assertEqual(result["decompiler_export"]["completeness"]["status"], "complete")
@@ -2988,7 +2988,7 @@ class StageBTests(unittest.TestCase):
             original = self._write_pe(root / "libjq-1.dll", b"\xc3\xc3")
             script_path = root / "tools" / "ghidra"
             script_path.mkdir(parents=True)
-            (script_path / "WincrStageBExport.java").write_text("// test exporter\n", encoding="utf-8")
+            (script_path / "SpaghettiExtractorStageBExport.java").write_text("// test exporter\n", encoding="utf-8")
 
             class Proc:
                 returncode = 0
@@ -3023,7 +3023,7 @@ class StageBTests(unittest.TestCase):
                 )
                 return Proc()
 
-            with patch("wincr.stage_b.subprocess.run", side_effect=fake_run):
+            with patch("spaghetti_extractor.stage_b.subprocess.run", side_effect=fake_run):
                 result = stage_b_export_decompiler(
                     original=original,
                     target_name="jq-libjq-1",
@@ -9735,8 +9735,8 @@ class StageBTests(unittest.TestCase):
                 },
             ]
 
-            with patch("wincr.stage_b.stage_b_check_contract") as validate_candidate, patch(
-                "wincr.stage_b._stage_b_delta_repair_items", return_value=repair_items
+            with patch("spaghetti_extractor.stage_b.stage_b_check_contract") as validate_candidate, patch(
+                "spaghetti_extractor.stage_b._stage_b_delta_repair_items", return_value=repair_items
             ):
                 result = stage_b_explain_delta(
                     reference_contract=reference_contract,

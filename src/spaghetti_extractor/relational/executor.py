@@ -19,20 +19,20 @@ from .schema import RELATIONAL_ACCEPTANCE_THEOREM, RELATIONAL_APPROVED_AXIOMS
 
 
 def _relational_cache_dir() -> Path | None:
-    configured = os.environ.get("WINCR_STAGE_A_RELATIONAL_CACHE")
+    configured = os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE")
     if configured == "off":
         return None
     if configured:
         return Path(configured).expanduser()
     xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
     if xdg_cache_home:
-        return Path(xdg_cache_home).expanduser() / "wincr" / "stage-a-relational-v1"
+        return Path(xdg_cache_home).expanduser() / "spaghetti-extractor" / "stage-a-relational-v1"
     home = os.environ.get("HOME")
     if home and home != "/homeless-shelter":
-        return Path(home).expanduser() / ".cache" / "wincr" / "stage-a-relational-v1"
+        return Path(home).expanduser() / ".cache" / "spaghetti-extractor" / "stage-a-relational-v1"
     temporary = os.environ.get("TMPDIR")
     if temporary:
-        return Path(temporary) / "wincr-cache" / "stage-a-relational-v1"
+        return Path(temporary) / "spaghetti-extractor-cache" / "stage-a-relational-v1"
     return None
 
 def _failed_shard_hint_path(lean_dir: Path) -> Path | None:
@@ -53,7 +53,7 @@ def _failed_shard_hint_path(lean_dir: Path) -> Path | None:
     return cache_root / "failed-shards" / f"{key}.json"
 
 def _relational_proof_jobs() -> int:
-    configured = os.environ.get("WINCR_STAGE_A_RELATIONAL_PROOF_JOBS")
+    configured = os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PROOF_JOBS")
     if configured is not None:
         return max(1, int(configured))
     cpu_jobs = min(16, os.cpu_count() or 1)

@@ -1,6 +1,6 @@
 """Compatibility facade for the relational Stage A package.
 
-New implementation code belongs under :mod:`wincr.relational`. Existing CLI,
+New implementation code belongs under :mod:`spaghetti_extractor.relational`. Existing CLI,
 tests, and third-party callers may continue importing the historical symbols
 from this module.
 """

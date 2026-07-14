@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from wincr import slice_loop
-from wincr.util import write_json
+from spaghetti_extractor import slice_loop
+from spaghetti_extractor.util import write_json
 
 
 class SliceLoopTests(unittest.TestCase):
@@ -267,7 +267,7 @@ class SliceLoopTests(unittest.TestCase):
             script = (
                 "import json, os; "
                 "from pathlib import Path; "
-                "out=Path(os.environ['WINCR_SLICE_OUT_DIR']); out.mkdir(parents=True, exist_ok=True); "
+                "out=Path(os.environ['SPAGHETTI_EXTRACTOR_SLICE_OUT_DIR']); out.mkdir(parents=True, exist_ok=True); "
                 "(out/'jq-stage-b-generated-closure-candidate.exe').write_bytes(b'candidate'); "
                 "(out/'jq-stage-b-generated-closure-candidate.map').write_text('map', encoding='utf-8'); "
                 "(out/'skeleton-manifest.json').write_text(json.dumps({'format':'stage-b-skeleton-v1'}), encoding='utf-8'); "
@@ -304,8 +304,8 @@ class SliceLoopTests(unittest.TestCase):
                 write_json(out, payload)
                 return payload
 
-            with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=smoke_failure), patch(
-                "wincr.slice_loop.stage_b_explain_delta"
+            with patch("spaghetti_extractor.slice_loop.stage_a_smoke_contract", side_effect=smoke_failure), patch(
+                "spaghetti_extractor.slice_loop.stage_b_explain_delta"
             ) as explain:
                 code = self._run_main(
                     [
@@ -322,7 +322,7 @@ class SliceLoopTests(unittest.TestCase):
             self.assertEqual(code, 1)
             explain.assert_not_called()
             report = json.loads(
-                (root / "work" / "jq" / "checks" / "selected" / "fast" / "wincr-slice-check.json").read_text(
+                (root / "work" / "jq" / "checks" / "selected" / "fast" / "spaghetti-extractor-slice-check.json").read_text(
                     encoding="utf-8"
                 )
             )
@@ -334,11 +334,11 @@ class SliceLoopTests(unittest.TestCase):
             root = Path(tmp)
             self._prepared_workspace(root)
 
-            with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
-                "wincr.slice_loop.stage_b_check_contract", side_effect=self._contract_candidate_validation
+            with patch("spaghetti_extractor.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
+                "spaghetti_extractor.slice_loop.stage_b_check_contract", side_effect=self._contract_candidate_validation
             ) as validate_candidate, patch(
-                "wincr.slice_loop.stage_b_check_unit", side_effect=self._unit_incomplete
-            ) as validate_unit, patch("wincr.slice_loop.stage_b_explain_delta", side_effect=self._unrelated_delta) as explain:
+                "spaghetti_extractor.slice_loop.stage_b_check_unit", side_effect=self._unit_incomplete
+            ) as validate_unit, patch("spaghetti_extractor.slice_loop.stage_b_explain_delta", side_effect=self._unrelated_delta) as explain:
                 code = self._run_main(
                     [
                         "--work-dir",
@@ -363,7 +363,7 @@ class SliceLoopTests(unittest.TestCase):
             self.assertEqual(focused["status"], "pass")
             self.assertEqual(focused["counts"]["repair_items"], 0)
             report = json.loads(
-                (root / "work" / "jq" / "checks" / "selected" / "fast" / "wincr-slice-check.json").read_text(
+                (root / "work" / "jq" / "checks" / "selected" / "fast" / "spaghetti-extractor-slice-check.json").read_text(
                     encoding="utf-8"
                 )
             )
@@ -375,11 +375,11 @@ class SliceLoopTests(unittest.TestCase):
             self._prepared_workspace(root)
             candidate = root / "candidate" / "jq-stage-b-generated-closure-candidate.exe"
 
-            with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
-                "wincr.slice_loop.stage_b_check_contract", side_effect=self._contract_candidate_validation
+            with patch("spaghetti_extractor.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
+                "spaghetti_extractor.slice_loop.stage_b_check_contract", side_effect=self._contract_candidate_validation
             ) as validate_candidate, patch(
-                "wincr.slice_loop.stage_b_check_unit", side_effect=self._unit_incomplete
-            ), patch("wincr.slice_loop.stage_b_explain_delta", side_effect=self._unrelated_delta):
+                "spaghetti_extractor.slice_loop.stage_b_check_unit", side_effect=self._unit_incomplete
+            ), patch("spaghetti_extractor.slice_loop.stage_b_explain_delta", side_effect=self._unrelated_delta):
                 self.assertEqual(
                     self._run_main(
                         [
@@ -426,7 +426,7 @@ class SliceLoopTests(unittest.TestCase):
 
             self.assertEqual(validate_candidate.call_count, 2)
             report = json.loads(
-                (root / "work" / "jq" / "checks" / "selected" / "fast" / "wincr-slice-check.json").read_text(
+                (root / "work" / "jq" / "checks" / "selected" / "fast" / "spaghetti-extractor-slice-check.json").read_text(
                     encoding="utf-8"
                 )
             )
@@ -437,9 +437,9 @@ class SliceLoopTests(unittest.TestCase):
             root = Path(tmp)
             self._prepared_workspace(root)
 
-            with patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
-                "wincr.slice_loop.stage_b_check_contract", side_effect=self._contract_candidate_validation
-            ) as validate_candidate, patch("wincr.slice_loop.stage_b_explain_delta") as explain:
+            with patch("spaghetti_extractor.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass), patch(
+                "spaghetti_extractor.slice_loop.stage_b_check_contract", side_effect=self._contract_candidate_validation
+            ) as validate_candidate, patch("spaghetti_extractor.slice_loop.stage_b_explain_delta") as explain:
                 code = self._run_main(
                     [
                         "--work-dir",
@@ -455,7 +455,7 @@ class SliceLoopTests(unittest.TestCase):
             self.assertEqual(validate_candidate.call_count, 1)
             explain.assert_not_called()
             report = json.loads(
-                (root / "work" / "jq" / "checks" / "all" / "fast" / "wincr-slice-check.json").read_text(
+                (root / "work" / "jq" / "checks" / "all" / "fast" / "spaghetti-extractor-slice-check.json").read_text(
                     encoding="utf-8"
                 )
             )
@@ -750,9 +750,9 @@ class SliceLoopTests(unittest.TestCase):
 
     def _patched_prepare_contracts(self):
         return _PatchGroup(
-            patch("wincr.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass),
-            patch("wincr.slice_loop.stage_b_contract_coverage", side_effect=self._semantic_incomplete),
-            patch("wincr.slice_loop.stage_b_extract_work_items", side_effect=self._work_items),
+            patch("spaghetti_extractor.slice_loop.stage_a_smoke_contract", side_effect=self._smoke_pass),
+            patch("spaghetti_extractor.slice_loop.stage_b_contract_coverage", side_effect=self._semantic_incomplete),
+            patch("spaghetti_extractor.slice_loop.stage_b_extract_work_items", side_effect=self._work_items),
         )
 
     def _smoke_pass(self, *, reference_contract, out):

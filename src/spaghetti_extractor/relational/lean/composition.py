@@ -62,7 +62,7 @@ def _write_reachable_product_local_certificate(
         int(item["edge_id"]): item for item in external_call_refinement_modules
     }
     proof_chunk_size = max(
-        1, int(os.environ.get("WINCR_STAGE_A_PRODUCT_PROOF_CHUNK", "16"))
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_PRODUCT_PROOF_CHUNK", "16"))
     )
     decoded_by_node: dict[int, tuple[dict[str, Any], str]] = {}
     decoded_candidates = evidence["decoded_control_candidates"]
@@ -124,7 +124,7 @@ def _write_reachable_product_local_certificate(
 
     local_chunk_size = max(
         1,
-        int(os.environ.get("WINCR_STAGE_A_REACHABLE_PRODUCT_LOCAL_CHUNK", "8")),
+        int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_REACHABLE_PRODUCT_LOCAL_CHUNK", "8")),
     )
     node_chunks: list[dict[str, str]] = []
     for chunk_index, offset in enumerate(
@@ -465,7 +465,7 @@ def _write_relational_product_graph_modules(
     )
 
     chunk_size = max(
-        1, int(os.environ.get("WINCR_STAGE_A_PRODUCT_GRAPH_CHUNK", "16"))
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_PRODUCT_GRAPH_CHUNK", "16"))
     )
     node_ranges = _static_index_ranges(len(nodes), chunk_size)
     edge_ranges = _static_index_ranges(len(edges), chunk_size)
@@ -579,7 +579,7 @@ def _write_relational_product_graph_modules(
     )
 
     proof_chunk_size = max(
-        1, int(os.environ.get("WINCR_STAGE_A_PRODUCT_PROOF_CHUNK", "16"))
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_PRODUCT_PROOF_CHUNK", "16"))
     )
     decode_chunk_by_region = {
         region_index: chunk_index
@@ -791,7 +791,7 @@ def _write_relational_product_graph_modules(
     )
     dynamic_fanout_by_source: dict[int, dict[str, str]] = {}
     dynamic_fanout_chunk_size = max(
-        1, int(os.environ.get("WINCR_STAGE_A_DYNAMIC_FANOUT_CHUNK", "32"))
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_DYNAMIC_FANOUT_CHUNK", "32"))
     )
     for group in evidence.get("dynamic_range_indirect_call_edge_groups", []):
         source_node_id = int(group["source_node_id"])

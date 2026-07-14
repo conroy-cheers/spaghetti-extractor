@@ -2,7 +2,7 @@
 //
 // Usage:
 //   analyzeHeadless <project-dir> <project-name> -import <binary> \
-//     -postScript WincrStageBExport.java <out.json> [sha256]
+//     -postScript SpaghettiExtractorStageBExport.java <out.json> [sha256]
 //
 // This script exports private dirty semantic metadata for clean-room review.
 // The output may include decompiler C and p-code and must not be published.
@@ -40,7 +40,7 @@ import ghidra.program.model.symbol.ReferenceIterator;
 import ghidra.program.model.symbol.RefType;
 import ghidra.program.model.symbol.Symbol;
 
-public class WincrStageBExport extends GhidraScript {
+public class SpaghettiExtractorStageBExport extends GhidraScript {
     private long imageBase;
     private DecompInterface decompiler;
 

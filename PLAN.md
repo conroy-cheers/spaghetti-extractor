@@ -42,19 +42,19 @@ Stage B does not trace or execute the original binary during iteration.
 2. Prepare a local slice workspace:
 
    ```sh
-   nix run .#wincr-slice -- --work-dir build/wincr-slices prepare jq --realize-nix
+   nix run .#spaghetti-extractor-slice -- --work-dir build/spaghetti-extractor-slices prepare jq --realize-nix
    ```
 
 3. Pick a focused contract item:
 
    ```sh
-   nix run .#wincr-slice -- --work-dir build/wincr-slices next jq --top-k 20
+   nix run .#spaghetti-extractor-slice -- --work-dir build/spaghetti-extractor-slices next jq --top-k 20
    ```
 
 4. Rebuild the local candidate outside Nix:
 
    ```sh
-   nix run .#wincr-slice -- --work-dir build/wincr-slices build jq \
+   nix run .#spaghetti-extractor-slice -- --work-dir build/spaghetti-extractor-slices build jq \
      --region <id> \
      --command-json '["./scripts/build-jq-candidate.sh"]'
    ```
@@ -62,7 +62,7 @@ Stage B does not trace or execute the original binary during iteration.
 5. Check the focused slice against cached Stage A feedback:
 
    ```sh
-   nix run .#wincr-slice -- --work-dir build/wincr-slices check jq \
+   nix run .#spaghetti-extractor-slice -- --work-dir build/spaghetti-extractor-slices check jq \
      --region <id> \
      --json
    ```
@@ -88,12 +88,11 @@ Stage B does not trace or execute the original binary during iteration.
 
 ## Current Nix Surface
 
-- `.#wincr-tools`
+- `.#spaghetti-extractor`
 - `.#stage-a-fixtures-check`
 - `.#stage-a-jq-fixtures`
 - `.#stage-a-jq-fixtures-check`
 - `.#stage-b-jq-skeleton`
-- `.#wincr`
-- `.#wincr-slice`
+- `.#spaghetti-extractor-slice`
 
 Anything outside this surface should justify itself against the workflow above.

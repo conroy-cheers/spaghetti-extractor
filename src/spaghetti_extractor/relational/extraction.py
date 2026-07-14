@@ -183,7 +183,7 @@ def _extract_relational_behaviors(
         r"(.*?)\nSTAGE_A_BEHAVIOR_IR\n(.*?)\nSTAGE_A_BEHAVIOR_END",
         re.DOTALL,
     )
-    batch_size = max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_EXTRACTION_BATCH", "128")))
+    batch_size = max(1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_BATCH", "128")))
     ordered_missing = sorted(missing, key=lambda item: (item[1], item[0]))
     batch_count = (len(ordered_missing) + batch_size - 1) // batch_size
     last_result: dict[str, Any] = {}
@@ -209,7 +209,7 @@ def _extract_relational_behaviors(
         source_path.write_text(source, encoding="utf-8")
         return batch_index, batch, _run_lean_extractor(lean_dir, bundle=bundle)
 
-    jobs = max(1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_EXTRACTION_JOBS", "8")))
+    jobs = max(1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS", "8")))
     with ThreadPoolExecutor(max_workers=min(jobs, batch_count)) as executor:
         futures = [executor.submit(run_batch, batch_index, batch) for batch_index, batch in batches]
         for future in as_completed(futures):

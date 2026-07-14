@@ -937,13 +937,13 @@ def _write_relational_module_graph(
         )
 
     pack_size = max(
-        1, int(os.environ.get("WINCR_STAGE_A_RELATIONAL_NIX_PACK_MODULES", "16"))
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NIX_PACK_MODULES", "16"))
     )
     static_usage_pack_size = max(
         1,
         int(
             os.environ.get(
-                "WINCR_STAGE_A_RELATIONAL_STATIC_USAGE_NIX_PACK_MODULES", "4"
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_USAGE_NIX_PACK_MODULES", "4"
             )
         ),
     )
@@ -1299,7 +1299,7 @@ def _relational_nix_evaluator() -> Path:
         Path(__file__).resolve().parents[3] / "nix" / "stage-a-lean-graph.nix",
         Path(__file__).with_name("nix") / "stage-a-lean-graph.nix",
         *(
-            parent / "share" / "wincr" / "nix" / "stage-a-lean-graph.nix"
+            parent / "share" / "spaghetti-extractor" / "nix" / "stage-a-lean-graph.nix"
             for parent in Path(__file__).resolve().parents
         ),
     ]

@@ -29,7 +29,7 @@ is documented in
 Project an existing complete block map into an editable relation contract:
 
 ```sh
-wincr stage-a-generate-relation-contract \
+spaghetti-extractor stage-a-generate-relation-contract \
   --original original.exe \
   --candidate candidate.exe \
   --mapping block-map.json \
@@ -39,13 +39,13 @@ wincr stage-a-generate-relation-contract \
 Prove and independently replay it:
 
 ```sh
-wincr stage-a-prove \
+spaghetti-extractor stage-a-prove \
   --original original.exe \
   --candidate candidate.exe \
   --relation-contract relation-contract.json \
   --out report/
 
-wincr stage-a-check-proof --report report/
+spaghetti-extractor stage-a-check-proof --report report/
 ```
 
 The authoritative commands are `stage-a-prove` and `stage-a-check-proof`.
@@ -53,13 +53,13 @@ The authoritative commands are `stage-a-prove` and `stage-a-check-proof`.
 For large proofs, separate deterministic extraction from Lean compilation:
 
 ```sh
-wincr stage-a-prepare-relational \
+spaghetti-extractor stage-a-prepare-relational \
   --original original.exe \
   --candidate candidate.exe \
   --relation-contract relation-contract.json \
   --out prepared-proof/
 
-wincr stage-a-build-relational \
+spaghetti-extractor stage-a-build-relational \
   --prepared prepared-proof/ \
   --executor nix \
   --builders-file nix/stage-a-builders \
@@ -347,7 +347,7 @@ ten deterministic examples, and an omitted-example count. Compaction changes
 diagnostics only; one or thousands of instances still make acceptance
 `incomplete`.
 
-Set `WINCR_STAGE_A_RELATIONAL_CACHE` to select the untrusted decoded-semantics
+Set `SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE` to select the untrusted decoded-semantics
 cache, or to `off` to disable it. Keys include the PE hash, span, and Lean
 decoder module hash. Decoder and normalization semantics now live in the
 separately compiled `StageA.RelationalDecode` module; proof tactics and

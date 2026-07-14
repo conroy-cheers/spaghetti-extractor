@@ -5,13 +5,13 @@ import shutil
 from pathlib import Path
 
 
-DEFAULT_GHIDRA_SCRIPT = "WincrStageBExport.java"
+DEFAULT_GHIDRA_SCRIPT = "SpaghettiExtractorStageBExport.java"
 
 
 def _resolve_analyze_headless(value: str | None) -> str:
     if value:
         return value
-    env_value = os.environ.get("WINCR_GHIDRA_HEADLESS")
+    env_value = os.environ.get("SPAGHETTI_EXTRACTOR_GHIDRA_HEADLESS")
     if env_value:
         return env_value
     found = shutil.which("analyzeHeadless")

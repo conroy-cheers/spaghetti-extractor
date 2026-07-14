@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from wincr.relational.schema import (
+from spaghetti_extractor.relational.schema import (
     STAGE_A_RELATIONAL_MODEL_ID,
     STAGE_A_RELATIONAL_PROFILE_ID,
 )
-from wincr.util import sha256_file
+from spaghetti_extractor.util import sha256_file
 
 
 def write_relational_report(

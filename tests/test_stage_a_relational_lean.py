@@ -9,7 +9,7 @@ class StageARelationalLeanTests(StageARelationalTestBase):
             stage_a = lean_dir / "StageA"
             stage_a.mkdir()
             source_root = (
-                Path(__file__).parents[1] / "src" / "wincr" / "lean" / "StageA"
+                Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
             )
             for name in ("Formal.lean", "RelationalDecode.lean"):
                 shutil.copyfile(source_root / name, stage_a / name)
@@ -127,7 +127,7 @@ end StageA.MachineCallBoundary
             stage_a = lean_dir / "StageA"
             stage_a.mkdir()
             source_root = (
-                Path(__file__).parents[1] / "src" / "wincr" / "lean" / "StageA"
+                Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
             )
             for module in RELATIONAL_KERNEL_MODULES:
                 shutil.copyfile(
@@ -519,7 +519,7 @@ end StageA.DynamicCallWitness
             stage_a = lean_dir / "StageA"
             stage_a.mkdir()
             source_root = (
-                Path(__file__).parents[1] / "src" / "wincr" / "lean" / "StageA"
+                Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
             )
             for module in RELATIONAL_KERNEL_MODULES:
                 shutil.copyfile(
@@ -1124,4 +1124,3 @@ end StageA.ImportCallWitness
                 )
             )
             self.assertIn("RelatedWordZeroGuardClaim", segment_source)
-

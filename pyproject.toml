@@ -3,9 +3,9 @@ requires = [ "setuptools>=69" ]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "wincr-tools"
+name = "spaghetti-extractor"
 version = "0.1.0"
-description = "Windows jq Stage A/B reimplementation tooling"
+description = "Binary reimplementation and equivalence-proof tooling"
 requires-python = ">=3.11"
 dependencies = [
   "capstone",
@@ -18,14 +18,17 @@ proof = [
 ]
 
 [project.scripts]
-wincr = "wincr.cli:main"
-wincr-slice = "wincr.slice_loop:main"
+spaghetti-extractor = "spaghetti_extractor.cli:main"
+spaghetti-extractor-slice = "spaghetti_extractor.slice_loop:main"
+
+[project.urls]
+Repository = "https://github.com/conroy-cheers/spaghetti-extractor"
 
 [tool.setuptools.packages.find]
 where = [ "src" ]
 
 [tool.setuptools.package-data]
-wincr = [ "lean/**/*.lean" ]
+spaghetti_extractor = [ "lean/**/*.lean" ]
 
 [tool.setuptools.data-files]
-"share/wincr/nix" = [ "nix/stage-a-lean-graph.nix" ]
+"share/spaghetti-extractor/nix" = [ "nix/stage-a-lean-graph.nix" ]

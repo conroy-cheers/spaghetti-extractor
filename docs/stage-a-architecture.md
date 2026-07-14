@@ -17,8 +17,8 @@ and candidate-only feedback commands are not acceptance gates.
 
 ## Python Phases
 
-`wincr.stage_a_relational` is a compatibility facade. Implementation lives in
-`wincr.relational`:
+`spaghetti_extractor.stage_a_relational` is a compatibility facade. Implementation lives in
+`spaghetti_extractor.relational`:
 
 - `schema.py` parses immutable, runtime-validated artifact boundaries.
 - `ir.py` validates proof, graph, acceptance, and progress records.
@@ -90,7 +90,7 @@ after a Stage A pass is a prover/toolchain defect investigation.
 
 Prepared proof inputs are source-only and content-addressed. Nix store paths
 are the authoritative compiled Lean cache for distributed builds. Local hot
-loop caches belong under `${XDG_CACHE_HOME:-~/.cache}/wincr`, not in the source
+loop caches belong under `${XDG_CACHE_HOME:-~/.cache}/spaghetti-extractor`, not in the source
 tree. `build/` contains disposable or explicitly exported work products and
 must never be an implicit proof input. Large generated Ghidra/skeleton data is
 reused by content hash and regenerated only when its own inputs change.

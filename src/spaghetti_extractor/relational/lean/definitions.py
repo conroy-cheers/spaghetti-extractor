@@ -384,7 +384,7 @@ def _write_relational_static_context_modules(
         ),
     )
     chunk_size = max(
-        1, int(os.environ.get("WINCR_STAGE_A_STATIC_MAP_CHUNK", "16"))
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_STATIC_MAP_CHUNK", "16"))
     )
     target_count = len(contract.get("code_targets", []))
     original_address_count = target_count + sum(
@@ -497,7 +497,7 @@ def _write_relational_static_context_modules(
 
     range_roots: dict[str, dict[str, Any]] = {}
     tree_fanout = max(
-        2, int(os.environ.get("WINCR_STAGE_A_STATIC_TREE_FANOUT", "16"))
+        2, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_STATIC_TREE_FANOUT", "16"))
     )
     for family, nodes in range_nodes.items():
         if not nodes:

@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from wincr.relational.artifacts import write_text_if_changed
-from wincr.relational.schema import (
+from spaghetti_extractor.relational.artifacts import write_text_if_changed
+from spaghetti_extractor.relational.schema import (
     ModuleGraph,
     PreparedProofDigests,
     SchemaError,

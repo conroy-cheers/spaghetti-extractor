@@ -678,7 +678,7 @@ class StageARelationalContractTests(StageARelationalTestBase):
             dependency_source.write_text("def dependency := 1\n")
             dependency_olean.write_bytes(b"compiled-v1")
             with patch.dict(os.environ, {
-                "WINCR_STAGE_A_RELATIONAL_CACHE": str(root / "cache"),
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE": str(root / "cache"),
             }):
                 first = _persistent_olean_path(
                     root, "Consumer", source, [dependency_olean]
@@ -699,11 +699,11 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 },
                 clear=False,
             ):
-                os.environ.pop("WINCR_STAGE_A_RELATIONAL_CACHE", None)
+                os.environ.pop("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE", None)
                 os.environ.pop("XDG_CACHE_HOME", None)
                 self.assertEqual(
                     _relational_cache_dir(),
-                    Path(temporary) / "wincr-cache" / "stage-a-relational-v1",
+                    Path(temporary) / "spaghetti-extractor-cache" / "stage-a-relational-v1",
                 )
 
     def test_relational_nix_build_command_disables_local_jobs_for_builders_file(self):

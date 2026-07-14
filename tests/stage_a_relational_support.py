@@ -11,7 +11,7 @@ from threading import Event, Timer
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from wincr.stage_a_relational import (
+from spaghetti_extractor.stage_a_relational import (
     RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_ENVIRONMENT_ID,
     RELATIONAL_KERNEL_MODULES,
@@ -87,7 +87,7 @@ from wincr.stage_a_relational import (
     stage_a_prepare_relational,
     stage_a_prove_relational,
 )
-from wincr.stage_binary import StageAImport, StageAInputError, _parse_stage_a_pe
+from spaghetti_extractor.stage_binary import StageAImport, StageAInputError, _parse_stage_a_pe
 
 
 

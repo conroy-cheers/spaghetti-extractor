@@ -5,14 +5,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from wincr.cli import _build_parser
-from wincr.relational.mapping import stage_a_generate_map
-from wincr.relational.reference_contract import (
+from spaghetti_extractor.cli import _build_parser
+from spaghetti_extractor.relational.mapping import stage_a_generate_map
+from spaghetti_extractor.relational.reference_contract import (
     REFERENCE_CONTRACT_MODEL_ID,
     stage_a_export_reference_contract,
     stage_a_smoke_contract,
 )
-from wincr.stage_binary import StageAInputError
+from spaghetti_extractor.stage_binary import StageAInputError
 
 from contract_fixtures import write_relational_report
 from pe_fixtures import pe32_image, pe32_import_image

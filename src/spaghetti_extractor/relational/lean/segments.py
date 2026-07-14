@@ -239,7 +239,7 @@ def _write_relational_invariant_modules(
         inventory_pack_count = min(
             len(shard_groups),
             max(1, int(os.environ.get(
-                "WINCR_STAGE_A_RELATIONAL_INVARIANT_INVENTORY_PACKS", "64"
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_INVARIANT_INVENTORY_PACKS", "64"
             ))),
         )
         shards_per_inventory_pack = (
@@ -1406,7 +1406,7 @@ def _write_relational_segment_refinement_modules(
         for region_index in region_indices
     }
     product_proof_chunk_size = max(
-        1, int(os.environ.get("WINCR_STAGE_A_PRODUCT_PROOF_CHUNK", "16"))
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_PRODUCT_PROOF_CHUNK", "16"))
     )
     decoded_control_chunk_by_node = {
         int(candidate["node_id"]): candidate_index // product_proof_chunk_size
