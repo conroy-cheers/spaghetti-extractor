@@ -1,8 +1,13 @@
 # Stage A Binary Equivalence Prover
 
+> Historical v2 evidence profile. This document describes useful extraction
+> and regional checking machinery, but v2 cannot authorize whole-program
+> equivalence. See [stage-a-architecture.md](stage-a-architecture.md) for the
+> sole current acceptance contract.
+
 ## Completion Goal
 
-Stage A is complete when `wincr stage-a-prove` can reproducibly classify a
+The historical profile is complete when `wincr stage-a-legacy-prove` can reproducibly classify a
 generic x86 32-bit PE candidate binary against an original PE binary as exactly
 one of `pass`, `fail`, or `incomplete`. A `pass` must be justified by a
 Lean-kernel-checked theorem over the exact input bytes, not by obligation status
@@ -92,17 +97,15 @@ produce `incomplete`. Full `jq.exe` remains an expected `incomplete` breadth
 case while indirect calls, x87 state, partial-register and operand-size forms,
 and the remaining integer instruction families are added to the checked model.
 
-The separate `x86-pe32-relational-v3` profile is under active implementation
-for flexible code layouts and explicit state relations. Its command surface,
-contract, replay evidence, and current theorem boundary are documented in
-[stage-a-relational-v3.md](stage-a-relational-v3.md). It does not replace or
-weaken v2, and its current relational-region certificate is not yet a
-whole-program acceptance theorem.
+The `x86-pe32-relational-v3` profile is the sole acceptance path. Its command
+surface, contract, replay evidence, and theorem boundary are documented in
+[stage-a-relational-v3.md](stage-a-relational-v3.md). It reuses useful v2
+evidence without treating v2 verdicts as proof authority.
 
 ## Command Surface
 
 ```sh
-wincr stage-a-prove \
+wincr stage-a-legacy-prove \
   --original original.exe \
   --candidate candidate.exe \
   --mapping block-map.json \
@@ -114,7 +117,7 @@ wincr stage-a-prove \
 The resulting proof can be independently reproduced and freshly checked:
 
 ```sh
-wincr stage-a-check-proof --report report/
+wincr stage-a-legacy-check-proof --report report/
 ```
 
 The checker first verifies binary hashes and regenerates the formal kernel and
@@ -178,7 +181,7 @@ report/
 Validation suites may batch this command without changing the proof source:
 
 ```sh
-wincr stage-a-validate-suite \
+wincr stage-a-legacy-validate-suite \
   --suite suite.json \
   --model x86-pe32-env-v1 \
   --out suite-report/

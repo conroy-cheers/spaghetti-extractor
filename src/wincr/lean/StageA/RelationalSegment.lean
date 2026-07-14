@@ -1,4 +1,4 @@
-import StageA.Relational
+import StageA.RelationalInvariant
 
 namespace StageA.Relational
 
@@ -97,7 +97,7 @@ def NoWriteSegmentShapeClosed (context : StaticProofContext)
 
 def DirectCallSegmentShapeClosed (context : StaticProofContext)
     (edge : RelationalSegmentEdge) (sourceInvariant : StateInvariant)
-    (sourceWindow : StackWindowPair)
+    (sourceWindow : StackWindowPair) (stackAmount : Nat)
     (originalReturnAddress candidateReturnAddress : Word)
     (originalBehavior candidateBehavior : SymbolicBehavior) : Prop :=
   match context.codeMap.resolveIds edge.localCodeTargetIds,
@@ -114,10 +114,10 @@ def DirectCallSegmentShapeClosed (context : StaticProofContext)
                   some candidateResult ∧
               originalResult.writes = [
                 (originalState.registers.get sourceWindow.originalRegister -
-                  BitVec.ofNat 32 4, originalReturnAddress)] ∧
+                  BitVec.ofNat 32 stackAmount, originalReturnAddress)] ∧
               candidateResult.writes = [
                 (candidateState.registers.get sourceWindow.candidateRegister -
-                  BitVec.ofNat 32 4, candidateReturnAddress)] ∧
+                  BitVec.ofNat 32 stackAmount, candidateReturnAddress)] ∧
               originalResult.outcome.segmentExitFor context false = some edge.exit ∧
               candidateResult.outcome.segmentExitFor context true = some edge.exit ∧
               outcomesRelated context.originalPe.imageBase context.candidatePe.imageBase
@@ -476,26 +476,33 @@ def NoWriteSegmentDynamicTransferClosed (context : StaticProofContext)
           candidateResult.registers = true
   | none => False
 
-theorem pairedStackWordWriteReadsBack
+theorem pairedStackWordWriteReadsBack_amount
     (context : StaticProofContext) (world : RelationalWorld)
     (sourceInvariant : StateInvariant) (sourceWindow : StackWindowPair)
+    (stackAmount : Nat)
     (originalValue candidateValue : Word)
     (originalState candidateState : MachineState)
     (originalBehavior candidateBehavior : RelationalBehavior)
     (related : StateRel context world sourceInvariant originalState candidateState)
     (sourceWindowMember : sourceWindow ∈ sourceInvariant.stackWindows)
-    (sourceWindowEnoughBelow : 4 <= sourceWindow.bytesBelow)
+    (stackAmountAtLeastWord : 4 <= stackAmount)
+    (stackAmountAligned : stackAmount % 4 = 0)
+    (sourceWindowEnoughBelow : stackAmount <= sourceWindow.bytesBelow)
     (originalWrites : originalBehavior.writes = [
-      (originalState.registers.get sourceWindow.originalRegister - BitVec.ofNat 32 4,
+      (originalState.registers.get sourceWindow.originalRegister -
+        BitVec.ofNat 32 stackAmount,
         originalValue)])
     (candidateWrites : candidateBehavior.writes = [
-      (candidateState.registers.get sourceWindow.candidateRegister - BitVec.ofNat 32 4,
+      (candidateState.registers.get sourceWindow.candidateRegister -
+        BitVec.ofNat 32 stackAmount,
         candidateValue)]) :
     Memory.read32 (originalBehavior.nextMachineState originalState).memory
-        (originalState.registers.get sourceWindow.originalRegister - BitVec.ofNat 32 4) =
+        (originalState.registers.get sourceWindow.originalRegister -
+          BitVec.ofNat 32 stackAmount) =
           originalValue ∧
       Memory.read32 (candidateBehavior.nextMachineState candidateState).memory
-        (candidateState.registers.get sourceWindow.candidateRegister - BitVec.ofNat 32 4) =
+        (candidateState.registers.get sourceWindow.candidateRegister -
+          BitVec.ofNat 32 stackAmount) =
           candidateValue := by
   rcases related with
     ⟨_worldValid, stackRangesValid, _stackMemory, _importsStatic, _importsComplete,
@@ -507,9 +514,10 @@ theorem pairedStackWordWriteReadsBack
       _inputFsBase⟩
   simp only [stackWindowsRelated, List.all_eq_true] at inputStackWindows
   have sourceWindowHolds := inputStackWindows sourceWindow sourceWindowMember
-  rcases pairedStackWordLocation_below_window context world sourceWindow
+  rcases pairedStackWordLocation_below_window_amount context world sourceWindow
       originalState.registers candidateState.registers stackRangesValid
-      sourceWindowHolds sourceWindowEnoughBelow with
+      sourceWindowHolds stackAmount stackAmountAtLeastWord stackAmountAligned
+      sourceWindowEnoughBelow with
     ⟨location, originalLocation, candidateLocation⟩
   have locationValid : location.range.disjointFromImages context = true := by
     have validRows := stackRangesValid
@@ -533,6 +541,32 @@ theorem pairedStackWordWriteReadsBack
     exact Memory.read32_write32_same_of_fits candidateState.memory
       (location.range.candidateBase + BitVec.ofNat 32 location.offset)
       candidateValue candidateFits
+
+theorem pairedStackWordWriteReadsBack
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant) (sourceWindow : StackWindowPair)
+    (originalValue candidateValue : Word)
+    (originalState candidateState : MachineState)
+    (originalBehavior candidateBehavior : RelationalBehavior)
+    (related : StateRel context world sourceInvariant originalState candidateState)
+    (sourceWindowMember : sourceWindow ∈ sourceInvariant.stackWindows)
+    (sourceWindowEnoughBelow : 4 <= sourceWindow.bytesBelow)
+    (originalWrites : originalBehavior.writes = [
+      (originalState.registers.get sourceWindow.originalRegister - BitVec.ofNat 32 4,
+        originalValue)])
+    (candidateWrites : candidateBehavior.writes = [
+      (candidateState.registers.get sourceWindow.candidateRegister - BitVec.ofNat 32 4,
+        candidateValue)]) :
+    Memory.read32 (originalBehavior.nextMachineState originalState).memory
+        (originalState.registers.get sourceWindow.originalRegister - BitVec.ofNat 32 4) =
+          originalValue ∧
+      Memory.read32 (candidateBehavior.nextMachineState candidateState).memory
+        (candidateState.registers.get sourceWindow.candidateRegister - BitVec.ofNat 32 4) =
+          candidateValue := by
+  exact pairedStackWordWriteReadsBack_amount context world sourceInvariant sourceWindow
+    4 originalValue candidateValue originalState candidateState originalBehavior
+    candidateBehavior related sourceWindowMember (by decide) (by decide)
+    sourceWindowEnoughBelow originalWrites candidateWrites
 
 theorem StateRel.afterNoWriteEvaluation
     (context : StaticProofContext) (world : RelationalWorld)
@@ -748,7 +782,7 @@ theorem segmentTransitionClosed_of_no_write_with_transfers
 theorem segmentTransitionClosed_of_direct_call_with_transfers
     (context : StaticProofContext) (edge : RelationalSegmentEdge)
     (sourceInvariant targetInvariant : StateInvariant)
-    (sourceWindow : StackWindowPair)
+    (sourceWindow : StackWindowPair) (stackAmount : Nat)
     (originalReturnAddress candidateReturnAddress : Word)
     (originalBehavior candidateBehavior : SymbolicBehavior)
     (localCodeTargets : List CodeTargetPair) (localValues : List ValueTargetPair)
@@ -758,13 +792,16 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
       context.dataMap.resolveIds edge.localValueTargetIds = some localValues)
     (contextValid : context.StructurallyValid)
     (sourceWindowMember : sourceWindow ∈ sourceInvariant.stackWindows)
-    (sourceWindowEnoughBelow : 4 <= sourceWindow.bytesBelow)
+    (stackAmountAtLeastWord : 4 <= stackAmount)
+    (stackAmountAligned : stackAmount % 4 = 0)
+    (sourceWindowEnoughBelow : stackAmount <= sourceWindow.bytesBelow)
     (returnAddressesRelated : ∀ world,
       wordRelated context.originalPe.imageBase context.candidatePe.imageBase
         context.codeMap.entries.toList (context.relationalValueTargets world)
         originalReturnAddress candidateReturnAddress = true)
     (shape : DirectCallSegmentShapeClosed context edge sourceInvariant sourceWindow
-      originalReturnAddress candidateReturnAddress originalBehavior candidateBehavior)
+      stackAmount originalReturnAddress candidateReturnAddress originalBehavior
+      candidateBehavior)
     (stateTransfer : NoWriteSegmentStateTransferClosed context edge sourceInvariant
       targetInvariant originalBehavior candidateBehavior)
     (importTransfer : NoWriteSegmentImportTransferClosed context edge sourceInvariant
@@ -808,16 +845,19 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
           _inputUndefined, _, _, _inputFsBase⟩
       simp only [stackWindowsRelated, List.all_eq_true] at inputStackWindows
       have sourceWindowHolds := inputStackWindows sourceWindow sourceWindowMember
-      rcases pairedStackWordLocation_below_window context world sourceWindow
+      rcases pairedStackWordLocation_below_window_amount context world sourceWindow
           originalState.registers candidateState.registers stackRangesValid
-          sourceWindowHolds sourceWindowEnoughBelow with
+          sourceWindowHolds stackAmount stackAmountAtLeastWord stackAmountAligned
+          sourceWindowEnoughBelow with
         ⟨location, originalLocation, candidateLocation⟩
       have originalWriteAddress :
-          originalState.registers.get sourceWindow.originalRegister - BitVec.ofNat 32 4 =
+          originalState.registers.get sourceWindow.originalRegister -
+              BitVec.ofNat 32 stackAmount =
             location.range.originalBase + BitVec.ofNat 32 location.offset :=
         originalLocation.symm.trans location.originalAddressExact
       have candidateWriteAddress :
-          candidateState.registers.get sourceWindow.candidateRegister - BitVec.ofNat 32 4 =
+          candidateState.registers.get sourceWindow.candidateRegister -
+              BitVec.ofNat 32 stackAmount =
             location.range.candidateBase + BitVec.ofNat 32 location.offset :=
         candidateLocation.symm.trans location.candidateAddressExact
       have locationValid : location.range.disjointFromImages context = true := by
@@ -858,9 +898,11 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
         guardTrue
       apply StateRel.afterPairedMemoryFamiliesUpdate context world sourceInvariant
         targetInvariant originalState candidateState originalResult candidateResult
-        [(originalState.registers.get sourceWindow.originalRegister - BitVec.ofNat 32 4,
+        [(originalState.registers.get sourceWindow.originalRegister -
+            BitVec.ofNat 32 stackAmount,
           originalReturnAddress)]
-        [(candidateState.registers.get sourceWindow.candidateRegister - BitVec.ofNat 32 4,
+        [(candidateState.registers.get sourceWindow.candidateRegister -
+            BitVec.ofNat 32 stackAmount,
           candidateReturnAddress)] related originalWrites candidateWrites
       · simpa [applyConcreteWrites, originalWriteAddress, candidateWriteAddress] using
           outputMemoryFamilies
@@ -1129,7 +1171,7 @@ theorem segmentTransitionClosed_of_paired_stack_word_writes_with_transfers
 theorem segmentTransitionClosed_of_direct_call
     (context : StaticProofContext) (edge : RelationalSegmentEdge)
     (sourceInvariant targetInvariant : StateInvariant)
-    (sourceWindow : StackWindowPair)
+    (sourceWindow : StackWindowPair) (stackAmount : Nat)
     (originalReturnAddress candidateReturnAddress : Word)
     (originalBehavior candidateBehavior : SymbolicBehavior)
     (localCodeTargets : List CodeTargetPair) (localValues : List ValueTargetPair)
@@ -1139,7 +1181,9 @@ theorem segmentTransitionClosed_of_direct_call
       context.dataMap.resolveIds edge.localValueTargetIds = some localValues)
     (contextValid : context.StructurallyValid)
     (sourceWindowMember : sourceWindow ∈ sourceInvariant.stackWindows)
-    (sourceWindowEnoughBelow : 4 <= sourceWindow.bytesBelow)
+    (stackAmountAtLeastWord : 4 <= stackAmount)
+    (stackAmountAligned : stackAmount % 4 = 0)
+    (sourceWindowEnoughBelow : stackAmount <= sourceWindow.bytesBelow)
     (returnAddressesRelated : ∀ world,
       wordRelated context.originalPe.imageBase context.candidatePe.imageBase
         context.codeMap.entries.toList (context.relationalValueTargets world)
@@ -1148,16 +1192,18 @@ theorem segmentTransitionClosed_of_direct_call
     (targetDynamicRelationsEmpty :
       targetInvariant.dynamicRegisterRangeRelations = [])
     (shape : DirectCallSegmentShapeClosed context edge sourceInvariant sourceWindow
-      originalReturnAddress candidateReturnAddress originalBehavior candidateBehavior)
+      stackAmount originalReturnAddress candidateReturnAddress originalBehavior
+      candidateBehavior)
     (stateTransfer : NoWriteSegmentStateTransferClosed context edge sourceInvariant
       targetInvariant originalBehavior candidateBehavior) :
     SegmentTransitionClosed context edge sourceInvariant targetInvariant
       originalBehavior candidateBehavior := by
   apply segmentTransitionClosed_of_direct_call_with_transfers context edge
-    sourceInvariant targetInvariant sourceWindow originalReturnAddress
+    sourceInvariant targetInvariant sourceWindow stackAmount originalReturnAddress
     candidateReturnAddress originalBehavior candidateBehavior localCodeTargets localValues
     localCodeTargetsResolved localValuesResolved contextValid sourceWindowMember
-    sourceWindowEnoughBelow returnAddressesRelated shape stateTransfer
+    stackAmountAtLeastWord stackAmountAligned sourceWindowEnoughBelow
+    returnAddressesRelated shape stateTransfer
   · unfold NoWriteSegmentImportTransferClosed
     rw [localCodeTargetsResolved]
     intro world originalState candidateState originalResult candidateResult related

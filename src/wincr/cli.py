@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .stage_a import (
+from .stage_a_legacy import (
     STAGE_A_MODEL_ID,
     StageAInputError,
-    stage_a_check_proof,
+    stage_a_check_proof as stage_a_legacy_check_proof,
     stage_a_audit_contract_shortfalls,
     stage_a_diff_obligations,
     stage_a_explain_obligations,
@@ -18,13 +18,12 @@ from .stage_a import (
     stage_a_generate_map,
     stage_a_semantic_coverage,
     stage_a_smoke_contract,
-    stage_a_validate,
+    stage_a_validate as stage_a_legacy_validate,
     stage_a_validate_contract_candidate,
-    stage_a_validate_suite,
+    stage_a_validate_suite as stage_a_legacy_validate_suite,
     stage_a_validate_unit,
 )
 from .stage_a_relational import (
-    STAGE_A_RELATIONAL_MODEL_ID,
     stage_a_build_relational,
     stage_a_check_relational_proof,
     stage_a_generate_relation_contract,
@@ -45,6 +44,7 @@ from .stage_b_functional import (
 )
 from .stage_b_provenance import StageBProvenanceInputError, stage_b_generate_candidate_provenance
 from .stage_b_skeleton import stage_b_generate_link_roots, stage_b_generate_skeleton
+from .workspace import workspace_prune
 
 
 def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
@@ -71,7 +71,25 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
-    validate = subcommands.add_parser("stage-a-validate", help="validate a PE32 binary pair against a block map")
+    prune = subcommands.add_parser(
+        "workspace-prune",
+        help="inventory or remove disposable caches and runtime state",
+    )
+    prune.add_argument("--root", type=Path, default=Path("build"))
+    prune.add_argument("--include", action="append", type=Path, default=[])
+    prune.add_argument("--apply", action="store_true")
+    prune.set_defaults(
+        func=lambda args: workspace_prune(
+            root=args.root,
+            include=args.include,
+            apply=args.apply,
+        )
+    )
+
+    validate = subcommands.add_parser(
+        "stage-a-legacy-validate",
+        help="produce evidence-only v2 PE/block-map validation",
+    )
     validate.add_argument("--original", type=Path, required=True)
     validate.add_argument("--candidate", type=Path, required=True)
     validate.add_argument("--mapping", type=Path, required=True)
@@ -80,23 +98,35 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     validate.add_argument("--invariants", type=Path)
     validate.add_argument("--layout-contract", type=Path)
     validate.add_argument("--lean-input", action="append", default=[], type=Path)
-    validate.set_defaults(func=_cmd_stage_a_validate)
+    validate.set_defaults(func=_cmd_stage_a_legacy_validate)
 
-    prove = subcommands.add_parser("stage-a-prove", help="generate and check an exact-byte Stage A refinement proof")
+    prove = subcommands.add_parser(
+        "stage-a-prove",
+        help="generate and replay the whole-program v3 acceptance theorem",
+    )
     prove.add_argument("--original", type=Path, required=True)
     prove.add_argument("--candidate", type=Path, required=True)
-    prove.add_argument("--mapping", type=Path)
-    prove.add_argument("--relation-contract", type=Path)
-    prove.add_argument("--model", default=STAGE_A_MODEL_ID)
+    prove.add_argument("--relation-contract", type=Path, required=True)
     prove.add_argument("--out", type=Path, required=True)
-    prove.add_argument("--invariants", type=Path)
-    prove.add_argument("--layout-contract", type=Path)
-    prove.add_argument("--lean-input", action="append", default=[], type=Path)
     prove.set_defaults(func=_cmd_stage_a_prove)
+
+    legacy_prove = subcommands.add_parser(
+        "stage-a-legacy-prove",
+        help="compatibility alias for evidence-only v2 validation",
+    )
+    legacy_prove.add_argument("--original", type=Path, required=True)
+    legacy_prove.add_argument("--candidate", type=Path, required=True)
+    legacy_prove.add_argument("--mapping", type=Path, required=True)
+    legacy_prove.add_argument("--model", default=STAGE_A_MODEL_ID)
+    legacy_prove.add_argument("--out", type=Path, required=True)
+    legacy_prove.add_argument("--invariants", type=Path)
+    legacy_prove.add_argument("--layout-contract", type=Path)
+    legacy_prove.add_argument("--lean-input", action="append", default=[], type=Path)
+    legacy_prove.set_defaults(func=_cmd_stage_a_legacy_validate)
 
     prove_relational = subcommands.add_parser(
         "stage-a-prove-relational",
-        help="generate and replay a v3 relational exact-byte proof",
+        help="generate and replay the whole-program v3 acceptance theorem",
     )
     prove_relational.add_argument("--original", type=Path, required=True)
     prove_relational.add_argument("--candidate", type=Path, required=True)
@@ -162,7 +192,10 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         )
     )
 
-    check_proof = subcommands.add_parser("stage-a-check-proof", help="independently rebuild and check a Stage A formal proof bundle")
+    check_proof = subcommands.add_parser(
+        "stage-a-check-proof",
+        help="independently replay the v3 whole-program acceptance theorem",
+    )
     check_proof.add_argument("--report", type=Path, required=True)
     check_proof.add_argument("--original", type=Path)
     check_proof.add_argument("--candidate", type=Path)
@@ -171,9 +204,26 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         func=_cmd_stage_a_check_proof,
     )
 
+    legacy_check = subcommands.add_parser(
+        "stage-a-legacy-check-proof",
+        help="replay an evidence-only v2 proof bundle",
+    )
+    legacy_check.add_argument("--report", type=Path, required=True)
+    legacy_check.add_argument("--original", type=Path)
+    legacy_check.add_argument("--candidate", type=Path)
+    legacy_check.add_argument("--out", type=Path)
+    legacy_check.set_defaults(
+        func=lambda args: stage_a_legacy_check_proof(
+            report=args.report,
+            original=args.original,
+            candidate=args.candidate,
+            out=args.out,
+        )
+    )
+
     check_relational = subcommands.add_parser(
         "stage-a-check-relational-proof",
-        help="independently replay a v3 relational proof bundle",
+        help="independently replay the v3 whole-program acceptance theorem",
     )
     check_relational.add_argument("--report", type=Path, required=True)
     check_relational.add_argument("--out", type=Path)
@@ -198,11 +248,20 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
         )
     )
 
-    suite = subcommands.add_parser("stage-a-validate-suite", help="run a Stage A validation suite manifest")
+    suite = subcommands.add_parser(
+        "stage-a-legacy-validate-suite",
+        help="run an evidence-only v2 validation suite manifest",
+    )
     suite.add_argument("--suite", type=Path, required=True)
     suite.add_argument("--out", type=Path, required=True)
     suite.add_argument("--model")
-    suite.set_defaults(func=lambda args: stage_a_validate_suite(suite=args.suite, out=args.out, model=args.model))
+    suite.set_defaults(
+        func=lambda args: stage_a_legacy_validate_suite(
+            suite=args.suite,
+            out=args.out,
+            model=args.model,
+        )
+    )
 
     generate_map = subcommands.add_parser("stage-a-generate-map", help="generate a linker-map/capstone Stage A block map")
     generate_map.add_argument("--original", type=Path, required=True)
@@ -235,7 +294,10 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     smoke.add_argument("--out", type=Path)
     smoke.set_defaults(func=lambda args: stage_a_smoke_contract(reference_contract=args.reference_contract, out=args.out))
 
-    contract_candidate = subcommands.add_parser("stage-a-validate-contract-candidate", help="validate a candidate against a reference contract")
+    contract_candidate = subcommands.add_parser(
+        "stage-a-validate-contract-candidate",
+        help="evaluate non-authoritative candidate evidence against a reference contract",
+    )
     contract_candidate.add_argument("--reference-contract", type=Path, required=True)
     contract_candidate.add_argument("--candidate", type=Path, required=True)
     contract_candidate.add_argument("--linker-map-candidate", type=Path, required=True)
@@ -272,7 +334,10 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     semantic.add_argument("--unit-contract-dir", type=Path)
     semantic.set_defaults(func=_cmd_stage_a_semantic_coverage)
 
-    validate_unit = subcommands.add_parser("stage-a-validate-unit", help="run focused Stage A contract validation for one region")
+    validate_unit = subcommands.add_parser(
+        "stage-a-validate-unit",
+        help="run focused non-authoritative contract validation for one region",
+    )
     validate_unit.add_argument("--reference-contract", type=Path, required=True)
     validate_unit.add_argument("--candidate", type=Path, required=True)
     validate_unit.add_argument("--linker-map-candidate", type=Path, required=True)
@@ -416,8 +481,8 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     return parser
 
 
-def _cmd_stage_a_validate(args: Any) -> dict[str, Any]:
-    return stage_a_validate(
+def _cmd_stage_a_legacy_validate(args: Any) -> dict[str, Any]:
+    return stage_a_legacy_validate(
         original=args.original,
         candidate=args.candidate,
         mapping=args.mapping,
@@ -430,20 +495,12 @@ def _cmd_stage_a_validate(args: Any) -> dict[str, Any]:
 
 
 def _cmd_stage_a_prove(args: Any) -> dict[str, Any]:
-    if args.model == STAGE_A_RELATIONAL_MODEL_ID or args.relation_contract is not None:
-        if args.relation_contract is None:
-            raise StageAInputError("--relation-contract is required for the relational v3 model")
-        if args.mapping is not None:
-            raise StageAInputError("--mapping and --relation-contract select different proof profiles")
-        return stage_a_prove_relational(
-            original=args.original,
-            candidate=args.candidate,
-            relation_contract=args.relation_contract,
-            out=args.out,
-        )
-    if args.mapping is None:
-        raise StageAInputError("--mapping is required for the refinement v2 model")
-    return _cmd_stage_a_validate(args)
+    return stage_a_prove_relational(
+        original=args.original,
+        candidate=args.candidate,
+        relation_contract=args.relation_contract,
+        out=args.out,
+    )
 
 
 def _cmd_stage_a_check_proof(args: Any) -> dict[str, Any]:
@@ -452,16 +509,14 @@ def _cmd_stage_a_check_proof(args: Any) -> dict[str, Any]:
         verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise StageAInputError(f"cannot read {verdict_path}: {exc}") from exc
-    if verdict.get("profile") == "x86-pe32-lean-relational-v3":
-        if args.original is not None or args.candidate is not None:
-            raise StageAInputError("relational v3 replay uses the binaries embedded in the report")
-        return stage_a_check_relational_proof(report=args.report, out=args.out)
-    return stage_a_check_proof(
-        report=args.report,
-        original=args.original,
-        candidate=args.candidate,
-        out=args.out,
-    )
+    if verdict.get("profile") != "x86-pe32-lean-relational-v3":
+        raise StageAInputError(
+            "stage-a-check-proof accepts only relational v3 reports; use "
+            "stage-a-legacy-check-proof for evidence-only v2 reports"
+        )
+    if args.original is not None or args.candidate is not None:
+        raise StageAInputError("relational v3 replay uses the binaries embedded in the report")
+    return stage_a_check_relational_proof(report=args.report, out=args.out)
 
 
 def _cmd_stage_a_generate_map(args: Any) -> dict[str, Any]:

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .stage_a import (
+from .stage_a_legacy import (
     STAGE_A_MODEL_ID,
     stage_a_extract_work_items,
     stage_a_semantic_coverage,

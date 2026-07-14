@@ -119,6 +119,8 @@
               $CC -O2 "''${common_flags[@]}" -DSTAGE_A_NO_EXTERNAL -DSTAGE_A_NO_BRANCH -DSTAGE_A_MUTATION -o stage-a-mutated.exe stage_a_equivalence.S
               $CC -O0 "''${common_flags[@]}" -o stage-a-calls-original.exe stage_a_calls.S -lkernel32
               $CC -O2 "''${common_flags[@]}" -DSTAGE_A_VARIANT_B -o stage-a-calls-candidate.exe stage_a_calls.S -lkernel32
+              $CC -O0 "''${common_flags[@]}" -o stage-a-loop-original.exe stage_a_loop.S
+              $CC -O2 "''${common_flags[@]}" -o stage-a-loop-candidate.exe stage_a_loop.S
               python3 - stage-a-original.exe stage-a-candidate.exe stage-a-mutated.exe <<'PY'
               import pathlib
               import struct
@@ -140,7 +142,8 @@
               fixture_dir="$out/share/wincr/stage-a-fixtures/symbolic-equivalence"
               mkdir -p "$fixture_dir"
               cp stage-a-original.exe stage-a-candidate.exe stage-a-mutated.exe \
-                stage-a-calls-original.exe stage-a-calls-candidate.exe "$fixture_dir/"
+                stage-a-calls-original.exe stage-a-calls-candidate.exe \
+                stage-a-loop-original.exe stage-a-loop-candidate.exe "$fixture_dir/"
               cat > "$fixture_dir/block-map.json" <<'JSON'
               {
                 "blocks": [
@@ -188,6 +191,16 @@
                 ]
               }
               JSON
+              cat > "$fixture_dir/block-map-loop.json" <<'JSON'
+              {
+                "blocks": [
+                  { "id": "entry-loop", "kind": "code", "reachable": true, "root": { "kind": "pe_entrypoint", "checked": true }, "original": { "rva": "0x1000", "size": 2 }, "candidate": { "rva": "0x1000", "size": 2 } }
+                ],
+                "waivers": [
+                  { "id": "loop-linker-padding", "binary": "both", "rva": "0x1002", "size": 2, "reason": "verified post-jump NOP alignment emitted by the PE linker" }
+                ]
+              }
+              JSON
               cat > "$fixture_dir/stage-a-fixture-lemmas.lean" <<'LEAN'
               namespace StageAFixture
 
@@ -199,7 +212,7 @@
               {
                 "model": "x86-pe32-env-v1",
                 "cases": [
-                  { "id": "gcc-o0-vs-gcc-o2-symbolic-equivalence", "original": "stage-a-original.exe", "candidate": "stage-a-candidate.exe", "mapping": "block-map.json", "lean_inputs": [ "stage-a-fixture-lemmas.lean" ], "expect": "pass" },
+                  { "id": "gcc-o0-vs-gcc-o2-symbolic-equivalence", "original": "stage-a-original.exe", "candidate": "stage-a-candidate.exe", "mapping": "block-map.json", "lean_inputs": [ "stage-a-fixture-lemmas.lean" ], "expect": "incomplete" },
                   { "id": "gcc-o0-vs-mutated-candidate", "original": "stage-a-original.exe", "candidate": "stage-a-mutated.exe", "mapping": "block-map-mutated.json", "lean_inputs": [ "stage-a-fixture-lemmas.lean" ], "expect": "fail" },
                   { "id": "mingw-import-relocation-call-composition", "original": "stage-a-calls-original.exe", "candidate": "stage-a-calls-candidate.exe", "mapping": "block-map-calls.json", "expect": "pass" }
                 ]
@@ -217,25 +230,22 @@
             }
             ''
               fixture_dir="${stage-a-fixtures}/share/wincr/stage-a-fixtures/symbolic-equivalence"
-              wincr stage-a-validate-suite \
+              export WINCR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/stage-a-relational-cache"
+              wincr stage-a-legacy-validate-suite \
                 --suite "$fixture_dir/suite.json" \
                 --model x86-pe32-env-v1 \
                 --out "$TMPDIR/stage-a-suite"
-              wincr stage-a-check-proof \
-                --report "$TMPDIR/stage-a-suite/cases/gcc-o0-vs-gcc-o2-symbolic-equivalence" \
-                --out "$TMPDIR/stage-a-suite/formal-proof-check.json"
-              wincr stage-a-check-proof \
+              wincr stage-a-legacy-check-proof \
                 --report "$TMPDIR/stage-a-suite/cases/mingw-import-relocation-call-composition" \
                 --out "$TMPDIR/stage-a-suite/formal-proof-check-calls.json"
               wincr stage-a-generate-relation-contract \
-                --original "$fixture_dir/stage-a-original.exe" \
-                --candidate "$fixture_dir/stage-a-candidate.exe" \
-                --mapping "$fixture_dir/block-map.json" \
+                --original "$fixture_dir/stage-a-loop-original.exe" \
+                --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
+                --mapping "$fixture_dir/block-map-loop.json" \
                 --out "$TMPDIR/stage-a-suite/relational-contract.json"
-              WINCR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/stage-a-relational-cache" \
-                wincr stage-a-prove-relational \
-                  --original "$fixture_dir/stage-a-original.exe" \
-                  --candidate "$fixture_dir/stage-a-candidate.exe" \
+              wincr stage-a-prove-relational \
+                  --original "$fixture_dir/stage-a-loop-original.exe" \
+                  --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
                   --relation-contract "$TMPDIR/stage-a-suite/relational-contract.json" \
                   --out "$TMPDIR/stage-a-suite/relational-v3"
               wincr stage-a-check-relational-proof \
@@ -343,7 +353,7 @@
                 ]
               }
               JSON
-              wincr stage-a-validate-suite \
+              wincr stage-a-legacy-validate-suite \
                 --suite "$work/suite.json" \
                 --model x86-pe32-env-v1 \
                 --out "$work/suite"

@@ -2,9 +2,14 @@
 
 ## Purpose
 
-`x86-pe32-relational-v3` is a separate proof profile for equivalent PE32/i386
-programs whose code layout and instruction selection may differ. It does not
-relax `x86-pe32-lean-refinement-v2`. A v3 report embeds the exact original and
+The normative command authority and trust boundary are defined in
+[stage-a-architecture.md](stage-a-architecture.md). This document records the
+implemented v3 profile and measured progress; where older wording conflicts,
+the architecture document controls.
+
+`x86-pe32-relational-v3` is the authoritative proof profile for equivalent
+PE32/i386 programs whose code layout and instruction selection may differ. It
+may consume v2 evidence but never inherits v2 acceptance. A v3 report embeds the exact original and
 candidate bytes, re-parses them in Lean, decodes every classified executable
 region with the reviewed x86 semantics, and proves the declared relations.
 
@@ -12,6 +17,12 @@ Python, pefile, Capstone, block-map generation, decoded-semantics caches, and
 SAT proof production are untrusted producers. The checked boundary is the Lean
 kernel, `Formal.lean`, `Relational.lean`, and either a replayed LRAT certificate
 or kernel-checked bitvector normalization for each region.
+
+The forward plan for completing internal whole-program equivalence, replacing
+detailed external semantics with an exact lockstep shared-oracle boundary, and
+then validating the architecture on a representative 3D application and a game
+is documented in
+[stage-a-internal-equivalence-and-3d-roadmap.md](stage-a-internal-equivalence-and-3d-roadmap.md).
 
 ## Workflow
 
@@ -29,7 +40,6 @@ Prove and independently replay it:
 
 ```sh
 wincr stage-a-prove \
-  --model x86-pe32-relational-v3 \
   --original original.exe \
   --candidate candidate.exe \
   --relation-contract relation-contract.json \

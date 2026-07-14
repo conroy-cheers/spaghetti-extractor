@@ -40,6 +40,36 @@ TEST_SOLVER_BACKEND = {
 
 
 class StageAValidateTests(unittest.TestCase):
+    def test_cli_exposes_v2_validation_only_under_legacy_names(self):
+        parser = wincr_cli._build_parser(prog="wincr")
+        subcommands = next(
+            action for action in parser._actions
+            if action.dest == "command"
+        ).choices
+        self.assertNotIn("stage-a-validate", subcommands)
+        self.assertNotIn("stage-a-validate-suite", subcommands)
+        self.assertIn("stage-a-legacy-validate", subcommands)
+        self.assertIn("stage-a-legacy-validate-suite", subcommands)
+
+    def test_primary_proof_replay_rejects_v2_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp)
+            (report / "verdict.json").write_text(
+                json.dumps({"profile": "x86-pe32-lean-refinement-v2"}),
+                encoding="utf-8",
+            )
+            args = mock.Mock(
+                report=report,
+                original=None,
+                candidate=None,
+                out=None,
+            )
+            with self.assertRaisesRegex(
+                stage_a.StageAInputError,
+                "stage-a-legacy-check-proof",
+            ):
+                wincr_cli._cmd_stage_a_check_proof(args)
+
     def test_structural_identity_pass_writes_required_report_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2192,7 +2222,7 @@ class StageAValidateTests(unittest.TestCase):
             failure = json.loads((out / "failures" / "mapping-block-dup.json").read_text(encoding="utf-8"))
             self.assertEqual(failure["category"], "invalid_mapping")
 
-    def test_cli_stage_a_validate_uses_existing_command_surface(self):
+    def test_cli_stage_a_legacy_validate_uses_explicit_command_surface(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             original = self._write_pe(root / "original.exe", b"\xb8\x2a\x00\x00\x00\xc3")
@@ -2203,7 +2233,7 @@ class StageAValidateTests(unittest.TestCase):
             with self._mock_lean_checked():
                 code = wincr_cli.main(
                     [
-                        "stage-a-validate",
+                        "stage-a-legacy-validate",
                         "--original",
                         str(original),
                         "--candidate",
@@ -2221,7 +2251,7 @@ class StageAValidateTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(json.loads((out / "verdict.json").read_text(encoding="utf-8"))["verdict"], "pass")
 
-    def test_cli_stage_a_validate_suite_runs_relative_case_paths(self):
+    def test_cli_stage_a_legacy_validate_suite_runs_relative_case_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cases = root / "cases"
@@ -2252,7 +2282,7 @@ class StageAValidateTests(unittest.TestCase):
             with self._mock_lean_checked():
                 code = wincr_cli.main(
                     [
-                        "stage-a-validate-suite",
+                        "stage-a-legacy-validate-suite",
                         "--suite",
                         str(suite),
                         "--out",

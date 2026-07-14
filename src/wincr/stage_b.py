@@ -620,7 +620,7 @@ def stage_b_validate_candidate(
     map_result: dict[str, Any] | None = None
     binary_evidence: dict[str, Any]
     reference_contract_payload: dict[str, Any] | None = None
-    from .stage_a import stage_a_generate_map, stage_a_validate, stage_a_validate_contract_candidate
+    from .stage_a_legacy import stage_a_generate_map, stage_a_validate, stage_a_validate_contract_candidate
 
     if reference_contract is not None:
         try:
@@ -1232,7 +1232,7 @@ def stage_b_explain_delta(
     focused_only: bool = False,
     embed_contract_candidate_validation: bool = True,
 ) -> dict[str, Any]:
-    from .stage_a import stage_a_validate_contract_candidate
+    from .stage_a_legacy import stage_a_validate_contract_candidate
 
     if focused_only and focus is None:
         raise StageAInputError("focused_only delta explanation requires --focus")
