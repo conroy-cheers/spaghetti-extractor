@@ -963,6 +963,29 @@ end StageA.FlagsCompose
             })
             self.assertEqual(proof_ir["status"], "incomplete")
             self.assertEqual(result["counts"]["incomplete_assumptions"], 9)
+            segment_diagnostics = json.loads(
+                (root / "report" / "relational-segment-diagnostics.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                segment_diagnostics["format"],
+                "stage-a-segment-refinement-diagnostics-v1",
+            )
+            self.assertEqual(segment_diagnostics["status"], "analysis_only")
+            self.assertFalse(segment_diagnostics["edges"][0]["eligible"])
+            self.assertIn(
+                "target_bound_invariant_required",
+                segment_diagnostics["edges"][0]["failed_checks"],
+            )
+            segment_obligation = next(
+                obligation for obligation in proof_ir["obligations"]
+                if obligation["kind"] == "relational_segment_refinement"
+            )
+            self.assertEqual(
+                segment_obligation["analysis"]["eligibility_diagnostic"],
+                segment_diagnostics["edges"][0],
+            )
             relocation = next(
                 obligation for obligation in proof_ir["obligations"]
                 if obligation["kind"] == "mapped_relocation_image_relation"

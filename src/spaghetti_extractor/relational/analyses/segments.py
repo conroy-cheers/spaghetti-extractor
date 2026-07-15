@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Any
 
 from ...stage_binary import StageABinary
@@ -865,6 +866,7 @@ def _segment_refinement_candidates(
     memory_contracts: dict[str, Any],
     register_relations: dict[str, Any],
     import_register_seeds: list[dict[str, Any]] | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     by_edge: dict[int, dict[str, Any]] = {}
     memory_regions = memory_contracts.get("regions", [])
@@ -882,6 +884,14 @@ def _segment_refinement_candidates(
             continue
         source = contract["regions"][source_index]
         target = contract["regions"][target_index]
+        source_target = next((
+            code_target for code_target in contract.get("code_targets", [])
+            if int(code_target.get("region_index", -1)) == source_index
+            and int(code_target["original_rva"])
+                == int(source["original"]["rva_start"])
+            and int(code_target["candidate_rva"])
+                == int(source["candidate"]["rva_start"])
+        ), None)
         memory = memory_regions[source_index]
         successors = memory.get("successors", {})
         candidate_successors = memory.get("candidate_successors", {})
@@ -1051,18 +1061,200 @@ def _segment_refinement_candidates(
             and not target.get("input_dynamic_range_relations")
             and (not branch_edge or guard_relation_claim is not None)
         )
-        if not (
+        segment_supported = (
             no_write_supported or call_supported or stack_write_supported
             or stack_writes_supported
-        ):
-            continue
-        source_target = next((
-            code_target for code_target in contract.get("code_targets", [])
-            if int(code_target.get("region_index", -1)) == source_index
-            and int(code_target["original_rva"]) == int(source["original"]["rva_start"])
-            and int(code_target["candidate_rva"]) == int(source["candidate"]["rva_start"])
-        ), None)
-        if source_target is None:
+        )
+        certificate_eligible = segment_supported and source_target is not None
+        if diagnostics is not None:
+            failed_checks: list[str] = []
+
+            def require(code: str, supported: bool) -> None:
+                if not supported:
+                    failed_checks.append(code)
+
+            require(
+                "relation_preservation_not_proposed",
+                bool(edge.get("relation_preservation_proposed")),
+            )
+            require(
+                "register_output_transfer_unsupported",
+                register_transfer_supported,
+            )
+            require(
+                "exact_memory_output_claim_present",
+                all(
+                    claim.get("kind") != "exact_memory"
+                    for claim in register_regions[source_index].get(
+                        "output_claims", []
+                    )
+                ),
+            )
+            require(
+                "external_environment_barrier",
+                not bool(edge.get("environment_barrier")),
+            )
+            require(
+                "call_stack_refinement_required",
+                not bool(edge.get("requires_call_stack_proof")),
+            )
+            require(
+                "successor_state_relation_mismatch",
+                source.get("output_relations", [])
+                == target.get("input_relations", []),
+            )
+            require(
+                "source_import_relation_transfer_required",
+                not source.get("output_import_relations"),
+            )
+            require(
+                "import_register_transfer_unsupported",
+                import_transfer_claims is not None,
+            )
+            require(
+                "dynamic_range_transfer_unsupported",
+                dynamic_transfer_claims is not None,
+            )
+            require(
+                "stack_window_transfer_unsupported",
+                stack_transfer_claims is not None,
+            )
+            require(
+                "flag_relation_mismatch",
+                source.get("flag_outputs", []) == target_flags,
+            )
+            require(
+                "target_flag_profile_unsupported",
+                target_flags in ([], [10]),
+            )
+            require(
+                "target_bound_invariant_required",
+                not target.get("bounds"),
+            )
+            require(
+                "target_address_separation_invariant_required",
+                not target.get("address_separations")
+                or bool(target.get("stack_address_separation_claims")),
+            )
+            require(
+                "x87_state_transfer_unsupported",
+                _lean_x87_state_only_pair(behaviors[source_index]),
+            )
+
+            original_write_count = int(
+                memory.get("writes", {}).get("original_count", -1)
+            )
+            candidate_write_count = int(
+                memory.get("writes", {}).get("candidate_count", -1)
+            )
+            if edge.get("kind") == "call":
+                attempted_profile = "composable_direct_call_v1"
+                require(
+                    "direct_call_push_missing",
+                    isinstance(call_claim, dict)
+                    and call_claim.get("profile") == "mapped_direct_call_push_v1"
+                    and call_stack_amount is not None,
+                )
+                require(
+                    "direct_call_stack_window_ambiguous",
+                    len(call_windows) == 1,
+                )
+                require(
+                    "direct_call_write_shape_mismatch",
+                    original_write_count == candidate_write_count == 1,
+                )
+                require(
+                    "direct_call_successor_shape_mismatch",
+                    successors.get("outcome") == "call"
+                    and candidate_successors.get("outcome") == "call"
+                    and isinstance(call_claim, dict)
+                    and int(call_claim.get("callee_target_id", -1))
+                        == int(target["numeric_id"])
+                    and int(call_claim.get("callee_target_id", -1))
+                        in direct_targets
+                    and direct_targets == candidate_direct_targets,
+                )
+                require(
+                    "callee_input_import_relation_unsupported",
+                    not target.get("input_import_relations"),
+                )
+                require(
+                    "callee_input_dynamic_range_relation_unsupported",
+                    not target.get("input_dynamic_range_relations"),
+                )
+                require(
+                    "unconditional_call_guard_required",
+                    edge.get("original_guard")
+                        == {"op": "bool_constant", "value": True}
+                    and edge.get("candidate_guard")
+                        == {"op": "bool_constant", "value": True},
+                )
+            elif edge.get("kind") in {
+                "jump", "branch_taken", "branch_fallthrough"
+            }:
+                if original_write_count == candidate_write_count == 0:
+                    attempted_profile = "composable_local_no_write_v1"
+                    write_claim_supported = True
+                elif original_write_count == candidate_write_count == 1:
+                    attempted_profile = "composable_paired_stack_word_write_v1"
+                    write_claim_supported = isinstance(stack_write_claim, dict)
+                    require(
+                        "paired_stack_word_write_witness_missing",
+                        write_claim_supported,
+                    )
+                else:
+                    attempted_profile = "composable_paired_stack_word_writes_v1"
+                    write_claim_supported = isinstance(stack_writes_claim, dict)
+                    require(
+                        "paired_stack_word_writes_witness_missing",
+                        write_claim_supported,
+                    )
+                require(
+                    "paired_memory_write_count_mismatch",
+                    original_write_count == candidate_write_count,
+                )
+                require(
+                    "direct_successor_shape_mismatch",
+                    successors.get("outcome") in {"jump", "branch"}
+                    and candidate_successors.get("outcome")
+                        == successors.get("outcome")
+                    and isinstance(direct_targets, list)
+                    and direct_targets == candidate_direct_targets
+                    and int(target["numeric_id"]) in direct_targets,
+                )
+                require(
+                    "successor_import_relation_unsupported",
+                    original_write_count == 0
+                    or not target.get("input_import_relations"),
+                )
+                require(
+                    "successor_dynamic_range_relation_unsupported",
+                    original_write_count == 0
+                    or not target.get("input_dynamic_range_relations"),
+                )
+                require(
+                    "branch_guard_relation_unsupported",
+                    not branch_edge or guard_relation_claim is not None,
+                )
+            else:
+                attempted_profile = "unsupported_control_or_memory_profile"
+                require("control_kind_unsupported", False)
+
+            require(
+                "canonical_source_target_missing",
+                source_target is not None,
+            )
+
+            diagnostics.append({
+                "edge_index": edge_index,
+                "source_region_index": source_index,
+                "target_region_index": target_index,
+                "edge_kind": str(edge.get("kind")),
+                "attempted_profile": attempted_profile,
+                "eligible": certificate_eligible,
+                "failed_checks": failed_checks if not certificate_eligible else [],
+            })
+        if not certificate_eligible:
             continue
         by_edge[edge_index] = {
             "format": RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
@@ -1112,6 +1304,35 @@ def _segment_refinement_candidates(
             "stack_transfer_claims": stack_transfer_claims,
         }
     return [by_edge[index] for index in sorted(by_edge)]
+
+
+def _segment_refinement_diagnostic_report(
+    diagnostics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    failed_check_counts = Counter(
+        str(code)
+        for row in diagnostics
+        if not bool(row.get("eligible"))
+        for code in row.get("failed_checks", [])
+    )
+    return {
+        "format": "stage-a-segment-refinement-diagnostics-v1",
+        "status": "analysis_only",
+        "counts": {
+            "edges": len(diagnostics),
+            "eligible": sum(bool(row.get("eligible")) for row in diagnostics),
+            "incomplete": sum(
+                not bool(row.get("eligible")) for row in diagnostics
+            ),
+            "failed_checks": dict(sorted(failed_check_counts.items())),
+        },
+        "edges": diagnostics,
+        "trust": {
+            "role": "untrusted_explanation_of_certificate_eligibility",
+            "acceptance_authority": False,
+            "final_pass_requires": "pe32ProgramsEquivalent",
+        },
+    }
 
 def _import_register_transfer_claims(
     contract: dict[str, Any],
@@ -1551,34 +1772,55 @@ def _stack_read32_sub_output_claim(
     original_expression: dict[str, Any],
     candidate_expression: dict[str, Any],
 ) -> dict[str, Any] | None:
-    def parse(expression: dict[str, Any]) -> tuple[str, int, int] | None:
-        if expression.get("op") != "sub":
+    def parse(
+        expression: dict[str, Any],
+    ) -> tuple[str, int, int, bool, bool] | None:
+        direct_read = expression.get("op") == "read32"
+        if direct_read:
+            read = expression
+            subtract_value = 0
+        elif expression.get("op") == "sub":
+            read = expression.get("left") or {}
+            subtract = expression.get("right") or {}
+            if subtract.get("op") != "constant":
+                return None
+            subtract_value = int(subtract.get("value", -1))
+        else:
             return None
-        read = expression.get("left") or {}
-        subtract = expression.get("right") or {}
         address = read.get("address") or {}
-        register = address.get("left") or {}
-        offset = address.get("right") or {}
+        direct_address = address.get("op") == "input_reg"
+        if direct_address:
+            register = address
+            offset_value = 0
+        elif address.get("op") == "add":
+            register = address.get("left") or {}
+            offset = address.get("right") or {}
+            if register.get("op") == "constant":
+                register, offset = offset, register
+            if offset.get("op") != "constant":
+                return None
+            offset_value = int(offset.get("value", -1))
+        else:
+            return None
         if (
             read.get("op") != "read32"
-            or address.get("op") != "add"
             or register.get("op") != "input_reg"
-            or offset.get("op") != "constant"
-            or subtract.get("op") != "constant"
         ):
             return None
-        offset_value = int(offset.get("value", -1))
-        subtract_value = int(subtract.get("value", -1))
         if not (0 <= offset_value < 2**31 and 0 <= subtract_value < 2**32):
             return None
-        return str(register.get("reg")), offset_value, subtract_value
+        return (
+            str(register.get("reg")), offset_value, subtract_value, direct_read,
+            direct_address,
+        )
 
     original = parse(original_expression)
     candidate = parse(candidate_expression)
     if (
         original is None
         or candidate is None
-        or original[1:] != candidate[1:]
+        or original[1] != candidate[1]
+        or original[2] != candidate[2]
         or output.get("relation") != "related_word"
         or original[1] % 4 != 0
         or original[2] != 0
@@ -1598,6 +1840,10 @@ def _stack_read32_sub_output_claim(
         "window": matches[0],
         "offset": original[1],
         "subtract": original[2],
+        "original_direct_read": original[3],
+        "candidate_direct_read": candidate[3],
+        "original_direct_address": original[4],
+        "candidate_direct_address": candidate[4],
     }
 
 def _attach_stack_register_output_claims(
@@ -1614,8 +1860,6 @@ def _attach_stack_register_output_claims(
         }
         for output in row.get("outputs", []):
             key = (str(output["original"]), str(output["candidate"]))
-            if key in existing:
-                continue
             original_expression = behaviors[region_index]["original_ir"]["registers"][
                 output["original"]
             ]
@@ -1626,6 +1870,9 @@ def _attach_stack_register_output_claims(
                 region, output, original_expression, candidate_expression
             )
             if claim is not None:
+                # A checked stack-window read is composable under StateRel. It
+                # therefore supersedes a local exact-memory claim synthesized
+                # before stack provenance was available.
                 existing[key] = claim
         row["output_claims"] = [
             existing[(str(output["original"]), str(output["candidate"]))]
@@ -1749,6 +1996,7 @@ def _attach_segment_refinement_analysis(
     import_register_seeds: list[dict[str, Any]] | None = None,
     *,
     segment_candidates: list[dict[str, Any]] | None = None,
+    segment_diagnostics: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     candidates = {
         item["edge_index"]: item
@@ -1760,6 +2008,10 @@ def _attach_segment_refinement_analysis(
                 import_register_seeds,
             )
         )
+    }
+    diagnostics = {
+        int(item["edge_index"]): item
+        for item in (segment_diagnostics or [])
     }
     obligations: list[dict[str, Any]] = []
     for edge_index, edge in enumerate(register_relations["edges"]):
@@ -1804,6 +2056,11 @@ def _attach_segment_refinement_analysis(
                 "edge guard into RelationalSegmentRefinement under the canonical StateRel"
             )
         candidate = candidates.get(edge_index)
+        diagnostic = diagnostics.get(edge_index)
+        failed_checks = (
+            list(diagnostic.get("failed_checks", []))
+            if diagnostic is not None else []
+        )
         obligations.append({
             "id": (
                 f"segment:{source['id']}:{target['id']}:{edge_index}"
@@ -1829,6 +2086,9 @@ def _attach_segment_refinement_analysis(
                     "successor shape, or exact nonzero guard"
                     if static_pointer is not None
                     and static_pointer["status"] == "incomplete" else
+                    "segment certificate eligibility checks failed: "
+                    + ", ".join(failed_checks)
+                    if failed_checks else
                     "no Lean RelationalSegmentRefinement theorem connects this decoded edge "
                     "to the canonical global StateRel"
                 )
@@ -1849,6 +2109,7 @@ def _attach_segment_refinement_analysis(
                     candidate["certificate_profile"] if candidate is not None else None
                 ),
                 "certificate": candidate,
+                "eligibility_diagnostic": diagnostic,
                 "dynamic_pointer_traversal": dynamic_pointer,
                 "static_dynamic_pointer_seed": static_pointer,
             },
@@ -1860,6 +2121,12 @@ def _attach_segment_refinement_analysis(
         "incomplete": len(obligations) - len(candidates),
         "interface": "StageA.Relational.RelationalSegmentRefinement",
         "certificate_format": RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
+        "incomplete_reason_counts": dict(sorted(Counter(
+            str(code)
+            for diagnostic in diagnostics.values()
+            if not bool(diagnostic.get("eligible"))
+            for code in diagnostic.get("failed_checks", [])
+        ).items())),
     }
     attached["obligations"] = [*proof_ir["obligations"], *obligations]
     attached["families"] = [

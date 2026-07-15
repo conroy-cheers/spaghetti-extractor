@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from typing import Any
 
 from ...stage_binary import StageABinary
@@ -338,9 +338,31 @@ def _attach_stack_window_invariants(
             tuple(read["path"]): read
             for read in _semantic_memory_reads(behavior["candidate_ir"])
         }
-        for path in sorted(original_reads.keys() & candidate_reads.keys()):
+        output_pairs = [
+            (str(pair["original"]), str(pair["candidate"]))
+            for pair in region.get("outputs", [])
+        ]
+        original_output_counts = Counter(pair[0] for pair in output_pairs)
+        candidate_output_counts = Counter(pair[1] for pair in output_pairs)
+        output_register_map = {
+            original_register: candidate_register
+            for original_register, candidate_register in output_pairs
+            if original_output_counts[original_register] == 1
+            and candidate_output_counts[candidate_register] == 1
+        }
+
+        def candidate_read_path(path: tuple[str, ...]) -> tuple[str, ...]:
+            if len(path) >= 2 and path[0] == "registers":
+                return (
+                    path[0], output_register_map.get(path[1], path[1]), *path[2:]
+                )
+            return path
+
+        for path in sorted(original_reads):
             original_read = original_reads[path]
-            candidate_read = candidate_reads[path]
+            candidate_read = candidate_reads.get(candidate_read_path(path))
+            if candidate_read is None:
+                continue
             width = original_read.get("width")
             if not isinstance(width, int) or width != candidate_read.get("width"):
                 continue

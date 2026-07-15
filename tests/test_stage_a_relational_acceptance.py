@@ -367,6 +367,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                     "certificate_format": "stage-a-relational-segment-certificate-v1",
                     "edges": 1,
                     "incomplete": 0,
+                    "incomplete_reason_counts": {},
                     "interface": "StageA.Relational.RelationalSegmentRefinement",
                     "proved": 1,
                 },
@@ -687,6 +688,108 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertEqual(
                 len(certificate["paired_stack_writes_claim"]["writes"]), 2
+            )
+
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertIn(
+                "candidatePE32ProgramsEquivalent' depends on axioms",
+                lean["stdout"],
+            )
+            self.assertNotIn("sorryAx", lean["stdout"])
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for stack-read proofs")
+    def test_direct_paired_stack_read_loop_closes_whole_program_theorem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original_code = bytes.fromhex("8b442404ebfa")
+            candidate_code = bytes.fromhex("8b4c2404ebfa")
+            original = self._write_pe(root / "original.exe", original_code)
+            candidate = self._write_pe(root / "candidate.exe", candidate_code)
+            contract = self._write_contract(
+                root / "relation.json", region_size=len(original_code),
+                candidate_region_size=len(candidate_code),
+            )
+            contract_payload = json.loads(contract.read_text(encoding="utf-8"))
+            for field in ("inputs", "outputs"):
+                pairs = contract_payload["regions"][0][field]
+                contract_payload["regions"][0][field] = [
+                    ({**pair, "candidate": "ecx"}
+                     if pair["original"] == "eax" else pair)
+                    for pair in pairs
+                    if pair["original"] != "ecx"
+                ]
+            contract.write_text(json.dumps(contract_payload), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            diagnostic_context = {
+                "result": result,
+                "segments": json.loads(
+                    (prepared / "relational-segment-diagnostics.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                "registers": json.loads(
+                    (prepared / "relational-register-relations.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                "stack": json.loads(
+                    (prepared / "relational-stack-windows.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+            }
+            self.assertEqual(
+                result["acceptance"]["status"], "ready", diagnostic_context
+            )
+            self.assertEqual(
+                result["composition_progress"]["counts"][
+                    "rooted_segment_refinement_frontier_edges"
+                ],
+                0,
+            )
+            proof_ir = json.loads(
+                (prepared / "relational-proof-ir.json").read_text(encoding="utf-8")
+            )
+            segment = next(
+                obligation for obligation in proof_ir["obligations"]
+                if obligation.get("kind") == "relational_segment_refinement"
+            )
+            register_relations = json.loads(
+                (prepared / "relational-register-relations.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            output_claim = next(
+                claim for claim in register_relations["regions"][
+                    segment["source_region_index"]
+                ]["output_claims"]
+                if claim["kind"] == "stack_read32_sub"
+            )
+            self.assertEqual(output_claim["offset"], 4)
+            self.assertEqual(output_claim["subtract"], 0)
+            self.assertTrue(output_claim["original_direct_read"])
+            self.assertTrue(output_claim["candidate_direct_read"])
+            self.assertFalse(output_claim["original_direct_address"])
+            self.assertFalse(output_claim["candidate_direct_address"])
+            segment_diagnostics = json.loads(
+                (prepared / "relational-segment-diagnostics.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(segment_diagnostics["counts"]["eligible"], 1)
+            self.assertEqual(
+                segment_diagnostics["edges"][0]["failed_checks"], []
             )
 
             lean = _run_lean_relational(

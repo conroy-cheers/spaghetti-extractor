@@ -61,9 +61,11 @@ class RelationalSchemaTests(unittest.TestCase):
                 "memory_contracts_sha256": "d",
                 "register_relations_sha256": "e",
                 "stack_windows_sha256": "f",
-                "product_graph_sha256": "g",
-                "invariants_sha256": "h",
-                "whole_program_acceptance_sha256": "i",
+                "segment_diagnostics_sha256": "g",
+                "product_graph_sha256": "h",
+                "invariants_sha256": "i",
+                "whole_program_acceptance_sha256": "j",
+                "composition_progress_sha256": "k",
             })
 
     def test_parallel_interface_manifest_has_one_acceptance_owner(self):

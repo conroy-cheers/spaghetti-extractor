@@ -275,6 +275,8 @@
               fixture_dir="${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
               work="$TMPDIR/stage-a-jq"
               mkdir -p "$work"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
               spaghetti-extractor stage-a-generate-map \
                 --original "$fixture_dir/jq-original.exe" \
                 --candidate "$fixture_dir/jq-candidate.exe" \
@@ -391,8 +393,57 @@
               ln -s "$prepared" "$out/report"
               ln -s "$generated" "$out/generated"
             '';
+          relationalLeanSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = ./src/spaghetti_extractor/lean/StageA;
+          };
+          stage-a-relational-kernel-cache = pkgs.runCommand
+            "stage-a-relational-kernel-cache"
+            {
+              nativeBuildInputs = [
+                pkgs.lean4
+              ];
+            }
+            ''
+              work="$TMPDIR/relational-kernel"
+              mkdir -p "$out/StageA" "$work"
+              cp -R ${relationalLeanSource}/src/spaghetti_extractor/lean/StageA \
+                "$work/StageA"
+              chmod -R u+w "$work/StageA"
+              cd "$work"
+              export LEAN_PATH=.
+              for module in \
+                Formal \
+                RelationalDecode \
+                RelationalMachine \
+                Relational \
+                RelationalInvariant \
+                RelationalExecution \
+                RelationalImage \
+                RelationalSegment \
+                RelationalComposition \
+                RelationalEnvironment \
+                RelationalCallbacks \
+                RelationalCertificates \
+                RelationalStaticTree
+              do
+                lean -o "StageA/$module.olean" "StageA/$module.lean"
+              done
+              cp StageA/*.lean StageA/*.olean "$out/StageA/"
+              printf '%s\n' \
+                'format=stage-a-relational-precompiled-kernel-v1' \
+                "lean=$(lean --version | head -n 1)" \
+                > "$out/kernel-build.txt"
+            '';
           mkStageARelationalTest = name: module: testFiles:
             let
+              usesLean =
+                builtins.elem name [ "state" "lean" "pipeline" ]
+                || pkgs.lib.hasPrefix "state-" name
+                || pkgs.lib.hasPrefix "lean-" name
+                || pkgs.lib.hasPrefix "pipeline-" name
+                || pkgs.lib.hasPrefix "contract" name
+                || pkgs.lib.hasPrefix "acceptance" name;
               testSource = pkgs.lib.fileset.toSource {
                 root = ./.;
                 fileset = pkgs.lib.fileset.unions (
@@ -400,11 +451,9 @@
                     ./tests/stage_a_relational_support.py
                   ]
                   ++ testFiles
-                  ++ pkgs.lib.optionals
-                    (builtins.elem name [ "lean" "pipeline" ]
-                      || pkgs.lib.hasPrefix "acceptance" name)
+                  ++ pkgs.lib.optionals usesLean
                     [ ./src/spaghetti_extractor/lean/StageA ]
-                  ++ pkgs.lib.optionals (name == "contract")
+                  ++ pkgs.lib.optionals (pkgs.lib.hasPrefix "contract" name)
                     [ ./nix/stage-a-lean-graph.nix ]
                 );
               };
@@ -421,13 +470,49 @@
                 export HOME="$TMPDIR/home"
                 export XDG_CACHE_HOME="$TMPDIR/xdg-cache"
                 export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/relational-cache"
+                ${pkgs.lib.optionalString usesLean ''
+                  export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
+                ''}
                 export PYTHONPATH="${spaghetti-extractor}/${pkgs.python3.sitePackages}:${pythonEnv}/${pkgs.python3.sitePackages}:${testSource}:${testSource}/tests"
                 mkdir -p "$HOME" "$XDG_CACHE_HOME" "$SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE"
                 cd "$TMPDIR"
                 python -m unittest -v ${module}
-                mkdir -p "$out"
-                printf '%s\n' '${module}' > "$out/test-module.txt"
+                mkdir -p "$out/${name}"
+                printf '%s\n' '${module}' > "$out/${name}/test-module.txt"
               '';
+          mkStageARelationalTestSuite = name: module: className: testFile:
+            let
+              testMethods = builtins.filter (method: method != null) (
+                map
+                  (line:
+                    let
+                      matched = builtins.match
+                        "^    def (test_[A-Za-z0-9_]+)\\(self.*$" line;
+                    in
+                    if matched == null then null else builtins.head matched)
+                  (pkgs.lib.splitString "\n" (builtins.readFile testFile))
+              );
+              cases = builtins.listToAttrs (
+                map
+                  (method:
+                    let caseName = pkgs.lib.removePrefix "test_" method;
+                    in {
+                      name = caseName;
+                      value = mkStageARelationalTest
+                        "${name}-${caseName}"
+                        "${module}.${className}.${method}"
+                        [ testFile ];
+                    })
+                  testMethods
+              );
+            in
+            {
+              inherit cases;
+              aggregate = pkgs.symlinkJoin {
+                name = "stage-a-relational-tests-${name}";
+                paths = builtins.attrValues cases;
+              };
+            };
           stage-a-relational-tests-schema = mkStageARelationalTest
             "schema"
             "tests.test_relational_schema tests.test_contract_tools.ContractToolTests.test_cli_exposes_one_stage_a_authority_and_candidate_only_stage_b_tools"
@@ -437,20 +522,30 @@
               ./tests/contract_fixtures.py
               ./tests/pe_fixtures.py
             ];
-          stage-a-relational-tests-contract = mkStageARelationalTest
-            "contract" "tests.test_stage_a_relational_contract" [ ./tests/test_stage_a_relational_contract.py ];
-          stage-a-relational-tests-state = mkStageARelationalTest
-            "state" "tests.test_stage_a_relational_state" [ ./tests/test_stage_a_relational_state.py ];
-          stage-a-relational-tests-pipeline = mkStageARelationalTest
-            "pipeline" "tests.test_stage_a_relational_pipeline" [ ./tests/test_stage_a_relational_pipeline.py ];
-          stage-a-relational-tests-lean = mkStageARelationalTest
-            "lean" "tests.test_stage_a_relational_lean" [ ./tests/test_stage_a_relational_lean.py ];
-          stage-a-relational-tests-acceptance = mkStageARelationalTest
-            "acceptance" "tests.test_stage_a_relational_acceptance" [ ./tests/test_stage_a_relational_acceptance.py ];
-          stage-a-relational-tests-acceptance-nested-external = mkStageARelationalTest
-            "acceptance-nested-external"
-            "tests.test_stage_a_relational_acceptance.StageARelationalAcceptanceTests.test_nested_external_call_preserves_internal_runtime_frame_end_to_end"
-            [ ./tests/test_stage_a_relational_acceptance.py ];
+          stageARelationalContractSuite = mkStageARelationalTestSuite
+            "contract" "tests.test_stage_a_relational_contract"
+            "StageARelationalContractTests" ./tests/test_stage_a_relational_contract.py;
+          stageARelationalStateSuite = mkStageARelationalTestSuite
+            "state" "tests.test_stage_a_relational_state"
+            "StageARelationalStateTests" ./tests/test_stage_a_relational_state.py;
+          stageARelationalPipelineSuite = mkStageARelationalTestSuite
+            "pipeline" "tests.test_stage_a_relational_pipeline"
+            "StageARelationalPipelineTests" ./tests/test_stage_a_relational_pipeline.py;
+          stageARelationalLeanSuite = mkStageARelationalTestSuite
+            "lean" "tests.test_stage_a_relational_lean"
+            "StageARelationalLeanTests" ./tests/test_stage_a_relational_lean.py;
+          stageARelationalAcceptanceSuite = mkStageARelationalTestSuite
+            "acceptance" "tests.test_stage_a_relational_acceptance"
+            "StageARelationalAcceptanceTests" ./tests/test_stage_a_relational_acceptance.py;
+          stage-a-relational-tests-contract = stageARelationalContractSuite.aggregate;
+          stage-a-relational-tests-state = stageARelationalStateSuite.aggregate;
+          stage-a-relational-tests-pipeline = stageARelationalPipelineSuite.aggregate;
+          stage-a-relational-tests-lean = stageARelationalLeanSuite.aggregate;
+          stage-a-relational-tests-acceptance = stageARelationalAcceptanceSuite.aggregate;
+          stage-a-relational-tests-acceptance-nested-external =
+            stageARelationalAcceptanceSuite.cases.nested_external_call_preserves_internal_runtime_frame_end_to_end;
+          stage-a-relational-tests-acceptance-direct-stack-read =
+            stageARelationalAcceptanceSuite.cases.direct_paired_stack_read_loop_closes_whole_program_theorem;
           stage-a-relational-tests = pkgs.symlinkJoin {
             name = "stage-a-relational-tests";
             paths = [
@@ -507,6 +602,7 @@
             stage-a-jq-reference-contract
             stage-a-jq-fixtures-check
             stage-a-jq-fixtures-root
+            stage-a-relational-kernel-cache
             stage-a-relational-tests
             stage-a-relational-tests-schema
             stage-a-relational-tests-contract
@@ -515,6 +611,7 @@
             stage-a-relational-tests-lean
             stage-a-relational-tests-acceptance
             stage-a-relational-tests-acceptance-nested-external
+            stage-a-relational-tests-acceptance-direct-stack-read
             stage-b-jq-skeleton
             stage-b-jq-skeleton-root
             ;

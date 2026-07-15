@@ -1266,6 +1266,9 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         "memory_contracts_sha256": prepared / "relational-memory-contracts.json",
         "register_relations_sha256": prepared / "relational-register-relations.json",
         "stack_windows_sha256": prepared / "relational-stack-windows.json",
+        "segment_diagnostics_sha256": (
+            prepared / "relational-segment-diagnostics.json"
+        ),
         "product_graph_sha256": prepared / "relational-product-graph.json",
         "invariants_sha256": prepared / "relational-invariants.json",
         "whole_program_acceptance_sha256": (

@@ -169,6 +169,24 @@ def _persistent_olean_path(
     }, sort_keys=True, separators=(",", ":")).encode())
     return cache_root / "lean-oleans" / f"{bundle}-{key}.olean"
 
+
+def _precompiled_kernel_olean(source: Path, module: str) -> Path | None:
+    configured = os.environ.get(
+        "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL"
+    )
+    if not configured:
+        return None
+    stage_a = Path(configured).expanduser() / "StageA"
+    precompiled_source = stage_a / f"{module}.lean"
+    precompiled_output = stage_a / f"{module}.olean"
+    if (
+        not precompiled_source.is_file()
+        or not precompiled_output.is_file()
+        or sha256_file(precompiled_source) != sha256_file(source)
+    ):
+        return None
+    return precompiled_output
+
 def _terminate_process_group(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
@@ -258,6 +276,11 @@ def _run_lean_relational(
             and all(_lean_output_current(dependency, output)
                     for dependency in dependency_outputs)
         ):
+            continue
+        precompiled_output = _precompiled_kernel_olean(source, module)
+        if precompiled_output is not None:
+            shutil.copyfile(precompiled_output, output)
+            os.utime(output, None)
             continue
         cached_output = _persistent_olean_path(
             lean_dir, module, source, dependency_outputs

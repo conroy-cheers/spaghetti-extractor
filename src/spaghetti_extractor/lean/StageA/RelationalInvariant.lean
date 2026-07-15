@@ -724,17 +724,29 @@ structure StackRead32SubRegisterOutputClaim where
   window : StackWindowPair
   offset : Nat
   subtract : Nat
+  originalDirectRead : Bool := false
+  candidateDirectRead : Bool := false
+  originalDirectAddress : Bool := false
+  candidateDirectAddress : Bool := false
 deriving Repr, DecidableEq
 
 def StackRead32SubRegisterOutputClaim.originalExpression
     (claim : StackRead32SubRegisterOutputClaim) : Expr :=
-  .sub (.read32 (.add (.inputReg claim.window.originalRegister)
-    (.constant claim.offset))) (.constant claim.subtract)
+  let address : Expr := if claim.originalDirectAddress then
+    .inputReg claim.window.originalRegister
+  else
+    .add (.inputReg claim.window.originalRegister) (.constant claim.offset)
+  let read : Expr := .read32 address
+  if claim.originalDirectRead then read else .sub read (.constant claim.subtract)
 
 def StackRead32SubRegisterOutputClaim.candidateExpression
     (claim : StackRead32SubRegisterOutputClaim) : Expr :=
-  .sub (.read32 (.add (.inputReg claim.window.candidateRegister)
-    (.constant claim.offset))) (.constant claim.subtract)
+  let address : Expr := if claim.candidateDirectAddress then
+    .inputReg claim.window.candidateRegister
+  else
+    .add (.inputReg claim.window.candidateRegister) (.constant claim.offset)
+  let read : Expr := .read32 address
+  if claim.candidateDirectRead then read else .sub read (.constant claim.subtract)
 
 def StackRead32SubRegisterOutputClaim.checked (region : RegionRelation)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
@@ -743,6 +755,8 @@ def StackRead32SubRegisterOutputClaim.checked (region : RegionRelation)
     region.stackWindows.contains claim.window &&
     decide (claim.offset + 4 <= claim.window.bytesAbove) &&
     claim.offset % 4 == 0 &&
+    decide ((claim.originalDirectAddress = true ∨
+      claim.candidateDirectAddress = true) → claim.offset = 0) &&
     originalBehavior.registers.get claim.output.original == claim.originalExpression &&
     candidateBehavior.registers.get claim.output.candidate == claim.candidateExpression
 
@@ -761,8 +775,8 @@ theorem StackRead32SubRegisterOutputClaim.holds_output_of_stateRel
   simp only [StackRead32SubRegisterOutputClaim.checked, Bool.and_eq_true,
     decide_eq_true_eq] at checked
   rcases checked with
-    ⟨⟨⟨⟨⟨⟨relationKind, subtractZero⟩, windowMember⟩, inside⟩,
-      aligned⟩, originalChecked⟩, candidateChecked⟩
+    ⟨⟨⟨⟨⟨⟨⟨relationKind, subtractZero⟩, windowMember⟩, inside⟩,
+      aligned⟩, directAddressOffset⟩, originalChecked⟩, candidateChecked⟩
   have originalExpression := beq_iff_eq.mp originalChecked
   have candidateExpression := beq_iff_eq.mp candidateChecked
   have windowMember' : claim.window ∈ region.inputInvariant.stackWindows := by
@@ -772,13 +786,18 @@ theorem StackRead32SubRegisterOutputClaim.holds_output_of_stateRel
     windowMember' inside (by simpa using aligned)
   simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
   rw [originalExpression, candidateExpression]
-  simp only [StackRead32SubRegisterOutputClaim.originalExpression,
-    StackRead32SubRegisterOutputClaim.candidateExpression, Expr.eval,
-    machineStateRead32_eq_memoryRead32]
   have relationKind' := beq_iff_eq.mp relationKind
   have subtractZero' := beq_iff_eq.mp subtractZero
-  rw [relationKind', subtractZero']
-  simpa [RegisterValueRelation.holds] using readRelated
+  rw [relationKind']
+  cases originalDirectRead : claim.originalDirectRead <;>
+    cases candidateDirectRead : claim.candidateDirectRead <;>
+      cases originalDirectAddress : claim.originalDirectAddress <;>
+        cases candidateDirectAddress : claim.candidateDirectAddress <;>
+          simp_all [StackRead32SubRegisterOutputClaim.originalExpression,
+            StackRead32SubRegisterOutputClaim.candidateExpression,
+            originalDirectRead, candidateDirectRead, originalDirectAddress,
+            candidateDirectAddress, Expr.eval, machineStateRead32_eq_memoryRead32,
+            RegisterValueRelation.holds]
 
 inductive RegisterOutputClaim where
   | exactExpression (claim : ExactRegisterOutputClaim)

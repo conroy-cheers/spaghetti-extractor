@@ -90,6 +90,13 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "cache_boundary": True,
             },
             {
+                "id": "segment-diagnostics",
+                "path": "relational-segment-diagnostics.json",
+                "producer": "control-composition",
+                "consumers": ["contract-diagnostics", "stage-b-repair"],
+                "cache_boundary": True,
+            },
+            {
                 "id": "whole-program-acceptance",
                 "path": "whole-program-acceptance.json",
                 "producer": "acceptance-integration",

@@ -89,10 +89,14 @@ specific transfer rule is not an acceptable work packet.
 
 1. Normalize and type-check the changed public contract.
 2. Run the workstream's small generic fixture.
-3. Run its phase-oriented Python test module.
-4. Run the representative whole-program acceptance fixtures.
-5. Build the changed Lean module closure. Use the independently cached
-   `stage-a-relational-tests-*` Nix targets for Lean-bearing phase suites.
+3. Run a direct Python test only when it is a sub-second pure-analysis smoke
+   check. Use the matching `stage-a-relational-tests-*` Nix target for the
+   authoritative phase suite.
+4. Run the representative whole-program acceptance fixtures through the
+   per-case Nix derivation graph.
+5. Build the changed Lean module closure. The test derivations consume the
+   independently cached `stage-a-relational-kernel-cache`; generated proof
+   modules remain separate content-addressed outputs.
 6. Regenerate jq artifacts only when an extraction or contract input changed.
 7. Run the full remote Nix proof graph as the completeness gate.
 

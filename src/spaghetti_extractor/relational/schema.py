@@ -75,6 +75,7 @@ RELATIONAL_PREPARED_REPORT_FILES = (
     "relational-memory-contracts.json",
     "relational-register-relations.json",
     "relational-stack-windows.json",
+    "relational-segment-diagnostics.json",
     "relational-product-graph.json",
     "relational-invariants.json",
     "relational-machine-import-calls.json",
@@ -325,9 +326,11 @@ class PreparedProofDigests:
     memory_contracts: str
     register_relations: str
     stack_windows: str
+    segment_diagnostics: str
     product_graph: str
     invariants: str
     whole_program_acceptance: str
+    composition_progress: str
     module_graph: str
 
     @classmethod
@@ -340,9 +343,11 @@ class PreparedProofDigests:
             "memory_contracts": "memory_contracts_sha256",
             "register_relations": "register_relations_sha256",
             "stack_windows": "stack_windows_sha256",
+            "segment_diagnostics": "segment_diagnostics_sha256",
             "product_graph": "product_graph_sha256",
             "invariants": "invariants_sha256",
             "whole_program_acceptance": "whole_program_acceptance_sha256",
+            "composition_progress": "composition_progress_sha256",
             "module_graph": "module_graph_sha256",
         }
         return cls(**{

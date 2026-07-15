@@ -751,6 +751,14 @@ def _lean_register_output_claim(claim: dict[str, Any]) -> str:
             + ", window := " + _lean_stack_window(claim["window"])
             + ", offset := " + str(claim["offset"])
             + ", subtract := " + str(claim["subtract"])
+            + ", originalDirectRead := "
+            + _lean_bool(bool(claim.get("original_direct_read")))
+            + ", candidateDirectRead := "
+            + _lean_bool(bool(claim.get("candidate_direct_read")))
+            + ", originalDirectAddress := "
+            + _lean_bool(bool(claim.get("original_direct_address")))
+            + ", candidateDirectAddress := "
+            + _lean_bool(bool(claim.get("candidate_direct_address")))
             + " }"
         )
     raise StageAInputError(f"unsupported register output claim {kind!r}")

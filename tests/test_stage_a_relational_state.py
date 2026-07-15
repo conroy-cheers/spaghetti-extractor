@@ -2,6 +2,50 @@ from tests.stage_a_relational_support import *
 
 
 class StageARelationalStateTests(StageARelationalTestBase):
+    def test_stack_read_seeds_follow_only_unique_output_register_mapping(self):
+        binary = SimpleNamespace(
+            image_base=0x400000,
+            pe=SimpleNamespace(
+                OPTIONAL_HEADER=SimpleNamespace(SizeOfImage=0x10000),
+            ),
+        )
+        stack_read = {
+            "op": "read32",
+            "address": {
+                "op": "add",
+                "left": {"op": "input_reg", "reg": "esp"},
+                "right": {"op": "constant", "value": 4},
+            },
+        }
+        behaviors = [{
+            "original_ir": {"registers": {"eax": stack_read}},
+            "candidate_ir": {"registers": {"ecx": stack_read}},
+        }]
+        contract = {"regions": [{
+            "id": "mapped-read",
+            "address_separations": [],
+            "outputs": [{"original": "eax", "candidate": "ecx"}],
+        }]}
+
+        refined, analysis = _attach_stack_window_invariants(
+            contract, behaviors, {"regions": [], "edges": []}, binary, binary
+        )
+        self.assertEqual(analysis["windows"], 1)
+        self.assertEqual(
+            refined["regions"][0]["stack_windows"][0]["source"],
+            "paired_memory_read_seed",
+        )
+
+        ambiguous = json.loads(json.dumps(contract))
+        ambiguous["regions"][0]["outputs"].append({
+            "original": "edx", "candidate": "ecx",
+        })
+        refused, refused_analysis = _attach_stack_window_invariants(
+            ambiguous, behaviors, {"regions": [], "edges": []}, binary, binary
+        )
+        self.assertEqual(refused_analysis["windows"], 0)
+        self.assertEqual(refused["regions"][0]["stack_windows"], [])
+
     def test_stack_windows_propagate_identity_edges_and_fail_closed_at_frontier(self):
         binary = SimpleNamespace(
             image_base=0x400000,
@@ -1411,6 +1455,37 @@ class StageARelationalStateTests(StageARelationalTestBase):
         self.assertEqual(claim["kind"], "stack_read32_sub")
         self.assertEqual(claim["offset"], 76)
         self.assertEqual(claim["subtract"], 0)
+        self.assertFalse(claim["original_direct_read"])
+        self.assertFalse(claim["candidate_direct_read"])
+        self.assertFalse(claim["original_direct_address"])
+        self.assertFalse(claim["candidate_direct_address"])
+        direct_claim = _stack_read32_sub_output_claim(
+            {"stack_windows": [window]}, output,
+            expression("esp")["left"], expression("ebp")["left"],
+        )
+        self.assertEqual(direct_claim["offset"], 76)
+        self.assertEqual(direct_claim["subtract"], 0)
+        self.assertTrue(direct_claim["original_direct_read"])
+        self.assertTrue(direct_claim["candidate_direct_read"])
+        self.assertFalse(direct_claim["original_direct_address"])
+        self.assertFalse(direct_claim["candidate_direct_address"])
+        zero_offset_claim = _stack_read32_sub_output_claim(
+            {"stack_windows": [window]}, output,
+            {"op": "read32", "address": {"op": "input_reg", "reg": "esp"}},
+            {"op": "read32", "address": {"op": "input_reg", "reg": "ebp"}},
+        )
+        self.assertEqual(zero_offset_claim["offset"], 0)
+        self.assertTrue(zero_offset_claim["original_direct_read"])
+        self.assertTrue(zero_offset_claim["candidate_direct_read"])
+        self.assertTrue(zero_offset_claim["original_direct_address"])
+        self.assertTrue(zero_offset_claim["candidate_direct_address"])
+        mixed_shape_claim = _stack_read32_sub_output_claim(
+            {"stack_windows": [window]}, output,
+            expression("esp", offset=0)["left"],
+            {"op": "read32", "address": {"op": "input_reg", "reg": "ebp"}},
+        )
+        self.assertFalse(mixed_shape_claim["original_direct_address"])
+        self.assertTrue(mixed_shape_claim["candidate_direct_address"])
         self.assertIsNone(_stack_read32_sub_output_claim(
             {"stack_windows": [{**window, "bytes_above": 79}]}, output,
             expression("esp"), expression("ebp"),

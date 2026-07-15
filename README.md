@@ -41,8 +41,10 @@ Run the compact Stage A fixture suite:
 nix build .#stage-a-fixtures-check --no-link
 ```
 
-Run the phase-oriented relational tests as independently cached Nix builds. The
-repository builders file schedules the heavy Lean suites remotely:
+Run the phase-oriented relational tests as independently cached per-case Nix
+builds. The repository builders file schedules the heavy Lean suites remotely,
+while `stage-a-relational-kernel-cache` supplies the source-matched compiled
+static kernel to every case:
 
 ```sh
 nix build .#stage-a-relational-tests --no-link \
@@ -62,7 +64,10 @@ The jq path is split into independently cacheable derivations:
 graph, `stage-a-jq-reference-contract` exports Stage B feedback from that graph,
 and `stage-a-jq-fixtures-check` performs the lightweight acceptance audit. A
 report or assertion change therefore does not repeat PE extraction or hidden
-Lean compilation.
+Lean compilation. Preparation currently remains one coarse Nix derivation: its
+Lean extraction shards use 16 workers on one selected builder, but are not yet
+independent derivations schedulable across multiple hosts. The generated proof
+module graph is the finer-grained distributed build boundary.
 
 Generate a relation contract with reusable machine-level external-call schemas:
 

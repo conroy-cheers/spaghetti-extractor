@@ -116,6 +116,7 @@ from .analyses.segments import (
     _proof_ir,
     _related_word_zero_guard_claim,
     _segment_refinement_candidates,
+    _segment_refinement_diagnostic_report,
     _semantic_expr_has_exact_inputs,
     _semantic_expr_registers,
     _stack_read32_sub_output_claim,
@@ -614,13 +615,19 @@ def stage_a_prove_relational(
     proof_ir = _attach_memory_transition_analysis(
         proof_ir, normalized, behaviors, memory_contracts, register_relations
     )
+    segment_diagnostics: list[dict[str, Any]] = []
     segment_candidates = _segment_refinement_candidates(
         normalized, behaviors, memory_contracts, register_relations,
-        import_register_seeds,
+        import_register_seeds, diagnostics=segment_diagnostics,
+    )
+    write_json(
+        out / "relational-segment-diagnostics.json",
+        _segment_refinement_diagnostic_report(segment_diagnostics),
     )
     proof_ir = _attach_segment_refinement_analysis(
         proof_ir, normalized, behaviors, memory_contracts, register_relations,
         import_register_seeds, segment_candidates=segment_candidates,
+        segment_diagnostics=segment_diagnostics,
     )
     product_graph = _relational_product_graph(
         normalized, behaviors, register_relations, segment_candidates,
@@ -709,6 +716,9 @@ def stage_a_prove_relational(
                 ),
                 "stack_windows_sha256": sha256_file(
                     out / "relational-stack-windows.json"
+                ),
+                "segment_diagnostics_sha256": sha256_file(
+                    out / "relational-segment-diagnostics.json"
                 ),
                 "product_graph_sha256": sha256_file(
                     out / "relational-product-graph.json"

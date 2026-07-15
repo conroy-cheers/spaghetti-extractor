@@ -1,4 +1,5 @@
 from tests.stage_a_relational_support import *
+from spaghetti_extractor.relational.executor import _precompiled_kernel_olean
 from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
 
 
@@ -775,6 +776,33 @@ class StageARelationalContractTests(StageARelationalTestBase):
                     root, "Consumer", source, [dependency_olean]
                 )
                 self.assertNotEqual(first, second)
+
+    def test_precompiled_kernel_cache_requires_exact_source_match(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "work" / "StageA" / "Formal.lean"
+            source.parent.mkdir(parents=True)
+            source.write_text("def formal := 1\n", encoding="utf-8")
+            precompiled = root / "precompiled" / "StageA"
+            precompiled.mkdir(parents=True)
+            cached_source = precompiled / "Formal.lean"
+            cached_output = precompiled / "Formal.olean"
+            cached_source.write_bytes(source.read_bytes())
+            cached_output.write_bytes(b"compiled")
+
+            with patch.dict(os.environ, {
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL": str(
+                    precompiled.parent
+                ),
+            }):
+                self.assertEqual(
+                    _precompiled_kernel_olean(source, "Formal"), cached_output
+                )
+                cached_source.write_text("def formal := 2\n", encoding="utf-8")
+                self.assertIsNone(_precompiled_kernel_olean(source, "Formal"))
+                cached_source.write_bytes(source.read_bytes())
+                cached_output.unlink()
+                self.assertIsNone(_precompiled_kernel_olean(source, "Formal"))
 
     def test_relational_cache_uses_tmpdir_for_nix_sandbox_home(self):
         with tempfile.TemporaryDirectory() as temporary:
