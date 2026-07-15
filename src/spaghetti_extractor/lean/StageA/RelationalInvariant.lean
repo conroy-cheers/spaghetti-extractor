@@ -1212,44 +1212,70 @@ theorem callReturnEdgeShapeClosed_of_checked
   simp only [callReturnEdgeShapeChecked, Bool.and_eq_true, beq_iff_eq] at checked
   exact ⟨checked.1.1.1, checked.1.1.2, checked.1.2, checked.2⟩
 
-def pe32ExternalRegisterPreserved : Reg → Bool
-  | .ebx | .esi | .edi | .ebp | .esp => true
-  | .eax | .ecx | .edx => false
+def machineCallResultRelationAsRegisterValueRelation :
+    MachineCallResultRelationKind → RegisterValueRelation
+  | .exact => .exact
+  | .relatedWord => .relatedWord
 
 def externalRegisterInputPolicyClosed (source : RegionRelation)
-    (input : RegisterRelationPair) : Bool :=
-  if pe32ExternalRegisterPreserved input.original &&
-      pe32ExternalRegisterPreserved input.candidate then
+    (contract : MachineImportCallContract) (input : RegisterRelationPair) : Bool :=
+  if input.original == .esp && input.candidate == .esp then
     source.outputRelations.contains input
-  else if !pe32ExternalRegisterPreserved input.original &&
-      !pe32ExternalRegisterPreserved input.candidate then
-    input.relation == .relatedWord
+  else if contract.preservedRegisters.contains input.original &&
+      contract.preservedRegisters.contains input.candidate then
+    source.outputRelations.contains input
+  else if contract.clobberedRegisters.contains input.original &&
+      contract.clobberedRegisters.contains input.candidate then
+    match contract.resultRegisterRelations.filter
+        (fun relation => relation.register == input.original) with
+    | [] => input.relation == .relatedWord
+    | [relation] =>
+        input.candidate == relation.register &&
+          input.relation ==
+            machineCallResultRelationAsRegisterValueRelation relation.relation
+    | _ => false
   else
     false
 
-def externalRegisterPolicyClosed (source target : RegionRelation) : Bool :=
-  target.inputRelations.all (externalRegisterInputPolicyClosed source)
+def externalRegisterPolicyClosed (source target : RegionRelation)
+    (contract : MachineImportCallContract) : Bool :=
+  target.inputRelations.all (externalRegisterInputPolicyClosed source contract)
+
+def _root_.StageA.Relational.NormalizedOutcomeExpr.externalTarget? :
+    NormalizedOutcomeExpr → Option ExternalTarget
+  | .externalCall imported _ _ => some imported
+  | _ => none
 
 def ExternalRegisterPolicyEdgeClosed (source target : RegionRelation)
+    (contract : MachineImportCallContract)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Prop :=
-  originalBehavior.outcome.externalContinuation = some target.id ∧
+  contract.shapeValid = true ∧
+    originalBehavior.outcome.externalTarget? = some contract.imported ∧
+    candidateBehavior.outcome.externalTarget? = some contract.imported ∧
+    originalBehavior.outcome.externalContinuation = some target.id ∧
     candidateBehavior.outcome.externalContinuation = some target.id ∧
-    externalRegisterPolicyClosed source target = true
+    externalRegisterPolicyClosed source target contract = true
 
 def externalRegisterPolicyEdgeChecked (source target : RegionRelation)
+    (contract : MachineImportCallContract)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
-  originalBehavior.outcome.externalContinuation == some target.id &&
+  contract.shapeValid &&
+    originalBehavior.outcome.externalTarget? == some contract.imported &&
+    candidateBehavior.outcome.externalTarget? == some contract.imported &&
+    originalBehavior.outcome.externalContinuation == some target.id &&
     candidateBehavior.outcome.externalContinuation == some target.id &&
-    externalRegisterPolicyClosed source target
+    externalRegisterPolicyClosed source target contract
 
 theorem externalRegisterPolicyEdgeClosed_of_checked
     (source target : RegionRelation)
+    (contract : MachineImportCallContract)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
-    (checked : externalRegisterPolicyEdgeChecked source target
+    (checked : externalRegisterPolicyEdgeChecked source target contract
       originalBehavior candidateBehavior = true) :
-    ExternalRegisterPolicyEdgeClosed source target originalBehavior candidateBehavior := by
-  simp only [externalRegisterPolicyEdgeChecked, Bool.and_eq_true, beq_iff_eq] at checked
-  exact ⟨checked.1.1, checked.1.2, checked.2⟩
+    ExternalRegisterPolicyEdgeClosed source target contract originalBehavior
+      candidateBehavior := by
+  simpa [ExternalRegisterPolicyEdgeClosed, externalRegisterPolicyEdgeChecked,
+    Bool.and_eq_true, beq_iff_eq, and_assoc] using checked
 
 theorem registerRelationsHold_exact_change_context
     (sourceOriginalImageBase sourceCandidateImageBase : Nat)

@@ -67,6 +67,15 @@ The reviewed kernel is split by semantic ownership:
 - `RelationalCertificates.lean` contains the whole-program certificate and
   final soundness theorem.
 
+The console acceptance profile binds its selected launch node to a checked
+`.entrypoint` root in `StaticProofContext`. A top-level return observes the
+concrete EAX result as well as the relational world, and the terminal
+invariant must require exact EAX identity. Returning programs therefore cannot
+pass while disagreeing on their process result. External-call continuations
+may recover exact or related-word result registers only from the uniquely
+resolved `MachineImportCallContract`; ESP remains governed separately by the
+checked stack delta and runtime-frame relation.
+
 Generated modules contain data and compact certificates, not duplicated proof
 rules. Nix derivations follow direct Lean imports so proof-only changes
 invalidate only affected descendants.

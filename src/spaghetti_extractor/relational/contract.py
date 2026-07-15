@@ -17,6 +17,7 @@ from .schema import (
     MACHINE_CALL_DISPOSITIONS,
     MACHINE_CALL_MAX_ARGUMENT_WORDS,
     MACHINE_CALL_MEMORY_EFFECTS,
+    MACHINE_CALL_RESULT_RELATIONS,
     MACHINE_CALL_WORLD_EFFECTS,
     PROTOCOL_CALLBACK_CONTROL_FORMAT,
     ProtocolCallbackControl,
@@ -1670,6 +1671,36 @@ def _machine_import_call_contracts(
                 )
             )
         )
+        raw_result_relations = (
+            item.get("result_register_relations", [])
+            if isinstance(item, dict) else None
+        )
+        result_relations: list[dict[str, str]] = []
+        result_registers: set[str] = set()
+        result_relations_valid = isinstance(raw_result_relations, list)
+        if isinstance(raw_result_relations, list):
+            for relation in raw_result_relations:
+                register = (
+                    relation.get("register") if isinstance(relation, dict) else None
+                )
+                relation_kind = (
+                    relation.get("relation") if isinstance(relation, dict) else None
+                )
+                valid_relation = (
+                    register in MACHINE_CALL_ABI_REGISTERS
+                    and isinstance(clobbered, list)
+                    and register in clobbered
+                    and register not in result_registers
+                    and relation_kind in MACHINE_CALL_RESULT_RELATIONS
+                )
+                if not valid_relation:
+                    result_relations_valid = False
+                    continue
+                result_registers.add(str(register))
+                result_relations.append({
+                    "register": str(register),
+                    "relation": str(relation_kind),
+                })
         malformed = (
             not isinstance(item, dict)
             or not template_valid
@@ -1697,6 +1728,7 @@ def _machine_import_call_contracts(
             or set(preserved).union(clobbered) != MACHINE_CALL_ABI_REGISTERS
             or memory_effect not in MACHINE_CALL_MEMORY_EFFECTS
             or not memory_shape_valid
+            or not result_relations_valid
             or disposition not in MACHINE_CALL_DISPOSITIONS
             or world_effect not in MACHINE_CALL_WORLD_EFFECTS
             or (
@@ -1716,6 +1748,7 @@ def _machine_import_call_contracts(
                     stack_result_delta != 0
                     or memory_effect != "none"
                     or bool(footprints)
+                    or bool(result_relations)
                     or world_effect != "none"
                 )
             )
@@ -1764,6 +1797,9 @@ def _machine_import_call_contracts(
             "stack_result_delta": stack_result_delta,
             "preserved_registers": sorted(str(register) for register in preserved),
             "clobbered_registers": sorted(str(register) for register in clobbered),
+            "result_register_relations": sorted(
+                result_relations, key=lambda relation: relation["register"]
+            ),
             "disposition": str(disposition),
             "memory_effect": str(memory_effect),
             "memory_footprints": footprints,

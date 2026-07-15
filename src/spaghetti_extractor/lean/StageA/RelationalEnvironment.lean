@@ -462,6 +462,25 @@ def machineCallResultConforms (candidate : Bool) (context : StaticProofContext)
     machineCallWorldEffectHolds candidate context contract.worldEffect
       event.arguments event.world result.world
 
+def MachineCallResultRegisterRelation.holds (context : StaticProofContext)
+    (world : RelationalWorld) (relation : MachineCallResultRegisterRelation)
+    (original candidate : MachineState) : Bool :=
+  match relation.relation with
+  | .exact =>
+      original.registers.get relation.register ==
+        candidate.registers.get relation.register
+  | .relatedWord =>
+      wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList (context.relationalValueTargets world)
+        (original.registers.get relation.register)
+        (candidate.registers.get relation.register)
+
+def machineCallResultRegistersRelated (context : StaticProofContext)
+    (world : RelationalWorld) (contract : MachineImportCallContract)
+    (original candidate : MachineState) : Bool :=
+  contract.resultRegisterRelations.all fun relation =>
+    relation.holds context world original candidate
+
 def externalCallArgumentsRelated (context : StaticProofContext)
     (world : RelationalWorld) (original candidate : List Word) : Bool :=
   wordsRelated context.originalPe.imageBase context.candidatePe.imageBase
@@ -535,6 +554,8 @@ def ExternalEnvironmentRefinesAt (context : StaticProofContext)
         originalResult.world = candidateResult.world ∧
           machineCallResultConforms false context contract originalEvent originalResult ∧
           machineCallResultConforms true context contract candidateEvent candidateResult ∧
+          machineCallResultRegistersRelated context originalResult.world contract
+            originalResult.state candidateResult.state = true ∧
           StateRel context originalResult.world site.targetInvariant
             originalResult.state candidateResult.state ∧
           ExternalRuntimeFramesPreserved originalEvent candidateEvent
@@ -1109,6 +1130,8 @@ theorem externalCallResultsRelated
     originalResult.world = candidateResult.world ∧
       machineCallResultConforms false context contract originalEvent originalResult ∧
       machineCallResultConforms true context contract candidateEvent candidateResult ∧
+      machineCallResultRegistersRelated context originalResult.world contract
+        originalResult.state candidateResult.state = true ∧
       StateRel context originalResult.world site.targetInvariant
         originalResult.state candidateResult.state ∧
       ExternalRuntimeFramesPreserved originalEvent candidateEvent

@@ -635,7 +635,7 @@ def _synthesize_register_relations(
     regions = refined["regions"]
     region_by_id = {int(region["numeric_id"]): index for index, region in enumerate(regions)}
     predecessors: list[
-        list[tuple[int, bool, str, frozenset[str]]]
+        list[tuple[int, bool, str, frozenset[str], dict[str, str]]]
     ] = [[] for _ in regions]
     edges: list[dict[str, Any]] = []
     pending_indirect_edges: list[dict[str, Any]] = []
@@ -649,6 +649,36 @@ def _synthesize_register_relations(
         int(candidate["source_region_index"]): candidate
         for candidate in (import_call_candidates or [])
     }
+    contracts_by_target: dict[
+        tuple[str, str, str | int], list[dict[str, Any]]
+    ] = {}
+    for item in refined.get("machine_import_call_contracts", []):
+        imported = item.get("import") or {}
+        identity = (
+            str(imported.get("dll", "")).lower(),
+            "symbol" if "symbol" in imported else "ordinal",
+            imported.get("symbol", imported.get("ordinal")),
+        )
+        contracts_by_target.setdefault(identity, []).append(item)
+
+    def paired_machine_contract(
+        original_outcome: dict[str, Any], candidate_outcome: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        original_identity = _semantic_external_target_identity(
+            original_outcome.get("import")
+        )
+        candidate_identity = _semantic_external_target_identity(
+            candidate_outcome.get("import")
+        )
+        contracts = (
+            contracts_by_target.get(original_identity, [])
+            if original_identity is not None
+            and original_identity == candidate_identity else []
+        )
+        if len(contracts) != 1:
+            return None
+        return contracts[0]
+
     for source_index, behavior_pair in enumerate(behaviors):
         original_outcome = behavior_pair["original_ir"].get("outcome") or {}
         candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
@@ -670,10 +700,24 @@ def _synthesize_register_relations(
             if target_index is None:
                 continue
             barrier = bool(original_edge.get("environment_barrier"))
+            machine_contract = (
+                paired_machine_contract(original_outcome, candidate_outcome)
+                if barrier else None
+            )
+            result_relations = (
+                {
+                    str(relation["register"]): str(relation["relation"])
+                    for relation in machine_contract.get(
+                        "result_register_relations", []
+                    )
+                }
+                if machine_contract is not None else {}
+            )
             predecessors[target_index].append(
                 (
                     source_index, barrier, str(original_edge["kind"]),
                     _PE32_EXTERNAL_PRESERVED_REGISTERS,
+                    result_relations,
                 )
             )
             edges.append({
@@ -684,6 +728,10 @@ def _synthesize_register_relations(
                 "candidate_guard": candidate_edge["guard"],
                 "environment_barrier": barrier,
                 "requires_call_stack_proof": False,
+                "machine_contract_id": (
+                    int(machine_contract["id"])
+                    if machine_contract is not None else None
+                ),
             })
         indirect_candidate = indirect_by_source.get(source_index)
         if indirect_candidate is not None:
@@ -698,6 +746,7 @@ def _synthesize_register_relations(
                 (
                     source_index, False, indirect_kind,
                     _PE32_EXTERNAL_PRESERVED_REGISTERS,
+                    {},
                 )
             )
             pending_edge = {
@@ -718,10 +767,24 @@ def _synthesize_register_relations(
         import_call_candidate = import_call_by_source.get(source_index)
         if import_call_candidate is not None:
             target_index = int(import_call_candidate["continuation_region_index"])
+            import_outcome = {"import": import_call_candidate["import"]}
+            machine_contract = paired_machine_contract(
+                import_outcome, import_outcome
+            )
+            result_relations = (
+                {
+                    str(relation["register"]): str(relation["relation"])
+                    for relation in machine_contract.get(
+                        "result_register_relations", []
+                    )
+                }
+                if machine_contract is not None else {}
+            )
             predecessors[target_index].append(
                 (
                     source_index, True, "external_call",
                     _PE32_EXTERNAL_PRESERVED_REGISTERS,
+                    result_relations,
                 )
             )
             pending_import_edges.append({
@@ -734,18 +797,11 @@ def _synthesize_register_relations(
                 "requires_call_stack_proof": False,
                 "indirect_target_profile": import_call_candidate["profile"],
                 "import": import_call_candidate["import"],
+                "machine_contract_id": (
+                    int(machine_contract["id"])
+                    if machine_contract is not None else None
+                ),
             })
-    contracts_by_target: dict[
-        tuple[str, str, str | int], list[dict[str, Any]]
-    ] = {}
-    for item in refined.get("machine_import_call_contracts", []):
-        imported = item.get("import") or {}
-        identity = (
-            str(imported.get("dll", "")).lower(),
-            "symbol" if "symbol" in imported else "ordinal",
-            imported.get("symbol", imported.get("ordinal")),
-        )
-        contracts_by_target.setdefault(identity, []).append(item)
     for edge in edges:
         if edge.get("kind") != "call":
             continue
@@ -794,6 +850,12 @@ def _synthesize_register_relations(
                 {str(item) for item in contracts[0]["preserved_registers"]}
                 | {"esp"}
             ),
+            {
+                str(relation["register"]): str(relation["relation"])
+                for relation in contracts[0].get(
+                    "result_register_relations", []
+                )
+            },
         ))
 
     # A return destination is selected by the checked runtime call frame, not by
@@ -867,10 +929,14 @@ def _synthesize_register_relations(
                 candidates: list[str] = []
                 if region.get("root"):
                     candidates.append("exact")
-                for source_index, barrier, _, preserved in incoming:
+                for source_index, barrier, _, preserved, results in incoming:
                     candidates.append(
                         next_outputs[source_index][register]
-                        if not barrier or register in preserved
+                        if not barrier
+                        else results[register]
+                        if register in results
+                        else next_outputs[source_index][register]
+                        if register in preserved
                         else "related_word"
                     )
                 if not candidates:
@@ -1023,7 +1089,7 @@ def _synthesize_register_relations(
             ),
             "predecessor_count": len(predecessors[region_index]),
             "environment_barrier": any(
-                barrier for _, barrier, _, _ in predecessors[region_index]
+                barrier for _, barrier, _, _, _ in predecessors[region_index]
             ),
         })
 

@@ -8,7 +8,7 @@ open StageA.Formal
 inductive WorldRelationalObservable where
   | external (world : RelationalWorld) (imported : ExternalTarget)
       (arguments : List Word)
-  | returned (world : RelationalWorld)
+  | returned (world : RelationalWorld) (result : Word)
   | callback (world : RelationalWorld) (targetId : Nat)
   | fault
 deriving Repr, DecidableEq
@@ -21,8 +21,9 @@ def worldRelationalObservationsRelated (context : StaticProofContext) :
       originalWorld = candidateWorld ∧ originalImport = candidateImport ∧
         externalCallArgumentsRelated context originalWorld
           originalArguments candidateArguments = true
-  | some (.returned originalWorld), some (.returned candidateWorld) =>
-      originalWorld = candidateWorld
+  | some (.returned originalWorld originalResult),
+      some (.returned candidateWorld candidateResult) =>
+      originalWorld = candidateWorld ∧ originalResult = candidateResult
   | some (.callback originalWorld originalTarget),
       some (.callback candidateWorld candidateTarget) =>
       originalWorld = candidateWorld ∧ originalTarget = candidateTarget
@@ -186,7 +187,8 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
       | [] =>
           match callbacks with
           | [] =>
-              { next := .returned state world, observation := some (.returned world) }
+              { next := .returned state world,
+                observation := some (.returned world state.registers.eax) }
           | callback :: outerCallbacks =>
               if target == callback.entry.returnAddress then
                 { next := .awaitingExternal {
@@ -1841,13 +1843,19 @@ structure PE32ConsoleLaunchV1 where
   rootInvariant : StateInvariant
 deriving Repr, DecidableEq
 
-def PE32ConsoleLaunchV1.Valid (graph : RelationalProductGraph)
-    (invariants : ProductInvariantTable) (launch : PE32ConsoleLaunchV1) : Prop :=
+def PE32ConsoleLaunchV1.Valid (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (launch : PE32ConsoleLaunchV1) : Prop :=
   exists node,
     graph.getNode? launch.rootNodeId = some node ∧
       node.targetId = launch.rootTargetId ∧ node.root = true ∧
       graph.rootNodeIds.contains launch.rootNodeId = true ∧
-      invariants.nodeInvariants[launch.rootNodeId]? = some launch.rootInvariant
+      invariants.nodeInvariants[launch.rootNodeId]? = some launch.rootInvariant ∧
+      context.roots.contains {
+        targetId := launch.rootTargetId
+        kind := .entrypoint
+      } = true ∧
+      exactIdentityRegister invariants.terminalInvariant.registerRelations .eax = true
 
 def PE32ConsoleLaunchV1.StatesRelated (context : StaticProofContext)
     (launch : PE32ConsoleLaunchV1) (world : RelationalWorld)
@@ -1897,7 +1905,7 @@ structure WholeProgramCertificate (context : StaticProofContext)
   protocolEnvironmentsRefined : WorldExternalProtocolEnvironmentsRefine context graph
     invariants reachability control callbackTargets externalCallSites
     originalProtocolEnvironment candidateProtocolEnvironment
-  launchValid : launch.Valid graph invariants
+  launchValid : launch.Valid context graph invariants
   launchControlAllowed : control.Allows launch.rootNodeId [] [] = true
   runningProductNodesRefined : ReachableRunningProductNodesRefined context graph
     invariants reachability control callbackTargets
@@ -1988,7 +1996,8 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
     callbackTargets externalCallSites, ?_, ?_⟩
   . intro world originalState candidateState related
     rcases certificate.launchValid with
-      ⟨node, nodeFound, targetFound, rootFound, rootListed, invariantFound⟩
+      ⟨node, nodeFound, targetFound, rootFound, rootListed, invariantFound,
+        _entrypointRoot, _terminalResultExact⟩
     refine ⟨rfl, rfl, rfl, rfl, launch.rootNodeId, node,
       launch.rootInvariant, [], [], nodeFound, targetFound, ?_, invariantFound,
       certificate.launchControlAllowed, ?_, ?_, related⟩

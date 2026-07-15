@@ -153,6 +153,16 @@ inductive MachineCallDisposition where
   | protocol
 deriving Repr, DecidableEq
 
+inductive MachineCallResultRelationKind where
+  | exact
+  | relatedWord
+deriving Repr, DecidableEq
+
+structure MachineCallResultRegisterRelation where
+  register : Reg
+  relation : MachineCallResultRelationKind
+deriving Repr, DecidableEq
+
 structure MachineImportCallContract where
   id : Nat
   imported : ExternalTarget
@@ -160,6 +170,7 @@ structure MachineImportCallContract where
   stackResultDelta : Nat
   preservedRegisters : List Reg
   clobberedRegisters : List Reg
+  resultRegisterRelations : List MachineCallResultRegisterRelation := []
   disposition : MachineCallDisposition := .returns
   memoryEffect : MachineCallMemoryEffect
   memoryFootprints : List MachineCallMemoryFootprint := []
@@ -206,6 +217,11 @@ def MachineImportCallContract.shapeValid
       register != .esp &&
         (contract.clobberedRegisters.filter (· == register)).length == 1 &&
         !contract.preservedRegisters.contains register) &&
+    (contract.resultRegisterRelations.all fun relation =>
+      relation.register != .esp &&
+        contract.clobberedRegisters.contains relation.register &&
+        (contract.resultRegisterRelations.filter
+          (fun other => other.register == relation.register)).length == 1) &&
     (machineCallAbiRegisters.all fun register =>
       contract.preservedRegisters.contains register ||
         contract.clobberedRegisters.contains register) &&
@@ -220,6 +236,7 @@ def MachineImportCallContract.shapeValid
         contract.stackResultDelta == 0 &&
           contract.memoryEffect == .none &&
           contract.memoryFootprints.isEmpty &&
+          contract.resultRegisterRelations.isEmpty &&
           contract.worldEffect == .none
     | .protocol => contract.worldEffect == .none
 

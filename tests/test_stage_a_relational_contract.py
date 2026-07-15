@@ -1126,6 +1126,10 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 "stack_result_delta": 4,
                 "preserved_registers": ["ebx", "esi", "edi", "ebp"],
                 "clobbered_registers": ["eax", "ecx", "edx"],
+                "result_register_relations": [
+                    {"register": "eax", "relation": "exact"},
+                    {"register": "edx", "relation": "related_word"},
+                ],
                 "memory_effect": "argumentRanges",
                 "memory_footprints": [write_footprint],
                 "world_effect": "opaqueResources",
@@ -1141,6 +1145,10 @@ class StageARelationalContractTests(StageARelationalTestBase):
             self.assertEqual(
                 normalized[0]["memory_footprints"], [write_footprint]
             )
+            self.assertEqual(normalized[0]["result_register_relations"], [
+                {"register": "eax", "relation": "exact"},
+                {"register": "edx", "relation": "related_word"},
+            ])
 
             optional = {
                 **valid,
@@ -1350,6 +1358,9 @@ class StageARelationalContractTests(StageARelationalTestBase):
             for malformed_terminal in (
                 {**terminal, "disposition": "sometimes"},
                 {**terminal, "world_effect": "opaqueResources"},
+                {**terminal, "result_register_relations": [{
+                    "register": "eax", "relation": "exact",
+                }]},
                 {**terminal, "memory_effect": "readOnly", "memory_footprints": [{
                     "access": "read",
                     "base_argument": 0,
@@ -1424,6 +1435,19 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 {**templated, "memory_effect": None},
                 {**templated, "stack_result_delta": 4},
                 {**templated, "argument_words": 1025},
+                {**valid, "result_register_relations": [{
+                    "register": "esp", "relation": "exact",
+                }]},
+                {**valid, "result_register_relations": [{
+                    "register": "ebx", "relation": "exact",
+                }]},
+                {**valid, "result_register_relations": [
+                    {"register": "eax", "relation": "exact"},
+                    {"register": "eax", "relation": "related_word"},
+                ]},
+                {**valid, "result_register_relations": [{
+                    "register": "eax", "relation": "symbolic",
+                }]},
             )
             for malformed in malformed_cases:
                 malformed_issues: list[dict] = []

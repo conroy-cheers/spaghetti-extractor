@@ -643,6 +643,10 @@ def _write_relational_register_relation_modules(
     relation_by_region = {
         int(row["region_index"]): row for row in register_relations["regions"]
     }
+    contracts_by_id = {
+        int(item["id"]): item
+        for item in contract.get("machine_import_call_contracts", [])
+    }
     modules: list[dict[str, str]] = []
     for chunk_index, region_indices in enumerate(decode_chunk_regions):
         exact_edges = [
@@ -1126,6 +1130,13 @@ def _write_relational_register_relation_modules(
         for edge_index, edge in enumerate(environment_edges):
             source_index = int(edge["source_region_index"])
             target_index = int(edge["target_region_index"])
+            machine_contract_id = int(edge["machine_contract_id"])
+            machine_contract = contracts_by_id.get(machine_contract_id)
+            if machine_contract is None:
+                raise StageAInputError(
+                    f"external register-policy edge {edge_index} has no "
+                    f"machine contract {machine_contract_id}"
+                )
             original_name = (
                 f"registerRelationChunk{chunk_index}OriginalBehavior{source_index}"
             )
@@ -1138,16 +1149,27 @@ def _write_relational_register_relation_modules(
             theorem_name = (
                 f"registerRelationChunk{chunk_index}EnvironmentEdge{edge_index}Checked"
             )
+            contract_name = (
+                f"registerRelationChunk{chunk_index}EnvironmentEdge{edge_index}Contract"
+            )
+            definitions.append(
+                f"def {contract_name} : MachineImportCallContract := "
+                f"{_lean_machine_import_call_contract(machine_contract)}"
+            )
             definitions.append(
                 f"def {proposition_name} : Prop :=\n"
-                "  InvariantWP.ExternalRegisterPolicyEdgeClosed "
+                "  machineImportCallContractById? staticProofContext "
+                f"{machine_contract_id} = some {contract_name} \u2227\n"
+                "    InvariantWP.ExternalRegisterPolicyEdgeClosed "
                 f"region{source_index} region{target_index} "
-                f"{original_name} {candidate_name}"
+                f"{contract_name} {original_name} {candidate_name}"
             )
             definitions.append(
                 f"theorem {theorem_name} : {proposition_name} := by\n"
-                "  apply InvariantWP.externalRegisterPolicyEdgeClosed_of_checked\n"
-                "  decide"
+                "  constructor\n"
+                "  \u00b7 decide\n"
+                "  \u00b7 apply InvariantWP.externalRegisterPolicyEdgeClosed_of_checked\n"
+                "    decide"
             )
             theorem_names.append(theorem_name)
             proposition_names.append(proposition_name)
@@ -1475,6 +1497,7 @@ def _write_relational_register_relation_modules(
         module = f"RelationalRegisterRelationsChunk{chunk_index}"
         source = (
             "import StageA.RelationalComposition\n"
+            "import StageA.RelationalEnvironment\n"
             "import StageA.RelationalGlobalMappingContext\n"
             "import StageA.RelationalStaticContextBase\n"
             + imports
@@ -1539,6 +1562,8 @@ def _external_register_policy_replay_candidate(
     # Their transition belongs to the import/environment refinement proof, not
     # the direct external-call register-policy checker.
     if edge.get("indirect_target_profile"):
+        return False
+    if edge.get("machine_contract_id") is None:
         return False
     target = contract["regions"][int(edge["target_region_index"])]
     return not target.get("input_import_relations")

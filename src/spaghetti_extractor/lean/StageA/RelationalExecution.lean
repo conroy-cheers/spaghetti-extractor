@@ -197,10 +197,11 @@ def RelationalEnvironmentsRegisterCompatible
     (targets : List CodeTargetPair) (values : List ValueTargetPair)
     (regions : List RegionRelation)
     (original candidate : RelationalEnvironment) : Prop :=
-  ∀ source target originalBehavior candidateBehavior eventIndex originalEvent candidateEvent,
+  ∀ source target contract originalBehavior candidateBehavior eventIndex originalEvent
+      candidateEvent,
     source ∈ regions → target ∈ regions →
     InvariantWP.ExternalRegisterPolicyEdgeClosed source target
-      originalBehavior candidateBehavior →
+      contract originalBehavior candidateBehavior →
     originalEvent.imported = candidateEvent.imported →
     wordsRelated originalImageBase candidateImageBase targets values
       originalEvent.arguments candidateEvent.arguments = true →

@@ -1132,6 +1132,16 @@ two decoded world executions and proves related observations and successor
 states for every reachable step. The older relational-image certificate remains
 intermediate evidence and cannot select an acceptance theorem.
 
+For `pe32-console-launch-v1`, Lean additionally checks that the selected launch
+target is a canonical `.entrypoint` root. A top-level return emits an
+observation containing the concrete EAX process result, and launch validity
+requires the terminal invariant to relate EAX by exact identity. External
+result registers are not inferred from a hard-coded volatile-register table:
+each generated environment edge resolves one canonical machine-call contract
+by ID and uses only its checked `resultRegisterRelations`. ESP is related by
+the stack-delta/runtime-frame path rather than that ordinary register result
+inventory.
+
 The generated acceptance profiles remain deliberately narrow. In addition to
 `direct-no-write-jump-v1`, guarded direct branches close through exhaustive
 paired guards, and `finite-call-return-v1` closes direct calls and returns with

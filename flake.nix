@@ -546,6 +546,12 @@
             stageARelationalAcceptanceSuite.cases.nested_external_call_preserves_internal_runtime_frame_end_to_end;
           stage-a-relational-tests-acceptance-direct-stack-read =
             stageARelationalAcceptanceSuite.cases.direct_paired_stack_read_loop_closes_whole_program_theorem;
+          stage-a-relational-tests-acceptance-representative =
+            stageARelationalAcceptanceSuite.cases.representative_control_slice_closes_whole_program_theorem;
+          stage-a-relational-tests-acceptance-terminal-return =
+            stageARelationalAcceptanceSuite.cases.top_level_return_checks_terminal_invariant_end_to_end;
+          stage-a-relational-tests-acceptance-external-loop =
+            stageARelationalAcceptanceSuite.cases.external_call_loop_checks_paired_environment_end_to_end;
           stage-a-relational-tests = pkgs.symlinkJoin {
             name = "stage-a-relational-tests";
             paths = [
@@ -612,6 +618,9 @@
             stage-a-relational-tests-acceptance
             stage-a-relational-tests-acceptance-nested-external
             stage-a-relational-tests-acceptance-direct-stack-read
+            stage-a-relational-tests-acceptance-representative
+            stage-a-relational-tests-acceptance-terminal-return
+            stage-a-relational-tests-acceptance-external-loop
             stage-b-jq-skeleton
             stage-b-jq-skeleton-root
             ;

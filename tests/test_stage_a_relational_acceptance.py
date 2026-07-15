@@ -1054,6 +1054,9 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                     },
                     "abi_template": "pe32-stdcall-v1",
                     "argument_words": 0,
+                    "result_register_relations": [{
+                        "register": "eax", "relation": "exact",
+                    }],
                     "memory_effect": "none",
                     "memory_footprints": [],
                     "world_effect": "none",
@@ -1090,7 +1093,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             iat_address = 0x400000 + 0x2000 + 0x40
-            code = b"\xff\x15" + struct.pack("<I", iat_address) + b"\xc3"
+            code = (
+                b"\xff\x15" + struct.pack("<I", iat_address)
+                + b"\x31\xc0\xc3"
+            )
             original = root / "original.exe"
             candidate = root / "candidate.exe"
             original.write_bytes(_pe32_import_image(code, symbol="ProtocolStep"))
@@ -1130,8 +1136,8 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                     },
                     {
                         "id": "callback-return", "root": False,
-                        "original": {"rva": 0x1006, "size": 1},
-                        "candidate": {"rva": 0x1006, "size": 1},
+                        "original": {"rva": 0x1006, "size": 3},
+                        "candidate": {"rva": 0x1006, "size": 3},
                         "inputs": pairs, "outputs": pairs,
                     },
                 ],
@@ -1889,6 +1895,28 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "memory_footprints": [],
                 "world_effect": "none",
             }]
+            contract.write_text(json.dumps(payload), encoding="utf-8")
+            unconstrained = root / "unconstrained"
+
+            incomplete = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=unconstrained,
+            )
+
+            self.assertEqual(incomplete["acceptance"]["status"], "incomplete")
+            self.assertIn(
+                "terminal_result_relation_unmet",
+                {
+                    blocker["code"]
+                    for blocker in incomplete["acceptance"]["blockers"]
+                },
+            )
+
+            payload["machine_import_call_contracts"][0][
+                "result_register_relations"
+            ] = [{"register": "eax", "relation": "exact"}]
             contract.write_text(json.dumps(payload), encoding="utf-8")
             prepared = root / "prepared"
 

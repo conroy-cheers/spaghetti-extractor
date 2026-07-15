@@ -244,6 +244,14 @@ def _lean_machine_import_call_contract(contract: dict[str, Any]) -> str:
     clobbered = ", ".join(
         f".{register}" for register in contract["clobbered_registers"]
     )
+    result_relations = ", ".join(
+        "{ register := ." + relation["register"]
+        + ", relation := ."
+        + ("relatedWord" if relation["relation"] == "related_word"
+           else relation["relation"])
+        + " }"
+        for relation in contract.get("result_register_relations", [])
+    )
     footprints = ", ".join(
         _lean_machine_call_memory_footprint(footprint)
         for footprint in contract.get("memory_footprints", [])
@@ -261,6 +269,7 @@ def _lean_machine_import_call_contract(contract: dict[str, Any]) -> str:
         f"stackResultDelta := {int(contract['stack_result_delta'])}, "
         f"preservedRegisters := [{preserved}], "
         f"clobberedRegisters := [{clobbered}], "
+        f"resultRegisterRelations := [{result_relations}], "
         f"disposition := .{contract['disposition']}, "
         f"memoryEffect := .{contract['memory_effect']}, "
         f"memoryFootprints := [{footprints}], "

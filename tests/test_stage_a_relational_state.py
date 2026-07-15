@@ -2159,6 +2159,7 @@ class StageARelationalStateTests(StageARelationalTestBase):
         contract = {"regions": [{}, {}]}
         direct = {
             "environment_barrier": True,
+            "machine_contract_id": 3,
             "source_region_index": 0,
             "target_region_index": 1,
         }

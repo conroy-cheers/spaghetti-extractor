@@ -71,7 +71,9 @@ The following decisions define the least-pain initial proof class:
   external oracle interactions.
 - Concrete addresses and handles may differ through checked canonical tokens.
 - External APIs require machine-level interface schemas, not behavioral
-  implementations.
+  implementations. Those schemas explicitly classify preserved/clobbered
+  registers and any exact or related-word result-register guarantees used by
+  continuation invariants.
 - The candidate may use proof-oriented, low-level, unattractive C, explicit
   wrappers, and narrow assembly stubs.
 - Producing that candidate is an interactive synthesis and repair process, not

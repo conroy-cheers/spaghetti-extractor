@@ -1120,6 +1120,21 @@ def _whole_program_acceptance_plan(
                         "emit checked terminal transfer witnesses for these relation families",
                     )
                     continue
+                exact_eax_output = any(
+                    claim.get("output") == {
+                        "original": "eax",
+                        "candidate": "eax",
+                        "relation": "exact",
+                    }
+                    for claim in relation_row["output_claims"]
+                )
+                if not exact_eax_output:
+                    block(
+                        "terminal_result_relation_unmet",
+                        f"termination node {node_id} does not establish exact EAX equality",
+                        "emit a checked exact EAX output claim for the console return value",
+                    )
+                    continue
                 node_steps.append({
                     "kind": "terminate",
                     "node_id": node_id,
@@ -1614,7 +1629,11 @@ def _whole_program_acceptance_plan(
                 "stack_windows": [],
             }
             if returned_region_indices else {
-                "register_relations": [],
+                "register_relations": [{
+                    "original": "eax",
+                    "candidate": "eax",
+                    "relation": "exact",
+                }],
                 "import_register_relations": [],
                 "dynamic_register_range_relations": [],
                 "bounds": [],
@@ -2521,7 +2540,7 @@ def _lean_acceptance_running_node(
             "    dsimp only at results\n"
             "    rcases results with\n"
             "      ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
-            "        nextStatesRelated, framesPreserved⟩\n"
+            "        _resultRegistersRelated, nextStatesRelated, framesPreserved⟩\n"
             "    have argumentsRelated := boundaryKnown.2.2.2.2.2.2\n"
             "    have observationRelated : worldRelationalObservationsRelated\n"
             "        staticProofContext\n"
@@ -2790,7 +2809,7 @@ def _lean_acceptance_running_node(
             "  dsimp only at results\n"
             "  rcases results with\n"
             "    ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
-            "      nextStatesRelated, framesPreserved⟩\n"
+            "      _resultRegistersRelated, nextStatesRelated, framesPreserved⟩\n"
             "  have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
             "      (originalEnvironment.result eventIndex originalEvent).state\n"
             "      (candidateEnvironment.result eventIndex candidateEvent).state\n"
@@ -2946,10 +2965,25 @@ def _lean_acceptance_running_node(
             "      originalWrites candidateWrites outputRegisters outputBounds\n"
             "      outputSeparations outputStackWindows outputX87 outputFlags\n"
             "      outputImports outputDynamic\n"
+            "  have returnCodeEqual :\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState\n"
+            "        originalState).registers.eax =\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            "        candidateState).registers.eax := by\n"
+            "    rcases nextStatesRelated with\n"
+            "      ⟨_worldValid, _stackRangesValid, _stackMemory, _importsStatic,\n"
+            "        _importsComplete, _importsMemory, _originalImmutable,\n"
+            "        _candidateImmutable, outputCore, _outputSpecialRegisters⟩\n"
+            "    exact registerRelationsHold_exact_identity\n"
+            "      staticProofContext.originalPe.imageBase\n"
+            "      staticProofContext.candidatePe.imageBase\n"
+            "      staticProofContext.codeMap.entries.toList\n"
+            "      (staticProofContext.relationalValueTargets world)\n"
+            "      terminalInvariant.registerRelations _ _ .eax outputCore.1 (by decide)\n"
             "  simp [originalWorldProgram, candidateWorldProgram,\n"
             "    transitionFromWorldOutcome]\n"
             "  constructor\n"
-            "  · rfl\n"
+            "  · exact ⟨rfl, returnCodeEqual⟩\n"
             "  · exact ⟨rfl, nextStatesRelated⟩\n"
         )
     if step["kind"] == "indirect_jump":
@@ -4063,9 +4097,10 @@ def _write_relational_acceptance_modules(
         "    productInvariantTable.Valid relationalProductGraph := by\n"
         "  unfold ProductInvariantTable.Valid\n  decide\n\n"
         "theorem consoleLaunchValid :\n"
-        "    consoleLaunch.Valid relationalProductGraph productInvariantTable := by\n"
+        "    consoleLaunch.Valid staticProofContext relationalProductGraph\n"
+        "      productInvariantTable := by\n"
         f"  refine ⟨relationalProductGraph.nodes[{root_node_id}],\n"
-        "    (by decide), ?_, ?_, ?_, ?_⟩\n"
+        "    (by decide), ?_, ?_, ?_, ?_, ?_, ?_⟩\n"
         "  all_goals decide\n\n"
         + acceptance_certificate_source
         + "end StageA.GeneratedRelational\n"
