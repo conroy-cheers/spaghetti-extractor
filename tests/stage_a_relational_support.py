@@ -81,6 +81,7 @@ from spaghetti_extractor.stage_a_relational import (
     _synthesize_relational_invariants,
     _validate_relational_module_graph,
     _validate_prepared_relational,
+    _whole_program_acceptance_plan,
     _write_reachable_product_local_certificate,
     stage_a_build_relational,
     stage_a_check_relational_proof,

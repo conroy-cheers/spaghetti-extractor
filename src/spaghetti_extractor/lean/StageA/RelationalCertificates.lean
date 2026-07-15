@@ -100,12 +100,14 @@ def resolvedExternalCallContract? (context : StaticProofContext)
 structure WorldExternalSuspension where
   sourceTargetId : Nat
   siteId : Nat
+  site : ExternalCallSiteContract
   imported : ExternalTarget
   arguments : List Word
   continuationTargetId : Nat
   calls : List Nat
   eventIndex : Nat
   phaseIndex : Nat
+  resumeInvariant : StateInvariant
   event : WorldExternalEvent
   state : MachineState
   world : RelationalWorld
@@ -142,31 +144,37 @@ def resumeWorldExecution (callbacks : List WorldExternalCallbackRuntime)
   | [] => .running targetId state calls eventIndex world
   | _ => .callbackRunning targetId state calls eventIndex world callbacks
 
-def suspendWorldExternalProtocol (sourceTargetId siteId : Nat)
+def suspendWorldExternalProtocol (program : DecodedWorldProgram)
+    (sourceTargetId siteId : Nat)
     (imported : ExternalTarget) (arguments : List Word)
     (continuationTargetId : Nat) (state : MachineState) (calls : List Nat)
     (eventIndex : Nat) (world : RelationalWorld)
     (callbacks : List WorldExternalCallbackRuntime) : WorldExecution :=
-  let event : WorldExternalEvent := {
-    siteId
-    imported
-    arguments
-    state
-    world
-  }
-  .awaitingExternal {
-    sourceTargetId
-    siteId
-    imported
-    arguments
-    continuationTargetId
-    calls
-    eventIndex
-    phaseIndex := 0
-    event
-    state
-    world
-  } callbacks
+  match program.externalCallSites.find? fun site => site.id == siteId with
+  | none => .fault
+  | some site =>
+      let event : WorldExternalEvent := {
+        siteId
+        imported
+        arguments
+        state
+        world
+      }
+      .awaitingExternal {
+        sourceTargetId
+        siteId
+        site
+        imported
+        arguments
+        continuationTargetId
+        calls
+        eventIndex
+        phaseIndex := 0
+        resumeInvariant := site.boundaryInvariant
+        event
+        state
+        world
+      } callbacks
 
 def transitionFromWorldOutcome (program : DecodedWorldProgram)
     (sourceTargetId : Nat) (state : MachineState) (calls : List Nat)
@@ -184,6 +192,7 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                 { next := .awaitingExternal {
                     callback.suspension with
                     phaseIndex := callback.suspension.phaseIndex + 1
+                    resumeInvariant := callback.entry.returnInvariant
                     state
                     world
                   } outerCallbacks,
@@ -226,7 +235,7 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                   { next := .terminated world,
                     observation := some (.external world imported arguments) }
               | .protocol =>
-                  { next := suspendWorldExternalProtocol sourceTargetId siteId imported
+                  { next := suspendWorldExternalProtocol program sourceTargetId siteId imported
                       arguments continuation state calls eventIndex world callbacks,
                     observation := some (.external world imported arguments) }
               | .returns =>
@@ -257,7 +266,7 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                       { next := .terminated world,
                         observation := some (.external world imported arguments) }
                   | .protocol =>
-                      { next := suspendWorldExternalProtocol sourceTargetId siteId imported
+                      { next := suspendWorldExternalProtocol program sourceTargetId siteId imported
                           arguments continuation (normalizeImportReturnSlotState state) tail
                           eventIndex world callbacks,
                         observation := some (.external world imported arguments) }
@@ -305,7 +314,7 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                           { next := .terminated world,
                             observation := some (.external world imported arguments) }
                       | .protocol =>
-                          { next := suspendWorldExternalProtocol sourceTargetId siteId imported
+                          { next := suspendWorldExternalProtocol program sourceTargetId siteId imported
                               arguments continuation (normalizeImportReturnSlotState state)
                               calls eventIndex world callbacks,
                             observation := some (.external world imported arguments) }
@@ -349,7 +358,7 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                               { next := .terminated world,
                                 observation := some (.external world imported arguments) }
                           | .protocol =>
-                              { next := suspendWorldExternalProtocol sourceTargetId siteId imported
+                              { next := suspendWorldExternalProtocol program sourceTargetId siteId imported
                                   arguments continuation (normalizeImportReturnSlotState state)
                                   tail eventIndex world callbacks,
                                 observation := some (.external world imported arguments) }
@@ -673,6 +682,338 @@ def ProductInvariantTable.Valid (graph : RelationalProductGraph)
     (invariants : ProductInvariantTable) : Prop :=
   invariants.nodeInvariants.size = graph.nodes.size
 
+def WorldExternalSuspensionsRelated (context : StaticProofContext)
+    (sites : List ExternalCallSiteContract)
+    (original candidate : WorldExternalSuspension) : Prop :=
+  original.sourceTargetId = candidate.sourceTargetId ∧
+    original.siteId = candidate.siteId ∧
+    original.site = candidate.site ∧
+    original.imported = candidate.imported ∧
+    externalCallArgumentsRelated context original.world original.arguments
+      candidate.arguments = true ∧
+    original.continuationTargetId = candidate.continuationTargetId ∧
+    original.calls = candidate.calls ∧
+    original.eventIndex = candidate.eventIndex ∧
+    original.phaseIndex = candidate.phaseIndex ∧
+    original.resumeInvariant = candidate.resumeInvariant ∧
+    original.world = candidate.world ∧
+    StateRel context original.world original.resumeInvariant
+      original.state candidate.state ∧
+    ∃ site contract,
+      site = original.site ∧ site ∈ sites ∧ site.id = original.siteId ∧
+        site.sourceTargetId = original.sourceTargetId ∧
+        site.continuationTargetId = original.continuationTargetId ∧
+        machineImportCallContractById? context site.machineContractId = some contract ∧
+        contract.imported = original.imported ∧ contract.disposition = .protocol ∧
+        ExternalCallBoundaryRelated context site contract
+          original.event candidate.event ∧
+        (original.phaseIndex = 0 →
+          original.resumeInvariant = site.boundaryInvariant ∧
+            original.state = original.event.state ∧
+            candidate.state = candidate.event.state ∧
+            original.world = original.event.world ∧
+            candidate.world = candidate.event.world)
+
+theorem WorldExternalSuspensionsRelated.afterCallbackReturn
+    (context : StaticProofContext) (sites : List ExternalCallSiteContract)
+    (original candidate : WorldExternalCallbackRuntime)
+    (world : RelationalWorld) (originalState candidateState : MachineState)
+    (related : WorldExternalSuspensionsRelated context sites
+      original.suspension candidate.suspension)
+    (returnInvariant : original.entry.returnInvariant =
+      candidate.entry.returnInvariant)
+    (argumentsRelated : externalCallArgumentsRelated context world
+      original.suspension.arguments candidate.suspension.arguments = true)
+    (statesRelated : StateRel context world original.entry.returnInvariant
+      originalState candidateState) :
+    WorldExternalSuspensionsRelated context sites
+      { original.suspension with
+          phaseIndex := original.suspension.phaseIndex + 1
+          resumeInvariant := original.entry.returnInvariant
+          state := originalState
+          world }
+      { candidate.suspension with
+          phaseIndex := candidate.suspension.phaseIndex + 1
+          resumeInvariant := candidate.entry.returnInvariant
+          state := candidateState
+          world } := by
+  rcases related with
+    ⟨sourceEqual, siteIdEqual, siteEqual, importEqual, argumentsEqual,
+      continuationEqual, callsEqual, eventEqual, phaseEqual, _resumeEqual,
+      _worldEqual, _oldStatesRelated, site, contract, siteIdentity, siteMember,
+      siteId, sourceTarget, continuationTarget, resolved, imported, disposition,
+      boundary, _phaseZero⟩
+  refine ⟨sourceEqual, siteIdEqual, siteEqual, importEqual, argumentsRelated,
+    continuationEqual, callsEqual, eventEqual, ?_, returnInvariant, rfl,
+    statesRelated, site, contract, siteIdentity, siteMember, siteId, sourceTarget,
+    continuationTarget, resolved, imported, disposition, boundary, ?_⟩
+  · exact congrArg (fun phase => phase + 1) phaseEqual
+  · intro phaseZero
+    exfalso
+    exact Nat.add_one_ne_zero original.suspension.phaseIndex phaseZero
+
+/-- Finite, checked product nodes that may execute while an external callback is active.
+
+The profile includes callback entries and their callback-mode internal continuations. It is
+part of the proof contract rather than inferred by declaring every reachable node eligible.
+Protocol refinement must reject callback actions and resumptions outside this inventory. -/
+structure ProtocolCallbackControlState where
+  nodeId : Nat
+  activeFrameOffset : ReturnSlotOffsetPair
+  returnInvariant : StateInvariant
+  outerFrameTransferRules : List ReturnSlotTransferRule := []
+deriving Repr, DecidableEq
+
+structure ProtocolCallbackTargetProfile where
+  states : List ProtocolCallbackControlState := []
+deriving Repr, DecidableEq
+
+def ProtocolCallbackTargetProfile.contains
+    (profile : ProtocolCallbackTargetProfile) (nodeId : Nat) : Bool :=
+  profile.states.any fun state => state.nodeId == nodeId
+
+def ProtocolCallbackTargetProfile.Allows
+    (profile : ProtocolCallbackTargetProfile) (nodeId : Nat)
+    (activeFrameOffset : ReturnSlotOffsetPair)
+    (returnInvariant : StateInvariant) : Bool :=
+  profile.states.any fun state =>
+    state.nodeId == nodeId && state.activeFrameOffset == activeFrameOffset &&
+      state.returnInvariant == returnInvariant
+
+def ProtocolCallbackTargetProfile.transferRules?
+    (profile : ProtocolCallbackTargetProfile) (nodeId : Nat) :
+    Option (List ReturnSlotTransferRule) := do
+  let state <- profile.states.find? fun state => state.nodeId == nodeId
+  pure state.outerFrameTransferRules
+
+def ProtocolCallbackTargetProfile.Valid
+    (profile : ProtocolCallbackTargetProfile)
+    (graph : RelationalProductGraph)
+    (reachability : RelationalProductReachabilityEvidence) : Bool :=
+  profile.states.all fun state =>
+    (profile.states.filter fun other => other.nodeId == state.nodeId).length == 1 &&
+      (graph.getNode? state.nodeId).isSome && reachability.contains state.nodeId &&
+      state.outerFrameTransferRules.all fun rule =>
+        (state.outerFrameTransferRules.filter fun other =>
+          other.originalSourceRegister == rule.originalSourceRegister &&
+            other.candidateSourceRegister == rule.candidateSourceRegister).length == 1
+
+def WorldExternalCallbackRuntimePairRelated (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract)
+    (original candidate : WorldExternalCallbackRuntime) : Prop :=
+  WorldExternalSuspensionsRelated context sites
+      original.suspension candidate.suspension ∧
+    ExternalCallbackActionsRelated context original.entry.entryInvariant
+      original.suspension.world original.suspension.siteId
+      original.suspension.eventIndex original.suspension.phaseIndex
+      original.suspension.continuationTargetId original.entry candidate.entry ∧
+    ∃ nodeId node,
+      graph.getNode? nodeId = some node ∧
+        callbackTargets.contains nodeId = true ∧
+        callbackTargets.Allows nodeId ReturnSlotOffsetPair.zero
+          original.entry.returnInvariant = true ∧
+        node.targetId = original.entry.targetId ∧
+        reachability.contains nodeId = true ∧
+        invariants.nodeInvariants[nodeId]? = some original.entry.entryInvariant
+
+def WorldExternalCallbackFramesHold (context : StaticProofContext)
+    (world : RelationalWorld) (originalState candidateState : MachineState) :
+    List WorldExternalCallbackRuntime -> List WorldExternalCallbackRuntime ->
+      List ReturnSlotOffsetPair -> Prop
+  | [], [], [] => True
+  | original :: originals, candidate :: candidates, offset :: offsets =>
+      ∃ callback : RegisteredCallbackPair,
+        original.entry.targetId = callback.targetId ∧
+          candidate.entry.targetId = callback.targetId ∧
+          let frame := RelationalExternalCallbackFrame.ofActions
+            original.suspension.siteId original.suspension.eventIndex
+            original.suspension.phaseIndex original.suspension.continuationTargetId
+            callback original.entry candidate.entry
+          frame.valid context world = true ∧
+            frame.memoryHolds originalState.memory candidateState.memory ∧
+            externalCallArgumentsRelated context world
+                original.suspension.arguments candidate.suspension.arguments = true ∧
+            offset.holdsRuntimeFrame (.externalCallback frame)
+              originalState.registers candidateState.registers ∧
+            WorldExternalCallbackFramesHold context world originalState candidateState
+              originals candidates offsets
+  | _, _, _ => False
+
+/-- Preserve an arbitrary nested callback-frame stack through one internal
+machine step. Register movement is certified by a finite affine rule set and
+memory preservation is explicit; neither callback depth nor concrete addresses
+are baked into the theorem. -/
+theorem WorldExternalCallbackFramesHold.afterInternal
+    (context : StaticProofContext) (world : RelationalWorld)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (rules : List ReturnSlotTransferRule)
+    (originalState candidateState : MachineState)
+    (originalCallbacks candidateCallbacks : List WorldExternalCallbackRuntime)
+    (sourceOffsets targetOffsets : List ReturnSlotOffsetPair)
+    (checked : rules.all fun rule =>
+      rule.checked originalBehavior candidateBehavior)
+    (transferred : applyReturnSlotTransferRulesToList rules sourceOffsets =
+      some targetOffsets)
+    (originalMemory :
+      ((originalBehavior.eval originalState).nextMachineState originalState).memory =
+        originalState.memory)
+    (candidateMemory :
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory =
+        candidateState.memory)
+    (holds : WorldExternalCallbackFramesHold context world originalState candidateState
+      originalCallbacks candidateCallbacks sourceOffsets) :
+    WorldExternalCallbackFramesHold context world
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState)
+      originalCallbacks candidateCallbacks targetOffsets := by
+  induction originalCallbacks generalizing candidateCallbacks sourceOffsets targetOffsets with
+  | nil =>
+      cases candidateCallbacks with
+      | nil =>
+          cases sourceOffsets with
+          | nil =>
+              simp only [applyReturnSlotTransferRulesToList,
+                Option.some.injEq] at transferred
+              subst targetOffsets
+              simp [WorldExternalCallbackFramesHold]
+          | cons source sources =>
+              simp [WorldExternalCallbackFramesHold] at holds
+      | cons candidate candidates =>
+          simp [WorldExternalCallbackFramesHold] at holds
+  | cons original originals ih =>
+      cases candidateCallbacks with
+      | nil => simp [WorldExternalCallbackFramesHold] at holds
+      | cons candidate candidates =>
+          cases sourceOffsets with
+          | nil => simp [WorldExternalCallbackFramesHold] at holds
+          | cons source sources =>
+              simp only [applyReturnSlotTransferRulesToList] at transferred
+              cases ruleResult : applyReturnSlotTransferRules rules source with
+              | none => simp [ruleResult] at transferred
+              | some target =>
+                  cases tailResult : applyReturnSlotTransferRulesToList rules sources with
+                  | none => simp [ruleResult, tailResult] at transferred
+                  | some targets =>
+                      rw [ruleResult, tailResult] at transferred
+                      simp at transferred
+                      subst targetOffsets
+                      simp only [WorldExternalCallbackFramesHold] at holds ⊢
+                      rcases holds with
+                        ⟨callback, originalTarget, candidateTarget, frameValid,
+                          frameMemory, argumentsHold, sourceHolds, tailHolds⟩
+                      refine ⟨callback, originalTarget, candidateTarget, frameValid,
+                        ?_, argumentsHold, ?_, ?_⟩
+                      · simpa [originalMemory, candidateMemory] using frameMemory
+                      · simpa [RelationalBehavior.nextMachineState] using
+                          applyReturnSlotTransferRules_holdsRuntimeFrame_of_checked
+                            originalBehavior candidateBehavior rules source target
+                            (.externalCallback
+                              (RelationalExternalCallbackFrame.ofActions
+                                original.suspension.siteId
+                                original.suspension.eventIndex
+                                original.suspension.phaseIndex
+                                original.suspension.continuationTargetId callback
+                                original.entry candidate.entry))
+                            originalState candidateState checked ruleResult sourceHolds
+                      · exact ih candidates sources targets tailResult tailHolds
+
+def WorldExternalCallbackContinuationFramesHold
+    (context : StaticProofContext)
+    (callbackTargets : ProtocolCallbackTargetProfile) (nodeId : Nat)
+    (world : RelationalWorld) (originalState candidateState : MachineState) :
+    List WorldExternalCallbackRuntime -> List WorldExternalCallbackRuntime -> Prop
+  | [], [] => True
+  | original :: originals, candidate :: candidates =>
+      ∃ activeOffset outerOffsets transferredOuterOffsets transferRules,
+        callbackTargets.Allows nodeId activeOffset original.entry.returnInvariant = true ∧
+          callbackTargets.transferRules? nodeId = some transferRules ∧
+          applyReturnSlotTransferRulesToList transferRules outerOffsets =
+            some transferredOuterOffsets ∧
+          WorldExternalCallbackFramesHold context world originalState candidateState
+            (original :: originals) (candidate :: candidates)
+            (activeOffset :: outerOffsets)
+  | _, _ => False
+
+def WorldExternalCallbackRuntimesRelated (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract) :
+    List WorldExternalCallbackRuntime -> List WorldExternalCallbackRuntime -> Prop
+  | [], [] => True
+  | original :: originals, candidate :: candidates =>
+      WorldExternalCallbackRuntimePairRelated context graph invariants reachability
+          callbackTargets sites original candidate ∧
+        WorldExternalCallbackRuntimesRelated context graph invariants reachability
+          callbackTargets sites originals candidates
+  | _, _ => False
+
+theorem WorldExternalCallbackRuntimesRelated.length_eq
+    (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract)
+    (original candidate : List WorldExternalCallbackRuntime)
+    (related : WorldExternalCallbackRuntimesRelated context graph invariants
+      reachability callbackTargets sites original candidate) :
+    original.length = candidate.length := by
+  induction original generalizing candidate with
+  | nil =>
+      cases candidate <;>
+        simp_all [WorldExternalCallbackRuntimesRelated]
+  | cons runtime runtimes ih =>
+      cases candidate with
+      | nil => simp [WorldExternalCallbackRuntimesRelated] at related
+      | cons candidate candidates =>
+          simp only [WorldExternalCallbackRuntimesRelated] at related
+          simpa using congrArg Nat.succ (ih candidates related.2)
+
+def externalCallSitesExcludeProtocol (context : StaticProofContext)
+    (sites : List ExternalCallSiteContract) : Bool :=
+  sites.all fun site =>
+    match machineImportCallContractById? context site.machineContractId with
+    | some contract => contract.disposition != .protocol
+    | none => false
+
+theorem WorldExternalSuspensionsRelated.impossible_of_no_protocol_sites
+    (context : StaticProofContext) (sites : List ExternalCallSiteContract)
+    (original candidate : WorldExternalSuspension)
+    (related : WorldExternalSuspensionsRelated context sites original candidate)
+    (noProtocol : externalCallSitesExcludeProtocol context sites = true) : False := by
+  rcases related with
+    ⟨_, _, _, _, _, _, _, _, _, _, _, _, site, contract, _, member, _, _, _,
+      resolved, _, disposition, _, _⟩
+  simp only [externalCallSitesExcludeProtocol] at noProtocol
+  have siteChecked := List.all_eq_true.mp noProtocol site member
+  rw [resolved] at siteChecked
+  change (contract.disposition != .protocol) = true at siteChecked
+  rw [disposition] at siteChecked
+  simp at siteChecked
+
+theorem WorldExternalCallbackRuntimesRelated.impossible_of_no_protocol_sites
+    (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract)
+    (original candidate : List WorldExternalCallbackRuntime)
+    (nonempty : original ≠ [])
+    (related : WorldExternalCallbackRuntimesRelated context graph invariants
+      reachability callbackTargets sites original candidate)
+    (noProtocol : externalCallSitesExcludeProtocol context sites = true) : False := by
+  cases original with
+  | nil => exact nonempty rfl
+  | cons original originals =>
+      cases candidate with
+      | nil => simp [WorldExternalCallbackRuntimesRelated] at related
+      | cons candidate candidates =>
+          exact WorldExternalSuspensionsRelated.impossible_of_no_protocol_sites
+            context sites original.suspension candidate.suspension related.1.1 noProtocol
+
 def RegionMatchesProductNode (context : StaticProofContext)
     (graph : RelationalProductGraph) (regions : List RegionRelation)
     (nodeId : Nat) : Prop :=
@@ -694,7 +1035,9 @@ def RegionsMatchProductGraph (context : StaticProofContext)
 def WorldExecutionsRelated (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
-    (control : ProductControlProfile) :
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract) :
     WorldExecution -> WorldExecution -> Prop
   | .running originalTarget originalState originalCalls originalEventIndex originalWorld,
       .running candidateTarget candidateState candidateCalls candidateEventIndex
@@ -717,8 +1060,248 @@ def WorldExecutionsRelated (context : StaticProofContext)
           originalState candidateState
   | .terminated originalWorld, .terminated candidateWorld =>
       originalWorld = candidateWorld
+  | .awaitingExternal originalSuspension originalCallbacks,
+      .awaitingExternal candidateSuspension candidateCallbacks =>
+      WorldExternalSuspensionsRelated context sites originalSuspension
+          candidateSuspension ∧
+        WorldExternalCallbackRuntimesRelated context graph invariants reachability
+          callbackTargets sites originalCallbacks candidateCallbacks ∧
+        ∃ callbackFrameOffsets,
+          WorldExternalCallbackFramesHold context originalSuspension.world
+            originalSuspension.state candidateSuspension.state originalCallbacks
+            candidateCallbacks callbackFrameOffsets
+  | .callbackRunning originalTarget originalState originalCalls originalEventIndex
+      originalWorld originalCallbacks,
+      .callbackRunning candidateTarget candidateState candidateCalls candidateEventIndex
+      candidateWorld candidateCallbacks =>
+      originalTarget = candidateTarget ∧ originalCalls = candidateCalls ∧
+        originalEventIndex = candidateEventIndex ∧ originalWorld = candidateWorld ∧
+        originalCallbacks ≠ [] ∧
+        exists nodeId node invariant frames frameOffsets,
+          graph.getNode? nodeId = some node ∧
+            callbackTargets.contains nodeId = true ∧
+            node.targetId = originalTarget ∧
+            reachability.contains nodeId = true ∧
+            invariants.nodeInvariants[nodeId]? = some invariant ∧
+            control.Allows nodeId originalCalls frameOffsets = true ∧
+            RelationalRuntimeCallStackHolds context originalState candidateState
+              frames originalCalls frameOffsets ∧
+            RelationalRuntimeCallTargetsReachable graph reachability originalCalls ∧
+            StateRel context originalWorld invariant originalState candidateState ∧
+            WorldExternalCallbackRuntimesRelated context graph invariants reachability
+              callbackTargets sites originalCallbacks candidateCallbacks ∧
+            WorldExternalCallbackContinuationFramesHold context callbackTargets nodeId
+              originalWorld originalState candidateState originalCallbacks candidateCallbacks
   | .fault, .fault => True
   | _, _ => False
+
+def WorldExternalProtocolActionsRelated (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract)
+    (originalSuspension candidateSuspension : WorldExternalSuspension)
+    (originalCallbacks candidateCallbacks : List WorldExternalCallbackRuntime) :
+    WorldExternalProtocolAction -> WorldExternalProtocolAction -> Prop
+  | .returned originalResult, .returned candidateResult =>
+      originalResult.world = candidateResult.world ∧
+        ∃ nodeId node frames frameOffsets,
+          graph.getNode? nodeId = some node ∧
+            (originalCallbacks = [] ∨ callbackTargets.contains nodeId = true) ∧
+            node.targetId = originalSuspension.continuationTargetId ∧
+            reachability.contains nodeId = true ∧
+            invariants.nodeInvariants[nodeId]? =
+              some originalSuspension.site.targetInvariant ∧
+            control.Allows nodeId originalSuspension.calls frameOffsets = true ∧
+            RelationalRuntimeCallStackHolds context originalResult.state
+              candidateResult.state frames originalSuspension.calls frameOffsets ∧
+            RelationalRuntimeCallTargetsReachable graph reachability
+              originalSuspension.calls ∧
+            StateRel context originalResult.world
+              originalSuspension.site.targetInvariant originalResult.state
+              candidateResult.state ∧
+            WorldExternalCallbackRuntimesRelated context graph invariants reachability
+              callbackTargets sites originalCallbacks candidateCallbacks ∧
+            WorldExternalCallbackContinuationFramesHold context callbackTargets nodeId
+              originalResult.world originalResult.state candidateResult.state
+              originalCallbacks candidateCallbacks
+  | .callback originalEntry, .callback candidateEntry =>
+      ExternalCallbackActionsRelated context originalEntry.entryInvariant
+          originalSuspension.world originalSuspension.siteId
+          originalSuspension.eventIndex originalSuspension.phaseIndex
+          originalSuspension.continuationTargetId originalEntry candidateEntry ∧
+        ∃ nodeId node,
+          graph.getNode? nodeId = some node ∧
+            callbackTargets.contains nodeId = true ∧
+            callbackTargets.Allows nodeId ReturnSlotOffsetPair.zero
+              originalEntry.returnInvariant = true ∧
+            node.targetId = originalEntry.targetId ∧
+            reachability.contains nodeId = true ∧
+            invariants.nodeInvariants[nodeId]? = some originalEntry.entryInvariant ∧
+            control.Allows nodeId [] [] = true ∧
+            WorldExternalCallbackContinuationFramesHold context callbackTargets nodeId
+              originalEntry.world originalEntry.state candidateEntry.state
+              ({ suspension := originalSuspension, entry := originalEntry } ::
+                originalCallbacks)
+              ({ suspension := candidateSuspension, entry := candidateEntry } ::
+                candidateCallbacks)
+  | .terminated originalWorld, .terminated candidateWorld =>
+      originalWorld = candidateWorld
+  | _, _ => False
+
+def WorldExternalProtocolEnvironmentsRefine (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract)
+    (original candidate : WorldExternalProtocolEnvironment) : Prop :=
+  ∀ originalSuspension candidateSuspension originalCallbacks candidateCallbacks
+      callbackFrameOffsets,
+    WorldExternalSuspensionsRelated context sites originalSuspension
+        candidateSuspension →
+      WorldExternalCallbackRuntimesRelated context graph invariants reachability
+        callbackTargets sites originalCallbacks candidateCallbacks →
+      WorldExternalCallbackFramesHold context originalSuspension.world
+        originalSuspension.state candidateSuspension.state originalCallbacks
+        candidateCallbacks callbackFrameOffsets →
+      WorldExternalProtocolActionsRelated context graph invariants reachability control
+        callbackTargets sites originalSuspension candidateSuspension originalCallbacks
+        candidateCallbacks
+        (original.action originalSuspension.request)
+        (candidate.action candidateSuspension.request)
+
+theorem WorldExternalProtocolEnvironmentsRefine.of_no_protocol_sites
+    (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract)
+    (originalProtocol candidateProtocol : WorldExternalProtocolEnvironment)
+    (noProtocol : externalCallSitesExcludeProtocol context sites = true) :
+    WorldExternalProtocolEnvironmentsRefine context graph invariants reachability
+      control callbackTargets sites originalProtocol candidateProtocol := by
+  intro originalSuspension candidateSuspension originalCallbacks candidateCallbacks
+    callbackFrameOffsets suspensionsRelated callbacksRelated callbackFramesHold
+  exact False.elim
+    (WorldExternalSuspensionsRelated.impossible_of_no_protocol_sites context sites
+      originalSuspension candidateSuspension suspensionsRelated noProtocol)
+
+theorem stepWorldExternalSuspension_related (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract)
+    (original candidate : DecodedWorldProgram)
+    (originalSuspension candidateSuspension : WorldExternalSuspension)
+    (originalCallbacks candidateCallbacks : List WorldExternalCallbackRuntime)
+    (suspensionsRelated : WorldExternalSuspensionsRelated context sites
+      originalSuspension candidateSuspension)
+    (callbacksRelated : WorldExternalCallbackRuntimesRelated context graph invariants
+      reachability callbackTargets sites originalCallbacks candidateCallbacks)
+    (callbackFrameOffsets : List ReturnSlotOffsetPair)
+    (callbackFramesHold : WorldExternalCallbackFramesHold context
+      originalSuspension.world originalSuspension.state candidateSuspension.state
+      originalCallbacks candidateCallbacks callbackFrameOffsets)
+    (actionsRelated : WorldExternalProtocolActionsRelated context graph invariants
+      reachability control callbackTargets sites originalSuspension candidateSuspension
+      originalCallbacks candidateCallbacks
+      (original.protocolEnvironment.action originalSuspension.request)
+      (candidate.protocolEnvironment.action candidateSuspension.request)) :
+    worldRelationalObservationsRelated context
+        (stepWorldExternalSuspension original originalSuspension
+          originalCallbacks).observation
+        (stepWorldExternalSuspension candidate candidateSuspension
+          candidateCallbacks).observation ∧
+      WorldExecutionsRelated context graph invariants reachability control callbackTargets sites
+        (stepWorldExternalSuspension original originalSuspension
+          originalCallbacks).next
+        (stepWorldExternalSuspension candidate candidateSuspension
+          candidateCallbacks).next := by
+  have suspensionRelation := suspensionsRelated
+  rcases suspensionsRelated with
+    ⟨_, _, _, _, _, continuationEqual, callsEqual, eventEqual, _, _, _, _, _⟩
+  cases originalAction : original.protocolEnvironment.action originalSuspension.request <;>
+    cases candidateAction : candidate.protocolEnvironment.action candidateSuspension.request
+  case returned.returned originalResult candidateResult =>
+      simp only [originalAction, candidateAction, WorldExternalProtocolActionsRelated]
+        at actionsRelated
+      rcases actionsRelated with
+        ⟨resultWorldEqual, nodeId, node, frames, frameOffsets, nodeFound,
+          callbackContinuationAllowed, targetFound, reachable, invariantFound, controlAllowed,
+          stackHolds,
+          stackTargetsReachable, statesRelated, resultCallbacksRelated,
+          resultCallbackFramesHold⟩
+      unfold stepWorldExternalSuspension
+      rw [originalAction, candidateAction]
+      simp only
+      cases originalCallbacks with
+      | nil =>
+          cases candidateCallbacks with
+          | nil =>
+              refine ⟨True.intro, continuationEqual, callsEqual, ?_,
+                resultWorldEqual, nodeId, node, originalSuspension.site.targetInvariant,
+                frames, frameOffsets, nodeFound, targetFound, reachable, invariantFound,
+                controlAllowed, stackHolds, stackTargetsReachable, statesRelated⟩
+              exact congrArg (fun index => index + 1) eventEqual
+          | cons candidateCallback candidateCallbacks =>
+              simp [WorldExternalCallbackRuntimesRelated] at callbacksRelated
+      | cons originalCallback originalCallbacks =>
+          have callbackTargetAllowed : callbackTargets.contains nodeId = true := by
+            rcases callbackContinuationAllowed with impossible | allowed
+            · simp at impossible
+            · exact allowed
+          cases candidateCallbacks with
+          | nil =>
+              simp [WorldExternalCallbackRuntimesRelated] at callbacksRelated
+          | cons candidateCallback candidateCallbacks =>
+              refine ⟨True.intro, continuationEqual, callsEqual, ?_,
+                resultWorldEqual, (by simp), nodeId, node,
+                originalSuspension.site.targetInvariant, frames, frameOffsets, nodeFound,
+                callbackTargetAllowed, targetFound, reachable, invariantFound,
+                controlAllowed, stackHolds,
+                stackTargetsReachable, statesRelated, resultCallbacksRelated,
+                resultCallbackFramesHold⟩
+              exact congrArg (fun index => index + 1) eventEqual
+  case callback.callback originalEntry candidateEntry =>
+      simp only [originalAction, candidateAction, WorldExternalProtocolActionsRelated]
+        at actionsRelated
+      rcases actionsRelated with
+        ⟨entryRelated, nodeId, node, nodeFound, callbackTargetAllowed,
+          callbackControlAllowed, targetFound, reachable, invariantFound, controlAllowed,
+          callbackContinuationFramesHold⟩
+      have entryRelation := entryRelated
+      rcases entryRelated with
+        ⟨targetEqual, originalInvariant, candidateInvariant, _, _, _, _, entryWorldEqual,
+          callback, originalCallbackTarget, callbackEntry⟩
+      unfold stepWorldExternalSuspension
+      rw [originalAction, candidateAction]
+      simp only
+      refine ⟨⟨entryWorldEqual, targetEqual⟩, targetEqual, rfl, eventEqual,
+        entryWorldEqual, (by simp), nodeId, node, originalEntry.entryInvariant, [], [],
+        nodeFound, callbackTargetAllowed, targetFound, reachable, invariantFound,
+        controlAllowed, ?_, ?_,
+        callbackEntry.2.2.2.2.2.2.2.2.2, ?_, ?_⟩
+      · simp [RelationalRuntimeCallStackHolds]
+      · simp [RelationalRuntimeCallTargetsReachable]
+      · simp only [WorldExternalCallbackRuntimesRelated]
+        exact ⟨⟨suspensionRelation, entryRelation,
+          ⟨nodeId, node, nodeFound, callbackTargetAllowed, callbackControlAllowed,
+            targetFound, reachable, invariantFound⟩⟩,
+          callbacksRelated⟩
+      · exact callbackContinuationFramesHold
+  case terminated.terminated originalWorld candidateWorld =>
+      simp only [originalAction, candidateAction, WorldExternalProtocolActionsRelated]
+        at actionsRelated
+      unfold stepWorldExternalSuspension
+      rw [originalAction, candidateAction]
+      exact ⟨True.intro, actionsRelated⟩
+  all_goals
+    simp [originalAction, candidateAction, WorldExternalProtocolActionsRelated]
+      at actionsRelated
 
 def RelationalInternalExecutionEdgeRefined (context : StaticProofContext)
     (graph : RelationalProductGraph) (regions : List RegionRelation)
@@ -903,14 +1486,17 @@ def ProductStepRefinement (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
     (original candidate : DecodedWorldProgram) : Prop :=
   forall originalExecution candidateExecution,
     WorldExecutionsRelated context graph invariants reachability control
+      callbackTargets original.externalCallSites
       originalExecution candidateExecution ->
     worldRelationalObservationsRelated context
         (original.transitionSystem.step originalExecution).observation
         (candidate.transitionSystem.step candidateExecution).observation ∧
       WorldExecutionsRelated context graph invariants reachability control
+        callbackTargets original.externalCallSites
         (original.transitionSystem.step originalExecution).next
         (candidate.transitionSystem.step candidateExecution).next
 
@@ -918,6 +1504,7 @@ def RunningProductNodeStepRefined (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
     (original candidate : DecodedWorldProgram) (nodeId : Nat) : Prop :=
   match graph.getNode? nodeId, invariants.nodeInvariants[nodeId]? with
   | some node, some invariant =>
@@ -933,46 +1520,131 @@ def RunningProductNodeStepRefined (context : StaticProofContext)
             (candidate.transitionSystem.step
               (.running node.targetId candidateState calls eventIndex world)).observation ∧
           WorldExecutionsRelated context graph invariants reachability control
+            callbackTargets original.externalCallSites
             (original.transitionSystem.step
               (.running node.targetId originalState calls eventIndex world)).next
             (candidate.transitionSystem.step
               (.running node.targetId candidateState calls eventIndex world)).next
   | _, _ => False
 
+def CallbackRunningProductNodeStepRefined (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (original candidate : DecodedWorldProgram) (nodeId : Nat) : Prop :=
+  match graph.getNode? nodeId, invariants.nodeInvariants[nodeId]? with
+  | some node, some invariant =>
+      ∀ frames calls frameOffsets eventIndex world originalState candidateState
+          originalCallbacks candidateCallbacks,
+        control.Allows nodeId calls frameOffsets = true →
+        RelationalRuntimeCallStackHolds context originalState candidateState
+          frames calls frameOffsets →
+        RelationalRuntimeCallTargetsReachable graph reachability calls →
+        StateRel context world invariant originalState candidateState →
+        originalCallbacks ≠ [] →
+        WorldExternalCallbackRuntimesRelated context graph invariants reachability
+          callbackTargets original.externalCallSites originalCallbacks candidateCallbacks →
+        WorldExternalCallbackContinuationFramesHold context callbackTargets nodeId world
+          originalState candidateState originalCallbacks candidateCallbacks →
+        worldRelationalObservationsRelated context
+            (original.transitionSystem.step
+              (.callbackRunning node.targetId originalState calls eventIndex world
+                originalCallbacks)).observation
+            (candidate.transitionSystem.step
+              (.callbackRunning node.targetId candidateState calls eventIndex world
+                candidateCallbacks)).observation ∧
+          WorldExecutionsRelated context graph invariants reachability control
+            callbackTargets original.externalCallSites
+            (original.transitionSystem.step
+              (.callbackRunning node.targetId originalState calls eventIndex world
+                originalCallbacks)).next
+            (candidate.transitionSystem.step
+              (.callbackRunning node.targetId candidateState calls eventIndex world
+                candidateCallbacks)).next
+  | _, _ => False
+
 def ReachableRunningProductNodesRefined (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
     (original candidate : DecodedWorldProgram) : Prop :=
   forall nodeId, nodeId < graph.nodes.size ->
     reachability.contains nodeId = true ->
     RunningProductNodeStepRefined context graph invariants reachability control
-      original candidate nodeId
+      callbackTargets original candidate nodeId
+
+def ReachableCallbackRunningProductNodesRefined (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (original candidate : DecodedWorldProgram) : Prop :=
+  ∀ nodeId, nodeId < graph.nodes.size →
+    callbackTargets.contains nodeId = true →
+    CallbackRunningProductNodeStepRefined context graph invariants reachability control
+      callbackTargets original candidate nodeId
+
+theorem reachableCallbackRunningProductNodesRefined_of_no_protocol_sites
+    (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (original candidate : DecodedWorldProgram)
+    (invariantTableValid : invariants.Valid graph)
+    (noProtocol : externalCallSitesExcludeProtocol context
+      original.externalCallSites = true) :
+    ReachableCallbackRunningProductNodesRefined context graph invariants reachability
+      control callbackTargets original candidate := by
+  intro nodeId nodeBefore callbackTargetAllowed
+  have invariantBefore : nodeId < invariants.nodeInvariants.size := by
+    rw [invariantTableValid]
+    exact nodeBefore
+  let node := graph.nodes[nodeId]
+  let invariant := invariants.nodeInvariants[nodeId]
+  have nodeFound : graph.getNode? nodeId = some node := by
+    simp [RelationalProductGraph.getNode?, node, nodeBefore]
+  have invariantFound : invariants.nodeInvariants[nodeId]? = some invariant := by
+    simp [invariant, invariantBefore]
+  unfold CallbackRunningProductNodeStepRefined
+  rw [nodeFound, invariantFound]
+  intro frames calls frameOffsets eventIndex world originalState candidateState
+    originalCallbacks candidateCallbacks controlAllowed stackHolds
+    stackTargetsReachable statesRelated callbacksNonempty callbacksRelated
+    callbackFramesHold
+  exact False.elim
+    (WorldExternalCallbackRuntimesRelated.impossible_of_no_protocol_sites context
+      graph invariants reachability callbackTargets original.externalCallSites
+      originalCallbacks candidateCallbacks callbacksNonempty callbacksRelated noProtocol)
 
 def AllListedRunningProductNodesRefined (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
     (original candidate : DecodedWorldProgram) : List Nat -> Prop
   | [] => True
   | nodeId :: nodeIds =>
       RunningProductNodeStepRefined context graph invariants reachability control
-          original candidate nodeId ∧
+          callbackTargets original candidate nodeId ∧
         AllListedRunningProductNodesRefined context graph invariants reachability control
-          original candidate nodeIds
+          callbackTargets original candidate nodeIds
 
 theorem allListedRunningProductNodesRefined_append
     (context : StaticProofContext) (graph : RelationalProductGraph)
     (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
     (original candidate : DecodedWorldProgram) (left right : List Nat)
     (leftRefined : AllListedRunningProductNodesRefined context graph invariants
-      reachability control original candidate left)
+      reachability control callbackTargets original candidate left)
     (rightRefined : AllListedRunningProductNodesRefined context graph invariants
-      reachability control original candidate right) :
+      reachability control callbackTargets original candidate right) :
     AllListedRunningProductNodesRefined context graph invariants reachability control
-      original candidate (left ++ right) := by
+      callbackTargets original candidate (left ++ right) := by
   induction left with
   | nil => exact rightRefined
   | cons nodeId nodeIds ih =>
@@ -983,12 +1655,13 @@ theorem allListedRunningProductNodesRefined_of_mem
     (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
     (original candidate : DecodedWorldProgram) (nodeIds : List Nat)
     (listed : AllListedRunningProductNodesRefined context graph invariants
-      reachability control original candidate nodeIds) :
+      reachability control callbackTargets original candidate nodeIds) :
     forall nodeId, nodeId ∈ nodeIds ->
       RunningProductNodeStepRefined context graph invariants reachability control
-        original candidate nodeId := by
+        callbackTargets original candidate nodeId := by
   induction nodeIds with
   | nil => simp
   | cons head tail ih =>
@@ -999,23 +1672,81 @@ theorem allListedRunningProductNodesRefined_of_mem
       | inl same => simpa [same] using headRefined
       | inr inTail => exact ih tailRefined nodeId inTail
 
+def AllListedCallbackRunningProductNodesRefined (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (original candidate : DecodedWorldProgram) : List Nat -> Prop
+  | [] => True
+  | nodeId :: nodeIds =>
+      CallbackRunningProductNodeStepRefined context graph invariants reachability control
+          callbackTargets original candidate nodeId ∧
+        AllListedCallbackRunningProductNodesRefined context graph invariants reachability
+          control callbackTargets original candidate nodeIds
+
+theorem allListedCallbackRunningProductNodesRefined_of_mem
+    (context : StaticProofContext) (graph : RelationalProductGraph)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (original candidate : DecodedWorldProgram) (nodeIds : List Nat)
+    (listed : AllListedCallbackRunningProductNodesRefined context graph invariants
+      reachability control callbackTargets original candidate nodeIds) :
+    ∀ nodeId, nodeId ∈ nodeIds →
+      CallbackRunningProductNodeStepRefined context graph invariants reachability control
+        callbackTargets original candidate nodeId := by
+  induction nodeIds with
+  | nil => simp
+  | cons head tail ih =>
+      intro nodeId member
+      rcases listed with ⟨headRefined, tailRefined⟩
+      simp only [List.mem_cons] at member
+      cases member with
+      | inl same => simpa [same] using headRefined
+      | inr inTail => exact ih tailRefined nodeId inTail
+
+theorem reachableCallbackRunningProductNodesRefined_of_listed_profile
+    (context : StaticProofContext) (graph : RelationalProductGraph)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (original candidate : DecodedWorldProgram)
+    (listed : AllListedCallbackRunningProductNodesRefined context graph invariants
+      reachability control callbackTargets original candidate
+      (callbackTargets.states.map fun state => state.nodeId)) :
+    ReachableCallbackRunningProductNodesRefined context graph invariants reachability
+      control callbackTargets original candidate := by
+  intro nodeId _nodeBefore allowed
+  apply allListedCallbackRunningProductNodesRefined_of_mem context graph invariants
+    reachability control callbackTargets original candidate
+    (callbackTargets.states.map fun state => state.nodeId) listed nodeId
+  simp only [ProtocolCallbackTargetProfile.contains, List.any_eq_true,
+    beq_iff_eq] at allowed
+  rcases allowed with ⟨state, member, stateNode⟩
+  exact List.mem_map.mpr ⟨state, member, stateNode⟩
+
 theorem reachableRunningProductNodesRefined_of_complete_evidence
     (context : StaticProofContext) (graph : RelationalProductGraph)
     (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
     (original candidate : DecodedWorldProgram)
     (evidence : RelationalProductLocalEvidence)
     (complete : evidence.complete graph reachability = true)
     (listed : AllListedRunningProductNodesRefined context graph invariants
-      reachability control original candidate evidence.decodedNodeIds) :
+      reachability control callbackTargets original candidate evidence.decodedNodeIds) :
     ReachableRunningProductNodesRefined context graph invariants reachability control
-      original candidate := by
+      callbackTargets original candidate := by
   simp only [RelationalProductLocalEvidence.complete, Bool.and_eq_true,
     beq_iff_eq] at complete
   intro nodeId before reachable
   apply allListedRunningProductNodesRefined_of_mem context graph invariants
-    reachability control original candidate evidence.decodedNodeIds listed nodeId
+    reachability control callbackTargets original candidate evidence.decodedNodeIds
+    listed nodeId
   rw [complete.1]
   simp [RelationalProductReachabilityEvidence.reachableNodeIds, before, reachable]
 
@@ -1023,10 +1754,19 @@ theorem productStepRefinement_of_reachable_nodes (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
     (original candidate : DecodedWorldProgram)
+    (environmentRefines : ExternalEnvironmentRefines context
+      original.externalCallSites original.environment candidate.environment)
+    (protocolRefines : WorldExternalProtocolEnvironmentsRefine context graph invariants
+      reachability control callbackTargets original.externalCallSites
+      original.protocolEnvironment candidate.protocolEnvironment)
     (running : ReachableRunningProductNodesRefined context graph invariants
-      reachability control original candidate) :
-    ProductStepRefinement context graph invariants reachability control original candidate := by
+      reachability control callbackTargets original candidate)
+    (callbackRunning : ReachableCallbackRunningProductNodesRefined context graph
+      invariants reachability control callbackTargets original candidate) :
+    ProductStepRefinement context graph invariants reachability control callbackTargets
+      original candidate := by
   intro originalExecution candidateExecution related
   cases originalExecution <;> cases candidateExecution
   case running.running originalTarget originalState originalCalls originalEventIndex
@@ -1057,6 +1797,41 @@ theorem productStepRefinement_of_reachable_nodes (context : StaticProofContext)
   case terminated.terminated originalWorld candidateWorld =>
       subst candidateWorld
       exact ⟨True.intro, rfl⟩
+  case awaitingExternal.awaitingExternal originalSuspension originalCallbacks
+      candidateSuspension candidateCallbacks =>
+      rcases related with
+        ⟨suspensionsRelated, callbacksRelated, callbackFrameOffsets,
+          callbackFramesHold⟩
+      exact stepWorldExternalSuspension_related context graph invariants reachability
+        control callbackTargets original.externalCallSites original candidate originalSuspension
+        candidateSuspension originalCallbacks candidateCallbacks suspensionsRelated
+        callbacksRelated callbackFrameOffsets callbackFramesHold
+        (protocolRefines originalSuspension candidateSuspension originalCallbacks
+          candidateCallbacks callbackFrameOffsets suspensionsRelated callbacksRelated
+          callbackFramesHold)
+  case callbackRunning.callbackRunning originalTarget originalState originalCalls
+      originalEventIndex originalWorld originalCallbacks candidateTarget candidateState
+      candidateCalls candidateEventIndex candidateWorld candidateCallbacks =>
+      rcases related with
+        ⟨targetEqual, callsEqual, eventEqual, worldEqual, callbacksNonempty,
+          nodeId, node, invariant, frames, frameOffsets, nodeFound,
+          callbackTargetAllowed, targetFound, reachable, invariantFound, controlAllowed,
+          stackHolds,
+          stackTargetsReachable, statesRelated, callbacksRelated, callbackFramesHold⟩
+      subst candidateTarget
+      subst candidateCalls
+      subst candidateEventIndex
+      subst candidateWorld
+      have nodeBefore : nodeId < graph.nodes.size := by
+        exact Array.getElem?_eq_some_iff.mp nodeFound |>.1
+      have nodeStep := callbackRunning nodeId nodeBefore callbackTargetAllowed
+      unfold CallbackRunningProductNodeStepRefined at nodeStep
+      rw [nodeFound, invariantFound] at nodeStep
+      subst originalTarget
+      exact nodeStep frames originalCalls frameOffsets originalEventIndex originalWorld
+        originalState candidateState originalCallbacks candidateCallbacks
+        controlAllowed stackHolds stackTargetsReachable statesRelated
+        callbacksNonempty callbacksRelated callbackFramesHold
   case fault.fault => exact ⟨True.intro, True.intro⟩
   all_goals simp [WorldExecutionsRelated] at related
 
@@ -1099,14 +1874,18 @@ structure WholeProgramCertificate (context : StaticProofContext)
     (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
     (externalCallSites : List ExternalCallSiteContract)
     (launch : PE32ConsoleLaunchV1)
-    (originalEnvironment candidateEnvironment : WorldExternalEnvironment) where
+    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
+    (originalProtocolEnvironment candidateProtocolEnvironment :
+      WorldExternalProtocolEnvironment) where
   staticContextValid : context.StructurallyValid
   productGraphValid : graph.IndexedValid context
   regionsUseCanonicalContext : RegionsUseStaticContext context regions
   regionsMatchProductGraph : RegionsMatchProductGraph context graph regions
   invariantTableValid : invariants.Valid graph
+  callbackTargetsValid : callbackTargets.Valid graph reachability = true
   reachabilityClosed : reachability.SoundlyClosed context graph
   decodedControlComplete :
     ReachableProductNodesDecodedControlComplete context graph reachability
@@ -1115,16 +1894,20 @@ structure WholeProgramCertificate (context : StaticProofContext)
     ReachableProductExecutionEdgesRefined context graph regions invariants reachability
   environmentsRefined : ExternalEnvironmentRefines context externalCallSites
     originalEnvironment candidateEnvironment
+  protocolEnvironmentsRefined : WorldExternalProtocolEnvironmentsRefine context graph
+    invariants reachability control callbackTargets externalCallSites
+    originalProtocolEnvironment candidateProtocolEnvironment
   launchValid : launch.Valid graph invariants
   launchControlAllowed : control.Allows launch.rootNodeId [] [] = true
   runningProductNodesRefined : ReachableRunningProductNodesRefined context graph
-    invariants reachability control
+    invariants reachability control callbackTargets
     {
       candidate := false
       context
       regions
       externalCallSites
       environment := originalEnvironment
+      protocolEnvironment := originalProtocolEnvironment
     }
     {
       candidate := true
@@ -1132,25 +1915,18 @@ structure WholeProgramCertificate (context : StaticProofContext)
       regions
       externalCallSites
       environment := candidateEnvironment
+      protocolEnvironment := candidateProtocolEnvironment
     }
-
-theorem pe32ProgramsEquivalent (context : StaticProofContext)
-    (graph : RelationalProductGraph) (regions : List RegionRelation)
-    (invariants : ProductInvariantTable)
-    (reachability : RelationalProductReachabilityEvidence)
-    (control : ProductControlProfile)
-    (externalCallSites : List ExternalCallSiteContract)
-    (launch : PE32ConsoleLaunchV1)
-    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
-    (certificate : WholeProgramCertificate context graph regions invariants reachability control
-      externalCallSites launch originalEnvironment candidateEnvironment) :
-    PE32ProgramsObservationallyEquivalent context graph invariants reachability control launch
+  callbackRunningProductNodesRefined :
+    ReachableCallbackRunningProductNodesRefined context graph invariants reachability
+      control callbackTargets
       {
         candidate := false
         context
         regions
         externalCallSites
         environment := originalEnvironment
+        protocolEnvironment := originalProtocolEnvironment
       }
       {
         candidate := true
@@ -1158,6 +1934,39 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
         regions
         externalCallSites
         environment := candidateEnvironment
+        protocolEnvironment := candidateProtocolEnvironment
+      }
+
+theorem pe32ProgramsEquivalent (context : StaticProofContext)
+    (graph : RelationalProductGraph) (regions : List RegionRelation)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (externalCallSites : List ExternalCallSiteContract)
+    (launch : PE32ConsoleLaunchV1)
+    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
+    (originalProtocolEnvironment candidateProtocolEnvironment :
+      WorldExternalProtocolEnvironment)
+    (certificate : WholeProgramCertificate context graph regions invariants reachability control
+      callbackTargets externalCallSites launch originalEnvironment candidateEnvironment
+      originalProtocolEnvironment candidateProtocolEnvironment) :
+    PE32ProgramsObservationallyEquivalent context graph invariants reachability control launch
+      {
+        candidate := false
+        context
+        regions
+        externalCallSites
+        environment := originalEnvironment
+        protocolEnvironment := originalProtocolEnvironment
+      }
+      {
+        candidate := true
+        context
+        regions
+        externalCallSites
+        environment := candidateEnvironment
+        protocolEnvironment := candidateProtocolEnvironment
       } := by
   let original : DecodedWorldProgram := {
     candidate := false
@@ -1165,6 +1974,7 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
     regions
     externalCallSites
     environment := originalEnvironment
+    protocolEnvironment := originalProtocolEnvironment
   }
   let candidate : DecodedWorldProgram := {
     candidate := true
@@ -1172,8 +1982,10 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
     regions
     externalCallSites
     environment := candidateEnvironment
+    protocolEnvironment := candidateProtocolEnvironment
   }
-  refine ⟨WorldExecutionsRelated context graph invariants reachability control, ?_, ?_⟩
+  refine ⟨WorldExecutionsRelated context graph invariants reachability control
+    callbackTargets externalCallSites, ?_, ?_⟩
   . intro world originalState candidateState related
     rcases certificate.launchValid with
       ⟨node, nodeFound, targetFound, rootFound, rootListed, invariantFound⟩
@@ -1187,7 +1999,9 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
     . simp [RelationalRuntimeCallStackHolds]
     . simp [RelationalRuntimeCallTargetsReachable]
   . exact productStepRefinement_of_reachable_nodes context graph invariants reachability
-      control original candidate certificate.runningProductNodesRefined
+      control callbackTargets original candidate certificate.environmentsRefined
+      certificate.protocolEnvironmentsRefined certificate.runningProductNodesRefined
+      certificate.callbackRunningProductNodesRefined
 
 def PE32ProgramsTraceRelated (context : StaticProofContext)
     (original candidate : DecodedWorldProgram)

@@ -353,6 +353,7 @@ from .model import (
     _semantic_constant_bool,
     _semantic_hash,
 )
+from .interfaces import stage_a_interface_manifest
 from .schema import (
     FLAG_BITS,
     MACHINE_CALL_ABI_REGISTERS,
@@ -417,6 +418,10 @@ def stage_a_prove_relational(
     shutil.copyfile(original, original_artifact)
     shutil.copyfile(candidate, candidate_artifact)
     write_json(out / "relation-contract.json", normalized)
+    write_json(
+        out / "stage-a-interface-manifest.json",
+        stage_a_interface_manifest(),
+    )
 
     proof_ir = _proof_ir(original_bin, candidate_bin, normalized)
     RelationalProofIR.parse(proof_ir)
@@ -690,6 +695,9 @@ def stage_a_prove_relational(
                 "model": STAGE_A_RELATIONAL_MODEL_ID,
                 "original_sha256": original_bin.sha256,
                 "candidate_sha256": candidate_bin.sha256,
+                "interface_manifest_sha256": sha256_file(
+                    out / "stage-a-interface-manifest.json"
+                ),
                 "relation_contract_sha256": sha256_file(out / "relation-contract.json"),
                 "proof_ir_sha256": sha256_file(out / "relational-proof-ir.json"),
                 "semantic_ir_sha256": sha256_file(out / "relational-semantic-ir.json"),
@@ -930,6 +938,11 @@ def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> 
             for family in proof_ir.get("families", [])
         ),
         "proof_ir_hash_matches": sha256_file(report / "relational-proof-ir.json") == verdict.get("proof_ir_sha256"),
+        "interface_manifest_hash_matches": (
+            (report / "stage-a-interface-manifest.json").is_file()
+            and sha256_file(report / "stage-a-interface-manifest.json")
+                == verdict.get("interface_manifest_sha256")
+        ),
         "contract_hash_matches": sha256_file(report / "relation-contract.json") == verdict.get("relation_contract_sha256"),
         "product_graph_hash_matches": (
             (report / "relational-product-graph.json").is_file()

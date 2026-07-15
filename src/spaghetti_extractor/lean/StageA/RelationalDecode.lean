@@ -221,7 +221,7 @@ def MachineImportCallContract.shapeValid
           contract.memoryEffect == .none &&
           contract.memoryFootprints.isEmpty &&
           contract.worldEffect == .none
-    | .protocol => false
+    | .protocol => contract.worldEffect == .none
 
 def MachineImportCallContract.matchesImport
     (contract : MachineImportCallContract) (imported : PEImport) : Bool :=

@@ -55,6 +55,7 @@ class ContractToolTests(unittest.TestCase):
 
         self.assertIn("stage-a-prove", subcommands)
         self.assertIn("stage-a-check-proof", subcommands)
+        self.assertIn("stage-a-export-interfaces", subcommands)
         self.assertIn("stage-b-check-contract", subcommands)
         self.assertIn("stage-b-audit-contract", subcommands)
         self.assertNotIn("stage-a-legacy-validate", subcommands)

@@ -95,6 +95,14 @@ def RelationalRuntimeFrame.candidateStackAddress : RelationalRuntimeFrame -> Wor
   | .internal frame => frame.candidateStackAddress
   | .externalCallback frame => frame.candidateStackAddress
 
+def RelationalRuntimeFrame.originalReturnAddress : RelationalRuntimeFrame -> Word
+  | .internal frame => frame.originalReturnAddress
+  | .externalCallback frame => frame.originalReturnAddress
+
+def RelationalRuntimeFrame.candidateReturnAddress : RelationalRuntimeFrame -> Word
+  | .internal frame => frame.candidateReturnAddress
+  | .externalCallback frame => frame.candidateReturnAddress
+
 def RelationalRuntimeFrame.continuationMatches
     (frame : RelationalRuntimeFrame)
     (continuation : RelationalRuntimeContinuation) : Bool :=
@@ -163,6 +171,160 @@ theorem RelationalMixedRuntimeStackHolds.lengths
               exact ⟨by simpa using congrArg Nat.succ lengths.1,
                 by simpa using congrArg Nat.succ lengths.2⟩
 
+/-- Apply the first checked affine register rule whose source-register pair
+matches a runtime-frame offset. The list is an explicit finite control
+certificate; a missing rule fails closed. -/
+def applyReturnSlotTransferRules (rules : List ReturnSlotTransferRule)
+    (source : ReturnSlotOffsetPair) : Option ReturnSlotOffsetPair :=
+  match rules with
+  | [] => none
+  | rule :: rest =>
+      match rule.apply source with
+      | some target => some target
+      | none => applyReturnSlotTransferRules rest source
+
+def applyReturnSlotTransferRulesToList (rules : List ReturnSlotTransferRule) :
+    List ReturnSlotOffsetPair -> Option (List ReturnSlotOffsetPair)
+  | [] => some []
+  | source :: sources => do
+      let target <- applyReturnSlotTransferRules rules source
+      let targets <- applyReturnSlotTransferRulesToList rules sources
+      pure (target :: targets)
+
+/-- The affine return-slot transfer checker is independent of whether the
+runtime frame is an internal call or an external callback. -/
+theorem returnSlotTransferRuleHoldsRuntimeFrame_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (rule : ReturnSlotTransferRule) (source target : ReturnSlotOffsetPair)
+    (frame : RelationalRuntimeFrame) (originalState candidateState : MachineState)
+    (checked : rule.checked originalBehavior candidateBehavior = true)
+    (applied : rule.apply source = some target)
+    (sourceHolds : source.holdsRuntimeFrame frame originalState.registers
+      candidateState.registers) :
+    target.holdsRuntimeFrame frame
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers := by
+  have closed := returnSlotTransferRuleClosed_of_checked originalBehavior
+    candidateBehavior rule checked
+  unfold ReturnSlotTransferRule.apply at applied
+  split at applied
+  next registersMatch =>
+    simp only [Bool.and_eq_true, beq_iff_eq] at registersMatch
+    cases applied
+    rcases closed with ⟨originalExpression, candidateExpression,
+      originalDelta, candidateDelta⟩
+    rcases sourceHolds with ⟨originalSource, candidateSource⟩
+    constructor
+    · simp only [ReturnSlotOffsetPair.holdsRuntimeFrame,
+        NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get]
+      rw [← originalExpression, rule.originalOutput.eval_expression,
+        originalDelta, ← registersMatch.1]
+      calc
+        originalState.registers.get source.originalRegister + rule.originalDelta +
+            (source.originalOffset - rule.originalDelta) =
+            originalState.registers.get source.originalRegister +
+              source.originalOffset := by
+          exact word_add_delta_sub _ _ _
+        _ = frame.originalStackAddress := originalSource
+    · simp only [ReturnSlotOffsetPair.holdsRuntimeFrame,
+        NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get]
+      rw [← candidateExpression, rule.candidateOutput.eval_expression,
+        candidateDelta, ← registersMatch.2]
+      calc
+        candidateState.registers.get source.candidateRegister + rule.candidateDelta +
+            (source.candidateOffset - rule.candidateDelta) =
+            candidateState.registers.get source.candidateRegister +
+              source.candidateOffset := by
+          exact word_add_delta_sub _ _ _
+        _ = frame.candidateStackAddress := candidateSource
+  next registersMismatch => simp at applied
+
+theorem applyReturnSlotTransferRules_holdsRuntimeFrame_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (rules : List ReturnSlotTransferRule) (source target : ReturnSlotOffsetPair)
+    (frame : RelationalRuntimeFrame) (originalState candidateState : MachineState)
+    (checked : rules.all fun rule =>
+      rule.checked originalBehavior candidateBehavior)
+    (applied : applyReturnSlotTransferRules rules source = some target)
+    (sourceHolds : source.holdsRuntimeFrame frame originalState.registers
+      candidateState.registers) :
+    target.holdsRuntimeFrame frame
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers := by
+  induction rules with
+  | nil => simp [applyReturnSlotTransferRules] at applied
+  | cons rule rest ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      cases ruleApplied : rule.apply source with
+      | none =>
+          simp only [applyReturnSlotTransferRules, ruleApplied] at applied
+          exact ih checked.2 applied
+      | some ruleTarget =>
+          simp only [applyReturnSlotTransferRules, ruleApplied,
+            Option.some.injEq] at applied
+          subst ruleTarget
+          exact returnSlotTransferRuleHoldsRuntimeFrame_of_checked
+            originalBehavior candidateBehavior rule source target frame
+            originalState candidateState checked.1 ruleApplied sourceHolds
+
+/-- Resolve a checked `ret` target from either an internal or external callback
+runtime frame. This is the mixed-stack counterpart of
+`returnPopTargetsRuntimeFrame_of_checked`. -/
+theorem returnPopTargetsMixedRuntimeFrame_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (returnClaim : ReturnPopClaim) (frameClaim : ReturnPopFrameClaim)
+    (frame : RelationalRuntimeFrame) (originalState candidateState : MachineState)
+    (returnChecked : returnClaim.checked originalBehavior candidateBehavior = true)
+    (frameChecked : frameClaim.checked returnClaim = true)
+    (offsetsHold : frameClaim.offsets.holdsRuntimeFrame frame
+      originalState.registers candidateState.registers)
+    (memoryHolds : frame.memoryHolds originalState.memory candidateState.memory) :
+    originalBehavior.outcome.eval originalState =
+        .returned frame.originalReturnAddress ∧
+      candidateBehavior.outcome.eval candidateState =
+        .returned frame.candidateReturnAddress := by
+  cases frame with
+  | internal frame =>
+      exact returnPopTargetsRuntimeFrame_of_checked originalBehavior candidateBehavior
+        returnClaim frameClaim frame originalState candidateState returnChecked frameChecked
+        ((ReturnSlotOffsetPair.holdsRuntimeFrame_internal frameClaim.offsets frame
+          originalState.registers candidateState.registers).mp offsetsHold)
+        memoryHolds
+  | externalCallback frame =>
+      change frameClaim.offsets.holdsRuntimeFrame (.externalCallback frame)
+        originalState.registers candidateState.registers at offsetsHold
+      change frame.memoryHolds originalState.memory candidateState.memory at memoryHolds
+      have frameClosed := returnPopFrameClaimClosed_of_checked returnClaim frameClaim
+        frameChecked
+      rcases frameClosed with ⟨originalRegister, candidateRegister, originalExpression,
+        candidateExpression, originalOffset, candidateOffset⟩
+      unfold ReturnSlotOffsetPair.holdsRuntimeFrame at offsetsHold
+      simp only [originalRegister, candidateRegister] at offsetsHold
+      rcases offsetsHold with ⟨originalHolds, candidateHolds⟩
+      have originalSlot : returnClaim.originalStackAddress.eval originalState =
+          frame.originalStackAddress := by
+        rw [← originalExpression, frameClaim.originalSlot.eval_expression,
+          originalOffset]
+        exact originalHolds
+      have candidateSlot : returnClaim.candidateStackAddress.eval candidateState =
+          frame.candidateStackAddress := by
+        rw [← candidateExpression, frameClaim.candidateSlot.eval_expression,
+          candidateOffset]
+        exact candidateHolds
+      have closed := returnPopClosed_of_checked originalBehavior candidateBehavior
+        returnClaim returnChecked
+      rcases closed with ⟨_popBytes, originalOutcome, candidateOutcome, _offsets⟩
+      rcases memoryHolds with ⟨originalMemory, candidateMemory⟩
+      constructor
+      · rw [originalOutcome]
+        simp only [NormalizedOutcomeExpr.eval, PureOutcome.returned.injEq, Expr.eval]
+        rw [originalSlot]
+        simpa only [machineStateRead32_eq_memoryRead32] using originalMemory
+      · rw [candidateOutcome]
+        simp only [NormalizedOutcomeExpr.eval, PureOutcome.returned.injEq, Expr.eval]
+        rw [candidateSlot]
+        simpa only [machineStateRead32_eq_memoryRead32] using candidateMemory
+
 structure WorldExternalProtocolRequest where
   eventIndex : Nat
   phaseIndex : Nat
@@ -172,6 +334,8 @@ structure WorldExternalProtocolRequest where
 
 structure WorldExternalCallbackAction where
   targetId : Nat
+  entryInvariant : StateInvariant
+  returnInvariant : StateInvariant
   returnResourceId : Nat
   stackRangeId : Nat
   stackOffset : Nat
@@ -263,6 +427,9 @@ def ExternalCallbackActionsRelated
     (before : RelationalWorld) (siteId eventIndex phaseIndex continuationTargetId : Nat)
     (original candidate : WorldExternalCallbackAction) : Prop :=
   original.targetId = candidate.targetId ∧
+    original.entryInvariant = invariant ∧
+    candidate.entryInvariant = invariant ∧
+    original.returnInvariant = candidate.returnInvariant ∧
     original.returnResourceId = candidate.returnResourceId ∧
     original.stackRangeId = candidate.stackRangeId ∧
     original.stackOffset = candidate.stackOffset ∧
@@ -283,7 +450,8 @@ theorem ExternalCallbackActionsRelated.target
     ∃ callback : RegisteredCallbackPair,
       original.targetId = callback.targetId ∧
         candidate.targetId = callback.targetId ∧ callback.valid context = true := by
-  rcases related with ⟨targetEqual, _, _, _, _, callback, originalTarget, entry⟩
+  rcases related with
+    ⟨targetEqual, _, _, _, _, _, _, _, callback, originalTarget, entry⟩
   refine ⟨callback, originalTarget, ?_, ?_⟩
   · rw [← targetEqual]
     exact originalTarget

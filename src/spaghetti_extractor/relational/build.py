@@ -22,6 +22,7 @@ from .schema import (
     ModuleGraph,
     PreparedProofDigests,
     SchemaError,
+    StageAInterfaceManifest,
 )
 from .ir import CompositionProgressIR, RelationalProofIR, WholeProgramAcceptanceIR
 
@@ -83,8 +84,6 @@ def stage_a_build_relational(
         raise StageAInputError(
             "prepared module graph has no nodes " + repr(missing_target_nodes)
         )
-    evaluator = _relational_nix_evaluator()
-    flake_root = _find_relational_flake_root(flake)
     if out == prepared or prepared in out.parents:
         raise StageAInputError("build output must not be inside the prepared proof directory")
     acceptance = graph["acceptance"]
@@ -110,6 +109,9 @@ def stage_a_build_relational(
         }
         write_json(out / "verdict.json", result)
         return result
+
+    evaluator = _relational_nix_evaluator()
+    flake_root = _find_relational_flake_root(flake)
 
     focused_prepared: tempfile.TemporaryDirectory[str] | None = None
     nix_prepared = prepared
@@ -413,6 +415,9 @@ def stage_a_build_relational(
             "path": graph["artifacts"]["candidate"]["path"],
             "sha256": graph["artifacts"]["candidate"]["sha256"],
         },
+        "interface_manifest_sha256": sha256_file(
+            out / "stage-a-interface-manifest.json"
+        ),
         "relation_contract_sha256": sha256_file(out / "relation-contract.json"),
         "proof_ir_sha256": sha256_file(out / "relational-proof-ir.json"),
         "product_graph_sha256": sha256_file(out / "relational-product-graph.json"),
@@ -1246,8 +1251,15 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         raise StageAInputError("unsupported prepared relational proof format")
     if manifest.get("status") != "prepared":
         raise StageAInputError("relational proof preparation did not complete")
+    try:
+        StageAInterfaceManifest.parse(
+            _read_json(prepared / "stage-a-interface-manifest.json")
+        )
+    except SchemaError as exc:
+        raise StageAInputError(f"malformed Stage A interface manifest: {exc}") from exc
     graph = _validate_relational_module_graph(prepared)
     expected_hashes = {
+        "interface_manifest_sha256": prepared / "stage-a-interface-manifest.json",
         "relation_contract_sha256": prepared / "relation-contract.json",
         "proof_ir_sha256": prepared / "relational-proof-ir.json",
         "semantic_ir_sha256": prepared / "relational-semantic-ir.json",

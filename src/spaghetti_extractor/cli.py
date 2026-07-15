@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .relational.mapping import stage_a_generate_map
+from .relational.interfaces import stage_a_export_interface_manifest
 from .relational.reference_contract import (
     REFERENCE_CONTRACT_MODEL_ID,
     stage_a_diff_obligations,
@@ -84,6 +85,15 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
             include=args.include,
             apply=args.apply,
         )
+    )
+
+    interfaces = subcommands.add_parser(
+        "stage-a-export-interfaces",
+        help="export versioned Stage A schemas and parallel workstream boundaries",
+    )
+    interfaces.add_argument("--out", type=Path, required=True)
+    interfaces.set_defaults(
+        func=lambda args: stage_a_export_interface_manifest(out=args.out)
     )
 
     prove = subcommands.add_parser(

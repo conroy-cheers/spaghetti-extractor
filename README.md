@@ -25,10 +25,28 @@ Build the Python tools:
 nix build .#spaghetti-extractor --no-link
 ```
 
+Export the versioned schema, artifact, Lean-interface, and parallel-workstream
+boundaries used by Stage A development:
+
+```sh
+spaghetti-extractor stage-a-export-interfaces --out stage-a-interfaces.json
+```
+
+Prepared proofs embed and hash the same manifest. See
+[Parallel Stage A Development](docs/stage-a-parallel-development.md).
+
 Run the compact Stage A fixture suite:
 
 ```sh
 nix build .#stage-a-fixtures-check --no-link
+```
+
+Run the phase-oriented relational tests as independently cached Nix builds. The
+repository builders file schedules the heavy Lean suites remotely:
+
+```sh
+nix build .#stage-a-relational-tests --no-link \
+  --builders "$(cat nix/stage-a-builders)" --max-jobs 0
 ```
 
 Build and validate the full Windows x86 jq alignment-pair contract:

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from spaghetti_extractor.relational.artifacts import write_text_if_changed
@@ -7,7 +8,9 @@ from spaghetti_extractor.relational.schema import (
     ModuleGraph,
     PreparedProofDigests,
     SchemaError,
+    StageAInterfaceManifest,
 )
+from spaghetti_extractor.relational.interfaces import stage_a_interface_manifest
 
 
 class RelationalSchemaTests(unittest.TestCase):
@@ -51,6 +54,7 @@ class RelationalSchemaTests(unittest.TestCase):
     def test_prepared_digest_parser_rejects_missing_hash(self):
         with self.assertRaisesRegex(SchemaError, "module_graph_sha256"):
             PreparedProofDigests.parse({
+                "interface_manifest_sha256": "z",
                 "relation_contract_sha256": "a",
                 "proof_ir_sha256": "b",
                 "semantic_ir_sha256": "c",
@@ -61,6 +65,23 @@ class RelationalSchemaTests(unittest.TestCase):
                 "invariants_sha256": "h",
                 "whole_program_acceptance_sha256": "i",
             })
+
+    def test_parallel_interface_manifest_has_one_acceptance_owner(self):
+        manifest = stage_a_interface_manifest()
+        parsed = StageAInterfaceManifest.parse(manifest)
+
+        self.assertEqual(
+            parsed.acceptance_theorem,
+            "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
+        )
+        self.assertIn("external-protocol", parsed.workstream_ids)
+        self.assertIn("acceptance-integration", parsed.workstream_ids)
+        overlapping = deepcopy(manifest)
+        overlapping["workstreams"][1]["owned_paths"].append(
+            overlapping["workstreams"][0]["owned_paths"][0]
+        )
+        with self.assertRaisesRegex(SchemaError, "must be disjoint"):
+            StageAInterfaceManifest.parse(overlapping)
 
     def test_write_text_if_changed_preserves_timestamp(self):
         with tempfile.TemporaryDirectory() as temporary:

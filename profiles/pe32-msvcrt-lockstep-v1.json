@@ -31,6 +31,16 @@
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
       "world_effect_argument": 0
+    },
+    {
+      "id": 3,
+      "import": {"dll": "msvcrt.dll", "symbol": "exit"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "disposition": "protocol",
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "none"
     }
   ]
 }

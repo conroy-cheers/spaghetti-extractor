@@ -243,15 +243,31 @@ example (program : DecodedWorldProgram) (sourceTargetId : Nat)
       .awaitingExternal {
         callback.suspension with
         phaseIndex := callback.suspension.phaseIndex + 1
+        resumeInvariant := callback.entry.returnInvariant
         state
         world
       } callbacks := by
   simp [transitionFromWorldOutcome]
 
-example (contract : MachineImportCallContract)
-    (protocol : contract.disposition = .protocol) :
-    contract.shapeValid = false := by
-  simp [MachineImportCallContract.shapeValid, protocol]
+def protocolContract : MachineImportCallContract := {
+  id := 0
+  imported := {
+    dll := [109, 115, 118, 99, 114, 116, 46, 100, 108, 108]
+    name := .symbol [101, 120, 105, 116]
+  }
+  stackArgumentOffsets := [0]
+  stackResultDelta := 0
+  preservedRegisters := [.ebx, .esi, .edi, .ebp]
+  clobberedRegisters := [.eax, .ecx, .edx]
+  disposition := .protocol
+  memoryEffect := .none
+  worldEffect := .none
+}
+
+example : protocolContract.shapeValid = true := by decide
+
+example : ({ protocolContract with worldEffect := .opaqueResources }).shapeValid =
+    false := by decide
 
 example (context : StaticProofContext) (frame : RelationalExternalCallbackFrame) :
     frame.valid context {} = false := by
@@ -266,6 +282,65 @@ example (context : StaticProofContext) (invariant : StateInvariant)
       original.targetId = callback.targetId /\\
         candidate.targetId = callback.targetId /\\ callback.valid context = true :=
   related.target
+
+example (context : StaticProofContext) (sites : List ExternalCallSiteContract)
+    (original candidate : WorldExternalSuspension)
+    (related : WorldExternalSuspensionsRelated context sites original candidate)
+    (noProtocol : externalCallSitesExcludeProtocol context sites = true) : False :=
+  WorldExternalSuspensionsRelated.impossible_of_no_protocol_sites context sites
+    original candidate related noProtocol
+
+example (context : StaticProofContext) (graph : RelationalProductGraph)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract)
+    (original candidate : List WorldExternalCallbackRuntime)
+    (nonempty : original ≠ [])
+    (related : WorldExternalCallbackRuntimesRelated context graph invariants
+      reachability callbackTargets sites original candidate)
+    (noProtocol : externalCallSitesExcludeProtocol context sites = true) : False :=
+  WorldExternalCallbackRuntimesRelated.impossible_of_no_protocol_sites context graph
+    invariants reachability callbackTargets sites original candidate nonempty related noProtocol
+
+example (context : StaticProofContext) (graph : RelationalProductGraph)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (sites : List ExternalCallSiteContract)
+    (original candidate : DecodedWorldProgram)
+    (originalSuspension candidateSuspension : WorldExternalSuspension)
+    (originalCallbacks candidateCallbacks : List WorldExternalCallbackRuntime)
+    (suspensionsRelated : WorldExternalSuspensionsRelated context sites
+      originalSuspension candidateSuspension)
+    (callbacksRelated : WorldExternalCallbackRuntimesRelated context graph invariants
+      reachability callbackTargets sites originalCallbacks candidateCallbacks)
+    (callbackFrameOffsets : List ReturnSlotOffsetPair)
+    (callbackFramesHold : WorldExternalCallbackFramesHold context
+      originalSuspension.world originalSuspension.state candidateSuspension.state
+      originalCallbacks candidateCallbacks callbackFrameOffsets)
+    (protocolRefines : WorldExternalProtocolEnvironmentsRefine context graph invariants
+      reachability control callbackTargets sites original.protocolEnvironment
+      candidate.protocolEnvironment) :
+    worldRelationalObservationsRelated context
+        (stepWorldExternalSuspension original originalSuspension
+          originalCallbacks).observation
+        (stepWorldExternalSuspension candidate candidateSuspension
+          candidateCallbacks).observation ∧
+      WorldExecutionsRelated context graph invariants reachability control callbackTargets sites
+        (stepWorldExternalSuspension original originalSuspension
+          originalCallbacks).next
+        (stepWorldExternalSuspension candidate candidateSuspension
+          candidateCallbacks).next :=
+  stepWorldExternalSuspension_related context graph invariants reachability control
+    callbackTargets sites
+    original candidate originalSuspension candidateSuspension originalCallbacks
+    candidateCallbacks suspensionsRelated callbacksRelated callbackFrameOffsets
+    callbackFramesHold
+    (protocolRefines originalSuspension candidateSuspension originalCallbacks
+      candidateCallbacks callbackFrameOffsets suspensionsRelated callbacksRelated
+      callbackFramesHold)
 
 end StageA.MixedCallbackFrame
 """,

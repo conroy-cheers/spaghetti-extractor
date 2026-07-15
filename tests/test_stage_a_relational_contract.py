@@ -1,7 +1,73 @@
 from tests.stage_a_relational_support import *
+from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
 
 
 class StageARelationalContractTests(StageARelationalTestBase):
+    def test_protocol_callback_control_schema_is_explicit_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = _parse_stage_a_pe(
+                self._write_pe(root / "original.exe", b"\xc3")
+            )
+            candidate = _parse_stage_a_pe(
+                self._write_pe(root / "candidate.exe", b"\xc3")
+            )
+            contract_path = self._write_contract(root / "relation.json", region_size=1)
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            callback_state = {
+                "target_id": 0,
+                "active_frame_offset": {
+                    "original_register": "esp", "original": 0,
+                    "candidate_register": "esp", "candidate": 0,
+                },
+                "return_invariant": {"kind": "terminal"},
+            }
+            contract["protocol_callback_control"] = {
+                "format": PROTOCOL_CALLBACK_CONTROL_FORMAT,
+                "states": [callback_state],
+            }
+
+            normalized, issues = _normalize_contract(contract, original, candidate)
+
+            self.assertEqual(issues, [])
+            self.assertEqual(
+                normalized["protocol_callback_control"],
+                contract["protocol_callback_control"],
+            )
+
+            duplicate = json.loads(json.dumps(contract))
+            duplicate["protocol_callback_control"]["states"].append(callback_state)
+            _normalized, duplicate_issues = _normalize_contract(
+                duplicate, original, candidate
+            )
+            self.assertIn(
+                "protocol_callback_control_state_invalid",
+                {issue["category"] for issue in duplicate_issues},
+            )
+
+            malformed = json.loads(json.dumps(contract))
+            malformed["protocol_callback_control"]["states"][0][
+                "active_frame_offset"
+            ]["original_register"] = "eip"
+            _normalized, malformed_issues = _normalize_contract(
+                malformed, original, candidate
+            )
+            self.assertIn(
+                "protocol_callback_control_state_invalid",
+                {issue["category"] for issue in malformed_issues},
+            )
+
+            legacy = json.loads(json.dumps(contract))
+            legacy.pop("protocol_callback_control")
+            legacy["protocol_callback_target_ids"] = [0]
+            _normalized, legacy_issues = _normalize_contract(
+                legacy, original, candidate
+            )
+            self.assertIn(
+                "unknown_relation_contract_fields",
+                {issue["category"] for issue in legacy_issues},
+            )
+
     def test_paired_stack_word_write_proposal_fails_closed(self):
         source = {
             "stack_windows": [{
@@ -1215,6 +1281,43 @@ class StageARelationalContractTests(StageARelationalTestBase):
             self.assertEqual(terminal_issues, [])
             self.assertEqual(normalized_terminal[0]["disposition"], "terminates")
             self.assertEqual(normalized_terminal[0]["stack_result_delta"], 0)
+
+            protocol_binary = replace(
+                binary,
+                imports=(StageAImport(
+                    dll="msvcrt.dll", symbol="exit", ordinal=None,
+                    thunk_rva=0x3010,
+                ),),
+            )
+            protocol = {
+                "id": 11,
+                "import": {"dll": "msvcrt.dll", "symbol": "exit"},
+                "abi_template": "pe32-cdecl-v1",
+                "argument_words": 1,
+                "disposition": "protocol",
+                "memory_effect": "none",
+                "memory_footprints": [],
+                "world_effect": "none",
+            }
+            protocol_issues: list[dict] = []
+            normalized_protocol = _machine_import_call_contracts(
+                [protocol], protocol_binary, protocol_binary, protocol_issues
+            )
+            self.assertEqual(protocol_issues, [])
+            self.assertEqual(normalized_protocol[0]["disposition"], "protocol")
+
+            malformed_protocol_issues: list[dict] = []
+            self.assertEqual(
+                _machine_import_call_contracts(
+                    [{**protocol, "world_effect": "opaqueResources"}],
+                    protocol_binary, protocol_binary, malformed_protocol_issues,
+                ),
+                [],
+            )
+            self.assertEqual(
+                malformed_protocol_issues[0]["category"],
+                "machine_import_call_contract_invalid",
+            )
 
             for malformed_terminal in (
                 {**terminal, "disposition": "sometimes"},

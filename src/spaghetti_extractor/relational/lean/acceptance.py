@@ -13,6 +13,15 @@ from ..analyses.external import (
     _register_offset_witness,
     _semantic_external_target_identity,
 )
+from ..analyses.callbacks import (
+    attach_protocol_callback_states,
+    protocol_callback_controls_by_node,
+)
+from ..analyses.frames import (
+    return_frame_claim_for_location,
+    runtime_frame_location_key as location_key,
+    runtime_frame_location_payload as location_payload,
+)
 from ..analyses.registers import _target_shaped_register_output_claims
 from ..analyses.stack import _stack_window_transfer_claims
 from ..artifacts import write_text_if_changed as _write_text_if_changed
@@ -40,6 +49,7 @@ from .expressions import (
 from .definitions import (
     _normalized_behavior_fast_path,
 )
+from .callbacks import _lean_acceptance_callback_return_node
 
 
 def _compact_acceptance_blockers(
@@ -123,6 +133,12 @@ def _whole_program_acceptance_plan(
             "regenerate a canonical one-node-per-region product inventory",
         )
     roots = [int(node_id) for node_id in product_graph["root_node_ids"]]
+    node_by_target = {
+        int(node["target_id"]): node_id for node_id, node in enumerate(nodes)
+    }
+    protocol_callback_contract_by_node = protocol_callback_controls_by_node(
+        contract, node_by_target, block
+    )
     if len(roots) != 1:
         block(
             "console_launch_root_unsupported",
@@ -132,65 +148,12 @@ def _whole_program_acceptance_plan(
     control_states: list[dict[str, Any]] = []
     control_states_by_node: dict[int, list[dict[str, Any]]] = {}
     if len(roots) == 1 and len(nodes) == len(behaviors):
-        node_by_target = {
-            int(node["target_id"]): node_id for node_id, node in enumerate(nodes)
-        }
         register_edges_by_pair: dict[tuple[int, int], list[dict[str, Any]]] = {}
         for edge in register_relations.get("edges", []):
             register_edges_by_pair.setdefault((
                 int(edge["source_region_index"]),
                 int(edge["target_region_index"]),
             ), []).append(edge)
-
-        def location_key(location: dict[str, Any]) -> tuple[str, int, str, int]:
-            return (
-                str(location.get("original_register", "esp")),
-                int(location["original"]),
-                str(location.get("candidate_register", "esp")),
-                int(location["candidate"]),
-            )
-
-        def location_payload(
-            location: tuple[str, int, str, int],
-        ) -> dict[str, Any]:
-            return {
-                "original_register": location[0],
-                "original": location[1],
-                "candidate_register": location[2],
-                "candidate": location[3],
-            }
-
-        def return_frame_claim_for_location(
-            relation_row: dict[str, Any],
-            location: tuple[str, int, str, int],
-        ) -> dict[str, Any] | None:
-            for claim in relation_row.get("return_pop_frame_claims", []):
-                if location_key(claim["offsets"]) == location:
-                    return claim
-            return_claim = relation_row.get("return_pop_claim") or {}
-            if (
-                location[0] != "esp"
-                or location[2] != "esp"
-                or location[1] != int(
-                    return_claim.get("original_stack_offset", -1)
-                )
-                or location[3] != int(
-                    return_claim.get("candidate_stack_offset", -1)
-                )
-                or return_claim.get("original_stack_witness") is None
-                or return_claim.get("candidate_stack_witness") is None
-            ):
-                return None
-            return {
-                "profile": "return_pop_runtime_frame_v1",
-                "offsets": location_payload(location),
-                "original_slot_witness": return_claim[
-                    "original_stack_witness"
-                ],
-                "candidate_slot_witness": return_claim[
-                    "candidate_stack_witness"
-                ],
-            }
 
         def location_rank(
             source: tuple[str, int, str, int],
@@ -1404,6 +1367,19 @@ def _whole_program_acceptance_plan(
                 step["return_slot_external_transfer_claims"] = selected_claims
                 step["external_site"] = external_site
                 step["decoded_import"] = outcomes[0].get("import")
+                machine_contract = machine_contract_by_id.get(
+                    int(external_site["machine_contract_id"])
+                )
+                if machine_contract is None:
+                    block(
+                        "external_call_machine_contract_missing",
+                        f"external-call node {node_id} has no resolved machine contract",
+                        "declare one complete machine-level import contract",
+                    )
+                    continue
+                step["machine_contract"] = machine_contract
+                if machine_contract.get("disposition") == "protocol":
+                    step["kind"] = "external_protocol"
                 has_external_call = True
             elif jump_profile:
                 control_rows = control_states_by_node.get(node_id, [])
@@ -1562,6 +1538,13 @@ def _whole_program_acceptance_plan(
             int(step["node_id"]), []
         )
 
+    protocol_callback_states = attach_protocol_callback_states(
+        node_steps,
+        protocol_callback_contract_by_node,
+        register_relations,
+        block,
+    )
+
     if len(returned_region_indices) > 1:
         block(
             "multiple_terminal_invariants_pending",
@@ -1598,6 +1581,8 @@ def _whole_program_acceptance_plan(
             "theorem": None,
             "profile": profile,
             "control_states": control_states,
+            "protocol_callback_node_ids": sorted(protocol_callback_contract_by_node),
+            "protocol_callback_states": protocol_callback_states,
             "blockers": compact_blockers,
         }
     return {
@@ -1639,6 +1624,8 @@ def _whole_program_acceptance_plan(
             }
         ),
         "control_states": control_states,
+        "protocol_callback_node_ids": sorted(protocol_callback_contract_by_node),
+        "protocol_callback_states": protocol_callback_states,
         "node_steps": node_steps,
         "blockers": [],
     }
@@ -1648,6 +1635,28 @@ def _lean_all_listed_proof(theorems: list[str]) -> str:
         "".join(f"⟨{theorem}, " for theorem in theorems)
         + "True.intro"
         + "⟩" * len(theorems)
+    )
+
+
+def _lean_return_slot_transfer_rule(rule: dict[str, Any]) -> str:
+    return (
+        "{ originalSourceRegister := ."
+        + str(rule["original_source_register"])
+        + ", candidateSourceRegister := ."
+        + str(rule["candidate_source_register"])
+        + ", originalTargetRegister := ."
+        + str(rule["original_target_register"])
+        + ", candidateTargetRegister := ."
+        + str(rule["candidate_target_register"])
+        + ", originalOutput := "
+        + _lean_register_offset_witness(rule["original_output_witness"])
+        + ", candidateOutput := "
+        + _lean_register_offset_witness(rule["candidate_output_witness"])
+        + ", originalDelta := BitVec.ofNat 32 "
+        + str(int(rule["original_delta"]))
+        + ", candidateDelta := BitVec.ofNat 32 "
+        + str(int(rule["candidate_delta"]))
+        + " }"
     )
 
 def _lean_appended_list(names: list[str]) -> str:
@@ -1829,6 +1838,7 @@ def _lean_acceptance_running_node(
     step: dict[str, Any], regions: list[dict[str, Any]],
     behaviors: list[dict[str, Any]], *,
     parameterized_environment: bool = False,
+    parameterized_protocol_environment: bool = False,
 ) -> str:
     node_id = int(step["node_id"])
     region_index = int(step["region_index"])
@@ -1837,24 +1847,37 @@ def _lean_acceptance_running_node(
     candidate_behavior = f"acceptanceCandidateNormalizedBehavior{node_id}"
     running = f"acceptanceRunningNode{node_id}Refined"
     original_program = (
-        "(originalWorldProgram originalEnvironment)"
+        "(originalWorldProgram originalEnvironment"
+        + (" originalProtocolEnvironment" if parameterized_protocol_environment else "")
+        + ")"
         if parameterized_environment else "originalWorldProgram"
     )
     candidate_program = (
-        "(candidateWorldProgram candidateEnvironment)"
+        "(candidateWorldProgram candidateEnvironment"
+        + (" candidateProtocolEnvironment" if parameterized_protocol_environment else "")
+        + ")"
         if parameterized_environment else "candidateWorldProgram"
     )
     environment_binders = (
         "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
-        "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+        + (
+            "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+            "WorldExternalProtocolEnvironment)\n"
+            if parameterized_protocol_environment else ""
+        )
+        + "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
         "      externalCallSites originalEnvironment candidateEnvironment) :\n"
         if parameterized_environment else ""
     )
     behavior_rewrite_arguments = (
-        " originalEnvironment" if parameterized_environment else ""
+        " originalEnvironment"
+        + (" originalProtocolEnvironment" if parameterized_protocol_environment else "")
+        if parameterized_environment else ""
     )
     candidate_behavior_rewrite_arguments = (
-        " candidateEnvironment" if parameterized_environment else ""
+        " candidateEnvironment"
+        + (" candidateProtocolEnvironment" if parameterized_protocol_environment else "")
+        if parameterized_environment else ""
     )
     prefix = (
         f"theorem {running}\n"
@@ -1862,7 +1885,7 @@ def _lean_acceptance_running_node(
         + ("    " if parameterized_environment else "    :\n")
         + "    RunningProductNodeStepRefined staticProofContext relationalProductGraph\n"
         "      productInvariantTable relationalProductReachabilityEvidence\n"
-        "      productControlProfile\n"
+        "      productControlProfile protocolCallbackTargets\n"
         f"      {original_program} {candidate_program} {node_id} := by\n"
         "  unfold RunningProductNodeStepRefined\n"
         f"  have sourceInvariant : productInvariantTable.nodeInvariants[{node_id}]? =\n"
@@ -2559,7 +2582,7 @@ def _lean_acceptance_running_node(
                 ).splitlines()
             )
         )
-    if step["kind"] == "external_call":
+    if step["kind"] in {"external_call", "external_protocol"}:
         edge = step["edges"][0]
         edge_id = int(edge["edge_id"])
         target_region_index = int(edge["target_region_index"])
@@ -2620,7 +2643,7 @@ def _lean_acceptance_running_node(
         imported_literal = _lean_external_target({
             "dll": imported_identity[0], imported_identity[1]: imported_identity[2],
         })
-        return (
+        common = (
             prefix
             + f"  have controlShape : calls = {calls_literal} ∧ "
             f"frameOffsets = {source_offsets_literal} := by\n"
@@ -2682,6 +2705,79 @@ def _lean_acceptance_running_node(
             "      originalEvent candidateEvent := by\n"
             "    simpa [originalEvent, candidateEvent, originalBehaviorCommon,\n"
             "      candidateBehaviorCommon] using boundary\n"
+        )
+        if step["kind"] == "external_protocol":
+            return common + (
+                "  have argumentsRelated := boundaryKnown.2.2.2.2.2.2\n"
+                "  have observationRelated : worldRelationalObservationsRelated\n"
+                "      staticProofContext\n"
+                f"      (some (.external world externalCallEdge{edge_id}MachineContract.imported\n"
+                f"        [{original_arguments}]))\n"
+                f"      (some (.external world externalCallEdge{edge_id}MachineContract.imported\n"
+                f"        [{candidate_arguments}])) := by\n"
+                "    exact ⟨rfl, rfl, argumentsRelated⟩\n"
+                "  have originalSiteResolved : resolveExternalCallSite staticProofContext\n"
+                f"      externalCallSites {target_id}\n"
+                f"      {int(site['continuation_target_id'])}\n"
+                f"      externalCallEdge{edge_id}MachineContract.imported = some {edge_id} := by\n"
+                "    decide\n"
+                "  have candidateSiteResolved : resolveExternalCallSite staticProofContext\n"
+                f"      externalCallSites {target_id}\n"
+                f"      {int(site['continuation_target_id'])}\n"
+                f"      externalCallEdge{edge_id}MachineContract.imported = some {edge_id} := by\n"
+                "    decide\n"
+                f"  have contractDisposition : externalCallEdge{edge_id}MachineContract.disposition =\n"
+                "      .protocol := by decide\n"
+                f"  have originalWritesField : {original_behavior}.writes = [] := by decide\n"
+                f"  have candidateWritesField : {candidate_behavior}.writes = [] := by decide\n"
+                f"  have originalWrites : ({original_behavior}.eval originalState).writes = [] := by\n"
+                "    simp [originalWritesField, evalNormalizedWrites]\n"
+                f"  have candidateWrites : ({candidate_behavior}.eval candidateState).writes = [] := by\n"
+                "    simp [candidateWritesField, evalNormalizedWrites]\n"
+                "  rcases boundaryKnown.2.2.2.2.2.1 with\n"
+                "    ⟨_worldValid, _stackRangesValid, outputRegisters, outputBounds,\n"
+                "      outputSeparations, outputStackWindows, _undefinedEqual, outputX87,\n"
+                "      outputFlags, _fsBaseEqual, outputImports, outputDynamic⟩\n"
+                "  have suspendedStatesRelated : StateRel staticProofContext world\n"
+                f"      externalCallSite{edge_id}.boundaryInvariant originalEvent.state\n"
+                "      candidateEvent.state := by\n"
+                f"    apply StateRel.afterNoWriteEvaluation staticProofContext world\n"
+                f"      region{region_index}.inputInvariant\n"
+                f"      externalCallSite{edge_id}.boundaryInvariant originalState candidateState\n"
+                f"      ({original_behavior}.eval originalState)\n"
+                f"      ({candidate_behavior}.eval candidateState) statesRelated\n"
+                "      originalWrites candidateWrites\n"
+                "    · simpa [originalEvent, candidateEvent] using outputRegisters\n"
+                "    · simpa [originalEvent, candidateEvent] using outputBounds\n"
+                "    · simpa [originalEvent, candidateEvent] using outputSeparations\n"
+                "    · simpa [originalEvent, candidateEvent] using outputStackWindows\n"
+                "    · simpa [originalEvent, candidateEvent] using outputX87\n"
+                "    · simpa [originalEvent, candidateEvent] using outputFlags\n"
+                "    · simpa [originalEvent, candidateEvent] using outputImports\n"
+                "    · simpa [originalEvent, candidateEvent] using outputDynamic\n"
+                "  rw [originalBehaviorCommon, candidateBehaviorCommon]\n"
+                "  simp only [originalWorldProgram, candidateWorldProgram]\n"
+                f"  have importedCommon : ({imported_literal} : ExternalTarget) =\n"
+                f"      externalCallEdge{edge_id}MachineContract.imported := by decide\n"
+                "  rw [importedCommon]\n"
+                "  rw [originalSiteResolved]\n"
+                "  simp only [List.map_nil]\n"
+                "  refine ⟨observationRelated, ?_⟩\n"
+                "  refine ⟨?_, ?_, ⟨[], ?_⟩⟩\n"
+                "  · refine ⟨rfl, rfl, rfl, rfl, argumentsRelated, rfl, rfl, rfl,\n"
+                "      rfl, rfl, rfl, ?_, ?_⟩\n"
+                "    · simpa [originalEvent, candidateEvent] using suspendedStatesRelated\n"
+                f"    · refine ⟨externalCallSite{edge_id},\n"
+                f"        externalCallEdge{edge_id}MachineContract, rfl, ?_, rfl, rfl, rfl,\n"
+                f"        externalCallEdge{edge_id}MachineContractResolved, rfl,\n"
+                "        contractDisposition, boundaryKnown, ?_⟩\n"
+                "      · decide\n"
+                "      · intro _phaseZero\n"
+                "        exact ⟨rfl, rfl, rfl, rfl, rfl⟩\n"
+                "  · simp [WorldExternalCallbackRuntimesRelated]\n"
+                "  · simp [WorldExternalCallbackFramesHold]\n"
+            )
+        return common + (
             "  have environmentAt := ExternalEnvironmentRefines.at staticProofContext\n"
             "    externalCallSites originalEnvironment candidateEnvironment\n"
             f"    environmentRefines externalCallSite{edge_id}\n"
@@ -3126,7 +3222,7 @@ def _lean_acceptance_execution_edge(
     invariant_rewrites = ["sourceInvariant"]
     if target_node_id != node_id:
         invariant_rewrites.append("targetInvariant")
-    if step["kind"] == "external_call":
+    if step["kind"] in {"external_call", "external_protocol"}:
         return (
             f"theorem acceptanceExecutionEdge{edge_id}Refined :\n"
             "    RelationalProductExecutionEdgeRefined staticProofContext\n"
@@ -3218,8 +3314,13 @@ def _write_relational_acceptance_modules(
     terminal_region_index = int(plan["terminal_region_index"])
     terminal_invariant = _lean_state_invariant(plan["terminal_invariant"])
     parameterized_environment = any(
-        step["kind"] in {"external_call", "external_jump", "external_terminate"}
+        step["kind"] in {
+            "external_call", "external_protocol", "external_jump", "external_terminate"
+        }
         for step in plan["node_steps"]
+    )
+    parameterized_protocol_environment = any(
+        step["kind"] == "external_protocol" for step in plan["node_steps"]
     )
     invariant_rows = ", ".join(
         f"region{node_id}.inputInvariant" for node_id in range(len(nodes))
@@ -3235,38 +3336,63 @@ def _write_relational_acceptance_modules(
         + "] }"
         for state in plan["control_states"]
     )
-    world_program_source = (
-        "def inertWorldProtocolEnvironment : WorldExternalProtocolEnvironment := {\n"
-        "  action := fun request => .returned { state := request.state, world := request.world }\n"
-        "}\n\n"
-        "def originalWorldProgram (environment : WorldExternalEnvironment) : "
-        "DecodedWorldProgram := {\n"
-        "  candidate := false\n  context := staticProofContext\n"
-        "  regions := allRegions\n  externalCallSites\n"
-        "  environment\n  protocolEnvironment := inertWorldProtocolEnvironment\n}\n\n"
-        "def candidateWorldProgram (environment : WorldExternalEnvironment) : "
-        "DecodedWorldProgram := {\n"
-        "  candidate := true\n  context := staticProofContext\n"
-        "  regions := allRegions\n  externalCallSites\n"
-        "  environment\n  protocolEnvironment := inertWorldProtocolEnvironment\n}\n\n"
-        if parameterized_environment else
-        "def inertWorldProtocolEnvironment : WorldExternalProtocolEnvironment := {\n"
-        "  action := fun request => .returned { state := request.state, world := request.world }\n"
-        "}\n\n"
-        "def inertWorldEnvironment : WorldExternalEnvironment := {\n"
-        "  result := fun _ event => { state := event.state, world := event.world }\n"
-        "}\n\n"
-        "def originalWorldProgram : DecodedWorldProgram := {\n"
-        "  candidate := false\n  context := staticProofContext\n"
-        "  regions := allRegions\n  externalCallSites\n"
-        "  environment := inertWorldEnvironment\n"
-        "  protocolEnvironment := inertWorldProtocolEnvironment\n}\n\n"
-        "def candidateWorldProgram : DecodedWorldProgram := {\n"
-        "  candidate := true\n  context := staticProofContext\n"
-        "  regions := allRegions\n  externalCallSites\n"
-        "  environment := inertWorldEnvironment\n"
-        "  protocolEnvironment := inertWorldProtocolEnvironment\n}\n\n"
+    callback_target_rows = ", ".join(
+        "{ nodeId := " + str(int(state["node_id"]))
+        + ", activeFrameOffset := "
+        + _lean_return_slot_offset_pair(state["active_frame_offset"])
+        + ", returnInvariant := terminalInvariant"
+        + ", outerFrameTransferRules := ["
+        + ", ".join(
+            _lean_return_slot_transfer_rule(rule)
+            for rule in state["outer_frame_transfer_rules"]
+        )
+        + "] }"
+        for state in plan["protocol_callback_states"]
     )
+    inert_protocol_source = (
+        "def inertWorldProtocolEnvironment : WorldExternalProtocolEnvironment := {\n"
+        "  action := fun request => .returned { state := request.state, world := request.world }\n"
+        "}\n\n"
+    )
+    if parameterized_environment:
+        protocol_parameter = (
+            " (protocolEnvironment : WorldExternalProtocolEnvironment)"
+            if parameterized_protocol_environment else ""
+        )
+        protocol_assignment = (
+            "protocolEnvironment" if parameterized_protocol_environment
+            else "inertWorldProtocolEnvironment"
+        )
+        world_program_source = (
+            inert_protocol_source
+            + "def originalWorldProgram (environment : WorldExternalEnvironment)"
+            + protocol_parameter + " : DecodedWorldProgram := {\n"
+            "  candidate := false\n  context := staticProofContext\n"
+            "  regions := allRegions\n  externalCallSites\n"
+            f"  environment\n  protocolEnvironment := {protocol_assignment}\n}}\n\n"
+            + "def candidateWorldProgram (environment : WorldExternalEnvironment)"
+            + protocol_parameter + " : DecodedWorldProgram := {\n"
+            "  candidate := true\n  context := staticProofContext\n"
+            "  regions := allRegions\n  externalCallSites\n"
+            f"  environment\n  protocolEnvironment := {protocol_assignment}\n}}\n\n"
+        )
+    else:
+        world_program_source = (
+            inert_protocol_source
+            + "def inertWorldEnvironment : WorldExternalEnvironment := {\n"
+            "  result := fun _ event => { state := event.state, world := event.world }\n"
+            "}\n\n"
+            "def originalWorldProgram : DecodedWorldProgram := {\n"
+            "  candidate := false\n  context := staticProofContext\n"
+            "  regions := allRegions\n  externalCallSites\n"
+            "  environment := inertWorldEnvironment\n"
+            "  protocolEnvironment := inertWorldProtocolEnvironment\n}\n\n"
+            "def candidateWorldProgram : DecodedWorldProgram := {\n"
+            "  candidate := true\n  context := staticProofContext\n"
+            "  regions := allRegions\n  externalCallSites\n"
+            "  environment := inertWorldEnvironment\n"
+            "  protocolEnvironment := inertWorldProtocolEnvironment\n}\n\n"
+        )
     context_source = (
         "import StageA.RelationalBundle\n\n"
         "namespace StageA.GeneratedRelational\n\n"
@@ -3280,6 +3406,9 @@ def _write_relational_acceptance_modules(
         "}\n\n"
         "def productControlProfile : ProductControlProfile := {\n"
         f"  states := [{control_rows}]\n"
+        "}\n\n"
+        "def protocolCallbackTargets : ProtocolCallbackTargetProfile := {\n"
+        f"  states := [{callback_target_rows}]\n"
         "}\n\n"
         "def consoleLaunch : PE32ConsoleLaunchV1 := {\n"
         f"  rootNodeId := {root_node_id}\n"
@@ -3321,7 +3450,12 @@ def _write_relational_acceptance_modules(
             running = f"acceptanceRunningNode{node_id}Refined"
             region_theorems.append(region_match)
             running_theorems.append(
-                f"{running} originalEnvironment candidateEnvironment environmentRefines"
+                f"{running} originalEnvironment candidateEnvironment "
+                + (
+                    "originalProtocolEnvironment candidateProtocolEnvironment "
+                    if parameterized_protocol_environment else ""
+                )
+                + "environmentRefines"
                 if parameterized_environment else running
             )
             edge_theorems.extend(
@@ -3364,12 +3498,23 @@ def _write_relational_acceptance_modules(
                     f"acceptance{side_title}Normalization{node_id}Checked"
                 )
                 environment_name = f"{side}Environment"
+                protocol_environment_name = f"{side}ProtocolEnvironment"
                 world_program = (
-                    f"({side}WorldProgram {environment_name})"
+                    f"({side}WorldProgram {environment_name}"
+                    + (
+                        f" {protocol_environment_name}"
+                        if parameterized_protocol_environment else ""
+                    )
+                    + ")"
                     if parameterized_environment else f"{side}WorldProgram"
                 )
                 world_behavior_binder = (
                     f" ({environment_name} : WorldExternalEnvironment)"
+                    + (
+                        f" ({protocol_environment_name} : "
+                        "WorldExternalProtocolEnvironment)"
+                        if parameterized_protocol_environment else ""
+                    )
                     if parameterized_environment else ""
                 )
                 definitions.append(
@@ -3410,7 +3555,14 @@ def _write_relational_acceptance_modules(
             definitions.append(_lean_acceptance_running_node(
                 step, contract["regions"], behaviors,
                 parameterized_environment=parameterized_environment,
+                parameterized_protocol_environment=parameterized_protocol_environment,
             ))
+            if "callback_profile_index" in step:
+                definitions.append(_lean_acceptance_callback_return_node(
+                    step,
+                    parameterized_environment=parameterized_environment,
+                    parameterized_protocol_environment=parameterized_protocol_environment,
+                ))
             definitions.extend(
                 _lean_acceptance_execution_edge(step=step, edge=edge)
                 for edge in step["edges"]
@@ -3435,7 +3587,12 @@ def _write_relational_acceptance_modules(
                 + (
                     " (originalEnvironment candidateEnvironment : "
                     "WorldExternalEnvironment)\n"
-                    "    (environmentRefines : ExternalEnvironmentRefines "
+                    + (
+                        "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+                        "WorldExternalProtocolEnvironment)\n"
+                        if parameterized_protocol_environment else ""
+                    )
+                    + "    (environmentRefines : ExternalEnvironmentRefines "
                     "staticProofContext externalCallSites\n"
                     "      originalEnvironment candidateEnvironment)"
                     if parameterized_environment else ""
@@ -3444,9 +3601,20 @@ def _write_relational_acceptance_modules(
                 "    AllListedRunningProductNodesRefined staticProofContext\n"
                 "      relationalProductGraph productInvariantTable\n"
                 "      relationalProductReachabilityEvidence productControlProfile\n"
+                "      protocolCallbackTargets\n"
                 + (
-                    "      (originalWorldProgram originalEnvironment)\n"
-                    "      (candidateWorldProgram candidateEnvironment) "
+                    "      (originalWorldProgram originalEnvironment"
+                    + (
+                        " originalProtocolEnvironment"
+                        if parameterized_protocol_environment else ""
+                    )
+                    + ")\n"
+                    + "      (candidateWorldProgram candidateEnvironment"
+                    + (
+                        " candidateProtocolEnvironment"
+                        if parameterized_protocol_environment else ""
+                    )
+                    + ") "
                     if parameterized_environment else
                     "      originalWorldProgram\n"
                     "      candidateWorldProgram "
@@ -3479,7 +3647,12 @@ def _write_relational_acceptance_modules(
             "regions": f"acceptanceRegionChunk{chunk_index}Checked",
             "running": (
                 f"acceptanceRunningChunk{chunk_index}Checked originalEnvironment "
-                "candidateEnvironment environmentRefines"
+                "candidateEnvironment "
+                + (
+                    "originalProtocolEnvironment candidateProtocolEnvironment "
+                    if parameterized_protocol_environment else ""
+                )
+                + "environmentRefines"
                 if parameterized_environment else
                 f"acceptanceRunningChunk{chunk_index}Checked"
             ),
@@ -3493,17 +3666,22 @@ def _write_relational_acceptance_modules(
         "staticProofContext relationalProductGraph allRegions", "regions",
     )
     acceptance_original_program = (
-        "(originalWorldProgram originalEnvironment)"
+        "(originalWorldProgram originalEnvironment"
+        + (" originalProtocolEnvironment" if parameterized_protocol_environment else "")
+        + ")"
         if parameterized_environment else "originalWorldProgram"
     )
     acceptance_candidate_program = (
-        "(candidateWorldProgram candidateEnvironment)"
+        "(candidateWorldProgram candidateEnvironment"
+        + (" candidateProtocolEnvironment" if parameterized_protocol_environment else "")
+        + ")"
         if parameterized_environment else "candidateWorldProgram"
     )
     running_proof = _lean_appended_proof(
         chunks, "allListedRunningProductNodesRefined_append",
         "staticProofContext relationalProductGraph productInvariantTable "
         "relationalProductReachabilityEvidence productControlProfile "
+        "protocolCallbackTargets "
         f"{acceptance_original_program} {acceptance_candidate_program}",
         "running",
     )
@@ -3514,63 +3692,225 @@ def _write_relational_acceptance_modules(
         "edges",
     )
     root_target_id = int(nodes[root_node_id]["target_id"])
+    callback_node_ids = [
+        int(state["node_id"]) for state in plan["protocol_callback_states"]
+    ]
+    callback_node_ids_literal = "[" + ", ".join(map(str, callback_node_ids)) + "]"
+    callback_theorems = [
+        f"acceptanceCallbackRunningNode{node_id}Refined"
+        + (
+            " originalEnvironment candidateEnvironment"
+            + (
+                " originalProtocolEnvironment candidateProtocolEnvironment"
+                if parameterized_protocol_environment else ""
+            )
+            + " environmentRefines"
+            if parameterized_environment else ""
+        )
+        for node_id in callback_node_ids
+    ]
+    callback_closure_source = ""
+    if parameterized_protocol_environment:
+        callback_closure_source = (
+            f"def allAcceptanceCallbackNodeIds : List Nat := {callback_node_ids_literal}\n\n"
+            "theorem allAcceptanceCallbackRunningNodesListed\n"
+            "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+            "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+            "WorldExternalProtocolEnvironment)\n"
+            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    AllListedCallbackRunningProductNodesRefined staticProofContext\n"
+            "      relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      protocolCallbackTargets\n"
+            "      (originalWorldProgram originalEnvironment originalProtocolEnvironment)\n"
+            "      (candidateWorldProgram candidateEnvironment candidateProtocolEnvironment)\n"
+            "      allAcceptanceCallbackNodeIds := by\n"
+            f"  exact {_lean_all_listed_proof(callback_theorems)}\n\n"
+            "theorem allAcceptanceCallbackRunningNodesRefined\n"
+            "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+            "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+            "WorldExternalProtocolEnvironment)\n"
+            "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+            "      externalCallSites originalEnvironment candidateEnvironment) :\n"
+            "    ReachableCallbackRunningProductNodesRefined staticProofContext\n"
+            "      relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      protocolCallbackTargets\n"
+            "      (originalWorldProgram originalEnvironment originalProtocolEnvironment)\n"
+            "      (candidateWorldProgram candidateEnvironment candidateProtocolEnvironment) := by\n"
+            "  apply reachableCallbackRunningProductNodesRefined_of_listed_profile\n"
+            "  have ids : allAcceptanceCallbackNodeIds =\n"
+            "      (protocolCallbackTargets.states.map fun state => state.nodeId) := by decide\n"
+            "  rw [\u2190 ids]\n"
+            "  exact allAcceptanceCallbackRunningNodesListed originalEnvironment\n"
+            "    candidateEnvironment originalProtocolEnvironment\n"
+            "    candidateProtocolEnvironment environmentRefines\n\n"
+        )
     if parameterized_environment:
         running_closure_source = (
             "theorem allAcceptanceRunningNodesListed\n"
             "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+            + (
+                "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+                "WorldExternalProtocolEnvironment)\n"
+                if parameterized_protocol_environment else ""
+            )
+            +
             "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
             "      externalCallSites originalEnvironment candidateEnvironment) :\n"
             "    AllListedRunningProductNodesRefined staticProofContext\n"
             "      relationalProductGraph productInvariantTable\n"
             "      relationalProductReachabilityEvidence productControlProfile\n"
-            "      (originalWorldProgram originalEnvironment)\n"
-            "      (candidateWorldProgram candidateEnvironment) allAcceptanceNodeIds := by\n"
+            "      protocolCallbackTargets\n"
+            f"      {acceptance_original_program}\n"
+            f"      {acceptance_candidate_program} allAcceptanceNodeIds := by\n"
             f"  simpa [allAcceptanceNodeIds] using ({running_proof})\n\n"
             "theorem allAcceptanceRunningNodesRefined\n"
             "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+            + (
+                "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+                "WorldExternalProtocolEnvironment)\n"
+                if parameterized_protocol_environment else ""
+            )
+            +
             "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
             "      externalCallSites originalEnvironment candidateEnvironment) :\n"
             "    ReachableRunningProductNodesRefined staticProofContext\n"
             "      relationalProductGraph productInvariantTable\n"
             "      relationalProductReachabilityEvidence productControlProfile\n"
-            "      (originalWorldProgram originalEnvironment)\n"
-            "      (candidateWorldProgram candidateEnvironment) := by\n"
+            "      protocolCallbackTargets\n"
+            f"      {acceptance_original_program}\n"
+            f"      {acceptance_candidate_program} := by\n"
             "  apply reachableRunningProductNodesRefined_of_complete_evidence\n"
             "    staticProofContext relationalProductGraph productInvariantTable\n"
             "    relationalProductReachabilityEvidence productControlProfile\n"
-            "    (originalWorldProgram originalEnvironment)\n"
-            "    (candidateWorldProgram candidateEnvironment)\n"
+            "    protocolCallbackTargets\n"
+            f"    {acceptance_original_program}\n"
+            f"    {acceptance_candidate_program}\n"
             "    relationalProductLocalEvidence\n"
             "    relationalProductLocalEvidenceCompleteChecked\n"
             "  have ids : allAcceptanceNodeIds =\n"
             "      relationalProductLocalEvidence.decodedNodeIds := by decide\n"
             "  rw [← ids]\n"
             "  exact allAcceptanceRunningNodesListed originalEnvironment\n"
-            "    candidateEnvironment environmentRefines\n\n"
+            "    candidateEnvironment "
+            + (
+                "originalProtocolEnvironment candidateProtocolEnvironment "
+                if parameterized_protocol_environment else ""
+            )
+            + "environmentRefines\n\n"
         )
-        acceptance_certificate_source = (
+        if parameterized_protocol_environment:
+            acceptance_certificate_source = (
+                "def wholeProgramCertificate\n"
+                "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+                "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+                "WorldExternalProtocolEnvironment)\n"
+                "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+                "      externalCallSites originalEnvironment candidateEnvironment)\n"
+                "    (protocolRefines : WorldExternalProtocolEnvironmentsRefine\n"
+                "      staticProofContext relationalProductGraph productInvariantTable\n"
+                "      relationalProductReachabilityEvidence productControlProfile\n"
+                "      protocolCallbackTargets externalCallSites\n"
+                "      originalProtocolEnvironment candidateProtocolEnvironment) :\n"
+                "    WholeProgramCertificate staticProofContext relationalProductGraph\n"
+                "      allRegions productInvariantTable relationalProductReachabilityEvidence\n"
+                "      productControlProfile protocolCallbackTargets externalCallSites consoleLaunch\n"
+                "      originalEnvironment candidateEnvironment\n"
+                "      originalProtocolEnvironment candidateProtocolEnvironment := {\n"
+                "  staticContextValid := staticProofContextChecked\n"
+                "  productGraphValid := relationalProductGraphIndexedValidChecked\n"
+                "  regionsUseCanonicalContext := allRegionsUseStaticContextChecked\n"
+                "  regionsMatchProductGraph := allRegionsMatchProductGraph\n"
+                "  invariantTableValid := productInvariantTableValid\n"
+                "  callbackTargetsValid := by decide\n"
+                "  reachabilityClosed := generatedDeclaredGraphReachabilityCertificateChecked\n"
+                "  decodedControlComplete := reachableProductLocalCertificate.reachableControlComplete\n"
+                "  reachableEdgesRefined := reachableProductLocalCertificate.reachableEdgesRefined\n"
+                "  reachableExecutionEdgesRefined := allAcceptanceExecutionEdgesRefined\n"
+                "  environmentsRefined := environmentRefines\n"
+                "  protocolEnvironmentsRefined := protocolRefines\n"
+                "  launchValid := consoleLaunchValid\n"
+                "  launchControlAllowed := by decide\n"
+                "  runningProductNodesRefined := allAcceptanceRunningNodesRefined\n"
+                "    originalEnvironment candidateEnvironment originalProtocolEnvironment\n"
+                "    candidateProtocolEnvironment environmentRefines\n"
+                "  callbackRunningProductNodesRefined :=\n"
+                "    allAcceptanceCallbackRunningNodesRefined originalEnvironment\n"
+                "      candidateEnvironment originalProtocolEnvironment\n"
+                "      candidateProtocolEnvironment environmentRefines\n"
+                "}\n\n"
+                "theorem candidatePE32ProgramsEquivalent\n"
+                "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
+                "    (originalProtocolEnvironment candidateProtocolEnvironment : "
+                "WorldExternalProtocolEnvironment)\n"
+                "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
+                "      externalCallSites originalEnvironment candidateEnvironment)\n"
+                "    (protocolRefines : WorldExternalProtocolEnvironmentsRefine\n"
+                "      staticProofContext relationalProductGraph productInvariantTable\n"
+                "      relationalProductReachabilityEvidence productControlProfile\n"
+                "      protocolCallbackTargets externalCallSites\n"
+                "      originalProtocolEnvironment candidateProtocolEnvironment) :\n"
+                "    PE32ProgramsObservationallyEquivalent staticProofContext\n"
+                "      relationalProductGraph productInvariantTable\n"
+                "      relationalProductReachabilityEvidence productControlProfile consoleLaunch\n"
+                "      (originalWorldProgram originalEnvironment originalProtocolEnvironment)\n"
+                "      (candidateWorldProgram candidateEnvironment candidateProtocolEnvironment) := by\n"
+                "  simpa [originalWorldProgram, candidateWorldProgram] using\n"
+                "    pe32ProgramsEquivalent staticProofContext relationalProductGraph allRegions\n"
+                "      productInvariantTable relationalProductReachabilityEvidence productControlProfile\n"
+                "      protocolCallbackTargets externalCallSites consoleLaunch\n"
+                "      originalEnvironment candidateEnvironment originalProtocolEnvironment\n"
+                "      candidateProtocolEnvironment\n"
+                "      (wholeProgramCertificate originalEnvironment candidateEnvironment\n"
+                "        originalProtocolEnvironment candidateProtocolEnvironment\n"
+                "        environmentRefines protocolRefines)\n\n"
+                "#print axioms candidatePE32ProgramsEquivalent\n\n"
+            )
+        else:
+            acceptance_certificate_source = (
+            "theorem noProtocolExternalCallSitesChecked :\n"
+            "    externalCallSitesExcludeProtocol staticProofContext externalCallSites = true :=\n"
+            "  by decide\n\n"
             "def wholeProgramCertificate\n"
             "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
             "    (environmentRefines : ExternalEnvironmentRefines staticProofContext\n"
             "      externalCallSites originalEnvironment candidateEnvironment) :\n"
             "    WholeProgramCertificate staticProofContext relationalProductGraph\n"
             "      allRegions productInvariantTable relationalProductReachabilityEvidence\n"
-            "      productControlProfile externalCallSites consoleLaunch\n"
-            "      originalEnvironment candidateEnvironment := {\n"
+            "      productControlProfile protocolCallbackTargets externalCallSites consoleLaunch\n"
+            "      originalEnvironment candidateEnvironment\n"
+            "      inertWorldProtocolEnvironment inertWorldProtocolEnvironment := {\n"
             "  staticContextValid := staticProofContextChecked\n"
             "  productGraphValid := relationalProductGraphIndexedValidChecked\n"
             "  regionsUseCanonicalContext := allRegionsUseStaticContextChecked\n"
             "  regionsMatchProductGraph := allRegionsMatchProductGraph\n"
             "  invariantTableValid := productInvariantTableValid\n"
+            "  callbackTargetsValid := by decide\n"
             "  reachabilityClosed := generatedDeclaredGraphReachabilityCertificateChecked\n"
             "  decodedControlComplete := reachableProductLocalCertificate.reachableControlComplete\n"
             "  reachableEdgesRefined := reachableProductLocalCertificate.reachableEdgesRefined\n"
             "  reachableExecutionEdgesRefined := allAcceptanceExecutionEdgesRefined\n"
             "  environmentsRefined := environmentRefines\n"
+            "  protocolEnvironmentsRefined :=\n"
+            "    WorldExternalProtocolEnvironmentsRefine.of_no_protocol_sites\n"
+            "      staticProofContext relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      protocolCallbackTargets externalCallSites inertWorldProtocolEnvironment\n"
+            "      inertWorldProtocolEnvironment noProtocolExternalCallSitesChecked\n"
             "  launchValid := consoleLaunchValid\n"
             "  launchControlAllowed := by decide\n"
             "  runningProductNodesRefined := allAcceptanceRunningNodesRefined\n"
             "    originalEnvironment candidateEnvironment environmentRefines\n"
+            "  callbackRunningProductNodesRefined :=\n"
+            "    reachableCallbackRunningProductNodesRefined_of_no_protocol_sites\n"
+            "      staticProofContext relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      protocolCallbackTargets\n"
+            "      (originalWorldProgram originalEnvironment)\n"
+            "      (candidateWorldProgram candidateEnvironment)\n"
+            "      productInvariantTableValid noProtocolExternalCallSitesChecked\n"
             "}\n\n"
             "theorem candidatePE32ProgramsEquivalent\n"
             "    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)\n"
@@ -3584,7 +3924,9 @@ def _write_relational_acceptance_modules(
             "  simpa [originalWorldProgram, candidateWorldProgram] using\n"
             "    pe32ProgramsEquivalent staticProofContext relationalProductGraph allRegions\n"
             "      productInvariantTable relationalProductReachabilityEvidence productControlProfile\n"
-            "      externalCallSites consoleLaunch originalEnvironment candidateEnvironment\n"
+            "      protocolCallbackTargets externalCallSites consoleLaunch\n"
+            "      originalEnvironment candidateEnvironment\n"
+            "      inertWorldProtocolEnvironment inertWorldProtocolEnvironment\n"
             "      (wholeProgramCertificate originalEnvironment candidateEnvironment\n"
             "        environmentRefines)\n\n"
             "#print axioms candidatePE32ProgramsEquivalent\n\n"
@@ -3595,6 +3937,7 @@ def _write_relational_acceptance_modules(
             "    AllListedRunningProductNodesRefined staticProofContext\n"
             "      relationalProductGraph productInvariantTable\n"
             "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      protocolCallbackTargets\n"
             "      originalWorldProgram\n"
             "      candidateWorldProgram allAcceptanceNodeIds := by\n"
             f"  simpa [allAcceptanceNodeIds] using ({running_proof})\n\n"
@@ -3602,11 +3945,13 @@ def _write_relational_acceptance_modules(
             "    ReachableRunningProductNodesRefined staticProofContext\n"
             "      relationalProductGraph productInvariantTable\n"
             "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      protocolCallbackTargets\n"
             "      originalWorldProgram\n"
             "      candidateWorldProgram := by\n"
             "  apply reachableRunningProductNodesRefined_of_complete_evidence\n"
             "    staticProofContext relationalProductGraph productInvariantTable\n"
             "    relationalProductReachabilityEvidence productControlProfile\n"
+            "    protocolCallbackTargets\n"
             "    originalWorldProgram\n"
             "    candidateWorldProgram relationalProductLocalEvidence\n"
             "    relationalProductLocalEvidenceCompleteChecked\n"
@@ -3622,26 +3967,44 @@ def _write_relational_acceptance_modules(
             "  unfold ExternalEnvironmentRefines\n"
             "  refine ⟨by decide, by decide, ?_⟩\n"
             "  intro site member\n  simp [externalCallSites] at member\n\n"
+            "theorem noProtocolExternalCallSitesChecked :\n"
+            "    externalCallSitesExcludeProtocol staticProofContext externalCallSites = true :=\n"
+            "  by decide\n\n"
             "def wholeProgramCertificate : WholeProgramCertificate staticProofContext\n"
             "    relationalProductGraph allRegions productInvariantTable\n"
             "    relationalProductReachabilityEvidence productControlProfile\n"
-            "    externalCallSites consoleLaunch\n"
-            "    inertWorldEnvironment inertWorldEnvironment := {\n"
+            "    protocolCallbackTargets externalCallSites consoleLaunch\n"
+            "    inertWorldEnvironment inertWorldEnvironment\n"
+            "    inertWorldProtocolEnvironment inertWorldProtocolEnvironment := {\n"
             "  staticContextValid := staticProofContextChecked\n"
             "  productGraphValid := relationalProductGraphIndexedValidChecked\n"
             "  regionsUseCanonicalContext := allRegionsUseStaticContextChecked\n"
             "  regionsMatchProductGraph := allRegionsMatchProductGraph\n"
             "  invariantTableValid := productInvariantTableValid\n"
+            "  callbackTargetsValid := by decide\n"
             "  reachabilityClosed := generatedDeclaredGraphReachabilityCertificateChecked\n"
             "  decodedControlComplete := reachableProductLocalCertificate.reachableControlComplete\n"
             "  reachableEdgesRefined := reachableProductLocalCertificate.reachableEdgesRefined\n"
             "  reachableExecutionEdgesRefined := allAcceptanceExecutionEdgesRefined\n"
             "  environmentsRefined := inertEnvironmentRefines\n"
+            "  protocolEnvironmentsRefined :=\n"
+            "    WorldExternalProtocolEnvironmentsRefine.of_no_protocol_sites\n"
+            "      staticProofContext relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      protocolCallbackTargets externalCallSites inertWorldProtocolEnvironment\n"
+            "      inertWorldProtocolEnvironment noProtocolExternalCallSitesChecked\n"
             "  launchValid := consoleLaunchValid\n"
             "  launchControlAllowed := by decide\n"
             "  runningProductNodesRefined := by\n"
             "    simpa [originalWorldProgram, candidateWorldProgram] using\n"
             "      allAcceptanceRunningNodesRefined\n"
+            "  callbackRunningProductNodesRefined :=\n"
+            "    reachableCallbackRunningProductNodesRefined_of_no_protocol_sites\n"
+            "      staticProofContext relationalProductGraph productInvariantTable\n"
+            "      relationalProductReachabilityEvidence productControlProfile\n"
+            "      protocolCallbackTargets originalWorldProgram candidateWorldProgram\n"
+            "      productInvariantTableValid\n"
+            "      noProtocolExternalCallSitesChecked\n"
             "}\n\n"
             "theorem candidatePE32ProgramsEquivalent :\n"
             "    PE32ProgramsObservationallyEquivalent staticProofContext\n"
@@ -3651,8 +4014,9 @@ def _write_relational_acceptance_modules(
             "  simpa [originalWorldProgram, candidateWorldProgram] using\n"
             "    pe32ProgramsEquivalent staticProofContext relationalProductGraph allRegions\n"
             "      productInvariantTable relationalProductReachabilityEvidence productControlProfile\n"
-            "      externalCallSites\n"
+            "      protocolCallbackTargets externalCallSites\n"
             "      consoleLaunch inertWorldEnvironment inertWorldEnvironment\n"
+            "      inertWorldProtocolEnvironment inertWorldProtocolEnvironment\n"
             "      wholeProgramCertificate\n\n"
             "#print axioms candidatePE32ProgramsEquivalent\n\n"
         )
@@ -3677,6 +4041,7 @@ def _write_relational_acceptance_modules(
         "  rw [← allAcceptanceNodeIdsComplete]\n"
         "  exact allAcceptanceRegionsListed\n\n"
         + running_closure_source
+        + callback_closure_source
         + "theorem allAcceptanceExecutionEdgesListed :\n"
         "    AllListedProductExecutionEdgesRefined staticProofContext\n"
         "      relationalProductGraph allRegions productInvariantTable\n"

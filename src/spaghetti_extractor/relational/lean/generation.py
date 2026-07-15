@@ -842,7 +842,6 @@ def _write_sharded_relational_proof(
         structural_region_modules.append(module)
         source = (
             "import StageA.RelationalStaticContext\n"
-            "import StageA.RelationalProofRequiredInputsData\n"
             "import StageA.RelationalProofRegionIndexData\n\n"
             "namespace StageA.GeneratedRelational\n\n"
             "open StageA.Formal StageA.Relational\n\n"
@@ -854,14 +853,9 @@ def _write_sharded_relational_proof(
             "      region.inputs.length > 0 && region.outputs.length > 0) = true := by decide\n\n"
             f"theorem valueRegionsChunk{chunk_index}Checked :\n"
             f"    valueRegionsClosed originalPe candidatePe originalRelocations candidateRelocations {chunk_name} = true := by decide\n\n"
-            f"theorem relationOutputsChunk{chunk_index}Checked :\n"
-            f"    {chunk_name}.all (fun source => requiredInputsCertificate.all source.outputs.contains) = true := by decide\n\n"
             f"theorem flagRelationChunk{chunk_index}Checked :\n"
             f"    {chunk_name}.all (fun source => source.targets.all "
             f"(targetFlagRelationClosed allRegionIndex source)) = true := by decide\n\n"
-            f"theorem requiredInputsChunk{chunk_index}Checked :\n"
-            f"    requiredInputPairsFrom requiredInputsState{chunk_index} {chunk_name} = "
-            f"requiredInputsState{chunk_index + 1} := by decide\n\n"
             "end StageA.GeneratedRelational\n"
         )
         _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)
@@ -931,11 +925,6 @@ def _write_sharded_relational_proof(
         region_chunk_names,
         [f"valueRegionsChunk{index}Checked" for index in range(len(region_chunk_names))],
     )
-    relation_outputs_proof = _lean_all_append_proof(
-        "fun source => requiredInputsCertificate.all source.outputs.contains",
-        region_chunk_names,
-        [f"relationOutputsChunk{index}Checked" for index in range(len(region_chunk_names))],
-    )
     flag_relation_proof = _lean_all_append_proof(
         "fun source => source.targets.all (targetFlagRelationClosed allRegionIndex source)",
         region_chunk_names,
@@ -949,16 +938,6 @@ def _write_sharded_relational_proof(
         )
         for side in ("original", "candidate")
     }
-    required_input_rewrites = ", ".join(
-        [
-            item
-            for index in range(len(region_chunk_names))
-            for item in (
-                (["requiredInputPairsFrom_append"] if index + 1 < len(region_chunk_names) else [])
-                + [f"requiredInputsChunk{index}Checked"]
-            )
-        ]
-    )
     aggregate_source = (
         "import StageA.RelationalProofStructuralIndependent\n"
         + "\n".join(
@@ -984,17 +963,6 @@ def _write_sharded_relational_proof(
         "candidateRelocations allRegions :=\n"
         "  allMappedRelocationImageRelations_of_valueRegionsClosed originalPe candidatePe "
         "originalRelocations candidateRelocations allRegions valueRegionsChecked\n\n"
-        "theorem relationOutputsChecked : allRegions.all (fun source => requiredInputsCertificate.all source.outputs.contains) = true := by\n"
-        "  unfold allRegions\n"
-        f"  exact {relation_outputs_proof}\n\n"
-        "theorem requiredInputsChecked : requiredInputPairs allRegions = requiredInputsCertificate := by\n"
-        "  unfold requiredInputPairs\n"
-        "  change requiredInputPairsFrom requiredInputsState0 allRegions = requiredInputsCertificate\n"
-        "  unfold allRegions\n"
-        f"  rw [{required_input_rewrites}]\n"
-        "  rfl\n\n"
-        "theorem relationCompositionChecked : relationCompositionClosed allRegions = true :=\n"
-        "  relationCompositionClosed_of_certificate allRegions requiredInputsCertificate requiredInputsChecked relationOutputsChecked\n\n"
         "theorem flagRelationCompositionChecked : flagRelationCompositionClosed allRegionIndex allRegions = true := by\n"
         "  unfold flagRelationCompositionClosed allRegions\n"
         f"  exact {flag_relation_proof}\n\n"
@@ -1022,7 +990,7 @@ def _write_sharded_relational_proof(
         "    imagesChecked indexChecked regionStructureChecked originalCoverageChecked candidateCoverageChecked\n"
         "    originalPaddingChecked candidatePaddingChecked entryChecked targetsChecked\n"
         "    originalAliasCoverageChecked candidateAliasCoverageChecked targetAliasesChecked\n"
-        "    valuesChecked relationCompositionChecked flagRelationCompositionChecked\n\n"
+        "    valuesChecked flagRelationCompositionChecked\n\n"
         "theorem importsChecked : importTablesCertified proofBundle := by\n"
         "  unfold importTablesCertified parsedImages proofBundle\n"
         "  rw [originalParsed, candidateParsed]\n"

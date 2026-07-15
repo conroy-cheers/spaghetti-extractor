@@ -9,6 +9,8 @@ STAGE_A_RELATIONAL_MODEL_ID = "x86-pe32-relational-v3"
 STAGE_A_RELATIONAL_PROFILE_ID = "x86-pe32-lean-relational-v3"
 RELATION_CONTRACT_FORMAT = "stage-a-relation-contract-v1"
 EXTERNAL_ENVIRONMENT_PROFILE_FORMAT = "stage-a-external-environment-profile-v1"
+PROTOCOL_CALLBACK_CONTROL_FORMAT = "stage-a-protocol-callback-control-v1"
+STAGE_A_INTERFACE_MANIFEST_FORMAT = "stage-a-interface-manifest-v1"
 RELATIONAL_PROOF_IR_FORMAT = "stage-a-relational-proof-ir-v1"
 RELATIONAL_SEGMENT_CERTIFICATE_FORMAT = (
     "stage-a-relational-segment-certificate-v1"
@@ -16,7 +18,7 @@ RELATIONAL_SEGMENT_CERTIFICATE_FORMAT = (
 REGISTERS = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
 MACHINE_CALL_ABI_REGISTERS = REGISTERS - {"esp"}
 MACHINE_CALL_MEMORY_EFFECTS = {"none", "readOnly", "argumentRanges"}
-MACHINE_CALL_DISPOSITIONS = {"returns", "terminates"}
+MACHINE_CALL_DISPOSITIONS = {"returns", "terminates", "protocol"}
 MACHINE_CALL_WORLD_EFFECTS = {
     "none", "opaqueResources", "dynamicRanges", "dynamicRangeRelease",
     "callbackRegistration", "tlsState",
@@ -65,6 +67,7 @@ RELATIONAL_ACCEPTANCE_THEOREM = (
 )
 RELATIONAL_PREPARED_REPORT_FILES = (
     "prepared-proof.json",
+    "stage-a-interface-manifest.json",
     "module-graph.json",
     "relation-contract.json",
     "relational-proof-ir.json",
@@ -93,6 +96,140 @@ class AcceptanceAuthority(str, Enum):
 
 class SchemaError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class ProtocolCallbackFrameOffset:
+    original_register: str
+    original: int
+    candidate_register: str
+    candidate: int
+
+    @classmethod
+    def parse(cls, payload: Mapping[str, Any]) -> "ProtocolCallbackFrameOffset":
+        if set(payload) != {
+            "original_register", "original", "candidate_register", "candidate",
+        }:
+            raise SchemaError("callback frame offset has unexpected fields")
+        original_register = payload.get("original_register")
+        candidate_register = payload.get("candidate_register")
+        original = integer(payload.get("original"))
+        candidate = integer(payload.get("candidate"))
+        if original_register not in REGISTERS or candidate_register not in REGISTERS:
+            raise SchemaError("callback frame offset registers must be x86 registers")
+        if (
+            original is None or candidate is None
+            or not 0 <= original < 2**32
+            or not 0 <= candidate < 2**32
+        ):
+            raise SchemaError("callback frame offsets must be 32-bit words")
+        return cls(
+            original_register=str(original_register),
+            original=original,
+            candidate_register=str(candidate_register),
+            candidate=candidate,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "original_register": self.original_register,
+            "original": self.original,
+            "candidate_register": self.candidate_register,
+            "candidate": self.candidate,
+        }
+
+
+@dataclass(frozen=True)
+class ProtocolCallbackReturnInvariant:
+    kind: str
+    target_id: int | None = None
+
+    @classmethod
+    def parse(cls, payload: Mapping[str, Any]) -> "ProtocolCallbackReturnInvariant":
+        kind = payload.get("kind")
+        if kind == "terminal" and set(payload) == {"kind"}:
+            return cls(kind="terminal")
+        if kind == "region_input" and set(payload) == {"kind", "target_id"}:
+            target_id = integer(payload.get("target_id"))
+            if target_id is not None:
+                return cls(kind="region_input", target_id=target_id)
+        raise SchemaError("callback return invariant must name a supported invariant")
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"kind": self.kind}
+        if self.target_id is not None:
+            payload["target_id"] = self.target_id
+        return payload
+
+
+@dataclass(frozen=True)
+class ProtocolCallbackControlState:
+    target_id: int
+    active_frame_offset: ProtocolCallbackFrameOffset
+    return_invariant: ProtocolCallbackReturnInvariant
+
+    @classmethod
+    def parse(cls, payload: Mapping[str, Any]) -> "ProtocolCallbackControlState":
+        if set(payload) != {
+            "target_id", "active_frame_offset", "return_invariant",
+        }:
+            raise SchemaError("callback control state has unexpected fields")
+        target_id = integer(payload.get("target_id"))
+        active_frame_offset = payload.get("active_frame_offset")
+        return_invariant = payload.get("return_invariant")
+        if target_id is None:
+            raise SchemaError("callback target_id must be an integer")
+        if not isinstance(active_frame_offset, Mapping):
+            raise SchemaError("callback active_frame_offset must be an object")
+        if not isinstance(return_invariant, Mapping):
+            raise SchemaError("callback return_invariant must be an object")
+        return cls(
+            target_id=target_id,
+            active_frame_offset=ProtocolCallbackFrameOffset.parse(active_frame_offset),
+            return_invariant=ProtocolCallbackReturnInvariant.parse(return_invariant),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "target_id": self.target_id,
+            "active_frame_offset": self.active_frame_offset.to_payload(),
+            "return_invariant": self.return_invariant.to_payload(),
+        }
+
+
+@dataclass(frozen=True)
+class ProtocolCallbackControl:
+    states: tuple[ProtocolCallbackControlState, ...]
+    format: str = PROTOCOL_CALLBACK_CONTROL_FORMAT
+
+    @classmethod
+    def parse(cls, payload: Mapping[str, Any]) -> "ProtocolCallbackControl":
+        if set(payload) != {"format", "states"}:
+            raise SchemaError("callback control inventory has unexpected fields")
+        if payload.get("format") != PROTOCOL_CALLBACK_CONTROL_FORMAT:
+            raise SchemaError("unsupported callback control inventory format")
+        raw_states = payload.get("states")
+        if not isinstance(raw_states, list):
+            raise SchemaError("callback control states must be a list")
+        states: list[ProtocolCallbackControlState] = []
+        for raw_state in raw_states:
+            if not isinstance(raw_state, Mapping):
+                raise SchemaError("callback control state must be an object")
+            states.append(ProtocolCallbackControlState.parse(raw_state))
+        target_ids = [state.target_id for state in states]
+        if len(target_ids) != len(set(target_ids)):
+            raise SchemaError("callback control target ids must be unique")
+        return cls(states=tuple(states))
+
+    @classmethod
+    def empty(cls) -> "ProtocolCallbackControl":
+        return cls(states=())
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "format": self.format,
+            "states": [state.to_payload() for state in self.states],
+        }
 
 
 def integer(value: Any) -> int | None:
@@ -181,6 +318,7 @@ class ModuleGraph:
 
 @dataclass(frozen=True)
 class PreparedProofDigests:
+    interface_manifest: str
     relation_contract: str
     proof_ir: str
     semantic_ir: str
@@ -195,6 +333,7 @@ class PreparedProofDigests:
     @classmethod
     def parse(cls, payload: Mapping[str, Any]) -> "PreparedProofDigests":
         fields = {
+            "interface_manifest": "interface_manifest_sha256",
             "relation_contract": "relation_contract_sha256",
             "proof_ir": "proof_ir_sha256",
             "semantic_ir": "semantic_ir_sha256",
@@ -210,3 +349,74 @@ class PreparedProofDigests:
             name: _required_string(payload, field)
             for name, field in fields.items()
         })
+
+
+@dataclass(frozen=True)
+class StageAInterfaceManifest:
+    format: str
+    model: str
+    acceptance_theorem: str
+    schema_ids: tuple[str, ...]
+    artifact_ids: tuple[str, ...]
+    workstream_ids: tuple[str, ...]
+
+    @classmethod
+    def parse(cls, payload: Mapping[str, Any]) -> "StageAInterfaceManifest":
+        if payload.get("format") != STAGE_A_INTERFACE_MANIFEST_FORMAT:
+            raise SchemaError("unsupported Stage A interface manifest format")
+
+        def unique_ids(field: str) -> tuple[str, ...]:
+            rows = payload.get(field)
+            if not isinstance(rows, list) or any(
+                not isinstance(row, Mapping)
+                or not isinstance(row.get("id"), str)
+                or not row["id"]
+                for row in rows
+            ):
+                raise SchemaError(f"{field} must be a list of identified objects")
+            ids = tuple(str(row["id"]) for row in rows)
+            if len(ids) != len(set(ids)):
+                raise SchemaError(f"{field} ids must be unique")
+            return ids
+
+        workstreams = payload.get("workstreams")
+        workstream_ids = unique_ids("workstreams")
+        assert isinstance(workstreams, list)
+        acceptance_owners = [
+            row for row in workstreams
+            if isinstance(row, Mapping) and row.get("acceptance_owner") is True
+        ]
+        if len(acceptance_owners) != 1:
+            raise SchemaError("exactly one workstream must own acceptance integration")
+        if any(
+            not isinstance(row.get("parallel_safe"), bool)
+            or not isinstance(row.get("owned_paths"), list)
+            or not isinstance(row.get("integration_fixtures"), list)
+            for row in workstreams
+            if isinstance(row, Mapping)
+        ):
+            raise SchemaError("workstreams must declare ownership and integration fixtures")
+        owned_paths = [
+            str(path)
+            for row in workstreams
+            if isinstance(row, Mapping)
+            for path in row.get("owned_paths", [])
+        ]
+        if len(owned_paths) != len(set(owned_paths)):
+            raise SchemaError("workstream owned paths must be disjoint")
+        if acceptance_owners[0].get("parallel_safe") is not False:
+            raise SchemaError("acceptance integration must remain a serial merge point")
+        acceptance = payload.get("acceptance")
+        if not isinstance(acceptance, Mapping):
+            raise SchemaError("interface manifest acceptance must be an object")
+        theorem = _required_string(acceptance, "theorem")
+        if acceptance.get("only_pass_authority") is not True:
+            raise SchemaError("interface manifest must preserve the sole pass authority")
+        return cls(
+            format=str(payload["format"]),
+            model=_required_string(payload, "model"),
+            acceptance_theorem=theorem,
+            schema_ids=unique_ids("schemas"),
+            artifact_ids=unique_ids("artifacts"),
+            workstream_ids=workstream_ids,
+        )

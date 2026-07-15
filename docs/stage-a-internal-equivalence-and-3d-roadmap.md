@@ -1,5 +1,10 @@
 # Stage A Internal Equivalence And 3D Application Roadmap
 
+Implementation can proceed across the versioned workstreams in
+[stage-a-parallel-development.md](stage-a-parallel-development.md). This does
+not split acceptance authority: all workstreams still converge on the one
+Lean-checked whole-program theorem.
+
 ## Purpose
 
 This document records two connected plans:
@@ -340,12 +345,13 @@ relation. Well-bracketed callbacks are the first supported profile;
 asynchronous callbacks are deferred to Track B.
 
 The migration must remain fail closed while this stack is introduced. The
-mixed-frame kernel first wraps existing internal frames and checks external
-return tokens and paired stack slots. Protocol execution states may be decoded
-and tested before acceptance uses them, but the corresponding machine-call
-disposition must remain structurally invalid until the product bisimulation has
-checked cases for suspended calls, callback entry, nested internal/external
-frames, callback return, protocol resumption, and final termination.
+mixed-frame kernel wraps existing internal frames and checks external return
+tokens and paired stack slots. The whole-program execution relation now has
+explicit suspended-protocol and callback-running cases, but the corresponding
+machine-call disposition remains structurally invalid. Acceptance may enable it
+only after the product bisimulation checks paired protocol actions, callback
+entry, nested internal/external frames, callback return, protocol resumption,
+and final termination.
 
 ### A7. Lockstep External Boundary
 

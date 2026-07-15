@@ -338,9 +338,16 @@ theorem requiredInputPairsFrom_append (initial : List RegisterPair)
       requiredInputPairsFrom (requiredInputPairsFrom initial left) right := by
   simp [requiredInputPairsFrom, List.foldl_append]
 
-def relationCompositionClosed (regions : List RegionRelation) : Bool :=
-  let required := requiredInputPairs regions
-  regions.all fun source => required.all source.outputs.contains
+def targetRegisterRelationClosed (regions : IndexTree RegionRelation)
+    (source : RegionRelation) (target : CodeTargetPair) : Bool :=
+  match regions.get? target.regionIndex with
+  | some destination => destination.inputs.all source.outputs.contains
+  | none => false
+
+def relationCompositionClosed (index : IndexTree RegionRelation)
+    (regions : List RegionRelation) : Bool :=
+  regions.all fun source =>
+    source.targets.all (targetRegisterRelationClosed index source)
 
 def targetFlagRelationClosed (regions : IndexTree RegionRelation)
     (source : RegionRelation) (target : CodeTargetPair) : Bool :=
@@ -353,11 +360,11 @@ def flagRelationCompositionClosed (index : IndexTree RegionRelation)
   regions.all fun source => source.targets.all (targetFlagRelationClosed index source)
 
 theorem relationCompositionClosed_of_certificate
-    (regions : List RegionRelation) (required : List RegisterPair)
-    (requiredChecked : requiredInputPairs regions = required)
-    (outputsChecked : regions.all (fun source => required.all source.outputs.contains) = true) :
-    relationCompositionClosed regions = true := by
-  simp [relationCompositionClosed, requiredChecked, outputsChecked]
+    (index : IndexTree RegionRelation) (regions : List RegionRelation)
+    (outputsChecked : regions.all (fun source =>
+      source.targets.all (targetRegisterRelationClosed index source)) = true) :
+    relationCompositionClosed index regions = true := by
+  exact outputsChecked
 
 def imageStructureClosed (originalPe candidatePe : PE32) : Bool :=
   (executableEntrySection originalPe).isSome &&
@@ -413,7 +420,6 @@ def structuralEligible (bundle : ProofBundle) : Bool :=
       targetAliasesCertified bundle.regions bundle.originalAliasCoverage
         bundle.candidateAliasCoverage &&
       valueTargetsClosed originalPe candidatePe bundle.regions &&
-      relationCompositionClosed bundle.regions &&
       flagRelationCompositionClosed bundle.regionIndex bundle.regions
 
 theorem structuralEligible_of_checks (bundle : ProofBundle)
@@ -440,7 +446,6 @@ theorem structuralEligible_of_checks (bundle : ProofBundle)
     (targetAliasesChecked : targetAliasesCertified bundle.regions
       bundle.originalAliasCoverage bundle.candidateAliasCoverage = true)
     (valuesChecked : valueTargetsClosed originalPe candidatePe bundle.regions = true)
-    (compositionChecked : relationCompositionClosed bundle.regions = true)
     (flagCompositionChecked :
       flagRelationCompositionClosed bundle.regionIndex bundle.regions = true) :
     structuralEligible bundle = true := by
@@ -450,7 +455,7 @@ theorem structuralEligible_of_checks (bundle : ProofBundle)
     candidateCoverageChecked, originalPaddingChecked, candidatePaddingChecked,
     entryChecked, targetsChecked, originalAliasCoverageChecked,
     candidateAliasCoverageChecked, targetAliasesChecked, valuesChecked,
-    compositionChecked, flagCompositionChecked]
+    flagCompositionChecked]
 
 def regionGoal (bundle : ProofBundle) (region : RegionRelation) : Prop :=
   match parsedImages bundle with

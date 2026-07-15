@@ -29,10 +29,19 @@
               z3-solver
             ]
           );
+          spaghettiExtractorSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./pyproject.toml
+              ./src
+              ./nix/stage-a-lean-graph.nix
+              ./profiles
+            ];
+          };
           spaghetti-extractor = pkgs.python3Packages.buildPythonApplication {
             pname = "spaghetti-extractor";
             version = "0.1.0";
-            src = ./.;
+            src = spaghettiExtractorSource;
             pyproject = true;
 
             build-system = with pkgs.python3Packages; [
@@ -328,6 +337,77 @@
                 > "$work/smoke.stdout"
               jq -e '.status == "pass"' "$out/generated/contract-smoke.json" >/dev/null
             '';
+          mkStageARelationalTest = name: module: testFiles:
+            let
+              testSource = pkgs.lib.fileset.toSource {
+                root = ./.;
+                fileset = pkgs.lib.fileset.unions (
+                  [
+                    ./tests/stage_a_relational_support.py
+                  ]
+                  ++ testFiles
+                  ++ pkgs.lib.optionals
+                    (builtins.elem name [ "lean" "pipeline" ]
+                      || pkgs.lib.hasPrefix "acceptance" name)
+                    [ ./src/spaghetti_extractor/lean/StageA ]
+                  ++ pkgs.lib.optionals (name == "contract")
+                    [ ./nix/stage-a-lean-graph.nix ]
+                );
+              };
+            in
+            pkgs.runCommand "stage-a-relational-tests-${name}"
+              {
+                nativeBuildInputs = [
+                  spaghetti-extractor
+                  pythonEnv
+                  pkgs.lean4
+                ];
+              }
+              ''
+                export HOME="$TMPDIR/home"
+                export XDG_CACHE_HOME="$TMPDIR/xdg-cache"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/relational-cache"
+                export PYTHONPATH="${spaghetti-extractor}/${pkgs.python3.sitePackages}:${pythonEnv}/${pkgs.python3.sitePackages}:${testSource}:${testSource}/tests"
+                mkdir -p "$HOME" "$XDG_CACHE_HOME" "$SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE"
+                cd "$TMPDIR"
+                python -m unittest -v ${module}
+                mkdir -p "$out"
+                printf '%s\n' '${module}' > "$out/test-module.txt"
+              '';
+          stage-a-relational-tests-schema = mkStageARelationalTest
+            "schema"
+            "tests.test_relational_schema tests.test_contract_tools.ContractToolTests.test_cli_exposes_one_stage_a_authority_and_candidate_only_stage_b_tools"
+            [
+              ./tests/test_relational_schema.py
+              ./tests/test_contract_tools.py
+              ./tests/contract_fixtures.py
+              ./tests/pe_fixtures.py
+            ];
+          stage-a-relational-tests-contract = mkStageARelationalTest
+            "contract" "tests.test_stage_a_relational_contract" [ ./tests/test_stage_a_relational_contract.py ];
+          stage-a-relational-tests-state = mkStageARelationalTest
+            "state" "tests.test_stage_a_relational_state" [ ./tests/test_stage_a_relational_state.py ];
+          stage-a-relational-tests-pipeline = mkStageARelationalTest
+            "pipeline" "tests.test_stage_a_relational_pipeline" [ ./tests/test_stage_a_relational_pipeline.py ];
+          stage-a-relational-tests-lean = mkStageARelationalTest
+            "lean" "tests.test_stage_a_relational_lean" [ ./tests/test_stage_a_relational_lean.py ];
+          stage-a-relational-tests-acceptance = mkStageARelationalTest
+            "acceptance" "tests.test_stage_a_relational_acceptance" [ ./tests/test_stage_a_relational_acceptance.py ];
+          stage-a-relational-tests-acceptance-nested-external = mkStageARelationalTest
+            "acceptance-nested-external"
+            "tests.test_stage_a_relational_acceptance.StageARelationalAcceptanceTests.test_nested_external_call_preserves_internal_runtime_frame_end_to_end"
+            [ ./tests/test_stage_a_relational_acceptance.py ];
+          stage-a-relational-tests = pkgs.symlinkJoin {
+            name = "stage-a-relational-tests";
+            paths = [
+              stage-a-relational-tests-schema
+              stage-a-relational-tests-contract
+              stage-a-relational-tests-state
+              stage-a-relational-tests-pipeline
+              stage-a-relational-tests-lean
+              stage-a-relational-tests-acceptance
+            ];
+          };
           stage-a-jq-fixtures-root = pkgs.writeShellApplication {
             name = "stage-a-jq-fixtures-root";
             text = ''
@@ -371,6 +451,14 @@
             stage-a-jq-fixtures
             stage-a-jq-fixtures-check
             stage-a-jq-fixtures-root
+            stage-a-relational-tests
+            stage-a-relational-tests-schema
+            stage-a-relational-tests-contract
+            stage-a-relational-tests-state
+            stage-a-relational-tests-pipeline
+            stage-a-relational-tests-lean
+            stage-a-relational-tests-acceptance
+            stage-a-relational-tests-acceptance-nested-external
             stage-b-jq-skeleton
             stage-b-jq-skeleton-root
             ;
@@ -420,6 +508,7 @@
             spaghetti-extractor
             stage-a-fixtures-check
             stage-a-jq-fixtures-check
+            stage-a-relational-tests
             stage-b-jq-skeleton
             ;
         }

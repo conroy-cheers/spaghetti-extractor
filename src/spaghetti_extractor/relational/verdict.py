@@ -251,6 +251,11 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         "completed_at": utc_now(),
         "original": {"path": str(original.path), "sha256": original.sha256},
         "candidate": {"path": str(candidate.path), "sha256": candidate.sha256},
+        "interface_manifest_sha256": (
+            sha256_file(out / "stage-a-interface-manifest.json")
+            if (out / "stage-a-interface-manifest.json").is_file()
+            else None
+        ),
         "relation_contract_sha256": sha256_file(out / "relation-contract.json"),
         "proof_ir_sha256": sha256_file(out / "relational-proof-ir.json"),
         "semantic_ir_sha256": (

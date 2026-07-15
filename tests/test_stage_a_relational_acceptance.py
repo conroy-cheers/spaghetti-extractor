@@ -1,7 +1,38 @@
 from tests.stage_a_relational_support import *
+from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
 
 
 class StageARelationalAcceptanceTests(StageARelationalTestBase):
+    def test_protocol_contract_without_decoded_site_cannot_reach_acceptance(self):
+        plan = _whole_program_acceptance_plan(
+            {
+                "machine_import_call_contracts": [{
+                    "id": 3,
+                    "import": {"dll": "msvcrt.dll", "symbol": "exit"},
+                    "disposition": "protocol",
+                }],
+                "regions": [],
+            },
+            [],
+            {
+                "nodes": [],
+                "edges": [],
+                "root_node_ids": [],
+                "evidence": {"reachable_product_local_complete": False},
+            },
+            {"edges": [], "regions": []},
+            [],
+            [],
+        )
+
+        self.assertEqual(plan["status"], "incomplete")
+        self.assertEqual(plan["protocol_callback_node_ids"], [])
+        self.assertIn(
+            "reachable_product_local_incomplete",
+            {blocker["code"] for blocker in plan["blockers"]},
+        )
+        self.assertNotEqual(plan["profile"], "stateful-external-protocol-v1")
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for sharded relational proofs")
     def test_sharded_local_proof_uses_canonical_static_context(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -950,6 +981,137 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(lean["status"], "checked", lean)
             self.assertNotIn("sorryAx", lean["stdout"])
             self.assertNotIn("._native.", lean["stdout"])
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for protocol proofs")
+    def test_protocol_call_and_callback_return_close_whole_program_theorem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            iat_address = 0x400000 + 0x2000 + 0x40
+            code = b"\xff\x15" + struct.pack("<I", iat_address) + b"\xc3"
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_import_image(code, symbol="ProtocolStep"))
+            candidate.write_bytes(_pe32_import_image(code, symbol="ProtocolStep"))
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": 0, "original_rva": 0x1000, "candidate_rva": 0x1000},
+                    {"id": 1, "original_rva": 0x1006, "candidate_rva": 0x1006},
+                ],
+                "protocol_callback_control": {
+                    "format": PROTOCOL_CALLBACK_CONTROL_FORMAT,
+                    "states": [{
+                        "target_id": 1,
+                        "active_frame_offset": {
+                            "original_register": "esp", "original": 0,
+                            "candidate_register": "esp", "candidate": 0,
+                        },
+                        "return_invariant": {"kind": "terminal"},
+                    }],
+                },
+                "regions": [
+                    {
+                        "id": "protocol-call", "root": True,
+                        "original": {"rva": 0x1000, "size": 6},
+                        "candidate": {"rva": 0x1000, "size": 6},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "callback-return", "root": False,
+                        "original": {"rva": 0x1006, "size": 1},
+                        "candidate": {"rva": 0x1006, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                ],
+                "machine_import_call_contracts": [{
+                    "id": 0,
+                    "import": {
+                        "dll": "kernel32.dll", "symbol": "ProtocolStep",
+                    },
+                    "abi_template": "pe32-stdcall-v1",
+                    "argument_words": 0,
+                    "disposition": "protocol",
+                    "memory_effect": "none",
+                    "memory_footprints": [],
+                    "world_effect": "none",
+                }],
+                "padding": [],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                [step["kind"] for step in result["acceptance"]["node_steps"]],
+                ["external_protocol", "terminate"],
+            )
+            self.assertEqual(
+                result["acceptance"]["protocol_callback_node_ids"], [1]
+            )
+            self.assertEqual(
+                _validate_prepared_relational(prepared)["acceptance"]["status"],
+                "ready",
+            )
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
+            repeated = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=root / "prepared-repeated",
+            )
+            self.assertEqual(
+                repeated["acceptance"]["protocol_callback_states"],
+                result["acceptance"]["protocol_callback_states"],
+            )
+            self.assertEqual(
+                repeated["interface_manifest_sha256"],
+                result["interface_manifest_sha256"],
+            )
+
+            region_input_contract = json.loads(contract.read_text(encoding="utf-8"))
+            region_input_contract["protocol_callback_control"]["states"][0][
+                "return_invariant"
+            ] = {"kind": "region_input", "target_id": 1}
+            region_input_path = root / "region-input-relation.json"
+            region_input_path.write_text(
+                json.dumps(region_input_contract), encoding="utf-8"
+            )
+            region_input = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=region_input_path,
+                out=root / "prepared-region-input",
+            )
+            self.assertEqual(region_input["acceptance"]["status"], "incomplete")
+            self.assertIn(
+                "callback_return_invariant_profile_incomplete",
+                {
+                    blocker["code"]
+                    for blocker in region_input["acceptance"]["blockers"]
+                },
+            )
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for import-thunk proofs")
     def test_nested_direct_import_thunk_preserves_outer_runtime_frame_end_to_end(self):

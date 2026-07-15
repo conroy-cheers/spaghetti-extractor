@@ -6728,6 +6728,9 @@ def _load_stage_a_validation_report(path: Path | None) -> dict[str, Any] | None:
             "original": {"sha256": prepared.get("original_sha256")},
             "candidate": {"sha256": prepared.get("candidate_sha256")},
             "proof_ir_sha256": prepared.get("proof_ir_sha256"),
+            "interface_manifest_sha256": prepared.get(
+                "interface_manifest_sha256"
+            ),
             "relation_contract_sha256": prepared.get("relation_contract_sha256"),
             "semantic_ir_sha256": prepared.get("semantic_ir_sha256"),
             "product_graph_sha256": prepared.get("product_graph_sha256"),
@@ -6755,6 +6758,7 @@ def _load_stage_a_validation_report(path: Path | None) -> dict[str, Any] | None:
         "artifacts": {},
     }
     for name in (
+        "stage-a-interface-manifest.json",
         "relation-contract.json",
         "relational-semantic-ir.json",
         "relational-product-graph.json",
@@ -6857,6 +6861,7 @@ def _reference_validation_report_binding_constraint(
     )
 
     artifact_hash_fields = {
+        "stage-a-interface-manifest.json": "interface_manifest_sha256",
         "relation-contract.json": "relation_contract_sha256",
         "relational-semantic-ir.json": "semantic_ir_sha256",
         "relational-product-graph.json": "product_graph_sha256",

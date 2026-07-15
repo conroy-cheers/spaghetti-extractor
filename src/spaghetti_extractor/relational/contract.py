@@ -18,6 +18,9 @@ from .schema import (
     MACHINE_CALL_MAX_ARGUMENT_WORDS,
     MACHINE_CALL_MEMORY_EFFECTS,
     MACHINE_CALL_WORLD_EFFECTS,
+    PROTOCOL_CALLBACK_CONTROL_FORMAT,
+    ProtocolCallbackControl,
+    ProtocolCallbackControlState,
     REGISTERS,
     RELATION_CONTRACT_FORMAT,
     RELATIONAL_ENVIRONMENT_ID,
@@ -610,6 +613,22 @@ def _select_external_profile_contracts(
 
 def _normalize_contract(contract: dict[str, Any], original: StageABinary, candidate: StageABinary) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     issues: list[dict[str, Any]] = []
+    allowed_fields = {
+        "format", "model", "environment", "observations", "memory_relation",
+        "code_targets", "value_targets", "static_dynamic_pointer_slots",
+        "machine_import_call_contracts", "protocol_callback_control", "regions",
+        "padding", "provenance",
+    }
+    unknown_fields = sorted(set(contract) - allowed_fields)
+    if unknown_fields:
+        issues.append({
+            "category": "unknown_relation_contract_fields",
+            "severity": "hard",
+            "fields": unknown_fields,
+            "next_action": (
+                "remove unknown fields or introduce a versioned relation-contract schema"
+            ),
+        })
     if original.bitness != 32 or candidate.bitness != 32:
         issues.append({"category": "unsupported_bitness", "expected": 32})
     environment = contract.get("environment")
@@ -645,6 +664,9 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
     value_targets = contract.get("value_targets", [])
     static_dynamic_pointer_slots = contract.get("static_dynamic_pointer_slots", [])
     machine_import_call_contracts = contract.get("machine_import_call_contracts", [])
+    protocol_callback_control = contract.get(
+        "protocol_callback_control", ProtocolCallbackControl.empty().to_payload()
+    )
     regions = contract.get("regions")
     padding = contract.get("padding", [])
     if not isinstance(targets, list) or not targets:
@@ -668,6 +690,21 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             "severity": "hard",
         })
         machine_import_call_contracts = []
+    if (
+        not isinstance(protocol_callback_control, dict)
+        or set(protocol_callback_control) != {"format", "states"}
+        or protocol_callback_control.get("format")
+            != PROTOCOL_CALLBACK_CONTROL_FORMAT
+        or not isinstance(protocol_callback_control.get("states"), list)
+    ):
+        issues.append({
+            "category": "protocol_callback_control_invalid",
+            "severity": "hard",
+            "next_action": (
+                "declare a versioned finite callback control-state inventory"
+            ),
+        })
+        protocol_callback_control = ProtocolCallbackControl.empty().to_payload()
     if not isinstance(padding, list):
         issues.append({"category": "padding_not_list"})
         padding = []
@@ -733,6 +770,42 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
     normalized_machine_import_call_contracts = _machine_import_call_contracts(
         machine_import_call_contracts, original, candidate, issues,
     )
+    normalized_protocol_callback_states: list[dict[str, Any]] = []
+    seen_protocol_callback_target_ids: set[int] = set()
+    for index, raw_state in enumerate(protocol_callback_control["states"]):
+        try:
+            parsed_state = ProtocolCallbackControlState.parse(raw_state)
+        except (TypeError, ValueError):
+            parsed_state = None
+        target_id = parsed_state.target_id if parsed_state is not None else None
+        return_target_id = (
+            parsed_state.return_invariant.target_id
+            if parsed_state is not None
+            else None
+        )
+        if (
+            target_id is None
+            or target_id not in target_ids
+            or target_id in seen_protocol_callback_target_ids
+            or (
+                parsed_state is not None
+                and parsed_state.return_invariant.kind == "region_input"
+                and return_target_id not in target_ids
+            )
+        ):
+            issues.append({
+                "category": "protocol_callback_control_state_invalid",
+                "severity": "hard",
+                "index": index,
+                "state": raw_state,
+                "next_action": (
+                    "use one mapped target, checked active frame offset, and explicit "
+                    "return-invariant reference per callback control state"
+                ),
+            })
+            continue
+        seen_protocol_callback_target_ids.add(target_id)
+        normalized_protocol_callback_states.append(parsed_state.to_payload())
     for index, item in enumerate(regions):
         if not isinstance(item, dict):
             issues.append({"category": "malformed_region", "index": index})
@@ -979,6 +1052,13 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         "value_targets": normalized_value_targets,
         "static_dynamic_pointer_slots": normalized_static_dynamic_pointer_slots,
         "machine_import_call_contracts": normalized_machine_import_call_contracts,
+        "protocol_callback_control": {
+            "format": PROTOCOL_CALLBACK_CONTROL_FORMAT,
+            "states": sorted(
+                normalized_protocol_callback_states,
+                key=lambda state: state["target_id"],
+            ),
+        },
         "regions": normalized_regions,
         "padding": normalized_padding,
         "environment": {
@@ -1571,6 +1651,10 @@ def _machine_import_call_contracts(
                     or bool(footprints)
                     or world_effect != "none"
                 )
+            )
+            or (
+                disposition == "protocol"
+                and world_effect != "none"
             )
         )
         if malformed:

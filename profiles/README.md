@@ -39,9 +39,11 @@ requires one cdecl pointer argument and removes the uniquely matching paired
 dynamic range; a null pointer is an exact no-op. It does not treat deallocation
 as an unconstrained memory mutation or leave a released range silently live in
 the relational world. The `atexit` contract requires one cdecl callback pointer
-and records a checked mapped callback pair in LIFO registration order. It does
-not declare `exit` terminating: `exit` may invoke registered callbacks, so a
-callback-free terminal contract would be unsound.
+and records a checked mapped callback pair in LIFO registration order. `exit`
+uses the stateful `protocol` disposition rather than immediate termination
+because it may invoke those callbacks. Contract generation retains that
+declaration for precise diagnostics, but whole-program acceptance rejects it
+until the paired returned/callback/terminated action proof is present.
 
 Machine-call contracts default to `"disposition": "returns"`. A reviewed
 `"terminates"` contract still requires exact lockstep import identity and
@@ -53,3 +55,11 @@ does not query either external environment for a return result. This is suitable
 only when the imported call cannot return under the selected environment
 profile. The declaration is an explicit theorem assumption, not inferred from
 an API name by the generic proof core.
+
+`"protocol"` is a reviewed declaration surface for stateful, well-bracketed
+interactions. It must use `"world_effect": "none"`; world changes belong to
+the checked sequence of protocol actions rather than one opaque call result.
+The declaration alone never authorizes acceptance. Until Stage A emits and
+checks those action cases, the acceptance plan reports
+`external_protocol_refinement_incomplete`, and Lean independently rejects the
+contract's shape.

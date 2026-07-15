@@ -1,5 +1,9 @@
 # Stage A Relational v3 Profile
 
+Parallel Stage A ownership, schema stability, and integration rules are defined
+in [stage-a-parallel-development.md](stage-a-parallel-development.md). Every
+prepared proof records these boundaries in `stage-a-interface-manifest.json`.
+
 ## Purpose
 
 The normative command authority and trust boundary are defined in
@@ -1249,10 +1253,11 @@ replay checked site modules 4935 and 4945 and emitted reproducible OLean hashes.
 The prepare reused exact PE semantics and took 14 seconds; the focused remote
 build took 295.4 seconds, mostly due to remote contention and transferring the
 large prepared source closure. Rooted composition counts do not advance because
-the current rooted frontier reaches `msvcrt!exit` first. That import remains
-undeclared intentionally: invoking the registered callbacks requires explicit
-well-bracketed external callback frames before `exit` can be classified as a
-sound terminal interaction.
+the current rooted frontier reaches `msvcrt!exit` first. The reusable CRT
+profile now declares it as a stateful protocol boundary, not as a terminal
+interaction. The acceptance planner reports the missing paired action proof
+explicitly; declaration alone cannot bypass the required well-bracketed
+callback frames.
 
 The first callback-invocation kernel is now split into
 `RelationalCallbacks.lean`. It defines a mixed runtime stack with typed internal
@@ -1268,9 +1273,17 @@ The decoded execution model also has explicit `awaitingExternal` and
 `callbackRunning` states and a stateful protocol action type with `returned`,
 `callback`, and `terminated` outcomes. Callback return advances the suspended
 protocol phase only after the decoded return target equals the side-specific
-opaque return token. This surface is intentionally not yet an acceptance
-capability: `MachineCallDisposition.protocol` fails shape validation,
-`ExternalEnvironmentRefinesAt` rejects it, and `WorldExecutionsRelated` has no
-protocol-state case. The next increment must connect paired protocol actions,
-mixed-frame preservation, callback-node invariants, and callback return to the
-whole-program bisimulation before any profile may select the disposition.
+opaque return token. `WorldExecutionsRelated` now represents both states. A
+paired suspension carries the exact canonical call-site contract selected from
+the program and must resolve to a `.protocol` machine contract, preserve its
+phase invariant, and retain every outer callback return frame. A running
+callback must additionally resolve its entry target to a reachable product
+node and checked invariant while preserving its internal calls and all
+concrete external return slots.
+
+This remains intentionally unavailable to acceptance. The currently accepted
+`ExternalEnvironmentRefinesAt` rejects `.protocol`, and Lean derives a
+contradiction from any submitted related protocol state under that refinement.
+The next increment must replace that contradiction with checked paired
+protocol-action and callback-node step refinements before any profile may
+select the disposition.
