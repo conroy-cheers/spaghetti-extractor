@@ -245,6 +245,45 @@ theorem codeTargetIdAddresses_wordRelated
       exact codeTargetAddresses_wordRelated context world targetId target original candidate
         targetResult matchEvidence.1 matchEvidence.2 zeroesAgree
 
+def dataTargetAddressPairMatches (context : StaticProofContext) (targetId : Nat)
+    (original candidate : Word) : Bool :=
+  match context.dataMap.get? targetId with
+  | none => false
+  | some target =>
+      original == BitVec.ofNat 32 target.originalValue &&
+        candidate == BitVec.ofNat 32 target.candidateValue
+
+theorem dataTargetIdAddresses_wordRelated
+    (context : StaticProofContext) (world : RelationalWorld)
+    (targetId : Nat) (original candidate : Word)
+    (matchEvidence : dataTargetAddressPairMatches context targetId original candidate = true)
+    (zeroesAgree : (original == BitVec.ofNat 32 0) =
+      (candidate == BitVec.ofNat 32 0)) :
+    wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      original candidate = true := by
+  unfold dataTargetAddressPairMatches at matchEvidence
+  cases targetResult : context.dataMap.get? targetId with
+  | none => simp [targetResult] at matchEvidence
+  | some target =>
+      simp only [targetResult, Bool.and_eq_true] at matchEvidence
+      have targetArrayMember : target ∈ context.dataMap.entries := by
+        have indexed := Array.getElem?_eq_some_iff.mp targetResult
+        rcases indexed with ⟨inside, indexed⟩
+        have member := Array.getElem_mem inside
+        rw [indexed] at member
+        exact member
+      have targetMember : target ∈ context.dataMap.entries.toList :=
+        Array.mem_def.mp targetArrayMember
+      have mapped : mappedValueRelated (context.relationalValueTargets world)
+          original candidate = true := by
+        simp only [StaticProofContext.relationalValueTargets, mappedValueRelated,
+          List.any_eq_true]
+        refine ⟨target, List.mem_append_left _ targetMember, ?_⟩
+        by_cases zero : target.mappedSize = 0 <;>
+          simp [zero, matchEvidence.1, matchEvidence.2]
+      simp [wordRelated, zeroesAgree, mapped]
+
 def Memory.read32 (memory : Memory) (address : Word) : Word :=
   let b0 := BitVec.zeroExtend 32 (memory address)
   let b1 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 1))).shiftLeft 8

@@ -667,6 +667,8 @@ def _paired_stack_word_value_claim(
     source: dict[str, Any],
     original_value: dict[str, Any],
     candidate_value: dict[str, Any],
+    original_image_base: int | None = None,
+    candidate_image_base: int | None = None,
 ) -> dict[str, Any] | None:
     if (
         original_value == candidate_value
@@ -677,6 +679,61 @@ def _paired_stack_word_value_claim(
             "original": original_value,
             "candidate": candidate_value,
         }
+
+    original_constant = (
+        _integer(original_value.get("value"))
+        if original_value.get("op") == "constant" else None
+    )
+    candidate_constant = (
+        _integer(candidate_value.get("value"))
+        if candidate_value.get("op") == "constant" else None
+    )
+    if original_constant is not None and candidate_constant is not None:
+        code_matches = []
+        if original_image_base is not None and candidate_image_base is not None:
+            for target in source.get("code_targets", []):
+                original_addresses = {
+                    original_image_base + int(target["original_rva"]),
+                    *(
+                        original_image_base
+                        + int(alias["rva"] if isinstance(alias, dict) else alias)
+                        for alias in target.get("original_aliases", [])
+                    ),
+                }
+                candidate_addresses = {
+                    candidate_image_base + int(target["candidate_rva"]),
+                    *(
+                        candidate_image_base
+                        + int(alias["rva"] if isinstance(alias, dict) else alias)
+                        for alias in target.get("candidate_aliases", [])
+                    ),
+                }
+                if (
+                    original_constant in original_addresses
+                    and candidate_constant in candidate_addresses
+                ):
+                    code_matches.append(int(target["id"]))
+        if len(code_matches) == 1:
+            return {
+                "profile": "mapped_code_target_v1",
+                "original": original_value,
+                "candidate": candidate_value,
+                "target_id": code_matches[0],
+            }
+
+        data_matches = [
+            int(target["id"])
+            for target in source.get("values", [])
+            if int(target["original_value"]) == original_constant
+            and int(target["candidate_value"]) == candidate_constant
+        ]
+        if len(data_matches) == 1:
+            return {
+                "profile": "mapped_data_target_v1",
+                "original": original_value,
+                "candidate": candidate_value,
+                "target_id": data_matches[0],
+            }
 
     original_argument = _semantic_input_register_offset(original_value)
     candidate_argument = _semantic_input_register_offset(candidate_value)
@@ -729,6 +786,8 @@ def _paired_stack_word_value_claim(
 
 def _paired_stack_word_write_claim(
     source: dict[str, Any], behavior_pair: dict[str, Any],
+    original_image_base: int | None = None,
+    candidate_image_base: int | None = None,
 ) -> dict[str, Any] | None:
     original_writes = (behavior_pair.get("original_ir") or {}).get("writes") or []
     candidate_writes = (behavior_pair.get("candidate_ir") or {}).get("writes") or []
@@ -739,7 +798,8 @@ def _paired_stack_word_write_claim(
     original_value = original_write.get("value") or {}
     candidate_value = candidate_write.get("value") or {}
     value_claim = _paired_stack_word_value_claim(
-        source, original_value, candidate_value
+        source, original_value, candidate_value,
+        original_image_base, candidate_image_base,
     )
     if value_claim is None:
         return None
@@ -792,14 +852,21 @@ def _paired_stack_word_write_claim(
 
 def _paired_stack_word_writes_claim(
     source: dict[str, Any], behavior_pair: dict[str, Any],
+    original_image_base: int | None = None,
+    candidate_image_base: int | None = None,
+    minimum_writes: int = 2,
 ) -> dict[str, Any] | None:
     original_writes = (behavior_pair.get("original_ir") or {}).get("writes") or []
     candidate_writes = (behavior_pair.get("candidate_ir") or {}).get("writes") or []
-    if len(original_writes) < 2 or len(original_writes) != len(candidate_writes):
+    if (
+        len(original_writes) < minimum_writes
+        or len(original_writes) != len(candidate_writes)
+    ):
         return None
     value_claims = [
         _paired_stack_word_value_claim(
-            source, original.get("value") or {}, candidate.get("value") or {}
+            source, original.get("value") or {}, candidate.get("value") or {},
+            original_image_base, candidate_image_base,
         )
         for original, candidate in zip(
             original_writes, candidate_writes, strict=True
@@ -859,6 +926,50 @@ def _paired_stack_word_writes_claim(
         "profile": "paired_stack_word_writes_v1",
         "window": window,
         "writes": writes,
+    }
+
+def _direct_call_stack_writes_claim(
+    source: dict[str, Any], behavior_pair: dict[str, Any],
+    call_claim: dict[str, Any] | None,
+    original_image_base: int | None = None,
+    candidate_image_base: int | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(call_claim, dict):
+        return None
+    original_ir = behavior_pair.get("original_ir") or {}
+    candidate_ir = behavior_pair.get("candidate_ir") or {}
+    original_writes = original_ir.get("writes") or []
+    candidate_writes = candidate_ir.get("writes") or []
+    if len(original_writes) < 2 or len(original_writes) != len(candidate_writes):
+        return None
+    prefix_pair = {
+        "original_ir": {**original_ir, "writes": original_writes[:-1]},
+        "candidate_ir": {**candidate_ir, "writes": candidate_writes[:-1]},
+    }
+    stack_writes = _paired_stack_word_writes_claim(
+        source, prefix_pair, original_image_base, candidate_image_base,
+        minimum_writes=1,
+    )
+    if stack_writes is None:
+        return None
+    stack_amount = _direct_call_stack_amount(call_claim)
+    if stack_amount is None:
+        return None
+    window = stack_writes["window"]
+    if (
+        str(window.get("original_register")) != "esp"
+        or str(window.get("candidate_register")) != "esp"
+        or int(window.get("bytes_below", 0)) < stack_amount
+    ):
+        return None
+    return {
+        "profile": "direct_call_stack_writes_v1",
+        "stack_writes": stack_writes,
+        "stack_amount": stack_amount,
+        "callee_target_id": int(call_claim["callee_target_id"]),
+        "continuation_target_id": int(call_claim["continuation_target_id"]),
+        "original_return_address": int(call_claim["original_return_address"]),
+        "candidate_return_address": int(call_claim["candidate_return_address"]),
     }
 
 def _segment_refinement_candidates(
@@ -1018,6 +1129,33 @@ def _segment_refinement_candidates(
             and call_stack_amount is not None
             and int(window.get("bytes_below", 0)) >= call_stack_amount
         ]
+        original_image_base = original_bin.image_base if original_bin is not None else None
+        candidate_image_base = candidate_bin.image_base if candidate_bin is not None else None
+        call_stack_writes_claim = _direct_call_stack_writes_claim(
+            source, behaviors[source_index], call_claim,
+            original_image_base, candidate_image_base,
+        )
+        call_stack_writes_supported = (
+            edge.get("kind") == "call"
+            and common_transfer_supported
+            and isinstance(call_stack_writes_claim, dict)
+            and len(call_windows) == 1
+            and successors.get("outcome") == "call"
+            and candidate_successors.get("outcome") == "call"
+            and isinstance(call_claim, dict)
+            and int(call_claim.get("callee_target_id", -1))
+                == int(target["numeric_id"])
+            and int(call_claim.get("callee_target_id", -1)) in direct_targets
+            and direct_targets == candidate_direct_targets
+            and not target.get("input_import_relations")
+            and not target.get("input_dynamic_range_relations")
+            and edge.get("original_guard") == {
+                "op": "bool_constant", "value": True,
+            }
+            and edge.get("candidate_guard") == {
+                "op": "bool_constant", "value": True,
+            }
+        )
         call_supported = (
             edge.get("kind") == "call"
             and common_transfer_supported
@@ -1043,10 +1181,12 @@ def _segment_refinement_candidates(
             }
         )
         stack_write_claim = _paired_stack_word_write_claim(
-            source, behaviors[source_index]
+            source, behaviors[source_index],
+            original_image_base, candidate_image_base,
         )
         stack_writes_claim = _paired_stack_word_writes_claim(
-            source, behaviors[source_index]
+            source, behaviors[source_index],
+            original_image_base, candidate_image_base,
         )
         stack_write_supported = (
             edge.get("kind") in {"jump", "branch_taken", "branch_fallthrough"}
@@ -1081,8 +1221,8 @@ def _segment_refinement_candidates(
             and (not branch_edge or guard_relation_claim is not None)
         )
         segment_supported = (
-            no_write_supported or call_supported or stack_write_supported
-            or stack_writes_supported
+            no_write_supported or call_supported or call_stack_writes_supported
+            or stack_write_supported or stack_writes_supported
         )
         certificate_eligible = segment_supported and source_target is not None
         if diagnostics is not None:
@@ -1167,7 +1307,11 @@ def _segment_refinement_candidates(
                 memory.get("writes", {}).get("candidate_count", -1)
             )
             if edge.get("kind") == "call":
-                attempted_profile = "composable_direct_call_v1"
+                attempted_profile = (
+                    "composable_direct_call_stack_writes_v1"
+                    if max(original_write_count, candidate_write_count) > 1
+                    else "composable_direct_call_v1"
+                )
                 require(
                     "direct_call_push_missing",
                     isinstance(call_claim, dict)
@@ -1180,8 +1324,14 @@ def _segment_refinement_candidates(
                 )
                 require(
                     "direct_call_write_shape_mismatch",
-                    original_write_count == candidate_write_count == 1,
+                    original_write_count == candidate_write_count == 1
+                    or call_stack_writes_supported,
                 )
+                if max(original_write_count, candidate_write_count) > 1:
+                    require(
+                        "direct_call_stack_writes_witness_missing",
+                        call_stack_writes_supported,
+                    )
                 require(
                     "direct_call_successor_shape_mismatch",
                     successors.get("outcome") == "call"
@@ -1289,7 +1439,9 @@ def _segment_refinement_candidates(
                 int(target["id"]) for target in source.get("values", [])
             ],
             "certificate_profile": (
-                "composable_direct_call_v1" if call_supported
+                "composable_direct_call_stack_writes_v1"
+                if call_stack_writes_supported
+                else "composable_direct_call_v1" if call_supported
                 else "composable_paired_stack_word_write_v1"
                 if stack_write_supported
                 else "composable_paired_stack_word_writes_v1"
@@ -1306,13 +1458,19 @@ def _segment_refinement_candidates(
             "original_guard": edge["original_guard"],
             "candidate_guard": edge["candidate_guard"],
             **({
-                "source_stack_window": call_windows[0],
+                "source_stack_window": (
+                    call_stack_writes_claim["stack_writes"]["window"]
+                    if call_stack_writes_supported else call_windows[0]
+                ),
                 "callee_target_id": int(call_claim["callee_target_id"]),
                 "continuation_target_id": int(call_claim["continuation_target_id"]),
                 "original_return_address": int(call_claim["original_return_address"]),
                 "candidate_return_address": int(call_claim["candidate_return_address"]),
                 "stack_amount": call_stack_amount,
-            } if call_supported else {}),
+            } if call_supported or call_stack_writes_supported else {}),
+            "direct_call_stack_writes_claim": (
+                call_stack_writes_claim if call_stack_writes_supported else None
+            ),
             "paired_stack_write_claim": (
                 stack_write_claim if stack_write_supported else None
             ),

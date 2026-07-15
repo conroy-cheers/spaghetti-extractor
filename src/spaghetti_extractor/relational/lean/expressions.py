@@ -573,6 +573,10 @@ def _lean_paired_stack_word_value_claim(claim: dict[str, Any]) -> str:
             ".registerArgument "
             + _lean_register_argument_claim(claim["claim"])
         )
+    elif profile == "mapped_code_target_v1":
+        witness = ".mappedCodeTarget " + str(int(claim["target_id"]))
+    elif profile == "mapped_data_target_v1":
+        witness = ".mappedDataTarget " + str(int(claim["target_id"]))
     else:
         raise StageAInputError(
             f"unsupported paired stack-word value profile {profile!r}"
@@ -601,6 +605,21 @@ def _lean_paired_stack_word_writes_claim(claim: dict[str, Any]) -> str:
     return (
         "{ window := " + _lean_stack_window(claim["window"])
         + ", writes := [" + writes + "] }"
+    )
+
+def _lean_direct_call_stack_writes_claim(claim: dict[str, Any]) -> str:
+    return (
+        "{ stackWrites := "
+        + _lean_paired_stack_word_writes_claim(claim["stack_writes"])
+        + ", stackAmount := " + str(int(claim["stack_amount"]))
+        + ", calleeTargetId := " + str(int(claim["callee_target_id"]))
+        + ", continuationTargetId := "
+        + str(int(claim["continuation_target_id"]))
+        + ", originalReturnAddress := "
+        + str(int(claim["original_return_address"]))
+        + ", candidateReturnAddress := "
+        + str(int(claim["candidate_return_address"]))
+        + " }"
     )
 
 def _lean_state_invariant(invariant: dict[str, Any]) -> str:

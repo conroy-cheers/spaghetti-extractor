@@ -1170,7 +1170,10 @@ def _whole_program_acceptance_plan(
                 and edge.get("original_guard") == true_guard
                 and edge.get("candidate_guard") == true_guard
                 and segment is not None
-                and segment.get("certificate_profile") == "composable_direct_call_v1"
+                and segment.get("certificate_profile") in {
+                    "composable_direct_call_v1",
+                    "composable_direct_call_stack_writes_v1",
+                }
             )
             external_site = external_by_edge.get(edge_id)
             external_profile = (
@@ -1316,6 +1319,7 @@ def _whole_program_acceptance_plan(
                 step["continuation_target_id"] = continuation
                 step["continuation_node_id"] = continuation_node_id
                 step["direct_call_push_claim"] = direct_call_claim
+                step["certificate_profile"] = segment["certificate_profile"]
                 step["return_slot_frame_transfer_claims"] = selected_claims
                 step["source_stack_window"] = segment["source_stack_window"]
                 step["stack_amount"] = int(segment["stack_amount"])
@@ -1455,6 +1459,7 @@ def _whole_program_acceptance_plan(
                     in {
                         "composable_paired_stack_word_write_v1",
                         "composable_paired_stack_word_writes_v1",
+                        "composable_direct_call_stack_writes_v1",
                     }
             ):
                 has_paired_stack_write = True
@@ -1530,6 +1535,7 @@ def _whole_program_acceptance_plan(
                 in {
                     "composable_paired_stack_word_write_v1",
                     "composable_paired_stack_word_writes_v1",
+                    "composable_direct_call_stack_writes_v1",
                 }
             for edge in edge_rows
         )
@@ -1973,6 +1979,13 @@ def _lean_acceptance_running_node(
             for item in frame_claims
         ) + "]"
         continuation_node_id = int(step["continuation_node_id"])
+        combined_stack_writes = (
+            step.get("certificate_profile")
+            == "composable_direct_call_stack_writes_v1"
+        )
+        stack_writes_claim_name = (
+            f"segmentRefinementEdge{edge_id}DirectCallStackWritesClaim"
+        )
         if _normalized_behavior_fast_path(
             regions[region_index], behaviors[region_index]
         ):
@@ -1985,6 +1998,56 @@ def _lean_acceptance_running_node(
             segment_candidate_behavior = (
                 f"segmentRefinementEdge{edge_id}CandidateNormalizedBehavior"
             )
+        frame_memory_body = (
+            (
+                "    exact pairedStackWordFinalWriteReadsBack_amount "
+                "staticProofContext world\n"
+                if combined_stack_writes else
+                "    exact pairedStackWordWriteReadsBack_amount "
+                "staticProofContext world\n"
+            )
+            + f"      region{region_index}.inputInvariant sourceWindow "
+            + f"{stack_amount}\n"
+            + f"      (BitVec.ofNat 32 {original_return}) "
+            + f"(BitVec.ofNat 32 {candidate_return})\n"
+            + (
+                f"      ({stack_writes_claim_name}.stackWrites.originalWrites "
+                "originalState)\n"
+                f"      ({stack_writes_claim_name}.stackWrites.candidateWrites "
+                "candidateState)\n"
+                if combined_stack_writes else ""
+            )
+            + "      originalState candidateState\n"
+            + f"      ({original_behavior}.eval originalState)\n"
+            + f"      ({candidate_behavior}.eval candidateState) statesRelated\n"
+            + "      (by decide) (by decide) (by decide) (by decide)\n"
+            + "      (by simp [sourceWindow,\n"
+            + f"        acceptanceOriginalNormalizedWrites{node_id},\n"
+            + f"        originalBehavior{region_index}, evalNormalizedWrites, "
+            + "Expr.eval,\n"
+            + (
+                f"        {stack_writes_claim_name}, "
+                "DirectCallStackWritesClaim.originalWrites,\n"
+                "        PairedStackWordWritesClaim.originalWrites,\n"
+                "        PairedStackWordWriteItem.originalAddress, "
+                "pairedStackWordAddress,\n"
+                if combined_stack_writes else ""
+            )
+            + "        stackAddressRewrite])\n"
+            + "      (by simp [sourceWindow,\n"
+            + f"        acceptanceCandidateNormalizedWrites{node_id},\n"
+            + f"        candidateBehavior{region_index}, evalNormalizedWrites, "
+            + "Expr.eval,\n"
+            + (
+                f"        {stack_writes_claim_name}, "
+                "DirectCallStackWritesClaim.candidateWrites,\n"
+                "        PairedStackWordWritesClaim.candidateWrites,\n"
+                "        PairedStackWordWriteItem.candidateAddress, "
+                "pairedStackWordAddress,\n"
+                if combined_stack_writes else ""
+            )
+            + "        stackAddressRewrite])\n"
+        )
         return (
             prefix
             + f"  have controlShape : calls = {source_calls_literal} \u2227\n"
@@ -2033,22 +2096,8 @@ def _lean_acceptance_running_node(
             f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
             "        candidateState).memory := by\n"
             "    unfold RelationalRuntimeCallFrame.memoryHolds runtimeFrame\n"
-            "    exact pairedStackWordWriteReadsBack_amount staticProofContext world\n"
-            f"      region{region_index}.inputInvariant sourceWindow {stack_amount}\n"
-            f"      (BitVec.ofNat 32 {original_return}) (BitVec.ofNat 32 {candidate_return})\n"
-            "      originalState candidateState\n"
-            f"      ({original_behavior}.eval originalState)\n"
-            f"      ({candidate_behavior}.eval candidateState) statesRelated\n"
-            "      (by decide) (by decide) (by decide) (by decide)\n"
-            "      (by simp [sourceWindow,\n"
-            f"        acceptanceOriginalNormalizedWrites{node_id},\n"
-            f"        originalBehavior{region_index}, evalNormalizedWrites, Expr.eval,\n"
-            "        stackAddressRewrite])\n"
-            "      (by simp [sourceWindow,\n"
-            f"        acceptanceCandidateNormalizedWrites{node_id},\n"
-            f"        candidateBehavior{region_index}, evalNormalizedWrites, Expr.eval,\n"
-            "        stackAddressRewrite])\n"
-            "  have frameOffsetsHold : ReturnSlotOffsetPair.zero.holds runtimeFrame\n"
+            + frame_memory_body
+            + "  have frameOffsetsHold : ReturnSlotOffsetPair.zero.holds runtimeFrame\n"
             f"      ({original_behavior}.eval originalState).registers\n"
             f"      ({candidate_behavior}.eval candidateState).registers := by\n"
             "    simp [ReturnSlotOffsetPair.zero, ReturnSlotOffsetPair.holds, runtimeFrame,\n"

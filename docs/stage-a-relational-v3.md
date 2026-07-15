@@ -505,6 +505,20 @@ that word on one side suppresses the claim and keeps acceptance incomplete.
 Together these profiles raise jq to 104 refined segments out of 421 feasible
 rooted edges and reduce the rooted segment frontier to 317; the remaining jq
 result is still correctly incomplete.
+Internal calls may now perform one or more checked paired stack-word writes
+before the final return-address push. Python recovers the prepared write list,
+but Lean checks every address against one paired stack range, checks each value
+as an exact expression or canonical code/data pointer, applies all writes
+through the authoritative flat memory, and proves the final push establishes a
+relational runtime frame. The acceptance proof uses a generic final-write
+read-back theorem, so argument writes do not need to be absent. A whole-program
+fixture closes a relocated code-pointer argument followed by an internal call;
+changing only the candidate pointer leaves acceptance incomplete. On jq this
+closes 24 additional rooted call edges, raising refinement to 128 of 421 and
+reducing the rooted segment frontier to 293. The six previously isolated call
+sites not closed by this profile write writable globals or non-stack memory;
+they remain explicit frontiers for a broader checked paired-memory update
+certificate rather than being mislabeled as stack writes.
 All 32 segment chunks compose through the dedicated
 `RelationalSegmentRefinementCertificate` Nix node. The expanded 449-edge jq
 aggregate checked remotely in 482.648 seconds over a focused 935-node closure;
@@ -1233,7 +1247,7 @@ current composition profiles.
 Projecting the latest cached jq graph through `composition-progress.json`
 distinguishes 371 nodes reached by decoded rooted traversal from the 4,149-node
 conservative potential inventory. The rooted slice currently has 421 feasible
-edges, 104 refined segments, 317 segment frontiers, 72 stack-invariant
+edges, 128 refined segments, 293 segment frontiers, 72 stack-invariant
 frontiers, and no relational-call-frame frontier. Seventy unresolved indirect
 controls contribute 290,430 conservative potential targets. Twelve rooted
 external edges include nine refinement candidates and three contract gaps;

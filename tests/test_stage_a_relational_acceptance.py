@@ -1007,6 +1007,129 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertNotIn("._native.", lean["stdout"])
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
+    def test_direct_call_with_prepared_stack_word_checks_whole_program_theorem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def image(*, candidate: bool, mapped_pointer: int) -> bytes:
+                source_rva = 0x1001 if candidate else 0x1000
+                callee_rva = source_rva + 0xF
+                code = (
+                    b"\xc7\x44\x24\x04" + struct.pack("<I", mapped_pointer)
+                    + b"\xe8\x02\x00\x00\x00"  # call callee-return
+                    + b"\xeb\xf1"                  # continuation loops to source
+                    + b"\xc3"                        # callee-return: ret
+                )
+                result = bytearray(_pe32_image((b"\x90" if candidate else b"") + code))
+                if candidate:
+                    struct.pack_into("<I", result, 0xA8, source_rva)
+                return bytes(result)
+
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(image(candidate=False, mapped_pointer=0x40100F))
+            candidate.write_bytes(image(candidate=True, mapped_pointer=0x401010))
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": 0, "original_rva": 0x1000, "candidate_rva": 0x1001},
+                    {"id": 1, "original_rva": 0x100D, "candidate_rva": 0x100E},
+                    {"id": 2, "original_rva": 0x100F, "candidate_rva": 0x1010},
+                ],
+                "regions": [
+                    {
+                        "id": "caller", "root": True,
+                        "original": {"rva": 0x1000, "size": 13},
+                        "candidate": {"rva": 0x1001, "size": 13},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "continuation", "root": False,
+                        "original": {"rva": 0x100D, "size": 2},
+                        "candidate": {"rva": 0x100E, "size": 2},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "callee-return", "root": False,
+                        "original": {"rva": 0x100F, "size": 1},
+                        "candidate": {"rva": 0x1010, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                ],
+                "padding": [{
+                    "id": "candidate-entry-padding",
+                    "side": "candidate", "rva": 0x1000, "size": 1,
+                }],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result["status"], "prepared", result)
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                result["composition_progress"]["counts"][
+                    "rooted_segment_refinement_frontier_edges"
+                ],
+                0,
+            )
+            proof_ir = json.loads(
+                (prepared / "relational-proof-ir.json").read_text(encoding="utf-8")
+            )
+            direct_call = next(
+                obligation["analysis"]["certificate"]
+                for obligation in proof_ir["obligations"]
+                if obligation.get("kind") == "relational_segment_refinement"
+                and obligation.get("analysis", {}).get("certificate", {}).get(
+                    "certificate_profile"
+                ) == "composable_direct_call_stack_writes_v1"
+            )
+            prepared_value = direct_call["direct_call_stack_writes_claim"][
+                "stack_writes"
+            ]["writes"][0]["value"]
+            self.assertEqual(prepared_value["profile"], "mapped_code_target_v1")
+            self.assertEqual(prepared_value["target_id"], 2)
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertIn(
+                "candidatePE32ProgramsEquivalent' depends on axioms",
+                lean["stdout"],
+            )
+            self.assertNotIn("sorryAx", lean["stdout"])
+
+            candidate.write_bytes(image(candidate=True, mapped_pointer=0x401011))
+            mutated = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=root / "mutated",
+            )
+            self.assertEqual(mutated["acceptance"]["status"], "incomplete")
+            self.assertGreater(
+                mutated["composition_progress"]["counts"][
+                    "rooted_segment_refinement_frontier_edges"
+                ],
+                0,
+            )
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_external_call_loop_checks_paired_environment_end_to_end(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

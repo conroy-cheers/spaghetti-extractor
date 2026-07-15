@@ -558,6 +558,8 @@
             stageARelationalAcceptanceSuite.cases.exact_pure_guard_uses_derived_register_exactness;
           stage-a-relational-tests-acceptance-immutable-image-word =
             stageARelationalAcceptanceSuite.cases.immutable_image_word_load_closes_register_transfer;
+          stage-a-relational-tests-acceptance-direct-call-stack-writes =
+            stageARelationalAcceptanceSuite.cases.direct_call_with_prepared_stack_word_checks_whole_program_theorem;
           stage-a-relational-tests = pkgs.symlinkJoin {
             name = "stage-a-relational-tests";
             paths = [
@@ -630,6 +632,7 @@
             stage-a-relational-tests-acceptance-input-flag-guard
             stage-a-relational-tests-acceptance-exact-pure-guard
             stage-a-relational-tests-acceptance-immutable-image-word
+            stage-a-relational-tests-acceptance-direct-call-stack-writes
             stage-b-jq-skeleton
             stage-b-jq-skeleton-root
             ;

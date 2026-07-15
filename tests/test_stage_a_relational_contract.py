@@ -201,6 +201,69 @@ class StageARelationalContractTests(StageARelationalTestBase):
             related_source, related_behavior(offset=4)
         ))
 
+        mapped_source = {
+            **source,
+            "code_targets": [{
+                "id": 3,
+                "original_rva": 0x1000,
+                "candidate_rva": 0x1020,
+            }],
+            "values": [{
+                "id": 5,
+                "original_value": 0x402000,
+                "candidate_value": 0x403000,
+            }],
+        }
+
+        def mapped_behavior(
+            original_value: int, candidate_value: int,
+        ) -> dict[str, object]:
+            def write(value: int) -> dict[str, object]:
+                return {
+                    "address": {
+                        "op": "add",
+                        "left": {"op": "input_reg", "reg": "esp"},
+                        "right": {"op": "constant", "value": 8},
+                    },
+                    "value": {"op": "constant", "value": value},
+                }
+
+            return {
+                "original_ir": {"writes": [write(original_value)]},
+                "candidate_ir": {"writes": [write(candidate_value)]},
+            }
+
+        code_pointer = _paired_stack_word_write_claim(
+            mapped_source, mapped_behavior(0x401000, 0x401020),
+            0x400000, 0x400000,
+        )
+        self.assertEqual(code_pointer["value"], {
+            "profile": "mapped_code_target_v1",
+            "original": {"op": "constant", "value": 0x401000},
+            "candidate": {"op": "constant", "value": 0x401020},
+            "target_id": 3,
+        })
+        data_pointer = _paired_stack_word_write_claim(
+            mapped_source, mapped_behavior(0x402000, 0x403000),
+            0x400000, 0x400000,
+        )
+        self.assertEqual(data_pointer["value"]["profile"], "mapped_data_target_v1")
+        self.assertEqual(data_pointer["value"]["target_id"], 5)
+        self.assertIsNone(_paired_stack_word_write_claim(
+            mapped_source, mapped_behavior(0x401000, 0x401020)
+        ))
+        ambiguous_source = {
+            **mapped_source,
+            "values": [
+                *mapped_source["values"],
+                {**mapped_source["values"][0], "id": 6},
+            ],
+        }
+        self.assertIsNone(_paired_stack_word_write_claim(
+            ambiguous_source, mapped_behavior(0x402000, 0x403000),
+            0x400000, 0x400000,
+        ))
+
     def test_acceptance_blockers_are_compacted_without_losing_counts(self):
         compact = _compact_acceptance_blockers([
             {

@@ -37,6 +37,7 @@ from .expressions import (
     _lean_import_register_seed_claim,
     _lean_machine_import_call_contract,
     _lean_masked_successor_tautology_proof,
+    _lean_direct_call_stack_writes_claim,
     _lean_paired_stack_word_write_claim,
     _lean_paired_stack_word_writes_claim,
     _lean_register_argument_claim,
@@ -1625,12 +1626,17 @@ def _write_relational_segment_refinement_modules(
             theorem_name = f"{prefix}Checked"
             if candidate["certificate_profile"] in {
                 "composable_local_no_write_v1", "composable_direct_call_v1",
+                "composable_direct_call_stack_writes_v1",
                 "composable_immutable_indirect_jump_v1",
                 "composable_paired_stack_word_write_v1",
                 "composable_paired_stack_word_writes_v1",
             }:
                 direct_call = (
                     candidate["certificate_profile"] == "composable_direct_call_v1"
+                )
+                direct_call_stack_writes = (
+                    candidate["certificate_profile"]
+                    == "composable_direct_call_stack_writes_v1"
                 )
                 paired_stack_write = (
                     candidate["certificate_profile"]
@@ -2285,7 +2291,74 @@ def _write_relational_segment_refinement_modules(
                 paired_stack_write_shape_definition = ""
                 paired_stack_write_transition_definition = ""
                 immutable_indirect_jump_shape_definition = ""
-                if direct_call:
+                if direct_call_stack_writes:
+                    stack_claim_name = f"{prefix}DirectCallStackWritesClaim"
+                    stack_claim = candidate["direct_call_stack_writes_claim"]
+                    assert isinstance(stack_claim, dict)
+                    stack_amount = int(stack_claim["stack_amount"])
+                    stack_amount_twos_complement = 2**32 - stack_amount
+                    direct_call_shape_definition = (
+                        f"def {stack_claim_name} : DirectCallStackWritesClaim := "
+                        f"{_lean_direct_call_stack_writes_claim(stack_claim)}\n\n"
+                        f"theorem {shape_name} :\n"
+                        "    DirectCallStackWritesSegmentShapeClosed staticProofContext "
+                        f"{edge_name} region{source_index}.inputInvariant "
+                        f"{stack_claim_name}\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} := by\n"
+                        "  unfold DirectCallStackWritesSegmentShapeClosed\n"
+                        f"  rw [{local_code_targets_name}, {local_values_name}]\n"
+                        "  intro world originalState candidateState related\n"
+                        "  refine ⟨rfl, ?_⟩\n"
+                        "  intro guard\n"
+                        f"  refine ⟨{original_normalized_behavior}.eval originalState, "
+                        f"{candidate_normalized_behavior}.eval candidateState, "
+                        "?_, ?_, ?_⟩\n"
+                        f"  · simp [evalBehavior, {original_normalized_checked}]\n"
+                        f"  · simp [evalBehavior, {candidate_normalized_checked}]\n"
+                        "  have stackAddressRewrite (value : Word) :\n"
+                        f"      value + BitVec.ofNat 32 {stack_amount_twos_complement} =\n"
+                        f"        value - BitVec.ofNat 32 {stack_amount} := by\n"
+                        f"    exact word_add_ia32_twos_complement value {stack_amount} "
+                        "(by decide)\n"
+                        "  simp [NormalizedSymbolicBehavior.eval, "
+                        f"{normalized_shape_rewrites}, evalNormalizedWrites,\n"
+                        f"    originalBehavior{source_index}, candidateBehavior{source_index},\n"
+                        f"    {stack_claim_name}, DirectCallStackWritesClaim.originalWrites,\n"
+                        "    DirectCallStackWritesClaim.candidateWrites,\n"
+                        "    DirectCallStackWritesClaim.originalPushAddress,\n"
+                        "    DirectCallStackWritesClaim.candidatePushAddress,\n"
+                        "    PairedStackWordWritesClaim.originalWrites,\n"
+                        "    PairedStackWordWritesClaim.candidateWrites,\n"
+                        "    PairedStackWordWriteItem.originalAddress,\n"
+                        "    PairedStackWordWriteItem.candidateAddress,\n"
+                        "    pairedStackWordAddress, NormalizedOutcomeExpr.eval,\n"
+                        f"    {edge_name}, PureOutcome.segmentExitFor,\n"
+                        "    PureOutcome.segmentExit, outcomesRelated, "
+                        "StageA.Formal.Expr.eval, stackAddressRewrite]\n"
+                    )
+                    direct_call_transition_definition = (
+                        f"theorem {transition_name} :\n"
+                        f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} :=\n"
+                        "  segmentTransitionClosed_of_direct_call_stack_writes "
+                        f"staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    {stack_claim_name} originalBehavior{source_index} "
+                        f"candidateBehavior{source_index}\n"
+                        f"    {original_normalized_behavior} "
+                        f"{candidate_normalized_behavior}\n"
+                        f"    region{source_index}.targets region{source_index}.values\n"
+                        f"    {local_code_targets_name} {local_values_name} "
+                        "staticProofContextChecked\n"
+                        "    (by decide) (by decide) (by decide) (by decide) "
+                        f"{shape_name} {state_name}"
+                    )
+                elif direct_call:
                     source_window = _lean_stack_window(
                         candidate["source_stack_window"]
                     )
