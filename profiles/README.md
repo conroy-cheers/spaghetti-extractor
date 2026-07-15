@@ -13,6 +13,12 @@ footprint data outside the generic proof core.
 4. selects only exact import identities present in both PE import tables; and
 5. reports selected, ignored, covered, and uncovered common imports.
 
+The option may be repeated to compose disjoint profiles. Profile ids and
+selected import identities must be unique across the set. Stage A validates
+each profile independently, rejects overlaps, and then assigns deterministic
+contract ids in command-line order. This lets platform and library contracts
+remain separately owned without requiring a target-specific aggregate file.
+
 Selection does not prove an external call. Reachable call sites must still have
 checked argument recovery, ABI transfer, memory footprints, world effects, and
 paired-environment refinement before Lean can use them in the whole-program

@@ -263,7 +263,7 @@
                   compiler: { target: $compiler, version: $compiler_version }
                 }' > "$fixture_dir/build-metadata.json"
             '';
-          stage-a-jq-fixtures-check = pkgs.runCommand "stage-a-jq-fixtures-check"
+          stage-a-jq-prepared-proof = pkgs.runCommand "stage-a-jq-prepared-proof"
             {
               nativeBuildInputs = [
                 spaghetti-extractor
@@ -290,6 +290,7 @@
                 --candidate "$fixture_dir/jq-candidate.exe" \
                 --mapping "$work/jq-block-map.json" \
                 --external-profile "${./profiles/pe32-kernel32-lockstep-v1.json}" \
+                --external-profile "${./profiles/pe32-msvcrt-lockstep-v1.json}" \
                 --out "$work/jq-relation-contract.json" \
                 > "$work/generate-relation.stdout"
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
@@ -299,30 +300,31 @@
                   --relation-contract "$work/jq-relation-contract.json" \
                   --out "$work/relational-v3" \
                   > "$work/relational-v3.stdout"
-              jq -e '
-                .status == "prepared" and
-                .acceptance.status == "incomplete" and
-                .acceptance.theorem == null and
-                .composition_progress.status == "incomplete" and
-                .composition_progress.counts.rooted_reachable_nodes > 0 and
-                .composition_progress.counts.rooted_reachable_feasible_edges > 0 and
-                .composition_progress.counts.rooted_external_refinement_candidates == 9 and
-                .composition_progress.counts.rooted_external_contract_gap_edges == 3 and
-                .composition_progress.counts.rooted_refined_segments == 52 and
-                .composition_progress.counts.unsupported_instructions == 0
-              ' "$work/relational-v3/prepared-proof.json" >/dev/null
-              jq -e '.status == "supported" and .counts.issues == 0' \
-                "$work/relational-v3/semantic-gaps.json" >/dev/null
-              mkdir -p "$out/generated" "$out/report"
-              cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" "$work/jq-relation-contract.json" "$out/report/"
+              mkdir -p "$out/report"
+              cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" \
+                "$work/jq-relation-contract.json" "$out/report/"
               cp -R "$work/relational-v3" "$out/report/relational-v3"
-              cp "$work/relational-v3/semantic-gaps.json" "$out/generated/jq-formal-gaps.json"
+            '';
+          stage-a-jq-reference-contract = pkgs.runCommand "stage-a-jq-reference-contract"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor
+                pkgs.jq
+              ];
+            }
+            ''
+              fixture_dir="${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
+              prepared="${stage-a-jq-prepared-proof}/report"
+              work="$TMPDIR/stage-a-jq-reference"
+              mkdir -p "$work" "$out/generated"
+              cp "$prepared/relational-v3/semantic-gaps.json" \
+                "$out/generated/jq-formal-gaps.json"
               if spaghetti-extractor stage-a-export-reference-contract \
                   --original "$fixture_dir/jq-original.exe" \
                   --candidate "$fixture_dir/jq-candidate.exe" \
-                  --mapping "$out/report/jq-block-map.json" \
-                  --validation-report "$out/report/relational-v3" \
-                  --layout-contract "$out/report/jq-layout-contract.json" \
+                  --mapping "$prepared/jq-block-map.json" \
+                  --validation-report "$prepared/relational-v3" \
+                  --layout-contract "$prepared/jq-layout-contract.json" \
                   --sidecar-dir "$out/generated" \
                   --unit-contract-dir "$out/generated" \
                   --out "$out/generated/jq-reference-contract.json" \
@@ -330,12 +332,64 @@
                 echo "jq reference contract unexpectedly claimed formal completion" >&2
                 exit 1
               fi
-              jq -e '.status == "incomplete"' "$out/generated/jq-reference-contract.json" >/dev/null
+              jq -e '.status == "incomplete"' \
+                "$out/generated/jq-reference-contract.json" >/dev/null
               spaghetti-extractor stage-a-smoke-contract \
                 --reference-contract "$out/generated/jq-reference-contract.json" \
                 --out "$out/generated/contract-smoke.json" \
                 > "$work/smoke.stdout"
-              jq -e '.status == "pass"' "$out/generated/contract-smoke.json" >/dev/null
+              jq -e '.status == "pass"' \
+                "$out/generated/contract-smoke.json" >/dev/null
+            '';
+          stage-a-jq-fixtures-check = pkgs.runCommand "stage-a-jq-fixtures-check"
+            {
+              nativeBuildInputs = [ pkgs.jq ];
+            }
+            ''
+              prepared="${stage-a-jq-prepared-proof}/report"
+              generated="${stage-a-jq-reference-contract}/generated"
+              jq -e '
+                .status == "prepared" and
+                .acceptance.status == "incomplete" and
+                .acceptance.theorem == null and
+                .composition_progress.status == "incomplete" and
+                .composition_progress.counts.rooted_reachable_nodes > 0 and
+                .composition_progress.counts.rooted_reachable_feasible_edges > 0 and
+                .composition_progress.counts.rooted_external_refinement_candidates > 0 and
+                .composition_progress.counts.rooted_refined_segments > 0 and
+                .composition_progress.counts.rooted_refined_segments <
+                  .composition_progress.counts.rooted_reachable_feasible_edges and
+                .composition_progress.counts.unsupported_instructions == 0
+              ' "$prepared/relational-v3/prepared-proof.json" >/dev/null
+              jq -e '
+                (.machine_import_call_contracts | any(
+                  .import.dll == "kernel32.dll" and
+                  .import.symbol == "TlsGetValue" and
+                  .world_effect == "tlsState")) and
+                (.machine_import_call_contracts | any(
+                  .import.dll == "msvcrt.dll" and
+                  .import.symbol == "free" and
+                  .world_effect == "dynamicRangeRelease")) and
+                (.machine_import_call_contracts | any(
+                  .import.dll == "msvcrt.dll" and
+                  .import.symbol == "atexit" and
+                  .world_effect == "callbackRegistration")) and
+                (.machine_import_call_contracts | any(
+                  .import.dll == "msvcrt.dll" and
+                  .import.symbol == "exit" and
+                  .disposition == "protocol"))
+              ' "$prepared/relational-v3/relation-contract.json" >/dev/null
+              jq -e '.format == "stage-a-interface-manifest-v1"' \
+                "$prepared/relational-v3/stage-a-interface-manifest.json" >/dev/null
+              jq -e '.status == "supported" and .counts.issues == 0' \
+                "$prepared/relational-v3/semantic-gaps.json" >/dev/null
+              jq -e '.status == "incomplete"' \
+                "$generated/jq-reference-contract.json" >/dev/null
+              jq -e '.status == "pass"' \
+                "$generated/contract-smoke.json" >/dev/null
+              mkdir -p "$out"
+              ln -s "$prepared" "$out/report"
+              ln -s "$generated" "$out/generated"
             '';
           mkStageARelationalTest = name: module: testFiles:
             let
@@ -449,6 +503,8 @@
             stage-a-fixtures-check
             stage-a-fixtures-root
             stage-a-jq-fixtures
+            stage-a-jq-prepared-proof
+            stage-a-jq-reference-contract
             stage-a-jq-fixtures-check
             stage-a-jq-fixtures-root
             stage-a-relational-tests

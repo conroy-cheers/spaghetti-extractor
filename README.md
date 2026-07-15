@@ -53,8 +53,16 @@ Build and validate the full Windows x86 jq alignment-pair contract:
 
 ```sh
 nix build .#stage-a-jq-fixtures --no-link
-nix build .#stage-a-jq-fixtures-check --no-link
+nix build .#stage-a-jq-fixtures-check --no-link \
+  --builders "$(cat nix/stage-a-builders)" --max-jobs 0
 ```
+
+The jq path is split into independently cacheable derivations:
+`stage-a-jq-prepared-proof` performs static extraction and prepares the proof
+graph, `stage-a-jq-reference-contract` exports Stage B feedback from that graph,
+and `stage-a-jq-fixtures-check` performs the lightweight acceptance audit. A
+report or assertion change therefore does not repeat PE extraction or hidden
+Lean compilation.
 
 Generate a relation contract with reusable machine-level external-call schemas:
 

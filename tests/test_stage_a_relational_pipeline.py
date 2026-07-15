@@ -174,6 +174,128 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
                 {issue["category"] for issue in result["issues"]},
             )
 
+    def test_relation_contract_generator_composes_disjoint_external_profiles(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code = bytes.fromhex("ff1540204000c3")
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_import_image(code, symbol="Sleep"))
+            candidate.write_bytes(_pe32_import_image(code, symbol="Sleep"))
+            mapping = root / "mapping.json"
+            mapping.write_text(json.dumps({"blocks": [{
+                "id": "entry",
+                "kind": "code",
+                "original": {"rva": 0x1000, "size": len(code)},
+                "candidate": {"rva": 0x1000, "size": len(code)},
+            }]}), encoding="utf-8")
+            ignored_profile = root / "ignored-profile.json"
+            ignored_profile.write_text(json.dumps({
+                "format": "stage-a-external-environment-profile-v1",
+                "id": "generic-errors-v1",
+                "machine_import_call_contracts": [{
+                    "id": 40,
+                    "import": {"dll": "kernel32.dll", "symbol": "GetLastError"},
+                    "abi_template": "pe32-stdcall-v1",
+                    "argument_words": 0,
+                    "memory_effect": "none",
+                    "memory_footprints": [],
+                    "world_effect": "none",
+                }],
+            }), encoding="utf-8")
+            selected_profile = root / "selected-profile.json"
+            selected_profile.write_text(json.dumps({
+                "format": "stage-a-external-environment-profile-v1",
+                "id": "generic-scheduling-v1",
+                "machine_import_call_contracts": [{
+                    "id": 90,
+                    "import": {"dll": "kernel32.dll", "symbol": "Sleep"},
+                    "abi_template": "pe32-stdcall-v1",
+                    "argument_words": 1,
+                    "memory_effect": "none",
+                    "memory_footprints": [],
+                    "world_effect": "none",
+                }],
+            }), encoding="utf-8")
+            contract = root / "relation.json"
+
+            result = stage_a_generate_relation_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                external_profile=[ignored_profile, selected_profile],
+                out=contract,
+            )
+
+            self.assertEqual(result["status"], "generated", result["issues"])
+            self.assertEqual(
+                result["external_profile_set"],
+                {
+                    "format": "stage-a-external-environment-profile-set-v1",
+                    "ids": ["generic-errors-v1", "generic-scheduling-v1"],
+                    "selected_contracts": 1,
+                },
+            )
+            self.assertNotIn("external_profile", result)
+            self.assertEqual(len(result["external_profiles"]), 2)
+            payload = json.loads(contract.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["machine_import_call_contracts"][0]["id"],
+                0,
+            )
+            self.assertEqual(
+                payload["machine_import_call_contracts"][0]["import"],
+                {"dll": "kernel32.dll", "symbol": "Sleep"},
+            )
+
+    def test_relation_contract_generator_rejects_overlapping_external_profiles(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code = bytes.fromhex("ff1540204000c3")
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_import_image(code, symbol="Sleep"))
+            candidate.write_bytes(_pe32_import_image(code, symbol="Sleep"))
+            mapping = root / "mapping.json"
+            mapping.write_text(json.dumps({"blocks": [{
+                "id": "entry",
+                "kind": "code",
+                "original": {"rva": 0x1000, "size": len(code)},
+                "candidate": {"rva": 0x1000, "size": len(code)},
+            }]}), encoding="utf-8")
+
+            profiles = []
+            for profile_id in ("generic-scheduling-v1", "alternate-scheduling-v1"):
+                profile = root / f"{profile_id}.json"
+                profile.write_text(json.dumps({
+                    "format": "stage-a-external-environment-profile-v1",
+                    "id": profile_id,
+                    "machine_import_call_contracts": [{
+                        "id": 1,
+                        "import": {"dll": "kernel32.dll", "symbol": "Sleep"},
+                        "abi_template": "pe32-stdcall-v1",
+                        "argument_words": 1,
+                        "memory_effect": "none",
+                        "memory_footprints": [],
+                        "world_effect": "none",
+                    }],
+                }), encoding="utf-8")
+                profiles.append(profile)
+
+            result = stage_a_generate_relation_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                external_profile=profiles,
+                out=root / "relation.json",
+            )
+
+            self.assertEqual(result["status"], "incomplete")
+            self.assertIn(
+                "external_environment_profile_import_duplicate",
+                {issue["category"] for issue in result["issues"]},
+            )
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for string-copy relational proofs")
     def test_relation_generator_splits_and_checks_symbolic_rep_movsd(self):
         with tempfile.TemporaryDirectory() as temporary:

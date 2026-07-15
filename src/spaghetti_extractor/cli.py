@@ -179,7 +179,12 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     generate_relation.add_argument(
         "--external-profile",
         type=Path,
-        help="versioned machine-level contracts for shared imported calls",
+        action="append",
+        dest="external_profiles",
+        help=(
+            "versioned machine-level contracts for shared imported calls; "
+            "repeat to compose disjoint profiles"
+        ),
     )
     generate_relation.add_argument("--out", type=Path, required=True)
     generate_relation.set_defaults(
@@ -187,7 +192,7 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
             original=args.original,
             candidate=args.candidate,
             mapping=args.mapping,
-            external_profile=args.external_profile,
+            external_profile=args.external_profiles,
             out=args.out,
         )
     )

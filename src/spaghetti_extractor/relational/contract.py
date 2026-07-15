@@ -397,7 +397,7 @@ def stage_a_generate_relation_contract(
     original: Path,
     candidate: Path,
     mapping: Path,
-    external_profile: Path | None = None,
+    external_profile: Path | list[Path] | tuple[Path, ...] | None = None,
     out: Path,
 ) -> dict[str, Any]:
     original_bin = _parse_stage_a_pe(Path(original))
@@ -505,12 +505,18 @@ def stage_a_generate_relation_contract(
             "mapping_sha256": sha256_file(Path(mapping)),
         },
     }
-    profile_summary: dict[str, Any] | None = None
+    profile_summaries: list[dict[str, Any]] = []
     profile_issues: list[dict[str, Any]] = []
-    if external_profile is not None:
-        machine_contracts, profile_summary, profile_issues = (
-            _select_external_profile_contracts(
-                Path(external_profile), original_bin, candidate_bin
+    if external_profile is None:
+        external_profile_paths: list[Path] = []
+    elif isinstance(external_profile, (str, Path)):
+        external_profile_paths = [Path(external_profile)]
+    else:
+        external_profile_paths = [Path(path) for path in external_profile]
+    if external_profile_paths:
+        machine_contracts, profile_summaries, profile_issues = (
+            _select_external_profile_set_contracts(
+                external_profile_paths, original_bin, candidate_bin
             )
         )
         contract["machine_import_call_contracts"] = machine_contracts
@@ -535,9 +541,70 @@ def stage_a_generate_relation_contract(
         },
         "issues": issues,
     }
-    if profile_summary is not None:
-        result["external_profile"] = profile_summary
+    if len(profile_summaries) == 1:
+        result["external_profile"] = profile_summaries[0]
+    if profile_summaries:
+        result["external_profiles"] = profile_summaries
+        result["external_profile_set"] = {
+            "format": "stage-a-external-environment-profile-set-v1",
+            "ids": [summary["id"] for summary in profile_summaries],
+            "selected_contracts": len(
+                contract.get("machine_import_call_contracts", [])
+            ),
+        }
     return result
+
+
+def _select_external_profile_set_contracts(
+    paths: list[Path],
+    original: StageABinary,
+    candidate: StageABinary,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    selected: list[dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    seen_profile_ids: dict[str, Path] = {}
+    seen_imports: dict[tuple[str, str, str | int], str] = {}
+    for path in paths:
+        contracts, summary, profile_issues = _select_external_profile_contracts(
+            path, original, candidate
+        )
+        summaries.append(summary)
+        issues.extend(profile_issues)
+        profile_id = str(summary["id"])
+        prior_path = seen_profile_ids.get(profile_id)
+        if prior_path is not None:
+            issues.append({
+                "category": "external_environment_profile_id_duplicate",
+                "severity": "hard",
+                "profile_id": profile_id,
+                "paths": [str(prior_path), str(path)],
+                "next_action": "compose profiles with unique stable ids",
+            })
+        else:
+            seen_profile_ids[profile_id] = path
+        for contract in contracts:
+            identity = _import_identity(contract.get("import"))
+            if identity is None:
+                continue
+            normalized_identity = (identity[0].lower(), identity[1], identity[2])
+            prior_profile = seen_imports.get(normalized_identity)
+            if prior_profile is not None:
+                issues.append({
+                    "category": "external_environment_profile_import_duplicate",
+                    "severity": "hard",
+                    "import": contract["import"],
+                    "profiles": [prior_profile, profile_id],
+                    "next_action": (
+                        "declare each imported call in exactly one composed profile"
+                    ),
+                })
+                continue
+            seen_imports[normalized_identity] = profile_id
+            selected.append(dict(contract))
+    for contract_id, contract in enumerate(selected):
+        contract["id"] = contract_id
+    return selected, summaries, issues
 
 
 def _select_external_profile_contracts(

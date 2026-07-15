@@ -36,7 +36,8 @@ Stage B does not trace or execute the original binary during iteration.
 1. Build the canonical jq Stage A artifacts:
 
    ```sh
-   nix build .#stage-a-jq-fixtures-check --no-link
+   nix build .#stage-a-jq-fixtures-check --no-link \
+     --builders "$(cat nix/stage-a-builders)" --max-jobs 0
    ```
 
 2. Prepare a local slice workspace:
@@ -91,6 +92,8 @@ Stage B does not trace or execute the original binary during iteration.
 - `.#spaghetti-extractor`
 - `.#stage-a-fixtures-check`
 - `.#stage-a-jq-fixtures`
+- `.#stage-a-jq-prepared-proof`
+- `.#stage-a-jq-reference-contract`
 - `.#stage-a-jq-fixtures-check`
 - `.#stage-b-jq-skeleton`
 - `.#spaghetti-extractor-slice`
