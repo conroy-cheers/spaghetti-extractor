@@ -339,6 +339,14 @@ pending event, paired continuation, permitted callback targets, and successor
 relation. Well-bracketed callbacks are the first supported profile;
 asynchronous callbacks are deferred to Track B.
 
+The migration must remain fail closed while this stack is introduced. The
+mixed-frame kernel first wraps existing internal frames and checks external
+return tokens and paired stack slots. Protocol execution states may be decoded
+and tested before acceptance uses them, but the corresponding machine-call
+disposition must remain structurally invalid until the product bisimulation has
+checked cases for suspended calls, callback entry, nested internal/external
+frames, callback return, protocol resumption, and final termination.
+
 ### A7. Lockstep External Boundary
 
 Refactor the current paired-environment direction into one shared canonical

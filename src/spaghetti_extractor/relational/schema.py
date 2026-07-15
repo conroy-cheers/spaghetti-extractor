@@ -56,6 +56,7 @@ RELATIONAL_KERNEL_MODULES = (
     "RelationalSegment",
     "RelationalComposition",
     "RelationalEnvironment",
+    "RelationalCallbacks",
     "RelationalCertificates",
     "RelationalStaticTree",
 )

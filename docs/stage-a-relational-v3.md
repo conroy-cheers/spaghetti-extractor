@@ -1253,3 +1253,24 @@ the current rooted frontier reaches `msvcrt!exit` first. That import remains
 undeclared intentionally: invoking the registered callbacks requires explicit
 well-bracketed external callback frames before `exit` can be classified as a
 sound terminal interaction.
+
+The first callback-invocation kernel is now split into
+`RelationalCallbacks.lean`. It defines a mixed runtime stack with typed internal
+and external continuations. An external callback frame must resolve all of the
+following in Lean: a canonical registered callback pair, a mapped PE
+continuation for the suspended call, a same-offset slot in one paired stack
+range, and a non-null paired opaque-resource token for the external return
+address. Concrete memory and ESP predicates connect those witnesses to callback
+entry and return states. A checked adapter embeds every existing internal-only
+runtime stack into the mixed relation, avoiding a second proof regime.
+
+The decoded execution model also has explicit `awaitingExternal` and
+`callbackRunning` states and a stateful protocol action type with `returned`,
+`callback`, and `terminated` outcomes. Callback return advances the suspended
+protocol phase only after the decoded return target equals the side-specific
+opaque return token. This surface is intentionally not yet an acceptance
+capability: `MachineCallDisposition.protocol` fails shape validation,
+`ExternalEnvironmentRefinesAt` rejects it, and `WorldExecutionsRelated` has no
+protocol-state case. The next increment must connect paired protocol actions,
+mixed-frame preservation, callback-node invariants, and callback return to the
+whole-program bisimulation before any profile may select the disposition.

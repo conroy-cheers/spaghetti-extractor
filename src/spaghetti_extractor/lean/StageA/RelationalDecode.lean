@@ -150,6 +150,7 @@ deriving Repr, DecidableEq
 inductive MachineCallDisposition where
   | returns
   | terminates
+  | protocol
 deriving Repr, DecidableEq
 
 structure MachineImportCallContract where
@@ -220,6 +221,7 @@ def MachineImportCallContract.shapeValid
           contract.memoryEffect == .none &&
           contract.memoryFootprints.isEmpty &&
           contract.worldEffect == .none
+    | .protocol => false
 
 def MachineImportCallContract.matchesImport
     (contract : MachineImportCallContract) (imported : PEImport) : Bool :=

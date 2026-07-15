@@ -1,4 +1,4 @@
-import StageA.RelationalEnvironment
+import StageA.RelationalCallbacks
 import StageA.RelationalExecution
 
 namespace StageA.Relational
@@ -9,6 +9,7 @@ inductive WorldRelationalObservable where
   | external (world : RelationalWorld) (imported : ExternalTarget)
       (arguments : List Word)
   | returned (world : RelationalWorld)
+  | callback (world : RelationalWorld) (targetId : Nat)
   | fault
 deriving Repr, DecidableEq
 
@@ -22,6 +23,9 @@ def worldRelationalObservationsRelated (context : StaticProofContext) :
           originalArguments candidateArguments = true
   | some (.returned originalWorld), some (.returned candidateWorld) =>
       originalWorld = candidateWorld
+  | some (.callback originalWorld originalTarget),
+      some (.callback candidateWorld candidateTarget) =>
+      originalWorld = candidateWorld ∧ originalTarget = candidateTarget
   | some .fault, some .fault => True
   | _, _ => False
 
@@ -31,6 +35,9 @@ structure DecodedWorldProgram where
   regions : List RegionRelation
   externalCallSites : List ExternalCallSiteContract
   environment : WorldExternalEnvironment
+  protocolEnvironment : WorldExternalProtocolEnvironment := {
+    action := fun request => .returned { state := request.state, world := request.world }
+  }
 
 def decodedWorldRegionBehavior (program : DecodedWorldProgram)
     (targetId : Nat) (state : MachineState) : Option RelationalBehavior := do
@@ -90,21 +97,99 @@ def resolvedExternalCallContract? (context : StaticProofContext)
   let site <- sites.find? fun site => site.id == siteId
   machineImportCallContractById? context site.machineContractId
 
+structure WorldExternalSuspension where
+  sourceTargetId : Nat
+  siteId : Nat
+  imported : ExternalTarget
+  arguments : List Word
+  continuationTargetId : Nat
+  calls : List Nat
+  eventIndex : Nat
+  phaseIndex : Nat
+  event : WorldExternalEvent
+  state : MachineState
+  world : RelationalWorld
+
+structure WorldExternalCallbackRuntime where
+  suspension : WorldExternalSuspension
+  entry : WorldExternalCallbackAction
+
 inductive WorldExecution where
   | running (targetId : Nat) (state : MachineState) (calls : List Nat)
       (eventIndex : Nat) (world : RelationalWorld)
   | returned (state : MachineState) (world : RelationalWorld)
   | terminated (world : RelationalWorld)
+  | awaitingExternal (suspension : WorldExternalSuspension)
+      (callbacks : List WorldExternalCallbackRuntime)
+  | callbackRunning (targetId : Nat) (state : MachineState) (calls : List Nat)
+      (eventIndex : Nat) (world : RelationalWorld)
+      (callbacks : List WorldExternalCallbackRuntime)
   | fault
+
+def WorldExternalSuspension.request
+    (suspension : WorldExternalSuspension) : WorldExternalProtocolRequest := {
+  eventIndex := suspension.eventIndex
+  phaseIndex := suspension.phaseIndex
+  event := suspension.event
+  state := suspension.state
+  world := suspension.world
+}
+
+def resumeWorldExecution (callbacks : List WorldExternalCallbackRuntime)
+    (targetId : Nat) (state : MachineState) (calls : List Nat)
+    (eventIndex : Nat) (world : RelationalWorld) : WorldExecution :=
+  match callbacks with
+  | [] => .running targetId state calls eventIndex world
+  | _ => .callbackRunning targetId state calls eventIndex world callbacks
+
+def suspendWorldExternalProtocol (sourceTargetId siteId : Nat)
+    (imported : ExternalTarget) (arguments : List Word)
+    (continuationTargetId : Nat) (state : MachineState) (calls : List Nat)
+    (eventIndex : Nat) (world : RelationalWorld)
+    (callbacks : List WorldExternalCallbackRuntime) : WorldExecution :=
+  let event : WorldExternalEvent := {
+    siteId
+    imported
+    arguments
+    state
+    world
+  }
+  .awaitingExternal {
+    sourceTargetId
+    siteId
+    imported
+    arguments
+    continuationTargetId
+    calls
+    eventIndex
+    phaseIndex := 0
+    event
+    state
+    world
+  } callbacks
 
 def transitionFromWorldOutcome (program : DecodedWorldProgram)
     (sourceTargetId : Nat) (state : MachineState) (calls : List Nat)
-    (eventIndex : Nat) (world : RelationalWorld) :
+    (eventIndex : Nat) (world : RelationalWorld)
+    (callbacks : List WorldExternalCallbackRuntime) :
     PureOutcome -> RelatedTransition WorldExecution WorldRelationalObservable
   | .returned target =>
       match calls with
       | [] =>
-          { next := .returned state world, observation := some (.returned world) }
+          match callbacks with
+          | [] =>
+              { next := .returned state world, observation := some (.returned world) }
+          | callback :: outerCallbacks =>
+              if target == callback.entry.returnAddress then
+                { next := .awaitingExternal {
+                    callback.suspension with
+                    phaseIndex := callback.suspension.phaseIndex + 1
+                    state
+                    world
+                  } outerCallbacks,
+                  observation := none }
+              else
+                { next := .fault, observation := some .fault }
       | continuation :: tail =>
           match resolveMappedCodeTarget program.candidate
               (if program.candidate then program.context.candidatePe.imageBase
@@ -112,19 +197,21 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
               program.context.codeMap.entries.toList target with
           | some resolved =>
               if resolved == continuation then
-                { next := .running continuation state tail eventIndex world,
+                { next := resumeWorldExecution callbacks continuation state tail eventIndex world,
                   observation := none }
               else
                 { next := .fault, observation := some .fault }
           | none => { next := .fault, observation := some .fault }
   | .jump target =>
-      { next := .running target state calls eventIndex world, observation := none }
+      { next := resumeWorldExecution callbacks target state calls eventIndex world,
+        observation := none }
   | .branch condition taken fallthrough =>
-      { next := .running (if condition then taken else fallthrough)
+      { next := resumeWorldExecution callbacks (if condition then taken else fallthrough)
           state calls eventIndex world,
         observation := none }
   | .call target continuation =>
-      { next := .running target state (continuation :: calls) eventIndex world,
+      { next := resumeWorldExecution callbacks target state (continuation :: calls)
+          eventIndex world,
         observation := none }
   | .externalCall imported arguments continuation =>
       match resolveExternalCallSite program.context program.externalCallSites
@@ -138,6 +225,10 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
               | .terminates =>
                   { next := .terminated world,
                     observation := some (.external world imported arguments) }
+              | .protocol =>
+                  { next := suspendWorldExternalProtocol sourceTargetId siteId imported
+                      arguments continuation state calls eventIndex world callbacks,
+                    observation := some (.external world imported arguments) }
               | .returns =>
                   let event : WorldExternalEvent := {
                     siteId
@@ -147,8 +238,8 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                     world
                   }
                   let result := program.environment.result eventIndex event
-                  { next := .running continuation result.state calls (eventIndex + 1)
-                      result.world,
+                  { next := resumeWorldExecution callbacks continuation result.state calls
+                      (eventIndex + 1) result.world,
                     observation := some (.external world imported arguments) }
   | .externalJump imported arguments =>
       match calls with
@@ -165,6 +256,11 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                   | .terminates =>
                       { next := .terminated world,
                         observation := some (.external world imported arguments) }
+                  | .protocol =>
+                      { next := suspendWorldExternalProtocol sourceTargetId siteId imported
+                          arguments continuation (normalizeImportReturnSlotState state) tail
+                          eventIndex world callbacks,
+                        observation := some (.external world imported arguments) }
                   | .returns =>
                       let event : WorldExternalEvent := {
                         siteId
@@ -174,13 +270,14 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                         world
                       }
                       let result := program.environment.result eventIndex event
-                      { next := .running continuation result.state tail
+                      { next := resumeWorldExecution callbacks continuation result.state tail
                             (eventIndex + 1) result.world,
                         observation := some (.external world imported arguments) }
   | .bulkCopy destination source count direction continuation =>
       let memory := Memory.bulkCopyDwords state.memory destination source direction
         count.toNat
-      { next := .running continuation { state with memory } calls eventIndex world,
+      { next := resumeWorldExecution callbacks continuation { state with memory } calls
+          eventIndex world,
         observation := none }
   | .indirectCall target continuation =>
       match resolveMappedCodeTarget program.candidate
@@ -188,7 +285,8 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
            else program.context.originalPe.imageBase)
           program.context.codeMap.entries.toList target with
       | some resolved =>
-          { next := .running resolved state (continuation :: calls) eventIndex world,
+          { next := resumeWorldExecution callbacks resolved state (continuation :: calls)
+              eventIndex world,
             observation := none }
       | none =>
           match resolveWorldImportCall program.candidate program.context world target state with
@@ -206,6 +304,11 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                       | .terminates =>
                           { next := .terminated world,
                             observation := some (.external world imported arguments) }
+                      | .protocol =>
+                          { next := suspendWorldExternalProtocol sourceTargetId siteId imported
+                              arguments continuation (normalizeImportReturnSlotState state)
+                              calls eventIndex world callbacks,
+                            observation := some (.external world imported arguments) }
                       | .returns =>
                           let event : WorldExternalEvent := {
                             siteId
@@ -215,7 +318,7 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                             world
                           }
                           let result := program.environment.result eventIndex event
-                          { next := .running continuation result.state calls
+                          { next := resumeWorldExecution callbacks continuation result.state calls
                                 (eventIndex + 1) result.world,
                             observation := some (.external world imported arguments) }
   | .indirectJump target =>
@@ -224,7 +327,7 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
            else program.context.originalPe.imageBase)
           program.context.codeMap.entries.toList target with
       | some resolved =>
-          { next := .running resolved state calls eventIndex world,
+          { next := resumeWorldExecution callbacks resolved state calls eventIndex world,
             observation := none }
       | none =>
           match calls with
@@ -245,6 +348,11 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                           | .terminates =>
                               { next := .terminated world,
                                 observation := some (.external world imported arguments) }
+                          | .protocol =>
+                              { next := suspendWorldExternalProtocol sourceTargetId siteId imported
+                                  arguments continuation (normalizeImportReturnSlotState state)
+                                  tail eventIndex world callbacks,
+                                observation := some (.external world imported arguments) }
                           | .returns =>
                               let event : WorldExternalEvent := {
                                 siteId
@@ -254,19 +362,36 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                                 world
                               }
                               let result := program.environment.result eventIndex event
-                              { next := .running continuation result.state tail
+                              { next := resumeWorldExecution callbacks continuation result.state tail
                                     (eventIndex + 1) result.world,
                                 observation := some (.external world imported arguments) }
   | .checkedContinue valid continuation =>
       if valid then
-        { next := .running continuation state calls eventIndex world,
+        { next := resumeWorldExecution callbacks continuation state calls eventIndex world,
           observation := none }
       else
         { next := .fault, observation := some .fault }
   | .atomicCompareExchange address expected replacement continuation =>
       let memory := Memory.atomicCompareExchange state.memory address expected replacement
-      { next := .running continuation { state with memory } calls eventIndex world,
+      { next := resumeWorldExecution callbacks continuation { state with memory } calls
+          eventIndex world,
         observation := none }
+
+def stepWorldExternalSuspension (program : DecodedWorldProgram)
+    (suspension : WorldExternalSuspension)
+    (callbacks : List WorldExternalCallbackRuntime) :
+    RelatedTransition WorldExecution WorldRelationalObservable :=
+  match program.protocolEnvironment.action suspension.request with
+  | .returned result =>
+      { next := resumeWorldExecution callbacks suspension.continuationTargetId
+          result.state suspension.calls (suspension.eventIndex + 1) result.world,
+        observation := none }
+  | .callback entry =>
+      { next := .callbackRunning entry.targetId entry.state [] suspension.eventIndex
+          entry.world ({ suspension, entry } :: callbacks),
+        observation := some (.callback entry.world entry.targetId) }
+  | .terminated world =>
+      { next := .terminated world, observation := none }
 
 def stepWorldExecution (program : DecodedWorldProgram) :
     WorldExecution -> RelatedTransition WorldExecution WorldRelationalObservable
@@ -275,10 +400,19 @@ def stepWorldExecution (program : DecodedWorldProgram) :
       | none => { next := .fault, observation := some .fault }
       | some behavior =>
           transitionFromWorldOutcome program targetId
-            (behavior.nextMachineState state) calls eventIndex world behavior.outcome
+            (behavior.nextMachineState state) calls eventIndex world [] behavior.outcome
   | .returned state world =>
       { next := .returned state world, observation := none }
   | .terminated world => { next := .terminated world, observation := none }
+  | .awaitingExternal suspension callbacks =>
+      stepWorldExternalSuspension program suspension callbacks
+  | .callbackRunning targetId state calls eventIndex world callbacks =>
+      match decodedWorldRegionBehavior program targetId state with
+      | none => { next := .fault, observation := some .fault }
+      | some behavior =>
+          transitionFromWorldOutcome program targetId
+            (behavior.nextMachineState state) calls eventIndex world callbacks
+            behavior.outcome
   | .fault => { next := .fault, observation := none }
 
 def DecodedWorldProgram.transitionSystem (program : DecodedWorldProgram) :
@@ -299,6 +433,36 @@ def RelationalRuntimeCallStackHolds (context : StaticProofContext)
         RelationalRuntimeCallStackHolds context original candidate frames
           continuations remainingOffsets
   | _, _, _ => False
+
+theorem RelationalRuntimeCallStackHolds.toMixed
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : MachineState)
+    (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
+    (offsets : List ReturnSlotOffsetPair)
+    (holds : RelationalRuntimeCallStackHolds context original candidate
+      frames continuations offsets) :
+    RelationalMixedRuntimeStackHolds context world original candidate
+      (frames.map RelationalRuntimeFrame.internal)
+      (continuations.map RelationalRuntimeContinuation.internal) offsets := by
+  induction frames generalizing continuations offsets with
+  | nil =>
+      cases continuations <;> cases offsets <;>
+        simp_all [RelationalRuntimeCallStackHolds, RelationalMixedRuntimeStackHolds]
+  | cons frame frames ih =>
+      cases continuations with
+      | nil => simp [RelationalRuntimeCallStackHolds] at holds
+      | cons continuation continuations =>
+          cases offsets with
+          | nil => simp [RelationalRuntimeCallStackHolds] at holds
+          | cons offset offsets =>
+              simp only [RelationalRuntimeCallStackHolds] at holds
+              simp only [List.map_cons, RelationalMixedRuntimeStackHolds,
+                RelationalRuntimeFrame.continuationMatches,
+                RelationalRuntimeFrame.valid, RelationalRuntimeFrame.memoryHolds,
+                ReturnSlotOffsetPair.holdsRuntimeFrame_internal, Bool.and_eq_true]
+              exact ⟨by simpa using holds.1, ⟨holds.2.1, holds.2.2.1⟩,
+                holds.2.2.2.1, holds.2.2.2.2.1,
+                ih continuations offsets holds.2.2.2.2.2⟩
 
 theorem RelationalRuntimeCallStackHolds.afterInternal
     (context : StaticProofContext)

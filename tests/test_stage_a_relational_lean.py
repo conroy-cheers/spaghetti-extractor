@@ -162,6 +162,121 @@ end StageA.CallbackRegistration
             )
             self.assertEqual(result["status"], "checked", result)
 
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for callback-frame proofs")
+    def test_mixed_external_callback_frame_is_checked_by_lean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lean_dir = Path(temporary)
+            stage_a = lean_dir / "StageA"
+            stage_a.mkdir()
+            source_root = (
+                Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
+            )
+            for module in RELATIONAL_KERNEL_MODULES:
+                shutil.copyfile(
+                    source_root / f"{module}.lean",
+                    stage_a / f"{module}.lean",
+                )
+            (stage_a / "MixedCallbackFrame.lean").write_text(
+                """import StageA.RelationalCertificates
+
+namespace StageA.MixedCallbackFrame
+
+open StageA.Formal StageA.Relational
+
+example (context : StaticProofContext) (invariant : StateInvariant)
+    (before after : RelationalWorld) (frame : RelationalExternalCallbackFrame)
+    (original candidate : MachineState)
+    (entry : RelationalExternalCallbackEntry context invariant before after frame
+      original candidate) :
+    frame.callback.valid context = true :=
+  entry.callback_valid
+
+example (context : StaticProofContext) (invariant : StateInvariant)
+    (world : RelationalWorld) (frame : RelationalExternalCallbackFrame)
+    (original candidate : MachineState) (originalTarget candidateTarget : Word)
+    (returned : RelationalExternalCallbackReturn context invariant world frame
+      original candidate originalTarget candidateTarget) :
+    originalTarget = frame.originalReturnAddress /\\
+      candidateTarget = frame.candidateReturnAddress :=
+  returned.targets
+
+example (frame : RelationalExternalCallbackFrame)
+    (original candidate : Memory)
+    (holds : frame.memoryHolds original candidate) :
+    (RelationalRuntimeFrame.externalCallback frame).memoryHolds original candidate := by
+  exact holds
+
+example (frame : RelationalRuntimeCallFrame)
+    (original candidate : Memory)
+    (holds : frame.memoryHolds original candidate) :
+    (RelationalRuntimeFrame.internal frame).memoryHolds original candidate := by
+  exact holds
+
+example (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : MachineState)
+    (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
+    (offsets : List ReturnSlotOffsetPair)
+    (holds : RelationalRuntimeCallStackHolds context original candidate
+      frames continuations offsets) :
+    RelationalMixedRuntimeStackHolds context world original candidate
+      (frames.map RelationalRuntimeFrame.internal)
+      (continuations.map RelationalRuntimeContinuation.internal) offsets :=
+  RelationalRuntimeCallStackHolds.toMixed context world original candidate
+    frames continuations offsets holds
+
+example (program : DecodedWorldProgram) (suspension : WorldExternalSuspension)
+    (callbacks : List WorldExternalCallbackRuntime)
+    (entry : WorldExternalCallbackAction)
+    (action : program.protocolEnvironment.action suspension.request =
+      .callback entry) :
+    (stepWorldExternalSuspension program suspension callbacks).next =
+      .callbackRunning entry.targetId entry.state [] suspension.eventIndex
+        entry.world ({ suspension, entry } :: callbacks) := by
+  simp [stepWorldExternalSuspension, action]
+
+example (program : DecodedWorldProgram) (sourceTargetId : Nat)
+    (state : MachineState) (eventIndex : Nat) (world : RelationalWorld)
+    (callback : WorldExternalCallbackRuntime)
+    (callbacks : List WorldExternalCallbackRuntime) :
+    (transitionFromWorldOutcome program sourceTargetId state [] eventIndex world
+      (callback :: callbacks) (.returned callback.entry.returnAddress)).next =
+      .awaitingExternal {
+        callback.suspension with
+        phaseIndex := callback.suspension.phaseIndex + 1
+        state
+        world
+      } callbacks := by
+  simp [transitionFromWorldOutcome]
+
+example (contract : MachineImportCallContract)
+    (protocol : contract.disposition = .protocol) :
+    contract.shapeValid = false := by
+  simp [MachineImportCallContract.shapeValid, protocol]
+
+example (context : StaticProofContext) (frame : RelationalExternalCallbackFrame) :
+    frame.valid context {} = false := by
+  simp [RelationalExternalCallbackFrame.valid]
+
+example (context : StaticProofContext) (invariant : StateInvariant)
+    (before : RelationalWorld) (siteId eventIndex phaseIndex continuationTargetId : Nat)
+    (original candidate : WorldExternalCallbackAction)
+    (related : ExternalCallbackActionsRelated context invariant before siteId
+      eventIndex phaseIndex continuationTargetId original candidate) :
+    ∃ callback : RegisteredCallbackPair,
+      original.targetId = callback.targetId /\\
+        candidate.targetId = callback.targetId /\\ callback.valid context = true :=
+  related.target
+
+end StageA.MixedCallbackFrame
+""",
+                encoding="utf-8",
+            )
+
+            result = _run_lean_relational(
+                lean_dir, bundle="MixedCallbackFrame"
+            )
+            self.assertEqual(result["status"], "checked", result)
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for call-boundary proofs")
     def test_machine_import_call_arguments_are_recovered_by_lean(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -338,7 +453,7 @@ example (program : DecodedWorldProgram) (source : Nat) (state : MachineState)
     (eventIndex : Nat) (world : RelationalWorld) (imported : ExternalTarget)
     (arguments : List Word) :
     (transitionFromWorldOutcome program source state [] eventIndex world
-      (.externalJump imported arguments)).next = .fault := by
+      [] (.externalJump imported arguments)).next = .fault := by
   rfl
 
 end StageA.ImportThunkBoundary

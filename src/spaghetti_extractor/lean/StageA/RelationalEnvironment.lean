@@ -540,6 +540,7 @@ def ExternalEnvironmentRefinesAt (context : StaticProofContext)
           ExternalRuntimeFramesPreserved originalEvent candidateEvent
             originalResult candidateResult
   | .terminates => True
+  | .protocol => False
 
 def ExternalEnvironmentRefines (context : StaticProofContext)
     (sites : List ExternalCallSiteContract)
