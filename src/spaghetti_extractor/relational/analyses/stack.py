@@ -307,6 +307,24 @@ def _attach_stack_window_invariants(
 
     for region_index, behavior in enumerate(behaviors):
         region = regions[region_index]
+        relation_row = register_relations.get("regions", [])[region_index]
+        for location in relation_row.get("return_slot_offsets", []):
+            original_register = str(
+                location.get("original_register", "esp")
+            )
+            candidate_register = str(
+                location.get("candidate_register", "esp")
+            )
+            original_window = access_window(int(location["original"]), 4)
+            candidate_window = access_window(int(location["candidate"]), 4)
+            if original_window is None or candidate_window is None:
+                continue
+            add_requirement(
+                region_index, original_register, candidate_register,
+                max(original_window[1], candidate_window[1]),
+                "runtime_return_frame_seed",
+                max(original_window[0], candidate_window[0]),
+            )
         original_reads = {
             tuple(read["path"]): read
             for read in _semantic_memory_reads(behavior["original_ir"])
@@ -1334,6 +1352,7 @@ def _attach_return_slot_contracts(
     relation_rows: list[dict[str, Any]],
     edges: list[dict[str, Any]],
     *,
+    machine_import_call_contracts: list[dict[str, Any]] | None = None,
     disjunction_budget: int = 8,
 ) -> dict[str, Any]:
     FrameLocation = tuple[str, int, str, int]
@@ -1400,6 +1419,14 @@ def _attach_return_slot_contracts(
         return transfers
 
     transfer_rule_cache: dict[int, list[dict[str, Any]]] = {}
+    machine_contracts_by_target = {
+        (
+            str(item["import"]["dll"]).lower(),
+            "symbol" if "symbol" in item["import"] else "ordinal",
+            item["import"].get("symbol", item["import"].get("ordinal")),
+        ): item
+        for item in (machine_import_call_contracts or [])
+    }
 
     def behavior_transfer_rules(source: int) -> list[dict[str, Any]]:
         cached = transfer_rule_cache.get(source)
@@ -1460,6 +1487,210 @@ def _attach_return_slot_contracts(
                 })
         transfer_rule_cache[source] = rules
         return rules
+
+    external_transfer_rule_cache: dict[int, list[dict[str, Any]]] = {}
+
+    def word_offsets_disjoint(left: int, right: int) -> bool:
+        return all(
+            (left + left_byte) % 2**32 != (right + right_byte) % 2**32
+            for left_byte in range(4)
+            for right_byte in range(4)
+        )
+
+    def write_address_witnesses(
+        behavior: dict[str, Any], register: str, frame_offset: int,
+    ) -> list[dict[str, Any]] | None:
+        witnesses = []
+        for write in behavior.get("writes") or []:
+            result = _register_offset_witness(write.get("address"), register)
+            if result is None:
+                return None
+            witness, write_offset = result
+            if not word_offsets_disjoint(frame_offset, int(write_offset)):
+                return None
+            witnesses.append(witness)
+        return witnesses
+
+    def external_transfer_rules(source: int) -> list[dict[str, Any]]:
+        cached = external_transfer_rule_cache.get(source)
+        if cached is not None:
+            return cached
+        original = behaviors[source].get("original_ir") or {}
+        candidate = behaviors[source].get("candidate_ir") or {}
+        original_outcome = original.get("outcome") or {}
+        candidate_outcome = candidate.get("outcome") or {}
+        original_identity = _semantic_external_target_identity(
+            original_outcome.get("import")
+        )
+        candidate_identity = _semantic_external_target_identity(
+            candidate_outcome.get("import")
+        )
+        contract = machine_contracts_by_target.get(original_identity)
+        if (
+            original_outcome.get("op") != "external_call"
+            or candidate_outcome.get("op") != "external_call"
+            or original_identity is None
+            or original_identity != candidate_identity
+            or contract is None
+        ):
+            external_transfer_rule_cache[source] = []
+            return []
+        source_relations: list[dict[str, Any]] = []
+        source_pairs: set[tuple[str, str]] = set()
+        for family in ("inputs", "outputs"):
+            for relation in relation_rows[source].get(family, []):
+                pair = (str(relation["original"]), str(relation["candidate"]))
+                if pair in source_pairs:
+                    continue
+                source_pairs.add(pair)
+                source_relations.append(relation)
+        preserved = set(str(item) for item in contract["preserved_registers"])
+        stack_delta = int(contract["stack_result_delta"])
+        rules: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for input_relation in source_relations:
+            original_source_register = str(input_relation["original"])
+            candidate_source_register = str(input_relation["candidate"])
+            for output_relation in relation_rows[source].get("outputs", []):
+                original_target_register = str(output_relation["original"])
+                candidate_target_register = str(output_relation["candidate"])
+                if (
+                    original_target_register == "esp"
+                    and candidate_target_register == "esp"
+                ):
+                    original_environment_delta = stack_delta
+                    candidate_environment_delta = stack_delta
+                elif (
+                    original_target_register in preserved
+                    and candidate_target_register in preserved
+                ):
+                    original_environment_delta = 0
+                    candidate_environment_delta = 0
+                else:
+                    continue
+                key = (
+                    original_source_register, candidate_source_register,
+                    original_target_register, candidate_target_register,
+                )
+                if key in seen:
+                    continue
+                original_result = _register_offset_witness(
+                    (original.get("registers") or {}).get(
+                        original_target_register
+                    ),
+                    original_source_register,
+                )
+                candidate_result = _register_offset_witness(
+                    (candidate.get("registers") or {}).get(
+                        candidate_target_register
+                    ),
+                    candidate_source_register,
+                )
+                if original_result is None or candidate_result is None:
+                    continue
+                seen.add(key)
+                original_witness, original_internal_delta = original_result
+                candidate_witness, candidate_internal_delta = candidate_result
+                rules.append({
+                    "profile": "external_return_slot_affine_transfer_rule_v1",
+                    "machine_contract_id": int(contract["id"]),
+                    "original_source_register": original_source_register,
+                    "candidate_source_register": candidate_source_register,
+                    "original_target_register": original_target_register,
+                    "candidate_target_register": candidate_target_register,
+                    "original_output_witness": original_witness,
+                    "candidate_output_witness": candidate_witness,
+                    "original_internal_delta": int(original_internal_delta),
+                    "candidate_internal_delta": int(candidate_internal_delta),
+                    "original_environment_delta": original_environment_delta,
+                    "candidate_environment_delta": candidate_environment_delta,
+                    "original_delta": (
+                        int(original_internal_delta) + original_environment_delta
+                    ) % 2**32,
+                    "candidate_delta": (
+                        int(candidate_internal_delta) + candidate_environment_delta
+                    ) % 2**32,
+                })
+        external_transfer_rule_cache[source] = rules
+        return rules
+
+    def external_transfer_claims(source: int) -> list[dict[str, Any]]:
+        original = behaviors[source].get("original_ir") or {}
+        candidate = behaviors[source].get("candidate_ir") or {}
+        claims = []
+        for source_location in sorted(locations[source]):
+            original_source_register, original_source_offset, \
+                candidate_source_register, candidate_source_offset = source_location
+            original_write_witnesses = write_address_witnesses(
+                original, original_source_register, original_source_offset
+            )
+            candidate_write_witnesses = write_address_witnesses(
+                candidate, candidate_source_register, candidate_source_offset
+            )
+            if (
+                original_write_witnesses is None
+                or candidate_write_witnesses is None
+            ):
+                continue
+            for rule in external_transfer_rules(source):
+                if (
+                    rule["original_source_register"] != original_source_register
+                    or rule["candidate_source_register"] != candidate_source_register
+                ):
+                    continue
+                internal_location: FrameLocation = (
+                    str(rule["original_target_register"]),
+                    (
+                        original_source_offset
+                        - int(rule["original_internal_delta"])
+                    ) % 2**32,
+                    str(rule["candidate_target_register"]),
+                    (
+                        candidate_source_offset
+                        - int(rule["candidate_internal_delta"])
+                    ) % 2**32,
+                )
+                target_location: FrameLocation = (
+                    internal_location[0],
+                    (
+                        internal_location[1]
+                        - int(rule["original_environment_delta"])
+                    ) % 2**32,
+                    internal_location[2],
+                    (
+                        internal_location[3]
+                        - int(rule["candidate_environment_delta"])
+                    ) % 2**32,
+                )
+                claims.append({
+                    "profile": "external_return_slot_transfer_claim_v1",
+                    "machine_contract_id": int(rule["machine_contract_id"]),
+                    "source": location_payload(source_location),
+                    "internal_target": location_payload(internal_location),
+                    "target": location_payload(target_location),
+                    "internal_rule": {
+                        "original_source_register": original_source_register,
+                        "candidate_source_register": candidate_source_register,
+                        "original_target_register": internal_location[0],
+                        "candidate_target_register": internal_location[2],
+                        "original_output_witness": rule["original_output_witness"],
+                        "candidate_output_witness": rule["candidate_output_witness"],
+                        "original_delta": int(rule["original_internal_delta"]),
+                        "candidate_delta": int(rule["candidate_internal_delta"]),
+                    },
+                    "result_rule": {
+                        "source": location_payload(internal_location),
+                        "target": location_payload(target_location),
+                        "original_delta": int(rule["original_environment_delta"]),
+                        "candidate_delta": int(rule["candidate_environment_delta"]),
+                    },
+                    "memory_claim": {
+                        "offsets": location_payload(source_location),
+                        "original_write_witnesses": original_write_witnesses,
+                        "candidate_write_witnesses": candidate_write_witnesses,
+                    },
+                })
+        return claims
 
     def transfer_witnesses(
         edge: dict[str, Any], source_location: FrameLocation,
@@ -1718,6 +1949,8 @@ def _attach_return_slot_contracts(
 
     transfer_claim_count = 0
     transfer_rule_count = 0
+    external_transfer_rule_count = 0
+    external_transfer_claim_count = 0
     for edge in edges:
         source = int(edge["source_region_index"])
         has_checked_call_push = (
@@ -1732,7 +1965,21 @@ def _attach_return_slot_contracts(
             and (not edge.get("indirect_target_profile") or has_checked_call_push)
             else []
         )
+        edge["return_slot_external_transfer_rules"] = (
+            external_transfer_rules(source)
+            if edge["environment_barrier"] else []
+        )
+        edge["return_slot_external_transfer_claims"] = (
+            external_transfer_claims(source)
+            if edge["environment_barrier"] else []
+        )
         transfer_rule_count += len(edge["return_slot_transfer_rules"])
+        external_transfer_rule_count += len(
+            edge["return_slot_external_transfer_rules"]
+        )
+        external_transfer_claim_count += len(
+            edge["return_slot_external_transfer_claims"]
+        )
         claims = []
         for source_location in sorted(locations[source]):
             for target_location, original_witness, candidate_witness in \
@@ -1849,6 +2096,8 @@ def _attach_return_slot_contracts(
         "seed_edges": seed_edges,
         "transfer_claims": transfer_claim_count,
         "transfer_rules": transfer_rule_count,
+        "external_transfer_rules": external_transfer_rule_count,
+        "external_transfer_claims": external_transfer_claim_count,
         "return_transfer_claims": return_transfer_claim_count,
         "return_transfer_rules": return_transfer_rule_count,
         "regions_with_offsets": sum(bool(items) for items in locations),

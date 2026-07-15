@@ -62,6 +62,170 @@ def machineCallAbiResultHolds (contract : MachineImportCallContract)
   machineCallStackResultHolds contract before after &&
     machineCallPreservedRegistersHold contract before after
 
+def machineCallRegisterDelta? (contract : MachineImportCallContract)
+    (register : Reg) : Option Nat :=
+  if register == .esp then
+    some contract.stackResultDelta
+  else if contract.preservedRegisters.contains register then
+    some 0
+  else
+    none
+
+theorem machineCallRegisterDeltaHolds_of_abi
+    (contract : MachineImportCallContract) (before after : MachineState)
+    (register : Reg) (delta : Nat)
+    (deltaKnown : machineCallRegisterDelta? contract register = some delta)
+    (abi : machineCallAbiResultHolds contract before after = true) :
+    after.registers.get register =
+      before.registers.get register + BitVec.ofNat 32 delta := by
+  simp only [machineCallAbiResultHolds, Bool.and_eq_true] at abi
+  unfold machineCallRegisterDelta? at deltaKnown
+  split at deltaKnown
+  next stackRegister =>
+    simp only [beq_iff_eq] at stackRegister
+    subst register
+    cases deltaKnown
+    simpa [machineCallStackResultHolds] using abi.1
+  next notStackRegister =>
+    split at deltaKnown
+    next preservedRegister =>
+      cases deltaKnown
+      simp only [machineCallPreservedRegistersHold, List.all_eq_true,
+        beq_iff_eq] at abi
+      have preserved := abi.2 register
+        (List.contains_iff_mem.mp preservedRegister)
+      simpa using preserved
+    next clobberedRegister => simp at deltaKnown
+
+structure ExternalReturnSlotResultRule where
+  source : ReturnSlotOffsetPair
+  target : ReturnSlotOffsetPair
+  originalDelta : Nat
+  candidateDelta : Nat
+deriving Repr, DecidableEq
+
+def externalReturnSlotResultSideChecked
+    (contract : MachineImportCallContract)
+    (sourceRegister targetRegister : Reg)
+    (sourceOffset targetOffset : Word) (delta : Nat) : Bool :=
+  sourceRegister == targetRegister &&
+    machineCallRegisterDelta? contract sourceRegister == some delta &&
+    targetOffset == sourceOffset - BitVec.ofNat 32 delta
+
+def ExternalReturnSlotResultRule.checked
+    (contract : MachineImportCallContract)
+    (rule : ExternalReturnSlotResultRule) : Bool :=
+  externalReturnSlotResultSideChecked contract
+      rule.source.originalRegister rule.target.originalRegister
+      rule.source.originalOffset rule.target.originalOffset rule.originalDelta &&
+    externalReturnSlotResultSideChecked contract
+      rule.source.candidateRegister rule.target.candidateRegister
+      rule.source.candidateOffset rule.target.candidateOffset rule.candidateDelta
+
+theorem externalReturnSlotResultSideHolds_of_checked
+    (contract : MachineImportCallContract) (before after : MachineState)
+    (sourceRegister targetRegister : Reg)
+    (sourceOffset targetOffset : Word) (delta : Nat)
+    (checked : externalReturnSlotResultSideChecked contract sourceRegister
+      targetRegister sourceOffset targetOffset delta = true)
+    (abi : machineCallAbiResultHolds contract before after = true)
+    (sourceAddress : before.registers.get sourceRegister + sourceOffset = frameAddress) :
+    after.registers.get targetRegister + targetOffset = frameAddress := by
+  simp only [externalReturnSlotResultSideChecked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with ⟨⟨registersMatch, deltaKnown⟩, offsetMatch⟩
+  rw [← registersMatch, machineCallRegisterDeltaHolds_of_abi contract before after
+    sourceRegister delta deltaKnown abi, offsetMatch]
+  exact (word_add_delta_sub _ _ _).trans sourceAddress
+
+theorem externalReturnSlotResultRuleHolds_of_checked
+    (contract : MachineImportCallContract) (beforeOriginal beforeCandidate
+      afterOriginal afterCandidate : MachineState)
+    (rule : ExternalReturnSlotResultRule) (frame : RelationalRuntimeCallFrame)
+    (checked : rule.checked contract = true)
+    (originalAbi : machineCallAbiResultHolds contract beforeOriginal
+      afterOriginal = true)
+    (candidateAbi : machineCallAbiResultHolds contract beforeCandidate
+      afterCandidate = true)
+    (sourceHolds : rule.source.holds frame beforeOriginal.registers
+      beforeCandidate.registers) :
+    rule.target.holds frame afterOriginal.registers afterCandidate.registers := by
+  simp only [ExternalReturnSlotResultRule.checked, Bool.and_eq_true] at checked
+  rcases sourceHolds with ⟨originalSource, candidateSource⟩
+  exact ⟨externalReturnSlotResultSideHolds_of_checked contract
+      beforeOriginal afterOriginal rule.source.originalRegister
+      rule.target.originalRegister rule.source.originalOffset
+      rule.target.originalOffset rule.originalDelta checked.1 originalAbi
+      originalSource,
+    externalReturnSlotResultSideHolds_of_checked contract beforeCandidate
+      afterCandidate rule.source.candidateRegister rule.target.candidateRegister
+      rule.source.candidateOffset rule.target.candidateOffset rule.candidateDelta
+      checked.2 candidateAbi candidateSource⟩
+
+structure ExternalReturnSlotTransferClaim where
+  source : ReturnSlotOffsetPair
+  internalTarget : ReturnSlotOffsetPair
+  internalRule : ReturnSlotTransferRule
+  resultRule : ExternalReturnSlotResultRule
+  memory : ReturnSlotMemoryTransferClaim
+deriving Repr, DecidableEq
+
+def ExternalReturnSlotTransferClaim.checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (contract : MachineImportCallContract)
+    (claim : ExternalReturnSlotTransferClaim) : Bool :=
+  claim.internalRule.checked originalBehavior candidateBehavior &&
+    claim.internalRule.apply claim.source == some claim.internalTarget &&
+    claim.memory.offsets == claim.source &&
+    claim.memory.checked originalBehavior candidateBehavior &&
+    claim.resultRule.source == claim.internalTarget &&
+    claim.resultRule.checked contract
+
+theorem externalReturnSlotTransferHolds_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (contract : MachineImportCallContract)
+    (claim : ExternalReturnSlotTransferClaim)
+    (frame : RelationalRuntimeCallFrame) (originalState candidateState : MachineState)
+    (originalResult candidateResult : MachineState)
+    (checked : claim.checked originalBehavior candidateBehavior contract = true)
+    (sourceOffsets : claim.source.holds frame originalState.registers
+      candidateState.registers)
+    (sourceMemory : frame.memoryHolds originalState.memory candidateState.memory)
+    (originalAbi : machineCallAbiResultHolds contract
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      originalResult = true)
+    (candidateAbi : machineCallAbiResultHolds contract
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState)
+      candidateResult = true)
+    (framesPreserved : frame.memoryHolds
+        ((originalBehavior.eval originalState).nextMachineState originalState).memory
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory →
+      frame.memoryHolds originalResult.memory candidateResult.memory) :
+    claim.resultRule.target.holds frame originalResult.registers
+        candidateResult.registers ∧
+      frame.memoryHolds originalResult.memory candidateResult.memory := by
+  simp only [ExternalReturnSlotTransferClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨⟨internalRuleChecked, internalApplied⟩, memorySource⟩,
+      memoryChecked⟩, resultSource⟩, resultChecked⟩
+  have internalOffsets := returnSlotTransferRuleHolds_of_checked
+    originalBehavior candidateBehavior claim.internalRule claim.source
+    claim.internalTarget frame originalState candidateState internalRuleChecked
+    internalApplied sourceOffsets
+  have internalMemory := returnSlotMemoryTransferHolds_of_checked
+    originalBehavior candidateBehavior claim.memory frame originalState candidateState
+    memoryChecked (by simpa [memorySource] using sourceOffsets) sourceMemory
+  have resultOffsets := externalReturnSlotResultRuleHolds_of_checked contract
+    ((originalBehavior.eval originalState).nextMachineState originalState)
+    ((candidateBehavior.eval candidateState).nextMachineState candidateState)
+    originalResult candidateResult claim.resultRule frame resultChecked originalAbi
+    candidateAbi (by
+      rw [resultSource]
+      simpa [RelationalBehavior.nextMachineState] using internalOffsets)
+  refine ⟨resultOffsets, framesPreserved ?_⟩
+  simpa [RelationalBehavior.nextMachineState] using internalMemory
+
 def MachineCallMemorySize.bytes? (arguments : List Word) :
     MachineCallMemorySize -> Option Nat
   | .fixed bytes => some bytes
@@ -199,6 +363,13 @@ def ExternalCallBoundaryRelated (context : StaticProofContext)
     externalCallArgumentsRelated context original.world
       original.arguments candidate.arguments = true
 
+def ExternalRuntimeFramesPreserved
+    (originalEvent candidateEvent : WorldExternalEvent)
+    (originalResult candidateResult : WorldExternalResult) : Prop :=
+  ∀ frame : RelationalRuntimeCallFrame,
+    frame.memoryHolds originalEvent.state.memory candidateEvent.state.memory →
+      frame.memoryHolds originalResult.state.memory candidateResult.state.memory
+
 def ExternalEnvironmentRefinesAt (context : StaticProofContext)
     (site : ExternalCallSiteContract) (contract : MachineImportCallContract)
     (original candidate : WorldExternalEnvironment) : Prop :=
@@ -210,7 +381,9 @@ def ExternalEnvironmentRefinesAt (context : StaticProofContext)
       machineCallResultConforms context contract originalEvent originalResult ∧
       machineCallResultConforms context contract candidateEvent candidateResult ∧
       StateRel context originalResult.world site.targetInvariant
-        originalResult.state candidateResult.state
+        originalResult.state candidateResult.state ∧
+      ExternalRuntimeFramesPreserved originalEvent candidateEvent
+        originalResult candidateResult
 
 def ExternalEnvironmentRefines (context : StaticProofContext)
     (sites : List ExternalCallSiteContract)
@@ -779,7 +952,9 @@ theorem externalCallResultsRelated
       machineCallResultConforms context contract originalEvent originalResult ∧
       machineCallResultConforms context contract candidateEvent candidateResult ∧
       StateRel context originalResult.world site.targetInvariant
-        originalResult.state candidateResult.state :=
+        originalResult.state candidateResult.state ∧
+      ExternalRuntimeFramesPreserved originalEvent candidateEvent
+        originalResult candidateResult :=
   environmentRefines eventIndex originalEvent candidateEvent boundary
 
 end StageA.Relational

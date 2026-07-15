@@ -442,6 +442,8 @@ def stage_a_prove_relational(
             "explicit_register_and_code_target_relations",
             "mapped_object_images_are_checked_at_relocation_word_granularity",
             "dynamic_memory_transition_preservation_requires_separate_closure",
+            "external_equivalence_is_conditional_on_checked_lockstep_environment_refinement",
+            "external_results_must_preserve_admitted_runtime_control_frames",
         ],
     }
     write_json(out / "trusted-base.json", trusted_base)

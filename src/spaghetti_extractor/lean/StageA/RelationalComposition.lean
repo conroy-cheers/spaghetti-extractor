@@ -531,6 +531,149 @@ theorem returnSlotTransferRuleHolds_of_checked
         _ = frame.candidateStackAddress := candidateSource
   next registersMismatch => simp at applied
 
+def wordOffsetsDisjoint (wordOffset writeOffset : Word) : Bool :=
+  (List.range 4).all fun wordByte =>
+    (List.range 4).all fun writeByte =>
+      decide (wordOffset + BitVec.ofNat 32 wordByte ≠
+        writeOffset + BitVec.ofNat 32 writeByte)
+
+def registerOffsetWitnessesAvoidWord
+    (register : Reg) (wordOffset : Word) :
+    List RegisterOffsetWitness -> List (Expr × Expr) -> Bool
+  | [], [] => true
+  | witness :: witnesses, write :: writes =>
+      witness.expression register == write.1 &&
+        wordOffsetsDisjoint wordOffset witness.offset &&
+        registerOffsetWitnessesAvoidWord register wordOffset witnesses writes
+  | _, _ => false
+
+def RegisterOffsetWitnessesAvoidWordClosed
+    (register : Reg) (wordOffset : Word) :
+    List RegisterOffsetWitness -> List (Expr × Expr) -> Prop
+  | [], [] => True
+  | witness :: witnesses, write :: writes =>
+      witness.expression register = write.1 ∧
+        wordOffsetsDisjoint wordOffset witness.offset = true ∧
+        RegisterOffsetWitnessesAvoidWordClosed register wordOffset witnesses writes
+  | _, _ => False
+
+theorem registerOffsetWitnessesAvoidWordClosed_of_checked
+    (register : Reg) (wordOffset : Word)
+    (witnesses : List RegisterOffsetWitness) (writes : List (Expr × Expr))
+    (checked : registerOffsetWitnessesAvoidWord register wordOffset
+      witnesses writes = true) :
+    RegisterOffsetWitnessesAvoidWordClosed register wordOffset witnesses writes := by
+  induction witnesses generalizing writes with
+  | nil => cases writes <;> simp_all [registerOffsetWitnessesAvoidWord,
+      RegisterOffsetWitnessesAvoidWordClosed]
+  | cons witness witnesses ih =>
+      cases writes with
+      | nil => simp [registerOffsetWitnessesAvoidWord] at checked
+      | cons write writes =>
+          simp only [registerOffsetWitnessesAvoidWord, Bool.and_eq_true,
+            beq_iff_eq] at checked
+          simp only [RegisterOffsetWitnessesAvoidWordClosed]
+          exact ⟨checked.1.1, checked.1.2, ih writes checked.2⟩
+
+theorem registerOffsetWitnessesAvoidWord_of_closed
+    (register : Reg) (wordOffset : Word)
+    (witnesses : List RegisterOffsetWitness) (writes : List (Expr × Expr))
+    (state : MachineState)
+    (closed : RegisterOffsetWitnessesAvoidWordClosed register wordOffset
+      witnesses writes) :
+    WritesAvoidWord
+      (state.registers.get register + wordOffset)
+      (evalNormalizedWrites state writes) := by
+  induction witnesses generalizing writes with
+  | nil =>
+      cases writes with
+      | nil => simp [evalNormalizedWrites, WritesAvoidWord]
+      | cons write writes =>
+          simp [RegisterOffsetWitnessesAvoidWordClosed] at closed
+  | cons witness witnesses ih =>
+      cases writes with
+      | nil => simp [RegisterOffsetWitnessesAvoidWordClosed] at closed
+      | cons write writes =>
+          simp only [RegisterOffsetWitnessesAvoidWordClosed] at closed
+          rcases closed with ⟨expression, disjoint, tailClosed⟩
+          intro concreteWrite concreteMember
+          simp only [evalNormalizedWrites, List.map_cons, List.mem_cons] at concreteMember
+          rcases concreteMember with rfl | tailMember
+          · intro wordByte wordByteBefore writeByte writeByteBefore overlap
+            simp only [wordOffsetsDisjoint, List.all_eq_true] at disjoint
+            have wordChecked := disjoint wordByte (by simpa using wordByteBefore)
+            have writeChecked := wordChecked writeByte (by simpa using writeByteBefore)
+            simp only [decide_eq_true_eq] at writeChecked
+            apply writeChecked
+            apply (BitVec.add_right_inj (state.registers.get register)).mp
+            rw [← expression, witness.eval_expression] at overlap
+            simpa only [BitVec.add_assoc] using overlap
+          · exact ih writes tailClosed concreteWrite tailMember
+
+structure ReturnSlotMemoryTransferClaim where
+  offsets : ReturnSlotOffsetPair
+  originalWrites : List RegisterOffsetWitness
+  candidateWrites : List RegisterOffsetWitness
+deriving Repr, DecidableEq
+
+def ReturnSlotMemoryTransferClaim.checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReturnSlotMemoryTransferClaim) : Bool :=
+  registerOffsetWitnessesAvoidWord claim.offsets.originalRegister
+      claim.offsets.originalOffset claim.originalWrites originalBehavior.writes &&
+    registerOffsetWitnessesAvoidWord claim.offsets.candidateRegister
+      claim.offsets.candidateOffset claim.candidateWrites candidateBehavior.writes
+
+def ReturnSlotMemoryTransferClaimClosed
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReturnSlotMemoryTransferClaim) : Prop :=
+  RegisterOffsetWitnessesAvoidWordClosed claim.offsets.originalRegister
+      claim.offsets.originalOffset claim.originalWrites originalBehavior.writes ∧
+    RegisterOffsetWitnessesAvoidWordClosed claim.offsets.candidateRegister
+      claim.offsets.candidateOffset claim.candidateWrites candidateBehavior.writes
+
+theorem returnSlotMemoryTransferClaimClosed_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReturnSlotMemoryTransferClaim)
+    (checked : claim.checked originalBehavior candidateBehavior = true) :
+    ReturnSlotMemoryTransferClaimClosed originalBehavior candidateBehavior claim := by
+  simp only [ReturnSlotMemoryTransferClaim.checked, Bool.and_eq_true] at checked
+  exact ⟨registerOffsetWitnessesAvoidWordClosed_of_checked _ _ _ _ checked.1,
+    registerOffsetWitnessesAvoidWordClosed_of_checked _ _ _ _ checked.2⟩
+
+theorem returnSlotMemoryTransferHolds_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReturnSlotMemoryTransferClaim)
+    (frame : RelationalRuntimeCallFrame) (originalState candidateState : MachineState)
+    (checked : claim.checked originalBehavior candidateBehavior = true)
+    (offsetsHold : claim.offsets.holds frame originalState.registers
+      candidateState.registers)
+    (memoryHolds : frame.memoryHolds originalState.memory candidateState.memory) :
+    frame.memoryHolds
+      (applyConcreteWrites originalState.memory
+        (evalNormalizedWrites originalState originalBehavior.writes))
+      (applyConcreteWrites candidateState.memory
+        (evalNormalizedWrites candidateState candidateBehavior.writes)) := by
+  have closed := returnSlotMemoryTransferClaimClosed_of_checked
+    originalBehavior candidateBehavior claim checked
+  have originalAvoids := registerOffsetWitnessesAvoidWord_of_closed
+    claim.offsets.originalRegister claim.offsets.originalOffset
+    claim.originalWrites originalBehavior.writes originalState closed.1
+  have candidateAvoids := registerOffsetWitnessesAvoidWord_of_closed
+    claim.offsets.candidateRegister claim.offsets.candidateOffset
+    claim.candidateWrites candidateBehavior.writes candidateState closed.2
+  rcases offsetsHold with ⟨originalOffset, candidateOffset⟩
+  rcases memoryHolds with ⟨originalMemory, candidateMemory⟩
+  constructor
+  · rw [← originalOffset]
+    rw [Memory.read32_applyConcreteWrites_of_avoids _ _ _ originalAvoids]
+    rw [originalOffset]
+    exact originalMemory
+  · rw [← candidateOffset]
+    rw [Memory.read32_applyConcreteWrites_of_avoids _ _ _ candidateAvoids]
+    rw [candidateOffset]
+    exact candidateMemory
+
 structure ReturnSlotCallSummaryClaim where
   source : ReturnSlotOffsetPair
   target : ReturnSlotOffsetPair

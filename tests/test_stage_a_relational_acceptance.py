@@ -951,6 +951,116 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertNotIn("sorryAx", lean["stdout"])
             self.assertNotIn("._native.", lean["stdout"])
 
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
+    def test_nested_external_call_preserves_internal_runtime_frame_end_to_end(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            iat_address = 0x400000 + 0x2000 + 0x40
+            code = (
+                b"\xe8\x02\x00\x00\x00"
+                b"\xeb\xfe"
+                b"\x83\xec\x04"
+                b"\xc7\x04\x24\x00\x00\x00\x00"
+                b"\xff\x15" + struct.pack("<I", iat_address)
+                + b"\xc3"
+            )
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_import_image(code, symbol="Sleep"))
+            candidate.write_bytes(_pe32_import_image(code, symbol="Sleep"))
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            preserved_pairs = [
+                pair for pair in pairs
+                if pair["original"] in {"ebx", "esi", "edi", "ebp"}
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": 0, "original_rva": 0x1000, "candidate_rva": 0x1000},
+                    {"id": 1, "original_rva": 0x1005, "candidate_rva": 0x1005},
+                    {"id": 2, "original_rva": 0x1007, "candidate_rva": 0x1007},
+                    {"id": 3, "original_rva": 0x1017, "candidate_rva": 0x1017},
+                ],
+                "regions": [
+                    {
+                        "id": "caller", "root": True,
+                        "original": {"rva": 0x1000, "size": 5},
+                        "candidate": {"rva": 0x1000, "size": 5},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "continuation-loop", "root": False,
+                        "original": {"rva": 0x1005, "size": 2},
+                        "candidate": {"rva": 0x1005, "size": 2},
+                        "inputs": preserved_pairs, "outputs": preserved_pairs,
+                    },
+                    {
+                        "id": "callee-import-call", "root": False,
+                        "original": {"rva": 0x1007, "size": 16},
+                        "candidate": {"rva": 0x1007, "size": 16},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "callee-return", "root": False,
+                        "original": {"rva": 0x1017, "size": 1},
+                        "candidate": {"rva": 0x1017, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                ],
+                "machine_import_call_contracts": [{
+                    "id": 0,
+                    "import": {"dll": "kernel32.dll", "symbol": "Sleep"},
+                    "abi_template": "pe32-stdcall-v1",
+                    "argument_words": 1,
+                    "memory_effect": "none",
+                    "memory_footprints": [],
+                    "world_effect": "none",
+                }],
+                "padding": [],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result.get("status"), "prepared", result)
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                [step["kind"] for step in result["acceptance"]["node_steps"]],
+                ["call", "jump", "external_call", "return"],
+            )
+            external_step = result["acceptance"]["node_steps"][2]
+            self.assertEqual(len(external_step["control_state"]["calls"]), 1)
+            self.assertEqual(
+                len(external_step["return_slot_external_transfer_claims"]), 1
+            )
+            claim = external_step["return_slot_external_transfer_claims"][0]
+            self.assertEqual(claim["source"]["original"], 0)
+            self.assertEqual(claim["internal_target"]["original"], 4)
+            self.assertEqual(claim["target"]["original"], 0)
+            self.assertEqual(
+                len(claim["memory_claim"]["original_write_witnesses"]), 1
+            )
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for import-thunk proofs")
     def test_direct_import_thunk_checks_runtime_frame_and_environment_end_to_end(self):
         with tempfile.TemporaryDirectory() as temporary:

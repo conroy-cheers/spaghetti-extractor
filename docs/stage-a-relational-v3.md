@@ -564,6 +564,18 @@ volatile/nonvolatile register partition. Memory and relational-world effects
 remain mandatory explicit fields. ABI templates therefore remove repetitive
 contract syntax but cannot authorize an external write or resource update.
 
+The external protocol also names runtime control-frame preservation explicitly.
+For every admitted live `RelationalRuntimeCallFrame`, the paired environment
+must preserve the frame's concrete return-address words across the matching API
+result. This is a hypothesis of `ExternalEnvironmentRefinesAt`, not a fact
+inferred from matching import names. Before invoking that hypothesis, Lean
+checks `ReturnSlotMemoryTransferClaim` certificates proving that the binary's
+own call-setup writes are disjoint from each live four-byte return slot. It then
+checks affine register witnesses for the pre-call, call-boundary, and ABI-result
+locations and carries the same frame objects and continuations into the
+successor product node. A missing write witness, unsupported clobber, ambiguous
+control state, or unpreserved frame remains `incomplete`.
+
 Machine-call memory effects now fail closed on explicit argument-relative
 footprints. Each footprint identifies a read or write range by base-argument
 index, byte offset, and either a fixed byte count or an argument-derived byte

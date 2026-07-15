@@ -258,6 +258,53 @@ def RelationalRuntimeCallStackHolds (context : StaticProofContext)
           continuations remainingOffsets
   | _, _, _ => False
 
+theorem RelationalRuntimeCallStackHolds.afterExternalCall
+    (context : StaticProofContext)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (contract : MachineImportCallContract)
+    (claims : List ExternalReturnSlotTransferClaim)
+    (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
+    (originalState candidateState originalResult candidateResult : MachineState)
+    (checked : claims.all fun claim =>
+      claim.checked originalBehavior candidateBehavior contract)
+    (holds : RelationalRuntimeCallStackHolds context originalState candidateState
+      frames continuations (claims.map (fun claim => claim.source)))
+    (originalAbi : machineCallAbiResultHolds contract
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      originalResult = true)
+    (candidateAbi : machineCallAbiResultHolds contract
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState)
+      candidateResult = true)
+    (framesPreserved : ∀ frame : RelationalRuntimeCallFrame,
+      frame.memoryHolds
+          ((originalBehavior.eval originalState).nextMachineState originalState).memory
+          ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory →
+        frame.memoryHolds originalResult.memory candidateResult.memory) :
+    RelationalRuntimeCallStackHolds context originalResult candidateResult
+      frames continuations (claims.map (fun claim => claim.resultRule.target)) := by
+  induction claims generalizing frames continuations with
+  | nil =>
+      cases frames <;> cases continuations <;>
+        simp_all [RelationalRuntimeCallStackHolds]
+  | cons claim claims ih =>
+      cases frames with
+      | nil =>
+          cases continuations <;> simp_all [RelationalRuntimeCallStackHolds]
+      | cons frame frames =>
+          cases continuations with
+          | nil => simp_all [RelationalRuntimeCallStackHolds]
+          | cons continuation continuations =>
+              simp only [List.all_cons, Bool.and_eq_true] at checked
+              simp only [List.map_cons, RelationalRuntimeCallStackHolds] at holds ⊢
+              have transferred := externalReturnSlotTransferHolds_of_checked
+                originalBehavior candidateBehavior contract claim frame originalState
+                candidateState originalResult candidateResult checked.1
+                holds.2.2.2.2.1 holds.2.2.2.1 originalAbi candidateAbi
+                (framesPreserved frame)
+              exact ⟨holds.1, holds.2.1, holds.2.2.1, transferred.2,
+                transferred.1,
+                ih frames continuations checked.2 holds.2.2.2.2.2⟩
+
 def RelationalRuntimeCallTargetsReachable (graph : RelationalProductGraph)
     (reachability : RelationalProductReachabilityEvidence) : List Nat -> Prop
   | [] => True

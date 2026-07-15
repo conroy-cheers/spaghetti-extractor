@@ -259,6 +259,33 @@ def _whole_program_acceptance_plan(
                 rules=matching_edges[0].get("return_slot_transfer_rules", []),
             )
 
+        def external_transfer_locations(
+            source_node_id: int, target_node_id: int,
+            source_locations: tuple[tuple[str, int, str, int], ...],
+        ) -> tuple[tuple[str, int, str, int], ...] | None:
+            matching_edges = register_edges_by_pair.get(
+                (source_node_id, target_node_id), []
+            )
+            if len(matching_edges) != 1:
+                block(
+                    "runtime_frame_external_edge_ambiguous",
+                    f"external transition {source_node_id}->{target_node_id} has "
+                    f"{len(matching_edges)} register-relation edges",
+                    "emit one canonical external register-relation edge",
+                )
+                return None
+            return choose_location_transfers(
+                source_node_id=source_node_id,
+                target_description=(
+                    f"external transition {source_node_id}->{target_node_id}"
+                ),
+                source_locations=source_locations,
+                claims=[],
+                rules=matching_edges[0].get(
+                    "return_slot_external_transfer_rules", []
+                ),
+            )
+
         pending: list[tuple[
             int, tuple[int, ...], tuple[tuple[str, int, str, int], ...],
         ]] = [(roots[0], (), ())]
@@ -528,16 +555,12 @@ def _whole_program_acceptance_plan(
                         break
                     successor_locations = ()
                 else:
-                    if frame_locations:
-                        block(
-                            "nested_external_runtime_frame_preservation_pending",
-                            f"external transition {node_id}->{target_node_id} must preserve "
-                            f"{len(frame_locations)} runtime frames",
-                            "prove the external footprint and register effects preserve each frame location",
-                        )
+                    successor_locations = external_transfer_locations(
+                        node_id, target_node_id, frame_locations
+                    )
+                    if successor_locations is None:
                         control_incomplete = True
                         break
-                    successor_locations = ()
                 pending.append((target_node_id, successor_calls, successor_locations))
 
     candidate_by_edge = {
@@ -947,19 +970,64 @@ def _whole_program_acceptance_plan(
                 has_internal_call = True
             elif external_profile:
                 control_rows = control_states_by_node.get(node_id, [])
-                if (
-                    len(control_rows) != 1
-                    or control_rows[0]["calls"]
-                    or control_rows[0]["frame_offsets"]
-                ):
+                if len(control_rows) != 1:
                     block(
-                        "nested_external_runtime_frame_preservation_pending",
-                        f"external-call node {node_id} is reached with live internal runtime frames",
-                        "prove the import write footprint disjoint from every live return slot and transfer frame offsets across the call",
+                        "external_call_control_profile_ambiguous",
+                        f"external-call node {node_id} has {len(control_rows)} rooted control states",
+                        "split the node theorem into one checked case per rooted control state",
+                    )
+                    continue
+                control_row = control_rows[0]
+                register_edge = register_edge_by_source_target.get(
+                    (node_id, target_node_id), {}
+                )
+                transfer_claims = register_edge.get(
+                    "return_slot_external_transfer_claims", []
+                )
+                selected_claims = []
+                selected_targets = []
+                for source_payload in control_row["frame_offsets"]:
+                    source_location = location_key(source_payload)
+                    candidates = [
+                        claim for claim in transfer_claims
+                        if location_key(claim["source"]) == source_location
+                    ]
+                    if not candidates:
+                        break
+                    selected = sorted(
+                        candidates,
+                        key=lambda claim: location_rank(
+                            source_location, location_key(claim["target"])
+                        ),
+                    )[0]
+                    selected_claims.append(selected)
+                    selected_targets.append(location_key(selected["target"]))
+                if len(selected_claims) != len(control_row["frame_offsets"]):
+                    block(
+                        "external_runtime_frame_transfer_claim_missing",
+                        f"external-call node {node_id} lacks a checked memory/register "
+                        "transfer claim for every live runtime frame",
+                        "emit affine call-setup, write-disjointness, and ABI-result witnesses",
+                    )
+                    continue
+                target_control_rows = [
+                    row for row in control_states_by_node.get(target_node_id, [])
+                    if row["calls"] == control_row["calls"]
+                    and tuple(location_key(item) for item in row["frame_offsets"])
+                        == tuple(selected_targets)
+                ]
+                if len(target_control_rows) != 1:
+                    block(
+                        "external_runtime_frame_target_state_missing",
+                        f"external-call node {node_id} has no unique checked successor "
+                        "control state for its transferred runtime frames",
+                        "regenerate the rooted control profile from the checked transfer claims",
                     )
                     continue
                 step["kind"] = "external_call"
-                step["control_state"] = control_rows[0]
+                step["control_state"] = control_row
+                step["target_control_state"] = target_control_rows[0]
+                step["return_slot_external_transfer_claims"] = selected_claims
                 step["external_site"] = external_site
                 step["decoded_import"] = outcomes[0].get("import")
                 has_external_call = True
@@ -1193,6 +1261,49 @@ def _lean_acceptance_empty_stack(node_id: int) -> str:
         f"      ((acceptanceCandidateNormalizedBehavior{node_id}.eval candidateState).nextMachineState\n"
         "        candidateState) [] [] [] := by\n"
         "    simp [RelationalRuntimeCallStackHolds]"
+    )
+
+def _lean_external_return_slot_transfer_claim(claim: dict[str, Any]) -> str:
+    internal = claim["internal_rule"]
+    result = claim["result_rule"]
+    memory = claim["memory_claim"]
+    original_writes = ", ".join(
+        _lean_register_offset_witness(witness)
+        for witness in memory["original_write_witnesses"]
+    )
+    candidate_writes = ", ".join(
+        _lean_register_offset_witness(witness)
+        for witness in memory["candidate_write_witnesses"]
+    )
+    return (
+        "{ source := " + _lean_return_slot_offset_pair(claim["source"])
+        + ", internalTarget := "
+        + _lean_return_slot_offset_pair(claim["internal_target"])
+        + ", internalRule := { originalSourceRegister := ."
+        + str(internal["original_source_register"])
+        + ", candidateSourceRegister := ."
+        + str(internal["candidate_source_register"])
+        + ", originalTargetRegister := ."
+        + str(internal["original_target_register"])
+        + ", candidateTargetRegister := ."
+        + str(internal["candidate_target_register"])
+        + ", originalOutput := "
+        + _lean_register_offset_witness(internal["original_output_witness"])
+        + ", candidateOutput := "
+        + _lean_register_offset_witness(internal["candidate_output_witness"])
+        + ", originalDelta := BitVec.ofNat 32 "
+        + str(int(internal["original_delta"]))
+        + ", candidateDelta := BitVec.ofNat 32 "
+        + str(int(internal["candidate_delta"]))
+        + " }, resultRule := { source := "
+        + _lean_return_slot_offset_pair(result["source"])
+        + ", target := " + _lean_return_slot_offset_pair(result["target"])
+        + ", originalDelta := " + str(int(result["original_delta"]))
+        + ", candidateDelta := " + str(int(result["candidate_delta"]))
+        + " }, memory := { offsets := "
+        + _lean_return_slot_offset_pair(memory["offsets"])
+        + f", originalWrites := [{original_writes}]"
+        + f", candidateWrites := [{candidate_writes}] }} }}"
     )
 
 def _lean_acceptance_running_target(
@@ -1725,7 +1836,7 @@ def _lean_acceptance_running_node(
             "    dsimp only at results\n"
             "    rcases results with\n"
             "      ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
-            "        nextStatesRelated⟩\n"
+            "        nextStatesRelated, _framesPreserved⟩\n"
             "    have argumentsRelated := boundaryKnown.2.2.2.2.2.2\n"
             "    have observationRelated : worldRelationalObservationsRelated\n"
             "        staticProofContext\n"
@@ -1804,12 +1915,35 @@ def _lean_acceptance_running_node(
             raise StageAInputError(
                 f"external acceptance node {node_id} has no decoded import identity"
             )
+        control_state = step["control_state"]
+        calls_literal = "[" + ", ".join(
+            str(int(call)) for call in control_state["calls"]
+        ) + "]"
+        source_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_pair(offset)
+            for offset in control_state["frame_offsets"]
+        ) + "]"
+        transfer_claims = step["return_slot_external_transfer_claims"]
+        transfer_claims_literal = "[" + ", ".join(
+            _lean_external_return_slot_transfer_claim(claim)
+            for claim in transfer_claims
+        ) + "]"
+        target_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_pair(claim["target"])
+            for claim in transfer_claims
+        ) + "]"
         imported_literal = _lean_external_target({
             "dll": imported_identity[0], imported_identity[1]: imported_identity[2],
         })
         return (
             prefix
-            + empty_control
+            + f"  have controlShape : calls = {calls_literal} ∧ "
+            f"frameOffsets = {source_offsets_literal} := by\n"
+            "    simpa [productControlProfile, ProductControlProfile.Allows] using\n"
+            "      controlAllowed\n"
+            "  rcases controlShape with ⟨rfl, rfl⟩\n"
+            f"  let frameClaims : List ExternalReturnSlotTransferClaim := "
+            f"{transfer_claims_literal}\n"
             + f"  have originalBehaviorCommon : {original_behavior} =\n"
             f"      externalCallEdge{edge_id}OriginalNormalized := by decide\n"
             f"  have candidateBehaviorCommon : {candidate_behavior} =\n"
@@ -1875,7 +2009,25 @@ def _lean_acceptance_running_node(
             "  dsimp only at results\n"
             "  rcases results with\n"
             "    ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
-            "      nextStatesRelated⟩\n"
+            "      nextStatesRelated, framesPreserved⟩\n"
+            "  have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
+            "      (originalEnvironment.result eventIndex originalEvent).state\n"
+            "      (candidateEnvironment.result eventIndex candidateEvent).state\n"
+            f"      frames {calls_literal} {target_offsets_literal} := by\n"
+            "    exact RelationalRuntimeCallStackHolds.afterExternalCall\n"
+            f"      staticProofContext {original_behavior} {candidate_behavior}\n"
+            f"      externalCallEdge{edge_id}MachineContract frameClaims frames\n"
+            f"      {calls_literal} originalState candidateState\n"
+            "      (originalEnvironment.result eventIndex originalEvent).state\n"
+            "      (candidateEnvironment.result eventIndex candidateEvent).state\n"
+            "      (by decide)\n"
+            "      (by simpa [frameClaims] using stackHolds)\n"
+            "      (by simpa [originalEvent] using _originalConforms.1)\n"
+            "      (by simpa [candidateEvent] using _candidateConforms.1)\n"
+            "      (by\n"
+            "        intro frame frameHolds\n"
+            "        exact framesPreserved frame (by\n"
+            "          simpa [originalEvent, candidateEvent] using frameHolds))\n"
             "  have argumentsRelated := boundaryKnown.2.2.2.2.2.2\n"
             "  have observationRelated : worldRelationalObservationsRelated\n"
             "      staticProofContext\n"
@@ -1901,15 +2053,14 @@ def _lean_acceptance_running_node(
             "  rw [importedCommon]\n"
             "  rw [originalSiteResolved]\n"
             "  simp only [List.map_nil]\n"
-            "  have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
-            "      (originalEnvironment.result eventIndex originalEvent).state\n"
-            "      (candidateEnvironment.result eventIndex candidateEvent).state\n"
-            "      [] [] [] := by\n"
-            "    simp [RelationalRuntimeCallStackHolds]\n"
             + _lean_acceptance_running_target(
                 node_id=node_id,
                 region_index=region_index,
                 edge=edge,
+                frames="frames",
+                calls=calls_literal,
+                frame_offsets=target_offsets_literal,
+                stack_targets_proof="stackTargetsReachable",
                 observation_proof="observationRelated",
                 world_equal_proof="resultWorldsEqual",
             )
@@ -2133,6 +2284,10 @@ def _lean_acceptance_running_node(
         return (
             prefix
             + empty_control
+            + f"  have originalBehaviorSegment : {original_behavior} =\n"
+            f"      segmentRefinementEdge{edge_id}OriginalNormalizedBehavior := by decide\n"
+            f"  have candidateBehaviorSegment : {candidate_behavior} =\n"
+            f"      segmentRefinementEdge{edge_id}CandidateNormalizedBehavior := by decide\n"
             + f"  have transition := segmentRefinementEdge{edge_id}TransitionChecked world\n"
             "    originalState candidateState statesRelated\n"
             f"  have guardTrue : segmentRefinementEdge{edge_id}Spec.originalGuard.eval\n"
@@ -2145,8 +2300,8 @@ def _lean_acceptance_running_node(
             "        originalState)\n"
             f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
             "        candidateState) := by\n"
-            f"    simpa [{original_behavior}, {candidate_behavior},\n"
-            f"      region{region_index}NormalizedBehavior] using transitioned.2.2.2\n"
+            "    simpa [originalBehaviorSegment, candidateBehaviorSegment] using\n"
+            "      transitioned.2.2.2\n"
             + _lean_acceptance_empty_stack(node_id)
             + "\n"
             + _lean_acceptance_running_target(

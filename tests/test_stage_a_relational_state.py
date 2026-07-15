@@ -1931,6 +1931,12 @@ class StageARelationalStateTests(StageARelationalTestBase):
         contract = {
             "code_targets": [],
             "value_targets": [],
+            "machine_import_call_contracts": [{
+                "id": 3,
+                "import": {"dll": "", "ordinal": 1},
+                "stack_result_delta": 4,
+                "preserved_registers": ["ebx", "esi", "edi", "ebp"],
+            }],
             "regions": [
                 {
                     "id": "call",
@@ -1975,6 +1981,28 @@ class StageARelationalStateTests(StageARelationalTestBase):
         self.assertEqual(
             relations["edges"][0]["environment_register_policy"]["id"],
             "win32-cdecl-stdcall-registers-v1",
+        )
+        external_rules = relations["edges"][0][
+            "return_slot_external_transfer_rules"
+        ]
+        esp_rule = next(
+            rule for rule in external_rules
+            if rule["original_source_register"] == "esp"
+            and rule["original_target_register"] == "esp"
+        )
+        self.assertEqual(esp_rule["machine_contract_id"], 3)
+        self.assertEqual(esp_rule["original_internal_delta"], 0)
+        self.assertEqual(esp_rule["original_environment_delta"], 4)
+        self.assertEqual(esp_rule["original_delta"], 4)
+        ebp_rule = next(
+            rule for rule in external_rules
+            if rule["original_source_register"] == "ebp"
+            and rule["original_target_register"] == "ebp"
+        )
+        self.assertEqual(ebp_rule["original_environment_delta"], 0)
+        self.assertEqual(ebp_rule["original_delta"], 0)
+        self.assertGreater(
+            relations["return_slot_analysis"]["external_transfer_rules"], 0
         )
         self.assertEqual(relations["counts"]["environment_register_policy_edges"], 1)
 

@@ -1022,7 +1022,10 @@ def _synthesize_register_relations(
         exact_pair_edge_claims += len(pair_claims)
         edges_with_exact_pair_claims += bool(pair_claims)
     return_slot_analysis = _attach_return_slot_contracts(
-        behaviors, relation_rows, edges
+        behaviors, relation_rows, edges,
+        machine_import_call_contracts=refined.get(
+            "machine_import_call_contracts", []
+        ),
     )
     counts = {
         "regions": len(regions),
