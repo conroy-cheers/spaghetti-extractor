@@ -1845,6 +1845,93 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(lean["status"], "checked", lean)
             self.assertNotIn("sorryAx", lean["stdout"])
 
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for input-flag proofs")
+    def test_input_flag_guard_closes_only_for_the_same_checked_flag(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = self._write_pe(
+                root / "original.exe", b"\x72\x02\xeb\xfc\xeb\xfa"
+            )
+            candidate = self._write_pe(
+                root / "candidate.exe", b"\x70\x02\xeb\xfc\xeb\xfa"
+            )
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            relation = {
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": index, "original_rva": rva, "candidate_rva": rva}
+                    for index, rva in enumerate((0x1000, 0x1002, 0x1004))
+                ],
+                "regions": [
+                    {
+                        "id": name,
+                        "root": index == 0,
+                        "original": {"rva": rva, "size": size},
+                        "candidate": {"rva": rva, "size": size},
+                        "inputs": pairs,
+                        "outputs": pairs,
+                    }
+                    for index, (name, rva, size) in enumerate((
+                        ("condition", 0x1000, 2),
+                        ("fallthrough", 0x1002, 2),
+                        ("taken", 0x1004, 2),
+                    ))
+                ],
+                "padding": [],
+                "memory_relation": {"mode": "identity"},
+            }
+            contract = root / "relation.json"
+            contract.write_text(json.dumps(relation), encoding="utf-8")
+
+            mismatched = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=root / "mismatched",
+            )
+
+            self.assertEqual(mismatched["acceptance"]["status"], "incomplete")
+            diagnostics = json.loads(
+                (root / "mismatched" / "relational-segment-diagnostics.json")
+                .read_text(encoding="utf-8")
+            )
+            self.assertTrue(any(
+                "branch_guard_relation_unsupported" in edge["failed_checks"]
+                for edge in diagnostics["edges"]
+                if edge["edge_kind"].startswith("branch_")
+            ))
+
+            candidate.write_bytes(original.read_bytes())
+            prepared = root / "prepared"
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                result["acceptance"]["profile"], "guarded-no-write-control-v1"
+            )
+            self.assertEqual(
+                [step["kind"] for step in result["acceptance"]["node_steps"]],
+                ["branch", "jump", "jump"],
+            )
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_representative_control_slice_closes_whole_program_theorem(self):
         with tempfile.TemporaryDirectory() as temporary:

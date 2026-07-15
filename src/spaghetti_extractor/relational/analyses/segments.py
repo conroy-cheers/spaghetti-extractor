@@ -911,6 +911,10 @@ def _segment_refinement_candidates(
             source,
             edge.get("original_guard") or {},
             edge.get("candidate_guard") or {},
+        ) or _input_flags_guard_claim(
+            source,
+            edge.get("original_guard") or {},
+            edge.get("candidate_guard") or {},
         ) or _paired_stack_guard_claim(
             source,
             edge.get("original_guard") or {},
@@ -942,6 +946,13 @@ def _segment_refinement_candidates(
             bool(register_regions[source_index].get("fully_supported_output_transfer"))
             or dynamic_register_output_claims is not None
         )
+        flag_transfer_claim = _preserved_input_flags_claim(
+            source, target_flags, behaviors[source_index]
+        )
+        flag_transfer_supported = (
+            target_flags == []
+            or flag_transfer_claim is not None
+        )
         common_transfer_supported = (
             edge.get("relation_preservation_proposed")
             and register_transfer_supported
@@ -956,8 +967,7 @@ def _segment_refinement_candidates(
             and import_transfer_claims is not None
             and dynamic_transfer_claims is not None
             and stack_transfer_claims is not None
-            and source.get("flag_outputs", []) == target_flags
-            and target_flags in ([], [10])
+            and flag_transfer_supported
             and not target.get("bounds")
             and (
                 not target.get("address_separations")
@@ -1121,11 +1131,11 @@ def _segment_refinement_candidates(
             )
             require(
                 "flag_relation_mismatch",
-                source.get("flag_outputs", []) == target_flags,
+                flag_transfer_supported,
             )
             require(
                 "target_flag_profile_unsupported",
-                target_flags in ([], [10]),
+                all(bit in FLAG_BITS for bit in target_flags),
             )
             require(
                 "target_bound_invariant_required",
@@ -1301,6 +1311,7 @@ def _segment_refinement_candidates(
                 stack_writes_claim if stack_writes_supported else None
             ),
             "guard_relation_claim": guard_relation_claim,
+            "flag_transfer_claim": flag_transfer_claim,
             "stack_transfer_claims": stack_transfer_claims,
         }
     return [by_edge[index] for index in sorted(by_edge)]
@@ -1644,6 +1655,81 @@ def _static_dynamic_pointer_slot_guard_claim(
                     "slot": slot,
                 })
     return matches[0] if len(matches) == 1 else None
+
+
+def _input_flags_guard_claim(
+    source: dict[str, Any],
+    original_guard: dict[str, Any],
+    candidate_guard: dict[str, Any],
+) -> dict[str, Any] | None:
+    if original_guard != candidate_guard:
+        return None
+    allowed = {
+        int(index) for index in source.get("flag_inputs", list(FLAG_BITS))
+    }
+
+    def supported(expression: Any) -> bool:
+        if not isinstance(expression, dict):
+            return False
+        operation = expression.get("op")
+        if operation == "input_flag":
+            return _integer(expression.get("index")) in allowed
+        if operation == "not":
+            return supported(expression.get("value"))
+        if operation in {"and", "or", "xor"}:
+            return supported(expression.get("left")) and supported(
+                expression.get("right")
+            )
+        return False
+
+    if not supported(original_guard):
+        return None
+    return {
+        "profile": "input_flags_guard_v1",
+        "guard": original_guard,
+    }
+
+
+def _preserved_input_flags_claim(
+    source: dict[str, Any],
+    target_flags: list[int],
+    behavior: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not target_flags:
+        return None
+    source_flags = {
+        int(index) for index in source.get("flag_inputs", list(FLAG_BITS))
+    }
+    if any(bit not in source_flags for bit in target_flags):
+        return None
+    fields = {
+        0: "carry",
+        2: "parity",
+        6: "zero",
+        7: "sign",
+        11: "overflow",
+    }
+
+    def preserves(side: str, bit: int) -> bool:
+        if bit == 10:
+            return True
+        field = fields.get(bit)
+        if field is None:
+            return False
+        flags = (behavior.get(side) or {}).get("flags") or {}
+        return flags.get(field) == {"op": "input_flag", "index": bit}
+
+    if not all(
+        preserves(side, bit)
+        for side in ("original_ir", "candidate_ir")
+        for bit in target_flags
+    ):
+        return None
+    return {
+        "profile": "preserved_input_flags_v1",
+        "bits": list(target_flags),
+    }
+
 
 def _related_word_zero_guard_claim(
     source: dict[str, Any],

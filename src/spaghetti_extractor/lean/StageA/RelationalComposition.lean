@@ -2977,6 +2977,188 @@ def applyBoolNots : Nat -> BoolExpr -> BoolExpr
   | 0, expression => expression
   | count + 1, expression => .not (applyBoolNots count expression)
 
+def _root_.StageA.Formal.BoolExpr.inputFlagsOnlyWithin
+    (allowed : List Nat) : BoolExpr -> Bool
+  | .inputFlag index => allowed.contains index
+  | .not value => value.inputFlagsOnlyWithin allowed
+  | .and left right | .or left right | .xor left right =>
+      left.inputFlagsOnlyWithin allowed && right.inputFlagsOnlyWithin allowed
+  | _ => false
+
+theorem _root_.StageA.Formal.BoolExpr.eval_eq_of_inputFlagsOnlyWithin
+    (allowed : List Nat) (original candidate : MachineState)
+    (expression : BoolExpr)
+    (within : expression.inputFlagsOnlyWithin allowed = true)
+    (related : flagsRelated allowed original.eflags candidate.eflags = true) :
+    expression.eval original = expression.eval candidate := by
+  induction expression with
+  | equal _ _ => simp [BoolExpr.inputFlagsOnlyWithin] at within
+  | not value ih =>
+      simp only [BoolExpr.inputFlagsOnlyWithin] at within
+      simp only [BoolExpr.eval]
+      rw [ih within]
+  | and left right leftIH rightIH =>
+      simp only [BoolExpr.inputFlagsOnlyWithin, Bool.and_eq_true] at within
+      simp only [BoolExpr.eval]
+      rw [leftIH within.1, rightIH within.2]
+  | or left right leftIH rightIH =>
+      simp only [BoolExpr.inputFlagsOnlyWithin, Bool.and_eq_true] at within
+      simp only [BoolExpr.eval]
+      rw [leftIH within.1, rightIH within.2]
+  | xor left right leftIH rightIH =>
+      simp only [BoolExpr.inputFlagsOnlyWithin, Bool.and_eq_true] at within
+      simp only [BoolExpr.eval]
+      rw [leftIH within.1, rightIH within.2]
+  | unsignedLess _ _ => simp [BoolExpr.inputFlagsOnlyWithin] at within
+  | msb _ => simp [BoolExpr.inputFlagsOnlyWithin] at within
+  | bit _ _ => simp [BoolExpr.inputFlagsOnlyWithin] at within
+  | inputFlag index =>
+      have bitEqual := flagsRelated_of_contains allowed original.eflags
+        candidate.eflags related within
+      simp only [BoolExpr.eval]
+      rw [bitEqual]
+  | divisionValid _ _ _ => simp [BoolExpr.inputFlagsOnlyWithin] at within
+
+structure InputFlagsGuardClaim where
+  guard : BoolExpr
+deriving Repr, DecidableEq
+
+def InputFlagsGuardClaim.checked (sourceInvariant : StateInvariant)
+    (originalGuard candidateGuard : BoolExpr)
+    (claim : InputFlagsGuardClaim) : Bool :=
+  claim.guard == originalGuard && claim.guard == candidateGuard &&
+    claim.guard.inputFlagsOnlyWithin sourceInvariant.flagBits
+
+theorem inputFlagsGuard_eval_equal_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant) (originalGuard candidateGuard : BoolExpr)
+    (claim : InputFlagsGuardClaim)
+    (checked : claim.checked sourceInvariant originalGuard candidateGuard = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    originalGuard.eval originalState = candidateGuard.eval candidateState := by
+  simp only [InputFlagsGuardClaim.checked, Bool.and_eq_true, beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨originalGuardExact, candidateGuardExact⟩, within⟩
+  rcases related with
+    ⟨_worldValid, _stackRangesValid, _stackMemory, _importsStatic,
+      _importsComplete, _importsMemory, _originalImmutable, _candidateImmutable,
+      relatedCore, _importAndDynamicRegisters⟩
+  rcases relatedCore with
+    ⟨_inputRegisters, _inputBounds, _inputSeparations, _inputStackWindows,
+      _inputMemory, _inputDynamicMemory, _inputUndefined, _inputX87, inputFlags,
+      _inputFsBase⟩
+  rw [← originalGuardExact, ← candidateGuardExact]
+  exact BoolExpr.eval_eq_of_inputFlagsOnlyWithin sourceInvariant.flagBits
+    originalState candidateState claim.guard within inputFlags
+
+def normalizedCarryIsInput : Option FlagsExpr -> Bool
+  | none => true
+  | some flags => flags.carry == some (.inputFlag 0)
+
+def normalizedParityIsInput : Option FlagsExpr -> Bool
+  | none => true
+  | some flags => flags.parity == some (.inputFlag 2)
+
+def normalizedZeroIsInput : Option FlagsExpr -> Bool
+  | none => true
+  | some flags => flags.zero == some (.inputFlag 6)
+
+def normalizedSignIsInput : Option FlagsExpr -> Bool
+  | none => true
+  | some flags => flags.sign == some (.inputFlag 7)
+
+def normalizedOverflowIsInput : Option FlagsExpr -> Bool
+  | none => true
+  | some flags => flags.overflow == some (.inputFlag 11)
+
+theorem oneBitConditionalReconstructs (value : BitVec 1) :
+    (if value == BitVec.ofNat 1 1 then BitVec.allOnes 1 else 0#1) = value := by
+  have valueBound : value.toNat < 2 := by simpa using value.isLt
+  by_cases zero : value.toNat = 0
+  · have valueZero : value = 0#1 := by
+      apply BitVec.eq_of_toNat_eq
+      simpa [zero]
+    subst value
+    decide
+  · have one : value.toNat = 1 := by omega
+    have valueOne : value = BitVec.ofNat 1 1 := by
+      apply BitVec.eq_of_toNat_eq
+      simpa [one]
+    subst value
+    decide
+
+theorem evalFlagBit_inputFlag (state : MachineState) (bit : Nat) :
+    evalFlagBit state bit (some (.inputFlag bit)) =
+      state.eflags.extractLsb' bit 1 := by
+  simp only [evalFlagBit, BoolExpr.eval]
+  exact oneBitConditionalReconstructs _
+
+theorem evalNormalizedFlags_extract_cf_input_of_checked
+    (state : MachineState) (flags : Option FlagsExpr)
+    (checked : normalizedCarryIsInput flags = true) :
+    (evalNormalizedFlags state flags).extractLsb' 0 1 =
+      state.eflags.extractLsb' 0 1 := by
+  cases flags with
+  | none => rfl
+  | some flags =>
+      simp only [normalizedCarryIsInput, beq_iff_eq] at checked
+      simp only [evalNormalizedFlags_some, FlagsExpr.eval_extract_cf, checked,
+        evalFlagBit, BoolExpr.eval]
+      exact oneBitConditionalReconstructs _
+
+theorem evalNormalizedFlags_extract_pf_input_of_checked
+    (state : MachineState) (flags : Option FlagsExpr)
+    (checked : normalizedParityIsInput flags = true) :
+    (evalNormalizedFlags state flags).extractLsb' 2 1 =
+      state.eflags.extractLsb' 2 1 := by
+  cases flags with
+  | none => rfl
+  | some flags =>
+      simp only [normalizedParityIsInput, beq_iff_eq] at checked
+      simp only [evalNormalizedFlags_some, FlagsExpr.eval_extract_pf, checked,
+        evalFlagBit, BoolExpr.eval]
+      exact oneBitConditionalReconstructs _
+
+theorem evalNormalizedFlags_extract_zf_input_of_checked
+    (state : MachineState) (flags : Option FlagsExpr)
+    (checked : normalizedZeroIsInput flags = true) :
+    (evalNormalizedFlags state flags).extractLsb' 6 1 =
+      state.eflags.extractLsb' 6 1 := by
+  cases flags with
+  | none => rfl
+  | some flags =>
+      simp only [normalizedZeroIsInput, beq_iff_eq] at checked
+      simp only [evalNormalizedFlags_some, FlagsExpr.eval_extract_zf, checked,
+        evalFlagBit, BoolExpr.eval]
+      exact oneBitConditionalReconstructs _
+
+theorem evalNormalizedFlags_extract_sf_input_of_checked
+    (state : MachineState) (flags : Option FlagsExpr)
+    (checked : normalizedSignIsInput flags = true) :
+    (evalNormalizedFlags state flags).extractLsb' 7 1 =
+      state.eflags.extractLsb' 7 1 := by
+  cases flags with
+  | none => rfl
+  | some flags =>
+      simp only [normalizedSignIsInput, beq_iff_eq] at checked
+      simp only [evalNormalizedFlags_some, FlagsExpr.eval_extract_sf, checked,
+        evalFlagBit, BoolExpr.eval]
+      exact oneBitConditionalReconstructs _
+
+theorem evalNormalizedFlags_extract_of_input_of_checked
+    (state : MachineState) (flags : Option FlagsExpr)
+    (checked : normalizedOverflowIsInput flags = true) :
+    (evalNormalizedFlags state flags).extractLsb' 11 1 =
+      state.eflags.extractLsb' 11 1 := by
+  cases flags with
+  | none => rfl
+  | some flags =>
+      simp only [normalizedOverflowIsInput, beq_iff_eq] at checked
+      simp only [evalNormalizedFlags_some, FlagsExpr.eval_extract_of, checked,
+        evalFlagBit, BoolExpr.eval]
+      exact oneBitConditionalReconstructs _
+
 def stackWordZeroGuard (register : Reg) (offset : Nat) : BoolExpr :=
   let value : Expr := .read32 (.add (.inputReg register) (.constant offset))
   .equal (.bitAnd value value) (.constant 0)

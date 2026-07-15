@@ -1915,6 +1915,15 @@ def _write_relational_segment_refinement_modules(
                     )
                 if (
                     guard_claim is not None
+                    and guard_claim["profile"] == "input_flags_guard_v1"
+                ):
+                    import_claim_definitions.append(
+                        f"def {guard_claim_name} : InputFlagsGuardClaim := {{\n"
+                        f"  guard := {_lean_semantic_bool_expr(guard_claim['guard'])}\n"
+                        "}"
+                    )
+                if (
+                    guard_claim is not None
                     and guard_claim["profile"] == "static_dynamic_pointer_guard_v1"
                 ):
                     import_claim_definitions.append(
@@ -1944,6 +1953,15 @@ def _write_relational_segment_refinement_modules(
                         f"{source_index}.inputInvariant {edge_name}.originalGuard "
                         f"{edge_name}.candidateGuard {guard_claim_name} (by decide) "
                         "originalState candidateState related\n"
+                    )
+                elif guard_claim["profile"] == "input_flags_guard_v1":
+                    guard_agreement_setup = (
+                        "  have guardAgreement := "
+                        "inputFlagsGuard_eval_equal_of_checked\n"
+                        f"    staticProofContext world region{source_index}.inputInvariant\n"
+                        f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
+                        f"{guard_claim_name} (by decide)\n"
+                        "    originalState candidateState related\n"
                     )
                 elif guard_claim["profile"] == "paired_stack_read_guard_v1":
                     guard_agreement_setup = (
@@ -2023,15 +2041,52 @@ def _write_relational_segment_refinement_modules(
                 if flag_bits == []:
                     flag_proof = "  · rfl"
                 else:
-                    flag_proof = (
-                        "  · apply flagsRelated_cons_of_eq\n"
-                        "    · simp only [NormalizedSymbolicBehavior.eval_eflags]\n"
-                        "      rw [evalNormalizedFlags_extract_df, "
-                        "evalNormalizedFlags_extract_df]\n"
-                        f"      exact flagsRelated_of_contains region{source_index}.flagInputs "
-                        "originalState.eflags candidateState.eflags inputFlags (by decide)\n"
-                        "    · rfl"
-                    )
+                    flag_claim = candidate.get("flag_transfer_claim") or {}
+                    if flag_claim.get("profile") != "preserved_input_flags_v1":
+                        raise ValueError(
+                            "nonempty target flags require a preserved-input claim"
+                        )
+                    flag_theorems = {
+                        0: "evalNormalizedFlags_extract_cf_input_of_checked",
+                        2: "evalNormalizedFlags_extract_pf_input_of_checked",
+                        6: "evalNormalizedFlags_extract_zf_input_of_checked",
+                        7: "evalNormalizedFlags_extract_sf_input_of_checked",
+                        11: "evalNormalizedFlags_extract_of_input_of_checked",
+                    }
+                    proof_lines = ["  · apply flagsRelated_cons_of_eq"]
+                    for bit_index, bit in enumerate(flag_bits):
+                        indent = " " * (4 + 2 * bit_index)
+                        proof_lines.append(
+                            f"{indent}· simp only "
+                            "[NormalizedSymbolicBehavior.eval_eflags]"
+                        )
+                        if bit == 10:
+                            proof_lines.append(
+                                f"{indent}  rw [evalNormalizedFlags_extract_df, "
+                                "evalNormalizedFlags_extract_df]"
+                            )
+                        else:
+                            theorem = flag_theorems[bit]
+                            proof_lines.append(
+                                f"{indent}  rw [{theorem} originalState "
+                                f"{original_normalized_behavior}.flags (by decide), "
+                                f"{theorem} candidateState "
+                                f"{candidate_normalized_behavior}.flags (by decide)]"
+                            )
+                        proof_lines.append(
+                            f"{indent}  exact flagsRelated_of_contains "
+                            f"region{source_index}.flagInputs originalState.eflags "
+                            "candidateState.eflags inputFlags (by decide)"
+                        )
+                        proof_lines.append(
+                            f"{indent}· "
+                            + (
+                                "apply flagsRelated_cons_of_eq"
+                                if bit_index + 1 < len(flag_bits)
+                                else "rfl"
+                            )
+                        )
+                    flag_proof = "\n".join(proof_lines)
                 if contract["regions"][target_index].get("stack_windows"):
                     stack_transfer_rows = ", ".join(
                         _lean_stack_window_transfer_claim(claim)

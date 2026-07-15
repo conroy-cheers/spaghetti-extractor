@@ -451,8 +451,13 @@ required before decoded-control completeness can close.
 The edge theorem proves original/candidate guard agreement; it does not assume
 that both guards hold. The generator emits checked segment refinements for
 composable no-write direct segments with checked local target projection,
-non-memory register-relation transfer, state-only x87 transfer, and empty-or-DF
-flag invariants. The older exact-map wrapper was removed because it required
+non-memory register-relation transfer, state-only x87 transfer, and empty or
+checked preserved-input flag invariants. For the latter, the proposal records
+the exact flag-bit inventory; Lean checks each normalized original/candidate
+flag expression against the corresponding input flag and reconstructs the
+target `flagsRelated` predicate one bit at a time. A mismatched guard tree,
+missing source flag, computed flag value, or unsupported bit remains
+incomplete. The older exact-map wrapper was removed because it required
 the pre-IAT full-memory relation and duplicated this interface. Shape certificates
 must provide successful evaluations on both sides; failed evaluation cannot
 close a segment vacuously. Unsupported edges remain incomplete rather than
@@ -476,6 +481,11 @@ expanded profile includes exact or `related_word` zero-test branches with any
 checked number of leading Boolean negations. Lean separately checks guard
 agreement and that a selected edge implies the decoded branch condition's
 truth value; Python not-parity normalization is not trusted.
+The input-flag guard and preserved-flag profile raises the rooted jq refinement
+count from 67 to 96 of 421 feasible edges and reduces the rooted segment
+frontier from 354 to 325. Rooted reachability remains 371 nodes, unresolved
+indirect control remains 70 nodes, and jq correctly remains incomplete with no
+whole-program theorem.
 All 32 segment chunks compose through the dedicated
 `RelationalSegmentRefinementCertificate` Nix node. The expanded 449-edge jq
 aggregate checked remotely in 482.648 seconds over a focused 935-node closure;
