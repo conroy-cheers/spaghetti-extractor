@@ -1269,6 +1269,125 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertNotIn("sorryAx", lean["stdout"])
             self.assertNotIn("._native.", lean["stdout"])
 
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for callback proofs")
+    def test_tail_jump_import_wrapper_registers_mapped_callback_end_to_end(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            iat_address = 0x400000 + 0x2000 + 0x40
+            code = (
+                b"\xe8\x02\x00\x00\x00"
+                + b"\xeb\xfe"
+                + b"\xe8\x02\x00\x00\x00"
+                + b"\xeb\xf7"
+                + b"\xe9\x00\x00\x00\x00"
+                + b"\xff\x25" + struct.pack("<I", iat_address)
+            )
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_import_image(
+                code, symbol="atexit", dll="msvcrt.dll",
+            ))
+            candidate.write_bytes(original.read_bytes())
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": 0, "original_rva": 0x1000, "candidate_rva": 0x1000},
+                    {"id": 1, "original_rva": 0x1005, "candidate_rva": 0x1005},
+                    {"id": 2, "original_rva": 0x1007, "candidate_rva": 0x1007},
+                    {"id": 3, "original_rva": 0x100C, "candidate_rva": 0x100C},
+                    {"id": 4, "original_rva": 0x100E, "candidate_rva": 0x100E},
+                    {"id": 5, "original_rva": 0x1013, "candidate_rva": 0x1013},
+                ],
+                "regions": [
+                    {
+                        "id": "outer-caller", "root": True,
+                        "original": {"rva": 0x1000, "size": 5},
+                        "candidate": {"rva": 0x1000, "size": 5},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "registered-callback-continuation", "root": False,
+                        "original": {"rva": 0x1005, "size": 2},
+                        "candidate": {"rva": 0x1005, "size": 2},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "register-callback", "root": False,
+                        "original": {"rva": 0x1007, "size": 5},
+                        "candidate": {"rva": 0x1007, "size": 5},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "registration-continuation", "root": False,
+                        "original": {"rva": 0x100C, "size": 2},
+                        "candidate": {"rva": 0x100C, "size": 2},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "atexit-tail-wrapper", "root": False,
+                        "original": {"rva": 0x100E, "size": 5},
+                        "candidate": {"rva": 0x100E, "size": 5},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "atexit-import-thunk", "root": False,
+                        "original": {"rva": 0x1013, "size": 6},
+                        "candidate": {"rva": 0x1013, "size": 6},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                ],
+                "machine_import_call_contracts": [{
+                    "id": 0,
+                    "import": {"dll": "msvcrt.dll", "symbol": "atexit"},
+                    "abi_template": "pe32-cdecl-v1",
+                    "argument_words": 1,
+                    "memory_effect": "none",
+                    "memory_footprints": [],
+                    "world_effect": "callbackRegistration",
+                    "world_effect_argument": 0,
+                }],
+                "padding": [],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result.get("status"), "prepared", result)
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            sites = json.loads(
+                (prepared / "relational-external-call-sites.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(sites["counts"], {"candidates": 1, "gaps": 0})
+            site = sites["candidates"][0]
+            self.assertEqual(site["source_region_index"], 5)
+            self.assertEqual(site["call_target_region_index"], 4)
+            self.assertEqual(site["tail_jump_region_indices"], [4])
+            self.assertEqual(len(site["tail_jump_edge_indices"]), 1)
+            self.assertEqual(site["machine_contract_id"], 0)
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for external termination proofs")
     def test_nonreturning_import_thunk_terminates_whole_program_end_to_end(self):
         with tempfile.TemporaryDirectory() as temporary:

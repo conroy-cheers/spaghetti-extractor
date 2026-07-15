@@ -402,6 +402,24 @@ def dynamicRangeReleaseHolds (candidate : Bool) (argumentIndex : Nat)
           after.stackRanges = before.stackRanges ∧
           after.opaqueResources = before.opaqueResources ∧
           after.importAddresses = before.importAddresses ∧
+          after.registeredCallbacks = before.registeredCallbacks ∧
+          after.tlsState = before.tlsState
+
+def callbackRegistrationHolds (candidate : Bool) (context : StaticProofContext)
+    (argumentIndex : Nat) (arguments : List Word)
+    (before after : RelationalWorld) : Prop :=
+  match arguments[argumentIndex]? with
+  | none => False
+  | some argument =>
+      ∃ callback,
+        after.registeredCallbacks = callback :: before.registeredCallbacks ∧
+          (if candidate then callback.candidateAddress else callback.originalAddress) =
+            argument ∧
+          callback.valid context = true ∧
+          after.dynamicRanges = before.dynamicRanges ∧
+          after.stackRanges = before.stackRanges ∧
+          after.opaqueResources = before.opaqueResources ∧
+          after.importAddresses = before.importAddresses ∧
           after.tlsState = before.tlsState
 
 def machineCallWorldEffectHolds (candidate : Bool)
@@ -413,21 +431,26 @@ def machineCallWorldEffectHolds (candidate : Bool)
       after.dynamicRanges = before.dynamicRanges ∧
         after.stackRanges = before.stackRanges ∧
         after.importAddresses = before.importAddresses ∧
+        after.registeredCallbacks = before.registeredCallbacks ∧
         after.tlsState = before.tlsState ∧
         opaqueResourcesExtend before after
   | .dynamicRanges =>
       after.stackRanges = before.stackRanges ∧
         after.opaqueResources = before.opaqueResources ∧
         after.importAddresses = before.importAddresses ∧
+        after.registeredCallbacks = before.registeredCallbacks ∧
         after.tlsState = before.tlsState ∧
         dynamicRangesExtend before after
   | .dynamicRangeRelease argumentIndex =>
       dynamicRangeReleaseHolds candidate argumentIndex arguments before after
+  | .callbackRegistration argumentIndex =>
+      callbackRegistrationHolds candidate context argumentIndex arguments before after
   | .tlsState =>
       after.dynamicRanges = before.dynamicRanges ∧
         after.stackRanges = before.stackRanges ∧
         after.opaqueResources = before.opaqueResources ∧
-        after.importAddresses = before.importAddresses
+        after.importAddresses = before.importAddresses ∧
+        after.registeredCallbacks = before.registeredCallbacks
 
 def machineCallResultConforms (candidate : Bool) (context : StaticProofContext)
     (contract : MachineImportCallContract) (event : WorldExternalEvent)

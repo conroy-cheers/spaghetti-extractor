@@ -397,9 +397,85 @@ def _direct_import_thunk_call_candidates(
         int(region.get("numeric_id", index)): index
         for index, region in enumerate(regions)
     }
+    register_edges_by_pair: dict[
+        tuple[int, int], list[tuple[int, dict[str, Any]]]
+    ] = {}
+    for edge_index, edge in enumerate(register_relations.get("edges", [])):
+        pair = (
+            int(edge["source_region_index"]),
+            int(edge["target_region_index"]),
+        )
+        register_edges_by_pair.setdefault(pair, []).append((edge_index, edge))
     candidates: list[dict[str, Any]] = []
     gaps: list[dict[str, Any]] = []
     seen_sites: set[tuple[int, int, tuple[str, str, str | int]]] = set()
+
+    def import_thunk_path(start_index: int) -> dict[str, Any] | None:
+        """Follow paired direct tail jumps to an import thunk proposal.
+
+        This remains untrusted recovery data. The whole-program acceptance proof
+        independently checks each decoded jump, runtime frame transfer, and final
+        external transition.
+        """
+        current_index = start_index
+        visited: set[int] = set()
+        wrapper_indices: list[int] = []
+        jump_edge_indices: list[int] = []
+        blocker = None
+        while 0 <= current_index < len(behaviors):
+            if current_index in visited:
+                return None
+            visited.add(current_index)
+            original_outcome = (
+                behaviors[current_index].get("original_ir", {}).get("outcome") or {}
+            )
+            candidate_outcome = (
+                behaviors[current_index].get("candidate_ir", {}).get("outcome") or {}
+            )
+            original_operation = original_outcome.get("op")
+            candidate_operation = candidate_outcome.get("op")
+            if "external_jump" in {original_operation, candidate_operation}:
+                return {
+                    "thunk_region_index": current_index,
+                    "tail_jump_region_indices": wrapper_indices,
+                    "tail_jump_edge_indices": jump_edge_indices,
+                    "blocker": blocker,
+                }
+            if original_operation != "jump" or candidate_operation != "jump":
+                return None
+            original_target = _integer(original_outcome.get("target"))
+            candidate_target = _integer(candidate_outcome.get("target"))
+            if original_target is None or original_target != candidate_target:
+                return None
+            next_index = region_by_target.get(original_target)
+            if next_index is None:
+                return None
+            matching_edges = register_edges_by_pair.get(
+                (current_index, next_index), []
+            )
+            if len(matching_edges) != 1:
+                blocker = blocker or (
+                    "tail-jump import wrapper lacks one unambiguous local edge"
+                )
+            else:
+                jump_edge_index, jump_edge = matching_edges[0]
+                if (
+                    jump_edge.get("kind") != "jump"
+                    or jump_edge.get("environment_barrier")
+                    or jump_edge.get("original_guard")
+                        != {"op": "bool_constant", "value": True}
+                    or jump_edge.get("candidate_guard")
+                        != {"op": "bool_constant", "value": True}
+                    or not jump_edge.get("relation_preservation_proposed")
+                ):
+                    blocker = blocker or (
+                        "tail-jump import wrapper edge lacks an unconditional "
+                        "relation-preservation proposal"
+                    )
+                jump_edge_indices.append(jump_edge_index)
+            wrapper_indices.append(current_index)
+            current_index = next_index
+        return None
 
     def gap(
         *,
@@ -409,6 +485,9 @@ def _direct_import_thunk_call_candidates(
         continuation_index: int | None,
         reason: str,
         imported: tuple[str, str, str | int] | None = None,
+        call_target_index: int | None = None,
+        tail_jump_region_indices: list[int] | None = None,
+        tail_jump_edge_indices: list[int] | None = None,
     ) -> None:
         imported_value = None
         if imported is not None:
@@ -423,40 +502,54 @@ def _direct_import_thunk_call_candidates(
             "original_import": imported_value,
             "candidate_import": imported_value,
             "dispatch_profile": "checked_direct_import_thunk",
+            "call_target_region_index": call_target_index,
+            "tail_jump_region_indices": tail_jump_region_indices or [],
+            "tail_jump_edge_indices": tail_jump_edge_indices or [],
         })
 
     for call_edge_index, edge in enumerate(register_relations.get("edges", [])):
         if edge.get("direct_call_push_claim") is None:
             continue
         caller_index = int(edge["source_region_index"])
-        thunk_index = int(edge["target_region_index"])
+        call_target_index = int(edge["target_region_index"])
         if not (
             0 <= caller_index < len(behaviors)
-            and 0 <= thunk_index < len(behaviors)
-            and thunk_index < len(regions)
+            and 0 <= call_target_index < len(behaviors)
+            and call_target_index < len(regions)
         ):
             gap(
                 call_edge_index=call_edge_index,
                 caller_index=caller_index,
-                thunk_index=thunk_index,
+                thunk_index=call_target_index,
                 continuation_index=None,
                 reason="direct import-thunk call references an invalid region",
+                call_target_index=call_target_index,
             )
             continue
         caller_original = behaviors[caller_index].get("original_ir") or {}
         caller_candidate = behaviors[caller_index].get("candidate_ir") or {}
         caller_original_outcome = caller_original.get("outcome") or {}
         caller_candidate_outcome = caller_candidate.get("outcome") or {}
-        expected_thunk_target = int(regions[thunk_index].get("numeric_id", thunk_index))
+        expected_call_target = int(
+            regions[call_target_index].get("numeric_id", call_target_index)
+        )
         if (
             caller_original_outcome.get("op") != "call"
             or caller_candidate_outcome.get("op") != "call"
-            or caller_original_outcome.get("target") != expected_thunk_target
-            or caller_candidate_outcome.get("target") != expected_thunk_target
+            or caller_original_outcome.get("target") != expected_call_target
+            or caller_candidate_outcome.get("target") != expected_call_target
             or caller_original_outcome.get("continuation")
                 != caller_candidate_outcome.get("continuation")
         ):
             continue
+        thunk_path = import_thunk_path(call_target_index)
+        if thunk_path is None:
+            continue
+        thunk_index = int(thunk_path["thunk_region_index"])
+        tail_jump_region_indices = list(
+            thunk_path["tail_jump_region_indices"]
+        )
+        tail_jump_edge_indices = list(thunk_path["tail_jump_edge_indices"])
         continuation_target = _integer(caller_original_outcome.get("continuation"))
         continuation_index = (
             region_by_target.get(continuation_target)
@@ -469,6 +562,9 @@ def _direct_import_thunk_call_candidates(
                 thunk_index=thunk_index,
                 continuation_index=None,
                 reason="direct import-thunk continuation is not mapped",
+                call_target_index=call_target_index,
+                tail_jump_region_indices=tail_jump_region_indices,
+                tail_jump_edge_indices=tail_jump_edge_indices,
             )
             continue
 
@@ -495,6 +591,9 @@ def _direct_import_thunk_call_candidates(
                 continuation_index=continuation_index,
                 reason="original and candidate import-thunk identities do not match",
                 imported=original_target,
+                call_target_index=call_target_index,
+                tail_jump_region_indices=tail_jump_region_indices,
+                tail_jump_edge_indices=tail_jump_edge_indices,
             )
             continue
         machine_contracts = contract_groups.get(original_target, [])
@@ -506,6 +605,9 @@ def _direct_import_thunk_call_candidates(
                 continuation_index=continuation_index,
                 reason="no unique machine import call contract matches the thunk",
                 imported=original_target,
+                call_target_index=call_target_index,
+                tail_jump_region_indices=tail_jump_region_indices,
+                tail_jump_edge_indices=tail_jump_edge_indices,
             )
             continue
         machine_contract = machine_contracts[0]
@@ -514,7 +616,7 @@ def _direct_import_thunk_call_candidates(
             continue
         seen_sites.add(site_key)
 
-        blocker = None
+        blocker = thunk_path["blocker"]
         if original.get("writes", []) or candidate.get("writes", []):
             blocker = "import thunk performs memory writes before external dispatch"
         elif original_outcome.get("arguments") != candidate_outcome.get("arguments"):
@@ -618,6 +720,9 @@ def _direct_import_thunk_call_candidates(
                 continuation_index=continuation_index,
                 reason=blocker,
                 imported=original_target,
+                call_target_index=call_target_index,
+                tail_jump_region_indices=tail_jump_region_indices,
+                tail_jump_edge_indices=tail_jump_edge_indices,
             )
             continue
 
@@ -629,6 +734,9 @@ def _direct_import_thunk_call_candidates(
             "source_region_index": thunk_index,
             "caller_region_index": caller_index,
             "target_region_index": continuation_index,
+            "call_target_region_index": call_target_index,
+            "tail_jump_region_indices": tail_jump_region_indices,
+            "tail_jump_edge_indices": tail_jump_edge_indices,
             "source_target_id": int(source.get("numeric_id", thunk_index)),
             "continuation_target_id": int(continuation_target),
             "machine_contract_id": int(machine_contract["id"]),

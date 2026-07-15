@@ -19,7 +19,7 @@ MACHINE_CALL_MEMORY_EFFECTS = {"none", "readOnly", "argumentRanges"}
 MACHINE_CALL_DISPOSITIONS = {"returns", "terminates"}
 MACHINE_CALL_WORLD_EFFECTS = {
     "none", "opaqueResources", "dynamicRanges", "dynamicRangeRelease",
-    "tlsState",
+    "callbackRegistration", "tlsState",
 }
 MACHINE_CALL_ABI_TEMPLATES = {
     "pe32-cdecl-v1": {

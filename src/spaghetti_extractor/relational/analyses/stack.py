@@ -305,9 +305,14 @@ def _attach_stack_window_invariants(
             )
             seed_sources.setdefault(key, set()).add("address_separation_seed")
 
+    relation_rows = register_relations.get("regions", [])
     for region_index, behavior in enumerate(behaviors):
         region = regions[region_index]
-        relation_row = register_relations.get("regions", [])[region_index]
+        relation_row = (
+            relation_rows[region_index]
+            if region_index < len(relation_rows)
+            else {}
+        )
         for location in relation_row.get("return_slot_offsets", []):
             original_register = str(
                 location.get("original_register", "esp")

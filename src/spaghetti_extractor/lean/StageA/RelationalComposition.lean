@@ -2937,7 +2937,7 @@ theorem dynamicRegisterRangeHolds_relatedWord_of_zero_offsets
   rw [candidateOffset] at candidateRegister
   simp [BitVec.add_zero] at originalRegister candidateRegister
   simp only [RelationalWorld.valid, Bool.and_eq_true] at worldValid
-  have dynamicValid : world.dynamicRangesValid context = true := worldValid.1.1.1
+  have dynamicValid : world.dynamicRangesValid context = true := worldValid.1.1.1.1
   simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
     List.all_eq_true] at dynamicValid
   have rangeValid := dynamicValid.1.1.1.1.1.2 range rangeMember

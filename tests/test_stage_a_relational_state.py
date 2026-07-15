@@ -694,6 +694,80 @@ class StageARelationalStateTests(StageARelationalTestBase):
             site["boundary_invariant"]["stack_windows"][0]["bytes_above"], 8
         )
 
+        tail_contract = json.loads(json.dumps(contract))
+        tail_contract["regions"] = [
+            tail_contract["regions"][0],
+            tail_contract["regions"][1],
+            {"id": "tail-wrapper", "numeric_id": 2},
+            {**tail_contract["regions"][2], "numeric_id": 3},
+        ]
+        tail_caller = json.loads(json.dumps(caller))
+        tail_caller["outcome"]["target"] = 2
+        tail_wrapper = {
+            "registers": {
+                register: {"op": "input_reg", "reg": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            },
+            "writes": [], "x87": {}, "flags": {},
+            "outcome": {"op": "jump", "target": 3},
+        }
+        tail_behaviors = [
+            {"original_ir": tail_caller, "candidate_ir": tail_caller},
+            {"original_ir": {}, "candidate_ir": {}},
+            {"original_ir": tail_wrapper, "candidate_ir": tail_wrapper},
+            {"original_ir": thunk, "candidate_ir": thunk},
+        ]
+        tail_jump_edge = {
+            "source_region_index": 2,
+            "target_region_index": 3,
+            "direct_call_push_claim": None,
+            "kind": "jump",
+            "environment_barrier": False,
+            "original_guard": {"op": "bool_constant", "value": True},
+            "candidate_guard": {"op": "bool_constant", "value": True},
+            "relation_preservation_proposed": True,
+        }
+        tail_register_relations = {
+            "edges": [
+                {
+                    "source_region_index": 0,
+                    "target_region_index": 2,
+                    "direct_call_push_claim": {
+                        "profile": "mapped_direct_call_push_v1",
+                    },
+                },
+                tail_jump_edge,
+            ],
+            "regions": [{}, {}, {}, {"output_claims": output_claims}],
+        }
+        tail_analysis = _direct_import_thunk_call_candidates(
+            tail_contract, tail_behaviors, tail_register_relations,
+            first_site_id=20,
+        )
+        self.assertEqual(tail_analysis["gaps"], [])
+        self.assertEqual(len(tail_analysis["candidates"]), 1)
+        tail_site = tail_analysis["candidates"][0]
+        self.assertEqual(tail_site["source_region_index"], 3)
+        self.assertEqual(tail_site["call_target_region_index"], 2)
+        self.assertEqual(tail_site["tail_jump_region_indices"], [2])
+        self.assertEqual(tail_site["tail_jump_edge_indices"], [1])
+
+        ambiguous_tail_relations = json.loads(json.dumps(tail_register_relations))
+        ambiguous_tail_relations["edges"].append(
+            json.loads(json.dumps(tail_jump_edge))
+        )
+        ambiguous_tail = _direct_import_thunk_call_candidates(
+            tail_contract, tail_behaviors, ambiguous_tail_relations,
+            first_site_id=20,
+        )
+        self.assertEqual(ambiguous_tail["candidates"], [])
+        self.assertIn(
+            "lacks one unambiguous local edge",
+            ambiguous_tail["gaps"][0]["reason"],
+        )
+
         missing_contract = json.loads(json.dumps(contract))
         missing_contract["machine_import_call_contracts"] = []
         incomplete = _direct_import_thunk_call_candidates(

@@ -868,7 +868,7 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
       have worldDynamicValid : world.dynamicRangesValid context = true := by
         have valid := worldValid
         simp only [RelationalWorld.valid, Bool.and_eq_true] at valid
-        exact valid.1.1.1
+        exact valid.1.1.1.1
       have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
         rcases contextValid with
           ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _⟩
@@ -1005,7 +1005,7 @@ theorem segmentTransitionClosed_of_paired_stack_word_write_with_transfers
       have worldDynamicValid : world.dynamicRangesValid context = true := by
         have valid := worldValid
         simp only [RelationalWorld.valid, Bool.and_eq_true] at valid
-        exact valid.1.1.1
+        exact valid.1.1.1.1
       have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
         rcases contextValid with
           ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _⟩
@@ -1133,7 +1133,7 @@ theorem segmentTransitionClosed_of_paired_stack_word_writes_with_transfers
       have worldDynamicValid : world.dynamicRangesValid context = true := by
         have valid := worldValid
         simp only [RelationalWorld.valid, Bool.and_eq_true] at valid
-        exact valid.1.1.1
+        exact valid.1.1.1.1
       have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
         rcases contextValid with
           ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _⟩

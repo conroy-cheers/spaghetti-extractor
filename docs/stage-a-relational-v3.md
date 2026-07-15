@@ -1225,3 +1225,31 @@ from 43 to 41. Rooted traversal now stops at `msvcrt!exit` in node 69, which is
 also non-returning and remains undeclared. The jq proof is therefore still
 truthfully incomplete; this increment closes a generic terminal-interaction
 class rather than asserting whole-program acceptance.
+
+The relational world now also carries an ordered inventory of registered
+callback pairs. Each registration names one canonical code-map target and the
+exact original/candidate entry addresses; Lean checks primary and alias
+addresses against the embedded PE mapping. The machine-call world effect
+preserves dynamic ranges, stack ranges, opaque resources, import addresses, and
+TLS while prepending exactly one valid callback. Contract shape validation
+rejects a missing or out-of-range callback argument.
+
+Direct import-thunk recovery now follows a finite chain of paired unconditional
+internal tail jumps from a checked call edge. The proposal records every wrapper
+region and local edge; ambiguity produces `incomplete`. Whole-program acceptance
+still independently derives the decoded call/jump runtime frames and consumes a
+Lean-checked external-jump refinement, so the recovery path is not trusted.
+A generic fixture checks nested calls, a mapped callback argument carried in the
+outer return slot, an internal tail wrapper, `atexit` registration, return-slot
+normalization, and continuation through `candidatePE32ProgramsEquivalent`.
+
+On jq this finds both actual `atexit` sites: callers 373 and 4071 call wrapper
+1726, which tail-jumps over checked edge 2017 to import thunk 66. Remote Nix
+replay checked site modules 4935 and 4945 and emitted reproducible OLean hashes.
+The prepare reused exact PE semantics and took 14 seconds; the focused remote
+build took 295.4 seconds, mostly due to remote contention and transferring the
+large prepared source closure. Rooted composition counts do not advance because
+the current rooted frontier reaches `msvcrt!exit` first. That import remains
+undeclared intentionally: invoking the registered callbacks requires explicit
+well-bracketed external callback frames before `exit` can be classified as a
+sound terminal interaction.

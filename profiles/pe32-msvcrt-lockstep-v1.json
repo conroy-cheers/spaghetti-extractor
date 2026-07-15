@@ -21,6 +21,16 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "none"
+    },
+    {
+      "id": 2,
+      "import": {"dll": "msvcrt.dll", "symbol": "atexit"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "callbackRegistration",
+      "world_effect_argument": 0
     }
   ]
 }

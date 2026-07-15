@@ -427,11 +427,18 @@ structure ImportAddressPair where
   candidateAddress : Word
 deriving Repr, DecidableEq
 
+structure RegisteredCallbackPair where
+  targetId : Nat
+  originalAddress : Word
+  candidateAddress : Word
+deriving Repr, DecidableEq
+
 structure RelationalWorld where
   dynamicRanges : List DynamicAddressRangePair := []
   stackRanges : List DynamicAddressRangePair := []
   opaqueResources : List OpaqueResourcePair := []
   importAddresses : List ImportAddressPair := []
+  registeredCallbacks : List RegisteredCallbackPair := []
   tlsState : RelationalTlsState := {}
 deriving Repr, DecidableEq
 
@@ -439,7 +446,8 @@ def RelationalWorld.empty : RelationalWorld := {}
 
 def RelationalWorld.staticOnly (world : RelationalWorld) : Bool :=
   world.dynamicRanges.isEmpty && world.opaqueResources.isEmpty &&
-    world.tlsState.slots.isEmpty && world.tlsState.lastError == BitVec.ofNat 32 0
+    world.registeredCallbacks.isEmpty && world.tlsState.slots.isEmpty &&
+    world.tlsState.lastError == BitVec.ofNat 32 0
 
 def dynamicAddressRangeIdsUnique (ranges : List DynamicAddressRangePair) : Bool :=
   ranges.all fun range =>
@@ -675,10 +683,31 @@ def RelationalWorld.tlsStateValid (context : StaticProofContext)
         (slot.target.resolve false context world).isSome &&
         (slot.target.resolve true context world).isSome
 
+def RegisteredCallbackPair.valid (context : StaticProofContext)
+    (callback : RegisteredCallbackPair) : Bool :=
+  match context.codeMap.get? callback.targetId with
+  | none => false
+  | some target =>
+      (callback.originalAddress == BitVec.ofNat 32
+          (context.originalPe.imageBase + target.originalRva) ||
+        target.originalAliases.any fun alias =>
+          callback.originalAddress == BitVec.ofNat 32
+            (context.originalPe.imageBase + alias.rva)) &&
+      (callback.candidateAddress == BitVec.ofNat 32
+          (context.candidatePe.imageBase + target.candidateRva) ||
+        target.candidateAliases.any fun alias =>
+          callback.candidateAddress == BitVec.ofNat 32
+            (context.candidatePe.imageBase + alias.rva))
+
+def RelationalWorld.registeredCallbacksValid (context : StaticProofContext)
+    (world : RelationalWorld) : Bool :=
+  world.registeredCallbacks.all (RegisteredCallbackPair.valid context)
+
 def RelationalWorld.valid (context : StaticProofContext)
     (world : RelationalWorld) : Bool :=
   world.dynamicRangesValid context && world.stackRangesValid context &&
-    world.opaqueResourcesValid && world.tlsStateValid context
+    world.opaqueResourcesValid && world.registeredCallbacksValid context &&
+    world.tlsStateValid context
 
 def DynamicAddressRangePair.valueTarget
     (range : DynamicAddressRangePair) : ValueTargetPair := {

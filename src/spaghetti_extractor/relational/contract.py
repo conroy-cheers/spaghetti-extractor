@@ -1553,14 +1553,14 @@ def _machine_import_call_contracts(
             or disposition not in MACHINE_CALL_DISPOSITIONS
             or world_effect not in MACHINE_CALL_WORLD_EFFECTS
             or (
-                world_effect == "dynamicRangeRelease"
+                world_effect in {"dynamicRangeRelease", "callbackRegistration"}
                 and (
                     world_effect_argument is None
                     or not 0 <= world_effect_argument < len(offsets)
                 )
             )
             or (
-                world_effect != "dynamicRangeRelease"
+                world_effect not in {"dynamicRangeRelease", "callbackRegistration"}
                 and world_effect_argument is not None
             )
             or (

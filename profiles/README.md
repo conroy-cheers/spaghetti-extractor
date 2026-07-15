@@ -26,15 +26,22 @@ that satisfy these schemas; changes to a schema alter the relation-contract
 hash and invalidate dependent proof artifacts.
 
 APIs whose correctness requires an unsupported world feature remain absent.
-For example, callback registration is not approximated as an opaque resource;
-it requires a checked callback target and nested-frame protocol first.
+Callback registration is not approximated as an opaque resource. The supported
+registration effect consumes one related machine argument, resolves both
+concrete addresses to one checked static code-map target, and prepends the pair
+to an ordered relational callback inventory. All other world components must be
+preserved. Invocation still requires a separately checked nested external frame;
+registration alone does not authorize callback execution.
 
-`pe32-msvcrt-lockstep-v1.json` starts the CRT lifecycle profile with `free` and
-the non-returning `_amsg_exit` boundary. The `free` contract requires one cdecl
-pointer argument and removes the uniquely matching paired dynamic range; a null
-pointer is an exact no-op. It does not treat deallocation as an unconstrained
-memory mutation or leave a released range silently live in the relational
-world.
+`pe32-msvcrt-lockstep-v1.json` starts the CRT lifecycle profile with `free`,
+`atexit`, and the non-returning `_amsg_exit` boundary. The `free` contract
+requires one cdecl pointer argument and removes the uniquely matching paired
+dynamic range; a null pointer is an exact no-op. It does not treat deallocation
+as an unconstrained memory mutation or leave a released range silently live in
+the relational world. The `atexit` contract requires one cdecl callback pointer
+and records a checked mapped callback pair in LIFO registration order. It does
+not declare `exit` terminating: `exit` may invoke registered callbacks, so a
+callback-free terminal contract would be unsound.
 
 Machine-call contracts default to `"disposition": "returns"`. A reviewed
 `"terminates"` contract still requires exact lockstep import identity and

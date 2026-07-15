@@ -249,7 +249,9 @@ def _lean_machine_import_call_contract(contract: dict[str, Any]) -> str:
         for footprint in contract.get("memory_footprints", [])
     )
     world_effect = f".{contract['world_effect']}"
-    if contract["world_effect"] == "dynamicRangeRelease":
+    if contract["world_effect"] in {
+        "dynamicRangeRelease", "callbackRegistration",
+    }:
         world_effect += f" {int(contract['world_effect_argument'])}"
     return (
         "{ "

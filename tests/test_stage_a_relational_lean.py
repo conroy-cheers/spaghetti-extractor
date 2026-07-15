@@ -83,6 +83,85 @@ end StageA.DynamicRangeRelease
             )
             self.assertEqual(result["status"], "checked", result)
 
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for callback-world proofs")
+    def test_callback_registration_world_effect_is_checked_by_lean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lean_dir = Path(temporary)
+            stage_a = lean_dir / "StageA"
+            stage_a.mkdir()
+            source_root = (
+                Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
+            )
+            for module in RELATIONAL_KERNEL_MODULES:
+                shutil.copyfile(
+                    source_root / f"{module}.lean",
+                    stage_a / f"{module}.lean",
+                )
+            (stage_a / "CallbackRegistration.lean").write_text(
+                """import StageA.RelationalEnvironment
+
+namespace StageA.CallbackRegistration
+
+open StageA.Formal StageA.Relational
+
+def callback : RegisteredCallbackPair := {
+  targetId := 7
+  originalAddress := BitVec.ofNat 32 4096
+  candidateAddress := BitVec.ofNat 32 8192
+}
+
+def beforeWorld : RelationalWorld := {}
+
+def afterWorld : RelationalWorld := {
+  registeredCallbacks := [callback]
+}
+
+def registrationContract : MachineImportCallContract := {
+  id := 0
+  imported := {
+    dll := [109, 115, 118, 99, 114, 116, 46, 100, 108, 108]
+    name := .symbol [97, 116, 101, 120, 105, 116]
+  }
+  stackArgumentOffsets := [0]
+  stackResultDelta := 0
+  preservedRegisters := [.ebx, .esi, .edi, .ebp]
+  clobberedRegisters := [.eax, .ecx, .edx]
+  memoryEffect := .none
+  worldEffect := .callbackRegistration 0
+}
+
+example : registrationContract.shapeValid = true := by decide
+
+example : ({ registrationContract with worldEffect := .callbackRegistration 1 }).shapeValid =
+    false := by decide
+
+example (context : StaticProofContext) (valid : callback.valid context = true) :
+    callbackRegistrationHolds false context 0 [BitVec.ofNat 32 4096]
+      beforeWorld afterWorld := by
+  have address : callback.originalAddress = BitVec.ofNat 32 4096 := rfl
+  simp [callbackRegistrationHolds, beforeWorld, afterWorld, address, valid]
+
+example (context : StaticProofContext) (valid : callback.valid context = true) :
+    callbackRegistrationHolds true context 0 [BitVec.ofNat 32 8192]
+      beforeWorld afterWorld := by
+  have address : callback.candidateAddress = BitVec.ofNat 32 8192 := rfl
+  simp [callbackRegistrationHolds, beforeWorld, afterWorld, address, valid]
+
+example (context : StaticProofContext) :
+    Not (callbackRegistrationHolds false context 0 [BitVec.ofNat 32 8192]
+      beforeWorld afterWorld) := by
+  simp [callbackRegistrationHolds, beforeWorld, afterWorld, callback]
+
+end StageA.CallbackRegistration
+""",
+                encoding="utf-8",
+            )
+
+            result = _run_lean_relational(
+                lean_dir, bundle="CallbackRegistration"
+            )
+            self.assertEqual(result["status"], "checked", result)
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for call-boundary proofs")
     def test_machine_import_call_arguments_are_recovered_by_lean(self):
         with tempfile.TemporaryDirectory() as temporary:

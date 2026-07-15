@@ -143,6 +143,7 @@ inductive MachineCallWorldEffect where
   | opaqueResources
   | dynamicRanges
   | dynamicRangeRelease (argumentIndex : Nat)
+  | callbackRegistration (argumentIndex : Nat)
   | tlsState
 deriving Repr, DecidableEq
 
@@ -209,7 +210,7 @@ def MachineImportCallContract.shapeValid
         contract.clobberedRegisters.contains register) &&
     contract.memoryShapeValid &&
     (match contract.worldEffect with
-    | .dynamicRangeRelease argumentIndex =>
+    | .dynamicRangeRelease argumentIndex | .callbackRegistration argumentIndex =>
         argumentIndex < contract.stackArgumentOffsets.length
     | _ => true) &&
     match contract.disposition with

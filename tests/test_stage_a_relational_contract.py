@@ -1142,6 +1142,55 @@ class StageARelationalContractTests(StageARelationalTestBase):
             )
             self.assertEqual(normalized_release[0]["world_effect_argument"], 0)
 
+            callback_binary = replace(
+                binary,
+                imports=(StageAImport(
+                    dll="msvcrt.dll", symbol="atexit", ordinal=None,
+                    thunk_rva=0x3010,
+                ),),
+            )
+            callback_registration = {
+                "id": 10,
+                "import": {"dll": "msvcrt.dll", "symbol": "atexit"},
+                "abi_template": "pe32-cdecl-v1",
+                "argument_words": 1,
+                "memory_effect": "none",
+                "memory_footprints": [],
+                "world_effect": "callbackRegistration",
+                "world_effect_argument": 0,
+            }
+            callback_issues: list[dict] = []
+            normalized_callback = _machine_import_call_contracts(
+                [callback_registration], callback_binary, callback_binary,
+                callback_issues,
+            )
+            self.assertEqual(callback_issues, [])
+            self.assertEqual(
+                normalized_callback[0]["world_effect"], "callbackRegistration"
+            )
+            self.assertEqual(
+                normalized_callback[0]["world_effect_argument"], 0
+            )
+
+            for malformed_callback in (
+                {key: value for key, value in callback_registration.items()
+                 if key != "world_effect_argument"},
+                {**callback_registration, "world_effect_argument": 1},
+                {**callback_registration, "world_effect": "none"},
+            ):
+                callback_failure_issues: list[dict] = []
+                self.assertEqual(
+                    _machine_import_call_contracts(
+                        [malformed_callback], callback_binary, callback_binary,
+                        callback_failure_issues,
+                    ),
+                    [],
+                )
+                self.assertEqual(
+                    callback_failure_issues[0]["category"],
+                    "machine_import_call_contract_invalid",
+                )
+
             terminal_binary = replace(
                 binary,
                 imports=(StageAImport(
