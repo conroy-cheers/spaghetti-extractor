@@ -14,6 +14,7 @@ from .schema import (
     FLAG_BITS,
     MACHINE_CALL_ABI_REGISTERS,
     MACHINE_CALL_ABI_TEMPLATES,
+    MACHINE_CALL_DISPOSITIONS,
     MACHINE_CALL_MAX_ARGUMENT_WORDS,
     MACHINE_CALL_MEMORY_EFFECTS,
     MACHINE_CALL_WORLD_EFFECTS,
@@ -1413,6 +1414,10 @@ def _machine_import_call_contracts(
             preserved = item.get("preserved_registers") if isinstance(item, dict) else None
             clobbered = item.get("clobbered_registers") if isinstance(item, dict) else None
         memory_effect = item.get("memory_effect") if isinstance(item, dict) else None
+        disposition = (
+            item.get("disposition", "returns")
+            if isinstance(item, dict) else None
+        )
         world_effect = item.get("world_effect") if isinstance(item, dict) else None
         world_effect_argument = (
             _integer(item.get("world_effect_argument"))
@@ -1545,6 +1550,7 @@ def _machine_import_call_contracts(
             or set(preserved).union(clobbered) != MACHINE_CALL_ABI_REGISTERS
             or memory_effect not in MACHINE_CALL_MEMORY_EFFECTS
             or not memory_shape_valid
+            or disposition not in MACHINE_CALL_DISPOSITIONS
             or world_effect not in MACHINE_CALL_WORLD_EFFECTS
             or (
                 world_effect == "dynamicRangeRelease"
@@ -1556,6 +1562,15 @@ def _machine_import_call_contracts(
             or (
                 world_effect != "dynamicRangeRelease"
                 and world_effect_argument is not None
+            )
+            or (
+                disposition == "terminates"
+                and (
+                    stack_result_delta != 0
+                    or memory_effect != "none"
+                    or bool(footprints)
+                    or world_effect != "none"
+                )
             )
         )
         if malformed:
@@ -1598,6 +1613,7 @@ def _machine_import_call_contracts(
             "stack_result_delta": stack_result_delta,
             "preserved_registers": sorted(str(register) for register in preserved),
             "clobbered_registers": sorted(str(register) for register in clobbered),
+            "disposition": str(disposition),
             "memory_effect": str(memory_effect),
             "memory_footprints": footprints,
             "world_effect": str(world_effect),

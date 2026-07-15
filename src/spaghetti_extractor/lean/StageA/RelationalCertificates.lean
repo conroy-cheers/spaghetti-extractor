@@ -84,10 +84,17 @@ def resolveExternalCallSite (context : StaticProofContext)
       | some contract => contract.imported == imported
   pure site.id
 
+def resolvedExternalCallContract? (context : StaticProofContext)
+    (sites : List ExternalCallSiteContract) (siteId : Nat) :
+    Option MachineImportCallContract := do
+  let site <- sites.find? fun site => site.id == siteId
+  machineImportCallContractById? context site.machineContractId
+
 inductive WorldExecution where
   | running (targetId : Nat) (state : MachineState) (calls : List Nat)
       (eventIndex : Nat) (world : RelationalWorld)
   | returned (state : MachineState) (world : RelationalWorld)
+  | terminated (world : RelationalWorld)
   | fault
 
 def transitionFromWorldOutcome (program : DecodedWorldProgram)
@@ -124,17 +131,25 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
           sourceTargetId continuation imported with
       | none => { next := .fault, observation := some .fault }
       | some siteId =>
-          let event : WorldExternalEvent := {
-            siteId
-            imported
-            arguments
-            state
-            world
-          }
-          let result := program.environment.result eventIndex event
-          { next := .running continuation result.state calls (eventIndex + 1)
-              result.world,
-            observation := some (.external world imported arguments) }
+          match resolvedExternalCallContract? program.context program.externalCallSites siteId with
+          | none => { next := .fault, observation := some .fault }
+          | some contract =>
+              match contract.disposition with
+              | .terminates =>
+                  { next := .terminated world,
+                    observation := some (.external world imported arguments) }
+              | .returns =>
+                  let event : WorldExternalEvent := {
+                    siteId
+                    imported
+                    arguments
+                    state
+                    world
+                  }
+                  let result := program.environment.result eventIndex event
+                  { next := .running continuation result.state calls (eventIndex + 1)
+                      result.world,
+                    observation := some (.external world imported arguments) }
   | .externalJump imported arguments =>
       match calls with
       | [] => { next := .fault, observation := some .fault }
@@ -143,17 +158,25 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
               sourceTargetId continuation imported with
           | none => { next := .fault, observation := some .fault }
           | some siteId =>
-              let event : WorldExternalEvent := {
-                siteId
-                imported
-                arguments
-                state := normalizeImportReturnSlotState state
-                world
-              }
-              let result := program.environment.result eventIndex event
-              { next := .running continuation result.state tail
-                    (eventIndex + 1) result.world,
-                observation := some (.external world imported arguments) }
+              match resolvedExternalCallContract? program.context program.externalCallSites siteId with
+              | none => { next := .fault, observation := some .fault }
+              | some contract =>
+                  match contract.disposition with
+                  | .terminates =>
+                      { next := .terminated world,
+                        observation := some (.external world imported arguments) }
+                  | .returns =>
+                      let event : WorldExternalEvent := {
+                        siteId
+                        imported
+                        arguments
+                        state := normalizeImportReturnSlotState state
+                        world
+                      }
+                      let result := program.environment.result eventIndex event
+                      { next := .running continuation result.state tail
+                            (eventIndex + 1) result.world,
+                        observation := some (.external world imported arguments) }
   | .bulkCopy destination source count direction continuation =>
       let memory := Memory.bulkCopyDwords state.memory destination source direction
         count.toNat
@@ -175,17 +198,26 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                   sourceTargetId continuation imported with
               | none => { next := .fault, observation := some .fault }
               | some siteId =>
-                  let event : WorldExternalEvent := {
-                    siteId
-                    imported
-                    arguments
-                    state := normalizeImportReturnSlotState state
-                    world
-                  }
-                  let result := program.environment.result eventIndex event
-                  { next := .running continuation result.state calls (eventIndex + 1)
-                      result.world,
-                    observation := some (.external world imported arguments) }
+                  match resolvedExternalCallContract? program.context
+                      program.externalCallSites siteId with
+                  | none => { next := .fault, observation := some .fault }
+                  | some contract =>
+                      match contract.disposition with
+                      | .terminates =>
+                          { next := .terminated world,
+                            observation := some (.external world imported arguments) }
+                      | .returns =>
+                          let event : WorldExternalEvent := {
+                            siteId
+                            imported
+                            arguments
+                            state := normalizeImportReturnSlotState state
+                            world
+                          }
+                          let result := program.environment.result eventIndex event
+                          { next := .running continuation result.state calls
+                                (eventIndex + 1) result.world,
+                            observation := some (.external world imported arguments) }
   | .indirectJump target =>
       match resolveMappedCodeTarget program.candidate
           (if program.candidate then program.context.candidatePe.imageBase
@@ -205,17 +237,26 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                       sourceTargetId continuation imported with
                   | none => { next := .fault, observation := some .fault }
                   | some siteId =>
-                      let event : WorldExternalEvent := {
-                        siteId
-                        imported
-                        arguments
-                        state := normalizeImportReturnSlotState state
-                        world
-                      }
-                      let result := program.environment.result eventIndex event
-                      { next := .running continuation result.state tail
-                            (eventIndex + 1) result.world,
-                        observation := some (.external world imported arguments) }
+                      match resolvedExternalCallContract? program.context
+                          program.externalCallSites siteId with
+                      | none => { next := .fault, observation := some .fault }
+                      | some contract =>
+                          match contract.disposition with
+                          | .terminates =>
+                              { next := .terminated world,
+                                observation := some (.external world imported arguments) }
+                          | .returns =>
+                              let event : WorldExternalEvent := {
+                                siteId
+                                imported
+                                arguments
+                                state := normalizeImportReturnSlotState state
+                                world
+                              }
+                              let result := program.environment.result eventIndex event
+                              { next := .running continuation result.state tail
+                                    (eventIndex + 1) result.world,
+                                observation := some (.external world imported arguments) }
   | .checkedContinue valid continuation =>
       if valid then
         { next := .running continuation state calls eventIndex world,
@@ -237,6 +278,7 @@ def stepWorldExecution (program : DecodedWorldProgram) :
             (behavior.nextMachineState state) calls eventIndex world behavior.outcome
   | .returned state world =>
       { next := .returned state world, observation := none }
+  | .terminated world => { next := .terminated world, observation := none }
   | .fault => { next := .fault, observation := none }
 
 def DecodedWorldProgram.transitionSystem (program : DecodedWorldProgram) :
@@ -509,6 +551,8 @@ def WorldExecutionsRelated (context : StaticProofContext)
       originalWorld = candidateWorld ∧
         StateRel context originalWorld invariants.terminalInvariant
           originalState candidateState
+  | .terminated originalWorld, .terminated candidateWorld =>
+      originalWorld = candidateWorld
   | .fault, .fault => True
   | _, _ => False
 
@@ -846,6 +890,9 @@ theorem productStepRefinement_of_reachable_nodes (context : StaticProofContext)
       rcases related with ⟨worldEqual, statesRelated⟩
       subst candidateWorld
       exact ⟨True.intro, ⟨rfl, statesRelated⟩⟩
+  case terminated.terminated originalWorld candidateWorld =>
+      subst candidateWorld
+      exact ⟨True.intro, rfl⟩
   case fault.fault => exact ⟨True.intro, True.intro⟩
   all_goals simp [WorldExecutionsRelated] at related
 

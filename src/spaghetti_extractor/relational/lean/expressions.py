@@ -259,6 +259,7 @@ def _lean_machine_import_call_contract(contract: dict[str, Any]) -> str:
         f"stackResultDelta := {int(contract['stack_result_delta'])}, "
         f"preservedRegisters := [{preserved}], "
         f"clobberedRegisters := [{clobbered}], "
+        f"disposition := .{contract['disposition']}, "
         f"memoryEffect := .{contract['memory_effect']}, "
         f"memoryFootprints := [{footprints}], "
         f"worldEffect := {world_effect} "

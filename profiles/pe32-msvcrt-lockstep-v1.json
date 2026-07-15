@@ -11,6 +11,16 @@
       "memory_footprints": [],
       "world_effect": "dynamicRangeRelease",
       "world_effect_argument": 0
+    },
+    {
+      "id": 1,
+      "import": {"dll": "msvcrt.dll", "symbol": "_amsg_exit"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "disposition": "terminates",
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "none"
     }
   ]
 }

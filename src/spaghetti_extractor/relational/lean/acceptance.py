@@ -105,6 +105,10 @@ def _whole_program_acceptance_plan(
         int(item["id"]): item
         for item in contract.get("machine_import_call_contracts", [])
     }
+    machine_contract_by_import = {
+        _semantic_external_target_identity(item.get("import") or {}): item
+        for item in contract.get("machine_import_call_contracts", [])
+    }
     regions = contract["regions"]
     if not evidence.get("reachable_product_local_complete"):
         block(
@@ -637,6 +641,14 @@ def _whole_program_acceptance_plan(
                     for field in ("import", "continuation")
                 ):
                     control_incomplete = True
+                elif (
+                    machine_contract_by_import.get(
+                        _semantic_external_target_identity(
+                            original_outcome.get("import") or {}
+                        ), {}
+                    ).get("disposition") == "terminates"
+                ):
+                    pass
                 else:
                     successor_targets.append((
                         int(original_outcome["continuation"]), calls,
@@ -662,6 +674,14 @@ def _whole_program_acceptance_plan(
                         "map the importing call and propagate its runtime continuation frame",
                     )
                     control_incomplete = True
+                elif (
+                    machine_contract_by_import.get(
+                        _semantic_external_target_identity(
+                            original_outcome.get("import") or {}
+                        ), {}
+                    ).get("disposition") == "terminates"
+                ):
+                    pass
                 else:
                     successor_targets.append((
                         calls[0], calls[1:], "external_pop",
@@ -861,7 +881,7 @@ def _whole_program_acceptance_plan(
     has_external_call = False
     has_bounded_indirect = False
     has_paired_stack_write = False
-    termination_region_indices: list[int] = []
+    returned_region_indices: list[int] = []
     for node_id, node in enumerate(nodes):
         if int(node.get("id", -1)) != node_id or node_id >= len(regions):
             block(
@@ -958,6 +978,20 @@ def _whole_program_acceptance_plan(
                         f"import-thunk node {node_id} has no resolved machine contract",
                         "declare one complete machine-level import contract",
                     )
+                    continue
+                if machine_contract.get("disposition") == "terminates":
+                    node_steps.append({
+                        "kind": "external_terminate",
+                        "node_id": node_id,
+                        "region_index": node_id,
+                        "target_id": target_id,
+                        "control_state": control_row,
+                        "external_site": external_site,
+                        "machine_contract": machine_contract,
+                        "decoded_import": outcomes[0].get("import"),
+                        "edges": [],
+                    })
+                    has_external_call = True
                     continue
                 outer_claims = external_jump_transfer_claims(
                     node_id,
@@ -1134,7 +1168,7 @@ def _whole_program_acceptance_plan(
                     "return_frame_claim_index": 0,
                     "edges": [],
                 })
-                termination_region_indices.append(node_id)
+                returned_region_indices.append(node_id)
             continue
         if len(outgoing) == 1:
             edge_id = outgoing[0]
@@ -1528,7 +1562,7 @@ def _whole_program_acceptance_plan(
             int(step["node_id"]), []
         )
 
-    if len(termination_region_indices) > 1:
+    if len(returned_region_indices) > 1:
         block(
             "multiple_terminal_invariants_pending",
             "the first terminal profile requires one canonical returned-state invariant",
@@ -1574,8 +1608,8 @@ def _whole_program_acceptance_plan(
         "profile": profile,
         "root_node_id": roots[0],
         "terminal_region_index": (
-            termination_region_indices[0]
-            if termination_region_indices else roots[0]
+            returned_region_indices[0]
+            if returned_region_indices else roots[0]
         ),
         "terminal_invariant": (
             {
@@ -1588,13 +1622,13 @@ def _whole_program_acceptance_plan(
                 "dynamic_register_range_relations": [],
                 "bounds": [],
                 "flag_bits": (
-                    regions[termination_region_indices[0]].get("flag_outputs", [])
-                    if termination_region_indices else []
+                    regions[returned_region_indices[0]].get("flag_outputs", [])
+                    if returned_region_indices else []
                 ),
                 "address_separations": [],
                 "stack_windows": [],
             }
-            if termination_region_indices else {
+            if returned_region_indices else {
                 "register_relations": [],
                 "import_register_relations": [],
                 "dynamic_register_range_relations": [],
@@ -2225,6 +2259,118 @@ def _lean_acceptance_running_node(
                 ).splitlines()
             )
         )
+    if step["kind"] == "external_terminate":
+        site = step["external_site"]
+        site_id = int(site["id"])
+        continuation = int(site["continuation_target_id"])
+        decoded_import_identity = _semantic_external_target_identity(
+            step.get("decoded_import") or {}
+        )
+        if decoded_import_identity is None:
+            raise StageAInputError(
+                f"external-termination acceptance node {node_id} has no decoded import identity"
+            )
+        decoded_import_literal = _lean_external_target({
+            "dll": decoded_import_identity[0],
+            decoded_import_identity[1]: decoded_import_identity[2],
+        })
+        control_calls = [
+            int(call) for call in step["control_state"]["calls"]
+        ]
+        calls_literal = "[" + ", ".join(
+            str(call) for call in control_calls
+        ) + "]"
+        source_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_pair(offset)
+            for offset in step["control_state"]["frame_offsets"]
+        ) + "]"
+        original_arguments = ", ".join(
+            f"({_lean_semantic_expr(argument)}).eval originalState"
+            for argument in site.get("argument_expressions", [])
+        )
+        candidate_arguments = ", ".join(
+            f"({_lean_semantic_expr(argument)}).eval candidateState"
+            for argument in site.get("argument_expressions", [])
+        )
+        return (
+            prefix
+            + f"  have controlShape : calls = {calls_literal} ∧ "
+            f"frameOffsets = {source_offsets_literal} := by\n"
+            "    simpa [productControlProfile, ProductControlProfile.Allows] using\n"
+            "      controlAllowed\n"
+            "  rcases controlShape with ⟨rfl, rfl⟩\n"
+            f"  have originalBehaviorCommon : {original_behavior} =\n"
+            f"      externalJumpSite{site_id}OriginalNormalized := by decide\n"
+            f"  have candidateBehaviorCommon : {candidate_behavior} =\n"
+            f"      externalJumpSite{site_id}CandidateNormalized := by decide\n"
+            f"  have closed := externalJumpSite{site_id}TransitionChecked world\n"
+            "    originalState candidateState statesRelated\n"
+            f"  simp only [evalBehavior, externalJumpSite{site_id}OriginalNormalizedChecked,\n"
+            f"    externalJumpSite{site_id}CandidateNormalizedChecked, Option.bind_some]\n"
+            "    at closed\n"
+            "  rcases closed with\n"
+            "    ⟨originalCallArguments, candidateCallArguments, originalOutcome,\n"
+            "      candidateOutcome, boundary⟩\n"
+            f"  have originalArgumentsKnown : [{original_arguments}] =\n"
+            "      originalCallArguments := by\n"
+            "    have decomposed := originalOutcome\n"
+            f"    simp only [externalJumpSite{site_id}OriginalOutcomeChecked,\n"
+            "      NormalizedSymbolicBehavior.eval_outcome, NormalizedOutcomeExpr.eval,\n"
+            "      Expr.eval, PureOutcome.externalJump.injEq] at decomposed\n"
+            "    simpa only [List.map] using decomposed.2\n"
+            f"  have candidateArgumentsKnown : [{candidate_arguments}] =\n"
+            "      candidateCallArguments := by\n"
+            "    have decomposed := candidateOutcome\n"
+            f"    simp only [externalJumpSite{site_id}CandidateOutcomeChecked,\n"
+            "      NormalizedSymbolicBehavior.eval_outcome, NormalizedOutcomeExpr.eval,\n"
+            "      Expr.eval, PureOutcome.externalJump.injEq] at decomposed\n"
+            "    simpa only [List.map] using decomposed.2\n"
+            "  subst originalCallArguments\n"
+            "  subst candidateCallArguments\n"
+            "  let originalEvent : WorldExternalEvent := {\n"
+            f"    siteId := {site_id}\n"
+            f"    imported := externalJumpSite{site_id}MachineContract.imported\n"
+            f"    arguments := [{original_arguments}]\n"
+            "    state := normalizeImportReturnSlotState\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState originalState)\n"
+            "    world\n"
+            "  }\n"
+            "  let candidateEvent : WorldExternalEvent := {\n"
+            f"    siteId := {site_id}\n"
+            f"    imported := externalJumpSite{site_id}MachineContract.imported\n"
+            f"    arguments := [{candidate_arguments}]\n"
+            "    state := normalizeImportReturnSlotState\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState candidateState)\n"
+            "    world\n"
+            "  }\n"
+            "  have boundaryKnown : ExternalCallBoundaryRelated staticProofContext\n"
+            f"      externalCallSite{site_id} externalJumpSite{site_id}MachineContract\n"
+            "      originalEvent candidateEvent := by\n"
+            "    simpa [originalEvent, candidateEvent, originalBehaviorCommon,\n"
+            "      candidateBehaviorCommon] using boundary\n"
+            "  have argumentsRelated := boundaryKnown.2.2.2.2.2.2\n"
+            "  have observationRelated : worldRelationalObservationsRelated\n"
+            "      staticProofContext\n"
+            f"      (some (.external world externalJumpSite{site_id}MachineContract.imported\n"
+            f"        [{original_arguments}]))\n"
+            f"      (some (.external world externalJumpSite{site_id}MachineContract.imported\n"
+            f"        [{candidate_arguments}])) := by\n"
+            "    exact ⟨rfl, rfl, argumentsRelated⟩\n"
+            "  have siteResolved : resolveExternalCallSite staticProofContext\n"
+            f"      externalCallSites {target_id} {continuation}\n"
+            f"      externalJumpSite{site_id}MachineContract.imported = some {site_id} := by\n"
+            "    decide\n"
+            "  have contractResolved : resolvedExternalCallContract? staticProofContext\n"
+            f"      externalCallSites {site_id} =\n"
+            f"        some externalJumpSite{site_id}MachineContract := by\n"
+            "    decide\n"
+            f"  have importedCommon : ({decoded_import_literal} : ExternalTarget) =\n"
+            f"      externalJumpSite{site_id}MachineContract.imported := by decide\n"
+            "  rw [originalBehaviorCommon, candidateBehaviorCommon]\n"
+            "  simp only [originalWorldProgram, candidateWorldProgram, importedCommon,\n"
+            "    siteResolved, contractResolved]\n"
+            "  exact ⟨observationRelated, rfl⟩\n"
+        )
     if step["kind"] == "external_jump":
         site = step["external_site"]
         site_id = int(site["id"])
@@ -2347,7 +2493,7 @@ def _lean_acceptance_running_node(
             f"      externalJumpSite{site_id}MachineContractResolved\n"
             "    have results := externalCallResultsRelated staticProofContext\n"
             f"      externalCallSite{site_id} externalJumpSite{site_id}MachineContract\n"
-            "      originalEnvironment candidateEnvironment environmentAt eventIndex\n"
+            "      originalEnvironment candidateEnvironment environmentAt (by decide) eventIndex\n"
             "      originalEvent candidateEvent boundaryKnown\n"
             "    dsimp only at results\n"
             "    rcases results with\n"
@@ -2381,8 +2527,8 @@ def _lean_acceptance_running_node(
             "        (candidateEnvironment.result eventIndex candidateEvent).state\n"
             "        (by decide)\n"
             "        (by simpa [outerFrameClaims] using stackHolds.2.2.2.2.2)\n"
-            "        (by simpa [originalEvent] using _originalConforms.1)\n"
-            "        (by simpa [candidateEvent] using _candidateConforms.1)\n"
+            "        (by simpa [originalEvent] using _originalConforms.2.1)\n"
+            "        (by simpa [candidateEvent] using _candidateConforms.2.1)\n"
             "        (by\n"
             "          intro outerFrame frameHolds\n"
             "          exact framesPreserved outerFrame (by\n"
@@ -2543,7 +2689,7 @@ def _lean_acceptance_running_node(
             f"    externalCallEdge{edge_id}MachineContractResolved\n"
             "  have results := externalCallResultsRelated staticProofContext\n"
             f"    externalCallSite{edge_id} externalCallEdge{edge_id}MachineContract\n"
-            "    originalEnvironment candidateEnvironment environmentAt eventIndex\n"
+            "    originalEnvironment candidateEnvironment environmentAt (by decide) eventIndex\n"
             "    originalEvent candidateEvent boundaryKnown\n"
             "  dsimp only at results\n"
             "  rcases results with\n"
@@ -2561,8 +2707,8 @@ def _lean_acceptance_running_node(
             "      (candidateEnvironment.result eventIndex candidateEvent).state\n"
             "      (by decide)\n"
             "      (by simpa [frameClaims] using stackHolds)\n"
-            "      (by simpa [originalEvent] using _originalConforms.1)\n"
-            "      (by simpa [candidateEvent] using _candidateConforms.1)\n"
+            "      (by simpa [originalEvent] using _originalConforms.2.1)\n"
+            "      (by simpa [candidateEvent] using _candidateConforms.2.1)\n"
             "      (by\n"
             "        intro frame frameHolds\n"
             "        exact framesPreserved frame (by\n"
@@ -3072,7 +3218,7 @@ def _write_relational_acceptance_modules(
     terminal_region_index = int(plan["terminal_region_index"])
     terminal_invariant = _lean_state_invariant(plan["terminal_invariant"])
     parameterized_environment = any(
-        step["kind"] in {"external_call", "external_jump"}
+        step["kind"] in {"external_call", "external_jump", "external_terminate"}
         for step in plan["node_steps"]
     )
     invariant_rows = ", ".join(

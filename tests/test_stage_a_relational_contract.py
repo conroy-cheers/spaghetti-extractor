@@ -1142,6 +1142,55 @@ class StageARelationalContractTests(StageARelationalTestBase):
             )
             self.assertEqual(normalized_release[0]["world_effect_argument"], 0)
 
+            terminal_binary = replace(
+                binary,
+                imports=(StageAImport(
+                    dll="msvcrt.dll", symbol="_amsg_exit", ordinal=None,
+                    thunk_rva=0x3010,
+                ),),
+            )
+            terminal = {
+                "id": 10,
+                "import": {"dll": "msvcrt.dll", "symbol": "_amsg_exit"},
+                "abi_template": "pe32-cdecl-v1",
+                "argument_words": 1,
+                "disposition": "terminates",
+                "memory_effect": "none",
+                "memory_footprints": [],
+                "world_effect": "none",
+            }
+            terminal_issues: list[dict] = []
+            normalized_terminal = _machine_import_call_contracts(
+                [terminal], terminal_binary, terminal_binary, terminal_issues
+            )
+            self.assertEqual(terminal_issues, [])
+            self.assertEqual(normalized_terminal[0]["disposition"], "terminates")
+            self.assertEqual(normalized_terminal[0]["stack_result_delta"], 0)
+
+            for malformed_terminal in (
+                {**terminal, "disposition": "sometimes"},
+                {**terminal, "world_effect": "opaqueResources"},
+                {**terminal, "memory_effect": "readOnly", "memory_footprints": [{
+                    "access": "read",
+                    "base_argument": 0,
+                    "offset": 0,
+                    "size": {"kind": "fixed", "bytes": 4},
+                    "nullable": False,
+                }]},
+            ):
+                terminal_failure_issues: list[dict] = []
+                self.assertEqual(
+                    _machine_import_call_contracts(
+                        [malformed_terminal], terminal_binary, terminal_binary,
+                        terminal_failure_issues,
+                    ),
+                    [],
+                )
+                self.assertEqual(
+                    terminal_failure_issues[0]["category"],
+                    "machine_import_call_contract_invalid",
+                )
+
             for malformed_release in (
                 {key: value for key, value in release.items()
                  if key != "world_effect_argument"},

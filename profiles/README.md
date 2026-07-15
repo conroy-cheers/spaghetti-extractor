@@ -29,8 +29,20 @@ APIs whose correctness requires an unsupported world feature remain absent.
 For example, callback registration is not approximated as an opaque resource;
 it requires a checked callback target and nested-frame protocol first.
 
-`pe32-msvcrt-lockstep-v1.json` starts the CRT lifecycle profile with `free`.
-The contract requires one cdecl pointer argument and removes the uniquely
-matching paired dynamic range; a null pointer is an exact no-op. It does not
-treat deallocation as an unconstrained memory mutation or leave a released
-range silently live in the relational world.
+`pe32-msvcrt-lockstep-v1.json` starts the CRT lifecycle profile with `free` and
+the non-returning `_amsg_exit` boundary. The `free` contract requires one cdecl
+pointer argument and removes the uniquely matching paired dynamic range; a null
+pointer is an exact no-op. It does not treat deallocation as an unconstrained
+memory mutation or leave a released range silently live in the relational
+world.
+
+Machine-call contracts default to `"disposition": "returns"`. A reviewed
+`"terminates"` contract still requires exact lockstep import identity and
+related machine arguments, but produces an external observation followed by a
+distinct terminal execution state. It cannot declare a successor stack delta,
+memory effect, footprint, or relational-world update; malformed combinations
+fail contract validation and Lean's independent shape check. The transition
+does not query either external environment for a return result. This is suitable
+only when the imported call cannot return under the selected environment
+profile. The declaration is an explicit theorem assumption, not inferred from
+an API name by the generic proof core.

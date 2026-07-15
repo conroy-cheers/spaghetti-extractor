@@ -146,6 +146,11 @@ inductive MachineCallWorldEffect where
   | tlsState
 deriving Repr, DecidableEq
 
+inductive MachineCallDisposition where
+  | returns
+  | terminates
+deriving Repr, DecidableEq
+
 structure MachineImportCallContract where
   id : Nat
   imported : ExternalTarget
@@ -153,6 +158,7 @@ structure MachineImportCallContract where
   stackResultDelta : Nat
   preservedRegisters : List Reg
   clobberedRegisters : List Reg
+  disposition : MachineCallDisposition := .returns
   memoryEffect : MachineCallMemoryEffect
   memoryFootprints : List MachineCallMemoryFootprint := []
   worldEffect : MachineCallWorldEffect
@@ -202,10 +208,17 @@ def MachineImportCallContract.shapeValid
       contract.preservedRegisters.contains register ||
         contract.clobberedRegisters.contains register) &&
     contract.memoryShapeValid &&
-    match contract.worldEffect with
+    (match contract.worldEffect with
     | .dynamicRangeRelease argumentIndex =>
         argumentIndex < contract.stackArgumentOffsets.length
-    | _ => true
+    | _ => true) &&
+    match contract.disposition with
+    | .returns => true
+    | .terminates =>
+        contract.stackResultDelta == 0 &&
+          contract.memoryEffect == .none &&
+          contract.memoryFootprints.isEmpty &&
+          contract.worldEffect == .none
 
 def MachineImportCallContract.matchesImport
     (contract : MachineImportCallContract) (imported : PEImport) : Bool :=

@@ -1190,12 +1190,13 @@ current composition profiles.
 Projecting the latest cached jq graph through `composition-progress.json`
 distinguishes 371 nodes reached by decoded rooted traversal from the 4,149-node
 conservative potential inventory. The rooted slice currently has 421 feasible
-edges, 54 locally refined segments, 367 segment frontiers, 74 stack-invariant
+edges, 54 locally refined segments, 367 segment frontiers, 72 stack-invariant
 frontiers, and no relational-call-frame frontier. Seventy unresolved indirect
 controls contribute 290,430 conservative potential targets. Twelve rooted
 external edges include nine refinement candidates and three contract gaps;
 direct import-thunk analysis emits four checked `free` sites and four checked
-`strlen` sites while 43 other thunk contracts remain absent. These are
+`strlen` sites plus two checked `_amsg_exit` sites, while 41 other thunk
+contracts remain absent. These are
 composition-frontier counts, not a completion percentage and not evidence of
 final equivalence.
 
@@ -1204,7 +1205,23 @@ reprepare took 28.6 seconds without rebuilding either PE or any Stage B
 artifact. Focused remote Nix compilation of
 the jq caller-1041 `free` site checked a 94-derivation, 958-module, 16.2 MB Lean
 closure in 148.7 seconds and emitted a reproducible OLean hash. Rooted control
-currently reaches an earlier `_amsg_exit` thunk first. That API is non-returning,
-while the current environment event model only admits calls with successor
-states, so Stage A truthfully stops there until termination-producing external
-events are modeled and composed.
+then reached an earlier `_amsg_exit` thunk first.
+
+The generic machine-call contract now distinguishes returning and terminating
+interactions. A terminating interaction emits the same checked external event
+on both sides and enters a distinct terminal world-execution state without
+querying an environment result. Contract validation and Lean both reject a
+terminating declaration with a successor stack delta, memory footprint, memory
+effect, or world update. The whole-program fixture checks a nested internal
+caller, direct import thunk, related stack argument, exact external observation,
+and terminal/terminal execution relation through `candidatePE32ProgramsEquivalent`.
+
+Applying that contract to jq emits two checked `_amsg_exit` thunk sites. A
+remote-only Nix replay of the machine-contract table and both site modules took
+155.5 seconds and produced checked OLean artifacts. The rooted counts remain 371
+nodes, 421 feasible edges, 54 refined segments, and 367 segment frontiers, while
+the stack-invariant frontier falls from 74 to 72 and absent thunk contracts fall
+from 43 to 41. Rooted traversal now stops at `msvcrt!exit` in node 69, which is
+also non-returning and remains undeclared. The jq proof is therefore still
+truthfully incomplete; this increment closes a generic terminal-interaction
+class rather than asserting whole-program acceptance.

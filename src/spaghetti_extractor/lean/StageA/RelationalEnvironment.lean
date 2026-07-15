@@ -432,7 +432,8 @@ def machineCallWorldEffectHolds (candidate : Bool)
 def machineCallResultConforms (candidate : Bool) (context : StaticProofContext)
     (contract : MachineImportCallContract) (event : WorldExternalEvent)
     (result : WorldExternalResult) : Prop :=
-  machineCallAbiResultHolds contract event.state result.state = true ∧
+  contract.disposition = .returns ∧
+    machineCallAbiResultHolds contract event.state result.state = true ∧
     machineCallMemoryEffectHolds contract event.arguments
       event.state.memory result.state.memory ∧
     machineCallWorldEffectHolds candidate context contract.worldEffect
@@ -502,17 +503,20 @@ def ExternalRuntimeFramesPreserved
 def ExternalEnvironmentRefinesAt (context : StaticProofContext)
     (site : ExternalCallSiteContract) (contract : MachineImportCallContract)
     (original candidate : WorldExternalEnvironment) : Prop :=
-  forall eventIndex originalEvent candidateEvent,
-    ExternalCallBoundaryRelated context site contract originalEvent candidateEvent ->
-    let originalResult := original.result eventIndex originalEvent
-    let candidateResult := candidate.result eventIndex candidateEvent
-    originalResult.world = candidateResult.world ∧
-      machineCallResultConforms false context contract originalEvent originalResult ∧
-      machineCallResultConforms true context contract candidateEvent candidateResult ∧
-      StateRel context originalResult.world site.targetInvariant
-        originalResult.state candidateResult.state ∧
-      ExternalRuntimeFramesPreserved originalEvent candidateEvent
-        originalResult candidateResult
+  match contract.disposition with
+  | .returns =>
+      forall eventIndex originalEvent candidateEvent,
+        ExternalCallBoundaryRelated context site contract originalEvent candidateEvent ->
+        let originalResult := original.result eventIndex originalEvent
+        let candidateResult := candidate.result eventIndex candidateEvent
+        originalResult.world = candidateResult.world ∧
+          machineCallResultConforms false context contract originalEvent originalResult ∧
+          machineCallResultConforms true context contract candidateEvent candidateResult ∧
+          StateRel context originalResult.world site.targetInvariant
+            originalResult.state candidateResult.state ∧
+          ExternalRuntimeFramesPreserved originalEvent candidateEvent
+            originalResult candidateResult
+  | .terminates => True
 
 def ExternalEnvironmentRefines (context : StaticProofContext)
     (sites : List ExternalCallSiteContract)
@@ -1072,6 +1076,7 @@ theorem externalCallResultsRelated
     (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
     (environmentRefines : ExternalEnvironmentRefinesAt context site contract
       originalEnvironment candidateEnvironment)
+    (returns : contract.disposition = .returns)
     (eventIndex : Nat) (originalEvent candidateEvent : WorldExternalEvent)
     (boundary : ExternalCallBoundaryRelated context site contract
       originalEvent candidateEvent) :
@@ -1083,7 +1088,9 @@ theorem externalCallResultsRelated
       StateRel context originalResult.world site.targetInvariant
         originalResult.state candidateResult.state ∧
       ExternalRuntimeFramesPreserved originalEvent candidateEvent
-        originalResult candidateResult :=
-  environmentRefines eventIndex originalEvent candidateEvent boundary
+        originalResult candidateResult := by
+  unfold ExternalEnvironmentRefinesAt at environmentRefines
+  rw [returns] at environmentRefines
+  exact environmentRefines eventIndex originalEvent candidateEvent boundary
 
 end StageA.Relational
