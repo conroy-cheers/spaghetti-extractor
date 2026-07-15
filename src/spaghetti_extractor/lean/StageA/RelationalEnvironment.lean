@@ -24,6 +24,38 @@ def normalizeImportReturnSlotState (state : MachineState) : MachineState := {
     (state.registers.esp + BitVec.ofNat 32 4)
 }
 
+def ReturnSlotOffsetPair.afterImportReturnSlot
+    (source : ReturnSlotOffsetPair) : ReturnSlotOffsetPair := {
+  originalRegister := source.originalRegister
+  originalOffset := source.originalOffset -
+    (if source.originalRegister == .esp then BitVec.ofNat 32 4 else BitVec.ofNat 32 0)
+  candidateRegister := source.candidateRegister
+  candidateOffset := source.candidateOffset -
+    (if source.candidateRegister == .esp then BitVec.ofNat 32 4 else BitVec.ofNat 32 0)
+}
+
+theorem ReturnSlotOffsetPair.afterImportReturnSlot_holds
+    (source : ReturnSlotOffsetPair) (frame : RelationalRuntimeCallFrame)
+    (original candidate : MachineState)
+    (sourceHolds : source.holds frame original.registers candidate.registers) :
+    source.afterImportReturnSlot.holds frame
+      (normalizeImportReturnSlotState original).registers
+      (normalizeImportReturnSlotState candidate).registers := by
+  rcases source with ⟨originalRegister, originalOffset, candidateRegister,
+    candidateOffset⟩
+  rcases sourceHolds with ⟨originalHolds, candidateHolds⟩
+  constructor
+  · cases originalRegister <;>
+      simp_all [ReturnSlotOffsetPair.afterImportReturnSlot,
+        normalizeImportReturnSlotState, ReturnSlotOffsetPair.holds,
+        StageA.Formal.Registers.get, StageA.Formal.Registers.set,
+        word_add_delta_sub]
+  · cases candidateRegister <;>
+      simp_all [ReturnSlotOffsetPair.afterImportReturnSlot,
+        normalizeImportReturnSlotState, ReturnSlotOffsetPair.holds,
+        StageA.Formal.Registers.get, StageA.Formal.Registers.set,
+        word_add_delta_sub]
+
 structure ExternalCallSiteContract where
   id : Nat
   sourceTargetId : Nat
@@ -226,6 +258,83 @@ theorem externalReturnSlotTransferHolds_of_checked
   refine ⟨resultOffsets, framesPreserved ?_⟩
   simpa [RelationalBehavior.nextMachineState] using internalMemory
 
+structure ExternalJumpReturnSlotTransferClaim where
+  source : ReturnSlotOffsetPair
+  internalTarget : ReturnSlotOffsetPair
+  boundaryTarget : ReturnSlotOffsetPair
+  internalRule : ReturnSlotTransferRule
+  resultRule : ExternalReturnSlotResultRule
+  memory : ReturnSlotMemoryTransferClaim
+deriving Repr, DecidableEq
+
+def ExternalJumpReturnSlotTransferClaim.checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (contract : MachineImportCallContract)
+    (claim : ExternalJumpReturnSlotTransferClaim) : Bool :=
+  claim.internalRule.checked originalBehavior candidateBehavior &&
+    claim.internalRule.apply claim.source == some claim.internalTarget &&
+    claim.boundaryTarget == claim.internalTarget.afterImportReturnSlot &&
+    claim.memory.offsets == claim.source &&
+    claim.memory.checked originalBehavior candidateBehavior &&
+    claim.resultRule.source == claim.boundaryTarget &&
+    claim.resultRule.checked contract
+
+theorem externalJumpReturnSlotTransferHolds_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (contract : MachineImportCallContract)
+    (claim : ExternalJumpReturnSlotTransferClaim)
+    (frame : RelationalRuntimeCallFrame) (originalState candidateState : MachineState)
+    (originalResult candidateResult : MachineState)
+    (checked : claim.checked originalBehavior candidateBehavior contract = true)
+    (sourceOffsets : claim.source.holds frame originalState.registers
+      candidateState.registers)
+    (sourceMemory : frame.memoryHolds originalState.memory candidateState.memory)
+    (originalAbi : machineCallAbiResultHolds contract
+      (normalizeImportReturnSlotState
+        ((originalBehavior.eval originalState).nextMachineState originalState))
+      originalResult = true)
+    (candidateAbi : machineCallAbiResultHolds contract
+      (normalizeImportReturnSlotState
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState))
+      candidateResult = true)
+    (framesPreserved : frame.memoryHolds
+        (normalizeImportReturnSlotState
+          ((originalBehavior.eval originalState).nextMachineState originalState)).memory
+        (normalizeImportReturnSlotState
+          ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory →
+      frame.memoryHolds originalResult.memory candidateResult.memory) :
+    claim.resultRule.target.holds frame originalResult.registers
+        candidateResult.registers ∧
+      frame.memoryHolds originalResult.memory candidateResult.memory := by
+  simp only [ExternalJumpReturnSlotTransferClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨⟨⟨internalRuleChecked, internalApplied⟩, boundaryTarget⟩,
+      memorySource⟩, memoryChecked⟩, resultSource⟩, resultChecked⟩
+  have internalOffsets := returnSlotTransferRuleHolds_of_checked
+    originalBehavior candidateBehavior claim.internalRule claim.source
+    claim.internalTarget frame originalState candidateState internalRuleChecked
+    internalApplied sourceOffsets
+  have boundaryOffsets := claim.internalTarget.afterImportReturnSlot_holds frame
+    ((originalBehavior.eval originalState).nextMachineState originalState)
+    ((candidateBehavior.eval candidateState).nextMachineState candidateState)
+    (by simpa [RelationalBehavior.nextMachineState] using internalOffsets)
+  have internalMemory := returnSlotMemoryTransferHolds_of_checked
+    originalBehavior candidateBehavior claim.memory frame originalState candidateState
+    memoryChecked (by simpa [memorySource] using sourceOffsets) sourceMemory
+  have resultOffsets := externalReturnSlotResultRuleHolds_of_checked contract
+    (normalizeImportReturnSlotState
+      ((originalBehavior.eval originalState).nextMachineState originalState))
+    (normalizeImportReturnSlotState
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState))
+    originalResult candidateResult claim.resultRule frame resultChecked originalAbi
+    candidateAbi (by
+      rw [resultSource, boundaryTarget]
+      exact boundaryOffsets)
+  refine ⟨resultOffsets, framesPreserved ?_⟩
+  simpa [normalizeImportReturnSlotState, RelationalBehavior.nextMachineState]
+    using internalMemory
+
 def MachineCallMemorySize.bytes? (arguments : List Word) :
     MachineCallMemorySize -> Option Nat
   | .fixed bytes => some bytes
@@ -279,8 +388,25 @@ def opaqueResourcesExtend (before after : RelationalWorld) : Prop :=
 def dynamicRangesExtend (before after : RelationalWorld) : Prop :=
   forall range, range ∈ before.dynamicRanges -> range ∈ after.dynamicRanges
 
-def machineCallWorldEffectHolds (context : StaticProofContext)
-    (effect : MachineCallWorldEffect) (before after : RelationalWorld) : Prop :=
+def dynamicRangeReleaseHolds (candidate : Bool) (argumentIndex : Nat)
+    (arguments : List Word) (before after : RelationalWorld) : Prop :=
+  match arguments[argumentIndex]? with
+  | none => False
+  | some argument =>
+      if argument == BitVec.ofNat 32 0 then
+        after = before
+      else
+        ∃ range, range ∈ before.dynamicRanges ∧
+          range.sideBase candidate = argument ∧
+          after.dynamicRanges = before.dynamicRanges.erase range ∧
+          after.stackRanges = before.stackRanges ∧
+          after.opaqueResources = before.opaqueResources ∧
+          after.importAddresses = before.importAddresses ∧
+          after.tlsState = before.tlsState
+
+def machineCallWorldEffectHolds (candidate : Bool)
+    (context : StaticProofContext) (effect : MachineCallWorldEffect)
+    (arguments : List Word) (before after : RelationalWorld) : Prop :=
   after.valid context = true ∧ match effect with
   | .none => after = before
   | .opaqueResources =>
@@ -295,19 +421,22 @@ def machineCallWorldEffectHolds (context : StaticProofContext)
         after.importAddresses = before.importAddresses ∧
         after.tlsState = before.tlsState ∧
         dynamicRangesExtend before after
+  | .dynamicRangeRelease argumentIndex =>
+      dynamicRangeReleaseHolds candidate argumentIndex arguments before after
   | .tlsState =>
       after.dynamicRanges = before.dynamicRanges ∧
         after.stackRanges = before.stackRanges ∧
         after.opaqueResources = before.opaqueResources ∧
         after.importAddresses = before.importAddresses
 
-def machineCallResultConforms (context : StaticProofContext)
+def machineCallResultConforms (candidate : Bool) (context : StaticProofContext)
     (contract : MachineImportCallContract) (event : WorldExternalEvent)
     (result : WorldExternalResult) : Prop :=
   machineCallAbiResultHolds contract event.state result.state = true ∧
     machineCallMemoryEffectHolds contract event.arguments
       event.state.memory result.state.memory ∧
-    machineCallWorldEffectHolds context contract.worldEffect event.world result.world
+    machineCallWorldEffectHolds candidate context contract.worldEffect
+      event.arguments event.world result.world
 
 def externalCallArgumentsRelated (context : StaticProofContext)
     (world : RelationalWorld) (original candidate : List Word) : Bool :=
@@ -378,8 +507,8 @@ def ExternalEnvironmentRefinesAt (context : StaticProofContext)
     let originalResult := original.result eventIndex originalEvent
     let candidateResult := candidate.result eventIndex candidateEvent
     originalResult.world = candidateResult.world ∧
-      machineCallResultConforms context contract originalEvent originalResult ∧
-      machineCallResultConforms context contract candidateEvent candidateResult ∧
+      machineCallResultConforms false context contract originalEvent originalResult ∧
+      machineCallResultConforms true context contract candidateEvent candidateResult ∧
       StateRel context originalResult.world site.targetInvariant
         originalResult.state candidateResult.state ∧
       ExternalRuntimeFramesPreserved originalEvent candidateEvent
@@ -949,8 +1078,8 @@ theorem externalCallResultsRelated
     let originalResult := originalEnvironment.result eventIndex originalEvent
     let candidateResult := candidateEnvironment.result eventIndex candidateEvent
     originalResult.world = candidateResult.world ∧
-      machineCallResultConforms context contract originalEvent originalResult ∧
-      machineCallResultConforms context contract candidateEvent candidateResult ∧
+      machineCallResultConforms false context contract originalEvent originalResult ∧
+      machineCallResultConforms true context contract candidateEvent candidateResult ∧
       StateRel context originalResult.world site.targetInvariant
         originalResult.state candidateResult.state ∧
       ExternalRuntimeFramesPreserved originalEvent candidateEvent

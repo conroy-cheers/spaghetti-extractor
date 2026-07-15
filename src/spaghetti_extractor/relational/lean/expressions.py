@@ -248,6 +248,9 @@ def _lean_machine_import_call_contract(contract: dict[str, Any]) -> str:
         _lean_machine_call_memory_footprint(footprint)
         for footprint in contract.get("memory_footprints", [])
     )
+    world_effect = f".{contract['world_effect']}"
+    if contract["world_effect"] == "dynamicRangeRelease":
+        world_effect += f" {int(contract['world_effect_argument'])}"
     return (
         "{ "
         f"id := {int(contract['id'])}, "
@@ -258,7 +261,7 @@ def _lean_machine_import_call_contract(contract: dict[str, Any]) -> str:
         f"clobberedRegisters := [{clobbered}], "
         f"memoryEffect := .{contract['memory_effect']}, "
         f"memoryFootprints := [{footprints}], "
-        f"worldEffect := .{contract['world_effect']} "
+        f"worldEffect := {world_effect} "
         "}"
     )
 

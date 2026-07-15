@@ -1115,6 +1115,52 @@ class StageARelationalContractTests(StageARelationalTestBase):
             )
             self.assertEqual(normalized_cdecl[0]["stack_result_delta"], 0)
 
+            free_binary = replace(
+                binary,
+                imports=(StageAImport(
+                    dll="msvcrt.dll", symbol="free", ordinal=None,
+                    thunk_rva=0x3010,
+                ),),
+            )
+            release = {
+                "id": 9,
+                "import": {"dll": "msvcrt.dll", "symbol": "free"},
+                "abi_template": "pe32-cdecl-v1",
+                "argument_words": 1,
+                "memory_effect": "none",
+                "memory_footprints": [],
+                "world_effect": "dynamicRangeRelease",
+                "world_effect_argument": 0,
+            }
+            release_issues: list[dict] = []
+            normalized_release = _machine_import_call_contracts(
+                [release], free_binary, free_binary, release_issues
+            )
+            self.assertEqual(release_issues, [])
+            self.assertEqual(
+                normalized_release[0]["world_effect"], "dynamicRangeRelease"
+            )
+            self.assertEqual(normalized_release[0]["world_effect_argument"], 0)
+
+            for malformed_release in (
+                {key: value for key, value in release.items()
+                 if key != "world_effect_argument"},
+                {**release, "world_effect_argument": 1},
+                {**release, "world_effect": "none"},
+            ):
+                release_failure_issues: list[dict] = []
+                self.assertEqual(
+                    _machine_import_call_contracts(
+                        [malformed_release], free_binary, free_binary,
+                        release_failure_issues,
+                    ),
+                    [],
+                )
+                self.assertEqual(
+                    release_failure_issues[0]["category"],
+                    "machine_import_call_contract_invalid",
+                )
+
             malformed_cases = (
                 {**valid, "stack_argument_offsets": [2]},
                 {**valid, "preserved_registers": ["ebx"]},

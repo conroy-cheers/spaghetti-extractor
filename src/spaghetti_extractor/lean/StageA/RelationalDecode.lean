@@ -142,6 +142,7 @@ inductive MachineCallWorldEffect where
   | none
   | opaqueResources
   | dynamicRanges
+  | dynamicRangeRelease (argumentIndex : Nat)
   | tlsState
 deriving Repr, DecidableEq
 
@@ -200,7 +201,11 @@ def MachineImportCallContract.shapeValid
     (machineCallAbiRegisters.all fun register =>
       contract.preservedRegisters.contains register ||
         contract.clobberedRegisters.contains register) &&
-    contract.memoryShapeValid
+    contract.memoryShapeValid &&
+    match contract.worldEffect with
+    | .dynamicRangeRelease argumentIndex =>
+        argumentIndex < contract.stackArgumentOffsets.length
+    | _ => true
 
 def MachineImportCallContract.matchesImport
     (contract : MachineImportCallContract) (imported : PEImport) : Bool :=

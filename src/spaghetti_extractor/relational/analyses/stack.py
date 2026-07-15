@@ -1372,6 +1372,7 @@ def _attach_return_slot_contracts(
     for edge in edges:
         edge["return_slot_seed"] = None
         edge["return_slot_transfer_claims"] = []
+        edge["return_slot_frame_transfer_claims"] = []
         edge["return_slot_call_summary_claims"] = []
         push_claim = (
             edge.get("direct_call_push_claim")
@@ -1438,7 +1439,9 @@ def _attach_return_slot_contracts(
         seen: set[tuple[str, str, str, str]] = set()
         source_relations: list[dict[str, Any]] = []
         source_pairs: set[tuple[str, str]] = set()
-        for family in ("inputs", "outputs"):
+        for family in (
+            "inputs", "outputs", "runtime_frame_inputs", "runtime_frame_outputs",
+        ):
             for relation in relation_rows[source].get(family, []):
                 pair = (str(relation["original"]), str(relation["candidate"]))
                 if pair in source_pairs:
@@ -1537,7 +1540,9 @@ def _attach_return_slot_contracts(
             return []
         source_relations: list[dict[str, Any]] = []
         source_pairs: set[tuple[str, str]] = set()
-        for family in ("inputs", "outputs"):
+        for family in (
+            "inputs", "outputs", "runtime_frame_inputs", "runtime_frame_outputs",
+        ):
             for relation in relation_rows[source].get(family, []):
                 pair = (str(relation["original"]), str(relation["candidate"]))
                 if pair in source_pairs:
@@ -1948,6 +1953,7 @@ def _attach_return_slot_contracts(
             replayable_call_summaries += 1
 
     transfer_claim_count = 0
+    frame_transfer_claim_count = 0
     transfer_rule_count = 0
     external_transfer_rule_count = 0
     external_transfer_claim_count = 0
@@ -1981,18 +1987,43 @@ def _attach_return_slot_contracts(
             edge["return_slot_external_transfer_claims"]
         )
         claims = []
+        frame_claims = []
+        original = behaviors[source].get("original_ir") or {}
+        candidate = behaviors[source].get("candidate_ir") or {}
         for source_location in sorted(locations[source]):
+            original_write_witnesses = write_address_witnesses(
+                original, source_location[0], source_location[1]
+            )
+            candidate_write_witnesses = write_address_witnesses(
+                candidate, source_location[2], source_location[3]
+            )
             for target_location, original_witness, candidate_witness in \
                     transfer_witnesses(edge, source_location):
-                claims.append({
+                transfer_claim = {
                     "profile": "return_slot_affine_transfer_v2",
                     "source": location_payload(source_location),
                     "target": location_payload(target_location),
                     "original_output_witness": original_witness,
                     "candidate_output_witness": candidate_witness,
-                })
+                }
+                claims.append(transfer_claim)
+                if (
+                    original_write_witnesses is not None
+                    and candidate_write_witnesses is not None
+                ):
+                    frame_claims.append({
+                        "profile": "return_slot_frame_transfer_v1",
+                        "transfer": transfer_claim,
+                        "memory": {
+                            "offsets": location_payload(source_location),
+                            "original_write_witnesses": original_write_witnesses,
+                            "candidate_write_witnesses": candidate_write_witnesses,
+                        },
+                    })
         edge["return_slot_transfer_claims"] = claims
+        edge["return_slot_frame_transfer_claims"] = frame_claims
         transfer_claim_count += len(claims)
+        frame_transfer_claim_count += len(frame_claims)
 
     return_transfer_claim_count = 0
     return_transfer_rule_count = 0
@@ -2020,6 +2051,15 @@ def _attach_return_slot_contracts(
                 })
         row["return_slot_return_transfer_claims"] = claims
         return_transfer_claim_count += len(claims)
+
+    local_transfer_rule_count = 0
+    for region_index, row in enumerate(relation_rows):
+        row["return_slot_local_transfer_rules"] = behavior_transfer_rules(
+            region_index
+        )
+        local_transfer_rule_count += len(
+            row["return_slot_local_transfer_rules"]
+        )
 
     aligned_returns = 0
     partially_aligned_returns = 0
@@ -2095,11 +2135,13 @@ def _attach_return_slot_contracts(
         "iterations": total_iterations,
         "seed_edges": seed_edges,
         "transfer_claims": transfer_claim_count,
+        "frame_transfer_claims": frame_transfer_claim_count,
         "transfer_rules": transfer_rule_count,
         "external_transfer_rules": external_transfer_rule_count,
         "external_transfer_claims": external_transfer_claim_count,
         "return_transfer_claims": return_transfer_claim_count,
         "return_transfer_rules": return_transfer_rule_count,
+        "local_transfer_rules": local_transfer_rule_count,
         "regions_with_offsets": sum(bool(items) for items in locations),
         "overflow_regions": sorted(overflow_regions),
         "aligned_returns": aligned_returns,

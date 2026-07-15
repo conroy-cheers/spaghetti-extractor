@@ -1028,6 +1028,12 @@ def _write_relational_product_graph_modules(
                     f"theorem {candidate_normalized}EspGet : "
                     f"{candidate_normalized}.registers.get .esp = .inputReg .esp := "
                     "by decide",
+                    f"theorem {original_normalized}RegistersGet (register : Reg) : "
+                    f"{original_normalized}.registers.get register = .inputReg register := by\n"
+                    "  cases register <;> decide",
+                    f"theorem {candidate_normalized}RegistersGet (register : Reg) : "
+                    f"{candidate_normalized}.registers.get register = .inputReg register := by\n"
+                    "  cases register <;> decide",
                     f"def {claim_name} : ImmutableIndirectJumpTargetClaim := {{\n"
                     f"  targetId := {int(candidate['target_id'])}\n"
                     f"  originalAddress := {int(candidate['original_address'])}\n"

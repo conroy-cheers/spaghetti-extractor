@@ -10,6 +10,7 @@ from ...stage_binary import StageABinary, StageAInputError
 from ...util import sha256_bytes, write_json
 from ..analyses.external import (
     _external_call_site_candidates,
+    _register_offset_witness,
     _semantic_external_target_identity,
 )
 from ..analyses.registers import _target_shaped_register_output_claims
@@ -93,6 +94,16 @@ def _whole_program_acceptance_plan(
     decoded_control_by_node = {
         int(candidate["node_id"]): candidate
         for candidate in evidence.get("decoded_control_candidates", [])
+    }
+    external_thunk_by_source_continuation = {
+        (int(candidate["source_region_index"]),
+         int(candidate["continuation_target_id"])): candidate
+        for candidate in external_site_candidates
+        if candidate.get("site_kind") == "direct_import_thunk"
+    }
+    machine_contract_by_id = {
+        int(item["id"]): item
+        for item in contract.get("machine_import_call_contracts", [])
     }
     regions = contract["regions"]
     if not evidence.get("reachable_product_local_complete"):
@@ -285,6 +296,247 @@ def _whole_program_acceptance_plan(
                     "return_slot_external_transfer_rules", []
                 ),
             )
+
+        def word_offsets_disjoint(left: int, right: int) -> bool:
+            return all(
+                (left + left_byte) % 2**32
+                    != (right + right_byte) % 2**32
+                for left_byte in range(4)
+                for right_byte in range(4)
+            )
+
+        def write_witnesses(
+            behavior: dict[str, Any], register: str, frame_offset: int,
+        ) -> list[dict[str, Any]] | None:
+            witnesses = []
+            for write in behavior.get("writes") or []:
+                result = _register_offset_witness(
+                    write.get("address"), register
+                )
+                if result is None:
+                    return None
+                witness, write_offset = result
+                if not word_offsets_disjoint(frame_offset, int(write_offset)):
+                    return None
+                witnesses.append(witness)
+            return witnesses
+
+        def internal_transfer_claims(
+            source_node_id: int,
+            source_locations: tuple[tuple[str, int, str, int], ...],
+        ) -> list[dict[str, Any]] | None:
+            relation_row = register_relations.get("regions", [])[source_node_id]
+            local_rules = relation_row.get(
+                "return_slot_local_transfer_rules", []
+            )
+            original = behaviors[source_node_id].get("original_ir") or {}
+            candidate = behaviors[source_node_id].get("candidate_ir") or {}
+            claims = []
+            for source_location in source_locations:
+                original_writes = write_witnesses(
+                    original, source_location[0], source_location[1]
+                )
+                candidate_writes = write_witnesses(
+                    candidate, source_location[2], source_location[3]
+                )
+                if original_writes is None or candidate_writes is None:
+                    return None
+                candidates = []
+                for rule in local_rules:
+                    if (
+                        rule["original_source_register"] != source_location[0]
+                        or rule["candidate_source_register"] != source_location[2]
+                    ):
+                        continue
+                    target_location = (
+                        str(rule["original_target_register"]),
+                        (
+                            source_location[1] - int(rule["original_delta"])
+                        ) % 2**32,
+                        str(rule["candidate_target_register"]),
+                        (
+                            source_location[3] - int(rule["candidate_delta"])
+                        ) % 2**32,
+                    )
+                    candidates.append((target_location, {
+                        "profile": "return_slot_frame_transfer_v1",
+                        "transfer": {
+                            "profile": "return_slot_affine_transfer_v2",
+                            "source": location_payload(source_location),
+                            "target": location_payload(target_location),
+                            "original_output_witness": rule[
+                                "original_output_witness"
+                            ],
+                            "candidate_output_witness": rule[
+                                "candidate_output_witness"
+                            ],
+                        },
+                        "memory": {
+                            "offsets": location_payload(source_location),
+                            "original_write_witnesses": original_writes,
+                            "candidate_write_witnesses": candidate_writes,
+                        },
+                    }))
+                if not candidates:
+                    return None
+                claims.append(sorted(
+                    candidates,
+                    key=lambda item: location_rank(source_location, item[0]),
+                )[0][1])
+            return claims
+
+        def external_jump_transfer_claims(
+            source_node_id: int, continuation_target_id: int,
+            source_locations: tuple[tuple[str, int, str, int], ...],
+        ) -> list[dict[str, Any]] | None:
+            site = external_thunk_by_source_continuation.get(
+                (source_node_id, continuation_target_id)
+            )
+            if site is None:
+                block(
+                    "external_jump_runtime_site_missing",
+                    f"external jump {source_node_id}->{continuation_target_id} lacks "
+                    "a checked continuation-specific machine contract",
+                    "add the exact import ABI, argument, memory, and world-effect contract",
+                )
+                return None
+            contract_row = machine_contract_by_id.get(
+                int(site["machine_contract_id"])
+            )
+            if contract_row is None:
+                block(
+                    "external_jump_machine_contract_missing",
+                    f"external jump {source_node_id}->{continuation_target_id} "
+                    "references a missing machine contract",
+                    "regenerate the canonical machine-contract inventory",
+                )
+                return None
+            relation_row = register_relations.get("regions", [])[source_node_id]
+            local_rules = relation_row.get(
+                "return_slot_local_transfer_rules", []
+            )
+            original = behaviors[source_node_id].get("original_ir") or {}
+            candidate = behaviors[source_node_id].get("candidate_ir") or {}
+
+            claims = []
+            preserved = set(str(item) for item in contract_row[
+                "preserved_registers"
+            ])
+            for source_location in source_locations:
+                original_source_register, original_source_offset, \
+                    candidate_source_register, candidate_source_offset = \
+                    source_location
+                original_writes = write_witnesses(
+                    original, original_source_register, original_source_offset
+                )
+                candidate_writes = write_witnesses(
+                    candidate, candidate_source_register, candidate_source_offset
+                )
+                if original_writes is None or candidate_writes is None:
+                    return None
+                candidates = []
+                for rule in local_rules:
+                    if (
+                        rule["original_source_register"]
+                            != original_source_register
+                        or rule["candidate_source_register"]
+                            != candidate_source_register
+                    ):
+                        continue
+                    internal_location = (
+                        str(rule["original_target_register"]),
+                        (
+                            original_source_offset
+                            - int(rule["original_delta"])
+                        ) % 2**32,
+                        str(rule["candidate_target_register"]),
+                        (
+                            candidate_source_offset
+                            - int(rule["candidate_delta"])
+                        ) % 2**32,
+                    )
+                    boundary_location = (
+                        internal_location[0],
+                        (
+                            internal_location[1]
+                            - (4 if internal_location[0] == "esp" else 0)
+                        ) % 2**32,
+                        internal_location[2],
+                        (
+                            internal_location[3]
+                            - (4 if internal_location[2] == "esp" else 0)
+                        ) % 2**32,
+                    )
+                    if (
+                        boundary_location[0] == "esp"
+                        and boundary_location[2] == "esp"
+                    ):
+                        original_environment_delta = int(
+                            contract_row["stack_result_delta"]
+                        )
+                        candidate_environment_delta = int(
+                            contract_row["stack_result_delta"]
+                        )
+                    elif (
+                        boundary_location[0] in preserved
+                        and boundary_location[2] in preserved
+                    ):
+                        original_environment_delta = 0
+                        candidate_environment_delta = 0
+                    else:
+                        continue
+                    target_location = (
+                        boundary_location[0],
+                        (
+                            boundary_location[1]
+                            - original_environment_delta
+                        ) % 2**32,
+                        boundary_location[2],
+                        (
+                            boundary_location[3]
+                            - candidate_environment_delta
+                        ) % 2**32,
+                    )
+                    candidates.append((target_location, {
+                        "profile": "external_jump_return_slot_transfer_claim_v1",
+                        "machine_contract_id": int(contract_row["id"]),
+                        "source": location_payload(source_location),
+                        "internal_target": location_payload(internal_location),
+                        "boundary_target": location_payload(boundary_location),
+                        "target": location_payload(target_location),
+                        "internal_rule": {
+                            "original_source_register": original_source_register,
+                            "candidate_source_register": candidate_source_register,
+                            "original_target_register": internal_location[0],
+                            "candidate_target_register": internal_location[2],
+                            "original_output_witness": rule[
+                                "original_output_witness"
+                            ],
+                            "candidate_output_witness": rule[
+                                "candidate_output_witness"
+                            ],
+                            "original_delta": int(rule["original_delta"]),
+                            "candidate_delta": int(rule["candidate_delta"]),
+                        },
+                        "result_rule": {
+                            "source": location_payload(boundary_location),
+                            "target": location_payload(target_location),
+                            "original_delta": original_environment_delta,
+                            "candidate_delta": candidate_environment_delta,
+                        },
+                        "memory_claim": {
+                            "offsets": location_payload(source_location),
+                            "original_write_witnesses": original_writes,
+                            "candidate_write_witnesses": candidate_writes,
+                        },
+                    }))
+                if not candidates:
+                    return None
+                claims.append(sorted(
+                    candidates,
+                    key=lambda item: location_rank(source_location, item[0]),
+                )[0][1])
+            return claims
 
         pending: list[tuple[
             int, tuple[int, ...], tuple[tuple[str, int, str, int], ...],
@@ -544,16 +796,32 @@ def _whole_program_acceptance_plan(
                         control_incomplete = True
                         break
                 elif frame_operation == "external_pop":
-                    if len(frame_locations) != 1:
+                    active_location = frame_locations[0]
+                    if active_location != ("esp", 0, "esp", 0):
                         block(
-                            "nested_external_runtime_frame_preservation_pending",
-                            f"external jump {node_id}->{target_node_id} must preserve "
-                            f"{len(frame_locations) - 1} outer runtime frames",
-                            "prove the external footprint and result registers preserve each outer frame location",
+                            "external_jump_active_frame_location_unmet",
+                            f"external jump {node_id}->{target_node_id} has active "
+                            f"runtime frame at {active_location}",
+                            "propagate the decoded direct-call return slot to ESP+0",
                         )
                         control_incomplete = True
                         break
-                    successor_locations = ()
+                    outer_claims = external_jump_transfer_claims(
+                        node_id, target_id, frame_locations[1:]
+                    )
+                    if outer_claims is None:
+                        block(
+                            "external_jump_outer_frame_transfer_incomplete",
+                            f"external jump {node_id}->{target_node_id} cannot "
+                            f"transfer {len(frame_locations) - 1} outer runtime frames",
+                            "emit decoded thunk, return-slot normalization, write, and ABI witnesses",
+                        )
+                        control_incomplete = True
+                        break
+                    successor_locations = tuple(
+                        location_key(claim["target"])
+                        for claim in outer_claims
+                    )
                 else:
                     successor_locations = external_transfer_locations(
                         node_id, target_node_id, frame_locations
@@ -570,16 +838,6 @@ def _whole_program_acceptance_plan(
         int(candidate["edge_index"]): candidate
         for candidate in external_site_candidates
         if "edge_index" in candidate
-    }
-    external_thunk_by_source_continuation = {
-        (int(candidate["source_region_index"]),
-         int(candidate["continuation_target_id"])): candidate
-        for candidate in external_site_candidates
-        if candidate.get("site_kind") == "direct_import_thunk"
-    }
-    machine_contract_by_id = {
-        int(item["id"]): item
-        for item in contract.get("machine_import_call_contracts", [])
     }
     register_edge_by_source_target = {
         (int(edge["source_region_index"]), int(edge["target_region_index"])): edge
@@ -645,14 +903,15 @@ def _whole_program_acceptance_plan(
             relation_row = register_relations.get("regions", [])[node_id]
             control_rows = control_states_by_node.get(node_id, [])
             if all(outcome.get("op") == "external_jump" for outcome in outcomes):
-                if len(control_rows) != 1 or len(control_rows[0]["calls"]) != 1:
+                if len(control_rows) != 1 or not control_rows[0]["calls"]:
                     block(
                         "external_jump_control_profile_unmet",
-                        f"import-thunk node {node_id} does not have one checked caller frame",
+                        f"import-thunk node {node_id} does not have one checked active caller frame",
                         "generate continuation-specific external-jump cases for every allowed runtime frame",
                     )
                     continue
-                continuation_target_id = int(control_rows[0]["calls"][0])
+                control_row = control_rows[0]
+                continuation_target_id = int(control_row["calls"][0])
                 external_site = external_thunk_by_source_continuation.get(
                     (node_id, continuation_target_id)
                 )
@@ -663,11 +922,17 @@ def _whole_program_acceptance_plan(
                         "close the thunk identity, ABI argument, boundary, and continuation evidence",
                     )
                     continue
-                if len(control_rows[0]["frame_offsets"]) != 1:
+                frame_offsets = control_row["frame_offsets"]
+                if (
+                    len(frame_offsets) != len(control_row["calls"])
+                    or not frame_offsets
+                    or location_key(frame_offsets[0])
+                        != ("esp", 0, "esp", 0)
+                ):
                     block(
                         "external_jump_frame_offset_missing",
-                        f"import-thunk node {node_id} lacks one checked return-slot offset",
-                        "propagate the caller return slot into the thunk control state",
+                        f"import-thunk node {node_id} lacks a checked active ESP+0 return slot",
+                        "propagate every caller return slot into the thunk control state",
                     )
                     continue
                 target_node_id = next(
@@ -694,12 +959,41 @@ def _whole_program_acceptance_plan(
                         "declare one complete machine-level import contract",
                     )
                     continue
+                outer_claims = external_jump_transfer_claims(
+                    node_id,
+                    continuation_target_id,
+                    tuple(location_key(item) for item in frame_offsets[1:]),
+                )
+                if outer_claims is None:
+                    block(
+                        "external_jump_outer_frame_transfer_incomplete",
+                        f"import-thunk node {node_id} cannot transfer every outer runtime frame",
+                        "emit decoded thunk, normalization, memory, and ABI transfer claims",
+                    )
+                    continue
+                target_offsets = [
+                    claim["target"] for claim in outer_claims
+                ]
+                target_control_rows = [
+                    row for row in control_states_by_node.get(target_node_id, [])
+                    if row["calls"] == control_row["calls"][1:]
+                    and row["frame_offsets"] == target_offsets
+                ]
+                if len(target_control_rows) != 1:
+                    block(
+                        "external_jump_target_control_state_missing",
+                        f"import-thunk node {node_id} has no unique checked outer-frame successor",
+                        "regenerate rooted control closure from the checked thunk transfers",
+                    )
+                    continue
                 node_steps.append({
                     "kind": "external_jump",
                     "node_id": node_id,
                     "region_index": node_id,
                     "target_id": target_id,
-                    "control_state": control_rows[0],
+                    "control_state": control_row,
+                    "target_control_state": target_control_rows[0],
+                    "return_slot_external_jump_transfer_claims": outer_claims,
                     "target_node_id": target_node_id,
                     "target_region_index": target_node_id,
                     "target_target_id": continuation_target_id,
@@ -953,18 +1247,64 @@ def _whole_program_acceptance_plan(
                     direct_call_claim is None
                     or any(int(outcome.get("continuation", -1)) != continuation for outcome in outcomes)
                     or len(control_rows) != 1
-                    or control_rows[0]["calls"]
-                    or control_rows[0]["frame_offsets"]
                 ):
                     block(
                         "direct_call_control_profile_unmet",
-                        f"call node {node_id} lacks a top-level checked runtime-frame seed",
-                        "close the call push and finite control-state evidence",
+                        f"call node {node_id} lacks a unique checked runtime-frame seed",
+                        "close the call push and finite rooted control-state evidence",
                     )
                     continue
-                step["control_state"] = control_rows[0]
+                control_row = control_rows[0]
+                source_locations = tuple(
+                    location_key(item) for item in control_row["frame_offsets"]
+                )
+                selected_claims = internal_transfer_claims(
+                    node_id, source_locations
+                )
+                if selected_claims is None:
+                    block(
+                        "direct_call_outer_frame_transfer_incomplete",
+                        f"call node {node_id} lacks a checked register/memory "
+                        "transfer for every live outer runtime frame",
+                        "emit affine register and call-push write-disjointness witnesses",
+                    )
+                    continue
+                selected_targets = [
+                    location_key(claim["transfer"]["target"])
+                    for claim in selected_claims
+                ]
+                target_control_rows = [
+                    row for row in control_states_by_node.get(target_node_id, [])
+                    if row["calls"] == [
+                        continuation, *control_row["calls"]
+                    ]
+                    and tuple(
+                        location_key(item) for item in row["frame_offsets"]
+                    ) == (("esp", 0, "esp", 0), *selected_targets)
+                ]
+                if len(target_control_rows) != 1:
+                    block(
+                        "direct_call_target_control_state_missing",
+                        f"call node {node_id} has no unique checked successor "
+                        "control state for its new and transferred runtime frames",
+                        "regenerate rooted control closure from the checked call transfer",
+                    )
+                    continue
+                continuation_node_id = node_by_target.get(continuation)
+                if continuation_node_id is None:
+                    block(
+                        "direct_call_continuation_unmapped",
+                        f"call node {node_id} continuation {continuation} has no "
+                        "canonical product node",
+                        "close the decoded continuation mapping frontier",
+                    )
+                    continue
+                step["control_state"] = control_row
+                step["target_control_state"] = target_control_rows[0]
                 step["continuation_target_id"] = continuation
+                step["continuation_node_id"] = continuation_node_id
                 step["direct_call_push_claim"] = direct_call_claim
+                step["return_slot_frame_transfer_claims"] = selected_claims
                 step["source_stack_window"] = segment["source_stack_window"]
                 step["stack_amount"] = int(segment["stack_amount"])
                 has_internal_call = True
@@ -1031,6 +1371,52 @@ def _whole_program_acceptance_plan(
                 step["external_site"] = external_site
                 step["decoded_import"] = outcomes[0].get("import")
                 has_external_call = True
+            elif jump_profile:
+                control_rows = control_states_by_node.get(node_id, [])
+                if len(control_rows) != 1:
+                    block(
+                        "jump_control_profile_ambiguous",
+                        f"jump node {node_id} has {len(control_rows)} rooted control states",
+                        "split the node theorem into one checked case per rooted control state",
+                    )
+                    continue
+                control_row = control_rows[0]
+                source_locations = tuple(
+                    location_key(item) for item in control_row["frame_offsets"]
+                )
+                selected_claims = internal_transfer_claims(
+                    node_id, source_locations
+                )
+                if selected_claims is None:
+                    block(
+                        "jump_runtime_frame_transfer_incomplete",
+                        f"jump node {node_id} lacks a checked register/memory "
+                        "transfer for every live runtime frame",
+                        "emit affine register and write-disjointness witnesses",
+                    )
+                    continue
+                selected_targets = [
+                    location_key(claim["transfer"]["target"])
+                    for claim in selected_claims
+                ]
+                target_control_rows = [
+                    row for row in control_states_by_node.get(target_node_id, [])
+                    if row["calls"] == control_row["calls"]
+                    and tuple(
+                        location_key(item) for item in row["frame_offsets"]
+                    ) == tuple(selected_targets)
+                ]
+                if len(target_control_rows) != 1:
+                    block(
+                        "jump_target_control_state_missing",
+                        f"jump node {node_id} has no unique checked successor "
+                        "control state for its transferred runtime frames",
+                        "regenerate rooted control closure from the checked transfer",
+                    )
+                    continue
+                step["control_state"] = control_row
+                step["target_control_state"] = target_control_rows[0]
+                step["return_slot_frame_transfer_claims"] = selected_claims
             elif indirect_jump_profile:
                 step["decoded_control"] = {
                     **decoded_control,
@@ -1306,6 +1692,79 @@ def _lean_external_return_slot_transfer_claim(claim: dict[str, Any]) -> str:
         + f", candidateWrites := [{candidate_writes}] }} }}"
     )
 
+def _lean_external_jump_return_slot_transfer_claim(
+    claim: dict[str, Any],
+) -> str:
+    internal = claim["internal_rule"]
+    result = claim["result_rule"]
+    memory = claim["memory_claim"]
+    original_writes = ", ".join(
+        _lean_register_offset_witness(witness)
+        for witness in memory["original_write_witnesses"]
+    )
+    candidate_writes = ", ".join(
+        _lean_register_offset_witness(witness)
+        for witness in memory["candidate_write_witnesses"]
+    )
+    return (
+        "{ source := " + _lean_return_slot_offset_pair(claim["source"])
+        + ", internalTarget := "
+        + _lean_return_slot_offset_pair(claim["internal_target"])
+        + ", boundaryTarget := "
+        + _lean_return_slot_offset_pair(claim["boundary_target"])
+        + ", internalRule := { originalSourceRegister := ."
+        + str(internal["original_source_register"])
+        + ", candidateSourceRegister := ."
+        + str(internal["candidate_source_register"])
+        + ", originalTargetRegister := ."
+        + str(internal["original_target_register"])
+        + ", candidateTargetRegister := ."
+        + str(internal["candidate_target_register"])
+        + ", originalOutput := "
+        + _lean_register_offset_witness(internal["original_output_witness"])
+        + ", candidateOutput := "
+        + _lean_register_offset_witness(internal["candidate_output_witness"])
+        + ", originalDelta := BitVec.ofNat 32 "
+        + str(int(internal["original_delta"]))
+        + ", candidateDelta := BitVec.ofNat 32 "
+        + str(int(internal["candidate_delta"]))
+        + " }, resultRule := { source := "
+        + _lean_return_slot_offset_pair(result["source"])
+        + ", target := " + _lean_return_slot_offset_pair(result["target"])
+        + ", originalDelta := " + str(int(result["original_delta"]))
+        + ", candidateDelta := " + str(int(result["candidate_delta"]))
+        + " }, memory := { offsets := "
+        + _lean_return_slot_offset_pair(memory["offsets"])
+        + f", originalWrites := [{original_writes}]"
+        + f", candidateWrites := [{candidate_writes}] }} }}"
+    )
+
+
+def _lean_return_slot_frame_transfer_claim(claim: dict[str, Any]) -> str:
+    transfer = claim["transfer"]
+    memory = claim["memory"]
+    original_writes = ", ".join(
+        _lean_register_offset_witness(witness)
+        for witness in memory["original_write_witnesses"]
+    )
+    candidate_writes = ", ".join(
+        _lean_register_offset_witness(witness)
+        for witness in memory["candidate_write_witnesses"]
+    )
+    return (
+        "{ transfer := { source := "
+        + _lean_return_slot_offset_pair(transfer["source"])
+        + ", target := " + _lean_return_slot_offset_pair(transfer["target"])
+        + ", originalOutput := "
+        + _lean_register_offset_witness(transfer["original_output_witness"])
+        + ", candidateOutput := "
+        + _lean_register_offset_witness(transfer["candidate_output_witness"])
+        + " }, memory := { offsets := "
+        + _lean_return_slot_offset_pair(memory["offsets"])
+        + f", originalWrites := [{original_writes}]"
+        + f", candidateWrites := [{candidate_writes}] }} }}"
+    )
+
 def _lean_acceptance_running_target(
     *, node_id: int, region_index: int, edge: dict[str, Any],
     frames: str = "[]", calls: str = "[]", frame_offsets: str = "[]",
@@ -1420,6 +1879,24 @@ def _lean_acceptance_running_node(
         stack_amount = int(step["stack_amount"])
         stack_amount_twos_complement = 2**32 - stack_amount
         source_window = _lean_stack_window(step["source_stack_window"])
+        control_calls = [int(item) for item in step["control_state"]["calls"]]
+        source_calls_literal = "[" + ", ".join(
+            str(item) for item in control_calls
+        ) + "]"
+        source_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_pair(item)
+            for item in step["control_state"]["frame_offsets"]
+        ) + "]"
+        frame_claims = step["return_slot_frame_transfer_claims"]
+        frame_claims_literal = "[" + ", ".join(
+            _lean_return_slot_frame_transfer_claim(item)
+            for item in frame_claims
+        ) + "]"
+        target_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_pair(item["transfer"]["target"])
+            for item in frame_claims
+        ) + "]"
+        continuation_node_id = int(step["continuation_node_id"])
         if _normalized_behavior_fast_path(
             regions[region_index], behaviors[region_index]
         ):
@@ -1434,7 +1911,13 @@ def _lean_acceptance_running_node(
             )
         return (
             prefix
-            + empty_control
+            + f"  have controlShape : calls = {source_calls_literal} \u2227\n"
+            f"      frameOffsets = {source_offsets_literal} := by\n"
+            "    simpa [productControlProfile, ProductControlProfile.Allows] using\n"
+            "      controlAllowed\n"
+            "  rcases controlShape with ⟨rfl, rfl⟩\n"
+            f"  let outerFrameClaims : List ReturnSlotFrameTransferClaim :=\n"
+            f"    {frame_claims_literal}\n"
             + f"  let sourceWindow : StackWindowPair := {source_window}\n"
             f"  have stackAddressRewrite (value : Word) :\n"
             f"      value + BitVec.ofNat 32 {stack_amount_twos_complement} =\n"
@@ -1516,26 +1999,42 @@ def _lean_acceptance_running_node(
             f"      candidateReturnAddress := BitVec.ofNat 32 {candidate_return}\n"
             "    } = true\n"
             "    decide\n"
+            "  have outerStackHolds : RelationalRuntimeCallStackHolds\n"
+            "      staticProofContext\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState\n"
+            "        originalState)\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            f"        candidateState) frames {source_calls_literal}\n"
+            f"      {target_offsets_literal} := by\n"
+            "    exact RelationalRuntimeCallStackHolds.afterInternal\n"
+            f"      staticProofContext {original_behavior} {candidate_behavior}\n"
+            f"      outerFrameClaims frames {source_calls_literal} originalState\n"
+            "      candidateState (by decide)\n"
+            "      (by simpa [outerFrameClaims] using stackHolds)\n"
             "  have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
             f"      (({original_behavior}.eval originalState).nextMachineState\n"
             "        originalState)\n"
             f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
-            f"        candidateState) [runtimeFrame] [{continuation}]\n"
-            "      [ReturnSlotOffsetPair.zero] := by\n"
+            f"        candidateState) (runtimeFrame :: frames)\n"
+            f"      ({continuation} :: {source_calls_literal})\n"
+            f"      (ReturnSlotOffsetPair.zero :: {target_offsets_literal}) := by\n"
             "    simp only [RelationalRuntimeCallStackHolds]\n"
             "    exact ⟨rfl, frameValid, frameResolves, frameMemory, frameOffsetsHold,\n"
-            "      True.intro⟩\n"
+            "      outerStackHolds⟩\n"
             + _lean_acceptance_running_target(
                 node_id=node_id,
                 region_index=region_index,
                 edge=edge,
-                frames="[runtimeFrame]",
-                calls=f"[{continuation}]",
-                frame_offsets="[ReturnSlotOffsetPair.zero]",
+                frames="runtimeFrame :: frames",
+                calls=f"{continuation} :: {source_calls_literal}",
+                frame_offsets=(
+                    "ReturnSlotOffsetPair.zero :: " + target_offsets_literal
+                ),
                 stack_targets_proof=(
                     "(by simp only [RelationalRuntimeCallTargetsReachable]; "
-                    f"exact ⟨⟨{continuation}, relationalProductGraph.nodes[{continuation}], "
-                    "by decide, by decide, by decide⟩, True.intro⟩)"
+                    f"exact ⟨⟨{continuation_node_id}, "
+                    f"relationalProductGraph.nodes[{continuation_node_id}], "
+                    "by decide, by decide, by decide⟩, stackTargetsReachable⟩)"
                 ),
             )
         )
@@ -1743,9 +2242,29 @@ def _lean_acceptance_running_node(
             "dll": decoded_import_identity[0],
             decoded_import_identity[1]: decoded_import_identity[2],
         })
-        frame_offset = _lean_return_slot_offset_pair(
-            step["control_state"]["frame_offsets"][0]
-        )
+        control_calls = [
+            int(call) for call in step["control_state"]["calls"]
+        ]
+        outer_calls = control_calls[1:]
+        calls_literal = "[" + ", ".join(
+            str(call) for call in control_calls
+        ) + "]"
+        outer_calls_literal = "[" + ", ".join(
+            str(call) for call in outer_calls
+        ) + "]"
+        source_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_pair(offset)
+            for offset in step["control_state"]["frame_offsets"]
+        ) + "]"
+        outer_claims = step["return_slot_external_jump_transfer_claims"]
+        outer_claims_literal = "[" + ", ".join(
+            _lean_external_jump_return_slot_transfer_claim(claim)
+            for claim in outer_claims
+        ) + "]"
+        target_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_pair(claim["target"])
+            for claim in outer_claims
+        ) + "]"
         original_arguments = ", ".join(
             f"({_lean_semantic_expr(argument)}).eval originalState"
             for argument in site.get("argument_expressions", [])
@@ -1761,20 +2280,17 @@ def _lean_acceptance_running_node(
         }
         return (
             prefix
-            + f"  have controlShape : calls = [{continuation}] ∧ "
-            f"frameOffsets = [{frame_offset}] := by\n"
+            + f"  have controlShape : calls = {calls_literal} ∧ "
+            f"frameOffsets = {source_offsets_literal} := by\n"
             "    simpa [productControlProfile, ProductControlProfile.Allows] using\n"
             "      controlAllowed\n"
             "  rcases controlShape with ⟨rfl, rfl⟩\n"
             "  cases frames with\n"
             "  | nil => simp [RelationalRuntimeCallStackHolds] at stackHolds\n"
-            "  | cons frame tail =>\n"
-            "    have tailEmpty : tail = [] := by\n"
-            "      cases tail with\n"
-            "      | nil => rfl\n"
-            "      | cons next rest =>\n"
-            "          simp [RelationalRuntimeCallStackHolds] at stackHolds\n"
-            "    subst tail\n"
+            "  | cons frame outerFrames =>\n"
+            "    simp only [RelationalRuntimeCallStackHolds] at stackHolds\n"
+            f"    let outerFrameClaims : List ExternalJumpReturnSlotTransferClaim := "
+            f"{outer_claims_literal}\n"
             f"    have originalBehaviorCommon : {original_behavior} =\n"
             f"        externalJumpSite{site_id}OriginalNormalized := by decide\n"
             f"    have candidateBehaviorCommon : {candidate_behavior} =\n"
@@ -1836,7 +2352,7 @@ def _lean_acceptance_running_node(
             "    dsimp only at results\n"
             "    rcases results with\n"
             "      ⟨resultWorldsEqual, _originalConforms, _candidateConforms,\n"
-            "        nextStatesRelated, _framesPreserved⟩\n"
+            "        nextStatesRelated, framesPreserved⟩\n"
             "    have argumentsRelated := boundaryKnown.2.2.2.2.2.2\n"
             "    have observationRelated : worldRelationalObservationsRelated\n"
             "        staticProofContext\n"
@@ -1856,7 +2372,26 @@ def _lean_acceptance_running_node(
             "    have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
             "        (originalEnvironment.result eventIndex originalEvent).state\n"
             "        (candidateEnvironment.result eventIndex candidateEvent).state\n"
-            "        [] [] [] := by simp [RelationalRuntimeCallStackHolds]\n"
+            f"        outerFrames {outer_calls_literal} {target_offsets_literal} := by\n"
+            "      exact RelationalRuntimeCallStackHolds.afterExternalJump\n"
+            f"        staticProofContext {original_behavior} {candidate_behavior}\n"
+            f"        externalJumpSite{site_id}MachineContract outerFrameClaims\n"
+            f"        outerFrames {outer_calls_literal} originalState candidateState\n"
+            "        (originalEnvironment.result eventIndex originalEvent).state\n"
+            "        (candidateEnvironment.result eventIndex candidateEvent).state\n"
+            "        (by decide)\n"
+            "        (by simpa [outerFrameClaims] using stackHolds.2.2.2.2.2)\n"
+            "        (by simpa [originalEvent] using _originalConforms.1)\n"
+            "        (by simpa [candidateEvent] using _candidateConforms.1)\n"
+            "        (by\n"
+            "          intro outerFrame frameHolds\n"
+            "          exact framesPreserved outerFrame (by\n"
+            "            simpa [originalEvent, candidateEvent] using frameHolds))\n"
+            "    have outerTargetsReachable : RelationalRuntimeCallTargetsReachable\n"
+            f"        relationalProductGraph relationalProductReachabilityEvidence\n"
+            f"        {outer_calls_literal} := by\n"
+            "      simpa only [RelationalRuntimeCallTargetsReachable] using\n"
+            "        stackTargetsReachable.2\n"
             "    rw [originalBehaviorCommon, candidateBehaviorCommon]\n"
             "    simp only [originalWorldProgram, candidateWorldProgram]\n"
             f"    have importedCommon : ({decoded_import_literal} : ExternalTarget) =\n"
@@ -1869,6 +2404,10 @@ def _lean_acceptance_running_node(
                     node_id=node_id,
                     region_index=region_index,
                     edge=target_edge,
+                    frames="outerFrames",
+                    calls=outer_calls_literal,
+                    frame_offsets=target_offsets_literal,
+                    stack_targets_proof="outerTargetsReachable",
                     observation_proof="observationRelated",
                     world_equal_proof="resultWorldsEqual",
                 ).splitlines()
@@ -2244,18 +2783,20 @@ def _lean_acceptance_running_node(
             f"      {candidate_product_behavior}WritesEmpty, evalNormalizedWrites,\n"
             "      applyConcreteWrites])\n"
             "    (by\n"
+            "      intro register\n"
             "      change (evalNormalizedRegisters originalState\n"
-            f"        {original_product_behavior}.registers).get .esp =\n"
-            "          originalState.registers.get .esp\n"
-            f"      rw [evalNormalizedRegisters_get, "
-            f"{original_product_behavior}EspGet]\n"
+            f"        {original_product_behavior}.registers).get register =\n"
+            "          originalState.registers.get register\n"
+            f"      rw [evalNormalizedRegisters_get,\n"
+            f"        {original_product_behavior}RegistersGet]\n"
             "      rfl)\n"
             "    (by\n"
+            "      intro register\n"
             "      change (evalNormalizedRegisters candidateState\n"
-            f"        {candidate_product_behavior}.registers).get .esp =\n"
-            "          candidateState.registers.get .esp\n"
-            f"      rw [evalNormalizedRegisters_get, "
-            f"{candidate_product_behavior}EspGet]\n"
+            f"        {candidate_product_behavior}.registers).get register =\n"
+            "          candidateState.registers.get register\n"
+            f"      rw [evalNormalizedRegisters_get,\n"
+            f"        {candidate_product_behavior}RegistersGet]\n"
             "      rfl)\n"
             "  have targetControlAllowed : productControlProfile.Allows\n"
             f"      {int(edge['target_node_id'])} calls frameOffsets = true := by\n"
@@ -2281,9 +2822,32 @@ def _lean_acceptance_running_node(
         edge = step["edges"][0]
         edge_id = int(edge["edge_id"])
         target_region_index = int(edge["target_region_index"])
+        control_calls = [int(item) for item in step["control_state"]["calls"]]
+        calls_literal = "[" + ", ".join(
+            str(item) for item in control_calls
+        ) + "]"
+        source_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_pair(item)
+            for item in step["control_state"]["frame_offsets"]
+        ) + "]"
+        frame_claims = step["return_slot_frame_transfer_claims"]
+        frame_claims_literal = "[" + ", ".join(
+            _lean_return_slot_frame_transfer_claim(item)
+            for item in frame_claims
+        ) + "]"
+        target_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_pair(item["transfer"]["target"])
+            for item in frame_claims
+        ) + "]"
         return (
             prefix
-            + empty_control
+            + f"  have controlShape : calls = {calls_literal} ∧\n"
+            f"      frameOffsets = {source_offsets_literal} := by\n"
+            "    simpa [productControlProfile, ProductControlProfile.Allows] using\n"
+            "      controlAllowed\n"
+            "  rcases controlShape with ⟨rfl, rfl⟩\n"
+            f"  let frameClaims : List ReturnSlotFrameTransferClaim :=\n"
+            f"    {frame_claims_literal}\n"
             + f"  have originalBehaviorSegment : {original_behavior} =\n"
             f"      segmentRefinementEdge{edge_id}OriginalNormalizedBehavior := by decide\n"
             f"  have candidateBehaviorSegment : {candidate_behavior} =\n"
@@ -2302,10 +2866,25 @@ def _lean_acceptance_running_node(
             "        candidateState) := by\n"
             "    simpa [originalBehaviorSegment, candidateBehaviorSegment] using\n"
             "      transitioned.2.2.2\n"
-            + _lean_acceptance_empty_stack(node_id)
-            + "\n"
+            "  have stackHoldsNext : RelationalRuntimeCallStackHolds\n"
+            "      staticProofContext\n"
+            f"      (({original_behavior}.eval originalState).nextMachineState\n"
+            "        originalState)\n"
+            f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            f"        candidateState) frames {calls_literal}\n"
+            f"      {target_offsets_literal} := by\n"
+            "    exact RelationalRuntimeCallStackHolds.afterInternal\n"
+            f"      staticProofContext {original_behavior} {candidate_behavior}\n"
+            f"      frameClaims frames {calls_literal} originalState candidateState\n"
+            "      (by decide) (by simpa [frameClaims] using stackHolds)\n"
             + _lean_acceptance_running_target(
-                node_id=node_id, region_index=region_index, edge=edge
+                node_id=node_id,
+                region_index=region_index,
+                edge=edge,
+                frames="frames",
+                calls=calls_literal,
+                frame_offsets=target_offsets_literal,
+                stack_targets_proof="stackTargetsReachable",
             )
         )
 

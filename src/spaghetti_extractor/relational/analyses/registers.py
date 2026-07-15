@@ -13,6 +13,7 @@ from ..extraction import (
 from ..model import _semantic_constant_bool, _semantic_hash
 from ..schema import STAGE_A_RELATIONAL_MODEL_ID
 from .control import _constant_read32_address
+from .external import _semantic_external_target_identity
 from .invariants import _semantic_edges
 from .segments import _semantic_expr_registers
 from .stack import (
@@ -633,7 +634,9 @@ def _synthesize_register_relations(
     refined = json.loads(json.dumps(contract))
     regions = refined["regions"]
     region_by_id = {int(region["numeric_id"]): index for index, region in enumerate(regions)}
-    predecessors: list[list[tuple[int, bool, str]]] = [[] for _ in regions]
+    predecessors: list[
+        list[tuple[int, bool, str, frozenset[str]]]
+    ] = [[] for _ in regions]
     edges: list[dict[str, Any]] = []
     pending_indirect_edges: list[dict[str, Any]] = []
     pending_indirect_jump_edges: list[dict[str, Any]] = []
@@ -668,7 +671,10 @@ def _synthesize_register_relations(
                 continue
             barrier = bool(original_edge.get("environment_barrier"))
             predecessors[target_index].append(
-                (source_index, barrier, str(original_edge["kind"]))
+                (
+                    source_index, barrier, str(original_edge["kind"]),
+                    _PE32_EXTERNAL_PRESERVED_REGISTERS,
+                )
             )
             edges.append({
                 "source_region_index": source_index,
@@ -689,7 +695,10 @@ def _synthesize_register_relations(
                 else "call"
             )
             predecessors[target_index].append(
-                (source_index, False, indirect_kind)
+                (
+                    source_index, False, indirect_kind,
+                    _PE32_EXTERNAL_PRESERVED_REGISTERS,
+                )
             )
             pending_edge = {
                 "source_region_index": source_index,
@@ -710,7 +719,10 @@ def _synthesize_register_relations(
         if import_call_candidate is not None:
             target_index = int(import_call_candidate["continuation_region_index"])
             predecessors[target_index].append(
-                (source_index, True, "external_call")
+                (
+                    source_index, True, "external_call",
+                    _PE32_EXTERNAL_PRESERVED_REGISTERS,
+                )
             )
             pending_import_edges.append({
                 "source_region_index": source_index,
@@ -723,10 +735,71 @@ def _synthesize_register_relations(
                 "indirect_target_profile": import_call_candidate["profile"],
                 "import": import_call_candidate["import"],
             })
+    contracts_by_target: dict[
+        tuple[str, str, str | int], list[dict[str, Any]]
+    ] = {}
+    for item in refined.get("machine_import_call_contracts", []):
+        imported = item.get("import") or {}
+        identity = (
+            str(imported.get("dll", "")).lower(),
+            "symbol" if "symbol" in imported else "ordinal",
+            imported.get("symbol", imported.get("ordinal")),
+        )
+        contracts_by_target.setdefault(identity, []).append(item)
+    for edge in edges:
+        if edge.get("kind") != "call":
+            continue
+        caller_index = int(edge["source_region_index"])
+        thunk_index = int(edge["target_region_index"])
+        caller_outcome = behaviors[caller_index]["original_ir"].get("outcome") or {}
+        candidate_caller_outcome = (
+            behaviors[caller_index]["candidate_ir"].get("outcome") or {}
+        )
+        thunk_outcome = behaviors[thunk_index]["original_ir"].get("outcome") or {}
+        candidate_thunk_outcome = (
+            behaviors[thunk_index]["candidate_ir"].get("outcome") or {}
+        )
+        if (
+            caller_outcome.get("op") != "call"
+            or candidate_caller_outcome.get("op") != "call"
+            or caller_outcome.get("continuation")
+                != candidate_caller_outcome.get("continuation")
+            or thunk_outcome.get("op") != "external_jump"
+            or candidate_thunk_outcome.get("op") != "external_jump"
+        ):
+            continue
+        original_identity = _semantic_external_target_identity(
+            thunk_outcome.get("import")
+        )
+        candidate_identity = _semantic_external_target_identity(
+            candidate_thunk_outcome.get("import")
+        )
+        contracts = (
+            contracts_by_target.get(original_identity, [])
+            if original_identity is not None
+            and original_identity == candidate_identity else []
+        )
+        continuation = caller_outcome.get("continuation")
+        continuation_index = (
+            region_by_id.get(int(continuation))
+            if isinstance(continuation, int) else None
+        )
+        if len(contracts) != 1 or continuation_index is None:
+            continue
+        predecessors[continuation_index].append((
+            thunk_index,
+            True,
+            "external_jump_return",
+            frozenset(
+                {str(item) for item in contracts[0]["preserved_registers"]}
+                | {"esp"}
+            ),
+        ))
+
     # A return destination is selected by the checked runtime call frame, not by
-    # untrusted function recovery.  Return continuations therefore participate
-    # in rooted reachability but are not submitted as decoded outgoing edges of
-    # the return instruction.
+    # untrusted function recovery. Return continuations therefore participate
+    # in rooted reachability but remain absent from decoded predecessor edges;
+    # Lean checks the concrete runtime frame at composition time.
 
     # Keep existing direct edge IDs stable when a new checked indirect-target
     # profile becomes available. Product-graph arrays remain contiguous, while
@@ -794,10 +867,10 @@ def _synthesize_register_relations(
                 candidates: list[str] = []
                 if region.get("root"):
                     candidates.append("exact")
-                for source_index, barrier, _ in incoming:
+                for source_index, barrier, _, preserved in incoming:
                     candidates.append(
                         next_outputs[source_index][register]
-                        if not barrier or register in _PE32_EXTERNAL_PRESERVED_REGISTERS
+                        if not barrier or register in preserved
                         else "related_word"
                     )
                 if not candidates:
@@ -923,6 +996,12 @@ def _synthesize_register_relations(
             "region_index": region_index,
             "inputs": region["input_relations"],
             "outputs": region["output_relations"],
+            "runtime_frame_inputs": json.loads(json.dumps(
+                region["input_relations"]
+            )),
+            "runtime_frame_outputs": json.loads(json.dumps(
+                region["output_relations"]
+            )),
             "exact_output_claims": claims,
             "output_claims": output_claims,
             "return_pop_claim": _return_pop_claim(
@@ -943,7 +1022,9 @@ def _synthesize_register_relations(
                 and bool(region["output_relations"])
             ),
             "predecessor_count": len(predecessors[region_index]),
-            "environment_barrier": any(barrier for _, barrier, _ in predecessors[region_index]),
+            "environment_barrier": any(
+                barrier for _, barrier, _, _ in predecessors[region_index]
+            ),
         })
 
     unsupported_edges = 0

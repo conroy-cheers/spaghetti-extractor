@@ -1414,6 +1414,10 @@ def _machine_import_call_contracts(
             clobbered = item.get("clobbered_registers") if isinstance(item, dict) else None
         memory_effect = item.get("memory_effect") if isinstance(item, dict) else None
         world_effect = item.get("world_effect") if isinstance(item, dict) else None
+        world_effect_argument = (
+            _integer(item.get("world_effect_argument"))
+            if isinstance(item, dict) else None
+        )
         import_valid = (
             isinstance(dll, str)
             and bool(dll)
@@ -1542,6 +1546,17 @@ def _machine_import_call_contracts(
             or memory_effect not in MACHINE_CALL_MEMORY_EFFECTS
             or not memory_shape_valid
             or world_effect not in MACHINE_CALL_WORLD_EFFECTS
+            or (
+                world_effect == "dynamicRangeRelease"
+                and (
+                    world_effect_argument is None
+                    or not 0 <= world_effect_argument < len(offsets)
+                )
+            )
+            or (
+                world_effect != "dynamicRangeRelease"
+                and world_effect_argument is not None
+            )
         )
         if malformed:
             issues.append({
@@ -1587,6 +1602,8 @@ def _machine_import_call_contracts(
             "memory_footprints": footprints,
             "world_effect": str(world_effect),
         }
+        if world_effect_argument is not None:
+            normalized["world_effect_argument"] = world_effect_argument
         result.append(normalized)
     return sorted(result, key=lambda contract: contract["id"])
 

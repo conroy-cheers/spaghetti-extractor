@@ -2,6 +2,87 @@ from tests.stage_a_relational_support import *
 
 
 class StageARelationalLeanTests(StageARelationalTestBase):
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for world-effect proofs")
+    def test_dynamic_range_release_world_effect_is_checked_by_lean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lean_dir = Path(temporary)
+            stage_a = lean_dir / "StageA"
+            stage_a.mkdir()
+            source_root = (
+                Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
+            )
+            for module in RELATIONAL_KERNEL_MODULES:
+                shutil.copyfile(
+                    source_root / f"{module}.lean",
+                    stage_a / f"{module}.lean",
+                )
+            (stage_a / "DynamicRangeRelease.lean").write_text(
+                """import StageA.RelationalEnvironment
+
+namespace StageA.DynamicRangeRelease
+
+open StageA.Formal StageA.Relational
+
+def releasedRange : DynamicAddressRangePair := {
+  id := 7
+  originalBase := BitVec.ofNat 32 4096
+  candidateBase := BitVec.ofNat 32 8192
+  size := 32
+}
+
+def beforeWorld : RelationalWorld := {
+  dynamicRanges := [releasedRange]
+}
+
+def afterWorld : RelationalWorld := {
+  dynamicRanges := []
+}
+
+def releaseContract : MachineImportCallContract := {
+  id := 0
+  imported := {
+    dll := [109, 115, 118, 99, 114, 116, 46, 100, 108, 108]
+    name := .symbol [102, 114, 101, 101]
+  }
+  stackArgumentOffsets := [0]
+  stackResultDelta := 0
+  preservedRegisters := [.ebx, .esi, .edi, .ebp]
+  clobberedRegisters := [.eax, .ecx, .edx]
+  memoryEffect := .none
+  worldEffect := .dynamicRangeRelease 0
+}
+
+example : releaseContract.shapeValid = true := by decide
+
+example : dynamicRangeReleaseHolds false 0 [BitVec.ofNat 32 4096]
+    beforeWorld afterWorld := by
+  simp [dynamicRangeReleaseHolds, beforeWorld, afterWorld, releasedRange,
+    DynamicAddressRangePair.sideBase]
+
+example : dynamicRangeReleaseHolds true 0 [BitVec.ofNat 32 8192]
+    beforeWorld afterWorld := by
+  simp [dynamicRangeReleaseHolds, beforeWorld, afterWorld, releasedRange,
+    DynamicAddressRangePair.sideBase]
+
+example : dynamicRangeReleaseHolds false 0 [BitVec.ofNat 32 0]
+    beforeWorld beforeWorld := by
+  simp [dynamicRangeReleaseHolds]
+
+example : Not (dynamicRangeReleaseHolds false 0 [BitVec.ofNat 32 8192]
+    beforeWorld afterWorld) := by
+  simp [dynamicRangeReleaseHolds, beforeWorld, afterWorld, releasedRange,
+    DynamicAddressRangePair.sideBase]
+
+end StageA.DynamicRangeRelease
+""",
+                encoding="utf-8",
+            )
+
+            result = _run_lean_relational(
+                lean_dir, bundle="DynamicRangeRelease"
+            )
+            self.assertEqual(result["status"], "checked", result)
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for call-boundary proofs")
     def test_machine_import_call_arguments_are_recovered_by_lean(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -896,8 +977,8 @@ def returnSlotTransferClaim : ReturnSlotTransferClaim := {
     originalOffset := BitVec.ofNat 32 8
     candidateOffset := BitVec.ofNat 32 8
   }
-  originalEsp := minusEightWitness
-  candidateEsp := minusEightWitness
+  originalOutput := minusEightWitness
+  candidateOutput := minusEightWitness
 }
 
 example : returnSlotTransferClaim.checked adjustedBehavior adjustedBehavior = false := by

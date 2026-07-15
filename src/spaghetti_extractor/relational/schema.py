@@ -17,7 +17,8 @@ REGISTERS = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
 MACHINE_CALL_ABI_REGISTERS = REGISTERS - {"esp"}
 MACHINE_CALL_MEMORY_EFFECTS = {"none", "readOnly", "argumentRanges"}
 MACHINE_CALL_WORLD_EFFECTS = {
-    "none", "opaqueResources", "dynamicRanges", "tlsState",
+    "none", "opaqueResources", "dynamicRanges", "dynamicRangeRelease",
+    "tlsState",
 }
 MACHINE_CALL_ABI_TEMPLATES = {
     "pe32-cdecl-v1": {

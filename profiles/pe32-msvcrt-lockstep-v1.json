@@ -1,0 +1,16 @@
+{
+  "format": "stage-a-external-environment-profile-v1",
+  "id": "pe32-msvcrt-lockstep-v1",
+  "machine_import_call_contracts": [
+    {
+      "id": 0,
+      "import": {"dll": "msvcrt.dll", "symbol": "free"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRangeRelease",
+      "world_effect_argument": 0
+    }
+  ]
+}

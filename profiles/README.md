@@ -28,3 +28,9 @@ hash and invalidate dependent proof artifacts.
 APIs whose correctness requires an unsupported world feature remain absent.
 For example, callback registration is not approximated as an opaque resource;
 it requires a checked callback target and nested-frame protocol first.
+
+`pe32-msvcrt-lockstep-v1.json` starts the CRT lifecycle profile with `free`.
+The contract requires one cdecl pointer argument and removes the uniquely
+matching paired dynamic range; a null pointer is an exact no-op. It does not
+treat deallocation as an unconstrained memory mutation or leave a released
+range silently live in the relational world.

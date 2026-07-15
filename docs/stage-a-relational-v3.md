@@ -576,6 +576,27 @@ locations and carries the same frame objects and continuations into the
 successor product node. A missing write witness, unsupported clobber, ambiguous
 control state, or unpreserved frame remains `incomplete`.
 
+Direct import thunks use the same rule after an additional checked boundary
+normalization. `ExternalJumpReturnSlotTransferClaim` proves the thunk's decoded
+register transformation, proves its writes disjoint from every outer return
+slot, accounts for the synthetic import return-slot pop, and then applies the
+machine contract's stack-result and preserved-register rules. The checked list
+theorem carries any number of outer runtime frames through the matching
+external event. Ordinary internal calls and jumps use
+`ReturnSlotFrameTransferClaim`: every live frame needs an affine register
+witness and a complete write-disjointness inventory. This applies to loops as
+well as call setup, so runtime-frame preservation is no longer restricted to
+top-level control states.
+
+The relational world now has an explicit `dynamicRangeRelease` effect for
+deallocation contracts. A non-null argument must identify exactly one existing
+paired dynamic range on the appropriate original or candidate side, and the
+successor world removes that same range while preserving stack ranges, opaque
+resources, import addresses, and TLS state. A null argument is an exact world
+no-op. The environment must still return one equal successor world for the
+paired events and re-establish the continuation `StateRel`; matching the name
+`free` alone proves nothing.
+
 Machine-call memory effects now fail closed on explicit argument-relative
 footprints. Each footprint identifies a read or write range by base-argument
 index, byte offset, and either a fixed byte count or an argument-derived byte
@@ -1167,22 +1188,23 @@ graph; the small loop, branch, and call/return fixtures only validate their
 current composition profiles.
 
 Projecting the latest cached jq graph through `composition-progress.json`
-reports the current scale without regenerating binary analysis: one root,
-4,149 nodes in the conservative rooted closure, 9,081 feasible rooted edges,
-415 locally refined edges, and 8,666 refinement-frontier edges. The corrected
-stack analysis identifies 1,375 rooted stack-invariant frontier nodes, of which
-1,052 require relational call-frame treatment rather than finite windows.
-Thirty-nine singleton and fourteen finite-list paired stack-write edges now
-have generated segment certificates. One formerly proposed singleton returned
-to the frontier because its value performs arithmetic over a `related_word`;
-the current witness language deliberately does not claim that operation
-preserves relocated-pointer meaning. Sixty-nine
-unresolved indirect-control nodes account for 286,281 conservative target
-alternatives. Of 48 rooted external edges, 34 have generated refinement
-candidates and 14 still have contract gaps. These are composition-frontier
-counts, not a completion percentage and not evidence of final equivalence.
+distinguishes 371 nodes reached by decoded rooted traversal from the 4,149-node
+conservative potential inventory. The rooted slice currently has 421 feasible
+edges, 54 locally refined segments, 367 segment frontiers, 74 stack-invariant
+frontiers, and no relational-call-frame frontier. Seventy unresolved indirect
+controls contribute 290,430 conservative potential targets. Twelve rooted
+external edges include nine refinement candidates and three contract gaps;
+direct import-thunk analysis emits four checked `free` sites and four checked
+`strlen` sites while 43 other thunk contracts remain absent. These are
+composition-frontier counts, not a completion percentage and not evidence of
+final equivalence.
 
-Preparation of this full graph takes about 26.4 seconds after replacing
-unbounded stack-window widening with exact weighted-SCC classification. A
-focused distributed replay of segment chunk 15, containing both guarded
-singleton writes and an ordered three-write cluster, checked in 82.9 seconds.
+The first jq reprepare with the `free` contract took 97 seconds and a warm
+reprepare took 28.6 seconds without rebuilding either PE or any Stage B
+artifact. Focused remote Nix compilation of
+the jq caller-1041 `free` site checked a 94-derivation, 958-module, 16.2 MB Lean
+closure in 148.7 seconds and emitted a reproducible OLean hash. Rooted control
+currently reaches an earlier `_amsg_exit` thunk first. That API is non-returning,
+while the current environment event model only admits calls with successor
+states, so Stage A truthfully stops there until termination-producing external
+events are modeled and composed.

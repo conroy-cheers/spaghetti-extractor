@@ -674,6 +674,44 @@ theorem returnSlotMemoryTransferHolds_of_checked
     rw [candidateOffset]
     exact candidateMemory
 
+structure ReturnSlotFrameTransferClaim where
+  transfer : ReturnSlotTransferClaim
+  memory : ReturnSlotMemoryTransferClaim
+deriving Repr, DecidableEq
+
+def ReturnSlotFrameTransferClaim.checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReturnSlotFrameTransferClaim) : Bool :=
+  claim.memory.offsets == claim.transfer.source &&
+    claim.transfer.checked originalBehavior candidateBehavior &&
+    claim.memory.checked originalBehavior candidateBehavior
+
+theorem returnSlotFrameTransferHolds_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReturnSlotFrameTransferClaim)
+    (frame : RelationalRuntimeCallFrame) (originalState candidateState : MachineState)
+    (checked : claim.checked originalBehavior candidateBehavior = true)
+    (sourceOffsets : claim.transfer.source.holds frame originalState.registers
+      candidateState.registers)
+    (sourceMemory : frame.memoryHolds originalState.memory candidateState.memory) :
+    claim.transfer.target.holds frame
+        (originalBehavior.eval originalState).registers
+        (candidateBehavior.eval candidateState).registers ∧
+      frame.memoryHolds
+        ((originalBehavior.eval originalState).nextMachineState originalState).memory
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory := by
+  simp only [ReturnSlotFrameTransferClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with ⟨⟨memorySource, transferChecked⟩, memoryChecked⟩
+  have offsets := returnSlotTransferHolds_of_checked originalBehavior
+    candidateBehavior claim.transfer frame originalState candidateState
+    transferChecked sourceOffsets
+  have memory := returnSlotMemoryTransferHolds_of_checked originalBehavior
+    candidateBehavior claim.memory frame originalState candidateState memoryChecked
+    (by simpa [memorySource] using sourceOffsets) sourceMemory
+  exact ⟨offsets, by
+    simpa [RelationalBehavior.nextMachineState] using memory⟩
+
 structure ReturnSlotCallSummaryClaim where
   source : ReturnSlotOffsetPair
   target : ReturnSlotOffsetPair

@@ -258,6 +258,41 @@ def RelationalRuntimeCallStackHolds (context : StaticProofContext)
           continuations remainingOffsets
   | _, _, _ => False
 
+theorem RelationalRuntimeCallStackHolds.afterInternal
+    (context : StaticProofContext)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List ReturnSlotFrameTransferClaim)
+    (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
+    (originalState candidateState : MachineState)
+    (checked : claims.all fun claim =>
+      claim.checked originalBehavior candidateBehavior)
+    (holds : RelationalRuntimeCallStackHolds context originalState candidateState
+      frames continuations (claims.map (fun claim => claim.transfer.source))) :
+    RelationalRuntimeCallStackHolds context
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState)
+      frames continuations (claims.map (fun claim => claim.transfer.target)) := by
+  induction claims generalizing frames continuations with
+  | nil =>
+      cases frames <;> cases continuations <;>
+        simp_all [RelationalRuntimeCallStackHolds]
+  | cons claim claims ih =>
+      cases frames with
+      | nil =>
+          cases continuations <;> simp_all [RelationalRuntimeCallStackHolds]
+      | cons frame frames =>
+          cases continuations with
+          | nil => simp_all [RelationalRuntimeCallStackHolds]
+          | cons continuation continuations =>
+              simp only [List.all_cons, Bool.and_eq_true] at checked
+              simp only [List.map_cons, RelationalRuntimeCallStackHolds] at holds ⊢
+              have transferred := returnSlotFrameTransferHolds_of_checked
+                originalBehavior candidateBehavior claim frame originalState
+                candidateState checked.1 holds.2.2.2.2.1 holds.2.2.2.1
+              exact ⟨holds.1, holds.2.1, holds.2.2.1, transferred.2,
+                transferred.1,
+                ih frames continuations checked.2 holds.2.2.2.2.2⟩
+
 theorem RelationalRuntimeCallStackHolds.afterExternalCall
     (context : StaticProofContext)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
@@ -297,6 +332,57 @@ theorem RelationalRuntimeCallStackHolds.afterExternalCall
               simp only [List.all_cons, Bool.and_eq_true] at checked
               simp only [List.map_cons, RelationalRuntimeCallStackHolds] at holds ⊢
               have transferred := externalReturnSlotTransferHolds_of_checked
+                originalBehavior candidateBehavior contract claim frame originalState
+                candidateState originalResult candidateResult checked.1
+                holds.2.2.2.2.1 holds.2.2.2.1 originalAbi candidateAbi
+                (framesPreserved frame)
+              exact ⟨holds.1, holds.2.1, holds.2.2.1, transferred.2,
+                transferred.1,
+                ih frames continuations checked.2 holds.2.2.2.2.2⟩
+
+theorem RelationalRuntimeCallStackHolds.afterExternalJump
+    (context : StaticProofContext)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (contract : MachineImportCallContract)
+    (claims : List ExternalJumpReturnSlotTransferClaim)
+    (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
+    (originalState candidateState originalResult candidateResult : MachineState)
+    (checked : claims.all fun claim =>
+      claim.checked originalBehavior candidateBehavior contract)
+    (holds : RelationalRuntimeCallStackHolds context originalState candidateState
+      frames continuations (claims.map (fun claim => claim.source)))
+    (originalAbi : machineCallAbiResultHolds contract
+      (normalizeImportReturnSlotState
+        ((originalBehavior.eval originalState).nextMachineState originalState))
+      originalResult = true)
+    (candidateAbi : machineCallAbiResultHolds contract
+      (normalizeImportReturnSlotState
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState))
+      candidateResult = true)
+    (framesPreserved : ∀ frame : RelationalRuntimeCallFrame,
+      frame.memoryHolds
+          (normalizeImportReturnSlotState
+            ((originalBehavior.eval originalState).nextMachineState originalState)).memory
+          (normalizeImportReturnSlotState
+            ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory →
+        frame.memoryHolds originalResult.memory candidateResult.memory) :
+    RelationalRuntimeCallStackHolds context originalResult candidateResult
+      frames continuations (claims.map (fun claim => claim.resultRule.target)) := by
+  induction claims generalizing frames continuations with
+  | nil =>
+      cases frames <;> cases continuations <;>
+        simp_all [RelationalRuntimeCallStackHolds]
+  | cons claim claims ih =>
+      cases frames with
+      | nil =>
+          cases continuations <;> simp_all [RelationalRuntimeCallStackHolds]
+      | cons frame frames =>
+          cases continuations with
+          | nil => simp_all [RelationalRuntimeCallStackHolds]
+          | cons continuation continuations =>
+              simp only [List.all_cons, Bool.and_eq_true] at checked
+              simp only [List.map_cons, RelationalRuntimeCallStackHolds] at holds ⊢
+              have transferred := externalJumpReturnSlotTransferHolds_of_checked
                 originalBehavior candidateBehavior contract claim frame originalState
                 candidateState originalResult candidateResult checked.1
                 holds.2.2.2.2.1 holds.2.2.2.1 originalAbi candidateAbi
