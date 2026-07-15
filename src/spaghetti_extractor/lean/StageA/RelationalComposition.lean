@@ -3052,6 +3052,126 @@ theorem inputFlagsGuard_eval_equal_of_checked
   exact BoolExpr.eval_eq_of_inputFlagsOnlyWithin sourceInvariant.flagBits
     originalState candidateState claim.guard within inputFlags
 
+def _root_.StageA.Formal.Expr.exactInputsOnly
+    (invariant : StateInvariant) : Expr -> Bool
+  | .inputReg register => exactIdentityRegister invariant.registerRelations register
+  | .inputFlagValue bit => invariant.flagBits.contains bit
+  | .inputFsBase | .inputX87Control | .inputX87Status | .constant _ | .undefined _ => true
+  | .add left right | .sub left right | .bitAnd left right | .bitXor left right |
+      .shiftLeftBy left right | .shiftRightBy left right |
+      .shiftArithmeticRightBy left right | .bitOr left right |
+      .unsignedLessValue left right | .multiply left right |
+      .multiplyHighUnsigned left right | .multiplyHighSigned left right =>
+      left.exactInputsOnly invariant && right.exactInputsOnly invariant
+  | .bitNot value | .extractByte value _ | .shiftLeft value _ | .shiftRight value _ |
+      .bitValue value _ | .lowestSetBit value | .highestSetBit value =>
+      value.exactInputsOnly invariant
+  | .ifEqual left right thenValue elseValue =>
+      left.exactInputsOnly invariant && right.exactInputsOnly invariant &&
+        thenValue.exactInputsOnly invariant && elseValue.exactInputsOnly invariant
+  | .divideQuotient high low divisor | .divideRemainder high low divisor |
+      .divisionValidValue high low divisor =>
+      high.exactInputsOnly invariant && low.exactInputsOnly invariant &&
+        divisor.exactInputsOnly invariant
+  | .read8 _ | .read32 _ | .read8AfterWrite _ _ _ _ | .x87Part _ _ |
+      .x87CompareBit _ _ _ _ | .x87ExamineStatus _ _ => false
+
+theorem _root_.StageA.Formal.Expr.eval_eq_of_exactInputsOnly
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (expression : Expr) (checked : expression.exactInputsOnly invariant = true)
+    (related : StateRel context world invariant original candidate) :
+    expression.eval original = expression.eval candidate := by
+  rcases related with
+    ⟨_worldValid, _stackRangesValid, _stackMemory, _importsStatic,
+      _importsComplete, _importsMemory, _originalImmutable, _candidateImmutable,
+      relatedCore, _importAndDynamicRegisters⟩
+  rcases relatedCore with
+    ⟨inputRegisters, _inputBounds, _inputSeparations, _inputStackWindows,
+      _inputMemory, _inputDynamicMemory, inputUndefined, inputX87, inputFlags,
+      inputFsBase⟩
+  have exactRegister : ∀ register,
+      exactIdentityRegister invariant.registerRelations register = true →
+        original.registers.get register = candidate.registers.get register := by
+    intro register exact
+    exact registerRelationsHold_exact_identity
+      context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      invariant.registerRelations original.registers candidate.registers register
+      inputRegisters exact
+  have exactFlag : ∀ bit, invariant.flagBits.contains bit = true →
+      original.eflags.extractLsb' bit 1 = candidate.eflags.extractLsb' bit 1 := by
+    intro bit contains
+    exact flagsRelated_of_contains invariant.flagBits original.eflags candidate.eflags
+      inputFlags contains
+  have evalAll : ∀ value : Expr, value.exactInputsOnly invariant = true →
+      value.eval original = value.eval candidate := by
+    intro value
+    apply Expr.rec
+      (motive_1 := fun item => item.exactInputsOnly invariant = true →
+        item.eval original = item.eval candidate)
+      (motive_2 := fun _ => True) <;>
+      simp_all [Expr.exactInputsOnly, Expr.eval, Bool.and_eq_true]
+  exact evalAll expression checked
+
+def _root_.StageA.Formal.BoolExpr.exactInputsOnly
+    (invariant : StateInvariant) : BoolExpr -> Bool
+  | .equal left right | .unsignedLess left right =>
+      left.exactInputsOnly invariant && right.exactInputsOnly invariant
+  | .not value => value.exactInputsOnly invariant
+  | .and left right | .or left right | .xor left right =>
+      left.exactInputsOnly invariant && right.exactInputsOnly invariant
+  | .msb value | .bit value _ => value.exactInputsOnly invariant
+  | .inputFlag bit => invariant.flagBits.contains bit
+  | .divisionValid high low divisor =>
+      high.exactInputsOnly invariant && low.exactInputsOnly invariant &&
+        divisor.exactInputsOnly invariant
+
+theorem _root_.StageA.Formal.BoolExpr.eval_eq_of_exactInputsOnly
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (expression : BoolExpr) (checked : expression.exactInputsOnly invariant = true)
+    (related : StateRel context world invariant original candidate) :
+    expression.eval original = expression.eval candidate := by
+  have exactExpression := fun value safe =>
+    Expr.eval_eq_of_exactInputsOnly context world invariant original candidate
+      value safe related
+  have exactFlag : ∀ bit, invariant.flagBits.contains bit = true →
+      original.eflags.extractLsb' bit 1 = candidate.eflags.extractLsb' bit 1 := by
+    intro bit contains
+    rcases related with ⟨_, _, _, _, _, _, _, _, relatedCore, _⟩
+    exact flagsRelated_of_contains invariant.flagBits original.eflags candidate.eflags
+      relatedCore.2.2.2.2.2.2.2.2.1 contains
+  induction expression <;>
+    simp_all [BoolExpr.exactInputsOnly, BoolExpr.eval, Bool.and_eq_true]
+  case divisionValid high low divisor =>
+    have evaluated := exactExpression (.divisionValidValue high low divisor) (by
+      simpa [Expr.exactInputsOnly] using checked)
+    exact congrArg (fun value => value == BitVec.ofNat 32 1) evaluated
+
+structure ExactPureGuardClaim where
+  guard : BoolExpr
+deriving Repr, DecidableEq
+
+def ExactPureGuardClaim.checked (sourceInvariant : StateInvariant)
+    (originalGuard candidateGuard : BoolExpr) (claim : ExactPureGuardClaim) : Bool :=
+  claim.guard == originalGuard && claim.guard == candidateGuard &&
+    claim.guard.exactInputsOnly sourceInvariant
+
+theorem exactPureGuard_eval_equal_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant) (originalGuard candidateGuard : BoolExpr)
+    (claim : ExactPureGuardClaim)
+    (checked : claim.checked sourceInvariant originalGuard candidateGuard = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    originalGuard.eval originalState = candidateGuard.eval candidateState := by
+  simp only [ExactPureGuardClaim.checked, Bool.and_eq_true, beq_iff_eq] at checked
+  rcases checked with ⟨⟨originalExact, candidateExact⟩, exactInputs⟩
+  rw [← originalExact, ← candidateExact]
+  exact BoolExpr.eval_eq_of_exactInputsOnly context world sourceInvariant
+    originalState candidateState claim.guard exactInputs related
+
 def normalizedCarryIsInput : Option FlagsExpr -> Bool
   | none => true
   | some flags => flags.carry == some (.inputFlag 0)

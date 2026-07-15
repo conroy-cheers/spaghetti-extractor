@@ -1924,6 +1924,15 @@ def _write_relational_segment_refinement_modules(
                     )
                 if (
                     guard_claim is not None
+                    and guard_claim["profile"] == "exact_pure_guard_v1"
+                ):
+                    import_claim_definitions.append(
+                        f"def {guard_claim_name} : ExactPureGuardClaim := {{\n"
+                        f"  guard := {_lean_semantic_bool_expr(guard_claim['guard'])}\n"
+                        "}"
+                    )
+                if (
+                    guard_claim is not None
                     and guard_claim["profile"] == "static_dynamic_pointer_guard_v1"
                 ):
                     import_claim_definitions.append(
@@ -1958,6 +1967,15 @@ def _write_relational_segment_refinement_modules(
                     guard_agreement_setup = (
                         "  have guardAgreement := "
                         "inputFlagsGuard_eval_equal_of_checked\n"
+                        f"    staticProofContext world region{source_index}.inputInvariant\n"
+                        f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
+                        f"{guard_claim_name} (by decide)\n"
+                        "    originalState candidateState related\n"
+                    )
+                elif guard_claim["profile"] == "exact_pure_guard_v1":
+                    guard_agreement_setup = (
+                        "  have guardAgreement := "
+                        "exactPureGuard_eval_equal_of_checked\n"
                         f"    staticProofContext world region{source_index}.inputInvariant\n"
                         f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
                         f"{guard_claim_name} (by decide)\n"

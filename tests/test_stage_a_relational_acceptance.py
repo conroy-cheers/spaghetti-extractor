@@ -1932,6 +1932,102 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertNotIn("sorryAx", lean["stdout"])
             self.assertNotIn("._native.", lean["stdout"])
 
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for exact guards")
+    def test_exact_pure_guard_uses_derived_register_exactness(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code = b"\xb8\x07\x00\x00\x00\xeb\x00\x83\xf8\x07\x74\x02\xeb\xfe\xeb\xfe"
+            original = self._write_pe(root / "original.exe", code)
+            candidate_code = bytearray(code)
+            candidate_code[9] = 8
+            candidate = self._write_pe(root / "candidate.exe", bytes(candidate_code))
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            relation = {
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": index, "original_rva": rva, "candidate_rva": rva}
+                    for index, rva in enumerate((0x1000, 0x1007, 0x100C, 0x100E))
+                ],
+                "regions": [
+                    {
+                        "id": name,
+                        "root": index == 0,
+                        "original": {"rva": rva, "size": size},
+                        "candidate": {"rva": rva, "size": size},
+                        "inputs": pairs,
+                        "outputs": pairs,
+                    }
+                    for index, (name, rva, size) in enumerate((
+                        ("exact-producer", 0x1000, 7),
+                        ("condition", 0x1007, 5),
+                        ("fallthrough", 0x100C, 2),
+                        ("taken", 0x100E, 2),
+                    ))
+                ],
+                "padding": [],
+                "memory_relation": {"mode": "identity"},
+            }
+            contract = root / "relation.json"
+            contract.write_text(json.dumps(relation), encoding="utf-8")
+
+            mismatched = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=root / "mismatched",
+            )
+            self.assertEqual(mismatched["acceptance"]["status"], "incomplete")
+            diagnostics = json.loads(
+                (root / "mismatched" / "relational-segment-diagnostics.json")
+                .read_text(encoding="utf-8")
+            )
+            self.assertTrue(any(
+                "branch_guard_relation_unsupported" in edge["failed_checks"]
+                for edge in diagnostics["edges"]
+                if edge["edge_kind"].startswith("branch_")
+            ))
+
+            candidate.write_bytes(original.read_bytes())
+            prepared = root / "prepared"
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            register_relations = json.loads(
+                (prepared / "relational-register-relations.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            condition_inputs = register_relations["regions"][1]["inputs"]
+            self.assertIn({
+                "original": "eax", "candidate": "eax", "relation": "exact",
+            }, condition_inputs)
+            segment_source = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted(
+                    (prepared / "lean" / "StageA").glob(
+                        "RelationalSegmentRefinementChunk*.lean"
+                    )
+                )
+            )
+            self.assertIn("ExactPureGuardClaim", segment_source)
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_representative_control_slice_closes_whole_program_theorem(self):
         with tempfile.TemporaryDirectory() as temporary:

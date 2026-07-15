@@ -486,6 +486,16 @@ count from 67 to 96 of 421 feasible edges and reduces the rooted segment
 frontier from 354 to 325. Rooted reachability remains 371 nodes, unresolved
 indirect control remains 70 nodes, and jq correctly remains incomplete with no
 whole-program theorem.
+Pure arithmetic and bitvector guards now use a recursive exact-input checker.
+Python proposes the guard only when both normalized trees are identical and all
+register leaves are exact identity relations; Lean rechecks the complete tree,
+derives each register and flag equality from `StateRel`, and proves equal guard
+evaluation. Memory reads and `related_word` leaves are rejected by this profile.
+A whole-program fixture derives an exact register from a preceding constant
+producer, closes the matching branch, and leaves a changed compare immediate
+incomplete. This raises jq to 100 refined segments out of 421 feasible rooted
+edges and reduces the rooted segment frontier to 321; the remaining jq result
+is still correctly incomplete.
 All 32 segment chunks compose through the dedicated
 `RelationalSegmentRefinementCertificate` Nix node. The expanded 449-edge jq
 aggregate checked remotely in 482.648 seconds over a focused 935-node closure;

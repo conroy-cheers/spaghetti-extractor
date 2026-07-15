@@ -915,6 +915,10 @@ def _segment_refinement_candidates(
             source,
             edge.get("original_guard") or {},
             edge.get("candidate_guard") or {},
+        ) or _exact_pure_guard_claim(
+            source,
+            edge.get("original_guard") or {},
+            edge.get("candidate_guard") or {},
         ) or _paired_stack_guard_claim(
             source,
             edge.get("original_guard") or {},
@@ -1686,6 +1690,94 @@ def _input_flags_guard_claim(
         return None
     return {
         "profile": "input_flags_guard_v1",
+        "guard": original_guard,
+    }
+
+
+def _exact_pure_guard_claim(
+    source: dict[str, Any],
+    original_guard: dict[str, Any],
+    candidate_guard: dict[str, Any],
+) -> dict[str, Any] | None:
+    if original_guard != candidate_guard:
+        return None
+    exact_registers = {
+        str(relation["original"])
+        for relation in source.get("input_relations", [])
+        if relation.get("relation") == "exact"
+        and relation.get("original") == relation.get("candidate")
+    }
+    allowed_flags = {
+        int(index) for index in source.get("flag_inputs", list(FLAG_BITS))
+    }
+
+    def exact_expression(expression: Any) -> bool:
+        if not isinstance(expression, dict):
+            return False
+        operation = expression.get("op")
+        if operation == "input_reg":
+            return str(expression.get("reg")) in exact_registers
+        if operation == "input_flag_value":
+            return _integer(expression.get("bit")) in allowed_flags
+        if operation in {
+            "input_fs_base", "input_x87_control", "input_x87_status",
+            "constant", "undefined",
+        }:
+            return True
+        if operation in {
+            "add", "sub", "bit_and", "bit_xor", "shift_left_by",
+            "shift_right_by", "shift_arithmetic_right_by", "bit_or",
+            "unsigned_less_value", "multiply", "multiply_high_unsigned",
+            "multiply_high_signed",
+        }:
+            return exact_expression(expression.get("left")) and exact_expression(
+                expression.get("right")
+            )
+        if operation in {
+            "bit_not", "extract_byte", "shift_left", "shift_right",
+            "bit_value", "lowest_set_bit", "highest_set_bit",
+        }:
+            return exact_expression(expression.get("value"))
+        if operation == "if_equal":
+            return all(exact_expression(expression.get(field)) for field in (
+                "left", "right", "then", "else",
+            ))
+        if operation in {
+            "divide_quotient", "divide_remainder", "division_valid_value",
+        }:
+            return all(exact_expression(expression.get(field)) for field in (
+                "high", "low", "divisor",
+            ))
+        return False
+
+    def exact_boolean(expression: Any) -> bool:
+        if not isinstance(expression, dict):
+            return False
+        operation = expression.get("op")
+        if operation in {"equal", "unsigned_less"}:
+            return exact_expression(expression.get("left")) and exact_expression(
+                expression.get("right")
+            )
+        if operation == "not":
+            return exact_boolean(expression.get("value"))
+        if operation in {"and", "or", "xor"}:
+            return exact_boolean(expression.get("left")) and exact_boolean(
+                expression.get("right")
+            )
+        if operation in {"msb", "bit"}:
+            return exact_expression(expression.get("value"))
+        if operation == "input_flag":
+            return _integer(expression.get("index")) in allowed_flags
+        if operation == "division_valid":
+            return all(exact_expression(expression.get(field)) for field in (
+                "high", "low", "divisor",
+            ))
+        return False
+
+    if not exact_boolean(original_guard):
+        return None
+    return {
+        "profile": "exact_pure_guard_v1",
         "guard": original_guard,
     }
 

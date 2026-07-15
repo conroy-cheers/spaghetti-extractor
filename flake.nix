@@ -554,6 +554,8 @@
             stageARelationalAcceptanceSuite.cases.external_call_loop_checks_paired_environment_end_to_end;
           stage-a-relational-tests-acceptance-input-flag-guard =
             stageARelationalAcceptanceSuite.cases.input_flag_guard_closes_only_for_the_same_checked_flag;
+          stage-a-relational-tests-acceptance-exact-pure-guard =
+            stageARelationalAcceptanceSuite.cases.exact_pure_guard_uses_derived_register_exactness;
           stage-a-relational-tests = pkgs.symlinkJoin {
             name = "stage-a-relational-tests";
             paths = [
@@ -624,6 +626,7 @@
             stage-a-relational-tests-acceptance-terminal-return
             stage-a-relational-tests-acceptance-external-loop
             stage-a-relational-tests-acceptance-input-flag-guard
+            stage-a-relational-tests-acceptance-exact-pure-guard
             stage-b-jq-skeleton
             stage-b-jq-skeleton-root
             ;
