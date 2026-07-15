@@ -490,12 +490,21 @@ Pure arithmetic and bitvector guards now use a recursive exact-input checker.
 Python proposes the guard only when both normalized trees are identical and all
 register leaves are exact identity relations; Lean rechecks the complete tree,
 derives each register and flag equality from `StateRel`, and proves equal guard
-evaluation. Memory reads and `related_word` leaves are rejected by this profile.
+evaluation. `related_word` leaves and general memory reads are rejected by this
+profile. A constant-address 32-bit read is accepted only when Lean reparses both
+embedded PEs, finds the address in a non-writable mapped section on each side,
+checks equal file-backed words, and derives the corresponding runtime reads
+from `StateRel`'s `ImmutableImageWordMemory` witnesses. Register-output claims
+for such reads use the same checked PE facts and classify the loaded values
+through the canonical exact, code-pointer, or data-pointer relations. Writable,
+missing, differently valued, or nonconstant reads remain incomplete.
 A whole-program fixture derives an exact register from a preceding constant
 producer, closes the matching branch, and leaves a changed compare immediate
-incomplete. This raises jq to 100 refined segments out of 421 feasible rooted
-edges and reduces the rooted segment frontier to 321; the remaining jq result
-is still correctly incomplete.
+incomplete. A second fixture loads and branches on a read-only PE word; changing
+that word on one side suppresses the claim and keeps acceptance incomplete.
+Together these profiles raise jq to 104 refined segments out of 421 feasible
+rooted edges and reduce the rooted segment frontier to 317; the remaining jq
+result is still correctly incomplete.
 All 32 segment chunks compose through the dedicated
 `RelationalSegmentRefinementCertificate` Nix node. The expanded 449-edge jq
 aggregate checked remotely in 482.648 seconds over a focused 935-node closure;
@@ -1224,7 +1233,7 @@ current composition profiles.
 Projecting the latest cached jq graph through `composition-progress.json`
 distinguishes 371 nodes reached by decoded rooted traversal from the 4,149-node
 conservative potential inventory. The rooted slice currently has 421 feasible
-edges, 54 locally refined segments, 367 segment frontiers, 72 stack-invariant
+edges, 104 refined segments, 317 segment frontiers, 72 stack-invariant
 frontiers, and no relational-call-frame frontier. Seventy unresolved indirect
 controls contribute 290,430 conservative potential targets. Twelve rooted
 external edges include nine refinement candidates and three contract gaps;

@@ -949,8 +949,9 @@ def _write_relational_register_relation_modules(
             output_theorem_name = (
                 f"registerRelationChunk{chunk_index}Region{index}OutputClaimsChecked"
             )
+            state_rel_only_claims = {"immutable_image_word", "stack_read32_sub"}
             if not any(
-                claim["kind"] == "stack_read32_sub"
+                claim["kind"] in state_rel_only_claims
                 for claim in row["output_claims"]
             ):
                 definitions.append(
@@ -971,7 +972,7 @@ def _write_relational_register_relation_modules(
                 theorem_names.append(output_theorem_name)
                 proposition_names.append(output_proposition_name)
             if row["fully_supported_output_transfer"] and not any(
-                claim["kind"] == "stack_read32_sub"
+                claim["kind"] in state_rel_only_claims
                 for claim in row["output_claims"]
             ):
                 supported_transfer_name = (

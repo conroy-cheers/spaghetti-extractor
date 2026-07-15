@@ -556,6 +556,8 @@
             stageARelationalAcceptanceSuite.cases.input_flag_guard_closes_only_for_the_same_checked_flag;
           stage-a-relational-tests-acceptance-exact-pure-guard =
             stageARelationalAcceptanceSuite.cases.exact_pure_guard_uses_derived_register_exactness;
+          stage-a-relational-tests-acceptance-immutable-image-word =
+            stageARelationalAcceptanceSuite.cases.immutable_image_word_load_closes_register_transfer;
           stage-a-relational-tests = pkgs.symlinkJoin {
             name = "stage-a-relational-tests";
             paths = [
@@ -627,6 +629,7 @@
             stage-a-relational-tests-acceptance-external-loop
             stage-a-relational-tests-acceptance-input-flag-guard
             stage-a-relational-tests-acceptance-exact-pure-guard
+            stage-a-relational-tests-acceptance-immutable-image-word
             stage-b-jq-skeleton
             stage-b-jq-skeleton-root
             ;

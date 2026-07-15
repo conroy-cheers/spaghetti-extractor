@@ -159,6 +159,62 @@ def _pe32_image(code: bytes) -> bytes:
     return headers + code.ljust(text_raw_size, b"\0")
 
 
+def _pe32_image_with_immutable_word_branch(value: int) -> bytes:
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    headers_size = 0x200
+    image_base = 0x400000
+    text_rva = 0x1000
+    data_rva = 0x3000
+    reloc_rva = 0x4000
+    text_raw = 0x200
+    data_raw = 0x400
+    reloc_raw = 0x600
+    code = (
+        b"\xa1" + struct.pack("<I", image_base + data_rva)
+        + b"\xeb\x00\x83\xf8\x07\x74\x02\xeb\xfe\xeb\xfe"
+    )
+    data = struct.pack("<I", value & 0xFFFFFFFF)
+    relocations = struct.pack("<IIHH", text_rva, 12, 0x3001, 0)
+    size_of_image = 0x5000
+
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+    coff = struct.pack("<HHIIIHH", 0x014C, 3, 0, 0, 0, 224, 0x010F)
+    optional_prefix = struct.pack(
+        "<HBB" + "I" * 9 + "H" * 6 + "I" * 4 + "H" * 2 + "I" * 6,
+        0x10B, 0, 0, 0x200, 0x400, 0, text_rva, text_rva, data_rva,
+        image_base, section_alignment, file_alignment, 4, 0, 0, 0, 4, 0, 0,
+        size_of_image, headers_size, 0, 3, 0, 0x100000, 0x1000, 0x100000,
+        0x1000, 0, 16,
+    )
+    directories = bytearray(16 * 8)
+    struct.pack_into("<II", directories, 5 * 8, reloc_rva, len(relocations))
+    sections = b"".join((
+        struct.pack(
+            "<8sIIIIIIHHI", b".text\0\0\0", len(code), text_rva, 0x200,
+            text_raw, 0, 0, 0, 0, 0x60000020,
+        ),
+        struct.pack(
+            "<8sIIIIIIHHI", b".rdata\0\0", len(data), data_rva, 0x200,
+            data_raw, 0, 0, 0, 0, 0x40000040,
+        ),
+        struct.pack(
+            "<8sIIIIIIHHI", b".reloc\0\0", len(relocations), reloc_rva, 0x200,
+            reloc_raw, 0, 0, 0, 0, 0x42000040,
+        ),
+    ))
+    headers = (
+        bytes(dos) + b"PE\0\0" + coff + optional_prefix + bytes(directories)
+        + sections
+    ).ljust(headers_size, b"\0")
+    return (
+        headers + code.ljust(0x200, b"\0") + data.ljust(0x200, b"\0")
+        + relocations.ljust(0x200, b"\0")
+    )
+
+
 def _pe32_import_image(
     code: bytes, *, symbol: str, dll: str = "KERNEL32.dll", iat_offset: int = 0x40,
 ) -> bytes:

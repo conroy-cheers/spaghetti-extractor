@@ -557,6 +557,8 @@ def stage_a_prove_relational(
         candidate_image_base=candidate_bin.image_base,
         indirect_call_candidates=indirect_call_candidates,
         import_call_candidates=import_register_analysis["indirect_import_calls"],
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
     )
     normalized, stack_window_analysis = _attach_stack_window_invariants(
         normalized, behaviors, register_relations, original_bin, candidate_bin
@@ -619,6 +621,7 @@ def stage_a_prove_relational(
     segment_candidates = _segment_refinement_candidates(
         normalized, behaviors, memory_contracts, register_relations,
         import_register_seeds, diagnostics=segment_diagnostics,
+        original_bin=original_bin, candidate_bin=candidate_bin,
     )
     write_json(
         out / "relational-segment-diagnostics.json",

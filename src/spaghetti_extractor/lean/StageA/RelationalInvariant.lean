@@ -719,6 +719,65 @@ theorem RegisterValueRelation.holds_of_eq
   cases relation <;> simp_all [registerValueRelationAcceptsEqual,
     RegisterValueRelation.holds, wordRelated_self]
 
+structure ImmutableImageWordRegisterOutputClaim where
+  output : RegisterRelationPair
+  originalAddress : Nat
+  candidateAddress : Nat
+  originalValue : Nat
+  candidateValue : Nat
+deriving Repr, DecidableEq
+
+def ImmutableImageWordRegisterOutputClaim.checked
+    (context : StaticProofContext)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ImmutableImageWordRegisterOutputClaim) : Bool :=
+  readImmutableImageWord context.originalPe claim.originalAddress 4 ==
+      some claim.originalValue &&
+    readImmutableImageWord context.candidatePe claim.candidateAddress 4 ==
+      some claim.candidateValue &&
+    claim.output.relation.holds context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      context.dataMap.entries.toList (BitVec.ofNat 32 claim.originalValue)
+      (BitVec.ofNat 32 claim.candidateValue) &&
+    originalBehavior.registers.get claim.output.original ==
+      .read32 (.constant claim.originalAddress) &&
+    candidateBehavior.registers.get claim.output.candidate ==
+      .read32 (.constant claim.candidateAddress)
+
+theorem ImmutableImageWordRegisterOutputClaim.holds_output_of_stateRel
+    (context : StaticProofContext) (world : RelationalWorld)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ImmutableImageWordRegisterOutputClaim)
+    (checked : claim.checked context originalBehavior candidateBehavior = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world region.inputInvariant originalState candidateState) :
+    claim.output.relation.holds context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      ((originalBehavior.eval originalState).registers.get claim.output.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true := by
+  simp only [ImmutableImageWordRegisterOutputClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨originalWord, candidateWord⟩, staticRelated⟩,
+      originalExpression⟩, candidateExpression⟩
+  rcases related with
+    ⟨_, _, _, _, _, _, originalImmutable, candidateImmutable, _, _⟩
+  have originalRead := ImmutableImageWordMemory.read32_of_checked
+    context.originalPe originalState.memory claim.originalAddress claim.originalValue
+    originalImmutable originalWord
+  have candidateRead := ImmutableImageWordMemory.read32_of_checked
+    context.candidatePe candidateState.memory claim.candidateAddress claim.candidateValue
+    candidateImmutable candidateWord
+  simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
+  rw [originalExpression, candidateExpression]
+  simp only [Expr.eval, machineStateRead32_eq_memoryRead32]
+  rw [originalRead, candidateRead]
+  exact RegisterValueRelation.holds_append_values
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList context.dataMap.entries.toList
+    world.dynamicValueTargets claim.output.relation _ _ staticRelated
+
 structure StackRead32SubRegisterOutputClaim where
   output : RegisterRelationPair
   window : StackWindowPair
@@ -804,6 +863,7 @@ inductive RegisterOutputClaim where
   | exactMemory (claim : ExactMemoryRegisterOutputClaim)
   | identity (claim : IdentityRegisterOutputClaim)
   | constant (claim : ConstantRegisterOutputClaim)
+  | immutableImageWord (claim : ImmutableImageWordRegisterOutputClaim)
   | stackRead32Sub (claim : StackRead32SubRegisterOutputClaim)
 deriving Repr, DecidableEq
 
@@ -812,6 +872,7 @@ def RegisterOutputClaim.output : RegisterOutputClaim → RegisterRelationPair
   | .exactMemory claim => claim.output
   | .identity claim => claim.output
   | .constant claim => claim.output
+  | .immutableImageWord claim => claim.output
   | .stackRead32Sub claim => claim.output
 
 def RegisterOutputClaim.checked
@@ -825,6 +886,7 @@ def RegisterOutputClaim.checked
   | .identity claim => claim.checked region originalBehavior candidateBehavior
   | .constant claim => claim.checked originalImageBase candidateImageBase targets values region
       originalBehavior candidateBehavior
+  | .immutableImageWord _ => false
   | .stackRead32Sub _ => false
 
 def RegisterOutputClaim.Holds
@@ -845,6 +907,7 @@ def RegisterOutputClaim.Holds
   | .constant claim =>
       claim.Holds originalImageBase candidateImageBase targets values region
         originalBehavior candidateBehavior
+  | .immutableImageWord _ => False
   | .stackRead32Sub _ => False
 
 theorem RegisterOutputClaim.holds_of_checked
@@ -870,6 +933,7 @@ theorem RegisterOutputClaim.holds_of_checked
   | constant claim =>
       exact claim.holds_of_checked originalImageBase candidateImageBase targets values region
         originalBehavior candidateBehavior checked
+  | immutableImageWord _ => simp [RegisterOutputClaim.checked] at checked
   | stackRead32Sub _ => simp [RegisterOutputClaim.checked] at checked
 
 theorem RegisterOutputClaim.holds_output
@@ -888,6 +952,7 @@ theorem RegisterOutputClaim.holds_output
       ((originalBehavior.eval originalState).registers.get claim.output.original)
       ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true := by
   cases claim <;> try exact holds originalState candidateState related
+  case immutableImageWord => contradiction
   case stackRead32Sub => contradiction
 
 def AllRegisterOutputClaims
@@ -981,16 +1046,17 @@ theorem registerTransferClosed_of_checked
     region originalBehavior candidateBehavior claims checked originalState candidateState related
 
 def RegisterOutputClaim.nonMemoryChecked
-    (originalImageBase candidateImageBase : Nat)
-    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (context : StaticProofContext)
     (region : RegionRelation)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) :
     RegisterOutputClaim → Bool
   | .exactExpression claim => claim.checked region originalBehavior candidateBehavior
   | .exactMemory _ => false
   | .identity claim => claim.checked region originalBehavior candidateBehavior
-  | .constant claim => claim.checked originalImageBase candidateImageBase targets values region
-      originalBehavior candidateBehavior
+  | .constant claim => claim.checked context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      context.dataMap.entries.toList region originalBehavior candidateBehavior
+  | .immutableImageWord claim => claim.checked context originalBehavior candidateBehavior
   | .stackRead32Sub claim => claim.checked region originalBehavior candidateBehavior
 
 theorem ExactRegisterOutputClaim.holds_output_of_stateRel
@@ -1099,9 +1165,7 @@ theorem registerRelationsHold_of_nonMemoryOutputClaims
     (region : RegionRelation)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (claims : List RegisterOutputClaim)
-    (checked : claims.all (RegisterOutputClaim.nonMemoryChecked
-      context.originalPe.imageBase context.candidatePe.imageBase
-      context.codeMap.entries.toList context.dataMap.entries.toList region
+    (checked : claims.all (RegisterOutputClaim.nonMemoryChecked context region
       originalBehavior candidateBehavior) = true)
     (originalState candidateState : MachineState)
     (related : StateRel context world region.inputInvariant originalState candidateState) :
@@ -1131,6 +1195,10 @@ theorem registerRelationsHold_of_nonMemoryOutputClaims
           exact ⟨claim.holds_output_of_stateRel context world region originalBehavior
             candidateBehavior checked.1 originalState candidateState related,
             ih checked.2⟩
+      | immutableImageWord claim =>
+          exact ⟨claim.holds_output_of_stateRel context world region originalBehavior
+            candidateBehavior checked.1 originalState candidateState related,
+            ih checked.2⟩
       | stackRead32Sub claim =>
           exact ⟨claim.holds_output_of_stateRel context world region originalBehavior
             candidateBehavior checked.1 originalState candidateState related,
@@ -1142,9 +1210,7 @@ theorem registerTransferUnderStateRel_of_checked
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (claims : List RegisterOutputClaim)
     (inventory : claims.map RegisterOutputClaim.output = region.outputRelations)
-    (checked : claims.all (RegisterOutputClaim.nonMemoryChecked
-      context.originalPe.imageBase context.candidatePe.imageBase
-      context.codeMap.entries.toList context.dataMap.entries.toList region
+    (checked : claims.all (RegisterOutputClaim.nonMemoryChecked context region
       originalBehavior candidateBehavior) = true)
     (originalState candidateState : MachineState)
     (related : StateRel context world region.inputInvariant originalState candidateState) :

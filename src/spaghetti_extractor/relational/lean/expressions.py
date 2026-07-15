@@ -753,6 +753,16 @@ def _lean_register_output_claim(claim: dict[str, Any]) -> str:
             + ", candidateValue := " + str(claim["candidate_value"])
             + " }"
         )
+    if kind == "immutable_image_word":
+        return (
+            "InvariantWP.RegisterOutputClaim.immutableImageWord { output := "
+            + _lean_register_relation_pair(claim["output"])
+            + ", originalAddress := " + str(claim["original_address"])
+            + ", candidateAddress := " + str(claim["candidate_address"])
+            + ", originalValue := " + str(claim["original_value"])
+            + ", candidateValue := " + str(claim["candidate_value"])
+            + " }"
+        )
     if kind == "stack_read32_sub":
         return (
             "InvariantWP.RegisterOutputClaim.stackRead32Sub { output := "

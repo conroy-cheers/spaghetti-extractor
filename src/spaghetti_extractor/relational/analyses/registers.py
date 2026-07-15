@@ -12,7 +12,7 @@ from ..extraction import (
 )
 from ..model import _semantic_constant_bool, _semantic_hash
 from ..schema import STAGE_A_RELATIONAL_MODEL_ID
-from .control import _constant_read32_address
+from .control import _constant_read32_address, _immutable_image_u32
 from .external import _semantic_external_target_identity
 from .invariants import _semantic_edges
 from .segments import _semantic_expr_registers
@@ -215,6 +215,8 @@ def _infer_register_output_relation(
     original_image_base: int,
     candidate_image_base: int,
     global_values_empty: bool,
+    original_bin: StageABinary | None = None,
+    candidate_bin: StageABinary | None = None,
 ) -> tuple[str, str]:
     constant_relation = _paired_constant_relation(
         original_expression,
@@ -225,6 +227,26 @@ def _infer_register_output_relation(
     )
     if constant_relation is not None:
         return constant_relation, "paired_constant"
+    original_address = _constant_read32_address(original_expression)
+    candidate_address = _constant_read32_address(candidate_expression)
+    if (
+        original_bin is not None
+        and candidate_bin is not None
+        and original_address is not None
+        and candidate_address is not None
+    ):
+        original_value = _immutable_image_u32(original_bin, original_address)
+        candidate_value = _immutable_image_u32(candidate_bin, candidate_address)
+        if original_value is not None and candidate_value is not None:
+            immutable_relation = _paired_constant_relation(
+                {"op": "constant", "value": original_value},
+                {"op": "constant", "value": candidate_value},
+                contract,
+                original_image_base,
+                candidate_image_base,
+            )
+            if immutable_relation is not None:
+                return immutable_relation, "immutable_image_word"
     if original_expression == candidate_expression:
         if original_expression.get("op") == "input_reg":
             register = str(original_expression.get("reg"))
@@ -630,6 +652,8 @@ def _synthesize_register_relations(
     candidate_image_base: int,
     indirect_call_candidates: list[dict[str, Any]] | None = None,
     import_call_candidates: list[dict[str, Any]] | None = None,
+    original_bin: StageABinary | None = None,
+    candidate_bin: StageABinary | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     refined = json.loads(json.dumps(contract))
     regions = refined["regions"]
@@ -917,6 +941,8 @@ def _synthesize_register_relations(
                     original_image_base,
                     candidate_image_base,
                     not refined.get("value_targets"),
+                    original_bin,
+                    candidate_bin,
                 )
             next_outputs.append(kinds)
             next_reasons.append(reasons)
@@ -1013,7 +1039,9 @@ def _synthesize_register_relations(
                 relation["relation"] == "exact"
                 and relation["original"] == relation["candidate"]
                 and original_expression == candidate_expression
-                and reason != "lean_exact_memory_expression"
+                and reason not in {
+                    "lean_exact_memory_expression", "immutable_image_word",
+                }
             ):
                 claims.append({
                     "register": register,
@@ -1048,6 +1076,33 @@ def _synthesize_register_relations(
                     "output": relation,
                     "expression": original_expression,
                 })
+            elif reason == "immutable_image_word":
+                original_address = _constant_read32_address(original_expression)
+                candidate_address = _constant_read32_address(candidate_expression)
+                original_value = (
+                    _immutable_image_u32(original_bin, original_address)
+                    if original_bin is not None and original_address is not None
+                    else None
+                )
+                candidate_value = (
+                    _immutable_image_u32(candidate_bin, candidate_address)
+                    if candidate_bin is not None and candidate_address is not None
+                    else None
+                )
+                if (
+                    original_address is not None
+                    and candidate_address is not None
+                    and original_value is not None
+                    and candidate_value is not None
+                ):
+                    output_claims.append({
+                        "kind": "immutable_image_word",
+                        "output": relation,
+                        "original_address": original_address,
+                        "candidate_address": candidate_address,
+                        "original_value": original_value,
+                        "candidate_value": candidate_value,
+                    })
             elif relation["relation"] == "exact" and any(
                 claim["register"] == register for claim in claims
             ):

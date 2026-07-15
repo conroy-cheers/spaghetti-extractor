@@ -27,6 +27,7 @@ from .external import (
     _semantic_external_target_identity,
     _semantic_input_register_offset,
 )
+from .control import _immutable_image_u32
 from ..model import _stack_window_transfer_claims
 
 
@@ -867,6 +868,8 @@ def _segment_refinement_candidates(
     register_relations: dict[str, Any],
     import_register_seeds: list[dict[str, Any]] | None = None,
     diagnostics: list[dict[str, Any]] | None = None,
+    original_bin: StageABinary | None = None,
+    candidate_bin: StageABinary | None = None,
 ) -> list[dict[str, Any]]:
     by_edge: dict[int, dict[str, Any]] = {}
     memory_regions = memory_contracts.get("regions", [])
@@ -919,6 +922,8 @@ def _segment_refinement_candidates(
             source,
             edge.get("original_guard") or {},
             edge.get("candidate_guard") or {},
+            original_bin,
+            candidate_bin,
         ) or _paired_stack_guard_claim(
             source,
             edge.get("original_guard") or {},
@@ -1698,6 +1703,8 @@ def _exact_pure_guard_claim(
     source: dict[str, Any],
     original_guard: dict[str, Any],
     candidate_guard: dict[str, Any],
+    original_bin: StageABinary | None = None,
+    candidate_bin: StageABinary | None = None,
 ) -> dict[str, Any] | None:
     if original_guard != candidate_guard:
         return None
@@ -1724,6 +1731,18 @@ def _exact_pure_guard_claim(
             "constant", "undefined",
         }:
             return True
+        if operation == "read32":
+            address = expression.get("address") or {}
+            if (
+                original_bin is None
+                or candidate_bin is None
+                or address.get("op") != "constant"
+            ):
+                return False
+            absolute = int(address.get("value", -1))
+            original_value = _immutable_image_u32(original_bin, absolute)
+            candidate_value = _immutable_image_u32(candidate_bin, absolute)
+            return original_value is not None and original_value == candidate_value
         if operation in {
             "add", "sub", "bit_and", "bit_xor", "shift_left_by",
             "shift_right_by", "shift_arithmetic_right_by", "bit_or",

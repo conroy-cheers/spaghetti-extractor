@@ -3052,8 +3052,39 @@ theorem inputFlagsGuard_eval_equal_of_checked
   exact BoolExpr.eval_eq_of_inputFlagsOnlyWithin sourceInvariant.flagBits
     originalState candidateState claim.guard within inputFlags
 
+def immutableImageWordsEqual (context : StaticProofContext) (address : Nat) : Bool :=
+  match readImmutableImageWord context.originalPe address 4,
+      readImmutableImageWord context.candidatePe address 4 with
+  | some original, some candidate => original == candidate
+  | _, _ => false
+
+theorem immutableConstantRead32_eval_equal
+    (context : StaticProofContext) (address : Nat)
+    (original candidate : MachineState)
+    (originalImmutable : ImmutableImageWordMemory context.originalPe original.memory)
+    (candidateImmutable : ImmutableImageWordMemory context.candidatePe candidate.memory)
+    (checked : immutableImageWordsEqual context address = true) :
+    (.read32 (.constant address) : Expr).eval original =
+      (.read32 (.constant address) : Expr).eval candidate := by
+  unfold immutableImageWordsEqual at checked
+  cases originalResult : readImmutableImageWord context.originalPe address 4 with
+  | none => simp [originalResult] at checked
+  | some originalValue =>
+      cases candidateResult : readImmutableImageWord context.candidatePe address 4 with
+      | none => simp [originalResult, candidateResult] at checked
+      | some candidateValue =>
+          simp only [originalResult, candidateResult, beq_iff_eq] at checked
+          have originalRead := ImmutableImageWordMemory.read32_of_checked
+            context.originalPe original.memory address originalValue
+            originalImmutable originalResult
+          have candidateRead := ImmutableImageWordMemory.read32_of_checked
+            context.candidatePe candidate.memory address candidateValue
+            candidateImmutable candidateResult
+          simp only [Expr.eval, machineStateRead32_eq_memoryRead32]
+          rw [originalRead, candidateRead, checked]
+
 def _root_.StageA.Formal.Expr.exactInputsOnly
-    (invariant : StateInvariant) : Expr -> Bool
+    (context : StaticProofContext) (invariant : StateInvariant) : Expr -> Bool
   | .inputReg register => exactIdentityRegister invariant.registerRelations register
   | .inputFlagValue bit => invariant.flagBits.contains bit
   | .inputFsBase | .inputX87Control | .inputX87Status | .constant _ | .undefined _ => true
@@ -3062,29 +3093,31 @@ def _root_.StageA.Formal.Expr.exactInputsOnly
       .shiftArithmeticRightBy left right | .bitOr left right |
       .unsignedLessValue left right | .multiply left right |
       .multiplyHighUnsigned left right | .multiplyHighSigned left right =>
-      left.exactInputsOnly invariant && right.exactInputsOnly invariant
+      left.exactInputsOnly context invariant && right.exactInputsOnly context invariant
   | .bitNot value | .extractByte value _ | .shiftLeft value _ | .shiftRight value _ |
       .bitValue value _ | .lowestSetBit value | .highestSetBit value =>
-      value.exactInputsOnly invariant
+      value.exactInputsOnly context invariant
   | .ifEqual left right thenValue elseValue =>
-      left.exactInputsOnly invariant && right.exactInputsOnly invariant &&
-        thenValue.exactInputsOnly invariant && elseValue.exactInputsOnly invariant
+      left.exactInputsOnly context invariant && right.exactInputsOnly context invariant &&
+        thenValue.exactInputsOnly context invariant &&
+        elseValue.exactInputsOnly context invariant
   | .divideQuotient high low divisor | .divideRemainder high low divisor |
       .divisionValidValue high low divisor =>
-      high.exactInputsOnly invariant && low.exactInputsOnly invariant &&
-        divisor.exactInputsOnly invariant
+      high.exactInputsOnly context invariant && low.exactInputsOnly context invariant &&
+        divisor.exactInputsOnly context invariant
+  | .read32 (.constant address) => immutableImageWordsEqual context address
   | .read8 _ | .read32 _ | .read8AfterWrite _ _ _ _ | .x87Part _ _ |
       .x87CompareBit _ _ _ _ | .x87ExamineStatus _ _ => false
 
 theorem _root_.StageA.Formal.Expr.eval_eq_of_exactInputsOnly
     (context : StaticProofContext) (world : RelationalWorld)
     (invariant : StateInvariant) (original candidate : MachineState)
-    (expression : Expr) (checked : expression.exactInputsOnly invariant = true)
+    (expression : Expr) (checked : expression.exactInputsOnly context invariant = true)
     (related : StateRel context world invariant original candidate) :
     expression.eval original = expression.eval candidate := by
   rcases related with
     ⟨_worldValid, _stackRangesValid, _stackMemory, _importsStatic,
-      _importsComplete, _importsMemory, _originalImmutable, _candidateImmutable,
+      _importsComplete, _importsMemory, originalImmutable, candidateImmutable,
       relatedCore, _importAndDynamicRegisters⟩
   rcases relatedCore with
     ⟨inputRegisters, _inputBounds, _inputSeparations, _inputStackWindows,
@@ -3104,33 +3137,39 @@ theorem _root_.StageA.Formal.Expr.eval_eq_of_exactInputsOnly
     intro bit contains
     exact flagsRelated_of_contains invariant.flagBits original.eflags candidate.eflags
       inputFlags contains
-  have evalAll : ∀ value : Expr, value.exactInputsOnly invariant = true →
+  have evalAll : ∀ value : Expr, value.exactInputsOnly context invariant = true →
       value.eval original = value.eval candidate := by
     intro value
     apply Expr.rec
-      (motive_1 := fun item => item.exactInputsOnly invariant = true →
+      (motive_1 := fun item => item.exactInputsOnly context invariant = true →
         item.eval original = item.eval candidate)
-      (motive_2 := fun _ => True) <;>
-      simp_all [Expr.exactInputsOnly, Expr.eval, Bool.and_eq_true]
+      (motive_2 := fun _ => True)
+    case read32 =>
+      intro address _ safe
+      cases address <;> simp_all [Expr.exactInputsOnly]
+      exact immutableConstantRead32_eval_equal context _ original candidate
+        originalImmutable candidateImmutable safe
+    all_goals simp_all [Expr.exactInputsOnly, Expr.eval, Bool.and_eq_true]
   exact evalAll expression checked
 
 def _root_.StageA.Formal.BoolExpr.exactInputsOnly
-    (invariant : StateInvariant) : BoolExpr -> Bool
+    (context : StaticProofContext) (invariant : StateInvariant) : BoolExpr -> Bool
   | .equal left right | .unsignedLess left right =>
-      left.exactInputsOnly invariant && right.exactInputsOnly invariant
-  | .not value => value.exactInputsOnly invariant
+      left.exactInputsOnly context invariant && right.exactInputsOnly context invariant
+  | .not value => value.exactInputsOnly context invariant
   | .and left right | .or left right | .xor left right =>
-      left.exactInputsOnly invariant && right.exactInputsOnly invariant
-  | .msb value | .bit value _ => value.exactInputsOnly invariant
+      left.exactInputsOnly context invariant && right.exactInputsOnly context invariant
+  | .msb value | .bit value _ => value.exactInputsOnly context invariant
   | .inputFlag bit => invariant.flagBits.contains bit
   | .divisionValid high low divisor =>
-      high.exactInputsOnly invariant && low.exactInputsOnly invariant &&
-        divisor.exactInputsOnly invariant
+      high.exactInputsOnly context invariant && low.exactInputsOnly context invariant &&
+        divisor.exactInputsOnly context invariant
 
 theorem _root_.StageA.Formal.BoolExpr.eval_eq_of_exactInputsOnly
     (context : StaticProofContext) (world : RelationalWorld)
     (invariant : StateInvariant) (original candidate : MachineState)
-    (expression : BoolExpr) (checked : expression.exactInputsOnly invariant = true)
+    (expression : BoolExpr)
+    (checked : expression.exactInputsOnly context invariant = true)
     (related : StateRel context world invariant original candidate) :
     expression.eval original = expression.eval candidate := by
   have exactExpression := fun value safe =>
@@ -3153,16 +3192,17 @@ structure ExactPureGuardClaim where
   guard : BoolExpr
 deriving Repr, DecidableEq
 
-def ExactPureGuardClaim.checked (sourceInvariant : StateInvariant)
+def ExactPureGuardClaim.checked (context : StaticProofContext)
+    (sourceInvariant : StateInvariant)
     (originalGuard candidateGuard : BoolExpr) (claim : ExactPureGuardClaim) : Bool :=
   claim.guard == originalGuard && claim.guard == candidateGuard &&
-    claim.guard.exactInputsOnly sourceInvariant
+    claim.guard.exactInputsOnly context sourceInvariant
 
 theorem exactPureGuard_eval_equal_of_checked
     (context : StaticProofContext) (world : RelationalWorld)
     (sourceInvariant : StateInvariant) (originalGuard candidateGuard : BoolExpr)
     (claim : ExactPureGuardClaim)
-    (checked : claim.checked sourceInvariant originalGuard candidateGuard = true)
+    (checked : claim.checked context sourceInvariant originalGuard candidateGuard = true)
     (originalState candidateState : MachineState)
     (related : StateRel context world sourceInvariant originalState candidateState) :
     originalGuard.eval originalState = candidateGuard.eval candidateState := by

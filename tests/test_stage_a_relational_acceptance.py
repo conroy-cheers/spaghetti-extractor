@@ -2028,6 +2028,106 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertNotIn("sorryAx", lean["stdout"])
             self.assertNotIn("._native.", lean["stdout"])
 
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for immutable words")
+    def test_immutable_image_word_load_closes_register_transfer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_image_with_immutable_word_branch(7))
+            candidate.write_bytes(_pe32_image_with_immutable_word_branch(8))
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            relation = {
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": index, "original_rva": rva, "candidate_rva": rva}
+                    for index, rva in enumerate((0x1000, 0x1007, 0x100C, 0x100E))
+                ],
+                "regions": [
+                    {
+                        "id": name,
+                        "root": index == 0,
+                        "original": {"rva": rva, "size": size},
+                        "candidate": {"rva": rva, "size": size},
+                        "inputs": pairs,
+                        "outputs": pairs,
+                    }
+                    for index, (name, rva, size) in enumerate((
+                        ("immutable-load", 0x1000, 7),
+                        ("condition", 0x1007, 5),
+                        ("fallthrough", 0x100C, 2),
+                        ("taken", 0x100E, 2),
+                    ))
+                ],
+                "padding": [],
+                "memory_relation": {"mode": "identity"},
+            }
+            contract = root / "relation.json"
+            contract.write_text(json.dumps(relation), encoding="utf-8")
+
+            mismatched = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=root / "mismatched",
+            )
+            self.assertEqual(mismatched["acceptance"]["status"], "incomplete")
+            mismatched_relations = json.loads(
+                (root / "mismatched" / "relational-register-relations.json")
+                .read_text(encoding="utf-8")
+            )
+            self.assertNotIn(
+                "immutable_image_word",
+                {
+                    claim["kind"]
+                    for claim in mismatched_relations["regions"][0]["output_claims"]
+                },
+            )
+
+            candidate.write_bytes(original.read_bytes())
+            prepared = root / "prepared"
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            register_relations = json.loads(
+                (prepared / "relational-register-relations.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            immutable_claims = [
+                claim
+                for claim in register_relations["regions"][0]["output_claims"]
+                if claim["kind"] == "immutable_image_word"
+            ]
+            self.assertEqual(len(immutable_claims), 1)
+            self.assertEqual(immutable_claims[0]["original_value"], 7)
+            segment_source = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted(
+                    (prepared / "lean" / "StageA").glob(
+                        "RelationalRegisterRelationsChunk*.lean"
+                    )
+                )
+            )
+            self.assertIn("RegisterOutputClaim.immutableImageWord", segment_source)
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_representative_control_slice_closes_whole_program_theorem(self):
         with tempfile.TemporaryDirectory() as temporary:
