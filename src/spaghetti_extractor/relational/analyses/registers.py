@@ -1109,8 +1109,18 @@ def _infer_import_register_invariants(
                     source_index = int(
                         edges[edge_index]["source_region_index"]
                     )
-                    proposals = set(seed_facts.get(source_index, set()))
-                    proposals.update(
+                    target_facts = set(seed_facts.get(source_index, set()))
+                    original_outputs = (
+                        behaviors[source_index]["original_ir"].get(
+                            "registers"
+                        ) or {}
+                    )
+                    candidate_outputs = (
+                        behaviors[source_index]["candidate_ir"].get(
+                            "registers"
+                        ) or {}
+                    )
+                    source_facts = [
                         (
                             original_register,
                             candidate_register,
@@ -1123,11 +1133,24 @@ def _infer_import_register_invariants(
                             imported,
                         ) in result
                         if region_index == source_index
-                    )
-                    for proposal in proposals:
-                        fact = (target_index, *proposal)
+                    ]
+                    for source_fact in source_facts:
+                        imported = source_fact[2]
+                        for original_target in original_outputs:
+                            for candidate_target in candidate_outputs:
+                                target_fact = (
+                                    str(original_target),
+                                    str(candidate_target),
+                                    imported,
+                                )
+                                if transferred_source_fact(
+                                    edges[edge_index], target_fact
+                                ) == source_fact:
+                                    target_facts.add(target_fact)
+                    for target_fact in target_facts:
+                        fact = (target_index, *target_fact)
                         if fact not in result and edge_supports(
-                            edges[edge_index], proposal, result
+                            edges[edge_index], target_fact, result
                         ):
                             result.add(fact)
                             changed = True

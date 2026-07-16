@@ -1681,6 +1681,116 @@ class StageARelationalStateTests(StageARelationalTestBase):
         self.assertEqual(volatile["relations"], [], volatile)
         self.assertEqual(volatile["indirect_import_calls"], [], volatile)
 
+    def test_import_register_inference_tracks_paired_register_renames(self):
+        imported = {
+            "dll": "kernel32.dll",
+            "symbol": "WideCharToMultiByte",
+        }
+
+        def identity_registers():
+            return {
+                register: {"op": "input_reg", "reg": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            }
+
+        contract = {
+            "regions": [
+                {"numeric_id": region_index}
+                for region_index in range(4)
+            ],
+        }
+        renamed_original = identity_registers()
+        renamed_candidate = identity_registers()
+        renamed_original["ebx"] = {"op": "input_reg", "reg": "ebp"}
+        renamed_candidate["esi"] = {"op": "input_reg", "reg": "edi"}
+        renamed_original["ebp"] = {"op": "constant", "value": 0}
+        renamed_candidate["edi"] = {"op": "constant", "value": 0}
+        behaviors = [
+            {
+                "original_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {"op": "jump", "target": 1},
+                },
+                "candidate_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {"op": "jump", "target": 1},
+                },
+            },
+            {
+                "original_ir": {
+                    "registers": renamed_original,
+                    "outcome": {"op": "jump", "target": 2},
+                },
+                "candidate_ir": {
+                    "registers": renamed_candidate,
+                    "outcome": {"op": "jump", "target": 2},
+                },
+            },
+            {
+                "original_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {
+                        "op": "indirect_call",
+                        "target": {"op": "input_reg", "reg": "ebx"},
+                        "continuation": 3,
+                    },
+                },
+                "candidate_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {
+                        "op": "indirect_call",
+                        "target": {"op": "input_reg", "reg": "esi"},
+                        "continuation": 3,
+                    },
+                },
+            },
+            {
+                "original_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {"op": "returned"},
+                },
+                "candidate_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {"op": "returned"},
+                },
+            },
+        ]
+        analysis = _infer_import_register_invariants(
+            contract,
+            behaviors,
+            [{
+                "region_index": 0,
+                "original_register": "ebp",
+                "candidate_register": "edi",
+                "import": imported,
+            }],
+        )
+
+        relation_keys = {
+            (
+                row["region_index"],
+                row["original_register"],
+                row["candidate_register"],
+            )
+            for row in analysis["relations"]
+        }
+        self.assertIn((1, "ebp", "edi"), relation_keys)
+        self.assertIn((2, "ebx", "esi"), relation_keys)
+        self.assertIn((3, "ebx", "esi"), relation_keys)
+        self.assertEqual(
+            analysis["indirect_import_calls"],
+            [{
+                "profile": "inductive_iat_register_call_v1",
+                "source_region_index": 2,
+                "continuation_region_index": 3,
+                "original_register": "ebx",
+                "candidate_register": "esi",
+                "import": imported,
+            }],
+        )
+
     def test_import_register_inference_composes_checked_internal_returns(self):
         imported = {"dll": "kernel32.dll", "symbol": "GetTickCount"}
 
