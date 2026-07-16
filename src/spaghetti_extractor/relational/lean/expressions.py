@@ -226,6 +226,20 @@ def _lean_machine_call_memory_size(size: dict[str, Any]) -> str:
             f".product {int(size['left_argument'])} "
             f"{int(size['right_argument'])}"
         )
+    sentinel = ", ".join(str(int(byte)) for byte in size.get("sentinel", []))
+    if size["kind"] == "bounded_terminated":
+        return (
+            f".boundedTerminated {int(size['source_argument'])} "
+            f"{int(size['source_offset'])} {int(size['unit_bytes'])} "
+            f"[{sentinel}] {int(size['max_units'])}"
+        )
+    if size["kind"] == "argument_or_bounded_terminated":
+        return (
+            f".argumentOrBoundedTerminated {int(size['length_argument'])} "
+            f"{int(size['terminated_value'])} {int(size['source_argument'])} "
+            f"{int(size['source_offset'])} {int(size['unit_bytes'])} "
+            f"[{sentinel}] {int(size['max_units'])}"
+        )
     raise StageAInputError(f"unsupported machine-call memory size {size!r}")
 
 def _lean_machine_call_memory_footprint(footprint: dict[str, Any]) -> str:

@@ -1678,8 +1678,8 @@ def _static_word_relation_slots(
     return sorted(result, key=lambda slot: slot["id"])
 
 def _machine_call_memory_size(
-    value: Any, argument_count: int,
-) -> dict[str, int | str] | None:
+    value: Any, argument_count: int, *, footprint: bool = False,
+) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     kind = value.get("kind")
@@ -1713,7 +1713,88 @@ def _machine_call_memory_size(
                 "left_argument": left_argument,
                 "right_argument": right_argument,
             }
+    if kind in {
+        "bounded_terminated", "argument_or_bounded_terminated",
+    } and footprint:
+        source_argument = _integer(value.get("source_argument"))
+        source_offset = _integer(value.get("source_offset"))
+        unit_bytes = _integer(value.get("unit_bytes"))
+        raw_sentinel = value.get("sentinel")
+        sentinel = (
+            [_integer(byte) for byte in raw_sentinel]
+            if isinstance(raw_sentinel, list) else None
+        )
+        max_units = _integer(value.get("max_units"))
+        bounded_bytes = (
+            unit_bytes * max_units
+            if unit_bytes is not None and max_units is not None else None
+        )
+        common_valid = (
+            source_argument is not None
+            and 0 <= source_argument < argument_count
+            and source_offset is not None
+            and 0 <= source_offset < 2**32
+            and unit_bytes is not None
+            and unit_bytes > 0
+            and sentinel is not None
+            and len(sentinel) == unit_bytes
+            and all(byte is not None and 0 <= byte <= 0xFF for byte in sentinel)
+            and max_units is not None
+            and max_units > 0
+            and bounded_bytes is not None
+            and bounded_bytes < 2**32
+            and source_offset + bounded_bytes <= 2**32
+        )
+        if not common_valid:
+            return None
+        assert source_argument is not None
+        assert source_offset is not None
+        assert unit_bytes is not None
+        assert sentinel is not None
+        assert max_units is not None
+        normalized: dict[str, Any] = {
+            "kind": str(kind),
+            "source_argument": source_argument,
+            "source_offset": source_offset,
+            "unit_bytes": unit_bytes,
+            "sentinel": [int(byte) for byte in sentinel],
+            "max_units": max_units,
+        }
+        if kind == "argument_or_bounded_terminated":
+            length_argument = _integer(value.get("length_argument"))
+            terminated_value = _integer(value.get("terminated_value"))
+            if (
+                length_argument is None
+                or not 0 <= length_argument < argument_count
+                or terminated_value is None
+                or not 0 <= terminated_value < 2**32
+            ):
+                return None
+            normalized = {
+                "kind": "argument_or_bounded_terminated",
+                "length_argument": length_argument,
+                "terminated_value": terminated_value,
+                **{key: field for key, field in normalized.items() if key != "kind"},
+            }
+        return normalized
     return None
+
+
+def _canonical_machine_call_value(value: Any) -> tuple[Any, ...]:
+    if isinstance(value, dict):
+        return (
+            "object",
+            tuple(
+                (key, _canonical_machine_call_value(value[key]))
+                for key in sorted(value)
+            ),
+        )
+    if isinstance(value, list):
+        return (
+            "array",
+            tuple(_canonical_machine_call_value(item) for item in value),
+        )
+    return (type(value).__name__, value)
 
 
 def _machine_import_call_contracts(
@@ -1828,13 +1909,15 @@ def _machine_import_call_contracts(
                     if isinstance(footprint, dict) else None
                 )
                 size = footprint.get("size") if isinstance(footprint, dict) else None
-                normalized_size = _machine_call_memory_size(size, len(offsets))
+                normalized_size = _machine_call_memory_size(
+                    size, len(offsets), footprint=True,
+                )
                 size_key = (
-                    tuple(sorted(normalized_size.items()))
+                    _canonical_machine_call_value(normalized_size)
                     if normalized_size is not None else None
                 )
                 key = (
-                    access, base_argument, offset, *size_key
+                    access, base_argument, offset, size_key
                 ) if size_key is not None else None
                 valid_footprint = (
                     access in {"read", "write"}

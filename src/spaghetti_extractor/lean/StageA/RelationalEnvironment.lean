@@ -512,41 +512,98 @@ def MachineCallMemorySize.bytes? (arguments : List Word) :
           let bytes := left.toNat * right.toNat
           if bytes < 2^32 then some bytes else none
       | _, _ => none
+  | .boundedTerminated _ _ _ _ _ | .argumentOrBoundedTerminated _ _ _ _ _ _ _ =>
+      none
 
-def MachineCallMemoryFootprint.range? (arguments : List Word)
+def memoryMatchesBytes (memory : Memory) (address : Nat) : Bytes -> Bool
+  | [] => true
+  | expected :: rest =>
+      memory (BitVec.ofNat 32 address) == expected &&
+        memoryMatchesBytes memory (address + 1) rest
+
+def boundedTerminatedExtentFrom? (memory : Memory) (start unitBytes : Nat)
+    (sentinel : Bytes) : Nat -> Nat -> Option Nat
+  | 0, _index => none
+  | remaining + 1, index =>
+      if memoryMatchesBytes memory (start + index * unitBytes) sentinel then
+        some ((index + 1) * unitBytes)
+      else
+        boundedTerminatedExtentFrom? memory start unitBytes sentinel remaining
+          (index + 1)
+
+def boundedTerminatedExtent? (memory : Memory) (arguments : List Word)
+    (sourceArgument sourceOffset unitBytes : Nat) (sentinel : Bytes)
+    (maxUnits : Nat) : Option Nat :=
+  match arguments[sourceArgument]? with
+  | none => none
+  | some source =>
+      if source == BitVec.ofNat 32 0 then none
+      else
+        let start := source.toNat + sourceOffset
+        if start < 2^32 && start + unitBytes * maxUnits <= 2^32 then
+          boundedTerminatedExtentFrom? memory start unitBytes sentinel maxUnits 0
+        else none
+
+def MachineCallMemorySize.footprintBytes? (memory : Memory)
+    (arguments : List Word) : MachineCallMemorySize -> Option Nat
+  | size@(.fixed _) | size@(.argument _ _) | size@(.product _ _) =>
+      size.bytes? arguments
+  | .boundedTerminated sourceArgument sourceOffset unitBytes sentinel maxUnits =>
+      boundedTerminatedExtent? memory arguments sourceArgument sourceOffset unitBytes
+        sentinel maxUnits
+  | .argumentOrBoundedTerminated lengthArgument terminatedValue sourceArgument
+      sourceOffset unitBytes sentinel maxUnits =>
+      match arguments[lengthArgument]? with
+      | none => none
+      | some length =>
+          if length.toNat == terminatedValue then
+            boundedTerminatedExtent? memory arguments sourceArgument sourceOffset
+              unitBytes sentinel maxUnits
+          else
+            let bytes := length.toNat * unitBytes
+            if bytes < 2^32 then some bytes else none
+
+def MachineCallMemoryFootprint.range? (memory : Memory) (arguments : List Word)
     (footprint : MachineCallMemoryFootprint) : Option (Nat × Nat) :=
-  match arguments[footprint.baseArgument]?,
-      footprint.size.bytes? arguments with
-  | some base, some size =>
+  match arguments[footprint.baseArgument]? with
+  | some base =>
       if base == BitVec.ofNat 32 0 && footprint.nullable then
         some (0, 0)
       else
-        let start := base.toNat + footprint.offset
-        if (size == 0 || base != BitVec.ofNat 32 0) && start + size <= 2^32 then
-          some (start, start + size)
-        else none
-  | _, _ => none
+        match footprint.size.footprintBytes? memory arguments with
+        | none => none
+        | some size =>
+            let start := base.toNat + footprint.offset
+            if (size == 0 || base != BitVec.ofNat 32 0) &&
+                start < 2^32 && start + size <= 2^32 then
+              some (start, start + size)
+            else none
+  | none => none
 
-def MachineCallMemoryFootprint.contains (arguments : List Word)
+def MachineCallMemoryFootprint.contains (memory : Memory) (arguments : List Word)
     (footprint : MachineCallMemoryFootprint) (address : Word) : Bool :=
-  match footprint.range? arguments with
+  match footprint.range? memory arguments with
   | none => false
   | some range => range.1 <= address.toNat && address.toNat < range.2
 
 def machineCallMemoryFootprintsRuntimeValid (contract : MachineImportCallContract)
-    (arguments : List Word) : Bool :=
+    (memory : Memory) (arguments : List Word) : Bool :=
   contract.memoryFootprints.all fun footprint =>
-    (footprint.range? arguments).isSome
+    (footprint.range? memory arguments).isSome
 
 def machineCallMemoryEffectHolds (contract : MachineImportCallContract)
     (arguments : List Word) (before after : Memory) : Prop :=
   match contract.memoryEffect with
-  | .none | .readOnly => before = after
+  | .none => before = after
+  | .readOnly =>
+      machineCallMemoryFootprintsRuntimeValid contract before arguments = true ∧
+        before = after
   | .argumentRanges =>
-      machineCallMemoryFootprintsRuntimeValid contract arguments = true ∧
+      machineCallMemoryFootprintsRuntimeValid contract before arguments = true ∧
         ∀ address,
           (contract.memoryFootprints.any fun footprint =>
-            footprint.access == .write && footprint.contains arguments address) = false →
+            footprint.access == .write &&
+              footprint.contains before arguments address) = false →
           after address = before address
   | .newDynamicRanges => False
 

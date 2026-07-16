@@ -1797,6 +1797,176 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 "machine_import_call_contract_import_mismatch",
             )
 
+    def test_bounded_terminated_memory_footprints_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "fixture.exe"
+            image.write_bytes(_pe32_image_with_relocated_data(0x3000))
+            binary = replace(
+                _parse_stage_a_pe(image),
+                imports=(StageAImport(
+                    dll="KERNEL32.dll", symbol="EnterCriticalSection",
+                    ordinal=None, thunk_rva=0x3010,
+                ),),
+            )
+
+            bounded = {
+                "kind": "bounded_terminated",
+                "source_argument": 1,
+                "source_offset": 4,
+                "unit_bytes": 2,
+                "sentinel": [0, 0],
+                "max_units": 16,
+            }
+            selected = {
+                "kind": "argument_or_bounded_terminated",
+                "length_argument": 0,
+                "terminated_value": 0xFFFFFFFF,
+                "source_argument": 1,
+                "source_offset": 4,
+                "unit_bytes": 2,
+                "sentinel": [0, 0],
+                "max_units": 16,
+            }
+
+            def footprint(size: dict, *, base: int = 0, offset: int = 0) -> dict:
+                return {
+                    "access": "read",
+                    "base_argument": base,
+                    "offset": offset,
+                    "size": size,
+                    "nullable": False,
+                }
+
+            def contract(
+                footprints: list[dict],
+                *,
+                memory_effect: str = "readOnly",
+                world_effect: str = "none",
+                result_relations: list[dict] | None = None,
+            ) -> dict:
+                return {
+                    "id": 8,
+                    "import": {
+                        "dll": "kernel32.dll",
+                        "symbol": "EnterCriticalSection",
+                    },
+                    "stack_argument_offsets": [0, 4],
+                    "stack_result_delta": 8,
+                    "preserved_registers": ["ebx", "esi", "edi", "ebp"],
+                    "clobbered_registers": ["eax", "ecx", "edx"],
+                    "result_register_relations": result_relations or [],
+                    "memory_effect": memory_effect,
+                    "memory_footprints": footprints,
+                    "world_effect": world_effect,
+                }
+
+            footprints = [
+                footprint(bounded),
+                footprint(selected, base=1, offset=4),
+            ]
+            issues: list[dict] = []
+            normalized = _machine_import_call_contracts(
+                [contract(footprints)], binary, binary, issues,
+            )
+            self.assertEqual(issues, [])
+            self.assertEqual(normalized[0]["memory_footprints"], footprints)
+
+            malformed_sizes = {
+                "source index": {**bounded, "source_argument": 2},
+                "negative source offset": {**bounded, "source_offset": -1},
+                "source offset domain": {**bounded, "source_offset": 2**32},
+                "source bound domain": {
+                    **bounded,
+                    "source_offset": 2**32 - 1,
+                    "unit_bytes": 1,
+                    "sentinel": [0],
+                    "max_units": 2,
+                },
+                "empty sentinel": {**bounded, "sentinel": []},
+                "sentinel width": {**bounded, "sentinel": [0]},
+                "sentinel byte": {**bounded, "sentinel": [0, 256]},
+                "zero unit": {
+                    **bounded, "unit_bytes": 0, "sentinel": [],
+                },
+                "zero bound": {**bounded, "max_units": 0},
+                "bound multiplication": {**bounded, "max_units": 2**31},
+                "length index": {**selected, "length_argument": 2},
+                "malformed selector": {**selected, "length_argument": []},
+                "negative terminated value": {
+                    **selected, "terminated_value": -1,
+                },
+                "terminated value domain": {
+                    **selected, "terminated_value": 2**32,
+                },
+                "malformed terminated value": {
+                    **selected, "terminated_value": "terminated",
+                },
+            }
+            for name, malformed_size in malformed_sizes.items():
+                with self.subTest(name=name):
+                    malformed_issues: list[dict] = []
+                    self.assertEqual(
+                        _machine_import_call_contracts(
+                            [contract([footprint(malformed_size)])],
+                            binary,
+                            binary,
+                            malformed_issues,
+                        ),
+                        [],
+                    )
+                    self.assertEqual(
+                        malformed_issues[0]["category"],
+                        "machine_import_call_contract_invalid",
+                    )
+
+            for size in (bounded, selected):
+                with self.subTest(duplicate=size["kind"]):
+                    reordered = {
+                        key: size[key] for key in reversed(tuple(size))
+                    }
+                    duplicate_issues: list[dict] = []
+                    self.assertEqual(
+                        _machine_import_call_contracts(
+                            [contract([footprint(size), footprint(reordered)])],
+                            binary,
+                            binary,
+                            duplicate_issues,
+                        ),
+                        [],
+                    )
+                    self.assertEqual(
+                        duplicate_issues[0]["category"],
+                        "machine_import_call_contract_invalid",
+                    )
+
+            for size in (bounded, selected):
+                with self.subTest(result_size=size["kind"]):
+                    result_issues: list[dict] = []
+                    dynamic_result = contract(
+                        [],
+                        memory_effect="newDynamicRanges",
+                        world_effect="dynamicRanges",
+                        result_relations=[{
+                            "register": "eax",
+                            "relation": "dynamic_range_base",
+                            "size": size,
+                            "minimum_size": 0,
+                            "required_words": [],
+                            "nullable": False,
+                        }],
+                    )
+                    self.assertEqual(
+                        _machine_import_call_contracts(
+                            [dynamic_result], binary, binary, result_issues,
+                        ),
+                        [],
+                    )
+                    self.assertEqual(
+                        result_issues[0]["category"],
+                        "machine_import_call_contract_invalid",
+                    )
+
     def test_machine_import_call_analysis_requires_recovered_arguments(self):
         imported = {
             "dll": list(b"kernel32.dll"),

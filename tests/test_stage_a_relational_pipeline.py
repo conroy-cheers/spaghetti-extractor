@@ -1,5 +1,10 @@
 from tests.stage_a_relational_support import *
 
+from spaghetti_extractor.relational.lean.expressions import (
+    _lean_machine_call_memory_size,
+)
+from spaghetti_extractor.relational.model import _semantic_hash
+
 
 class StageARelationalPipelineTests(StageARelationalTestBase):
     def test_proof_shards_are_bounded_by_region_count_and_estimated_source_size(self):
@@ -11,6 +16,52 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             ),
             [[0, 1], [2], [3, 4, 5]],
         )
+
+    def test_bounded_terminated_memory_sizes_emit_every_field(self):
+        bounded = {
+            "kind": "bounded_terminated",
+            "source_argument": 1,
+            "source_offset": 4,
+            "unit_bytes": 2,
+            "sentinel": [0, 255],
+            "max_units": 8,
+        }
+        selected = {
+            "kind": "argument_or_bounded_terminated",
+            "length_argument": 0,
+            "terminated_value": 0xFFFFFFFF,
+            "source_argument": 1,
+            "source_offset": 4,
+            "unit_bytes": 2,
+            "sentinel": [0, 255],
+            "max_units": 8,
+        }
+
+        self.assertEqual(
+            _lean_machine_call_memory_size(bounded),
+            ".boundedTerminated 1 4 2 [0, 255] 8",
+        )
+        self.assertEqual(
+            _lean_machine_call_memory_size(selected),
+            ".argumentOrBoundedTerminated 0 4294967295 1 4 2 [0, 255] 8",
+        )
+
+        replacements = {
+            "kind": "different_kind",
+            "length_argument": 2,
+            "terminated_value": 7,
+            "source_argument": 2,
+            "source_offset": 12,
+            "unit_bytes": 4,
+            "sentinel": [1, 255],
+            "max_units": 9,
+        }
+        for size in (bounded, selected):
+            base_hash = _semantic_hash(size)
+            for field in size:
+                with self.subTest(kind=size["kind"], field=field):
+                    mutated = {**size, field: replacements[field]}
+                    self.assertNotEqual(_semantic_hash(mutated), base_hash)
 
     def test_relation_contract_generator_projects_complete_block_map(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1171,6 +1171,47 @@ def optionalCallerBufferContract : MachineImportCallContract := {
   callerBufferContract with memoryFootprints := [optionalCallerBufferFootprint]
 }
 
+def zeroMemory : Memory := fun _ => BitVec.ofNat 8 0
+
+def nonzeroMemory : Memory := fun _ => BitVec.ofNat 8 1
+
+def utf16Memory : Memory := fun address =>
+  match address.toNat with
+  | 4096 => BitVec.ofNat 8 65
+  | 4097 => BitVec.ofNat 8 0
+  | 4098 | 4099 => BitVec.ofNat 8 0
+  | _ => BitVec.ofNat 8 1
+
+def utf16TerminatedSize : MachineCallMemorySize :=
+  .boundedTerminated 0 0 2 [0, 0] 4
+
+def utf16CountOrTerminatedSize : MachineCallMemorySize :=
+  .argumentOrBoundedTerminated 1 4294967295 0 0 2 [0, 0] 4
+
+def utf16ReadFootprint : MachineCallMemoryFootprint := {
+  access := .read
+  baseArgument := 0
+  offset := 0
+  size := utf16TerminatedSize
+}
+
+def utf16ReadContract : MachineImportCallContract := {
+  callerBufferContract with
+  stackArgumentOffsets := [0, 4]
+  memoryEffect := .readOnly
+  memoryFootprints := [utf16ReadFootprint]
+}
+
+def utf16WriteFootprint : MachineCallMemoryFootprint := {
+  utf16ReadFootprint with access := .write
+}
+
+def utf16WriteContract : MachineImportCallContract := {
+  utf16ReadContract with
+  memoryEffect := .argumentRanges
+  memoryFootprints := [utf16WriteFootprint]
+}
+
 def stackArgumentWindow : StackWindowPair := {
   rangeId := 0
   originalRegister := .esp
@@ -1205,20 +1246,41 @@ def stackArgumentClaim : StackWindowArgumentClaim := {
 }
 
 example : callerBufferContract.shapeValid = true := by decide
-example : callerBufferFootprint.range? [BitVec.ofNat 32 4096] = some (4100, 4108) := by
+example : callerBufferFootprint.range? zeroMemory [BitVec.ofNat 32 4096] =
+    some (4100, 4108) := by
   decide
-example : callerBufferFootprint.contains [BitVec.ofNat 32 4096]
+example : callerBufferFootprint.contains zeroMemory [BitVec.ofNat 32 4096]
     (BitVec.ofNat 32 4104) = true := by decide
-example : callerBufferFootprint.contains [BitVec.ofNat 32 4096]
+example : callerBufferFootprint.contains zeroMemory [BitVec.ofNat 32 4096]
     (BitVec.ofNat 32 4108) = false := by decide
-example : callerBufferFootprint.range? [BitVec.ofNat 32 (2^32 - 8)] = none := by
+example : callerBufferFootprint.range? zeroMemory [BitVec.ofNat 32 (2^32 - 8)] =
+    none := by
   decide
-example : callerBufferFootprint.range? [BitVec.ofNat 32 0] = none := by decide
+example : callerBufferFootprint.range? zeroMemory [BitVec.ofNat 32 0] = none := by
+  decide
 example : optionalCallerBufferContract.shapeValid = true := by decide
-example : optionalCallerBufferFootprint.range? [BitVec.ofNat 32 0] = some (0, 0) := by
+example : optionalCallerBufferFootprint.range? zeroMemory [BitVec.ofNat 32 0] =
+    some (0, 0) := by
   decide
-example : optionalCallerBufferFootprint.contains [BitVec.ofNat 32 0]
+example : optionalCallerBufferFootprint.contains zeroMemory [BitVec.ofNat 32 0]
     (BitVec.ofNat 32 0) = false := by decide
+example : utf16ReadContract.shapeValid = true := by decide
+example : utf16TerminatedSize.footprintBytes? utf16Memory
+    [BitVec.ofNat 32 4096] = some 4 := by decide
+example : utf16ReadFootprint.range? utf16Memory [BitVec.ofNat 32 4096] =
+    some (4096, 4100) := by decide
+example : utf16TerminatedSize.footprintBytes? nonzeroMemory
+    [BitVec.ofNat 32 4096] = none := by decide
+example : (MachineCallMemorySize.boundedTerminated 0 0 2 [0, 0] 1).footprintBytes?
+    utf16Memory [BitVec.ofNat 32 4096] = none := by decide
+example : utf16TerminatedSize.footprintBytes? utf16Memory
+    [BitVec.ofNat 32 0] = none := by decide
+example : utf16TerminatedSize.footprintBytes? utf16Memory
+    [BitVec.ofNat 32 (2^32 - 4)] = none := by decide
+example : utf16CountOrTerminatedSize.footprintBytes? utf16Memory
+    [BitVec.ofNat 32 4096, BitVec.ofNat 32 2] = some 4 := by decide
+example : utf16CountOrTerminatedSize.footprintBytes? utf16Memory
+    [BitVec.ofNat 32 4096, BitVec.ofNat 32 4294967295] = some 4 := by decide
 example : stackArgumentClaim.checked stackArgumentInvariant directStackArgument
     assembledStackArgument = true := by decide
 example : assembledStackArgument = decodedAssembledStackArgument := by decide
@@ -1226,19 +1288,34 @@ example (before after : Memory)
     (holds : machineCallMemoryEffectHolds callerBufferContract
       [BitVec.ofNat 32 4096] before after) :
     after (BitVec.ofNat 32 4108) = before (BitVec.ofNat 32 4108) := by
-  exact holds.2 _ (by decide)
+  apply holds.2
+  simp [callerBufferContract, callerBufferFootprint,
+    MachineCallMemoryFootprint.contains, MachineCallMemoryFootprint.range?,
+    MachineCallMemorySize.footprintBytes?, MachineCallMemorySize.bytes?]
 example (before after : Memory)
     (holds : machineCallMemoryEffectHolds optionalCallerBufferContract
       [BitVec.ofNat 32 0] before after) (address : Word) :
     after address = before address := by
   apply holds.2
-  have emptyRange : optionalCallerBufferFootprint.range? [BitVec.ofNat 32 0] =
-      some (0, 0) := by decide
-  have outside : optionalCallerBufferFootprint.contains [BitVec.ofNat 32 0]
-      address = false := by
+  have emptyRange : optionalCallerBufferFootprint.range? before
+      [BitVec.ofNat 32 0] = some (0, 0) := by rfl
+  have outside : optionalCallerBufferFootprint.contains before
+      [BitVec.ofNat 32 0] address = false := by
     simp [MachineCallMemoryFootprint.contains, emptyRange]
   simpa [optionalCallerBufferContract, optionalCallerBufferFootprint,
     callerBufferFootprint] using outside
+
+example (before after : Memory)
+    (holds : machineCallMemoryEffectHolds utf16ReadContract
+      [BitVec.ofNat 32 4096, BitVec.ofNat 32 4294967295] before after) :
+    before = after := holds.2
+
+example (after : Memory)
+    (holds : machineCallMemoryEffectHolds utf16WriteContract
+      [BitVec.ofNat 32 4096, BitVec.ofNat 32 4294967295] utf16Memory after) :
+    after (BitVec.ofNat 32 4100) = utf16Memory (BitVec.ofNat 32 4100) := by
+  apply holds.2
+  decide
 
 example : normalizeDllName [75, 69, 82, 78, 69, 76, 51, 50, 46, 100, 108, 108] =
     [107, 101, 114, 110, 101, 108, 51, 50, 46, 100, 108, 108] := by decide

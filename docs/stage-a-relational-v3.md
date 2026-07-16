@@ -664,6 +664,19 @@ value for such a footprint as an empty range and proves that it authorizes no
 memory changes; non-null values retain the ordinary size and non-wrapping
 checks. Nullability is part of the reviewed machine contract and cannot be
 inferred from a call-site value.
+
+The generic size algebra also supports bounded sentinel-terminated footprints.
+`bounded_terminated` scans pre-call memory at aligned fixed-width units and
+returns the inclusive extent of the first exact sentinel. Missing sentinels,
+zero bounds, null sources, malformed widths, and any possible PE32 address wrap
+fail closed. `argument_or_bounded_terminated` uses an explicit element count
+unless the declared selector value requests the same bounded scan. These forms
+cannot size a newly allocated result range: memory-dependent allocation sizing
+is rejected independently by normalization and Lean. A terminated footprint is
+only a checked access extent; it does not replace the separate `StateRel`
+witness for related pointers and contents or the paired-environment refinement
+theorem.
+
 `.none` and `.readOnly` preserve the complete concrete memory; an
 `.argumentRanges` transition may change only bytes covered by a declared write
 footprint. The former `.opaqueStatic` and `.relationalMemory` cases, which

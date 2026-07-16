@@ -24,6 +24,19 @@ checked argument recovery, ABI transfer, memory footprints, world effects, and
 paired-environment refinement before Lean can use them in the whole-program
 theorem. Missing or ambiguous evidence remains `incomplete`.
 
+Footprint sizes may use `bounded_terminated` for aligned sentinel-delimited
+input, or `argument_or_bounded_terminated` when a count word selects between an
+explicit element count and sentinel scanning. These forms name the source
+argument, source offset, unit width, exact sentinel bytes, and a finite unit
+bound. Lean scans pre-call memory at unit-aligned positions, includes the first
+matching sentinel in the extent, and rejects null sources, address-space wrap,
+and bound exhaustion. The selector form multiplies a non-sentinel count by the
+declared unit width with the same PE32 overflow checks. Memory-dependent sizes
+are footprint-only and are rejected for allocation-result relations. They
+authorize no call by themselves: a pointer relation, readable paired contents,
+matching termination evidence, and external-environment refinement are still
+required.
+
 `pe32-kernel32-lockstep-v1.json` is deliberately small. It contains ABI and
 caller-memory effect schemas for nine Kernel32 calls encountered in the current
 generic PE32 integration target. It does not claim to model Kernel32 or Windows

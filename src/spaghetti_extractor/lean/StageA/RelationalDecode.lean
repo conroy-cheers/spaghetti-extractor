@@ -215,6 +215,11 @@ inductive MachineCallMemorySize where
   | fixed (bytes : Nat)
   | argument (index scale : Nat)
   | product (leftIndex rightIndex : Nat)
+  | boundedTerminated (sourceArgument sourceOffset unitBytes : Nat)
+      (sentinel : Bytes) (maxUnits : Nat)
+  | argumentOrBoundedTerminated
+      (lengthArgument terminatedValue sourceArgument sourceOffset unitBytes : Nat)
+      (sentinel : Bytes) (maxUnits : Nat)
 deriving Repr, DecidableEq
 
 structure MachineCallMemoryFootprint where
@@ -294,11 +299,32 @@ def MachineCallMemorySize.shapeValid
   | .argument index scale => index < argumentCount && 0 < scale && scale < 2^32
   | .product leftIndex rightIndex =>
       leftIndex < argumentCount && rightIndex < argumentCount
+  | .boundedTerminated sourceArgument sourceOffset unitBytes sentinel maxUnits =>
+      sourceArgument < argumentCount && sourceOffset < 2^32 &&
+        0 < unitBytes && sentinel.length == unitBytes && 0 < maxUnits &&
+        unitBytes * maxUnits < 2^32 &&
+        sourceOffset + unitBytes * maxUnits <= 2^32
+  | .argumentOrBoundedTerminated lengthArgument terminatedValue sourceArgument
+      sourceOffset unitBytes sentinel maxUnits =>
+      lengthArgument < argumentCount && terminatedValue < 2^32 &&
+        sourceArgument < argumentCount && sourceOffset < 2^32 &&
+        0 < unitBytes && sentinel.length == unitBytes && 0 < maxUnits &&
+        unitBytes * maxUnits < 2^32 &&
+        sourceOffset + unitBytes * maxUnits <= 2^32
+
+def MachineCallMemorySize.resultShapeValid
+    (argumentCount : Nat) : MachineCallMemorySize -> Bool
+  | size@(.fixed _) | size@(.argument _ _) | size@(.product _ _) =>
+      size.shapeValid argumentCount
+  | .boundedTerminated _ _ _ _ _ | .argumentOrBoundedTerminated _ _ _ _ _ _ _ =>
+      false
 
 def MachineCallMemorySize.canMeetMinimum
     (minimumSize : Nat) : MachineCallMemorySize -> Bool
   | .fixed bytes => minimumSize <= bytes
   | .argument _ _ | .product _ _ => true
+  | .boundedTerminated _ _ _ _ _ | .argumentOrBoundedTerminated _ _ _ _ _ _ _ =>
+      false
 
 def MachineCallMemoryFootprint.shapeValid
     (argumentCount : Nat) (footprint : MachineCallMemoryFootprint) : Bool :=
@@ -331,7 +357,7 @@ def MachineCallResultRelationKind.shapeValid
   | .exact | .relatedWord => true
   | .dynamicRangeBase size minimumSize requiredWords _nullable =>
       worldEffect == .dynamicRanges &&
-        size.shapeValid argumentCount &&
+        size.resultShapeValid argumentCount &&
         size.canMeetMinimum minimumSize &&
         minimumSize < 2^32 &&
         (requiredWords.all fun word =>
