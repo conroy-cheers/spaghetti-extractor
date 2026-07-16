@@ -1348,6 +1348,122 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertNotIn("._native.", lean["stdout"])
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
+    def test_nested_known_indirect_call_replays_its_return_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(
+                _pe32_image_with_nested_immutable_indirect_call(0x2000)
+            )
+            candidate.write_bytes(
+                _pe32_image_with_nested_immutable_indirect_call(0x3000)
+            )
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in ("eax", "ecx", "edx", "ebx", "ebp")
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": 0, "original_rva": 0x1000, "candidate_rva": 0x1000},
+                    {"id": 1, "original_rva": 0x1005, "candidate_rva": 0x1005},
+                    {"id": 2, "original_rva": 0x1030, "candidate_rva": 0x1030},
+                    {"id": 3, "original_rva": 0x1036, "candidate_rva": 0x1036},
+                    {"id": 4, "original_rva": 0x1050, "candidate_rva": 0x1050},
+                ],
+                "regions": [
+                    {
+                        "id": "outer-call", "root": True,
+                        "original": {"rva": 0x1000, "size": 5},
+                        "candidate": {"rva": 0x1000, "size": 5},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "outer-continuation", "root": False,
+                        "original": {"rva": 0x1005, "size": 2},
+                        "candidate": {"rva": 0x1005, "size": 2},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "indirect-call", "root": False,
+                        "original": {"rva": 0x1030, "size": 6},
+                        "candidate": {"rva": 0x1030, "size": 6},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "indirect-continuation", "root": False,
+                        "original": {"rva": 0x1036, "size": 1},
+                        "candidate": {"rva": 0x1036, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "indirect-callee", "root": False,
+                        "original": {"rva": 0x1050, "size": 1},
+                        "candidate": {"rva": 0x1050, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                ],
+                "padding": [
+                    {"id": "outer-padding", "side": "both",
+                     "rva": 0x1007, "size": 0x29},
+                    {"id": "inner-padding", "side": "both",
+                     "rva": 0x1037, "size": 0x19},
+                ],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+
+            prepared = root / "prepared"
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result.get("status"), "prepared", result)
+            register_relations = json.loads(
+                (prepared / "relational-register-relations.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            indirect_edges = [
+                edge
+                for edge in register_relations["edges"]
+                if edge.get("indirect_call_push_claim") is not None
+            ]
+            self.assertEqual(len(indirect_edges), 1)
+            self.assertEqual(
+                len(indirect_edges[0]["return_slot_call_summary_claims"]), 1
+            )
+            register_modules = [
+                (path, path.read_text(encoding="utf-8"))
+                for path in sorted((prepared / "lean" / "StageA").glob(
+                    "RelationalRegisterRelationsChunk*.lean"
+                ))
+            ]
+            register_source = "\n".join(source for _, source in register_modules)
+            self.assertIn("IndirectReturnSlotCallSummaryClosed", register_source)
+            self.assertIn(
+                "indirectReturnSlotCallSummaryClosed_of_checked", register_source
+            )
+            summary_modules = [
+                path for path, source in register_modules
+                if "IndirectReturnSlotCallSummaryClosed" in source
+            ]
+            self.assertEqual(len(summary_modules), 1)
+
+            lean = _run_lean_relational(
+                prepared / "lean", bundle=summary_modules[0].stem
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_direct_call_with_prepared_stack_word_checks_whole_program_theorem(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -27,6 +27,11 @@ structure RelationalRuntimeCallFrame extends RelationalCallFrame where
   candidateStackAddress : Word
 deriving Repr, DecidableEq
 
+structure CallPushStackClaim where
+  originalStackAddress : Expr
+  candidateStackAddress : Expr
+deriving Repr, DecidableEq
+
 def RelationalRuntimeCallFrame.memoryHolds (frame : RelationalRuntimeCallFrame)
     (original candidate : Memory) : Prop :=
   Memory.read32 original frame.originalStackAddress = frame.originalReturnAddress ∧
@@ -59,6 +64,11 @@ structure DirectCallPushClaim where
   originalStackAddress : Expr
   candidateStackAddress : Expr
 deriving Repr, DecidableEq
+
+def DirectCallPushClaim.stackClaim (claim : DirectCallPushClaim) : CallPushStackClaim := {
+  originalStackAddress := claim.originalStackAddress
+  candidateStackAddress := claim.candidateStackAddress
+}
 
 def DirectCallPushClaim.frame (context : StaticProofContext)
     (claim : DirectCallPushClaim) : Option RelationalCallFrame := do
@@ -134,6 +144,21 @@ structure IndirectCallPushClaim where
   originalStackAddress : Expr
   candidateStackAddress : Expr
 deriving Repr, DecidableEq
+
+def IndirectCallPushClaim.stackClaim (claim : IndirectCallPushClaim) : CallPushStackClaim := {
+  originalStackAddress := claim.originalStackAddress
+  candidateStackAddress := claim.candidateStackAddress
+}
+
+def IndirectCallPushClaim.asDirectRuntimeClaim
+    (claim : IndirectCallPushClaim) : DirectCallPushClaim := {
+  calleeTargetId := 0
+  continuationTargetId := claim.continuationTargetId
+  originalReturnAddress := claim.originalReturnAddress
+  candidateReturnAddress := claim.candidateReturnAddress
+  originalStackAddress := claim.originalStackAddress
+  candidateStackAddress := claim.candidateStackAddress
+}
 
 def IndirectCallPushClaim.frame (context : StaticProofContext)
     (claim : IndirectCallPushClaim) : Option RelationalCallFrame := do
@@ -1325,17 +1350,17 @@ def returnStackAddressMatches (behavior : NormalizedSymbolicBehavior)
   behavior.outcome == .returned (.read32 address) ||
     behavior.outcome == .returned (address.read32AfterWrites behavior.writes)
 
-def ReturnSlotCallSummaryClosed
+def ReturnSlotCallSummaryCoreClosed
     (originalCallBehavior candidateCallBehavior
       originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
-    (callClaim : DirectCallPushClaim) (claim : ReturnSlotCallSummaryClaim) : Prop :=
+    (callStack : CallPushStackClaim) (claim : ReturnSlotCallSummaryClaim) : Prop :=
   ((((claim.source.originalRegister = .esp ∧
     claim.source.candidateRegister = .esp) ∧
     claim.target.originalRegister = .esp) ∧
     claim.target.candidateRegister = .esp) ∧
     claim.popBytes ≤ 65535) ∧
-  claim.originalCallEsp.expression .esp = callClaim.originalStackAddress ∧
-  claim.candidateCallEsp.expression .esp = callClaim.candidateStackAddress ∧
+  claim.originalCallEsp.expression .esp = callStack.originalStackAddress ∧
+  claim.candidateCallEsp.expression .esp = callStack.candidateStackAddress ∧
   returnStackAddressMatches originalReturnBehavior
     (claim.originalReturnSlot.expression .esp) = true ∧
   returnStackAddressMatches candidateReturnBehavior
@@ -1351,17 +1376,17 @@ def ReturnSlotCallSummaryClosed
   claim.candidateCallEsp.offset + BitVec.ofNat 32 (4 + claim.popBytes) +
     claim.target.candidateOffset = claim.source.candidateOffset
 
-def ReturnSlotCallSummaryClaim.checked
+def ReturnSlotCallSummaryClaim.checkedCore
     (originalCallBehavior candidateCallBehavior
       originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
-    (callClaim : DirectCallPushClaim) (claim : ReturnSlotCallSummaryClaim) : Bool :=
+    (callStack : CallPushStackClaim) (claim : ReturnSlotCallSummaryClaim) : Bool :=
   claim.source.originalRegister == .esp &&
   claim.source.candidateRegister == .esp &&
   claim.target.originalRegister == .esp &&
   claim.target.candidateRegister == .esp &&
   decide (claim.popBytes ≤ 65535) &&
-  (claim.originalCallEsp.expression .esp == callClaim.originalStackAddress &&
-  (claim.candidateCallEsp.expression .esp == callClaim.candidateStackAddress &&
+  (claim.originalCallEsp.expression .esp == callStack.originalStackAddress &&
+  (claim.candidateCallEsp.expression .esp == callStack.candidateStackAddress &&
   (returnStackAddressMatches originalReturnBehavior
     (claim.originalReturnSlot.expression .esp) &&
   (returnStackAddressMatches candidateReturnBehavior
@@ -1377,6 +1402,34 @@ def ReturnSlotCallSummaryClaim.checked
   claim.candidateCallEsp.offset + BitVec.ofNat 32 (4 + claim.popBytes) +
     claim.target.candidateOffset == claim.source.candidateOffset)))))))))
 
+def ReturnSlotCallSummaryClosed
+    (originalCallBehavior candidateCallBehavior
+      originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
+    (callClaim : DirectCallPushClaim) (claim : ReturnSlotCallSummaryClaim) : Prop :=
+  ReturnSlotCallSummaryCoreClosed originalCallBehavior candidateCallBehavior
+    originalReturnBehavior candidateReturnBehavior callClaim.stackClaim claim
+
+def IndirectReturnSlotCallSummaryClosed
+    (originalCallBehavior candidateCallBehavior
+      originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
+    (callClaim : IndirectCallPushClaim) (claim : ReturnSlotCallSummaryClaim) : Prop :=
+  ReturnSlotCallSummaryCoreClosed originalCallBehavior candidateCallBehavior
+    originalReturnBehavior candidateReturnBehavior callClaim.stackClaim claim
+
+def ReturnSlotCallSummaryClaim.checked
+    (originalCallBehavior candidateCallBehavior
+      originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
+    (callClaim : DirectCallPushClaim) (claim : ReturnSlotCallSummaryClaim) : Bool :=
+  claim.checkedCore originalCallBehavior candidateCallBehavior
+    originalReturnBehavior candidateReturnBehavior callClaim.stackClaim
+
+def ReturnSlotCallSummaryClaim.checkedIndirect
+    (originalCallBehavior candidateCallBehavior
+      originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
+    (callClaim : IndirectCallPushClaim) (claim : ReturnSlotCallSummaryClaim) : Bool :=
+  claim.checkedCore originalCallBehavior candidateCallBehavior
+    originalReturnBehavior candidateReturnBehavior callClaim.stackClaim
+
 theorem returnSlotCallSummaryClosed_of_checked
     (originalCallBehavior candidateCallBehavior
       originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
@@ -1387,6 +1440,24 @@ theorem returnSlotCallSummaryClosed_of_checked
       originalReturnBehavior candidateReturnBehavior callClaim claim := by
   unfold ReturnSlotCallSummaryClaim.checked at checked
   unfold ReturnSlotCallSummaryClosed
+  unfold ReturnSlotCallSummaryClaim.checkedCore at checked
+  unfold ReturnSlotCallSummaryCoreClosed
+  unfold DirectCallPushClaim.stackClaim
+  simpa only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] using checked
+
+theorem indirectReturnSlotCallSummaryClosed_of_checked
+    (originalCallBehavior candidateCallBehavior
+      originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
+    (callClaim : IndirectCallPushClaim) (claim : ReturnSlotCallSummaryClaim)
+    (checked : claim.checkedIndirect originalCallBehavior candidateCallBehavior
+      originalReturnBehavior candidateReturnBehavior callClaim = true) :
+    IndirectReturnSlotCallSummaryClosed originalCallBehavior candidateCallBehavior
+      originalReturnBehavior candidateReturnBehavior callClaim claim := by
+  unfold ReturnSlotCallSummaryClaim.checkedIndirect at checked
+  unfold IndirectReturnSlotCallSummaryClosed
+  unfold ReturnSlotCallSummaryClaim.checkedCore at checked
+  unfold ReturnSlotCallSummaryCoreClosed
+  unfold IndirectCallPushClaim.stackClaim
   simpa only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] using checked
 
 theorem returnSlotCallSummaryHolds_of_checked
@@ -1418,6 +1489,8 @@ theorem returnSlotCallSummaryHolds_of_checked
     originalReturnOutputExpression, candidateReturnOutputExpression,
     originalOutputOffset, candidateOutputOffset, originalSummaryOffset,
     candidateSummaryOffset⟩
+  simp only [DirectCallPushClaim.stackClaim] at originalCallExpression
+  simp only [DirectCallPushClaim.stackClaim] at candidateCallExpression
   have originalSourceRegister := registersAndPop.1.1.1.1
   have candidateSourceRegister := registersAndPop.1.1.1.2
   have originalTargetRegister := registersAndPop.1.1.2
@@ -1500,6 +1573,42 @@ theorem returnSlotCallSummaryHolds_of_checked
               claim.target.candidateOffset]
             rw [candidateSummaryOffset]
           _ = outerFrame.candidateStackAddress := candidateOuter
+
+theorem indirectReturnSlotCallSummaryHolds_of_checked
+    (context : StaticProofContext)
+    (originalCallBehavior candidateCallBehavior
+      originalReturnBehavior candidateReturnBehavior : NormalizedSymbolicBehavior)
+    (callClaim : IndirectCallPushClaim) (claim : ReturnSlotCallSummaryClaim)
+    (outerFrame nestedFrame : RelationalRuntimeCallFrame)
+    (originalCallState candidateCallState originalReturnState candidateReturnState :
+      MachineState)
+    (checked : claim.checkedIndirect originalCallBehavior candidateCallBehavior
+      originalReturnBehavior candidateReturnBehavior callClaim = true)
+    (nestedFrameResult : callClaim.runtimeFrame context originalCallState
+      candidateCallState = some nestedFrame)
+    (outerSource : claim.source.holds outerFrame originalCallState.registers
+      candidateCallState.registers)
+    (nestedSlots : ({
+        originalOffset := claim.originalReturnSlot.offset
+        candidateOffset := claim.candidateReturnSlot.offset
+      } : ReturnSlotOffsetPair).holds nestedFrame originalReturnState.registers
+        candidateReturnState.registers) :
+    claim.target.holds outerFrame
+      (originalReturnBehavior.eval originalReturnState).registers
+      (candidateReturnBehavior.eval candidateReturnState).registers := by
+  apply returnSlotCallSummaryHolds_of_checked context originalCallBehavior
+    candidateCallBehavior originalReturnBehavior candidateReturnBehavior
+    callClaim.asDirectRuntimeClaim claim outerFrame nestedFrame originalCallState
+    candidateCallState originalReturnState candidateReturnState
+  · simpa [ReturnSlotCallSummaryClaim.checked,
+      ReturnSlotCallSummaryClaim.checkedIndirect,
+      IndirectCallPushClaim.asDirectRuntimeClaim,
+      DirectCallPushClaim.stackClaim, IndirectCallPushClaim.stackClaim] using checked
+  · simpa [IndirectCallPushClaim.runtimeFrame, DirectCallPushClaim.runtimeFrame,
+      IndirectCallPushClaim.frame, DirectCallPushClaim.frame,
+      IndirectCallPushClaim.asDirectRuntimeClaim] using nestedFrameResult
+  · exact outerSource
+  · exact nestedSlots
 
 structure ReturnPopClaim where
   originalStackAddress : Expr

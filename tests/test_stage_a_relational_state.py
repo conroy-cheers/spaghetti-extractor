@@ -984,6 +984,44 @@ class StageARelationalStateTests(StageARelationalTestBase):
             {row["reason"] for row in analysis["frontier"]},
         )
 
+        indirect_behaviors = json.loads(json.dumps(behaviors))
+        indirect_outcome = {
+            "op": "indirect_call",
+            "target": {"op": "constant", "value": 0x401000},
+            "continuation": 1,
+        }
+        indirect_behaviors[0]["original_ir"]["outcome"] = indirect_outcome
+        indirect_behaviors[0]["candidate_ir"]["outcome"] = indirect_outcome
+        indirect_relations = {
+            "edges": [{
+                "source_region_index": 0,
+                "target_region_index": 2,
+                "environment_barrier": False,
+                "indirect_target_profile":
+                    "fixed_static_function_pointer_call_v1",
+                "indirect_target_claim": {"target_id": 2},
+                "indirect_call_push_claim": {
+                    "profile": "mapped_indirect_call_push_v1",
+                    "continuation_target_id": 1,
+                },
+            }],
+            "return_slot_analysis": {
+                "call_summary_analysis": {"summaries": []},
+            },
+        }
+        indirect_refined, indirect_analysis = _attach_stack_window_invariants(
+            contract, indirect_behaviors, indirect_relations, binary, binary
+        )
+        self.assertEqual([
+            (region["stack_windows"][0]["bytes_below"],
+             region["stack_windows"][0]["bytes_above"])
+            for region in indirect_refined["regions"]
+        ], [(16, 1), (0, 4), (0, 12)])
+        self.assertNotIn(
+            "direct_call_window_requires_return_summary",
+            {row["reason"] for row in indirect_analysis["frontier"]},
+        )
+
         uncontracted = json.loads(json.dumps(contract))
         uncontracted["machine_import_call_contracts"] = []
         stopped, stopped_analysis = _attach_stack_window_invariants(
@@ -2312,6 +2350,92 @@ class StageARelationalStateTests(StageARelationalTestBase):
                 "kind": "sub_right", "prior": {"kind": "input"}, "value": 4,
             },
         }])
+
+    def test_return_slot_summary_replays_a_checked_indirect_nested_call(self):
+        def offset(value):
+            operation = "add" if value >= 0 else "sub"
+            return {
+                "op": operation,
+                "left": {"op": "input_reg", "reg": "esp"},
+                "right": {"op": "constant", "value": abs(value)},
+            }
+
+        return_behavior = {
+            "original_ir": {
+                "registers": {"esp": offset(4)},
+                "outcome": {
+                    "op": "returned",
+                    "target": {"op": "read32", "address": offset(0)},
+                },
+            },
+            "candidate_ir": {
+                "registers": {"esp": offset(4)},
+                "outcome": {
+                    "op": "returned",
+                    "target": {"op": "read32", "address": offset(0)},
+                },
+            },
+        }
+        behaviors = [
+            {"original_ir": {"registers": {"esp": offset(-4)}},
+             "candidate_ir": {"registers": {"esp": offset(-4)}}},
+            {"original_ir": {"registers": {"esp": offset(-4)}},
+             "candidate_ir": {"registers": {"esp": offset(-4)}}},
+            return_behavior,
+            {"original_ir": {"registers": {"esp": offset(0)}},
+             "candidate_ir": {"registers": {"esp": offset(0)}}},
+        ]
+        rows = [{
+            "region_index": index,
+            "is_return": index == 2,
+            "return_pop_claim": (
+                _return_pop_claim(return_behavior) if index == 2 else None
+            ),
+            "outputs": [{"original": "esp", "candidate": "esp"}],
+        } for index in range(4)]
+        edges = [
+            {
+                "source_region_index": 0, "target_region_index": 1,
+                "kind": "call", "environment_barrier": False,
+                "requires_call_stack_proof": False,
+                "direct_call_push_claim": {"continuation_region_index": 3},
+            },
+            {
+                "source_region_index": 1, "target_region_index": 2,
+                "kind": "call", "environment_barrier": False,
+                "requires_call_stack_proof": False,
+                "direct_call_push_claim": None,
+                "indirect_target_profile":
+                    "immutable_relocated_function_pointer_call_v1",
+                "indirect_target_claim": {"target_id": 2},
+                "indirect_call_push_claim": {
+                    "continuation_region_index": 3,
+                    "continuation_target_id": 3,
+                },
+            },
+        ]
+
+        analysis = _attach_return_slot_contracts(behaviors, rows, edges)
+
+        self.assertTrue(analysis["converged"])
+        self.assertEqual(rows[3]["return_slot_offsets"], [{
+            "original_register": "esp", "original": 0,
+            "candidate_register": "esp", "candidate": 0,
+        }])
+        self.assertEqual(len(edges[1]["return_slot_call_summary_claims"]), 1)
+        self.assertEqual(
+            edges[1]["return_slot_call_summary_claims"][0]["profile"],
+            "return_slot_call_summary_v1",
+        )
+        indirect_summary = next(
+            summary
+            for summary in analysis["call_summary_analysis"]["summaries"]
+            if summary["callsite_region_index"] == 1
+        )
+        self.assertEqual(
+            indirect_summary["return_slot_status"],
+            "candidate_requires_lean_replay",
+        )
 
     def test_return_slot_contracts_follow_frame_pointer_round_trip(self):
         def input_register(register):

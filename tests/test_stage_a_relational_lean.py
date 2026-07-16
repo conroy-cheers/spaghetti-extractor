@@ -1599,6 +1599,14 @@ def summaryCallClaim : DirectCallPushClaim := {
   candidateStackAddress := .sub (.inputReg .esp) (.constant 4)
 }
 
+def summaryIndirectCallClaim : IndirectCallPushClaim := {
+  continuationTargetId := 2
+  originalReturnAddress := 4096
+  candidateReturnAddress := 8192
+  originalStackAddress := .sub (.inputReg .esp) (.constant 4)
+  candidateStackAddress := .sub (.inputReg .esp) (.constant 4)
+}
+
 def summaryReturnRegisters : Registers Expr := {
   registers with
   esp := .add (.inputReg .esp) (.constant 12)
@@ -1627,12 +1635,21 @@ example : ReturnSlotCallSummaryClosed adjustedBehavior adjustedBehavior
   returnSlotCallSummaryClosed_of_checked adjustedBehavior adjustedBehavior
     summaryReturnBehavior summaryReturnBehavior summaryCallClaim callSummaryClaim (by decide)
 
+example : IndirectReturnSlotCallSummaryClosed adjustedBehavior adjustedBehavior
+    summaryReturnBehavior summaryReturnBehavior summaryIndirectCallClaim callSummaryClaim :=
+  indirectReturnSlotCallSummaryClosed_of_checked adjustedBehavior adjustedBehavior
+    summaryReturnBehavior summaryReturnBehavior summaryIndirectCallClaim callSummaryClaim
+    (by decide)
+
 def wrongCallSummaryClaim : ReturnSlotCallSummaryClaim := {
   callSummaryClaim with popBytes := 4
 }
 
 example : wrongCallSummaryClaim.checked adjustedBehavior adjustedBehavior
     summaryReturnBehavior summaryReturnBehavior summaryCallClaim = false := by decide
+
+example : wrongCallSummaryClaim.checkedIndirect adjustedBehavior adjustedBehavior
+    summaryReturnBehavior summaryReturnBehavior summaryIndirectCallClaim = false := by decide
 
 def returnAfterWriteSeparations : List AddressSeparationPair :=
   (List.range 4).flatMap fun wordByte =>

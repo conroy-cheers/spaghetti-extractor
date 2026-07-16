@@ -592,11 +592,20 @@ def _attach_stack_window_invariants(
         int(region.get("numeric_id", index)): index
         for index, region in enumerate(regions)
     }
-    direct_call_continuations: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    direct_call_edges_by_source = {
+    checked_call_continuations: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    checked_call_edges_by_source = {
         int(edge["source_region_index"]): edge
         for edge in register_relations.get("edges", [])
-        if edge.get("direct_call_push_claim") is not None
+        if (
+            edge.get("direct_call_push_claim") is not None
+            or (
+                edge.get("indirect_call_push_claim") is not None
+                and edge.get("indirect_target_profile") in {
+                    "immutable_relocated_function_pointer_call_v1",
+                    "fixed_static_function_pointer_call_v1",
+                }
+            )
+        )
     }
     stack_window_return_summary_by_source = {
         int(summary["callsite_region_index"]): summary
@@ -611,20 +620,48 @@ def _attach_stack_window_invariants(
     for source_index, behavior in enumerate(behaviors):
         original_outcome = behavior["original_ir"].get("outcome") or {}
         candidate_outcome = behavior["candidate_ir"].get("outcome") or {}
-        if (
-            original_outcome.get("op") != "call"
-            or candidate_outcome.get("op") != "call"
-            or original_outcome.get("target") != candidate_outcome.get("target")
-            or original_outcome.get("continuation")
-                != candidate_outcome.get("continuation")
-        ):
+        call_edge = checked_call_edges_by_source.get(source_index)
+        if call_edge is None:
             continue
-        callee_index = region_index_by_target_id.get(
-            int(original_outcome["target"])
-        )
-        continuation_index = region_index_by_target_id.get(
-            int(original_outcome["continuation"])
-        )
+        direct_claim = call_edge.get("direct_call_push_claim")
+        indirect_claim = call_edge.get("indirect_call_push_claim")
+        if direct_claim is not None:
+            if (
+                original_outcome.get("op") != "call"
+                or candidate_outcome.get("op") != "call"
+                or original_outcome.get("target") != candidate_outcome.get("target")
+                or original_outcome.get("continuation")
+                    != candidate_outcome.get("continuation")
+            ):
+                continue
+            callee_index = region_index_by_target_id.get(
+                int(original_outcome["target"])
+            )
+            continuation_index = region_index_by_target_id.get(
+                int(original_outcome["continuation"])
+            )
+        else:
+            target_claim = call_edge.get("indirect_target_claim") or {}
+            expected_target_id = int(target_claim.get("target_id", -1))
+            expected_continuation = int(
+                (indirect_claim or {}).get("continuation_target_id", -1)
+            )
+            if (
+                original_outcome.get("op") != "indirect_call"
+                or candidate_outcome.get("op") != "indirect_call"
+                or int(original_outcome.get("continuation", -2))
+                    != expected_continuation
+                or int(candidate_outcome.get("continuation", -2))
+                    != expected_continuation
+                or expected_target_id < 0
+                or expected_target_id
+                    != int(regions[int(call_edge["target_region_index"])].get(
+                        "numeric_id", call_edge["target_region_index"]
+                    ))
+            ):
+                continue
+            callee_index = int(call_edge["target_region_index"])
+            continuation_index = region_index_by_target_id.get(expected_continuation)
         if callee_index is None or continuation_index is None:
             continue
         original_delta = stack_delta(
@@ -635,7 +672,6 @@ def _attach_stack_window_invariants(
         )
         if original_delta is None or original_delta != candidate_delta:
             continue
-        call_edge = direct_call_edges_by_source.get(source_index)
         return_stack_deltas = {
             4 + int(claim["pop_bytes"])
             for claim in (
@@ -674,7 +710,7 @@ def _attach_stack_window_invariants(
             return_stack_deltas.add(
                 4 + int(callee_machine_contract["stack_result_delta"])
             )
-        direct_call_continuations[continuation_index].append({
+        checked_call_continuations[continuation_index].append({
             "source_region_index": source_index,
             "callee_region_index": callee_index,
             "entry_stack_delta": original_delta,
@@ -688,7 +724,7 @@ def _attach_stack_window_invariants(
         continuation: {
             int(call["callee_region_index"]) for call in calls
         }
-        for continuation, calls in direct_call_continuations.items()
+        for continuation, calls in checked_call_continuations.items()
     }
 
     def call_window_path_exists(start: int, target: int) -> bool:
@@ -704,7 +740,7 @@ def _attach_stack_window_invariants(
             pending.extend(call_window_adjacency.get(node, set()) - seen)
         return False
 
-    for continuation, calls in direct_call_continuations.items():
+    for continuation, calls in checked_call_continuations.items():
         for call in calls:
             call["recursive"] = int(call_window_path_exists(
                 int(call["callee_region_index"]), continuation,
@@ -783,7 +819,7 @@ def _attach_stack_window_invariants(
             if source_key not in transfer_seen:
                 transfer_pending.append(source_key)
         if original_register == "esp" and candidate_register == "esp":
-            for call in direct_call_continuations.get(target_index, []):
+            for call in checked_call_continuations.get(target_index, []):
                 return_stack_delta = call.get("return_stack_delta")
                 if (
                     not bool(call.get("recursive"))
@@ -871,7 +907,7 @@ def _attach_stack_window_invariants(
             })
             continue
         if original_register == "esp" and candidate_register == "esp":
-            for call in direct_call_continuations.get(target_index, []):
+            for call in checked_call_continuations.get(target_index, []):
                 if bool(call.get("recursive")):
                     add_frontier({
                         "region_index": target_index,
@@ -1899,17 +1935,26 @@ def _attach_return_slot_contracts(
     call_summary_analysis = _discover_static_call_return_summaries(
         relation_rows, edges
     )
-    direct_call_edge_by_source = {
+    checked_call_edge_by_source = {
         int(edge["source_region_index"]): edge
         for edge in edges
-        if edge.get("direct_call_push_claim") is not None
+        if (
+            edge.get("direct_call_push_claim") is not None
+            or (
+                edge.get("indirect_call_push_claim") is not None
+                and edge.get("indirect_target_profile") in {
+                    "immutable_relocated_function_pointer_call_v1",
+                    "fixed_static_function_pointer_call_v1",
+                }
+            )
+        )
     }
 
     def replayable_call_summary(summary: dict[str, Any]) -> dict[str, Any] | None:
         if not summary["closed"] or not summary["return_region_indices"]:
             return None
         callsite = int(summary["callsite_region_index"])
-        call_edge = direct_call_edge_by_source.get(callsite)
+        call_edge = checked_call_edge_by_source.get(callsite)
         if call_edge is None:
             return None
         original = behaviors[callsite].get("original_ir") or {}
@@ -1966,7 +2011,7 @@ def _attach_return_slot_contracts(
         }
 
     summary_rounds = 0
-    max_summary_rounds = max(1, len(direct_call_edge_by_source) + 1)
+    max_summary_rounds = max(1, len(checked_call_edge_by_source) + 1)
     while summary_rounds < max_summary_rounds:
         summary_rounds += 1
         summary_changed = False
@@ -2048,7 +2093,7 @@ def _attach_return_slot_contracts(
             continue
         callsite = int(summary["callsite_region_index"])
         continuation = int(summary["continuation_region_index"])
-        call_edge = direct_call_edge_by_source[callsite]
+        call_edge = checked_call_edge_by_source[callsite]
         claims = []
         for source_location in sorted(locations[callsite]):
             original_register, original_source, candidate_register, \

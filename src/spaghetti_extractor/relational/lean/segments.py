@@ -1353,7 +1353,7 @@ def _write_relational_register_relation_modules(
                 )
                 theorem_names.append(theorem_name)
                 proposition_names.append(proposition_name)
-        call_push_claim_name_by_source: dict[int, str] = {}
+        call_push_claim_by_source: dict[int, tuple[str, bool]] = {}
         for edge_index, edge in enumerate(call_push_edges):
             source_index = int(edge["source_region_index"])
             claim = edge["direct_call_push_claim"]
@@ -1366,7 +1366,7 @@ def _write_relational_register_relation_modules(
             claim_name = (
                 f"registerRelationChunk{chunk_index}CallPushEdge{edge_index}Claim"
             )
-            call_push_claim_name_by_source[source_index] = claim_name
+            call_push_claim_by_source[source_index] = (claim_name, False)
             proposition_name = (
                 f"registerRelationChunk{chunk_index}CallPushEdge{edge_index}Closed"
             )
@@ -1409,6 +1409,7 @@ def _write_relational_register_relation_modules(
             claim_name = (
                 f"registerRelationChunk{chunk_index}IndirectCallPushEdge{edge_index}Claim"
             )
+            call_push_claim_by_source[source_index] = (claim_name, True)
             proposition_name = (
                 f"registerRelationChunk{chunk_index}IndirectCallPushEdge{edge_index}Closed"
             )
@@ -1446,7 +1447,15 @@ def _write_relational_register_relation_modules(
             candidate_call = (
                 f"registerRelationChunk{chunk_index}CandidateBehavior{source_index}"
             )
-            call_claim_name = call_push_claim_name_by_source[source_index]
+            call_claim_name, indirect_call = call_push_claim_by_source[source_index]
+            summary_proposition = (
+                "IndirectReturnSlotCallSummaryClosed"
+                if indirect_call else "ReturnSlotCallSummaryClosed"
+            )
+            summary_theorem = (
+                "indirectReturnSlotCallSummaryClosed_of_checked"
+                if indirect_call else "returnSlotCallSummaryClosed_of_checked"
+            )
             for claim_index, claim in enumerate(
                 edge["return_slot_call_summary_claims"]
             ):
@@ -1484,13 +1493,13 @@ def _write_relational_register_relation_modules(
                 )
                 definitions.append(
                     f"def {proposition_name} : Prop :=\n"
-                    "  ReturnSlotCallSummaryClosed "
+                    f"  {summary_proposition} "
                     f"{original_call} {candidate_call} {original_return} "
                     f"{candidate_return} {call_claim_name} {claim_name}"
                 )
                 definitions.append(
                     f"theorem {theorem_name} : {proposition_name} := by\n"
-                    "  apply returnSlotCallSummaryClosed_of_checked\n"
+                    f"  apply {summary_theorem}\n"
                     "  decide"
                 )
                 theorem_names.append(theorem_name)

@@ -623,6 +623,30 @@ def _pe32_image_with_immutable_indirect_call(
     )
 
 
+def _pe32_image_with_nested_immutable_indirect_call(data_rva: int) -> bytes:
+    image_base = 0x400000
+    image = bytearray(_pe32_image_with_immutable_indirect_call(
+        data_rva, callee_rva=0x1050, writable=True, argument_writes=False,
+    ))
+    text_raw = 0x200
+    reloc_raw = 0x600
+
+    # entry -> indirect-call wrapper; the entry continuation is a closed loop.
+    struct.pack_into("<BI", image, text_raw, 0xE8, 0x1030 - 0x1005)
+    image[text_raw + 5:text_raw + 7] = b"\xeb\xfe"
+    image[text_raw + 7] = 0x90
+
+    wrapper_offset = text_raw + 0x30
+    image[wrapper_offset:wrapper_offset + 6] = (
+        b"\xff\x15" + struct.pack("<I", image_base + data_rva)
+    )
+    image[wrapper_offset + 6] = 0xC3
+
+    # Move the absolute-slot relocation from entry+2 to wrapper+2.
+    struct.pack_into("<H", image, reloc_raw + 8, 0x3000 | 0x32)
+    return bytes(image)
+
+
 def _pe32_image_with_stack_write_and_relocated_read(data_rva: int) -> bytes:
     file_alignment = 0x200
     section_alignment = 0x1000
