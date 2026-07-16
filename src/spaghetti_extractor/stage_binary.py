@@ -59,6 +59,8 @@ class StageABinary:
     bitness: int
     image_base: int
     entrypoint_rva: int
+    tls_directory_rva: int
+    tls_directory_size: int
     size_of_image: int
     size_of_headers: int
     subsystem: str
@@ -106,6 +108,8 @@ def _parse_stage_a_pe(path: Path) -> StageABinary:
 
     imports = _imports(pe)
     sections = tuple(_stage_a_section(section) for section in pe.sections)
+    data_directories = pe.OPTIONAL_HEADER.DATA_DIRECTORY
+    tls_directory = data_directories[9] if len(data_directories) > 9 else None
     return StageABinary(
         path=path,
         sha256=sha256_file(path),
@@ -114,6 +118,12 @@ def _parse_stage_a_pe(path: Path) -> StageABinary:
         bitness=bitness,
         image_base=int(pe.OPTIONAL_HEADER.ImageBase),
         entrypoint_rva=int(pe.OPTIONAL_HEADER.AddressOfEntryPoint),
+        tls_directory_rva=(
+            int(tls_directory.VirtualAddress) if tls_directory is not None else 0
+        ),
+        tls_directory_size=(
+            int(tls_directory.Size) if tls_directory is not None else 0
+        ),
         size_of_image=int(pe.OPTIONAL_HEADER.SizeOfImage),
         size_of_headers=int(pe.OPTIONAL_HEADER.SizeOfHeaders),
         subsystem=_subsystem_name(int(pe.OPTIONAL_HEADER.Subsystem)),

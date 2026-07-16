@@ -565,6 +565,29 @@
               ./tests/test_stage_a_external_protocol.py
               ./profiles/pe32-msvcrt-lockstep-v1.json
             ];
+          stage-a-relational-tests-external-contract-selection =
+            mkStageARelationalTest
+              "external-contract-selection"
+              "tests.test_stage_a_external_contract_selection"
+              [ ./tests/test_stage_a_external_contract_selection.py ];
+          stage-a-relational-tests-external-stateful-memory =
+            mkStageARelationalTest
+              "external-stateful-memory"
+              "tests.test_stage_a_external_stateful_memory"
+              [
+                ./tests/test_stage_a_external_stateful_memory.py
+                ./profiles/pe32-msvcrt-lockstep-v1.json
+              ];
+          stage-a-relational-tests-external-stateful-memory-kernel =
+            mkStageARelationalTest
+              "lean-external-stateful-memory"
+              "tests.test_stage_a_external_stateful_memory_kernel"
+              [ ./tests/test_stage_a_external_stateful_memory_kernel.py ];
+          stage-a-relational-tests-reachable-acceptance =
+            mkStageARelationalTest
+              "reachable-acceptance"
+              "tests.test_stage_a_reachable_acceptance"
+              [ ./tests/test_stage_a_reachable_acceptance.py ];
           stage-a-relational-tests-indirect-control = mkStageARelationalTest
             "indirect-control"
             "tests.test_stage_a_indirect_control tests.test_stage_a_initial_static_code_pointers"
@@ -572,6 +595,20 @@
               ./tests/test_stage_a_indirect_control.py
               ./tests/test_stage_a_initial_static_code_pointers.py
             ];
+          stage-a-relational-tests-control-provenance = mkStageARelationalTest
+            "control-provenance"
+            "tests.test_stage_a_control_provenance"
+            [ ./tests/test_stage_a_control_provenance.py ];
+          stage-a-relational-tests-bounded-table-call-generation =
+            mkStageARelationalTest
+              "bounded-table-call-generation"
+              "tests.test_stage_a_bounded_table_call_generation"
+              [ ./tests/test_stage_a_bounded_table_call_generation.py ];
+          stage-a-relational-tests-bounded-table-call-kernel =
+            mkStageARelationalTest
+              "lean-bounded-table-call-kernel"
+              "tests.test_stage_a_bounded_table_call_kernel"
+              [ ./tests/test_stage_a_bounded_table_call_kernel.py ];
           stage-a-relational-tests-callsite-preservation = mkStageARelationalTest
             "callsite-preservation"
             "tests.test_stage_a_callsite_preservation"
@@ -581,6 +618,11 @@
               "callsite-summary-generation"
               "tests.test_stage_a_callsite_summary_generation"
               [ ./tests/test_stage_a_callsite_summary_generation.py ];
+          stage-a-relational-tests-call-return-summary =
+            mkStageARelationalTest
+              "call-return-summary"
+              "tests.test_stage_a_call_return_summary"
+              [ ./tests/test_stage_a_call_return_summary.py ];
           stage-a-relational-tests-callsite-preservation-schema =
             mkStageARelationalTest
               "callsite-preservation-schema"
@@ -631,6 +673,8 @@
           stage-a-relational-tests-acceptance = stageARelationalAcceptanceSuite.aggregate;
           stage-a-relational-tests-acceptance-whole-program-kernel =
             stageARelationalAcceptanceSuite.cases.whole_program_equivalence_kernel_checks_without_sorry;
+          stage-a-relational-tests-acceptance-direct-loop =
+            stageARelationalAcceptanceSuite.cases.direct_loop_emits_and_checks_closed_whole_program_theorem;
           stage-a-relational-tests-acceptance-nested-external =
             stageARelationalAcceptanceSuite.cases.nested_external_call_preserves_internal_runtime_frame_end_to_end;
           stage-a-relational-tests-acceptance-import-register-return =
@@ -684,9 +728,17 @@
               stage-a-relational-tests-build-graph
               stage-a-relational-tests-static-word-relations
               stage-a-relational-tests-external-protocol
+              stage-a-relational-tests-external-contract-selection
+              stage-a-relational-tests-external-stateful-memory
+              stage-a-relational-tests-external-stateful-memory-kernel
+              stage-a-relational-tests-reachable-acceptance
               stage-a-relational-tests-indirect-control
+              stage-a-relational-tests-control-provenance
+              stage-a-relational-tests-bounded-table-call-generation
+              stage-a-relational-tests-bounded-table-call-kernel
               stage-a-relational-tests-callsite-preservation
               stage-a-relational-tests-callsite-summary-generation
+              stage-a-relational-tests-call-return-summary
               stage-a-relational-tests-callsite-preservation-schema
               stage-a-relational-tests-register-analysis
               stage-a-relational-tests-lean-runtime-frame-import-environment
@@ -751,9 +803,17 @@
             stage-a-relational-tests-build-graph
             stage-a-relational-tests-static-word-relations
             stage-a-relational-tests-external-protocol
+            stage-a-relational-tests-external-contract-selection
+            stage-a-relational-tests-external-stateful-memory
+            stage-a-relational-tests-external-stateful-memory-kernel
+            stage-a-relational-tests-reachable-acceptance
             stage-a-relational-tests-indirect-control
+            stage-a-relational-tests-control-provenance
+            stage-a-relational-tests-bounded-table-call-generation
+            stage-a-relational-tests-bounded-table-call-kernel
             stage-a-relational-tests-callsite-preservation
             stage-a-relational-tests-callsite-summary-generation
+            stage-a-relational-tests-call-return-summary
             stage-a-relational-tests-callsite-preservation-schema
             stage-a-relational-tests-register-analysis
             stage-a-relational-tests-lean-runtime-frame-import-environment
@@ -768,6 +828,7 @@
             stage-a-relational-tests-contract-machine-import
             stage-a-relational-tests-acceptance
             stage-a-relational-tests-acceptance-whole-program-kernel
+            stage-a-relational-tests-acceptance-direct-loop
             stage-a-relational-tests-acceptance-nested-external
             stage-a-relational-tests-acceptance-import-register-return
             stage-a-relational-tests-acceptance-direct-stack-read

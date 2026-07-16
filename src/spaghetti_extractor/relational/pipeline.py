@@ -52,10 +52,12 @@ from .analyses.control import (
     _attach_import_register_analysis,
     _attach_product_graph_analysis,
     _attach_stack_window_analysis,
+    _bounded_immutable_code_pointer_table_call_inputs,
     _composition_progress,
     _constant_read32_address,
     _dynamic_range_indirect_call_candidates,
     _dynamic_range_indirect_call_shape,
+    _immutable_code_pointer_table_call_candidates,
     _immutable_image_u32,
     _immutable_indirect_call_candidates,
     _register_writes_have_address_separations,
@@ -135,6 +137,7 @@ from .analyses.segments import (
     _static_dynamic_pointer_slot_guard_claim,
 )
 from .analyses.registers import (
+    _attach_assembled_immutable_read_address_separations,
     _attach_import_register_invariants,
     _attach_import_seed_address_separations,
     _closed_internal_return_predecessors,
@@ -476,6 +479,31 @@ def _stabilize_fixed_code_pointer_register_calls(
     )
 
 
+def _indirect_call_target_artifact(
+    *,
+    status: str,
+    candidates: list[dict[str, Any]],
+    table_call_proposals: list[dict[str, Any]],
+    dynamic_range_candidates: list[dict[str, Any]],
+    fixed_register_candidates: list[dict[str, Any]] | None = None,
+    fixed_register_call_fixed_point: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    artifact = {
+        "format": "stage-a-relational-indirect-call-targets-v1",
+        "status": status,
+        "candidates": candidates,
+        "table_call_proposals": table_call_proposals,
+        "dynamic_range_candidates": dynamic_range_candidates,
+    }
+    if fixed_register_candidates is not None:
+        artifact["fixed_register_candidates"] = fixed_register_candidates
+    if fixed_register_call_fixed_point is not None:
+        artifact["fixed_register_call_fixed_point"] = (
+            fixed_register_call_fixed_point
+        )
+    return artifact
+
+
 def stage_a_prove_relational(
     *,
     original: Path,
@@ -612,6 +640,9 @@ def stage_a_prove_relational(
     indirect_call_candidates = _immutable_indirect_call_candidates(
         original_bin, candidate_bin, normalized, behaviors
     )
+    table_call_proposals = _immutable_code_pointer_table_call_candidates(
+        original_bin, candidate_bin, normalized, behaviors
+    )
     dynamic_call_candidates = _dynamic_range_indirect_call_candidates(
         normalized, behaviors
     )
@@ -621,17 +652,20 @@ def stage_a_prove_relational(
     normalized = _attach_import_seed_address_separations(
         normalized, import_register_seeds
     )
+    normalized = _attach_assembled_immutable_read_address_separations(
+        normalized, behaviors, original_bin, candidate_bin
+    )
     import_register_analysis = _infer_import_register_invariants(
         normalized, behaviors, import_register_seeds
     )
     write_json(
         out / "relational-indirect-call-targets.json",
-        {
-            "format": "stage-a-relational-indirect-call-targets-v1",
-            "status": "proposal_requires_generated_lean_replay",
-            "candidates": indirect_call_candidates,
-            "dynamic_range_candidates": dynamic_call_candidates,
-        },
+        _indirect_call_target_artifact(
+            status="proposal_requires_generated_lean_replay",
+            candidates=indirect_call_candidates,
+            table_call_proposals=table_call_proposals,
+            dynamic_range_candidates=dynamic_call_candidates,
+        ),
     )
     write_json(
         out / "relational-import-register-seeds.json",
@@ -889,14 +923,14 @@ def stage_a_prove_relational(
     )
     write_json(
         out / "relational-indirect-call-targets.json",
-        {
-            "format": "stage-a-relational-indirect-call-targets-v1",
-            "status": fixed_register_call_fixed_point["status"],
-            "candidates": indirect_call_candidates,
-            "fixed_register_candidates": fixed_register_call_candidates,
-            "dynamic_range_candidates": dynamic_call_candidates,
-            "fixed_register_call_fixed_point": fixed_register_call_fixed_point,
-        },
+        _indirect_call_target_artifact(
+            status=fixed_register_call_fixed_point["status"],
+            candidates=indirect_call_candidates,
+            table_call_proposals=table_call_proposals,
+            dynamic_range_candidates=dynamic_call_candidates,
+            fixed_register_candidates=fixed_register_call_candidates,
+            fixed_register_call_fixed_point=fixed_register_call_fixed_point,
+        ),
     )
     fixed_flow_facts = [
         {
@@ -990,11 +1024,25 @@ def stage_a_prove_relational(
         import_register_seeds, segment_candidates=segment_candidates,
         segment_diagnostics=segment_diagnostics,
     )
+    bounded_table_call_inputs = (
+        _bounded_immutable_code_pointer_table_call_inputs(
+            normalized,
+            behaviors,
+            table_call_proposals,
+            original_image_base=original_bin.image_base,
+            candidate_image_base=candidate_bin.image_base,
+        )
+    )
+    write_json(
+        out / "relational-bounded-table-call-inputs.json",
+        bounded_table_call_inputs,
+    )
     product_graph = _relational_product_graph(
         normalized, behaviors, register_relations, segment_candidates,
         original_image_base=original_bin.image_base,
         candidate_image_base=candidate_bin.image_base,
         indirect_call_candidates=combined_indirect_call_candidates,
+        bounded_table_call_candidates=bounded_table_call_inputs["candidates"],
         dynamic_call_candidates=dynamic_call_candidates,
         import_register_seeds=import_register_seeds,
         import_call_candidates=import_register_analysis["indirect_import_calls"],

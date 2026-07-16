@@ -94,6 +94,7 @@ def _whole_program_acceptance_plan(
     register_relations: dict[str, Any],
     segment_candidates: list[dict[str, Any]],
     external_site_candidates: list[dict[str, Any]],
+    launch_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Recognize the first fully compositional profile without weakening acceptance."""
     blockers: list[dict[str, str]] = []
@@ -127,6 +128,19 @@ def _whole_program_acceptance_plan(
         for item in contract.get("machine_import_call_contracts", [])
     }
     regions = contract["regions"]
+    launch_profile = launch_profile or {}
+    original_tls_directory = launch_profile.get("original_tls_directory") or {}
+    candidate_tls_directory = launch_profile.get("candidate_tls_directory") or {}
+    if any(
+        int(directory.get(field, 0)) != 0
+        for directory in (original_tls_directory, candidate_tls_directory)
+        for field in ("rva", "size")
+    ):
+        block(
+            "pre_entry_tls_profile_unmet",
+            "pe32-console-launch-v1 cannot yet compose non-empty PE TLS directories before the entrypoint",
+            "parse both TLS callback inventories and add their paired initialization paths as checked launch roots",
+        )
     if not evidence.get("reachable_product_local_complete"):
         block(
             "reachable_product_local_incomplete",
@@ -1485,15 +1499,19 @@ def _whole_program_acceptance_plan(
         (int(edge["source_region_index"]), int(edge["target_region_index"])): edge
         for edge in register_relations.get("edges", [])
     }
-    all_node_ids = list(range(len(nodes)))
     reachable_node_ids = [
         int(node_id) for node_id in evidence.get("declared_reachable_node_ids", [])
     ]
-    if reachable_node_ids != all_node_ids:
+    reachable_node_id_set = set(reachable_node_ids)
+    if (
+        reachable_node_ids != sorted(reachable_node_id_set)
+        or any(node_id < 0 or node_id >= len(nodes) for node_id in reachable_node_ids)
+        or any(root not in reachable_node_id_set for root in roots)
+    ):
         block(
-            "unreachable_region_composition_pending",
-            "the initial acceptance profile requires every canonical product node to be root-reachable",
-            "add checked unreachable-region exclusion or retain all nodes in the rooted simulation",
+            "declared_reachability_inventory_invalid",
+            "the declared reachable-node inventory is not canonical or omits a root",
+            "regenerate one sorted unique in-range reachability inventory containing every root",
         )
 
     node_steps: list[dict[str, Any]] = []
@@ -1522,18 +1540,24 @@ def _whole_program_acceptance_plan(
             )
             continue
         outgoing = [int(edge_id) for edge_id in node["outgoing_edge_ids"]]
+        if any(edge_id < 0 or edge_id >= len(edges) for edge_id in outgoing):
+            block(
+                "product_edge_index_invalid",
+                f"product node {node_id} references a missing outgoing edge",
+                "regenerate the indexed product graph",
+            )
+            continue
+        # Lean checks that this root-containing inventory is closed under every
+        # feasible decoded edge.  Behavioral certificates are therefore needed
+        # only for its members; executable-byte and graph-index validation still
+        # cover the complete canonical inventory.
+        if node_id not in reachable_node_id_set:
+            continue
         if len(outgoing) not in {0, 1, 2}:
             block(
                 "multi_exit_node_composition_pending",
                 f"reachable product node {node_id} has {len(outgoing)} outgoing edges",
                 "derive guard-exhaustive node steps from all decoded outgoing edges",
-            )
-            continue
-        if any(edge_id >= len(edges) for edge_id in outgoing):
-            block(
-                "product_edge_index_invalid",
-                f"product node {node_id} references a missing outgoing edge",
-                "regenerate the indexed product graph",
             )
             continue
         true_guard = {"op": "bool_constant", "value": True}
@@ -4908,6 +4932,8 @@ def _lean_acceptance_execution_edge(
 
 def _write_relational_acceptance_modules(
     lean_dir: Path,
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
     product_graph: dict[str, Any],
@@ -4925,6 +4951,16 @@ def _write_relational_acceptance_modules(
     plan = _whole_program_acceptance_plan(
         contract, behaviors, product_graph, register_relations, segment_candidates,
         external_site_candidates,
+        launch_profile={
+            "original_tls_directory": {
+                "rva": original_bin.tls_directory_rva,
+                "size": original_bin.tls_directory_size,
+            },
+            "candidate_tls_directory": {
+                "rva": candidate_bin.tls_directory_rva,
+                "size": candidate_bin.tls_directory_size,
+            },
+        },
     )
     write_json(lean_dir.parent / "whole-program-acceptance.json", plan)
     if plan["status"] != "ready":

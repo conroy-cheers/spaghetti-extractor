@@ -21,6 +21,7 @@ def _relational_product_graph(
     candidate_image_base: int,
     indirect_call_candidates: list[dict[str, Any]] | None = None,
     bounded_table_candidates: list[dict[str, Any]] | None = None,
+    bounded_table_call_candidates: list[dict[str, Any]] | None = None,
     dynamic_call_candidates: list[dict[str, Any]] | None = None,
     import_register_seeds: list[dict[str, Any]] | None = None,
     import_call_candidates: list[dict[str, Any]] | None = None,
@@ -110,6 +111,15 @@ def _relational_product_graph(
                 "right": guard,
             }
         return guard
+
+    def table_index_guard(
+        expression: dict[str, Any], index: int,
+    ) -> dict[str, Any]:
+        return {
+            "op": "equal",
+            "left": expression,
+            "right": {"op": "constant", "value": index},
+        }
 
     dynamic_edge_groups: list[dict[str, Any]] = []
     dynamic_sources: set[int] = set()
@@ -244,6 +254,104 @@ def _relational_product_graph(
             "edge_ids": edge_ids,
         })
 
+    bounded_table_call_edge_groups: list[dict[str, Any]] = []
+    bounded_table_call_sources: set[int] = set()
+    for candidate_index, table_candidate in enumerate(
+        bounded_table_call_candidates or []
+    ):
+        if (
+            table_candidate.get("profile")
+            != "immutable_code_pointer_table_call_v1"
+            or table_candidate.get("shape") != "direct_indexed_table_read"
+            or table_candidate.get("input_contract")
+            != "bounded_immutable_code_pointer_table_call_v1"
+        ):
+            raise StageAInputError(
+                "product graph received a non-canonical bounded immutable "
+                "code-pointer-table call input"
+            )
+        source = int(table_candidate["source_region_index"])
+        if source in bounded_table_call_sources:
+            raise StageAInputError(
+                f"product node {source} has duplicate bounded table-call claims"
+            )
+        bounded_table_call_sources.add(source)
+        if not 0 <= source < len(node_targets):
+            raise StageAInputError(
+                f"bounded table-call source {source} is out of range"
+            )
+        if outgoing[source]:
+            raise StageAInputError(
+                f"bounded table-call source {source} already has submitted edges"
+            )
+        original_outcome = behaviors[source]["original_ir"].get("outcome") or {}
+        candidate_outcome = behaviors[source]["candidate_ir"].get("outcome") or {}
+        if (
+            original_outcome.get("op") != "indirect_call"
+            or candidate_outcome.get("op") != "indirect_call"
+            or original_outcome.get("target")
+            != table_candidate["original_target_expression"]
+            or candidate_outcome.get("target")
+            != table_candidate["candidate_target_expression"]
+        ):
+            raise StageAInputError(
+                f"bounded table-call source {source} no longer matches decoded control"
+            )
+        continuation_region_index = int(
+            table_candidate["continuation_region_index"]
+        )
+        if not 0 <= continuation_region_index < len(node_targets):
+            raise StageAInputError(
+                f"bounded table-call source {source} has an out-of-range continuation"
+            )
+        if (
+            int(table_candidate["continuation_target_id"])
+            != int(node_targets[continuation_region_index]["id"])
+        ):
+            raise StageAInputError(
+                f"bounded table-call source {source} has a non-canonical continuation"
+            )
+
+        original_index_expression = table_candidate["original_index_expression"]
+        candidate_index_expression = table_candidate["candidate_index_expression"]
+        edge_ids: list[int] = []
+        for row in table_candidate["rows"]:
+            target_id = int(row["target_id"])
+            row_index = int(row["original_index"])
+            target = node_targets_by_id.get(int(target_id))
+            if target is None:
+                raise StageAInputError(
+                    f"bounded table-call target {target_id} is not canonical"
+                )
+            edge_id = len(edges)
+            edge_ids.append(edge_id)
+            outgoing[source].append(edge_id)
+            edges.append({
+                "id": edge_id,
+                "source_node_id": source,
+                "target_node_id": int(target["region_index"]),
+                "source_target_id": int(node_targets[source]["id"]),
+                "target_target_id": int(target["id"]),
+                "kind": "call",
+                "original_guard": table_index_guard(
+                    original_index_expression, row_index
+                ),
+                "candidate_guard": table_index_guard(
+                    candidate_index_expression, row_index
+                ),
+                "infeasible": False,
+                "bounded_code_pointer_table_call_candidate_index": candidate_index,
+            })
+        if not edge_ids:
+            raise StageAInputError(
+                f"bounded table-call source {source} has an empty finite target set"
+            )
+        bounded_table_call_edge_groups.append({
+            "source_node_id": source,
+            "candidate_index": candidate_index,
+            "edge_ids": edge_ids,
+        })
+
     root_node_ids = [
         index for index, region in enumerate(contract.get("regions", []))
         if bool(region.get("root"))
@@ -271,6 +379,10 @@ def _relational_product_graph(
         int(candidate["source_region_index"]): candidate
         for candidate in (bounded_table_candidates or [])
     }
+    bounded_table_call_by_source = {
+        int(candidate["source_region_index"]): candidate
+        for candidate in (bounded_table_call_candidates or [])
+    }
     import_call_by_source = {
         int(candidate["source_region_index"]): candidate
         for candidate in (import_call_candidates or [])
@@ -284,16 +396,27 @@ def _relational_product_graph(
             "a product node cannot have both immutable and dynamic indirect-call claims"
         )
     if set(bounded_table_by_source).intersection(
-        set(indirect_by_source) | set(dynamic_call_by_source)
+        set(indirect_by_source)
+        | set(dynamic_call_by_source)
+        | set(bounded_table_call_by_source)
     ):
         raise StageAInputError(
             "a product node cannot have multiple indirect-control claims"
+        )
+    if set(bounded_table_call_by_source).intersection(
+        set(indirect_by_source)
+        | set(dynamic_call_by_source)
+        | set(import_call_by_source)
+    ):
+        raise StageAInputError(
+            "a product node cannot have multiple indirect-call claims"
         )
 
     def decoded_control_edges(
         behavior: dict[str, Any],
         indirect_candidate: dict[str, Any] | None,
         bounded_table_candidate: dict[str, Any] | None,
+        bounded_table_call_candidate: dict[str, Any] | None,
         dynamic_candidate: dict[str, Any] | None,
         import_call_candidate: dict[str, Any] | None,
         *,
@@ -350,6 +473,31 @@ def _relational_product_graph(
                     ),
                 }
                 for target_id in bounded_table_candidate["target_ids"]
+                if (target := node_targets_by_id.get(int(target_id))) is not None
+            ]
+        if (
+            operation == "indirect_call"
+            and bounded_table_call_candidate is not None
+            and bounded_table_call_candidate["profile"]
+            == "immutable_code_pointer_table_call_v1"
+            and bounded_table_call_candidate["shape"]
+            == "direct_indexed_table_read"
+        ):
+            index_key = (
+                "candidate_index_expression"
+                if candidate_side else "original_index_expression"
+            )
+            return [
+                {
+                    "kind": "call",
+                    "target_target_id": int(target["id"]),
+                    "guard": table_index_guard(
+                        bounded_table_call_candidate[index_key],
+                        int(row["original_index"]),
+                    ),
+                }
+                for row in bounded_table_call_candidate["rows"]
+                for target_id in [int(row["target_id"])]
                 if (target := node_targets_by_id.get(int(target_id))) is not None
             ]
         if operation == "indirect_call" and import_call_candidate is not None:
@@ -413,16 +561,17 @@ def _relational_product_graph(
     ):
         indirect_candidate = indirect_by_source.get(node_id)
         bounded_table_candidate = bounded_table_by_source.get(node_id)
+        bounded_table_call_candidate = bounded_table_call_by_source.get(node_id)
         dynamic_candidate = dynamic_call_by_source.get(node_id)
         import_call_candidate = import_call_by_source.get(node_id)
         original_decoded = decoded_control_edges(
             behavior_pair["original_ir"], indirect_candidate,
-            bounded_table_candidate, dynamic_candidate,
+            bounded_table_candidate, bounded_table_call_candidate, dynamic_candidate,
             import_call_candidate, candidate_side=False,
         )
         candidate_decoded = decoded_control_edges(
             behavior_pair["candidate_ir"], indirect_candidate,
-            bounded_table_candidate, dynamic_candidate,
+            bounded_table_candidate, bounded_table_call_candidate, dynamic_candidate,
             import_call_candidate, candidate_side=True,
         )
         original_graph_decoded = [
@@ -456,6 +605,8 @@ def _relational_product_graph(
                 decoded_candidate.update(indirect_candidate)
             if bounded_table_candidate is not None:
                 decoded_candidate.update(bounded_table_candidate)
+            if bounded_table_call_candidate is not None:
+                decoded_candidate.update(bounded_table_call_candidate)
             if dynamic_candidate is not None:
                 decoded_candidate.update(dynamic_candidate)
             if import_call_candidate is not None:
@@ -494,6 +645,10 @@ def _relational_product_graph(
         })
     covered_node_ids = [item["node_id"] for item in coverage_candidates]
     runtime_call_continuations: dict[int, set[int]] = defaultdict(set)
+    for table_candidate in bounded_table_call_candidates or []:
+        runtime_call_continuations[int(table_candidate["source_region_index"])].add(
+            int(table_candidate["continuation_region_index"])
+        )
     for relation_edge in register_relations.get("edges", []):
         claim = (
             relation_edge.get("direct_call_push_claim")
@@ -684,6 +839,12 @@ def _relational_product_graph(
             "bounded_immutable_relocation_table_edge_groups": (
                 bounded_table_edge_groups
             ),
+            "bounded_immutable_code_pointer_table_call_candidates": (
+                bounded_table_call_candidates or []
+            ),
+            "bounded_immutable_code_pointer_table_call_edge_groups": (
+                bounded_table_call_edge_groups
+            ),
             "runtime_call_continuations": [
                 {
                     "source_node_id": source_node_id,
@@ -723,7 +884,7 @@ def _relational_product_graph(
             "declared_reachable_nodes": len(declared_reachable_node_ids),
             "declared_reachable_covered_nodes": reachable_covered_nodes,
             "declared_reachable_uncovered_nodes": reachable_uncovered_nodes,
-            "declared_unreachable_nodes": (
+            "outside_declared_reachability_nodes": (
                 len(nodes) - len(declared_reachable_node_ids)
             ),
             "potential_reachable_nodes": len(potential_reachable_node_ids),
@@ -1846,6 +2007,1248 @@ def _bounded_immutable_relocation_table_jump_candidates(
     return result
 
 
+def _immutable_code_pointer_table_call_candidates(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Propose finite indirect-call rows without making them proof facts."""
+    region_by_numeric_id = {
+        int(region["numeric_id"]): index
+        for index, region in enumerate(contract.get("regions", []))
+    }
+    result: list[dict[str, Any]] = []
+    for source_index, (region, behavior_pair) in enumerate(zip(
+        contract.get("regions", []), behaviors, strict=True
+    )):
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        if (
+            original_outcome.get("op") != "indirect_call"
+            or candidate_outcome.get("op") != "indirect_call"
+        ):
+            continue
+        original_continuation = _integer(original_outcome.get("continuation"))
+        candidate_continuation = _integer(candidate_outcome.get("continuation"))
+        if (
+            original_continuation is None
+            or original_continuation != candidate_continuation
+            or original_continuation not in region_by_numeric_id
+        ):
+            continue
+        continuation_region_index = region_by_numeric_id[original_continuation]
+        continuation_targets = {
+            int(target["id"])
+            for target in contract.get("code_targets", [])
+            if int(target["region_index"]) == continuation_region_index
+        }
+        if len(continuation_targets) != 1:
+            continue
+
+        candidate = _direct_immutable_code_pointer_table_call_candidate(
+            original_bin,
+            candidate_bin,
+            contract,
+            behaviors,
+            region,
+            original_outcome,
+            candidate_outcome,
+        )
+        if candidate is None:
+            candidate = _cursor_immutable_code_pointer_table_call_candidate(
+                original_bin,
+                candidate_bin,
+                contract,
+                behaviors,
+                region,
+                source_index,
+                original_outcome,
+                candidate_outcome,
+            )
+        if candidate is None:
+            continue
+        candidate.update({
+            "profile": "immutable_code_pointer_table_call_v1",
+            "status": "candidate_requires_lean_replay",
+            "acceptance_authority": False,
+            "source_region_index": source_index,
+            "continuation_region_index": continuation_region_index,
+            "continuation_target_id": next(iter(continuation_targets)),
+            "original_target_expression": original_outcome["target"],
+            "candidate_target_expression": candidate_outcome["target"],
+        })
+        result.append(candidate)
+    return result
+
+
+def _bounded_immutable_code_pointer_table_call_inputs(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    proposals: list[dict[str, Any]],
+    *,
+    original_image_base: int,
+    candidate_image_base: int,
+) -> dict[str, Any]:
+    """Canonicalize the narrow direct-table profile for Lean replay.
+
+    The analyzer's proposal status is deliberately ignored.  This function only
+    checks that a proposal is a complete, unambiguous serialization of decoded
+    control and contract data; the generated Lean claim remains responsible for
+    checking the PE bytes, relocations, invariant bound, and graph edges.
+    """
+    regions = contract.get("regions", [])
+    if len(behaviors) != len(regions):
+        raise StageAInputError(
+            "bounded table-call input generation requires one behavior per region"
+        )
+    region_by_numeric_id: dict[int, int] = {}
+    duplicate_numeric_ids: set[int] = set()
+    for region_index, region in enumerate(regions):
+        numeric_id = _integer(region.get("numeric_id"))
+        if numeric_id is None:
+            continue
+        if numeric_id in region_by_numeric_id:
+            duplicate_numeric_ids.add(numeric_id)
+        else:
+            region_by_numeric_id[numeric_id] = region_index
+
+    targets_by_id: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    targets_by_region: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for target in contract.get("code_targets", []):
+        target_id = _integer(target.get("id"))
+        region_index = _integer(target.get("region_index"))
+        if target_id is not None:
+            targets_by_id[target_id].append(target)
+        if region_index is not None:
+            targets_by_region[region_index].append(target)
+
+    incomplete: list[dict[str, Any]] = []
+
+    def reject(
+        proposal_index: int,
+        proposal: dict[str, Any],
+        reason: str,
+    ) -> None:
+        source = _integer(proposal.get("source_region_index"))
+        incomplete.append({
+            "proposal_index": proposal_index,
+            "source_region_index": source,
+            "profile": proposal.get("profile"),
+            "shape": proposal.get("shape"),
+            "reason": reason,
+        })
+
+    indexed: list[tuple[int, dict[str, Any], int]] = []
+    for proposal_index, proposal in enumerate(proposals):
+        if proposal.get("profile") != "immutable_code_pointer_table_call_v1":
+            reject(proposal_index, proposal, "unsupported_profile")
+            continue
+        source = _integer(proposal.get("source_region_index"))
+        if source is None or not 0 <= source < len(regions):
+            reject(proposal_index, proposal, "invalid_source_region")
+            continue
+        indexed.append((proposal_index, proposal, source))
+
+    source_counts = Counter(source for _index, _proposal, source in indexed)
+    candidates: list[dict[str, Any]] = []
+    for proposal_index, proposal, source in indexed:
+        if source_counts[source] != 1:
+            reject(proposal_index, proposal, "ambiguous_source_proposals")
+            continue
+        if proposal.get("shape") != "direct_indexed_table_read":
+            reject(
+                proposal_index,
+                proposal,
+                "cursor_loaded_or_non_direct_table_not_supported",
+            )
+            continue
+
+        region = regions[source]
+        behavior_pair = behaviors[source]
+        original_outcome = behavior_pair.get("original_ir", {}).get("outcome") or {}
+        candidate_outcome = behavior_pair.get("candidate_ir", {}).get("outcome") or {}
+        if (
+            original_outcome.get("op") != "indirect_call"
+            or candidate_outcome.get("op") != "indirect_call"
+        ):
+            reject(proposal_index, proposal, "decoded_exit_is_not_paired_indirect_call")
+            continue
+        original_shape = _indexed_u32_table_read(original_outcome.get("target"))
+        candidate_shape = _indexed_u32_table_read(candidate_outcome.get("target"))
+        if original_shape is None or candidate_shape is None:
+            reject(proposal_index, proposal, "decoded_target_is_not_direct_indexed_read")
+            continue
+        original_base, original_index = original_shape
+        candidate_base, candidate_index = candidate_shape
+        if (
+            _integer(proposal.get("original_base")) != original_base
+            or _integer(proposal.get("candidate_base")) != candidate_base
+            or proposal.get("original_index_expression") != original_index
+            or proposal.get("candidate_index_expression") != candidate_index
+            or proposal.get("original_target_expression")
+            != original_outcome.get("target")
+            or proposal.get("candidate_target_expression")
+            != candidate_outcome.get("target")
+            or _integer(proposal.get("scale")) != 4
+        ):
+            reject(proposal_index, proposal, "proposal_does_not_match_decoded_table_read")
+            continue
+
+        matching_bounds: list[dict[str, Any]] = []
+        for bound in region.get("bounds", []):
+            original_bound_expression = bound.get("original_expression")
+            if original_bound_expression is None and isinstance(
+                bound.get("original"), str
+            ):
+                original_bound_expression = {
+                    "op": "input_reg", "reg": bound["original"],
+                }
+            candidate_bound_expression = bound.get("candidate_expression")
+            if candidate_bound_expression is None and isinstance(
+                bound.get("candidate"), str
+            ):
+                candidate_bound_expression = {
+                    "op": "input_reg", "reg": bound["candidate"],
+                }
+            upper = _integer(bound.get("unsigned_lt"))
+            if (
+                upper is not None
+                and 0 < upper <= 4096
+                and original_bound_expression == original_index
+                and candidate_bound_expression == candidate_index
+            ):
+                matching_bounds.append(bound)
+        index_evidence = proposal.get("index_evidence")
+        if (
+            len(matching_bounds) != 1
+            or not isinstance(index_evidence, dict)
+            or index_evidence.get("kind") != "paired_unsigned_bound"
+            or index_evidence.get("bound") != matching_bounds[0]
+            or index_evidence.get("original_expression") != original_index
+            or index_evidence.get("candidate_expression") != candidate_index
+            or _integer(index_evidence.get("scale")) != 4
+        ):
+            reject(proposal_index, proposal, "unique_checked_unsigned_bound_required")
+            continue
+        upper_exclusive = int(matching_bounds[0]["unsigned_lt"])
+        original_index_register = _input_register(original_index)
+        candidate_index_register = _input_register(candidate_index)
+        if original_index_register is None or candidate_index_register is None:
+            reject(
+                proposal_index,
+                proposal,
+                "bounded_table_index_must_be_a_direct_register",
+            )
+            continue
+        exact_index_relations = [
+            relation for relation in region.get("input_relations", [])
+            if relation.get("relation") == "exact"
+            and relation.get("original") == original_index_register
+            and relation.get("candidate") == candidate_index_register
+        ]
+        if len(exact_index_relations) != 1:
+            reject(
+                proposal_index,
+                proposal,
+                "unique_exact_index_register_relation_required",
+            )
+            continue
+
+        matching_values: list[tuple[dict[str, Any], int]] = []
+        for value in contract.get("value_targets", []):
+            value_id = _integer(value.get("id"))
+            original_value = _integer(value.get("original_value"))
+            candidate_value = _integer(value.get("candidate_value"))
+            mapped_size = _integer(value.get("mapped_size"))
+            if (
+                value_id is None
+                or original_value is None
+                or candidate_value is None
+                or mapped_size is None
+            ):
+                continue
+            original_offset = original_base - original_value
+            candidate_offset = candidate_base - candidate_value
+            if (
+                original_offset != candidate_offset
+                or original_offset < 0
+                or original_offset + upper_exclusive * 4 > mapped_size
+            ):
+                continue
+            relocation_offsets = {
+                int(offset) for offset in value.get("relocation_offsets", [])
+                if _integer(offset) is not None
+            }
+            required_offsets = {
+                original_offset + index * 4 for index in range(upper_exclusive)
+            }
+            if required_offsets.issubset(relocation_offsets):
+                matching_values.append((value, original_offset))
+        matching_value_keys = {
+            (int(value["id"]), offset) for value, offset in matching_values
+        }
+        if len(matching_value_keys) != 1 or len(matching_values) != 1:
+            reject(
+                proposal_index,
+                proposal,
+                "unique_relocation_backed_value_target_required",
+            )
+            continue
+        table_value, table_offset = matching_values[0]
+
+        original_continuation = _integer(original_outcome.get("continuation"))
+        candidate_continuation = _integer(candidate_outcome.get("continuation"))
+        if (
+            original_continuation is None
+            or original_continuation != candidate_continuation
+            or original_continuation in duplicate_numeric_ids
+            or original_continuation not in region_by_numeric_id
+        ):
+            reject(proposal_index, proposal, "paired_continuation_is_not_unique")
+            continue
+        continuation_region_index = region_by_numeric_id[original_continuation]
+        continuation_targets = targets_by_region.get(continuation_region_index, [])
+        canonical_continuations = [
+            target for target in continuation_targets
+            if _integer(target.get("original_rva"))
+                == _integer(regions[continuation_region_index].get("original", {}).get("rva_start"))
+            and _integer(target.get("candidate_rva"))
+                == _integer(regions[continuation_region_index].get("candidate", {}).get("rva_start"))
+        ]
+        if len(canonical_continuations) != 1:
+            reject(proposal_index, proposal, "continuation_target_is_not_canonical")
+            continue
+        continuation_target_id = int(canonical_continuations[0]["id"])
+        if (
+            len(targets_by_id.get(continuation_target_id, [])) != 1
+            or _integer(proposal.get("continuation_region_index"))
+                != continuation_region_index
+            or _integer(proposal.get("continuation_target_id"))
+                != continuation_target_id
+        ):
+            reject(proposal_index, proposal, "proposal_continuation_is_not_exact")
+            continue
+
+        ranges = proposal.get("ranges")
+        if (
+            not isinstance(ranges, list)
+            or len(ranges) != 1
+            or _integer(ranges[0].get("original_start")) != original_base
+            or _integer(ranges[0].get("candidate_start")) != candidate_base
+            or _integer(ranges[0].get("original_end"))
+                != original_base + upper_exclusive * 4
+            or _integer(ranges[0].get("candidate_end"))
+                != candidate_base + upper_exclusive * 4
+            or _integer(ranges[0].get("row_count")) != upper_exclusive
+            or ranges[0].get("source") != "paired_unsigned_bound"
+        ):
+            reject(proposal_index, proposal, "table_range_does_not_match_bound")
+            continue
+
+        proposed_rows = proposal.get("rows")
+        if not isinstance(proposed_rows, list) or len(proposed_rows) != upper_exclusive:
+            reject(proposal_index, proposal, "table_rows_do_not_cover_bound")
+            continue
+        rows_by_index: dict[int, dict[str, Any]] = {}
+        row_failure: str | None = None
+        for row in proposed_rows:
+            if not isinstance(row, dict):
+                row_failure = "malformed_table_row"
+                break
+            original_row_index = _integer(row.get("original_index"))
+            candidate_row_index = _integer(row.get("candidate_index"))
+            if (
+                original_row_index is None
+                or original_row_index != candidate_row_index
+                or not 0 <= original_row_index < upper_exclusive
+                or original_row_index in rows_by_index
+            ):
+                row_failure = "ambiguous_or_out_of_range_table_row"
+                break
+            if (
+                row.get("kind") != "code_pointer"
+                or row.get("relocation_backed") is not True
+                or _integer(row.get("original_word")) in {None, 0}
+                or _integer(row.get("candidate_word")) in {None, 0}
+            ):
+                row_failure = "null_sentinel_or_non_relocation_row_not_supported"
+                break
+            target_id = _integer(row.get("target_id"))
+            target_rows = targets_by_id.get(target_id, []) if target_id is not None else []
+            if len(target_rows) != 1:
+                row_failure = "table_row_target_id_is_not_unique"
+                break
+            target = target_rows[0]
+            target_region_index = _integer(target.get("region_index"))
+            if (
+                target_region_index is None
+                or not 0 <= target_region_index < len(regions)
+                or _integer(target.get("original_rva"))
+                    != _integer(regions[target_region_index].get("original", {}).get("rva_start"))
+                or _integer(target.get("candidate_rva"))
+                    != _integer(regions[target_region_index].get("candidate", {}).get("rva_start"))
+            ):
+                row_failure = "table_row_target_is_not_canonical"
+                break
+            original_slot = original_base + original_row_index * 4
+            candidate_slot = candidate_base + original_row_index * 4
+            original_rva = original_slot - original_image_base
+            candidate_rva = candidate_slot - candidate_image_base
+            original_address = original_image_base + int(target["original_rva"])
+            candidate_address = candidate_image_base + int(target["candidate_rva"])
+            if (
+                _integer(row.get("original_slot")) != original_slot
+                or _integer(row.get("candidate_slot")) != candidate_slot
+                or _integer(row.get("original_rva")) != original_rva
+                or _integer(row.get("candidate_rva")) != candidate_rva
+                or _integer(row.get("original_relocation_rva")) != original_rva
+                or _integer(row.get("candidate_relocation_rva")) != candidate_rva
+                or _integer(row.get("range_index")) != 0
+                or int(row["original_word"]) != original_address
+                or int(row["candidate_word"]) != candidate_address
+            ):
+                row_failure = "table_row_does_not_match_slot_relocation_or_target"
+                break
+            rows_by_index[original_row_index] = row
+        if row_failure is not None or set(rows_by_index) != set(range(upper_exclusive)):
+            reject(
+                proposal_index,
+                proposal,
+                row_failure or "table_rows_do_not_cover_every_index",
+            )
+            continue
+
+        rows = [dict(rows_by_index[index]) for index in range(upper_exclusive)]
+        entry_target_ids = [int(row["target_id"]) for row in rows]
+        target_ids = sorted(set(entry_target_ids))
+        if len(target_ids) != len(entry_target_ids):
+            reject(
+                proposal_index,
+                proposal,
+                "duplicate_table_targets_not_supported_by_profile",
+            )
+            continue
+        proposed_target_ids = proposal.get("target_ids")
+        if (
+            not isinstance(proposed_target_ids, list)
+            or any(_integer(value) is None for value in proposed_target_ids)
+            or [int(value) for value in proposed_target_ids] != target_ids
+        ):
+            reject(proposal_index, proposal, "finite_target_inventory_is_not_canonical")
+            continue
+
+        candidates.append({
+            "input_contract": "bounded_immutable_code_pointer_table_call_v1",
+            "profile": "immutable_code_pointer_table_call_v1",
+            "shape": "direct_indexed_table_read",
+            "source_region_index": source,
+            "continuation_region_index": continuation_region_index,
+            "continuation_target_id": continuation_target_id,
+            "original_base": original_base,
+            "candidate_base": candidate_base,
+            "value_target_id": int(table_value["id"]),
+            "table_offset": table_offset,
+            "scale": 4,
+            "upper_exclusive": upper_exclusive,
+            "original_index_register": original_index_register,
+            "candidate_index_register": candidate_index_register,
+            "original_index_expression": original_index,
+            "candidate_index_expression": candidate_index,
+            "original_target_expression": original_outcome["target"],
+            "candidate_target_expression": candidate_outcome["target"],
+            "bound": dict(matching_bounds[0]),
+            "rows": rows,
+            "entry_target_ids": entry_target_ids,
+            "target_ids": target_ids,
+            "status": "candidate_requires_lean_replay",
+            "acceptance_authority": False,
+        })
+
+    candidates.sort(key=lambda candidate: int(candidate["source_region_index"]))
+    incomplete.sort(key=lambda row: int(row["proposal_index"]))
+    if incomplete:
+        status = "incomplete"
+    elif candidates:
+        status = "candidate_requires_lean_replay"
+    else:
+        status = "not_applicable"
+    return {
+        "format": "stage-a-bounded-immutable-code-pointer-table-call-input-v1",
+        "status": status,
+        "acceptance_authority": False,
+        "candidates": candidates,
+        "incomplete": incomplete,
+    }
+
+
+def _direct_immutable_code_pointer_table_call_candidate(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    region: dict[str, Any],
+    original_outcome: dict[str, Any],
+    candidate_outcome: dict[str, Any],
+) -> dict[str, Any] | None:
+    original_shape = _indexed_u32_table_read(original_outcome.get("target"))
+    candidate_shape = _indexed_u32_table_read(candidate_outcome.get("target"))
+    if original_shape is None or candidate_shape is None:
+        return None
+    original_base, original_index = original_shape
+    candidate_base, candidate_index = candidate_shape
+
+    matching_bounds: list[dict[str, Any]] = []
+    for bound in region.get("bounds", []):
+        original_bound_expression = bound.get("original_expression") or {
+            "op": "input_reg", "reg": str(bound.get("original")),
+        }
+        candidate_bound_expression = bound.get("candidate_expression") or {
+            "op": "input_reg", "reg": str(bound.get("candidate")),
+        }
+        upper = _integer(bound.get("unsigned_lt"))
+        if (
+            upper is not None
+            and upper > 0
+            and original_bound_expression == original_index
+            and candidate_bound_expression == candidate_index
+        ):
+            matching_bounds.append(bound)
+
+    ranges: list[dict[str, Any]]
+    index_evidence: dict[str, Any]
+    if len(matching_bounds) == 1:
+        upper_exclusive = int(matching_bounds[0]["unsigned_lt"])
+        ranges = [{
+            "original_start": original_base,
+            "original_end": original_base + upper_exclusive * 4,
+            "candidate_start": candidate_base,
+            "candidate_end": candidate_base + upper_exclusive * 4,
+            "source": "paired_unsigned_bound",
+        }]
+        index_evidence = {
+            "kind": "paired_unsigned_bound",
+            "bound": matching_bounds[0],
+            "original_expression": original_index,
+            "candidate_expression": candidate_index,
+            "scale": 4,
+        }
+    elif not matching_bounds:
+        reverse_evidence = _reverse_sentinel_table_index_evidence(
+            original_bin,
+            candidate_bin,
+            contract,
+            behaviors,
+            region,
+            original_base,
+            candidate_base,
+            original_index,
+            candidate_index,
+        )
+        if reverse_evidence is None:
+            return None
+        ranges = [reverse_evidence.pop("range")]
+        index_evidence = reverse_evidence
+    else:
+        return None
+
+    checked_ranges = _paired_immutable_code_pointer_table_ranges(
+        original_bin, candidate_bin, contract, ranges
+    )
+    if checked_ranges is None:
+        return None
+    checked_range_rows, rows = checked_ranges
+    return {
+        "shape": "direct_indexed_table_read",
+        "original_base": original_base,
+        "candidate_base": candidate_base,
+        "scale": 4,
+        "original_index_expression": original_index,
+        "candidate_index_expression": candidate_index,
+        "index_evidence": index_evidence,
+        "ranges": checked_range_rows,
+        "rows": rows,
+        "target_ids": sorted({
+            int(row["target_id"]) for row in rows if "target_id" in row
+        }),
+    }
+
+
+def _cursor_immutable_code_pointer_table_call_candidate(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    region: dict[str, Any],
+    source_index: int,
+    original_outcome: dict[str, Any],
+    candidate_outcome: dict[str, Any],
+) -> dict[str, Any] | None:
+    original_target_register = _input_register(original_outcome.get("target"))
+    candidate_target_register = _input_register(candidate_outcome.get("target"))
+    if original_target_register is None or candidate_target_register is None:
+        return None
+    function_id = region.get("function_id")
+    if function_id is None:
+        return None
+    source_numeric_id = int(region["numeric_id"])
+
+    producers: list[tuple[int, str, str]] = []
+    for producer_index, (producer_region, producer_pair) in enumerate(zip(
+        contract.get("regions", []), behaviors, strict=True
+    )):
+        if producer_region.get("function_id") != function_id:
+            continue
+        original_ir = producer_pair["original_ir"]
+        candidate_ir = producer_pair["candidate_ir"]
+        original_cursor = _input_register_read32(
+            (original_ir.get("registers") or {}).get(original_target_register)
+        )
+        candidate_cursor = _input_register_read32(
+            (candidate_ir.get("registers") or {}).get(candidate_target_register)
+        )
+        original_exit = original_ir.get("outcome") or {}
+        candidate_exit = candidate_ir.get("outcome") or {}
+        if (
+            original_cursor is not None
+            and candidate_cursor is not None
+            and original_exit.get("op") == "branch"
+            and candidate_exit.get("op") == "branch"
+            and int(original_exit.get("fallthrough", -1)) == source_numeric_id
+            and int(candidate_exit.get("fallthrough", -1)) == source_numeric_id
+            and _is_zero_test(
+                original_exit.get("condition"),
+                {"op": "read32", "address": {
+                    "op": "input_reg", "reg": original_cursor,
+                }},
+            )
+            and _is_zero_test(
+                candidate_exit.get("condition"),
+                {"op": "read32", "address": {
+                    "op": "input_reg", "reg": candidate_cursor,
+                }},
+            )
+        ):
+            producers.append((producer_index, original_cursor, candidate_cursor))
+    if len(producers) != 1:
+        return None
+    producer_index, original_cursor, candidate_cursor = producers[0]
+    producer_numeric_id = int(contract["regions"][producer_index]["numeric_id"])
+
+    steps: list[tuple[int, str, str]] = []
+    for step_index, (step_region, step_pair) in enumerate(zip(
+        contract.get("regions", []), behaviors, strict=True
+    )):
+        if step_region.get("function_id") != function_id:
+            continue
+        original_ir = step_pair["original_ir"]
+        candidate_ir = step_pair["candidate_ir"]
+        original_step = _input_register_add(
+            (original_ir.get("registers") or {}).get(original_cursor),
+            original_cursor,
+        )
+        candidate_step = _input_register_add(
+            (candidate_ir.get("registers") or {}).get(candidate_cursor),
+            candidate_cursor,
+        )
+        original_exit = original_ir.get("outcome") or {}
+        candidate_exit = candidate_ir.get("outcome") or {}
+        if (
+            original_step == 4
+            and candidate_step == 4
+            and original_exit.get("op") == "branch"
+            and candidate_exit.get("op") == "branch"
+            and int(original_exit.get("taken", -1)) == producer_numeric_id
+            and int(candidate_exit.get("taken", -1)) == producer_numeric_id
+        ):
+            original_bound_register = _unsigned_less_bound_register(
+                original_exit.get("condition"), original_cursor, 4
+            )
+            candidate_bound_register = _unsigned_less_bound_register(
+                candidate_exit.get("condition"), candidate_cursor, 4
+            )
+            if (
+                original_bound_register is not None
+                and candidate_bound_register is not None
+            ):
+                steps.append((
+                    step_index, original_bound_register, candidate_bound_register,
+                ))
+    if len(steps) != 1:
+        return None
+    step_index, original_bound_register, candidate_bound_register = steps[0]
+
+    entry_regions = [
+        index for index, candidate_region in enumerate(contract.get("regions", []))
+        if candidate_region.get("function_id") == function_id
+        and bool(candidate_region.get("function_entry"))
+    ]
+    if len(entry_regions) != 1:
+        return None
+    entry_region_index = entry_regions[0]
+    entry_numeric_id = int(contract["regions"][entry_region_index]["numeric_id"])
+    caller_ranges: list[dict[str, Any]] = []
+    caller_indices: list[int] = []
+    for caller_index, behavior_pair in enumerate(behaviors):
+        original_ir = behavior_pair["original_ir"]
+        candidate_ir = behavior_pair["candidate_ir"]
+        original_exit = original_ir.get("outcome") or {}
+        candidate_exit = candidate_ir.get("outcome") or {}
+        original_calls_entry = (
+            original_exit.get("op") == "call"
+            and _integer(original_exit.get("target")) == entry_numeric_id
+        )
+        candidate_calls_entry = (
+            candidate_exit.get("op") == "call"
+            and _integer(candidate_exit.get("target")) == entry_numeric_id
+        )
+        if not original_calls_entry and not candidate_calls_entry:
+            continue
+        if not original_calls_entry or not candidate_calls_entry:
+            return None
+        original_arguments = _constant_stack_call_arguments(original_ir)
+        candidate_arguments = _constant_stack_call_arguments(candidate_ir)
+        if original_arguments is None or candidate_arguments is None:
+            return None
+        caller_indices.append(caller_index)
+        caller_ranges.append({
+            "original_start": original_arguments[0],
+            "original_end": original_arguments[1],
+            "candidate_start": candidate_arguments[0],
+            "candidate_end": candidate_arguments[1],
+            "source": "paired_static_call_arguments",
+            "callsite_region_index": caller_index,
+        })
+    if not caller_ranges:
+        return None
+
+    checked_ranges = _paired_immutable_code_pointer_table_ranges(
+        original_bin, candidate_bin, contract, caller_ranges
+    )
+    if checked_ranges is None:
+        return None
+    checked_range_rows, rows = checked_ranges
+    return {
+        "shape": "cursor_loaded_table_word",
+        "original_target_register": original_target_register,
+        "candidate_target_register": candidate_target_register,
+        "original_cursor_register": original_cursor,
+        "candidate_cursor_register": candidate_cursor,
+        "original_bound_register": original_bound_register,
+        "candidate_bound_register": candidate_bound_register,
+        "scale": 4,
+        "index_evidence": {
+            "kind": "paired_static_call_range_cursor",
+            "function_entry_region_index": entry_region_index,
+            "producer_region_index": producer_index,
+            "step_region_index": step_index,
+            "callsite_region_indices": caller_indices,
+            "original_expression": {
+                "op": "input_reg", "reg": original_cursor,
+            },
+            "candidate_expression": {
+                "op": "input_reg", "reg": candidate_cursor,
+            },
+            "scale": 4,
+        },
+        "ranges": checked_range_rows,
+        "rows": rows,
+        "target_ids": sorted({
+            int(row["target_id"]) for row in rows if "target_id" in row
+        }),
+    }
+
+
+def _reverse_sentinel_table_index_evidence(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    region: dict[str, Any],
+    original_base: int,
+    candidate_base: int,
+    original_index: dict[str, Any],
+    candidate_index: dict[str, Any],
+) -> dict[str, Any] | None:
+    original_register = _input_register(original_index)
+    candidate_register = _input_register(candidate_index)
+    if original_register is None or candidate_register is None:
+        return None
+    if (
+        _immutable_section_u32(original_bin, original_base) != 0xFFFFFFFF
+        or _immutable_section_u32(candidate_bin, candidate_base) != 0xFFFFFFFF
+    ):
+        return None
+    function_id = region.get("function_id")
+    if function_id is None:
+        return None
+    source_numeric_id = int(region["numeric_id"])
+
+    header_producers = []
+    decrement_regions = []
+    nonzero_predecessors = []
+    scanner_steps: list[tuple[int, str, str]] = []
+    for region_index, (candidate_region, pair) in enumerate(zip(
+        contract.get("regions", []), behaviors, strict=True
+    )):
+        if candidate_region.get("function_id") != function_id:
+            continue
+        original_ir = pair["original_ir"]
+        candidate_ir = pair["candidate_ir"]
+        original_registers = original_ir.get("registers") or {}
+        candidate_registers = candidate_ir.get("registers") or {}
+        if (
+            _static_u32_read_address(original_registers.get(original_register))
+                == original_base
+            and _static_u32_read_address(candidate_registers.get(candidate_register))
+                == candidate_base
+        ):
+            header_producers.append(region_index)
+
+        original_decrement = _input_register_sub(
+            original_registers.get(original_register), original_register
+        )
+        candidate_decrement = _input_register_sub(
+            candidate_registers.get(candidate_register), candidate_register
+        )
+        original_exit = original_ir.get("outcome") or {}
+        candidate_exit = candidate_ir.get("outcome") or {}
+        if (
+            original_decrement == 1
+            and candidate_decrement == 1
+            and original_exit.get("op") == "branch"
+            and candidate_exit.get("op") == "branch"
+            and int(original_exit.get("taken", -1)) == source_numeric_id
+            and int(candidate_exit.get("taken", -1)) == source_numeric_id
+            and _is_nonzero_test(
+                original_exit.get("condition"),
+                original_registers[original_register],
+            )
+            and _is_nonzero_test(
+                candidate_exit.get("condition"),
+                candidate_registers[candidate_register],
+            )
+        ):
+            decrement_regions.append(region_index)
+
+        if (
+            original_exit.get("op") == "branch"
+            and candidate_exit.get("op") == "branch"
+            and int(original_exit.get("fallthrough", -1)) == source_numeric_id
+            and int(candidate_exit.get("fallthrough", -1)) == source_numeric_id
+            and _is_zero_test(
+                original_exit.get("condition"), original_index
+            )
+            and _is_zero_test(
+                candidate_exit.get("condition"), candidate_index
+            )
+        ):
+            nonzero_predecessors.append(region_index)
+
+        for original_scan_register, original_scan_expression in original_registers.items():
+            if _input_register_add(original_scan_expression, original_scan_register) != 1:
+                continue
+            for candidate_scan_register, candidate_scan_expression in candidate_registers.items():
+                if _input_register_add(candidate_scan_expression, candidate_scan_register) != 1:
+                    continue
+                if (
+                    original_registers.get(original_register) != {
+                        "op": "input_reg", "reg": original_scan_register,
+                    }
+                    or candidate_registers.get(candidate_register) != {
+                        "op": "input_reg", "reg": candidate_scan_register,
+                    }
+                ):
+                    continue
+                original_scan_index = original_scan_expression
+                candidate_scan_index = candidate_scan_expression
+                original_reads_table = any(
+                    _indexed_u32_table_read(expression)
+                        == (original_base, original_scan_index)
+                    for expression in original_registers.values()
+                    if isinstance(expression, dict)
+                )
+                candidate_reads_table = any(
+                    _indexed_u32_table_read(expression)
+                        == (candidate_base, candidate_scan_index)
+                    for expression in candidate_registers.values()
+                    if isinstance(expression, dict)
+                )
+                if original_reads_table and candidate_reads_table:
+                    scanner_steps.append((
+                        region_index,
+                        original_scan_register,
+                        candidate_scan_register,
+                    ))
+    if not (
+        len(header_producers) == 1
+        and len(decrement_regions) == 1
+        and len(nonzero_predecessors) == 1
+        and len(scanner_steps) == 1
+    ):
+        return None
+
+    scanner_region_index, original_scan_register, candidate_scan_register = (
+        scanner_steps[0]
+    )
+    scanner_numeric_id = int(contract["regions"][scanner_region_index]["numeric_id"])
+    scanner_initializers = []
+    scanner_loops = []
+    for region_index, (candidate_region, pair) in enumerate(zip(
+        contract.get("regions", []), behaviors, strict=True
+    )):
+        if candidate_region.get("function_id") != function_id:
+            continue
+        original_ir = pair["original_ir"]
+        candidate_ir = pair["candidate_ir"]
+        original_exit = original_ir.get("outcome") or {}
+        candidate_exit = candidate_ir.get("outcome") or {}
+        if (
+            original_exit.get("op") == "jump"
+            and candidate_exit.get("op") == "jump"
+            and int(original_exit.get("target", -1)) == scanner_numeric_id
+            and int(candidate_exit.get("target", -1)) == scanner_numeric_id
+            and (original_ir.get("registers") or {}).get(original_scan_register)
+                == {"op": "constant", "value": 0}
+            and (candidate_ir.get("registers") or {}).get(candidate_scan_register)
+                == {"op": "constant", "value": 0}
+        ):
+            scanner_initializers.append(region_index)
+        if (
+            original_exit.get("op") == "branch"
+            and candidate_exit.get("op") == "branch"
+            and int(original_exit.get("taken", -1)) == scanner_numeric_id
+            and int(candidate_exit.get("taken", -1)) == scanner_numeric_id
+        ):
+            scanner_loops.append(region_index)
+    if len(scanner_initializers) != 1 or len(scanner_loops) != 1:
+        return None
+
+    terminator = _paired_immutable_table_terminator(
+        original_bin, candidate_bin, contract, original_base, candidate_base
+    )
+    if terminator is None:
+        return None
+    original_end, candidate_end = terminator
+    return {
+        "kind": "paired_sentinel_terminated_reverse_count",
+        "original_expression": original_index,
+        "candidate_expression": candidate_index,
+        "scale": 4,
+        "header_producer_region_index": header_producers[0],
+        "nonzero_predecessor_region_index": nonzero_predecessors[0],
+        "decrement_region_index": decrement_regions[0],
+        "scanner_initializer_region_index": scanner_initializers[0],
+        "scanner_region_index": scanner_region_index,
+        "scanner_loop_region_index": scanner_loops[0],
+        "range": {
+            "original_start": original_base + 4,
+            "original_end": original_end,
+            "candidate_start": candidate_base + 4,
+            "candidate_end": candidate_end,
+            "source": "paired_sentinel_terminated_reverse_count",
+        },
+    }
+
+
+def _paired_immutable_table_terminator(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: dict[str, Any],
+    original_base: int,
+    candidate_base: int,
+) -> tuple[int, int] | None:
+    for index in range(1, 4097):
+        original_slot = original_base + index * 4
+        candidate_slot = candidate_base + index * 4
+        original_word = _immutable_section_u32(original_bin, original_slot)
+        candidate_word = _immutable_section_u32(candidate_bin, candidate_slot)
+        if original_word is None or candidate_word is None:
+            return None
+        if original_word == 0 and candidate_word == 0:
+            return original_slot + 4, candidate_slot + 4
+        if _paired_relocated_code_pointer_row(
+            original_bin,
+            candidate_bin,
+            contract,
+            original_slot,
+            candidate_slot,
+            index,
+        ) is None:
+            return None
+    return None
+
+
+def _paired_immutable_code_pointer_table_ranges(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: dict[str, Any],
+    ranges: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+    if original_bin.bitness != 32 or candidate_bin.bitness != 32:
+        return None
+    checked_ranges: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    total_rows = 0
+    for range_index, candidate_range in enumerate(ranges):
+        original_start_value = _integer(candidate_range.get("original_start"))
+        candidate_start_value = _integer(candidate_range.get("candidate_start"))
+        original_end_value = _integer(candidate_range.get("original_end"))
+        candidate_end_value = _integer(candidate_range.get("candidate_end"))
+        if (
+            original_start_value is None
+            or candidate_start_value is None
+            or original_end_value is None
+            or candidate_end_value is None
+        ):
+            return None
+        original_start = int(original_start_value)
+        candidate_start = int(candidate_start_value)
+        original_end = int(original_end_value)
+        candidate_end = int(candidate_end_value)
+        original_size = original_end - original_start
+        candidate_size = candidate_end - candidate_start
+        if (
+            original_size <= 0
+            or original_size != candidate_size
+            or original_size % 4 != 0
+            or original_start % 4 != 0
+            or candidate_start % 4 != 0
+        ):
+            return None
+        row_count = original_size // 4
+        total_rows += row_count
+        if total_rows > 4096:
+            return None
+        checked_range = dict(candidate_range)
+        checked_range["row_count"] = row_count
+        checked_ranges.append(checked_range)
+        for row_index in range(row_count):
+            original_slot = original_start + row_index * 4
+            candidate_slot = candidate_start + row_index * 4
+            original_word = _immutable_section_u32(original_bin, original_slot)
+            candidate_word = _immutable_section_u32(candidate_bin, candidate_slot)
+            if original_word is None or candidate_word is None:
+                return None
+            if original_word == 0 and candidate_word == 0:
+                row: dict[str, Any] = {
+                    "kind": "null",
+                    "original_slot": original_slot,
+                    "candidate_slot": candidate_slot,
+                    "original_rva": original_slot - original_bin.image_base,
+                    "candidate_rva": candidate_slot - candidate_bin.image_base,
+                    "original_index": row_index,
+                    "candidate_index": row_index,
+                    "range_index": range_index,
+                    "relocation_backed": False,
+                }
+            else:
+                row = _paired_relocated_code_pointer_row(
+                    original_bin,
+                    candidate_bin,
+                    contract,
+                    original_slot,
+                    candidate_slot,
+                    row_index,
+                ) or {}
+                if not row:
+                    return None
+                row["range_index"] = range_index
+            rows.append(row)
+    return checked_ranges, rows
+
+
+def _paired_relocated_code_pointer_row(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: dict[str, Any],
+    original_slot: int,
+    candidate_slot: int,
+    row_index: int,
+) -> dict[str, Any] | None:
+    original_word = _immutable_section_u32(original_bin, original_slot)
+    candidate_word = _immutable_section_u32(candidate_bin, candidate_slot)
+    if (
+        original_word is None
+        or original_word == 0
+        or candidate_word is None
+        or candidate_word == 0
+    ):
+        return None
+    original_rva = original_slot - original_bin.image_base
+    candidate_rva = candidate_slot - candidate_bin.image_base
+    if (
+        original_rva not in _base_relocation_rvas(original_bin)
+        or candidate_rva not in _base_relocation_rvas(candidate_bin)
+    ):
+        return None
+    matches = {
+        int(target["id"])
+        for target in contract.get("code_targets", [])
+        if _absolute_code_target_matches(
+            original_bin, target, "original", original_word
+        )
+        and _absolute_code_target_matches(
+            candidate_bin, target, "candidate", candidate_word
+        )
+    }
+    if len(matches) != 1:
+        return None
+    return {
+        "kind": "code_pointer",
+        "target_id": next(iter(matches)),
+        "original_slot": original_slot,
+        "candidate_slot": candidate_slot,
+        "original_rva": original_rva,
+        "candidate_rva": candidate_rva,
+        "original_index": row_index,
+        "candidate_index": row_index,
+        "original_word": original_word,
+        "candidate_word": candidate_word,
+        "original_relocation_rva": original_rva,
+        "candidate_relocation_rva": candidate_rva,
+        "relocation_backed": True,
+    }
+
+
+def _base_relocation_rvas(binary: StageABinary) -> set[int]:
+    relocation_type = 3 if binary.bitness == 32 else 10
+    return {
+        int(entry.rva)
+        for block in getattr(binary.pe, "DIRECTORY_ENTRY_BASERELOC", []) or []
+        for entry in block.entries
+        if int(entry.type) == relocation_type
+    }
+
+
+def _immutable_section_u32(binary: StageABinary, absolute: int) -> int | None:
+    if absolute < binary.image_base:
+        return None
+    rva = absolute - binary.image_base
+    if not any(
+        not section.writable
+        and section.rva_start <= rva
+        and rva + 4 <= section.rva_end
+        for section in binary.sections
+    ):
+        return None
+    return _immutable_image_u32(binary, absolute)
+
+
+def _input_register(expression: Any) -> str | None:
+    if not isinstance(expression, dict) or expression.get("op") != "input_reg":
+        return None
+    register = expression.get("reg")
+    return str(register) if register is not None else None
+
+
+def _input_register_read32(expression: Any) -> str | None:
+    if not isinstance(expression, dict) or expression.get("op") != "read32":
+        return None
+    return _input_register(expression.get("address"))
+
+
+def _input_register_add(expression: Any, register: str) -> int | None:
+    return _input_register_arithmetic(expression, register, "add")
+
+
+def _input_register_sub(expression: Any, register: str) -> int | None:
+    return _input_register_arithmetic(expression, register, "sub")
+
+
+def _input_register_arithmetic(
+    expression: Any, register: str, operation: str,
+) -> int | None:
+    if not isinstance(expression, dict) or expression.get("op") != operation:
+        return None
+    if _input_register(expression.get("left")) != register:
+        return None
+    right = expression.get("right")
+    if not isinstance(right, dict) or right.get("op") != "constant":
+        return None
+    return _integer(right.get("value"))
+
+
+def _is_zero_test(condition: Any, expression: dict[str, Any]) -> bool:
+    if not isinstance(condition, dict) or condition.get("op") != "equal":
+        return False
+    left = condition.get("left")
+    right = condition.get("right")
+    if left == {"op": "constant", "value": 0}:
+        left, right = right, left
+    if right != {"op": "constant", "value": 0}:
+        return False
+    return left == expression or (
+        isinstance(left, dict)
+        and left.get("op") == "bit_and"
+        and left.get("left") == expression
+        and left.get("right") == expression
+    )
+
+
+def _is_nonzero_test(condition: Any, expression: dict[str, Any]) -> bool:
+    return (
+        isinstance(condition, dict)
+        and condition.get("op") == "not"
+        and _is_zero_test(condition.get("value"), expression)
+    )
+
+
+def _unsigned_less_bound_register(
+    condition: Any, cursor_register: str, step: int,
+) -> str | None:
+    if not isinstance(condition, dict) or condition.get("op") != "unsigned_less":
+        return None
+    if _input_register_add(condition.get("left"), cursor_register) != step:
+        return None
+    return _input_register(condition.get("right"))
+
+
+def _static_u32_read_address(expression: Any) -> int | None:
+    if not isinstance(expression, dict):
+        return None
+    direct = _constant_read32_address(expression)
+    if direct is not None:
+        return direct
+    assembled = _assembled_u32_after_register_writes(expression)
+    return int(assembled[0]) if assembled is not None else None
+
+
+def _constant_stack_call_arguments(
+    behavior: dict[str, Any],
+) -> tuple[int, int] | None:
+    values: dict[int, list[int]] = defaultdict(list)
+    for write in behavior.get("writes", []):
+        offset = _stack_pointer_offset(write.get("address"))
+        value = write.get("value")
+        if (
+            offset in {0, 4}
+            and isinstance(value, dict)
+            and value.get("op") == "constant"
+            and _integer(value.get("value")) is not None
+        ):
+            values[offset].append(int(value["value"]))
+    if len(values[0]) != 1 or len(values[4]) != 1:
+        return None
+    return values[0][0], values[4][0]
+
+
+def _stack_pointer_offset(expression: Any) -> int | None:
+    if _input_register(expression) == "esp":
+        return 0
+    if not isinstance(expression, dict) or expression.get("op") != "add":
+        return None
+    left = expression.get("left")
+    right = expression.get("right")
+    if _input_register(right) == "esp":
+        left, right = right, left
+    if _input_register(left) != "esp" or not isinstance(right, dict):
+        return None
+    if right.get("op") != "constant":
+        return None
+    return _integer(right.get("value"))
+
+
 def _bounded_immutable_relocation_table_jump_candidate(
     original_bin: StageABinary,
     candidate_bin: StageABinary,
@@ -2165,6 +3568,13 @@ def _immutable_image_u32(binary: StageABinary, absolute: int) -> int | None:
     if absolute < binary.image_base:
         return None
     rva = absolute - binary.image_base
+    if any(
+        imported.thunk_rva is not None
+        and rva < int(imported.thunk_rva) + 4
+        and int(imported.thunk_rva) < rva + 4
+        for imported in binary.imports
+    ):
+        return None
     in_headers = rva + 4 <= binary.size_of_headers
     in_immutable_section = any(
         not section.writable

@@ -235,6 +235,7 @@ inductive MachineCallMemoryEffect where
   | readOnly
   | argumentRanges
   | newDynamicRanges
+  | relationalState
 deriving Repr, DecidableEq
 
 inductive MachineCallWorldEffect where
@@ -350,6 +351,7 @@ def MachineImportCallContract.memoryShapeValid
             match relation.relation with
             | .dynamicRangeBase _ _ _ _ => true
             | _ => false
+    | .relationalState => contract.memoryFootprints.isEmpty
 
 def MachineCallResultRelationKind.shapeValid
     (argumentCount : Nat) (worldEffect : MachineCallWorldEffect) :
@@ -402,7 +404,9 @@ def MachineImportCallContract.shapeValid
           contract.memoryFootprints.isEmpty &&
           contract.resultRegisterRelations.isEmpty &&
           contract.worldEffect == .none
-    | .protocol => contract.worldEffect == .none
+    | .protocol =>
+        contract.worldEffect == .none &&
+          contract.memoryEffect != .relationalState
 
 def MachineImportCallContract.matchesImport
     (contract : MachineImportCallContract) (imported : PEImport) : Bool :=

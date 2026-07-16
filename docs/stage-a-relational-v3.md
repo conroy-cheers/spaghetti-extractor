@@ -91,6 +91,13 @@ oversubscribing the host. Nix expression evaluation, scheduling, and store
 transfer remain local. The evaluator does not name or special-case any host or
 target binary.
 
+The checked-in `nix/stage-a-builders` inventory caps each 32-thread, 96 GiB
+builder at ten derivations. High-memory packs may run two approximately 4 GiB
+Lean processes, so this leaves memory headroom while still allowing about
+twenty concurrent elaborators per host. Host inventories with different memory
+profiles should adjust their machines-file job count rather than weakening the
+per-node resource classification.
+
 The final derivation imports the generated bundle and runs Lean with
 `--trust=0`, which type-checks imported modules rather than trusting remote
 `.olean` files. It also rejects final-theorem dependencies outside the approved
@@ -343,6 +350,17 @@ targets, unsupported instructions, external-environment frontiers, and stack
 invariant frontiers. Non-zero stack-delta SCCs and recursive call-window cycles
 are reported separately as relational-call-frame work; they are never widened
 into a finite flat stack window. Exact node and edge IDs accompany each count.
+Nodes outside the current proposal are reported as
+`outside_declared_reachability_nodes`, not as unreachable. They may be excluded
+from behavioral obligations only after Lean checks that every launch and
+callback root is included, every reachable node has complete decoded-control
+edges, every feasible edge remains inside the proposal, and every infeasible
+edge has false guards on both sides. A decoded-control frontier leaves
+`declared_reachability_control_closed` false and keeps acceptance incomplete.
+The initial `pe32-console-launch-v1` profile also fails closed when either PE
+has a non-empty TLS directory. Entry-root closure starts after loader callbacks,
+so TLS initialization must be added as checked paired launch paths before that
+profile can support such an image without narrowing the theorem silently.
 This makes composition progress the
 iteration metric while keeping local proof totals explicitly secondary.
 Whole-program acceptance blockers use the same iteration discipline: repeated

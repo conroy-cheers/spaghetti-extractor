@@ -1,11 +1,17 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from spaghetti_extractor.relational.analyses.registers import (
+    _attach_assembled_immutable_read_address_separations,
     _infer_register_output_relation,
+    _immutable_image_word_read,
     _paired_constant_relation,
     _register_relation_join,
     _synthesize_register_relations,
+)
+from spaghetti_extractor.relational.lean.expressions import (
+    _lean_register_output_claim,
 )
 from spaghetti_extractor.relational.analyses.segments import (
     _static_word_relation_supports_register_output,
@@ -24,6 +30,46 @@ def _input(register: str) -> dict[str, object]:
 
 def _read(address: int) -> dict[str, object]:
     return {"op": "read32", "address": {"op": "constant", "value": address}}
+
+
+def _assembled_read(
+    address: int,
+    *,
+    register: str = "esp",
+    offset: int = 0xFFFFFFFC,
+) -> dict[str, object]:
+    def byte(index: int) -> dict[str, object]:
+        byte_address = {"op": "constant", "value": address + index}
+        return {
+            "op": "read8_after_write",
+            "address": byte_address,
+            "write_address": {
+                "op": "add",
+                "left": {"op": "input_reg", "reg": register},
+                "right": {"op": "constant", "value": offset},
+            },
+            "write_value": {"op": "constant", "value": 0x401234},
+            "prior": {"op": "read8", "address": byte_address},
+        }
+
+    bytes_ = [byte(index) for index in range(4)]
+    return {
+        "op": "bit_or",
+        "left": bytes_[0],
+        "right": {
+            "op": "bit_or",
+            "left": {"op": "shift_left", "value": bytes_[1], "amount": 8},
+            "right": {
+                "op": "bit_or",
+                "left": {
+                    "op": "shift_left", "value": bytes_[2], "amount": 16,
+                },
+                "right": {
+                    "op": "shift_left", "value": bytes_[3], "amount": 24,
+                },
+            },
+        },
+    }
 
 
 def _pairs() -> list[dict[str, str]]:
@@ -86,6 +132,95 @@ def _behavior(
 
 
 class StageARegisterAnalysisTests(unittest.TestCase):
+    @patch(
+        "spaghetti_extractor.relational.analyses.registers._immutable_image_u32",
+        return_value=7,
+    )
+    def test_assembled_immutable_word_retains_writes_for_lean(
+        self, _immutable_image_u32,
+    ) -> None:
+        expression = _assembled_read(0x40FF34)
+        recovered = _immutable_image_word_read(expression, object())
+        self.assertEqual(recovered, (
+            0x40FF34,
+            [{
+                "register": "esp",
+                "offset": 0xFFFFFFFC,
+                "value": {"op": "constant", "value": 0x401234},
+            }],
+            True,
+            7,
+        ))
+        self.assertEqual(
+            _infer_register_output_relation(
+                expression, expression, {}, {}, 0x400000, 0x400000, True,
+                original_bin=object(), candidate_bin=object(),
+            ),
+            ("exact", "assembled_immutable_image_word"),
+        )
+
+    @patch(
+        "spaghetti_extractor.relational.analyses.registers._immutable_image_u32",
+        return_value=7,
+    )
+    def test_assembled_immutable_word_emits_checked_separation_inventory(
+        self, _immutable_image_u32,
+    ) -> None:
+        expression = _assembled_read(0x40FF34)
+        contract = {
+            "regions": [{
+                "outputs": [{"original": "ebx", "candidate": "ebx"}],
+                "address_separations": [],
+            }],
+        }
+        behaviors = [{
+            "original_ir": {"registers": {"ebx": expression}},
+            "candidate_ir": {"registers": {"ebx": expression}},
+        }]
+        binary = SimpleNamespace(image_base=0x400000)
+        refined = _attach_assembled_immutable_read_address_separations(
+            contract, behaviors, binary, binary,
+        )
+        rows = refined["regions"][0]["address_separations"]
+        self.assertEqual(len(rows), 16)
+        self.assertEqual({row["source"] for row in rows}, {
+            "assembled_immutable_word_write_separation",
+        })
+        self.assertEqual(
+            {(row["original_offset"], row["original_address"]) for row in rows},
+            {
+                ((0xFFFFFFFC + write_byte) & 0xFFFFFFFF, 0x40FF34 + word_byte)
+                for write_byte in range(4)
+                for word_byte in range(4)
+            },
+        )
+        self.assertEqual(contract["regions"][0]["address_separations"], [])
+
+    def test_assembled_immutable_word_serializer_preserves_proof_witness(self) -> None:
+        source = _lean_register_output_claim({
+            "kind": "immutable_image_word",
+            "output": {
+                "original": "ebx", "candidate": "ebx", "relation": "exact",
+            },
+            "original_address": 0x40FF34,
+            "candidate_address": 0x40FF34,
+            "original_value": 7,
+            "candidate_value": 7,
+            "original_assembled_read": True,
+            "candidate_assembled_read": True,
+            "original_writes": [{
+                "register": "esp", "offset": 0xFFFFFFFC,
+                "value": {"op": "constant", "value": 0x401234},
+            }],
+            "candidate_writes": [{
+                "register": "esp", "offset": 0xFFFFFFFC,
+                "value": {"op": "constant", "value": 0x401234},
+            }],
+        })
+        self.assertIn("originalAssembledRead := true", source)
+        self.assertIn("candidateAssembledRead := true", source)
+        self.assertEqual(source.count("{ register := .esp"), 2)
+
     def test_fixed_call_proposals_require_a_stable_replayed_fixed_point(self) -> None:
         proposal = {
             "profile": "inductive_fixed_code_pointer_register_call_v1",

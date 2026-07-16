@@ -242,6 +242,31 @@ def _paired_constant_relation(
         return "code_pointer"
     return None
 
+
+def _immutable_image_word_read(
+    expression: dict[str, Any], binary: StageABinary,
+) -> tuple[int, list[dict[str, Any]], bool, int] | None:
+    """Recover a checked constant-address image word read.
+
+    The decoder may represent a read following earlier writes as four
+    ``read8_after_write`` expressions.  Keep the writes in the witness so Lean
+    can prove that they do not alias the immutable image word before using its
+    on-disk value.
+    """
+    address = _constant_read32_address(expression)
+    writes: list[dict[str, Any]] = []
+    assembled = False
+    if address is None:
+        recovered = _assembled_u32_after_register_writes(expression)
+        if recovered is None:
+            return None
+        address, writes = recovered
+        assembled = True
+    value = _immutable_image_u32(binary, address)
+    if value is None:
+        return None
+    return address, writes, assembled, value
+
 def _infer_register_output_relation(
     original_expression: dict[str, Any],
     candidate_expression: dict[str, Any],
@@ -274,17 +299,19 @@ def _infer_register_output_relation(
                 "target_id": int(static_slot["target_id"]),
             }
         return relation, "static_word_slot"
-    original_address = _constant_read32_address(original_expression)
-    candidate_address = _constant_read32_address(candidate_expression)
     if (
         original_bin is not None
         and candidate_bin is not None
-        and original_address is not None
-        and candidate_address is not None
     ):
-        original_value = _immutable_image_u32(original_bin, original_address)
-        candidate_value = _immutable_image_u32(candidate_bin, candidate_address)
-        if original_value is not None and candidate_value is not None:
+        original_read = _immutable_image_word_read(
+            original_expression, original_bin,
+        )
+        candidate_read = _immutable_image_word_read(
+            candidate_expression, candidate_bin,
+        )
+        if original_read is not None and candidate_read is not None:
+            _, original_writes, original_assembled, original_value = original_read
+            _, candidate_writes, candidate_assembled, candidate_value = candidate_read
             immutable_relation = _paired_constant_relation(
                 {"op": "constant", "value": original_value},
                 {"op": "constant", "value": candidate_value},
@@ -293,7 +320,13 @@ def _infer_register_output_relation(
                 candidate_image_base,
             )
             if immutable_relation is not None:
-                return immutable_relation, "immutable_image_word"
+                if not original_assembled and not candidate_assembled:
+                    return immutable_relation, "immutable_image_word"
+                if (
+                    original_assembled == candidate_assembled
+                    and len(original_writes) == len(candidate_writes)
+                ):
+                    return immutable_relation, "assembled_immutable_image_word"
     if (
         original_expression.get("op") == "input_reg"
         and candidate_expression.get("op") == "input_reg"
@@ -490,6 +523,112 @@ def _attach_import_seed_address_separations(
                         "source": "assembled_iat_write_separation",
                     })
                     keys.add(key)
+        rows.sort(key=lambda row: (
+            str(row["original_register"]), str(row["candidate_register"]),
+            int(row["original_offset"]), int(row["candidate_offset"]),
+            int(row["original_address"]), int(row["candidate_address"]),
+        ))
+    return refined
+
+
+def _attach_assembled_immutable_read_address_separations(
+    contract: dict[str, Any], behaviors: list[dict[str, Any]],
+    original_bin: StageABinary, candidate_bin: StageABinary,
+) -> dict[str, Any]:
+    """Add explicit non-alias obligations for assembled immutable reads.
+
+    These rows are proof obligations, not trusted alias-analysis results.  If
+    incoming composition cannot establish them, the corresponding register
+    transfer remains incomplete in Lean.
+    """
+    refined = json.loads(json.dumps(contract))
+    regions = refined.get("regions", [])
+    if len(regions) != len(behaviors):
+        return refined
+    for region_index, (region, behavior_pair) in enumerate(
+        zip(regions, behaviors, strict=True)
+    ):
+        original_registers = behavior_pair["original_ir"].get("registers") or {}
+        candidate_registers = behavior_pair["candidate_ir"].get("registers") or {}
+        output_pairs = region.get("outputs", [])
+        read_pairs: list[
+            tuple[int, list[dict[str, Any]], int, list[dict[str, Any]]]
+        ] = []
+        for pair in output_pairs:
+            original_expression = original_registers.get(str(pair.get("original")))
+            candidate_expression = candidate_registers.get(str(pair.get("candidate")))
+            if not isinstance(original_expression, dict) or not isinstance(
+                candidate_expression, dict
+            ):
+                continue
+            original_read = _immutable_image_word_read(
+                original_expression, original_bin,
+            )
+            candidate_read = _immutable_image_word_read(
+                candidate_expression, candidate_bin,
+            )
+            if original_read is None or candidate_read is None:
+                continue
+            (
+                original_address, original_writes, original_assembled, original_value,
+            ) = original_read
+            (
+                candidate_address, candidate_writes, candidate_assembled, candidate_value,
+            ) = candidate_read
+            if (
+                not original_assembled
+                or not candidate_assembled
+                or len(original_writes) != len(candidate_writes)
+                or _paired_constant_relation(
+                    {"op": "constant", "value": original_value},
+                    {"op": "constant", "value": candidate_value},
+                    refined,
+                    original_bin.image_base,
+                    candidate_bin.image_base,
+                ) is None
+            ):
+                continue
+            read_pairs.append((
+                original_address, original_writes,
+                candidate_address, candidate_writes,
+            ))
+        if not read_pairs:
+            continue
+        rows = region.setdefault("address_separations", [])
+        keys = {
+            (
+                str(row["original_register"]), str(row["candidate_register"]),
+                int(row["original_offset"]), int(row["candidate_offset"]),
+                int(row["original_address"]), int(row["candidate_address"]),
+            )
+            for row in rows
+        }
+        for original_address, original_writes, candidate_address, candidate_writes in read_pairs:
+            for original_write, candidate_write in zip(
+                original_writes, candidate_writes, strict=True,
+            ):
+                for word_byte in range(4):
+                    for write_byte in range(4):
+                        key = (
+                            str(original_write["register"]),
+                            str(candidate_write["register"]),
+                            (int(original_write["offset"]) + write_byte) & 0xFFFFFFFF,
+                            (int(candidate_write["offset"]) + write_byte) & 0xFFFFFFFF,
+                            (original_address + word_byte) & 0xFFFFFFFF,
+                            (candidate_address + word_byte) & 0xFFFFFFFF,
+                        )
+                        if key in keys:
+                            continue
+                        rows.append({
+                            "original_register": key[0],
+                            "candidate_register": key[1],
+                            "original_offset": key[2],
+                            "candidate_offset": key[3],
+                            "original_address": key[4],
+                            "candidate_address": key[5],
+                            "source": "assembled_immutable_word_write_separation",
+                        })
+                        keys.add(key)
         rows.sort(key=lambda row: (
             str(row["original_register"]), str(row["candidate_register"]),
             int(row["original_offset"]), int(row["candidate_offset"]),
@@ -2038,7 +2177,7 @@ def _synthesize_register_relations(
                 and original_expression == candidate_expression
                 and reason not in {
                     "lean_exact_memory_expression", "immutable_image_word",
-                    "static_word_slot",
+                    "assembled_immutable_image_word", "static_word_slot",
                 }
             ):
                 claims.append({
@@ -2074,25 +2213,29 @@ def _synthesize_register_relations(
                     "output": relation,
                     "expression": original_expression,
                 })
-            elif reason == "immutable_image_word":
-                original_address = _constant_read32_address(original_expression)
-                candidate_address = _constant_read32_address(candidate_expression)
-                original_value = (
-                    _immutable_image_u32(original_bin, original_address)
-                    if original_bin is not None and original_address is not None
-                    else None
+            elif reason in {
+                "immutable_image_word", "assembled_immutable_image_word",
+            }:
+                original_read = (
+                    _immutable_image_word_read(original_expression, original_bin)
+                    if original_bin is not None else None
                 )
-                candidate_value = (
-                    _immutable_image_u32(candidate_bin, candidate_address)
-                    if candidate_bin is not None and candidate_address is not None
-                    else None
+                candidate_read = (
+                    _immutable_image_word_read(candidate_expression, candidate_bin)
+                    if candidate_bin is not None else None
                 )
                 if (
-                    original_address is not None
-                    and candidate_address is not None
-                    and original_value is not None
-                    and candidate_value is not None
+                    original_read is not None
+                    and candidate_read is not None
                 ):
+                    (
+                        original_address, original_writes,
+                        original_assembled, original_value,
+                    ) = original_read
+                    (
+                        candidate_address, candidate_writes,
+                        candidate_assembled, candidate_value,
+                    ) = candidate_read
                     output_claims.append({
                         "kind": "immutable_image_word",
                         "output": relation,
@@ -2100,6 +2243,10 @@ def _synthesize_register_relations(
                         "candidate_address": candidate_address,
                         "original_value": original_value,
                         "candidate_value": candidate_value,
+                        "original_assembled_read": original_assembled,
+                        "candidate_assembled_read": candidate_assembled,
+                        "original_writes": original_writes,
+                        "candidate_writes": candidate_writes,
                     })
             elif relation["relation"] == "exact" and any(
                 claim["register"] == register for claim in claims

@@ -1982,6 +1982,10 @@ def _machine_import_call_contracts(
                     and not footprints
                     and world_effect == "dynamicRanges"
                 )
+                or (
+                    memory_effect == "relationalState"
+                    and not footprints
+                )
             )
         )
         raw_result_relations = (
@@ -2124,6 +2128,10 @@ def _machine_import_call_contracts(
             or set(preserved).union(clobbered) != MACHINE_CALL_ABI_REGISTERS
             or memory_effect not in MACHINE_CALL_MEMORY_EFFECTS
             or not memory_shape_valid
+            or (
+                memory_effect == "relationalState"
+                and disposition != "returns"
+            )
             or not result_relations_valid
             or disposition not in MACHINE_CALL_DISPOSITIONS
             or world_effect not in MACHINE_CALL_WORLD_EFFECTS
@@ -2162,8 +2170,9 @@ def _machine_import_call_contracts(
                 "next_action": (
                     "declare one unique imported target; use either explicit aligned ABI "
                     "fields or one supported ABI template with argument_words; use explicit "
-                    "argument-relative read/write footprints for writable memory; and retain "
-                    "an explicit world effect"
+                    "argument-relative read/write footprints for bounded memory effects, or "
+                    "footprint-free relationalState when paired StateRel is authoritative; "
+                    "and retain an explicit world effect"
                 ),
             })
             continue

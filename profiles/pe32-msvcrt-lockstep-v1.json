@@ -185,6 +185,21 @@
         }
       ],
       "world_effect": "none"
+    },
+    {
+      "id": 11,
+      "import": {"dll": "msvcrt.dll", "symbol": "fflush"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "exact"
+        }
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
     }
   ]
 }

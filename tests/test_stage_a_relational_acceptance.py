@@ -316,7 +316,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                     "declared_reachable_covered_nodes": 1,
                     "declared_reachable_nodes": 1,
                     "declared_reachable_uncovered_nodes": 0,
-                    "declared_unreachable_nodes": 0,
+                    "outside_declared_reachability_nodes": 0,
                     "potential_reachable_nodes": 1,
                     "potential_reachable_feasible_edges": 1,
                     "potential_unrepresented_control_edges": 0,

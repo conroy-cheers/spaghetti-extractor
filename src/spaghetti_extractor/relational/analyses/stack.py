@@ -15,6 +15,444 @@ REGISTER_NAMES = frozenset({
 })
 
 
+def _discover_direct_call_stack_return_summaries(
+    regions: list[dict[str, Any]],
+    behaviors: list[dict[str, Any]],
+    relation_rows: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Propose reusable direct-call summaries from closed decoded paths."""
+    region_count = len(regions)
+    outgoing: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    direct_edges_by_source: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for edge in edges:
+        source = int(edge.get("source_region_index", -1))
+        if not 0 <= source < region_count:
+            continue
+        outgoing[source].append(edge)
+        if isinstance(edge.get("direct_call_push_claim"), dict):
+            direct_edges_by_source[source].append(edge)
+    for source_edges in outgoing.values():
+        source_edges.sort(key=lambda edge: (
+            int(edge.get("target_region_index", -1)), str(edge.get("kind", "")),
+        ))
+
+    target_id_by_region = {
+        index: int(region.get("numeric_id", index))
+        for index, region in enumerate(regions)
+    }
+
+    def affine_esp_offset(expression: Any) -> int | None:
+        if not isinstance(expression, dict):
+            return None
+        if expression.get("op") == "input_reg":
+            return 0 if expression.get("reg") == "esp" else None
+        operation = expression.get("op")
+        if operation not in {"add", "sub"}:
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if operation == "add" and left.get("op") == "constant":
+            left, right = right, left
+        if right.get("op") != "constant":
+            return None
+        value = int(right.get("value", -1))
+        if not 0 <= value < 2**32:
+            return None
+        prior = affine_esp_offset(left)
+        if prior is None:
+            return None
+        result = (prior + value if operation == "add" else prior - value) % 2**32
+        return result if result < 2**31 else result - 2**32
+
+    def paired_behavior_stack_delta(
+        behavior_pair: dict[str, Any],
+    ) -> int | None:
+        original = behavior_pair.get("original_ir") or {}
+        candidate = behavior_pair.get("candidate_ir") or {}
+        original_delta = affine_esp_offset(
+            (original.get("registers") or {}).get("esp")
+        )
+        candidate_delta = affine_esp_offset(
+            (candidate.get("registers") or {}).get("esp")
+        )
+        if original_delta is None or original_delta != candidate_delta:
+            return None
+        return original_delta
+
+    def stack_access_window(
+        behavior_pair: dict[str, Any],
+        *,
+        call_push_checked: bool,
+        relation_preservation_checked: bool,
+        return_claim: dict[str, Any] | None,
+    ) -> tuple[int, int] | None:
+        original = behavior_pair.get("original_ir") or {}
+        candidate = behavior_pair.get("candidate_ir") or {}
+        original_writes = original.get("writes") or []
+        candidate_writes = candidate.get("writes") or []
+        if len(original_writes) != len(candidate_writes):
+            return None
+        if original_writes and not (
+            call_push_checked
+            or relation_preservation_checked
+            or (
+                isinstance(return_claim, dict)
+                and return_claim.get("profile")
+                    == "esp_relative_return_after_static_writes_v1"
+            )
+        ):
+            return None
+
+        low = 0
+        high = 0
+        static_return_writes = (
+            isinstance(return_claim, dict)
+            and return_claim.get("profile")
+                == "esp_relative_return_after_static_writes_v1"
+        )
+        for original_write, candidate_write in zip(
+            original_writes, candidate_writes, strict=True
+        ):
+            original_offset = affine_esp_offset(original_write.get("address"))
+            candidate_offset = affine_esp_offset(candidate_write.get("address"))
+            if original_offset is None or candidate_offset is None:
+                if static_return_writes:
+                    continue
+                return None
+            if original_offset != candidate_offset:
+                return None
+            low = min(low, original_offset)
+            high = max(high, original_offset + 4)
+
+        def read_footprint(behavior: dict[str, Any]) -> Counter[tuple[int, int]]:
+            result: Counter[tuple[int, int]] = Counter()
+            for read in _semantic_memory_reads(behavior):
+                width = read.get("width")
+                offset = affine_esp_offset(read.get("address"))
+                if isinstance(width, int) and width > 0 and offset is not None:
+                    result[(offset, width)] += 1
+            return result
+
+        original_reads = read_footprint(original)
+        candidate_reads = read_footprint(candidate)
+        if original_reads != candidate_reads:
+            return None
+        for (offset, width), _ in original_reads.items():
+            low = min(low, offset)
+            high = max(high, offset + width)
+        return low, high
+
+    def decoded_ordinary_targets(
+        behavior_pair: dict[str, Any],
+    ) -> set[int] | None:
+        original = (behavior_pair.get("original_ir") or {}).get("outcome") or {}
+        candidate = (behavior_pair.get("candidate_ir") or {}).get("outcome") or {}
+        if original.get("op") != candidate.get("op"):
+            return None
+        operation = original.get("op")
+        fields = {
+            "jump": ("target",),
+            "branch": ("taken", "fallthrough"),
+            "checked_continue": ("continuation",),
+        }.get(str(operation))
+        if fields is None:
+            return None
+        original_targets = {int(original[field]) for field in fields}
+        candidate_targets = {int(candidate[field]) for field in fields}
+        return original_targets if original_targets == candidate_targets else None
+
+    def decoded_direct_call(
+        source: int, edge: dict[str, Any],
+    ) -> tuple[int, int] | None:
+        if not 0 <= source < len(behaviors):
+            return None
+        target = int(edge.get("target_region_index", -1))
+        claim = edge.get("direct_call_push_claim")
+        if not isinstance(claim, dict) or not 0 <= target < region_count:
+            return None
+        continuation = int(claim.get("continuation_region_index", -1))
+        if not 0 <= continuation < region_count:
+            return None
+        original = (behaviors[source].get("original_ir") or {}).get("outcome") or {}
+        candidate = (behaviors[source].get("candidate_ir") or {}).get("outcome") or {}
+        expected_target = target_id_by_region[target]
+        expected_continuation = target_id_by_region[continuation]
+        if (
+            original.get("op") != "call"
+            or candidate.get("op") != "call"
+            or int(original.get("target", -1)) != expected_target
+            or int(candidate.get("target", -1)) != expected_target
+            or int(original.get("continuation", -1)) != expected_continuation
+            or int(candidate.get("continuation", -1)) != expected_continuation
+            or paired_behavior_stack_delta(behaviors[source]) is None
+        ):
+            return None
+        return target, continuation
+
+    complete_entries: dict[int, dict[str, Any]] = {}
+    entry_blockers: dict[int, str] = {}
+
+    def analyze_entry(entry: int) -> tuple[dict[str, Any] | None, str]:
+        if not (
+            0 <= entry < region_count
+            and len(behaviors) == region_count
+            and len(relation_rows) == region_count
+        ):
+            return None, "callee_region_inventory_incomplete"
+        offsets = {entry: 0}
+        pending = [entry]
+        reachable: set[int] = set()
+        adjacency: dict[int, set[int]] = defaultdict(set)
+        returns: list[tuple[int, int]] = []
+        window_low = 0
+        window_high = 0
+
+        while pending:
+            source = pending.pop()
+            if source in reachable:
+                continue
+            reachable.add(source)
+            behavior_pair = behaviors[source]
+            stack_delta = paired_behavior_stack_delta(behavior_pair)
+            if stack_delta is None:
+                return None, "non_affine_or_unpaired_esp_transfer"
+            source_offset = offsets[source]
+            source_edges = outgoing.get(source, [])
+            relation_row = relation_rows[source]
+            return_claim = relation_row.get("return_pop_claim")
+            if relation_row.get("is_return"):
+                original_outcome = (
+                    behavior_pair.get("original_ir") or {}
+                ).get("outcome") or {}
+                candidate_outcome = (
+                    behavior_pair.get("candidate_ir") or {}
+                ).get("outcome") or {}
+                if (
+                    source_edges
+                    or not isinstance(return_claim, dict)
+                    or original_outcome.get("op") != "returned"
+                    or candidate_outcome.get("op") != "returned"
+                    or source_offset + int(
+                        return_claim.get("original_stack_offset", 2**32)
+                    ) != 0
+                    or source_offset + int(
+                        return_claim.get("candidate_stack_offset", 2**32)
+                    ) != 0
+                ):
+                    return None, "return_slot_restoration_unproved"
+                local_window = stack_access_window(
+                    behavior_pair,
+                    call_push_checked=False,
+                    relation_preservation_checked=False,
+                    return_claim=return_claim,
+                )
+                if local_window is None:
+                    return None, "return_memory_preservation_unproved"
+                window_low = min(window_low, source_offset + local_window[0])
+                window_high = max(window_high, source_offset + local_window[1])
+                returns.append((source, source_offset + stack_delta))
+                continue
+
+            if not source_edges:
+                return None, "reachable_non_return_terminal"
+
+            direct_edges = [
+                edge for edge in source_edges
+                if isinstance(edge.get("direct_call_push_claim"), dict)
+            ]
+            if direct_edges:
+                if len(source_edges) != 1 or len(direct_edges) != 1:
+                    return None, "ambiguous_nested_call_edge"
+                edge = direct_edges[0]
+                decoded = decoded_direct_call(source, edge)
+                if decoded is None:
+                    return None, "nested_call_decode_mismatch"
+                nested_entry, continuation = decoded
+                nested_summary = complete_entries.get(nested_entry)
+                if nested_summary is None:
+                    return None, "nested_call_return_summary_incomplete"
+                local_window = stack_access_window(
+                    behavior_pair,
+                    call_push_checked=True,
+                    relation_preservation_checked=False,
+                    return_claim=None,
+                )
+                if local_window is None:
+                    return None, "nested_call_memory_preservation_unproved"
+                nested_offset = source_offset + stack_delta
+                window_low = min(
+                    window_low,
+                    source_offset + local_window[0],
+                    nested_offset - int(nested_summary["bytes_below"]),
+                )
+                window_high = max(
+                    window_high,
+                    source_offset + local_window[1],
+                    nested_offset + int(nested_summary["bytes_above"]),
+                )
+                target = continuation
+                target_offset = nested_offset + int(nested_summary["return_delta"])
+                next_rows = [(target, target_offset)]
+            else:
+                if any(
+                    edge.get("environment_barrier")
+                    or edge.get("requires_call_stack_proof")
+                    or edge.get("indirect_target_profile")
+                    or edge.get("kind") == "call"
+                    for edge in source_edges
+                ):
+                    return None, "unsupported_reachable_exit"
+                decoded_targets = decoded_ordinary_targets(behavior_pair)
+                edge_target_ids = {
+                    target_id_by_region.get(
+                        int(edge.get("target_region_index", -1)), -1
+                    )
+                    for edge in source_edges
+                }
+                if decoded_targets is None or edge_target_ids != decoded_targets:
+                    return None, "ordinary_successor_decode_mismatch"
+                relation_preservation_checked = all(
+                    edge.get("relation_preservation_proposed") is True
+                    for edge in source_edges
+                )
+                local_window = stack_access_window(
+                    behavior_pair,
+                    call_push_checked=False,
+                    relation_preservation_checked=relation_preservation_checked,
+                    return_claim=None,
+                )
+                if local_window is None:
+                    return None, "paired_memory_preservation_unproved"
+                window_low = min(window_low, source_offset + local_window[0])
+                window_high = max(window_high, source_offset + local_window[1])
+                next_rows = [
+                    (int(edge["target_region_index"]), source_offset + stack_delta)
+                    for edge in source_edges
+                ]
+
+            for target, target_offset in next_rows:
+                if not 0 <= target < region_count:
+                    return None, "successor_region_missing"
+                if not -(2**31) < target_offset < 2**31:
+                    return None, "stack_offset_range_ambiguous"
+                prior = offsets.get(target)
+                if prior is not None and prior != target_offset:
+                    return None, "ambiguous_path_esp_offset"
+                adjacency[source].add(target)
+                if prior is None:
+                    offsets[target] = target_offset
+                    pending.append(target)
+
+        if not returns:
+            return None, "no_reachable_return"
+        reverse: dict[int, set[int]] = defaultdict(set)
+        for source, targets in adjacency.items():
+            for target in targets:
+                reverse[target].add(source)
+        reaches_return = {source for source, _ in returns}
+        pending = list(reaches_return)
+        while pending:
+            target = pending.pop()
+            for source in reverse.get(target, set()):
+                if source not in reaches_return:
+                    reaches_return.add(source)
+                    pending.append(source)
+        if reaches_return != reachable:
+            return None, "reachable_path_without_return"
+        if not (
+            -(2**31) < window_low <= 0
+            and 0 <= window_high < 2**31
+        ):
+            return None, "stack_window_range_ambiguous"
+
+        return_deltas = {delta for _, delta in returns}
+        if len(return_deltas) != 1:
+            return None, "ambiguous_return_esp_restoration"
+        return_delta = next(iter(return_deltas))
+        if not 4 <= return_delta <= 4 + 65535:
+            return None, "return_esp_restoration_out_of_range"
+        return {
+            "return_delta": return_delta,
+            "return_region_indices": sorted(source for source, _ in returns),
+            "reachable_region_indices": sorted(reachable),
+            "bytes_below": max(-window_low, 0),
+            "bytes_above": max(window_high, 1),
+        }, ""
+
+    callee_entries = sorted({
+        int(edge.get("target_region_index", -1))
+        for source_edges in direct_edges_by_source.values()
+        for edge in source_edges
+        if 0 <= int(edge.get("target_region_index", -1)) < region_count
+    })
+    rounds = 0
+    for _ in range(len(callee_entries) + 1):
+        rounds += 1
+        changed = False
+        for entry in callee_entries:
+            if entry in complete_entries:
+                continue
+            summary, blocker = analyze_entry(entry)
+            entry_blockers[entry] = blocker
+            if summary is not None:
+                complete_entries[entry] = summary
+                changed = True
+        if not changed:
+            break
+
+    summaries = []
+    for source, source_edges in sorted(direct_edges_by_source.items()):
+        if len(source_edges) != 1:
+            summaries.append({
+                "callsite_region_index": source,
+                "status": "incomplete",
+                "blocker": "ambiguous_direct_call_edge",
+            })
+            continue
+        edge = source_edges[0]
+        decoded = decoded_direct_call(source, edge)
+        if decoded is None:
+            summaries.append({
+                "callsite_region_index": source,
+                "status": "incomplete",
+                "blocker": "direct_call_decode_mismatch",
+            })
+            continue
+        callee, continuation = decoded
+        entry_summary = complete_entries.get(callee)
+        if entry_summary is None:
+            summaries.append({
+                "callsite_region_index": source,
+                "callee_region_index": callee,
+                "continuation_region_index": continuation,
+                "status": "incomplete",
+                "blocker": entry_blockers.get(
+                    callee, "callee_return_summary_incomplete"
+                ),
+            })
+            continue
+        summaries.append({
+            "profile": "decoded_affine_stack_return_summary_v1",
+            "callsite_region_index": source,
+            "callee_region_index": callee,
+            "continuation_region_index": continuation,
+            "status": "candidate_requires_local_lean_replay",
+            **entry_summary,
+            "blocker": None,
+        })
+    return {
+        "profile": "decoded_affine_stack_return_summary_v1",
+        "rounds": rounds,
+        "complete_callee_entries": len(complete_entries),
+        "complete_summaries": sum(
+            summary.get("status") == "candidate_requires_local_lean_replay"
+            for summary in summaries
+        ),
+        "summaries": summaries,
+    }
+
+
 
 def _attach_return_write_address_separations(
     contract: dict[str, Any],
@@ -618,6 +1056,19 @@ def _attach_stack_window_invariants(
         if summary.get("stack_window_return_status")
             == "candidate_requires_local_lean_replay"
     }
+    direct_call_return_summary_analysis = (
+        _discover_direct_call_stack_return_summaries(
+            regions,
+            behaviors,
+            relation_rows,
+            register_relations.get("edges", []),
+        )
+    )
+    direct_call_return_summary_by_source = {
+        int(summary["callsite_region_index"]): summary
+        for summary in direct_call_return_summary_analysis["summaries"]
+        if summary.get("status") == "candidate_requires_local_lean_replay"
+    }
     for source_index, behavior in enumerate(behaviors):
         original_outcome = behavior["original_ir"].get("outcome") or {}
         candidate_outcome = behavior["candidate_ir"].get("outcome") or {}
@@ -686,6 +1137,9 @@ def _attach_stack_window_invariants(
             return_stack_deltas.add(
                 int(static_return_summary["stack_window_return_delta"])
             )
+        direct_return_summary = direct_call_return_summary_by_source.get(source_index)
+        if direct_return_summary is not None:
+            return_stack_deltas.add(int(direct_return_summary["return_delta"]))
         callee_original_outcome = behaviors[callee_index]["original_ir"].get(
             "outcome"
         ) or {}
@@ -719,6 +1173,16 @@ def _attach_stack_window_invariants(
                 next(iter(return_stack_deltas))
                 if len(return_stack_deltas) == 1
                 else None
+            ),
+            "return_summary_bytes_below": (
+                int(direct_return_summary["bytes_below"])
+                if direct_return_summary is not None
+                else 0
+            ),
+            "return_summary_bytes_above": (
+                int(direct_return_summary["bytes_above"])
+                if direct_return_summary is not None
+                else 0
             ),
         })
     call_window_adjacency = {
@@ -942,8 +1406,16 @@ def _attach_stack_window_invariants(
                     original_register,
                     candidate_register,
                 )
-                callee_below = max(bytes_below - return_stack_delta, 0)
-                callee_above = max(bytes_above + return_stack_delta, 1)
+                callee_below = max(
+                    bytes_below - return_stack_delta,
+                    int(call.get("return_summary_bytes_below", 0)),
+                    0,
+                )
+                callee_above = max(
+                    bytes_above + return_stack_delta,
+                    int(call.get("return_summary_bytes_above", 0)),
+                    1,
+                )
                 prior_below, prior_above = requirements.get(callee_key, (0, 0))
                 required = (
                     max(prior_below, callee_below),
@@ -1063,6 +1535,7 @@ def _attach_stack_window_invariants(
         ),
         "unproven_stack_address_seeds": len(unproven_stack_seeds),
         "duplicate_frontier_observations": duplicate_frontier_observations,
+        "direct_call_return_summary_analysis": direct_call_return_summary_analysis,
         "frontier": frontier,
     }
 

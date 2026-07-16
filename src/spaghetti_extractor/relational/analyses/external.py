@@ -36,6 +36,60 @@ def _semantic_external_target_identity(
         return None if ordinal is None else (dll.lower(), "ordinal", ordinal)
     return None
 
+
+def _machine_import_call_contract_identity(
+    machine_contract: Any,
+) -> tuple[str, str, str | int] | None:
+    if not isinstance(machine_contract, dict):
+        return None
+    imported = machine_contract.get("import")
+    if not isinstance(imported, dict):
+        return None
+    dll = imported.get("dll")
+    symbol = imported.get("symbol")
+    ordinal = _integer(imported.get("ordinal"))
+    if not isinstance(dll, str) or not dll:
+        return None
+    if isinstance(symbol, str) and symbol and ordinal is None:
+        return (dll.lower(), "symbol", symbol)
+    if symbol is None and ordinal is not None:
+        return (dll.lower(), "ordinal", ordinal)
+    return None
+
+
+def _select_machine_import_call_contract(
+    machine_contracts: Any,
+    original_target: tuple[str, str, str | int] | None,
+    candidate_target: tuple[str, str, str | int] | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Select one explicit contract for an exact paired import interaction."""
+    if original_target is None or candidate_target is None:
+        return None, "paired import identity evidence is missing"
+    if original_target != candidate_target:
+        return None, "original and candidate import identities are not exact"
+    if not isinstance(machine_contracts, list):
+        return None, "machine import call contract evidence is missing"
+    matches = [
+        item for item in machine_contracts
+        if _machine_import_call_contract_identity(item) == original_target
+    ]
+    if not matches:
+        return None, "no explicit contract declares the exact import identity"
+    if len(matches) != 1:
+        return None, (
+            "multiple contracts declare the exact import identity; ABI, argument, "
+            "and footprint selection is ambiguous"
+        )
+    return matches[0], None
+
+
+def _machine_import_call_contract_gap_reason(
+    site: str, selection_reason: str | None,
+) -> str:
+    reason = f"no unique machine import call contract matches the {site}"
+    return reason if selection_reason is None else f"{reason}: {selection_reason}"
+
+
 def _semantic_add_word_offset(
     expression: dict[str, Any], offset: int,
 ) -> dict[str, Any]:
@@ -413,16 +467,6 @@ def _direct_import_thunk_call_candidates(
     *,
     first_site_id: int,
 ) -> dict[str, Any]:
-    contract_groups: dict[tuple[str, str, str | int], list[dict[str, Any]]] = {}
-    for item in contract.get("machine_import_call_contracts", []):
-        imported = item.get("import") or {}
-        identity = (
-            str(imported.get("dll", "")).lower(),
-            "symbol" if "symbol" in imported else "ordinal",
-            imported.get("symbol", imported.get("ordinal")),
-        )
-        contract_groups.setdefault(identity, []).append(item)
-
     regions = contract.get("regions", [])
     region_by_target = {
         int(region.get("numeric_id", index)): index
@@ -627,21 +671,26 @@ def _direct_import_thunk_call_candidates(
                 tail_jump_edge_indices=tail_jump_edge_indices,
             )
             continue
-        machine_contracts = contract_groups.get(original_target, [])
-        if len(machine_contracts) != 1:
+        machine_contract, selection_reason = _select_machine_import_call_contract(
+            contract.get("machine_import_call_contracts"),
+            original_target,
+            candidate_target,
+        )
+        if machine_contract is None:
             gap(
                 call_edge_index=call_edge_index,
                 caller_index=caller_index,
                 thunk_index=thunk_index,
                 continuation_index=continuation_index,
-                reason="no unique machine import call contract matches the thunk",
+                reason=_machine_import_call_contract_gap_reason(
+                    "thunk", selection_reason
+                ),
                 imported=original_target,
                 call_target_index=call_target_index,
                 tail_jump_region_indices=tail_jump_region_indices,
                 tail_jump_edge_indices=tail_jump_edge_indices,
             )
             continue
-        machine_contract = machine_contracts[0]
         site_key = (thunk_index, continuation_index, original_target)
         if site_key in seen_sites:
             continue
@@ -801,14 +850,6 @@ def _external_call_site_candidates(
     register_relations: dict[str, Any],
     import_call_candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    contracts_by_target = {
-        (
-            str(item["import"]["dll"]).lower(),
-            "symbol" if "symbol" in item["import"] else "ordinal",
-            item["import"].get("symbol", item["import"].get("ordinal")),
-        ): item
-        for item in contract.get("machine_import_call_contracts", [])
-    }
     indirect_calls_by_edge: dict[tuple[int, int], list[dict[str, Any]]] = {}
     for call in import_call_candidates or []:
         key = (
@@ -836,7 +877,8 @@ def _external_call_site_candidates(
         candidate_target = _semantic_external_target_identity(
             candidate_outcome.get("import")
         )
-        machine_contract = contracts_by_target.get(original_target)
+        machine_contract = None
+        contract_selection_reason = None
         dispatch_profile = "decoded_external_call"
         dispatch_registers = None
         argument_claims = None
@@ -867,9 +909,17 @@ def _external_call_site_candidates(
                     imported.get("symbol", imported.get("ordinal")),
                 )
                 candidate_target = original_target
-                machine_contract = contracts_by_target.get(original_target)
+                machine_contract, contract_selection_reason = (
+                    _select_machine_import_call_contract(
+                        contract.get("machine_import_call_contracts"),
+                        original_target,
+                        candidate_target,
+                    )
+                )
                 if machine_contract is None:
-                    blocker = "no unique machine import call contract matches the call"
+                    blocker = _machine_import_call_contract_gap_reason(
+                        "call", contract_selection_reason
+                    )
                 else:
                     original = _semantic_externalize_register_import_call(
                         decoded_original, machine_contract,
@@ -897,17 +947,34 @@ def _external_call_site_candidates(
         if blocker is None:
             if original_target is None or original_target != candidate_target:
                 blocker = "original and candidate import identities do not match"
-            elif machine_contract is None:
-                blocker = "no unique machine import call contract matches the call"
-            elif edge.get("original_guard") != {"op": "bool_constant", "value": True} or (
-                edge.get("candidate_guard") != {"op": "bool_constant", "value": True}
+            else:
+                if machine_contract is None:
+                    machine_contract, contract_selection_reason = (
+                        _select_machine_import_call_contract(
+                            contract.get("machine_import_call_contracts"),
+                            original_target,
+                            candidate_target,
+                        )
+                    )
+                if machine_contract is None:
+                    blocker = _machine_import_call_contract_gap_reason(
+                        "call", contract_selection_reason
+                    )
+            if blocker is None and (
+                edge.get("original_guard")
+                != {"op": "bool_constant", "value": True}
+                or edge.get("candidate_guard")
+                != {"op": "bool_constant", "value": True}
             ):
                 blocker = "external call guard is not unconditionally paired"
-            elif original_outcome.get("arguments") != candidate_outcome.get("arguments"):
+            elif blocker is None and (
+                original_outcome.get("arguments") != candidate_outcome.get("arguments")
+            ):
                 blocker = "original and candidate external arguments differ"
-            elif original.get("x87") != candidate.get("x87"):
+            elif blocker is None and original.get("x87") != candidate.get("x87"):
                 blocker = "external call setup has differing x87 transformations"
-            else:
+            elif blocker is None:
+                assert machine_contract is not None
                 blocker = _machine_call_argument_count_blocker(
                     machine_contract,
                     original_outcome.get("arguments"),
@@ -1230,14 +1297,6 @@ def _machine_import_call_contract_analysis(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    contracts_by_target = {
-        (
-            str(item["import"]["dll"]).lower(),
-            "symbol" if "symbol" in item["import"] else "ordinal",
-            item["import"].get("symbol", item["import"].get("ordinal")),
-        ): item
-        for item in contract.get("machine_import_call_contracts", [])
-    }
     calls: list[dict[str, Any]] = []
     for region_index, behavior_pair in enumerate(behaviors):
         original_outcome = behavior_pair["original_ir"].get("outcome") or {}
@@ -1253,10 +1312,12 @@ def _machine_import_call_contract_analysis(
         candidate_target = _semantic_external_target_identity(
             candidate_outcome.get("import")
         )
-        matched_contract = (
-            contracts_by_target.get(original_target)
-            if original_target is not None and original_target == candidate_target
-            else None
+        matched_contract, contract_selection_reason = (
+            _select_machine_import_call_contract(
+                contract.get("machine_import_call_contracts"),
+                original_target,
+                candidate_target,
+            )
         )
         original_arguments = original_outcome.get("arguments")
         candidate_arguments = candidate_outcome.get("arguments")
@@ -1285,6 +1346,7 @@ def _machine_import_call_contract_analysis(
             "contract_id": (
                 int(matched_contract["id"]) if matched_contract is not None else None
             ),
+            "contract_selection_reason": contract_selection_reason,
             "expected_argument_words": expected_arguments,
             "original_arguments": original_arguments,
             "candidate_arguments": candidate_arguments,
@@ -1546,13 +1608,19 @@ def _attach_external_call_site_analysis(
 
     def gap_next_action(gap: dict[str, Any]) -> str:
         reason = str(gap["reason"])
-        if reason == "no unique machine import call contract matches the call":
+        if reason.startswith("no unique machine import call contract matches the"):
             imported = gap.get("original_import")
             identity = None
             if isinstance(imported, dict):
                 name = imported.get("symbol", imported.get("ordinal"))
                 if imported.get("dll") is not None and name is not None:
                     identity = f"{imported['dll']}!{name}"
+            if "multiple contracts declare the exact import identity" in reason:
+                target = f" for {identity}" if identity else ""
+                return (
+                    f"retain one reviewed machine-level contract{target}; remove "
+                    "duplicate or conflicting ABI, argument, and footprint declarations"
+                )
             prefix = f"declare one machine-level contract for {identity}; " if identity else ""
             return (
                 prefix

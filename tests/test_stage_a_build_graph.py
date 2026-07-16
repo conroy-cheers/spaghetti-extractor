@@ -1,16 +1,23 @@
 import json
+import os
 import shutil
 import subprocess
 import tempfile
 import unittest
+from hashlib import sha256
 from pathlib import Path
+from unittest import mock
 
+from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.relational.build import (
     _locked_flake_input,
     _relational_nix_build_command,
     _relational_nix_expression,
     _relational_node_closure,
+    _relational_raw_build_nodes,
+    _validate_relational_module_graph,
 )
+from spaghetti_extractor.relational.schema import RELATIONAL_ACCEPTANCE_THEOREM
 
 
 class StageABuildGraphTests(unittest.TestCase):
@@ -43,6 +50,102 @@ class StageABuildGraphTests(unittest.TestCase):
             _relational_node_closure(graph, ["segment"]),
             {"kernel", "candidate-decode", "segment"},
         )
+
+    def test_static_code_map_chunks_are_packed_in_numeric_pages(self):
+        modules = {
+            "Formal",
+            *(f"RelationalStaticCodeMapChunk{index}" for index in range(10)),
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_CODE_MAP_NIX_PACK_MODULES": "4"
+            },
+        ):
+            nodes = _relational_raw_build_nodes(modules)
+
+        node_by_id = {node["id"]: node for node in nodes}
+        self.assertEqual(
+            node_by_id["static-code-map-pack-000"]["modules"],
+            [f"RelationalStaticCodeMapChunk{index}" for index in range(4)],
+        )
+        self.assertEqual(
+            node_by_id["static-code-map-pack-001"]["modules"],
+            [f"RelationalStaticCodeMapChunk{index}" for index in range(4, 8)],
+        )
+        self.assertEqual(
+            node_by_id["static-code-map-pack-002"]["modules"],
+            ["RelationalStaticCodeMapChunk8", "RelationalStaticCodeMapChunk9"],
+        )
+        self.assertEqual(node_by_id["formal"]["modules"], ["Formal"])
+        self.assertEqual(
+            {module for node in nodes for module in node["modules"]}, modules
+        )
+
+    def test_graph_validation_rejects_omitted_packed_import_dependency(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = Path(temporary)
+            stage_a = prepared / "lean" / "StageA"
+            stage_a.mkdir(parents=True)
+            sources = {
+                "RelationalStaticCodeMapChunk0": "def chunk0 := 0\n",
+                "RelationalStaticEntryTree0Node0": (
+                    "import StageA.RelationalStaticCodeMapChunk0\n"
+                    "def tree0 := chunk0\n"
+                ),
+            }
+            for module, source in sources.items():
+                (stage_a / f"{module}.lean").write_text(source, encoding="utf-8")
+            modules = {
+                module: {
+                    "source": f"lean/StageA/{module}.lean",
+                    "source_sha256": sha256(source.encode()).hexdigest(),
+                    "imports": (
+                        ["RelationalStaticCodeMapChunk0"]
+                        if module == "RelationalStaticEntryTree0Node0"
+                        else []
+                    ),
+                }
+                for module, source in sources.items()
+            }
+            graph = {
+                "format": "stage-a-lean-module-graph-v1",
+                "root_module": "RelationalStaticEntryTree0Node0",
+                "final_node": "tree",
+                "expected_final_theorem": None,
+                "acceptance": {
+                    "format": "stage-a-whole-program-acceptance-v1",
+                    "status": "incomplete",
+                    "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
+                    "theorem": None,
+                    "blockers": [{"next_action": "complete the proof"}],
+                },
+                "approved_axioms": [],
+                "modules": modules,
+                "nodes": [
+                    {
+                        "id": "static-code-map-pack-000",
+                        "modules": ["RelationalStaticCodeMapChunk0"],
+                        "dependencies": [],
+                        "resource_class": "high-memory",
+                        "estimated_memory_mb": 4096,
+                        "source_sha256": "chunk-pack",
+                    },
+                    {
+                        "id": "tree",
+                        "modules": ["RelationalStaticEntryTree0Node0"],
+                        "dependencies": [],
+                        "resource_class": "light",
+                        "estimated_memory_mb": 512,
+                        "source_sha256": "tree",
+                    },
+                ],
+            }
+
+            with self.assertRaisesRegex(
+                StageAInputError, "dependency inventory does not match imports"
+            ):
+                _validate_relational_module_graph(prepared, graph)
 
     def test_nix_expression_content_addresses_sources_not_full_prepared_report(self):
         with tempfile.TemporaryDirectory() as temporary:

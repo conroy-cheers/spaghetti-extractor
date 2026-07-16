@@ -1243,6 +1243,8 @@ def _write_sharded_relational_proof(
     _write_text_if_changed(lean_dir / "StageA" / "RelationalBundle.lean", final)
     _write_relational_acceptance_modules(
         lean_dir,
+        original_bin,
+        candidate_bin,
         contract,
         behaviors,
         product_graph,

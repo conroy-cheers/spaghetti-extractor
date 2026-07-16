@@ -1115,6 +1115,14 @@ def _lean_register_output_claim(claim: dict[str, Any]) -> str:
             + " }"
         )
     if kind == "immutable_image_word":
+        original_writes = ", ".join(
+            _lean_register_offset_write(write)
+            for write in claim.get("original_writes", [])
+        )
+        candidate_writes = ", ".join(
+            _lean_register_offset_write(write)
+            for write in claim.get("candidate_writes", [])
+        )
         return (
             "InvariantWP.RegisterOutputClaim.immutableImageWord { output := "
             + _lean_register_relation_pair(claim["output"])
@@ -1122,6 +1130,12 @@ def _lean_register_output_claim(claim: dict[str, Any]) -> str:
             + ", candidateAddress := " + str(claim["candidate_address"])
             + ", originalValue := " + str(claim["original_value"])
             + ", candidateValue := " + str(claim["candidate_value"])
+            + ", originalAssembledRead := "
+            + _lean_bool(bool(claim.get("original_assembled_read", False)))
+            + ", candidateAssembledRead := "
+            + _lean_bool(bool(claim.get("candidate_assembled_read", False)))
+            + ", originalWrites := [" + original_writes + "]"
+            + ", candidateWrites := [" + candidate_writes + "]"
             + " }"
         )
     if kind == "static_word_slot":

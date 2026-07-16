@@ -76,6 +76,69 @@ def _relational_node_closure(
     return closure
 
 
+def _numbered_relational_modules(
+    modules: set[str] | dict[str, Any], prefix: str,
+) -> list[str]:
+    return sorted(
+        (
+            module
+            for module in modules
+            if module.startswith(prefix)
+            and module.removeprefix(prefix).isdigit()
+        ),
+        key=lambda module: int(module.removeprefix(prefix)),
+    )
+
+
+def _relational_raw_build_nodes(reachable: set[str]) -> list[dict[str, Any]]:
+    pack_size = max(
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NIX_PACK_MODULES", "16"))
+    )
+    static_usage_pack_size = max(
+        1,
+        int(
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_USAGE_NIX_PACK_MODULES", "4"
+            )
+        ),
+    )
+    static_code_map_pack_size = max(
+        1,
+        int(
+            os.environ.get(
+                # Match the generated static-tree leaf width by default.
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_CODE_MAP_NIX_PACK_MODULES",
+                "16",
+            )
+        ),
+    )
+    packed: set[str] = set()
+    raw_nodes: list[dict[str, Any]] = []
+    for prefix, label, node_pack_size in (
+        ("RelationalDefinitionsShard", "definitions-pack", pack_size),
+        ("RelationalProofShard", "local-proof-pack", pack_size),
+        (
+            "RelationalProofStaticUsageLeaf",
+            "static-usage-pack",
+            static_usage_pack_size,
+        ),
+        (
+            "RelationalStaticCodeMapChunk",
+            "static-code-map-pack",
+            static_code_map_pack_size,
+        ),
+    ):
+        modules = _numbered_relational_modules(reachable, prefix)
+        for pack_index, offset in enumerate(range(0, len(modules), node_pack_size)):
+            members = modules[offset : offset + node_pack_size]
+            packed.update(members)
+            raw_nodes.append({"id": f"{label}-{pack_index:03d}", "modules": members})
+    for module in sorted(reachable - packed):
+        node_id = re.sub(r"[^a-z0-9]+", "-", module.lower()).strip("-")
+        raw_nodes.append({"id": node_id, "modules": [module]})
+    return raw_nodes
+
+
 def _relational_nix_expression(
     *,
     prepared: Path,
@@ -970,44 +1033,7 @@ def _write_relational_module_graph(
         for module in sorted(reachable)
     }
 
-    def numbered(prefix: str) -> list[str]:
-        return sorted(
-            (module for module in reachable if module.startswith(prefix)),
-            key=lambda module: int(module.removeprefix(prefix)),
-        )
-
-    pack_size = max(
-        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NIX_PACK_MODULES", "16"))
-    )
-    static_usage_pack_size = max(
-        1,
-        int(
-            os.environ.get(
-                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_USAGE_NIX_PACK_MODULES", "4"
-            )
-        ),
-    )
-    packed: set[str] = set()
-    raw_nodes: list[dict[str, Any]] = []
-    for prefix, label, node_pack_size in (
-        ("RelationalDefinitionsShard", "definitions-pack", pack_size),
-        ("RelationalProofShard", "local-proof-pack", pack_size),
-        (
-            "RelationalProofStaticUsageLeaf",
-            "static-usage-pack",
-            static_usage_pack_size,
-        ),
-    ):
-        modules = numbered(prefix)
-        for pack_index, offset in enumerate(
-            range(0, len(modules), node_pack_size)
-        ):
-            members = modules[offset : offset + node_pack_size]
-            packed.update(members)
-            raw_nodes.append({"id": f"{label}-{pack_index:03d}", "modules": members})
-    for module in sorted(reachable - packed):
-        node_id = re.sub(r"[^a-z0-9]+", "-", module.lower()).strip("-")
-        raw_nodes.append({"id": node_id, "modules": [module]})
+    raw_nodes = _relational_raw_build_nodes(reachable)
 
     module_node = {
         module: node["id"]
@@ -1054,7 +1080,9 @@ def _write_relational_module_graph(
         if any(module.startswith("RelationalStaticCodeMapChunk") for module in modules):
             # The generated source is small, but reducing indexed lookups through a
             # jq-sized imported map dominates the Lean process's resident set.
-            return "high-memory", max(4096, source_bytes // 1024 * 3)
+            return "high-memory", max(
+                4096 * min(2, len(modules)), source_bytes // 1024 * 3
+            )
         if any(
             module.startswith(prefix)
             for module in modules
@@ -1150,8 +1178,12 @@ def _write_relational_module_graph(
         "counts": {
             "logical_modules": len(logical_modules),
             "derivations": len(nodes),
-            "definition_modules": len(numbered("RelationalDefinitionsShard")),
-            "local_proof_modules": len(numbered("RelationalProofShard")),
+            "definition_modules": len(_numbered_relational_modules(
+                logical_modules, "RelationalDefinitionsShard"
+            )),
+            "local_proof_modules": len(_numbered_relational_modules(
+                logical_modules, "RelationalProofShard"
+            )),
             "decode_modules": sum("DecodeChunk" in module for module in logical_modules),
             "direct_modules": sum("DirectChunk" in module for module in logical_modules),
             "structural_modules": sum(module.startswith("RelationalProofStructural") for module in logical_modules),

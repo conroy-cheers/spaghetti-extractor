@@ -83,6 +83,38 @@ let
     name = node.id;
     value = node;
   }) graph.nodes);
+  nodeIds = map (node: node.id) graph.nodes;
+  assignedModules = lib.concatMap (node: node.modules) graph.nodes;
+  moduleOwners = builtins.listToAttrs (lib.concatMap (node:
+    map (module: {
+      name = module;
+      value = node.id;
+    }) node.modules
+  ) graph.nodes);
+  graphNodeIdsUnique = builtins.length nodeIds
+    == builtins.length (lib.unique nodeIds);
+  graphModuleImportsValid = builtins.all (module:
+    graph.modules.${module} ? imports
+    && builtins.isList graph.modules.${module}.imports
+    && builtins.all (dependency: builtins.hasAttr dependency graph.modules)
+      graph.modules.${module}.imports
+  ) (builtins.attrNames graph.modules);
+  graphModuleOwnershipValid =
+    builtins.length assignedModules
+      == builtins.length (lib.unique assignedModules)
+    && lib.sort builtins.lessThan assignedModules
+      == builtins.attrNames graph.modules;
+  graphNodeDependenciesValid = graphModuleImportsValid
+    && graphModuleOwnershipValid
+    && builtins.all (node:
+      let expected = lib.sort builtins.lessThan (lib.unique (lib.filter
+        (dependency: dependency != node.id)
+        (lib.concatMap (module:
+          map (dependency: moduleOwners.${dependency})
+            graph.modules.${module}.imports
+        ) node.modules)));
+      in node.dependencies == expected
+    ) graph.nodes;
 
   nodeDrvs = lib.fix (self:
     builtins.listToAttrs (map (node:
@@ -158,6 +190,11 @@ let
               if [ "$compile_jobs" -eq 0 ]; then
                 compile_jobs="$(nproc)"
               fi
+              ${lib.optionalString (node.resource_class == "high-memory") ''
+                if [ "$compile_jobs" -gt 2 ]; then
+                  compile_jobs=2
+                fi
+              ''}
               printf '%s\n' ${lib.escapeShellArgs node.modules} | \
                 xargs -r -P "$compile_jobs" -n 1 bash -c '
                   module="$1"
@@ -346,6 +383,10 @@ in
 assert graph.format == "stage-a-lean-module-graph-v1";
 assert graph.lean.trust == 0;
 assert builtins.length graph.nodes > 0;
+assert graphNodeIdsUnique;
+assert graphModuleImportsValid;
+assert graphModuleOwnershipValid;
+assert graphNodeDependenciesValid;
 assert !standalone || (standaloneModules != [] && standaloneImportsValid);
 assert !standalone
   || builtins.length standaloneModules

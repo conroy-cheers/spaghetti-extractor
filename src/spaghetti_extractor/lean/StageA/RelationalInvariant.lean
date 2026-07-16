@@ -725,10 +725,31 @@ structure ImmutableImageWordRegisterOutputClaim where
   candidateAddress : Nat
   originalValue : Nat
   candidateValue : Nat
+  originalAssembledRead : Bool := false
+  candidateAssembledRead : Bool := false
+  originalWrites : List RegisterOffsetWrite := []
+  candidateWrites : List RegisterOffsetWrite := []
 deriving Repr, DecidableEq
+
+def ImmutableImageWordRegisterOutputClaim.originalExpression
+    (claim : ImmutableImageWordRegisterOutputClaim) : Expr :=
+  if claim.originalAssembledRead then
+    .constantRead32AfterWrites claim.originalAddress
+      (claim.originalWrites.map RegisterOffsetWrite.toWrite)
+  else
+    .read32 (.constant claim.originalAddress)
+
+def ImmutableImageWordRegisterOutputClaim.candidateExpression
+    (claim : ImmutableImageWordRegisterOutputClaim) : Expr :=
+  if claim.candidateAssembledRead then
+    .constantRead32AfterWrites claim.candidateAddress
+      (claim.candidateWrites.map RegisterOffsetWrite.toWrite)
+  else
+    .read32 (.constant claim.candidateAddress)
 
 def ImmutableImageWordRegisterOutputClaim.checked
     (context : StaticProofContext)
+    (sourceInvariant : StateInvariant)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (claim : ImmutableImageWordRegisterOutputClaim) : Bool :=
   readImmutableImageWord context.originalPe claim.originalAddress 4 ==
@@ -740,16 +761,20 @@ def ImmutableImageWordRegisterOutputClaim.checked
       context.dataMap.entries.toList (BitVec.ofNat 32 claim.originalValue)
       (BitVec.ofNat 32 claim.candidateValue) &&
     originalBehavior.registers.get claim.output.original ==
-      .read32 (.constant claim.originalAddress) &&
+      claim.originalExpression &&
     candidateBehavior.registers.get claim.output.candidate ==
-      .read32 (.constant claim.candidateAddress)
+      claim.candidateExpression &&
+    registerOffsetWritesSeparated false sourceInvariant.addressSeparations
+      claim.originalAddress claim.originalWrites &&
+    registerOffsetWritesSeparated true sourceInvariant.addressSeparations
+      claim.candidateAddress claim.candidateWrites
 
 theorem ImmutableImageWordRegisterOutputClaim.holds_output_of_stateRel
     (context : StaticProofContext) (world : RelationalWorld)
     (region : RegionRelation)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (claim : ImmutableImageWordRegisterOutputClaim)
-    (checked : claim.checked context originalBehavior candidateBehavior = true)
+    (checked : claim.checked context region.inputInvariant originalBehavior candidateBehavior = true)
     (originalState candidateState : MachineState)
     (related : StateRel context world region.inputInvariant originalState candidateState) :
     claim.output.relation.holds context.originalPe.imageBase context.candidatePe.imageBase
@@ -759,20 +784,61 @@ theorem ImmutableImageWordRegisterOutputClaim.holds_output_of_stateRel
   simp only [ImmutableImageWordRegisterOutputClaim.checked, Bool.and_eq_true,
     beq_iff_eq] at checked
   rcases checked with
-    ⟨⟨⟨⟨originalWord, candidateWord⟩, staticRelated⟩,
-      originalExpression⟩, candidateExpression⟩
+    ⟨⟨⟨⟨⟨⟨originalWord, candidateWord⟩, staticRelated⟩,
+      originalBehaviorExpression⟩, candidateBehaviorExpression⟩,
+      originalSeparated⟩, candidateSeparated⟩
   rcases related with
-    ⟨_, _, _, _, _, _, originalImmutable, candidateImmutable, _, _⟩
+    ⟨_worldStatic, _stackRangesValid, _stackMemory, _importsStatic,
+      _importsComplete, _importsMemory, originalImmutable, candidateImmutable,
+      relatedCore, _importRegisters⟩
+  rcases relatedCore with
+    ⟨_registers, _bounds, separations, _stackWindows, _memory, _undefined,
+      _x87, _flags, _fsBase⟩
+  have originalSide := addressSeparationsRelated_original
+    region.inputInvariant.addressSeparations originalState.registers
+    candidateState.registers separations
+  have candidateSide := addressSeparationsRelated_candidate
+    region.inputInvariant.addressSeparations originalState.registers
+    candidateState.registers separations
+  have originalAvoids := registerOffsetWritesAvoidWord_of_checked false
+    region.inputInvariant.addressSeparations claim.originalAddress
+    claim.originalWrites originalState originalSide originalSeparated
+  have candidateAvoids := registerOffsetWritesAvoidWord_of_checked true
+    region.inputInvariant.addressSeparations claim.candidateAddress
+    claim.candidateWrites candidateState candidateSide candidateSeparated
   have originalRead := ImmutableImageWordMemory.read32_of_checked
     context.originalPe originalState.memory claim.originalAddress claim.originalValue
     originalImmutable originalWord
   have candidateRead := ImmutableImageWordMemory.read32_of_checked
     context.candidatePe candidateState.memory claim.candidateAddress claim.candidateValue
     candidateImmutable candidateWord
+  have originalEval : claim.originalExpression.eval originalState =
+      BitVec.ofNat 32 claim.originalValue := by
+    cases assembled : claim.originalAssembledRead with
+    | false =>
+        simp [ImmutableImageWordRegisterOutputClaim.originalExpression, assembled,
+          Expr.eval, machineStateRead32_eq_memoryRead32, originalRead]
+    | true =>
+        simp only [ImmutableImageWordRegisterOutputClaim.originalExpression,
+          assembled, if_true]
+        rw [Expr.eval_constantRead32AfterWrites]
+        rw [Memory.read32_applyConcreteWrites_of_avoids _ _ _ originalAvoids]
+        exact originalRead
+  have candidateEval : claim.candidateExpression.eval candidateState =
+      BitVec.ofNat 32 claim.candidateValue := by
+    cases assembled : claim.candidateAssembledRead with
+    | false =>
+        simp [ImmutableImageWordRegisterOutputClaim.candidateExpression, assembled,
+          Expr.eval, machineStateRead32_eq_memoryRead32, candidateRead]
+    | true =>
+        simp only [ImmutableImageWordRegisterOutputClaim.candidateExpression,
+          assembled, if_true]
+        rw [Expr.eval_constantRead32AfterWrites]
+        rw [Memory.read32_applyConcreteWrites_of_avoids _ _ _ candidateAvoids]
+        exact candidateRead
   simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
-  rw [originalExpression, candidateExpression]
-  simp only [Expr.eval, machineStateRead32_eq_memoryRead32]
-  rw [originalRead, candidateRead]
+  rw [originalBehaviorExpression, candidateBehaviorExpression,
+    originalEval, candidateEval]
   exact RegisterValueRelation.holds_append_values
     context.originalPe.imageBase context.candidatePe.imageBase
     context.codeMap.entries.toList context.dataMap.entries.toList
@@ -1310,7 +1376,8 @@ def RegisterOutputClaim.nonMemoryChecked
   | .constant claim => claim.checked context.originalPe.imageBase
       context.candidatePe.imageBase context.codeMap.entries.toList
       context.dataMap.entries.toList region originalBehavior candidateBehavior
-  | .immutableImageWord claim => claim.checked context originalBehavior candidateBehavior
+  | .immutableImageWord claim =>
+      claim.checked context region.inputInvariant originalBehavior candidateBehavior
   | .staticWordSlot claim => claim.checked context originalBehavior candidateBehavior
   | .stackRead32Sub claim => claim.checked region originalBehavior candidateBehavior
   | .stackRead32Relative claim => claim.checked region originalBehavior candidateBehavior

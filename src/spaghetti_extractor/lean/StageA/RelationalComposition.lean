@@ -2309,6 +2309,325 @@ theorem immutableIndirectCallTargetsClosed_of_checked
     · simp [codeAddressMatches]
     · simp [codeAddressMatches]
 
+/-
+A bounded immutable function-pointer table is a deliberately narrow indirect
+call profile.  The checker below accepts only a direct IA-32 scaled-index
+read, an exact paired index register, and a statically bounded, relocation-
+backed table whose rows name canonical code-map entries.  The row inventory is
+part of the checked certificate; no disassembly name or proposal status enters
+the proposition.
+-/
+structure ImmutableCodePointerTableRow where
+  index : Nat
+  targetId : Nat
+deriving Repr, DecidableEq
+
+structure BoundedImmutableCodePointerTableCallClaim where
+  valueTargetId : Nat
+  tableOffset : Nat
+  originalBase : Nat
+  candidateBase : Nat
+  upperExclusive : Nat
+  originalIndexRegister : Reg
+  candidateIndexRegister : Reg
+  continuationTargetId : Nat
+  rows : List ImmutableCodePointerTableRow
+deriving Repr, DecidableEq
+
+def BoundedImmutableCodePointerTableCallClaim.originalAddress
+    (claim : BoundedImmutableCodePointerTableCallClaim) (index : Nat) : Nat :=
+  claim.originalBase + index * 4
+
+def BoundedImmutableCodePointerTableCallClaim.candidateAddress
+    (claim : BoundedImmutableCodePointerTableCallClaim) (index : Nat) : Nat :=
+  claim.candidateBase + index * 4
+
+def BoundedImmutableCodePointerTableCallClaim.originalIndexExpression
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Expr :=
+  .inputReg claim.originalIndexRegister
+
+def BoundedImmutableCodePointerTableCallClaim.candidateIndexExpression
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Expr :=
+  .inputReg claim.candidateIndexRegister
+
+def immutableCodePointerTableAddressExpression (base : Nat) (index : Expr) : Expr :=
+  .add (.shiftLeft index 2) (.constant base)
+
+def immutableCodePointerTableTargetExpression (base : Nat) (index : Expr) : Expr :=
+  .read32 (immutableCodePointerTableAddressExpression base index)
+
+def BoundedImmutableCodePointerTableCallClaim.originalTargetExpression
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Expr :=
+  immutableCodePointerTableTargetExpression claim.originalBase
+    claim.originalIndexExpression
+
+def BoundedImmutableCodePointerTableCallClaim.candidateTargetExpression
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Expr :=
+  immutableCodePointerTableTargetExpression claim.candidateBase
+    claim.candidateIndexExpression
+
+def immutableCodePointerTableRowGuard (candidate : Bool)
+    (claim : BoundedImmutableCodePointerTableCallClaim)
+    (row : ImmutableCodePointerTableRow) : BoolExpr :=
+  .equal (if candidate then claim.candidateIndexExpression
+    else claim.originalIndexExpression) (.constant row.index)
+
+def BoundedImmutableCodePointerTableCallClaim.indexBound
+    (claim : BoundedImmutableCodePointerTableCallClaim) : RegisterBoundPair := {
+  original := claim.originalIndexRegister
+  candidate := claim.candidateIndexRegister
+  upperExclusive := claim.upperExclusive
+}
+
+def pe32RelocationWordAt (relocations : List BaseRelocation) (rva : Nat) : Bool :=
+  relocations.any fun relocation => relocation.rva == rva && relocation.kind == 3
+
+def ImmutableCodePointerTableRow.checked (context : StaticProofContext)
+    (claim : BoundedImmutableCodePointerTableCallClaim)
+    (row : ImmutableCodePointerTableRow) : Bool :=
+  match context.codeMap.get? row.targetId with
+  | none => false
+  | some target =>
+      (row.index < claim.upperExclusive &&
+        target.id == row.targetId &&
+        rvaInExecutableSection context.originalPe target.originalRva &&
+        rvaInExecutableSection context.candidatePe target.candidateRva &&
+        !(context.originalPe.imageBase + target.originalRva == 0) &&
+        !(context.candidatePe.imageBase + target.candidateRva == 0) &&
+        claim.originalAddress row.index >= context.originalPe.imageBase &&
+        claim.candidateAddress row.index >= context.candidatePe.imageBase &&
+        pe32RelocationWordAt context.originalRelocations
+          (claim.originalAddress row.index - context.originalPe.imageBase) &&
+        pe32RelocationWordAt context.candidateRelocations
+          (claim.candidateAddress row.index - context.candidatePe.imageBase)) &&
+        (readImmutableImageWord context.originalPe
+            (claim.originalAddress row.index) 4 ==
+          some (context.originalPe.imageBase + target.originalRva)) &&
+        readImmutableImageWord context.candidatePe
+            (claim.candidateAddress row.index) 4 ==
+          some (context.candidatePe.imageBase + target.candidateRva)
+
+def immutableCodePointerTableRowsCover
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  (List.range claim.upperExclusive).all fun index =>
+    claim.rows.any fun row => row.index == index
+
+def immutableCodePointerTableRowsUnique
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  claim.rows.all fun row =>
+    (claim.rows.filter (fun other => other.index == row.index)).length == 1 &&
+      (claim.rows.filter (fun other => other.targetId == row.targetId)).length == 1
+
+def BoundedImmutableCodePointerTableCallClaim.shapeChecked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  immutableCodePointerTableRowsCover claim &&
+    exactRegisterPair sourceInvariant.registerRelations
+      claim.originalIndexRegister claim.candidateIndexRegister &&
+    sourceInvariant.bounds.contains claim.indexBound &&
+    decide (claim.upperExclusive < 2 ^ 32) &&
+    match context.dataMap.get? claim.valueTargetId,
+        context.codeMap.get? claim.continuationTargetId with
+    | some table, some continuation =>
+        claim.upperExclusive > 0 &&
+          claim.rows.length == claim.upperExclusive &&
+          immutableCodePointerTableRowsUnique claim &&
+          table.id == claim.valueTargetId &&
+          continuation.id == claim.continuationTargetId &&
+          table.originalValue + claim.tableOffset == claim.originalBase &&
+          table.candidateValue + claim.tableOffset == claim.candidateBase &&
+          decide (claim.tableOffset + claim.upperExclusive * 4 <= table.mappedSize) &&
+          decide (claim.originalBase + claim.upperExclusive * 4 <= 2 ^ 32) &&
+          decide (claim.candidateBase + claim.upperExclusive * 4 <= 2 ^ 32) &&
+          (List.range claim.upperExclusive).all (fun index =>
+            table.relocationOffsets.contains (claim.tableOffset + index * 4))
+    | _, _ => false
+
+def BoundedImmutableCodePointerTableCallClaim.rowsChecked
+    (context : StaticProofContext)
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  claim.rows.all (ImmutableCodePointerTableRow.checked context claim)
+
+def BoundedImmutableCodePointerTableCallClaim.behaviorChecked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  originalBehavior.outcome == .indirectCall claim.originalTargetExpression
+      claim.continuationTargetId &&
+    candidateBehavior.outcome == .indirectCall claim.candidateTargetExpression
+      claim.continuationTargetId
+
+def BoundedImmutableCodePointerTableCallClaim.checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  claim.shapeChecked context sourceInvariant &&
+    claim.rowsChecked context &&
+    claim.behaviorChecked originalBehavior candidateBehavior
+
+def BoundedImmutableCodePointerTableCallTargetsClosed
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Prop :=
+  context.StructurallyValid ∧
+    ∀ world originalState candidateState,
+      StateRel context world sourceInvariant originalState candidateState →
+        ∃ row target originalTarget candidateTarget,
+          row ∈ claim.rows ∧
+            context.codeMap.get? row.targetId = some target ∧
+            row.checked context claim = true ∧
+            originalBehavior.outcome.eval originalState = .indirectCall
+              originalTarget claim.continuationTargetId ∧
+            candidateBehavior.outcome.eval candidateState = .indirectCall
+              candidateTarget claim.continuationTargetId ∧
+            (immutableCodePointerTableRowGuard false claim row).eval originalState = true ∧
+            (immutableCodePointerTableRowGuard true claim row).eval candidateState = true ∧
+            codeAddressMatches context.originalPe.imageBase target.originalRva
+              target.originalAliases originalTarget = true ∧
+            codeAddressMatches context.candidatePe.imageBase target.candidateRva
+              target.candidateAliases candidateTarget = true
+
+theorem boundedImmutableCodePointerTableCallTargetsClosed_of_checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : BoundedImmutableCodePointerTableCallClaim)
+    (structurallyValid : context.StructurallyValid)
+    (checked : claim.checked context sourceInvariant originalBehavior
+      candidateBehavior = true) :
+    BoundedImmutableCodePointerTableCallTargetsClosed context sourceInvariant
+      originalBehavior candidateBehavior claim := by
+  refine ⟨structurallyValid, ?_⟩
+  simp only [BoundedImmutableCodePointerTableCallClaim.checked,
+    Bool.and_eq_true] at checked
+  rcases checked with ⟨⟨shapeChecked, rowsChecked⟩, behaviorChecked⟩
+  simp only [BoundedImmutableCodePointerTableCallClaim.behaviorChecked,
+    Bool.and_eq_true, beq_iff_eq] at behaviorChecked
+  rcases behaviorChecked with ⟨originalOutcome, candidateOutcome⟩
+  simp only [BoundedImmutableCodePointerTableCallClaim.shapeChecked,
+    Bool.and_eq_true] at shapeChecked
+  rcases shapeChecked with
+    ⟨⟨⟨⟨rowsCover, exactIndices⟩, boundMember⟩, upperExclusiveChecked⟩,
+      tableShapeChecked⟩
+  intro world originalState candidateState related
+  rcases related with
+    ⟨worldValid, stackRangesValid, stackMemory, importsStatic, importsComplete,
+      importsMemory, originalImmutable, candidateImmutable, relatedCore,
+      importAndDynamicRegisters⟩
+  have indexEqual := registerRelationsHold_exact_pair
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList (context.relationalValueTargets world)
+    sourceInvariant.registerRelations originalState.registers candidateState.registers
+    claim.originalIndexRegister claim.candidateIndexRegister relatedCore.1 exactIndices
+  have allBounds := relatedCore.2.1
+  simp only [boundsRelated, List.all_eq_true] at allBounds
+  have selectedBound := allBounds claim.indexBound
+    (List.contains_iff_mem.mp boundMember)
+  simp only [BoundedImmutableCodePointerTableCallClaim.indexBound, boundValue] at selectedBound
+  simp only [Bool.and_eq_true] at selectedBound
+  have originalIndexBound :
+      (originalState.registers.get claim.originalIndexRegister).toNat <
+        claim.upperExclusive := by
+    have bounded := of_decide_eq_true selectedBound.1
+    change (originalState.registers.get claim.originalIndexRegister).toNat <
+      (BitVec.ofNat 32 claim.upperExclusive).toNat at bounded
+    have upperExclusiveSmall : claim.upperExclusive < 2 ^ 32 :=
+      of_decide_eq_true upperExclusiveChecked
+    simpa [BitVec.toNat_ofNat, Nat.mod_eq_of_lt upperExclusiveSmall] using bounded
+  have rowExists : claim.rows.any (fun row =>
+      row.index == (originalState.registers.get claim.originalIndexRegister).toNat) = true := by
+    simp only [immutableCodePointerTableRowsCover, List.all_eq_true] at rowsCover
+    exact rowsCover _ (List.mem_range.mpr originalIndexBound)
+  simp only [List.any_eq_true] at rowExists
+  rcases rowExists with ⟨row, rowMember, rowIndexChecked⟩
+  have rowIndex : row.index =
+      (originalState.registers.get claim.originalIndexRegister).toNat :=
+    beq_iff_eq.mp rowIndexChecked
+  have rowChecked := rowsChecked
+  simp only [BoundedImmutableCodePointerTableCallClaim.rowsChecked,
+    List.all_eq_true] at rowChecked
+  have checkedRow := rowChecked row rowMember
+  cases targetResult : context.codeMap.get? row.targetId with
+  | none =>
+      simp [ImmutableCodePointerTableRow.checked, targetResult] at checkedRow
+  | some target =>
+      simp only [ImmutableCodePointerTableRow.checked, targetResult,
+        Bool.and_eq_true, beq_iff_eq] at checkedRow
+      rcases checkedRow with
+        ⟨⟨_staticRowChecked, originalImageWord⟩, candidateImageWord⟩
+      have originalIndexWord :
+          originalState.registers.get claim.originalIndexRegister =
+            BitVec.ofNat 32 row.index := by
+        rw [rowIndex]
+        simp
+      have candidateIndexWord :
+          candidateState.registers.get claim.candidateIndexRegister =
+            BitVec.ofNat 32 row.index := by
+        rw [← indexEqual, originalIndexWord]
+      have originalAddressEvaluation :
+          (immutableCodePointerTableAddressExpression claim.originalBase
+            claim.originalIndexExpression).eval originalState =
+              BitVec.ofNat 32 (claim.originalAddress row.index) := by
+        simp only [immutableCodePointerTableAddressExpression,
+          BoundedImmutableCodePointerTableCallClaim.originalIndexExpression,
+          BoundedImmutableCodePointerTableCallClaim.originalAddress, Expr.eval,
+          originalIndexWord]
+        have shiftFour (value : BitVec 32) :
+            value.shiftLeft 2 = value * BitVec.ofNat 32 4 := by
+          bv_decide
+        rw [shiftFour, ← BitVec.ofNat_mul, ← BitVec.ofNat_add]
+        congr 1
+        omega
+      have candidateAddressEvaluation :
+          (immutableCodePointerTableAddressExpression claim.candidateBase
+            claim.candidateIndexExpression).eval candidateState =
+              BitVec.ofNat 32 (claim.candidateAddress row.index) := by
+        simp only [immutableCodePointerTableAddressExpression,
+          BoundedImmutableCodePointerTableCallClaim.candidateIndexExpression,
+          BoundedImmutableCodePointerTableCallClaim.candidateAddress, Expr.eval,
+          candidateIndexWord]
+        have shiftFour (value : BitVec 32) :
+            value.shiftLeft 2 = value * BitVec.ofNat 32 4 := by
+          bv_decide
+        rw [shiftFour, ← BitVec.ofNat_mul, ← BitVec.ofNat_add]
+        congr 1
+        omega
+      have originalTargetEvaluation :
+          claim.originalTargetExpression.eval originalState =
+            BitVec.ofNat 32 (context.originalPe.imageBase + target.originalRva) := by
+        simp only [BoundedImmutableCodePointerTableCallClaim.originalTargetExpression,
+          immutableCodePointerTableTargetExpression, Expr.eval,
+          machineStateRead32_eq_memoryRead32, originalAddressEvaluation]
+        exact ImmutableImageWordMemory.read32_of_checked context.originalPe
+          originalState.memory (claim.originalAddress row.index)
+          (context.originalPe.imageBase + target.originalRva) originalImmutable
+          originalImageWord
+      have candidateTargetEvaluation :
+          claim.candidateTargetExpression.eval candidateState =
+            BitVec.ofNat 32 (context.candidatePe.imageBase + target.candidateRva) := by
+        simp only [BoundedImmutableCodePointerTableCallClaim.candidateTargetExpression,
+          immutableCodePointerTableTargetExpression, Expr.eval,
+          machineStateRead32_eq_memoryRead32, candidateAddressEvaluation]
+        exact ImmutableImageWordMemory.read32_of_checked context.candidatePe
+          candidateState.memory (claim.candidateAddress row.index)
+          (context.candidatePe.imageBase + target.candidateRva) candidateImmutable
+          candidateImageWord
+      refine ⟨row, target,
+        BitVec.ofNat 32 (context.originalPe.imageBase + target.originalRva),
+        BitVec.ofNat 32 (context.candidatePe.imageBase + target.candidateRva),
+        rowMember, targetResult, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      · exact rowChecked row rowMember
+      · rw [originalOutcome]
+        simp [NormalizedOutcomeExpr.eval, originalTargetEvaluation]
+      · rw [candidateOutcome]
+        simp [NormalizedOutcomeExpr.eval, candidateTargetEvaluation]
+      · simp [immutableCodePointerTableRowGuard,
+          BoundedImmutableCodePointerTableCallClaim.originalIndexExpression,
+          BoolExpr.eval, Expr.eval, originalIndexWord]
+      · simp [immutableCodePointerTableRowGuard,
+          BoundedImmutableCodePointerTableCallClaim.candidateIndexExpression,
+          BoolExpr.eval, Expr.eval, candidateIndexWord]
+      · simp [codeAddressMatches]
+      · simp [codeAddressMatches]
+
 structure StaticWordSlotIndirectCallTargetClaim where
   targetId : Nat
   continuationTargetId : Nat
@@ -6299,6 +6618,24 @@ def immutableIndirectCallEdgesMatch (graph : RelationalProductGraph) (nodeId : N
       graph.resolveOutgoingControlEdges false node.outgoingEdgeIds == expected &&
         graph.resolveOutgoingControlEdges true node.outgoingEdgeIds == expected
 
+def boundedImmutableCodePointerTableCallExpectedEdges (candidate : Bool)
+    (claim : BoundedImmutableCodePointerTableCallClaim) :
+    List RelationalDecodedControlEdge :=
+  claim.rows.map fun row =>
+    RelationalDecodedControlEdge.mk .call row.targetId
+      (immutableCodePointerTableRowGuard candidate claim row)
+
+def boundedImmutableCodePointerTableCallEdgesMatch
+    (graph : RelationalProductGraph) (nodeId : Nat)
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  match graph.getNode? nodeId with
+  | none => false
+  | some node =>
+      graph.resolveOutgoingControlEdges false node.outgoingEdgeIds ==
+          some (boundedImmutableCodePointerTableCallExpectedEdges false claim) &&
+        graph.resolveOutgoingControlEdges true node.outgoingEdgeIds ==
+          some (boundedImmutableCodePointerTableCallExpectedEdges true claim)
+
 def immutableIndirectJumpEdgesMatch (graph : RelationalProductGraph) (nodeId : Nat)
     (claim : ImmutableIndirectJumpTargetClaim) : Bool :=
   match graph.getNode? nodeId with
@@ -6392,6 +6729,55 @@ def NodeImmutableIndirectCallEdgesComplete (graph : RelationalProductGraph)
     ImmutableIndirectCallTargetsClosed context region.inputInvariant originalNormalized
       candidateNormalized claim
 
+def NodeBoundedImmutableCodePointerTableCallEdgesComplete
+    (graph : RelationalProductGraph) (nodeId : Nat) (context : StaticProofContext)
+    (region : RegionRelation) (originalBehavior candidateBehavior : SymbolicBehavior)
+    (originalNormalized candidateNormalized : NormalizedSymbolicBehavior)
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Prop :=
+  regionBehaviorWithMachineCallContracts context.originalPe context.originalImports
+      context.machineImportCallContracts region.original =
+      some originalBehavior ∧
+    regionBehaviorWithMachineCallContracts context.candidatePe context.candidateImports
+      context.machineImportCallContracts region.candidate =
+      some candidateBehavior ∧
+    normalizeSymbolicBehavior false region.targets originalBehavior =
+      some originalNormalized ∧
+    normalizeSymbolicBehavior true region.targets candidateBehavior =
+      some candidateNormalized ∧
+    boundedImmutableCodePointerTableCallEdgesMatch graph nodeId claim = true ∧
+    BoundedImmutableCodePointerTableCallTargetsClosed context region.inputInvariant
+      originalNormalized candidateNormalized claim
+
+theorem nodeBoundedImmutableCodePointerTableCallEdgesComplete_of_checked
+    (graph : RelationalProductGraph) (nodeId : Nat) (context : StaticProofContext)
+    (region : RegionRelation) (originalBehavior candidateBehavior : SymbolicBehavior)
+    (originalNormalized candidateNormalized : NormalizedSymbolicBehavior)
+    (claim : BoundedImmutableCodePointerTableCallClaim)
+    (structurallyValid : context.StructurallyValid)
+    (originalDecoded :
+      regionBehaviorWithMachineCallContracts context.originalPe context.originalImports
+        context.machineImportCallContracts region.original = some originalBehavior)
+    (candidateDecoded :
+      regionBehaviorWithMachineCallContracts context.candidatePe context.candidateImports
+        context.machineImportCallContracts region.candidate = some candidateBehavior)
+    (originalNormalizedChecked :
+      normalizeSymbolicBehavior false region.targets originalBehavior =
+        some originalNormalized)
+    (candidateNormalizedChecked :
+      normalizeSymbolicBehavior true region.targets candidateBehavior =
+        some candidateNormalized)
+    (claimChecked : claim.checked context region.inputInvariant originalNormalized
+      candidateNormalized = true)
+    (edgesChecked :
+      boundedImmutableCodePointerTableCallEdgesMatch graph nodeId claim = true) :
+    NodeBoundedImmutableCodePointerTableCallEdgesComplete graph nodeId context region
+      originalBehavior candidateBehavior originalNormalized candidateNormalized claim := by
+  refine ⟨originalDecoded, candidateDecoded, originalNormalizedChecked,
+    candidateNormalizedChecked, edgesChecked, ?_⟩
+  exact boundedImmutableCodePointerTableCallTargetsClosed_of_checked context
+    region.inputInvariant originalNormalized candidateNormalized claim structurallyValid
+    claimChecked
+
 def NodeImmutableIndirectJumpEdgesComplete (graph : RelationalProductGraph)
     (nodeId : Nat) (context : StaticProofContext) (region : RegionRelation)
     (originalBehavior candidateBehavior : SymbolicBehavior)
@@ -6478,6 +6864,9 @@ def NodeControlEdgesComplete (graph : RelationalProductGraph) (nodeId : Nat)
     (∃ originalNormalized candidateNormalized claim,
       NodeImmutableIndirectCallEdgesComplete graph nodeId context region originalBehavior
         candidateBehavior originalNormalized candidateNormalized claim) ∨
+    (∃ originalNormalized candidateNormalized claim,
+      NodeBoundedImmutableCodePointerTableCallEdgesComplete graph nodeId context region
+        originalBehavior candidateBehavior originalNormalized candidateNormalized claim) ∨
     (∃ originalNormalized candidateNormalized claim,
       NodeImportRegisterIndirectCallEdgesComplete graph nodeId context region originalBehavior
         candidateBehavior originalNormalized candidateNormalized claim) ∨

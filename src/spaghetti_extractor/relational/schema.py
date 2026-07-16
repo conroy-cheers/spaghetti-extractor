@@ -19,6 +19,7 @@ REGISTERS = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
 MACHINE_CALL_ABI_REGISTERS = REGISTERS - {"esp"}
 MACHINE_CALL_MEMORY_EFFECTS = {
     "none", "readOnly", "argumentRanges", "newDynamicRanges",
+    "relationalState",
 }
 MACHINE_CALL_DISPOSITIONS = {"returns", "terminates", "protocol"}
 MACHINE_CALL_RESULT_RELATIONS = {
@@ -93,6 +94,7 @@ RELATIONAL_PREPARED_REPORT_FILES = (
     "relational-import-register-invariants.json",
     "relational-import-register-seeds.json",
     "relational-indirect-call-targets.json",
+    "relational-bounded-table-call-inputs.json",
     "whole-program-acceptance.json",
     "composition-progress.json",
     "trusted-base.json",

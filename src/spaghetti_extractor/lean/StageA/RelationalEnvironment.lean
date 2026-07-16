@@ -606,6 +606,7 @@ def machineCallMemoryEffectHolds (contract : MachineImportCallContract)
               footprint.contains before arguments address) = false →
           after address = before address
   | .newDynamicRanges => False
+  | .relationalState => True
 
 def DynamicAddressRangePair.containsAddress (candidate : Bool)
     (range : DynamicAddressRangePair) (address : Word) : Bool :=
