@@ -780,7 +780,10 @@ def _attach_stack_window_invariants(
                 or machine_contract is None
             ):
                 return None, "unsupported_environment_stack_transfer"
-            environment_delta = int(machine_contract["stack_result_delta"])
+            # Machine cleanup changes architectural ESP, not preserved frame
+            # or general-register windows that happen to cross the call edge.
+            if original_register == candidate_register == "esp":
+                environment_delta = int(machine_contract["stack_result_delta"])
         if (
             original_affine is None
             or candidate_affine is None

@@ -822,10 +822,10 @@ def _composition_progress(
         if gap.get("site_kind") == "direct_import_thunk"
         and int(gap["source_region_index"]) in reachable_node_id_set
     ]
-    environment_frontier_edge_ids = (
-        []
-        if acceptance.get("status") == "ready"
-        else reachable_external_edge_ids
+    environment_frontier_edge_ids = sorted(
+        set(reachable_external_edge_ids).difference(
+            reachable_external_candidate_edge_ids
+        )
     )
 
     potential_control_cuts = evidence["potential_control_cuts"]
