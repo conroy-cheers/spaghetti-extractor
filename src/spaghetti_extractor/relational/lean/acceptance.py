@@ -1357,6 +1357,40 @@ def _whole_program_acceptance_plan(
                         "add the continuation to the checked product graph",
                     )
                     continue
+                control_row = control_rows[0]
+                target_control_rows = [
+                    row for row in control_states_by_node.get(target_node_id, [])
+                    if row["calls"] == calls[1:]
+                ]
+                if len(target_control_rows) != 1:
+                    block(
+                        "return_target_control_state_missing",
+                        f"return node {node_id} has no unique checked successor "
+                        "control state for its remaining runtime frames",
+                        "regenerate rooted control closure from the checked return transfer",
+                    )
+                    continue
+                target_control_row = target_control_rows[0]
+                source_outer_inventories = tuple(
+                    inventory_key(item)
+                    for item in control_row["frame_offsets"][1:]
+                )
+                target_inventories = tuple(
+                    inventory_key(item)
+                    for item in target_control_row["frame_offsets"]
+                )
+                outer_frame_claims = internal_transfer_claims(
+                    node_id, source_outer_inventories, target_inventories
+                )
+                if outer_frame_claims is None:
+                    block(
+                        "return_outer_frame_transfer_incomplete",
+                        f"return node {node_id} cannot preserve every remaining "
+                        "runtime frame",
+                        "emit checked register and memory-footprint transfers for "
+                        "each outer frame",
+                    )
+                    continue
                 stack_transfers = _stack_window_transfer_claims(
                     region, regions[target_node_id], behaviors[node_id]
                 )
@@ -1406,6 +1440,7 @@ def _whole_program_acceptance_plan(
                     "region_index": node_id,
                     "target_id": target_id,
                     "control_state": control_rows[0],
+                    "target_control_state": target_control_row,
                     "target_node_id": target_node_id,
                     "target_region_index": target_node_id,
                     "target_target_id": continuation_target_id,
@@ -1413,6 +1448,7 @@ def _whole_program_acceptance_plan(
                     "return_frame_claim": return_frame_claim,
                     "return_frame_inventory":
                         control_rows[0]["frame_offsets"][0],
+                    "return_slot_frame_transfer_claims": outer_frame_claims,
                     "output_claims": target_output_claims,
                     "return_frame_claim_index": 0,
                     "stack_window_transfers": stack_transfers,
@@ -2781,6 +2817,29 @@ def _lean_acceptance_running_node(
         frame_inventory = _lean_return_slot_offset_inventory(
             step["return_frame_inventory"]
         )
+        control_calls = [int(item) for item in step["control_state"]["calls"]]
+        source_calls_literal = "[" + ", ".join(
+            str(item) for item in control_calls
+        ) + "]"
+        source_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_inventory(item)
+            for item in step["control_state"]["frame_offsets"]
+        ) + "]"
+        target_calls = [
+            int(item) for item in step["target_control_state"]["calls"]
+        ]
+        target_calls_literal = "[" + ", ".join(
+            str(item) for item in target_calls
+        ) + "]"
+        outer_frame_claims = step["return_slot_frame_transfer_claims"]
+        outer_frame_claims_literal = "[" + ", ".join(
+            _lean_return_slot_frame_inventory_transfer_claim(item)
+            for item in outer_frame_claims
+        ) + "]"
+        target_offsets_literal = "[" + ", ".join(
+            _lean_return_slot_offset_inventory(item["target"])
+            for item in outer_frame_claims
+        ) + "]"
         output_claims = ", ".join(
             _lean_register_output_claim(claim) for claim in step["output_claims"]
         )
@@ -2795,22 +2854,13 @@ def _lean_acceptance_running_node(
         }
         return (
             prefix
-            + "  have controlShape : calls = ["
-            + str(continuation)
-            + "] ∧ frameOffsets = ["
-            + frame_inventory
-            + "] := by\n"
+            + f"  have controlShape : calls = {source_calls_literal} ∧\n"
+            f"      frameOffsets = {source_offsets_literal} := by\n"
             "    simpa [productControlProfile] using controlMember.2\n"
             "  rcases controlShape with ⟨rfl, rfl⟩\n"
             "  cases frames with\n"
             "  | nil => simp [RelationalRuntimeCallStackHolds] at stackHolds\n"
             "  | cons frame tail =>\n"
-            "    have tailEmpty : tail = [] := by\n"
-            "      cases tail with\n"
-            "      | nil => rfl\n"
-            "      | cons next rest =>\n"
-            "          simp [RelationalRuntimeCallStackHolds] at stackHolds\n"
-            "    subst tail\n"
             "    simp only [RelationalRuntimeCallStackHolds] at stackHolds\n"
             "    have frameContinuation := stackHolds.1\n"
             "    have frameResolves := stackHolds.2.2.1\n"
@@ -2830,6 +2880,22 @@ def _lean_acceptance_running_node(
             f"      acceptanceCandidateNormalizedOutcome{node_id},\n"
             "      NormalizedOutcomeExpr.eval, PureOutcome.returned.injEq]\n"
             "      at returnTargets\n"
+            "    let outerFrameClaims : List ReturnSlotFrameInventoryTransferClaim :=\n"
+            f"      {outer_frame_claims_literal}\n"
+            "    have outerStackHolds : RelationalRuntimeCallStackHolds\n"
+            "        staticProofContext\n"
+            f"        (({original_behavior}.eval originalState).nextMachineState\n"
+            "          originalState)\n"
+            f"        (({candidate_behavior}.eval candidateState).nextMachineState\n"
+            f"          candidateState) tail {target_calls_literal}\n"
+            f"        {target_offsets_literal} := by\n"
+            "      exact RelationalRuntimeCallStackHolds.afterInternal\n"
+            f"        staticProofContext world region{region_index}.inputInvariant\n"
+            f"        {original_behavior} {candidate_behavior} outerFrameClaims\n"
+            f"        tail {target_calls_literal} originalState candidateState\n"
+            "        (by decide)\n"
+            "        (by simpa [outerFrameClaims] using stackHolds.2.2.2.2.2)\n"
+            "        statesRelated\n"
             "    have relatedForTransfer := statesRelated\n"
             "    rcases statesRelated with\n"
             "      ⟨_worldValid, stackRangesValid, _stackMemory, _importsStatic,\n"
@@ -2939,10 +3005,12 @@ def _lean_acceptance_running_node(
             "        originalWrites candidateWrites outputRegisters outputBounds\n"
             "        outputSeparations outputStackWindows outputX87 outputFlags\n"
             "        outputImports outputDynamic outputDynamicStack\n"
-            "    have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
-            f"        (({original_behavior}.eval originalState).nextMachineState originalState)\n"
-            f"        (({candidate_behavior}.eval candidateState).nextMachineState candidateState)\n"
-            "        [] [] [] := by simp [RelationalRuntimeCallStackHolds]\n"
+            "    have stackHoldsNext := outerStackHolds\n"
+            "    have outerTargetsReachable : RelationalRuntimeCallTargetsReachable\n"
+            "        relationalProductGraph relationalProductReachabilityEvidence\n"
+            f"        {target_calls_literal} := by\n"
+            "      simpa only [RelationalRuntimeCallTargetsReachable] using\n"
+            "        stackTargetsReachable.2\n"
             "    simp only [RelationalCallFrame.resolves, Bool.and_eq_true, beq_iff_eq]\n"
             "      at frameResolves\n"
             "    rw [frameContinuation] at frameResolves\n"
@@ -2955,6 +3023,10 @@ def _lean_acceptance_running_node(
                     node_id=node_id,
                     region_index=region_index,
                     edge=target_edge,
+                    frames="tail",
+                    calls=target_calls_literal,
+                    frame_offsets=target_offsets_literal,
+                    stack_targets_proof="outerTargetsReachable",
                 ).splitlines()
             )
         )

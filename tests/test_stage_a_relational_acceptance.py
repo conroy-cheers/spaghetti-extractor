@@ -1425,6 +1425,47 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
 
             self.assertEqual(result.get("status"), "prepared", result)
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                result["composition_progress"]["status"], "ready_for_lean", result
+            )
+            self.assertEqual(
+                result["acceptance"]["control_states"],
+                [
+                    {"node_id": 0, "calls": [], "frame_offsets": []},
+                    {
+                        "node_id": 2,
+                        "calls": [1],
+                        "frame_offsets": [{"locations": [{
+                            "original_register": "esp", "original": 0,
+                            "candidate_register": "esp", "candidate": 0,
+                        }]}],
+                    },
+                    {
+                        "node_id": 4,
+                        "calls": [3, 1],
+                        "frame_offsets": [
+                            {"locations": [{
+                                "original_register": "esp", "original": 0,
+                                "candidate_register": "esp", "candidate": 0,
+                            }]},
+                            {"locations": [{
+                                "original_register": "esp", "original": 4,
+                                "candidate_register": "esp", "candidate": 4,
+                            }]},
+                        ],
+                    },
+                    {
+                        "node_id": 3,
+                        "calls": [1],
+                        "frame_offsets": [{"locations": [{
+                            "original_register": "esp", "original": 0,
+                            "candidate_register": "esp", "candidate": 0,
+                        }]}],
+                    },
+                    {"node_id": 1, "calls": [], "frame_offsets": []},
+                ],
+            )
             register_relations = json.loads(
                 (prepared / "relational-register-relations.json").read_text(
                     encoding="utf-8"
@@ -1457,7 +1498,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(len(summary_modules), 1)
 
             lean = _run_lean_relational(
-                prepared / "lean", bundle=summary_modules[0].stem
+                prepared / "lean", bundle="RelationalAcceptance"
             )
             self.assertEqual(lean["status"], "checked", lean)
             self.assertNotIn("sorryAx", lean["stdout"])

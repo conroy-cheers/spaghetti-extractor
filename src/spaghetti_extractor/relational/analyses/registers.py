@@ -19,6 +19,7 @@ from .segments import _semantic_expr_registers
 from .stack import (
     _attach_return_slot_contracts,
     _direct_call_push_claim,
+    _discover_static_call_return_summaries,
     _indirect_call_push_claim,
     _return_pop_claim,
 )
@@ -909,6 +910,40 @@ def _synthesize_register_relations(
                 "fixed_static_function_pointer_call_v1",
             }
         ) else None
+
+    return_summary_analysis = _discover_static_call_return_summaries(
+        [
+            {
+                "is_return": (
+                    (behavior["original_ir"].get("outcome") or {}).get("op")
+                        == "returned"
+                    and
+                    (behavior["candidate_ir"].get("outcome") or {}).get("op")
+                        == "returned"
+                ),
+            }
+            for behavior in behaviors
+        ],
+        edges,
+    )
+    return_predecessors: set[tuple[int, int]] = set()
+    for summary in return_summary_analysis["summaries"]:
+        if not summary["closed"]:
+            continue
+        continuation = int(summary["continuation_region_index"])
+        for return_index_value in summary["return_region_indices"]:
+            return_index = int(return_index_value)
+            key = (return_index, continuation)
+            if key in return_predecessors:
+                continue
+            return_predecessors.add(key)
+            predecessors[continuation].append((
+                return_index,
+                False,
+                "internal_return",
+                frozenset(),
+                {},
+            ))
 
     register_order = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
     stack_window_input_pairs = [

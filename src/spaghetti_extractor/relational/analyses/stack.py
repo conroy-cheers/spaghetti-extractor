@@ -1600,7 +1600,9 @@ def _attach_return_slot_contracts(
             ))
         return transfers
 
-    transfer_rule_cache: dict[int, list[dict[str, Any]]] = {}
+    transfer_rule_cache: dict[
+        tuple[int, tuple[tuple[str, str], ...]], list[dict[str, Any]]
+    ] = {}
     machine_contracts_by_target = {
         (
             str(item["import"]["dll"]).lower(),
@@ -1611,7 +1613,11 @@ def _attach_return_slot_contracts(
     }
 
     def behavior_transfer_rules(source: int) -> list[dict[str, Any]]:
-        cached = transfer_rule_cache.get(source)
+        runtime_pairs = tuple(sorted({
+            (location[0], location[2]) for location in locations[source]
+        }))
+        cache_key = (source, runtime_pairs)
+        cached = transfer_rule_cache.get(cache_key)
         if cached is not None:
             return cached
         original = behaviors[source].get("original_ir") or {}
@@ -1629,10 +1635,31 @@ def _attach_return_slot_contracts(
                     continue
                 source_pairs.add(pair)
                 source_relations.append(relation)
+        for original_register, candidate_register in runtime_pairs:
+            if (original_register, candidate_register) in source_pairs:
+                continue
+            source_pairs.add((original_register, candidate_register))
+            source_relations.append({
+                "original": original_register,
+                "candidate": candidate_register,
+            })
+        target_relations = list(relation_rows[source].get("outputs", []))
+        target_pairs = {
+            (str(relation["original"]), str(relation["candidate"]))
+            for relation in target_relations
+        }
+        for original_register, candidate_register in runtime_pairs:
+            if (original_register, candidate_register) in target_pairs:
+                continue
+            target_pairs.add((original_register, candidate_register))
+            target_relations.append({
+                "original": original_register,
+                "candidate": candidate_register,
+            })
         for input_relation in source_relations:
             original_source_register = str(input_relation["original"])
             candidate_source_register = str(input_relation["candidate"])
-            for output_relation in relation_rows[source].get("outputs", []):
+            for output_relation in target_relations:
                 original_target_register = str(output_relation["original"])
                 candidate_target_register = str(output_relation["candidate"])
                 key = (
@@ -1669,7 +1696,7 @@ def _attach_return_slot_contracts(
                     "original_delta": original_delta,
                     "candidate_delta": candidate_delta,
                 })
-        transfer_rule_cache[source] = rules
+        transfer_rule_cache[cache_key] = rules
         return rules
 
     external_transfer_rule_cache: dict[int, list[dict[str, Any]]] = {}

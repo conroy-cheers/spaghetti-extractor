@@ -2266,7 +2266,7 @@ class StageARelationalStateTests(StageARelationalTestBase):
         self.assertEqual(len(edges[1]["return_slot_transfer_claims"]), 1)
         self.assertEqual(len(rows[2]["return_pop_frame_claims"]), 1)
 
-    def test_return_slot_contracts_preserve_outer_frame_on_nested_call(self):
+    def test_return_slot_contracts_preserve_outer_frame_without_public_esp(self):
         def offset(value):
             operation = "add" if value >= 0 else "sub"
             return {
@@ -2291,8 +2291,7 @@ class StageARelationalStateTests(StageARelationalTestBase):
         ]
         rows = [
             {"region_index": index, "is_return": False,
-             "return_pop_claim": None,
-             "outputs": [{"original": "esp", "candidate": "esp"}]}
+             "return_pop_claim": None, "outputs": []}
             for index in range(3)
         ]
         edges = [
@@ -2350,6 +2349,55 @@ class StageARelationalStateTests(StageARelationalTestBase):
                 "kind": "sub_right", "prior": {"kind": "input"}, "value": 4,
             },
         }])
+
+    def test_private_runtime_frame_transfer_rejects_non_affine_esp(self):
+        def offset(value):
+            operation = "add" if value >= 0 else "sub"
+            return {
+                "op": operation,
+                "left": {"op": "input_reg", "reg": "esp"},
+                "right": {"op": "constant", "value": abs(value)},
+            }
+
+        behaviors = [
+            {
+                "original_ir": {"registers": {"esp": offset(-4)}},
+                "candidate_ir": {"registers": {"esp": offset(-4)}},
+            },
+            {
+                "original_ir": {"registers": {
+                    "esp": {"op": "constant", "value": 0x1000},
+                }},
+                "candidate_ir": {"registers": {
+                    "esp": {"op": "constant", "value": 0x2000},
+                }},
+            },
+        ]
+        rows = [
+            {"region_index": index, "is_return": False,
+             "return_pop_claim": None, "outputs": []}
+            for index in range(2)
+        ]
+        edges = [
+            {
+                "source_region_index": 0, "target_region_index": 1,
+                "kind": "call", "environment_barrier": False,
+                "requires_call_stack_proof": False,
+                "direct_call_push_claim": {"continuation_region_index": 0},
+            },
+            {
+                "source_region_index": 1, "target_region_index": 1,
+                "kind": "jump", "environment_barrier": False,
+                "requires_call_stack_proof": False,
+                "direct_call_push_claim": None,
+            },
+        ]
+
+        analysis = _attach_return_slot_contracts(behaviors, rows, edges)
+
+        self.assertTrue(analysis["converged"])
+        self.assertEqual(edges[1]["return_slot_transfer_rules"], [])
+        self.assertEqual(edges[1]["return_slot_transfer_claims"], [])
 
     def test_return_slot_summary_replays_a_checked_indirect_nested_call(self):
         def offset(value):
