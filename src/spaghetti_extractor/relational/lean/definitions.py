@@ -45,6 +45,7 @@ from .expressions import (
     _lean_region_static_relocation_word_specs,
     _lean_static_dynamic_pointer_slot,
     _lean_static_word_relation_slot,
+    _lean_semantic_expr,
     _lean_value_target,
 )
 
@@ -212,6 +213,30 @@ def _lean_targets_definition(targets: list[dict[str, Any]]) -> str:
         for target in targets
     )
     return f"def allTargets : List CodeTargetPair := [{target_rows}]"
+
+
+def _lean_bounded_immutable_relocation_table_jump_claim(
+    candidate: dict[str, Any],
+) -> str:
+    entry_target_ids = ", ".join(
+        str(int(target_id)) for target_id in candidate["entry_target_ids"]
+    )
+    finite_target_ids = ", ".join(
+        str(int(target_id)) for target_id in candidate["target_ids"]
+    )
+    return (
+        "{ valueTargetId := " + str(int(candidate["value_target_id"]))
+        + ", tableOffset := " + str(int(candidate["table_offset"]))
+        + ", originalBase := " + str(int(candidate["original_base"]))
+        + ", candidateBase := " + str(int(candidate["candidate_base"]))
+        + ", upperExclusive := " + str(int(candidate["upper_exclusive"]))
+        + ", originalIndex := "
+        + _lean_semantic_expr(candidate["original_index_expression"])
+        + ", candidateIndex := "
+        + _lean_semantic_expr(candidate["candidate_index_expression"])
+        + ", entryTargetIds := [" + entry_target_ids + "]"
+        + ", finiteTargetIds := [" + finite_target_ids + "] }"
+    )
 
 def _lean_global_mapping_context_source(contract: dict[str, Any]) -> str:
     target_rows = ", ".join(

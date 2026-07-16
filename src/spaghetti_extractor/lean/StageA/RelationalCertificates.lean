@@ -1860,6 +1860,41 @@ structure PE32ConsoleLaunchV1 where
   rootInvariant : StateInvariant
 deriving Repr, DecidableEq
 
+def importIatByteCovered (imports : List PEImport) (rva : Nat) : Bool :=
+  imports.any fun imported =>
+    imported.iatRva <= rva && rva < imported.iatRva + 4
+
+/-- The bounded launch profile maps both images at their preferred bases. The
+loader-populated IAT is checked separately through the relational world. -/
+def PreferredBaseImageMemory (pe : PE32) (imports : List PEImport)
+    (memory : Memory) : Prop :=
+  forall rva expected,
+    rva < pe.sizeOfImage ->
+    importIatByteCovered imports rva = false ->
+    rvaByte pe rva = some expected ->
+    memory (BitVec.ofNat 32 (pe.imageBase + rva)) = BitVec.ofNat 8 expected
+
+def PE32ConsoleLaunchWorldV1.Valid (context : StaticProofContext)
+    (world : RelationalWorld) : Prop :=
+  world.valid context = true ∧
+    world.stackRanges.length = 1 ∧
+    world.dynamicRanges = [] ∧
+    world.opaqueResources = [] ∧
+    world.registeredCallbacks = [] ∧
+    world.tlsState.lastError = BitVec.ofNat 32 0 ∧
+    world.importAddressesStaticValid context = true ∧
+    world.importAddressesComplete context = true
+
+structure PE32ConsoleLaunchStateRel (context : StaticProofContext)
+    (launch : PE32ConsoleLaunchV1) (world : RelationalWorld)
+    (original candidate : MachineState) : Prop where
+  worldValid : PE32ConsoleLaunchWorldV1.Valid context world
+  originalImageMapped : PreferredBaseImageMemory context.originalPe
+    context.originalImports original.memory
+  candidateImageMapped : PreferredBaseImageMemory context.candidatePe
+    context.candidateImports candidate.memory
+  stateRel : StateRel context world launch.rootInvariant original candidate
+
 def PE32ConsoleLaunchV1.Valid (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (launch : PE32ConsoleLaunchV1) : Prop :=
@@ -1877,7 +1912,7 @@ def PE32ConsoleLaunchV1.Valid (context : StaticProofContext)
 def PE32ConsoleLaunchV1.StatesRelated (context : StaticProofContext)
     (launch : PE32ConsoleLaunchV1) (world : RelationalWorld)
     (original candidate : MachineState) : Prop :=
-  StateRel context world launch.rootInvariant original candidate
+  PE32ConsoleLaunchStateRel context launch world original candidate
 
 def PE32ProgramsObservationallyEquivalent (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
@@ -2017,7 +2052,7 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
         _entrypointRoot, _terminalResultExact⟩
     refine ⟨rfl, rfl, rfl, rfl, launch.rootNodeId, node,
       launch.rootInvariant, [], [], nodeFound, targetFound, ?_, invariantFound,
-      certificate.launchControlAllowed, ?_, ?_, related⟩
+      certificate.launchControlAllowed, ?_, ?_, related.stateRel⟩
     . have allRoots := certificate.reachabilityClosed.2.1.2.1
       unfold RelationalProductReachabilityEvidence.rootsIncluded at allRoots
       exact List.all_eq_true.mp allRoots launch.rootNodeId

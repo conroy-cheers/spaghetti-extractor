@@ -593,6 +593,25 @@ def stage_a_prove_relational(
     normalized, static_word_analysis = _attach_static_word_relation_slots(
         normalized, behaviors, original_bin, candidate_bin
     )
+    # Static slots are inferred from paired writes after the first register
+    # fixed point. Replay synthesis so equal-address loads do not retain an
+    # unsoundly strong exact relation when their checked slot is only related.
+    normalized, register_relations = _synthesize_register_relations(
+        normalized,
+        behaviors,
+        original_image_base=original_bin.image_base,
+        candidate_image_base=candidate_bin.image_base,
+        indirect_call_candidates=indirect_call_candidates,
+        import_call_candidates=import_register_analysis["indirect_import_calls"],
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
+    )
+    normalized, register_relations = _lower_stack_register_relations(
+        normalized, register_relations
+    )
+    register_relations = _attach_stack_register_output_claims(
+        normalized, behaviors, register_relations
+    )
     register_relations = _attach_static_word_register_output_claims(
         normalized, behaviors, register_relations
     )
@@ -677,6 +696,22 @@ def stage_a_prove_relational(
     )
     normalized, static_word_analysis = _attach_static_word_relation_slots(
         normalized, behaviors, original_bin, candidate_bin,
+    )
+    normalized, register_relations = _synthesize_register_relations(
+        normalized,
+        behaviors,
+        original_image_base=original_bin.image_base,
+        candidate_image_base=candidate_bin.image_base,
+        indirect_call_candidates=indirect_call_candidates,
+        import_call_candidates=import_register_analysis["indirect_import_calls"],
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
+    )
+    normalized, register_relations = _lower_stack_register_relations(
+        normalized, register_relations
+    )
+    register_relations = _attach_stack_register_output_claims(
+        normalized, behaviors, register_relations
     )
     register_relations = _attach_static_word_register_output_claims(
         normalized, behaviors, register_relations

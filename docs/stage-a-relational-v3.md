@@ -389,8 +389,15 @@ immutable-image word relations for both concrete memories. These permit local
 proofs to recover a word from exact PE bytes only when the containing section
 is non-writable. No-write segment transitions preserve all three relations.
 The eventual launch theorem must establish these relations from the bounded
-preferred-base PE launch profile; until then they remain an explicit
-`StateRel` premise and do not create an acceptance theorem.
+preferred-base PE launch profile. `PE32ConsoleLaunchStateRel` now establishes
+that boundary explicitly: both images must contain their mapped PE bytes,
+including writable initializers and section zero-fill, at their preferred image
+bases. Loader-written IAT bytes are excluded from the raw image predicate and
+are instead covered by complete, statically checked `ImportAddressPair`
+bindings. The launch world must contain exactly one valid paired stack and no
+pre-existing dynamic allocations, opaque resources, or registered callbacks.
+This is a checked bounded loader profile, not a claim to model ASLR or every
+Windows loader behavior.
 `StateRel` now accepts checked paired dynamic ranges as well as static image and
 stack mappings. A dynamic range must be nonempty and non-wrapping, disjoint from
 both PE images, pairwise disjoint on each side, and disjoint from every stack
@@ -1183,7 +1190,12 @@ result registers are not inferred from a hard-coded volatile-register table:
 each generated environment edge resolves one canonical machine-call contract
 by ID and uses only its checked `resultRegisterRelations`. ESP is related by
 the stack-delta/runtime-frame path rather than that ordinary register result
-inventory.
+inventory. Initial execution is quantified only over
+`PE32ConsoleLaunchStateRel`: a valid fresh relational world, one paired initial
+stack, complete checked IAT bindings, zero initial last-error state, preferred-
+base mapped image bytes outside the IAT, and the root `StateRel`. Relocations
+therefore have zero load delta in this v1 profile; a future ASLR profile must
+model and relate nonzero loader relocation deltas explicitly.
 
 The generated acceptance profiles remain deliberately narrow. In addition to
 `direct-no-write-jump-v1`, guarded direct branches close through exhaustive

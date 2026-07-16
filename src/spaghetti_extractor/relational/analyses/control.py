@@ -20,6 +20,7 @@ def _relational_product_graph(
     original_image_base: int,
     candidate_image_base: int,
     indirect_call_candidates: list[dict[str, Any]] | None = None,
+    bounded_table_candidates: list[dict[str, Any]] | None = None,
     dynamic_call_candidates: list[dict[str, Any]] | None = None,
     import_register_seeds: list[dict[str, Any]] | None = None,
     import_call_candidates: list[dict[str, Any]] | None = None,
@@ -42,6 +43,9 @@ def _relational_product_graph(
                 "product-graph cutpoint targets"
             )
         node_targets.append(matching[0])
+    node_targets_by_id = {
+        int(target["id"]): target for target in node_targets
+    }
 
     edges: list[dict[str, Any]] = []
     outgoing: list[list[int]] = [[] for _ in node_targets]
@@ -177,6 +181,69 @@ def _relational_product_graph(
             "edge_ids": edge_ids,
         })
 
+    bounded_table_edge_groups: list[dict[str, Any]] = []
+    bounded_table_sources: set[int] = set()
+    for candidate_index, indirect_candidate in enumerate(
+        bounded_table_candidates or []
+    ):
+        if indirect_candidate.get("profile") != (
+            "bounded_immutable_relocation_table_jump_v1"
+        ):
+            continue
+        source = int(indirect_candidate["source_region_index"])
+        if source in bounded_table_sources:
+            raise StageAInputError(
+                f"product node {source} has duplicate bounded relocation-table claims"
+            )
+        bounded_table_sources.add(source)
+        if not 0 <= source < len(node_targets):
+            raise StageAInputError(
+                f"bounded relocation-table source {source} is out of range"
+            )
+        if outgoing[source]:
+            raise StageAInputError(
+                f"bounded relocation-table source {source} already has submitted edges"
+            )
+        original_expression = behaviors[source]["original_ir"]["outcome"]["target"]
+        candidate_expression = behaviors[source]["candidate_ir"]["outcome"]["target"]
+        edge_ids: list[int] = []
+        for target_id in indirect_candidate["target_ids"]:
+            target = node_targets_by_id.get(int(target_id))
+            if target is None:
+                raise StageAInputError(
+                    f"bounded relocation-table target {target_id} is not canonical"
+                )
+            edge_id = len(edges)
+            edge_ids.append(edge_id)
+            outgoing[source].append(edge_id)
+            edges.append({
+                "id": edge_id,
+                "source_node_id": source,
+                "target_node_id": int(target["region_index"]),
+                "source_target_id": int(node_targets[source]["id"]),
+                "target_target_id": int(target["id"]),
+                "kind": "jump",
+                "original_guard": code_target_guard(
+                    original_expression,
+                    original_image_base,
+                    int(target["original_rva"]),
+                    [int(alias) for alias in target.get("original_aliases", [])],
+                ),
+                "candidate_guard": code_target_guard(
+                    candidate_expression,
+                    candidate_image_base,
+                    int(target["candidate_rva"]),
+                    [int(alias) for alias in target.get("candidate_aliases", [])],
+                ),
+                "infeasible": False,
+                "bounded_relocation_table_candidate_index": candidate_index,
+            })
+        bounded_table_edge_groups.append({
+            "source_node_id": source,
+            "candidate_index": candidate_index,
+            "edge_ids": edge_ids,
+        })
+
     root_node_ids = [
         index for index, region in enumerate(contract.get("regions", []))
         if bool(region.get("root"))
@@ -200,6 +267,10 @@ def _relational_product_graph(
         int(candidate["source_region_index"]): candidate
         for candidate in (indirect_call_candidates or [])
     }
+    bounded_table_by_source = {
+        int(candidate["source_region_index"]): candidate
+        for candidate in (bounded_table_candidates or [])
+    }
     import_call_by_source = {
         int(candidate["source_region_index"]): candidate
         for candidate in (import_call_candidates or [])
@@ -212,10 +283,17 @@ def _relational_product_graph(
         raise StageAInputError(
             "a product node cannot have both immutable and dynamic indirect-call claims"
         )
+    if set(bounded_table_by_source).intersection(
+        set(indirect_by_source) | set(dynamic_call_by_source)
+    ):
+        raise StageAInputError(
+            "a product node cannot have multiple indirect-control claims"
+        )
 
     def decoded_control_edges(
         behavior: dict[str, Any],
         indirect_candidate: dict[str, Any] | None,
+        bounded_table_candidate: dict[str, Any] | None,
         dynamic_candidate: dict[str, Any] | None,
         import_call_candidate: dict[str, Any] | None,
         *,
@@ -245,6 +323,32 @@ def _relational_product_graph(
                 "target_target_id": int(indirect_candidate["target_id"]),
                 "guard": {"op": "bool_constant", "value": True},
             }]
+        if (
+            operation == "indirect_jump"
+            and bounded_table_candidate is not None
+            and bounded_table_candidate["profile"] ==
+                "bounded_immutable_relocation_table_jump_v1"
+        ):
+            expression = outcome["target"]
+            image_base = candidate_image_base if candidate_side else original_image_base
+            rva_key = "candidate_rva" if candidate_side else "original_rva"
+            aliases_key = (
+                "candidate_aliases" if candidate_side else "original_aliases"
+            )
+            return [
+                {
+                    "kind": "jump",
+                    "target_target_id": int(target["id"]),
+                    "guard": code_target_guard(
+                        expression,
+                        image_base,
+                        int(target[rva_key]),
+                        [int(alias) for alias in target.get(aliases_key, [])],
+                    ),
+                }
+                for target_id in bounded_table_candidate["target_ids"]
+                if (target := node_targets_by_id.get(int(target_id))) is not None
+            ]
         if operation == "indirect_call" and import_call_candidate is not None:
             continuation_index = int(
                 import_call_candidate["continuation_region_index"]
@@ -305,14 +409,17 @@ def _relational_product_graph(
         zip(nodes, behaviors, strict=True)
     ):
         indirect_candidate = indirect_by_source.get(node_id)
+        bounded_table_candidate = bounded_table_by_source.get(node_id)
         dynamic_candidate = dynamic_call_by_source.get(node_id)
         import_call_candidate = import_call_by_source.get(node_id)
         original_decoded = decoded_control_edges(
-            behavior_pair["original_ir"], indirect_candidate, dynamic_candidate,
+            behavior_pair["original_ir"], indirect_candidate,
+            bounded_table_candidate, dynamic_candidate,
             import_call_candidate, candidate_side=False,
         )
         candidate_decoded = decoded_control_edges(
-            behavior_pair["candidate_ir"], indirect_candidate, dynamic_candidate,
+            behavior_pair["candidate_ir"], indirect_candidate,
+            bounded_table_candidate, dynamic_candidate,
             import_call_candidate, candidate_side=True,
         )
         original_graph_decoded = [
@@ -344,6 +451,8 @@ def _relational_product_graph(
             }
             if indirect_candidate is not None:
                 decoded_candidate.update(indirect_candidate)
+            if bounded_table_candidate is not None:
+                decoded_candidate.update(bounded_table_candidate)
             if dynamic_candidate is not None:
                 decoded_candidate.update(dynamic_candidate)
             if import_call_candidate is not None:
@@ -468,12 +577,20 @@ def _relational_product_graph(
             for side in ("original_ir", "candidate_ir")
         })
         added_targets: set[int] = set()
+        provenance: list[str] = []
         if any(
             operation in {"indirect_call", "indirect_jump", "checked_continue"}
             for operation in operations
         ):
             added_targets.update(range(len(nodes)))
-            reason = "unresolved_indirect_control_all_canonical_targets"
+            provenance = sorted({
+                _indirect_control_expression_provenance(
+                    (behavior_pair[side].get("outcome") or {}).get("target"),
+                    str((behavior_pair[side].get("outcome") or {}).get("op")),
+                )
+                for side in ("original_ir", "candidate_ir")
+            })
+            reason = "unresolved_indirect_control_" + "_or_".join(provenance)
         else:
             for side in ("original_ir", "candidate_ir"):
                 for semantic_edge in _semantic_edges(behavior_pair[side]):
@@ -489,6 +606,7 @@ def _relational_product_graph(
                 "node_id": source_node_id,
                 "operations": operations,
                 "reason": reason,
+                "provenance": provenance if len(added_targets) == len(nodes) else [],
                 "potential_target_count": len(added_targets),
                 "target_scope": (
                     "all_canonical_code_targets"
@@ -557,6 +675,9 @@ def _relational_product_graph(
             "import_register_seed_candidates": import_register_seeds or [],
             "dynamic_range_indirect_call_candidates": dynamic_call_candidates or [],
             "dynamic_range_indirect_call_edge_groups": dynamic_edge_groups,
+            "bounded_immutable_relocation_table_edge_groups": (
+                bounded_table_edge_groups
+            ),
             "runtime_call_continuations": [
                 {
                     "source_node_id": source_node_id,
@@ -1656,6 +1777,250 @@ def _immutable_indirect_call_candidates(
                 "continuation_target_id": continuation_target_id,
             })
         result.append(row)
+    return result
+
+
+def _bounded_immutable_relocation_table_jump_candidates(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for source_index, (region, behavior_pair) in enumerate(zip(
+        contract.get("regions", []), behaviors, strict=True
+    )):
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        if (
+            original_outcome.get("op") != "indirect_jump"
+            or candidate_outcome.get("op") != "indirect_jump"
+        ):
+            continue
+        candidate = _bounded_immutable_relocation_table_jump_candidate(
+            original_bin,
+            candidate_bin,
+            contract,
+            region,
+            source_index,
+            original_outcome,
+            candidate_outcome,
+        )
+        if candidate is not None:
+            result.append(candidate)
+    return result
+
+
+def _bounded_immutable_relocation_table_jump_candidate(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    contract: dict[str, Any],
+    region: dict[str, Any],
+    source_index: int,
+    original_outcome: dict[str, Any],
+    candidate_outcome: dict[str, Any],
+) -> dict[str, Any] | None:
+    original_shape = _indexed_u32_table_read(original_outcome.get("target"))
+    candidate_shape = _indexed_u32_table_read(candidate_outcome.get("target"))
+    if original_shape is None or candidate_shape is None:
+        return None
+    original_base, original_index = original_shape
+    candidate_base, candidate_index = candidate_shape
+
+    matching_bounds: list[dict[str, Any]] = []
+    for bound in region.get("bounds", []):
+        original_bound_expression = bound.get("original_expression") or {
+            "op": "input_reg",
+            "reg": str(bound.get("original")),
+        }
+        candidate_bound_expression = bound.get("candidate_expression") or {
+            "op": "input_reg",
+            "reg": str(bound.get("candidate")),
+        }
+        upper = _integer(bound.get("unsigned_lt"))
+        if (
+            upper is not None
+            and upper > 0
+            and original_bound_expression == original_index
+            and candidate_bound_expression == candidate_index
+        ):
+            matching_bounds.append(bound)
+    if len(matching_bounds) != 1:
+        return None
+    upper_exclusive = int(matching_bounds[0]["unsigned_lt"])
+
+    matching_values = []
+    for value in contract.get("value_targets", []):
+        original_offset = original_base - int(value["original_value"])
+        candidate_offset = candidate_base - int(value["candidate_value"])
+        if (
+            original_offset != candidate_offset
+            or original_offset < 0
+            or original_offset + upper_exclusive * 4 > int(value["mapped_size"])
+        ):
+            continue
+        required_offsets = {
+            original_offset + index * 4 for index in range(upper_exclusive)
+        }
+        if not required_offsets.issubset({
+            int(offset) for offset in value.get("relocation_offsets", [])
+        }):
+            continue
+        matching_values.append((value, original_offset))
+    matching_value_keys = {
+        (int(value["id"]), offset) for value, offset in matching_values
+    }
+    if len(matching_value_keys) != 1:
+        return None
+    table, table_offset = matching_values[0]
+
+    code_targets = contract.get("code_targets", [])
+    entry_target_ids: list[int] = []
+    for index in range(upper_exclusive):
+        original_word = _immutable_image_u32(
+            original_bin, original_base + index * 4
+        )
+        candidate_word = _immutable_image_u32(
+            candidate_bin, candidate_base + index * 4
+        )
+        if original_word is None or candidate_word is None:
+            return None
+        matches = [
+            target for target in code_targets
+            if _absolute_code_target_matches(
+                original_bin, target, "original", original_word
+            )
+            and _absolute_code_target_matches(
+                candidate_bin, target, "candidate", candidate_word
+            )
+        ]
+        matching_target_ids = {int(target["id"]) for target in matches}
+        if len(matching_target_ids) != 1:
+            return None
+        entry_target_ids.append(next(iter(matching_target_ids)))
+
+    target_ids = sorted(set(entry_target_ids))
+    available_target_ids = {
+        int(item["id"]) for item in region.get("code_targets", [])
+    }
+    if not target_ids or not set(target_ids).issubset(available_target_ids):
+        return None
+    return {
+        "profile": "bounded_immutable_relocation_table_jump_v1",
+        "source_region_index": source_index,
+        "value_target_id": int(table["id"]),
+        "table_offset": table_offset,
+        "original_base": original_base,
+        "candidate_base": candidate_base,
+        "original_index_expression": original_index,
+        "candidate_index_expression": candidate_index,
+        "upper_exclusive": upper_exclusive,
+        "entry_target_ids": entry_target_ids,
+        "target_ids": target_ids,
+    }
+
+
+def _indexed_u32_table_read(
+    expression: Any,
+) -> tuple[int, dict[str, Any]] | None:
+    if not isinstance(expression, dict) or expression.get("op") != "read32":
+        return None
+    address = expression.get("address")
+    if not isinstance(address, dict) or address.get("op") != "add":
+        return None
+    left = address.get("left")
+    right = address.get("right")
+    if isinstance(left, dict) and left.get("op") == "constant":
+        left, right = right, left
+    if (
+        not isinstance(left, dict)
+        or left.get("op") != "shift_left"
+        or _integer(left.get("amount")) != 2
+        or not isinstance(left.get("value"), dict)
+        or not isinstance(right, dict)
+        or right.get("op") != "constant"
+    ):
+        return None
+    base = _integer(right.get("value"))
+    if base is None or not 0 <= base < 2**32:
+        return None
+    return base, left["value"]
+
+
+def _absolute_code_target_matches(
+    binary: StageABinary,
+    target: dict[str, Any],
+    side: str,
+    absolute: int,
+) -> bool:
+    rvas = [
+        int(target[f"{side}_rva"]),
+        *(int(alias) for alias in target.get(f"{side}_aliases", [])),
+    ]
+    return absolute in {binary.image_base + rva for rva in rvas}
+
+
+def _indirect_control_expression_provenance(
+    expression: Any,
+    operation: str,
+) -> str:
+    if operation == "checked_continue":
+        return "decoded_continue_without_target"
+    if not isinstance(expression, dict):
+        return "missing_target_expression"
+    expression_op = expression.get("op")
+    if expression_op == "constant":
+        return "constant_code_address"
+    if expression_op == "input_reg":
+        return "register_word_without_producer_certificate"
+    if expression_op == "read32":
+        return _indirect_memory_address_provenance(expression.get("address"))
+    read_addresses = _collect_byte_read_addresses(expression)
+    if read_addresses:
+        address_classes = {
+            _indirect_memory_address_provenance(address)
+            for address in read_addresses
+        }
+        if len(address_classes) == 1:
+            return "assembled_" + next(iter(address_classes))
+        return "assembled_mixed_memory_words"
+    return "computed_word_without_producer_certificate"
+
+
+def _indirect_memory_address_provenance(expression: Any) -> str:
+    if not isinstance(expression, dict):
+        return "memory_word_with_unknown_address"
+    if expression.get("op") == "constant":
+        return "static_word_without_immutability_certificate"
+    if expression.get("op") != "add":
+        return "memory_word_with_computed_address"
+    left = expression.get("left")
+    right = expression.get("right")
+    operands = [item for item in (left, right) if isinstance(item, dict)]
+    registers = {
+        str(item.get("reg"))
+        for item in operands
+        if item.get("op") == "input_reg"
+    }
+    if registers.intersection({"esp", "ebp"}):
+        return "stack_word_without_code_pointer_producer"
+    if any(item.get("op") == "shift_left" for item in operands):
+        return "indexed_static_word_without_finite_table_certificate"
+    if registers:
+        return "dynamic_memory_word_without_typed_range"
+    return "memory_word_with_computed_address"
+
+
+def _collect_byte_read_addresses(expression: Any) -> list[dict[str, Any]]:
+    if not isinstance(expression, dict):
+        return []
+    if expression.get("op") in {"read8", "read8_after_write"}:
+        address = expression.get("address")
+        return [address] if isinstance(address, dict) else []
+    result: list[dict[str, Any]] = []
+    for value in expression.values():
+        if isinstance(value, dict):
+            result.extend(_collect_byte_read_addresses(value))
     return result
 
 def _dynamic_range_indirect_call_shape(

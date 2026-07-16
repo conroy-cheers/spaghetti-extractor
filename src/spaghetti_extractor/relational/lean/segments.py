@@ -57,6 +57,7 @@ from .expressions import (
     _lean_stack_window_argument_claim,
     _lean_stack_window_transfer_claim,
     _lean_static_dynamic_pointer_slot,
+    _lean_static_word_relation_slot,
     _lean_successor_tautology_proof,
     _lean_symbolic_x87_state,
 )
@@ -2019,6 +2020,20 @@ def _write_relational_segment_refinement_modules(
                             "    (by decide) (by decide) originalState candidateState related"
                         )
                 guard_claim = candidate.get("guard_relation_claim")
+                candidate_outcome_condition_name = (
+                    f"region{source_index}OutcomeCondition"
+                )
+                candidate_outcome = behaviors[source_index]["candidate_ir"].get(
+                    "outcome"
+                ) or {}
+                if guard_claim is not None and candidate_outcome.get("op") == "branch":
+                    candidate_outcome_condition_name = (
+                        f"{prefix}CandidateOutcomeCondition"
+                    )
+                    import_claim_definitions.append(
+                        f"def {candidate_outcome_condition_name} : BoolExpr := "
+                        f"{_lean_semantic_bool_expr(candidate_outcome['condition'])}"
+                    )
                 if (
                     guard_claim is not None
                     and guard_claim["profile"] == "related_word_zero_guard_v1"
@@ -2071,6 +2086,19 @@ def _write_relational_segment_refinement_modules(
                         f"def {guard_claim_name} : StaticDynamicPointerGuardClaim := {{\n"
                         f"  slot := {_lean_static_dynamic_pointer_slot(guard_claim['slot'])}\n"
                         f"  kind := .{guard_claim['kind']}\n"
+                        "}"
+                    )
+                if (
+                    guard_claim is not None
+                    and guard_claim["profile"] == "static_word_zero_guard_v1"
+                ):
+                    import_claim_definitions.append(
+                        f"def {guard_claim_name} : StaticWordZeroGuardClaim := {{\n"
+                        f"  slot := {_lean_static_word_relation_slot(guard_claim['slot'])}\n"
+                        f"  originalAddress := {int(guard_claim['original_address'])}\n"
+                        f"  candidateAddress := {int(guard_claim['candidate_address'])}\n"
+                        f"  masked := {'true' if guard_claim['masked'] else 'false'}\n"
+                        f"  notCount := {int(guard_claim['not_count'])}\n"
                         "}"
                     )
                 if (
@@ -2171,6 +2199,15 @@ def _write_relational_segment_refinement_modules(
                         f"{guard_claim_name} (by decide)\n"
                         "    originalState candidateState related\n"
                     )
+                elif guard_claim["profile"] == "static_word_zero_guard_v1":
+                    guard_agreement_setup = (
+                        "  have guardAgreement := "
+                        "staticWordZeroGuard_eval_equal_of_checked\n"
+                        f"    staticProofContext world region{source_index}.inputInvariant\n"
+                        f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
+                        f"{guard_claim_name} (by decide)\n"
+                        "    originalState candidateState related\n"
+                    )
                 else:
                     dynamic_guard_claim_name = (
                         f"{prefix}DynamicClaim{int(guard_claim['claim_index'])}"
@@ -2215,10 +2252,10 @@ def _write_relational_segment_refinement_modules(
                         f"region{source_index}OutcomeCondition {edge_name}.originalGuard "
                         f"{guard_expected} originalState (by decide) guard\n"
                         "  have candidateCondition : "
-                        f"region{source_index}OutcomeCondition.eval candidateState = "
+                        f"{candidate_outcome_condition_name}.eval candidateState = "
                         f"{guard_expected} := by\n"
                         "    exact normalizedBranchCondition_eval_of_guard_true "
-                        f"region{source_index}OutcomeCondition {edge_name}.candidateGuard "
+                        f"{candidate_outcome_condition_name} {edge_name}.candidateGuard "
                         f"{guard_expected} candidateState (by decide) candidateGuard\n"
                     )
                     guard_shape_finish = (
@@ -2730,7 +2767,8 @@ def _write_relational_segment_refinement_modules(
                         f"{normalized_shape_rewrites}, evalNormalizedWrites,\n"
                         f"    originalBehavior{source_index}, candidateBehavior{source_index},\n"
                         + ("" if guard_claim is None else
-                           f"region{source_index}OutcomeCondition, ")
+                           f"region{source_index}OutcomeCondition, "
+                           f"{candidate_outcome_condition_name}, ")
                         + "NormalizedOutcomeExpr.eval,\n"
                         f"    {prepared_claim_name}, "
                         "PairedPreparedWordWritesClaim.originalWrites,\n"
@@ -2890,7 +2928,8 @@ def _write_relational_segment_refinement_modules(
                         f"{normalized_shape_rewrites}, evalNormalizedWrites,\n"
                         f"    originalBehavior{source_index}, candidateBehavior{source_index},\n"
                         + ("" if guard_claim is None else
-                           f"region{source_index}OutcomeCondition, ")
+                           f"region{source_index}OutcomeCondition, "
+                           f"{candidate_outcome_condition_name}, ")
                         + "NormalizedOutcomeExpr.eval,\n"
                         f"    {stack_claim_name}, PairedStackWordWriteClaim.originalAddress,\n"
                         "    PairedStackWordWriteClaim.candidateAddress, "
@@ -2945,7 +2984,8 @@ def _write_relational_segment_refinement_modules(
                         f"{normalized_shape_rewrites}, evalNormalizedWrites,\n"
                         f"    originalBehavior{source_index}, candidateBehavior{source_index},\n"
                         + ("" if guard_claim is None else
-                           f"region{source_index}OutcomeCondition, ")
+                           f"region{source_index}OutcomeCondition, "
+                           f"{candidate_outcome_condition_name}, ")
                         + "NormalizedOutcomeExpr.eval,\n"
                         f"    {stack_claim_name}, "
                         "PairedStackWordWritesClaim.originalWrites,\n"
@@ -3087,7 +3127,8 @@ def _write_relational_segment_refinement_modules(
                         )
                         + "    evalNormalizedWrites,\n"
                         + ("" if guard_claim is None else
-                           f"    region{source_index}OutcomeCondition,\n")
+                           f"    region{source_index}OutcomeCondition,\n"
+                           f"    {candidate_outcome_condition_name},\n")
                         + f"    NormalizedOutcomeExpr.eval, {edge_name}, "
                         "PureOutcome.segmentExitFor, PureOutcome.segmentExit, "
                         "outcomesRelated]"

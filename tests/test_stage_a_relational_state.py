@@ -720,6 +720,7 @@ class StageARelationalStateTests(StageARelationalTestBase):
                 "import": {
                     "dll": "kernel32.dll", "symbol": "EnterCriticalSection",
                 },
+                "stack_argument_offsets": [0],
                 "stack_result_delta": 4,
             }],
             "regions": [
@@ -731,7 +732,11 @@ class StageARelationalStateTests(StageARelationalTestBase):
                  "address_separations": []},
             ],
         }
-        call_outcome = {"op": "external_call", "import": imported}
+        call_outcome = {
+            "op": "external_call",
+            "import": imported,
+            "arguments": [{"op": "constant", "value": 1}],
+        }
         behaviors = [
             {
                 "original_ir": {

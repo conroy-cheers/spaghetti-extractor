@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -55,7 +54,82 @@ def _relational_nix_build_command(
             "--max-jobs", "0", "--cores", "2",
             "--builders", f"@{builders_file}",
         ]
+        command[10:10] = ["--option", "builders-use-substitutes", "true"]
     return command
+
+
+def _relational_node_closure(
+    graph: dict[str, Any], target_nodes: list[str]
+) -> set[str]:
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    closure: set[str] = set()
+
+    def include(node_id: str) -> None:
+        if node_id in closure:
+            return
+        closure.add(node_id)
+        for dependency in nodes[node_id]["dependencies"]:
+            include(dependency)
+
+    for target_node in target_nodes:
+        include(target_node)
+    return closure
+
+
+def _relational_nix_expression(
+    *,
+    prepared: Path,
+    graph: dict[str, Any],
+    evaluator: Path,
+    flake_root: Path,
+    target_node: str | None,
+    target_nodes: list[str],
+) -> tuple[str, dict[str, Any] | None]:
+    requested_target_nodes = ([target_node] if target_node is not None else []) + list(
+        target_nodes
+    )
+    focused_input: dict[str, Any] | None = None
+    if requested_target_nodes:
+        closure = _relational_node_closure(graph, requested_target_nodes)
+        modules = sorted({
+            module
+            for node in graph["nodes"]
+            if node["id"] in closure
+            for module in node["modules"]
+        })
+        focused_input = {
+            "nodes": len(closure),
+            "modules": len(modules),
+            "source_bytes": sum(
+                (prepared / graph["modules"][module]["source"]).stat().st_size
+                for module in modules
+            ),
+        }
+
+    locked_nixpkgs = _locked_flake_input(flake_root / "flake.lock", "nixpkgs")
+    return "\n".join([
+        "let",
+        f"  nixpkgs = builtins.fetchTree (builtins.fromJSON {json.dumps(json.dumps(locked_nixpkgs, sort_keys=True))});",
+        "  pkgs = import nixpkgs { system = builtins.currentSystem; };",
+        "  graphFile = builtins.path {",
+        f"    path = builtins.toPath {json.dumps(str(prepared / 'module-graph.json'))};",
+        '    name = "stage-a-module-graph.json";',
+        "  };",
+        "  preparedManifest = builtins.path {",
+        f"    path = builtins.toPath {json.dumps(str(prepared / 'prepared-proof.json'))};",
+        '    name = "stage-a-prepared-proof.json";',
+        "  };",
+        f"  sourceRoot = builtins.toPath {json.dumps(str(prepared))};",
+        "  targetNode = " + (
+            "null" if target_node is None else json.dumps(target_node)
+        ) + ";",
+        "  targetNodes = [ "
+        + " ".join(json.dumps(node) for node in requested_target_nodes)
+        + " ];",
+        f"in import (builtins.toPath {json.dumps(str(evaluator))}) {{",
+        "  inherit pkgs graphFile preparedManifest sourceRoot targetNode targetNodes;",
+        "}",
+    ]), focused_input
 
 
 def stage_a_build_relational(
@@ -112,64 +186,14 @@ def stage_a_build_relational(
 
     evaluator = _relational_nix_evaluator()
     flake_root = _find_relational_flake_root(flake)
-
-    focused_prepared: tempfile.TemporaryDirectory[str] | None = None
-    nix_prepared = prepared
-    focused_input: dict[str, Any] | None = None
-    if requested_target_nodes:
-        focused_prepared = tempfile.TemporaryDirectory(
-            prefix="stage-a-relational-node-input-"
-        )
-        nix_prepared = Path(focused_prepared.name)
-        (nix_prepared / "lean" / "StageA").mkdir(parents=True)
-        shutil.copyfile(
-            prepared / "module-graph.json", nix_prepared / "module-graph.json"
-        )
-        nodes = {node["id"]: node for node in graph["nodes"]}
-        closure: set[str] = set()
-
-        def include(node_id: str) -> None:
-            if node_id in closure:
-                return
-            closure.add(node_id)
-            for dependency in nodes[node_id]["dependencies"]:
-                include(dependency)
-
-        for requested_target_node in requested_target_nodes:
-            include(requested_target_node)
-        modules = sorted({
-            module
-            for node_id in closure
-            for module in nodes[node_id]["modules"]
-        })
-        source_bytes = 0
-        for module in modules:
-            metadata = graph["modules"][module]
-            source = prepared / metadata["source"]
-            destination = nix_prepared / metadata["source"]
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
-            source_bytes += source.stat().st_size
-        focused_input = {
-            "nodes": len(closure),
-            "modules": len(modules),
-            "source_bytes": source_bytes,
-        }
-
-    locked_nixpkgs = _locked_flake_input(flake_root / "flake.lock", "nixpkgs")
-    expression = "\n".join([
-        "let",
-        f"  nixpkgs = builtins.fetchTree (builtins.fromJSON {json.dumps(json.dumps(locked_nixpkgs, sort_keys=True))});",
-        "  pkgs = import nixpkgs { system = builtins.currentSystem; };",
-        f"  prepared = builtins.path {{ path = builtins.toPath {json.dumps(str(nix_prepared))}; name = \"stage-a-prepared-proof\"; }};",
-        "  targetNode = " + (
-            "null" if target_node is None else json.dumps(target_node)
-        ) + ";",
-        "  targetNodes = [ "
-        + " ".join(json.dumps(node) for node in requested_target_nodes)
-        + " ];",
-        f"in import (builtins.toPath {json.dumps(str(evaluator))}) {{ inherit pkgs prepared targetNode targetNodes; }}",
-    ])
+    expression, focused_input = _relational_nix_expression(
+        prepared=prepared,
+        graph=graph,
+        evaluator=evaluator,
+        flake_root=flake_root,
+        target_node=target_node,
+        target_nodes=list(target_nodes or []),
+    )
     builders_path: Path | None = None
     if builders_file is not None:
         builders_path = Path(builders_file).resolve()
@@ -184,8 +208,6 @@ def stage_a_build_relational(
         stderr=subprocess.PIPE,
         check=False,
     )
-    if focused_prepared is not None:
-        focused_prepared.cleanup()
     elapsed = round(time.monotonic() - started, 3)
     if process.returncode != 0:
         _remove_relational_build_output(out)

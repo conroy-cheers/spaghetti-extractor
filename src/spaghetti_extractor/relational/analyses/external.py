@@ -376,6 +376,36 @@ def _external_argument_relation_claims(
     return claims, None
 
 
+def _machine_call_argument_count_blocker(
+    machine_contract: dict[str, Any],
+    original_arguments: Any,
+    candidate_arguments: Any,
+) -> str | None:
+    """Reject call proposals whose recovered ABI arguments are incomplete.
+
+    Argument recovery is proposal logic, but allowing a site with fewer words
+    than its selected machine contract would make the early diagnostics disagree
+    with Lean's contract-aware decoder. Keep the proposal fail-closed and report
+    the selected contract's exact machine-word count.
+    """
+    expected = len(machine_contract.get("stack_argument_offsets", []))
+    if not isinstance(original_arguments, list) or not isinstance(
+        candidate_arguments, list
+    ):
+        return (
+            f"machine import contract expects {expected} argument words, but "
+            "the external arguments were not recovered as expression lists"
+        )
+    original_count = len(original_arguments)
+    candidate_count = len(candidate_arguments)
+    if original_count != expected or candidate_count != expected:
+        return (
+            f"machine import contract expects {expected} argument words; "
+            f"recovered {original_count} original and {candidate_count} candidate"
+        )
+    return None
+
+
 def _direct_import_thunk_call_candidates(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
@@ -641,10 +671,16 @@ def _direct_import_thunk_call_candidates(
 
         argument_claims = None
         if blocker is None:
+            blocker = _machine_call_argument_count_blocker(
+                machine_contract,
+                original_outcome.get("arguments"),
+                candidate_outcome.get("arguments"),
+            )
+        if blocker is None:
             argument_claims, blocker = _external_argument_relation_claims(
                 source,
-                original_outcome.get("arguments", []),
-                candidate_outcome.get("arguments", []),
+                original_outcome.get("arguments"),
+                candidate_outcome.get("arguments"),
             )
 
         boundary_windows = [
@@ -872,13 +908,21 @@ def _external_call_site_candidates(
             elif original.get("x87") != candidate.get("x87"):
                 blocker = "external call setup has differing x87 transformations"
             else:
-                argument_claims, argument_blocker = _external_argument_relation_claims(
-                    source,
-                    original_outcome.get("arguments", []),
-                    candidate_outcome.get("arguments", []),
+                blocker = _machine_call_argument_count_blocker(
+                    machine_contract,
+                    original_outcome.get("arguments"),
+                    candidate_outcome.get("arguments"),
                 )
-                if argument_blocker is not None:
-                    blocker = argument_blocker
+                if blocker is None:
+                    argument_claims, argument_blocker = (
+                        _external_argument_relation_claims(
+                            source,
+                            original_outcome.get("arguments"),
+                            candidate_outcome.get("arguments"),
+                        )
+                    )
+                    if argument_blocker is not None:
+                        blocker = argument_blocker
 
         boundary_windows: list[dict[str, Any]] = []
         if blocker is None:

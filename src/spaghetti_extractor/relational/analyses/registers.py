@@ -191,6 +191,11 @@ def _infer_register_output_relation(
     )
     if constant_relation is not None:
         return constant_relation, "paired_constant"
+    static_slot = _matching_static_word_relation_slot(
+        original_expression, candidate_expression, contract,
+    )
+    if static_slot is not None:
+        return str(static_slot["relation"]), "static_word_slot"
     original_address = _constant_read32_address(original_expression)
     candidate_address = _constant_read32_address(candidate_expression)
     if (
@@ -229,6 +234,25 @@ def _infer_register_output_relation(
         ):
             return "exact", "lean_exact_memory_expression"
     return "related_word", "unsupported_or_mixed_relation"
+
+
+def _matching_static_word_relation_slot(
+    original_expression: dict[str, Any],
+    candidate_expression: dict[str, Any],
+    contract: dict[str, Any],
+) -> dict[str, Any] | None:
+    original_address = _constant_read32_address(original_expression)
+    candidate_address = _constant_read32_address(candidate_expression)
+    if original_address is None or candidate_address is None:
+        return None
+    matches = [
+        slot
+        for slot in contract.get("static_word_relation_slots", [])
+        if int(slot.get("original_address", -1)) == original_address
+        and int(slot.get("candidate_address", -1)) == candidate_address
+        and str(slot.get("relation")) in _REGISTER_RELATION_KINDS
+    ]
+    return dict(matches[0]) if len(matches) == 1 else None
 
 def _iat_seed_read(
     expression: dict[str, Any],
@@ -1031,6 +1055,7 @@ def _synthesize_register_relations(
                 and original_expression == candidate_expression
                 and reason not in {
                     "lean_exact_memory_expression", "immutable_image_word",
+                    "static_word_slot",
                 }
             ):
                 claims.append({

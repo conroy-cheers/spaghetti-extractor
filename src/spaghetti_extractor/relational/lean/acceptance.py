@@ -3765,6 +3765,9 @@ def _lean_acceptance_running_node(
         edge_id = int(edge["edge_id"])
         target_region_index = int(edge["target_region_index"])
         condition_literal = "true" if condition else "false"
+        candidate_condition_name = (
+            f"segmentRefinementEdge{edge_id}CandidateOutcomeCondition"
+        )
         if _normalized_behavior_fast_path(
             regions[region_index], behaviors[region_index]
         ):
@@ -3831,10 +3834,10 @@ def _lean_acceptance_running_node(
             "        candidateState = true := by\n"
             f"      rw [← transition{edge_id}.1]\n"
             "      exact originalGuard\n"
-            f"    have candidateCondition : region{region_index}OutcomeCondition.eval\n"
+            f"    have candidateCondition : {candidate_condition_name}.eval\n"
             f"        candidateState = {condition_literal} := by\n"
             "      exact normalizedBranchCondition_eval_of_guard_true\n"
-            f"        region{region_index}OutcomeCondition\n"
+            f"        {candidate_condition_name}\n"
             f"        segmentRefinementEdge{edge_id}Spec.candidateGuard\n"
             f"        {condition_literal} candidateState (by decide) candidateGuard\n"
             f"    have transitioned := transition{edge_id}.2 originalGuard\n"
@@ -3848,7 +3851,8 @@ def _lean_acceptance_running_node(
             "        transitioned.2.2.2\n"
             + stack_proof
             + "\n"
-            f"    simp only [region{region_index}OutcomeCondition] at "
+            f"    simp only [region{region_index}OutcomeCondition, "
+            f"{candidate_condition_name}] at "
             "originalCondition candidateCondition\n"
             "    simp [originalCondition, candidateCondition]\n"
             + target_proof

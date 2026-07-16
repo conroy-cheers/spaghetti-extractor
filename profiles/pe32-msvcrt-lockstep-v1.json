@@ -155,6 +155,36 @@
       "memory_effect": "newDynamicRanges",
       "memory_footprints": [],
       "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 10,
+      "import": {"dll": "msvcrt.dll", "symbol": "memcpy"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 3,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "related_word"
+        }
+      ],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {
+          "access": "write",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "nullable": false
+        },
+        {
+          "access": "read",
+          "base_argument": 1,
+          "offset": 0,
+          "size": {"kind": "argument", "argument": 2, "scale": 1},
+          "nullable": false
+        }
+      ],
+      "world_effect": "none"
     }
   ]
 }

@@ -5616,6 +5616,66 @@ theorem stackWordZeroRelativeGuard_eval_equal_of_checked
       simpa only [addressWordZeroGuard, BoolExpr.eval, Expr.eval, if_true,
         machineStateRead32_eq_memoryRead32, BitVec.and_self] using zeroEqual
 
+structure StaticWordZeroGuardClaim where
+  slot : StaticWordRelationSlotPair
+  originalAddress : Nat
+  candidateAddress : Nat
+  masked : Bool
+  notCount : Nat
+deriving Repr, DecidableEq
+
+def StaticWordZeroGuardClaim.checked (context : StaticProofContext)
+    (originalGuard candidateGuard : BoolExpr)
+    (claim : StaticWordZeroGuardClaim) : Bool :=
+  context.staticWordRelationSlots.contains claim.slot &&
+    claim.slot.originalAddress == BitVec.ofNat 32 claim.originalAddress &&
+    claim.slot.candidateAddress == BitVec.ofNat 32 claim.candidateAddress &&
+    (claim.slot.relation == .exact || claim.slot.relation == .relatedWord) &&
+    originalGuard == addressWordZeroGuardWithNots
+      (.constant claim.originalAddress) claim.masked claim.notCount &&
+    candidateGuard == addressWordZeroGuardWithNots
+      (.constant claim.candidateAddress) claim.masked claim.notCount
+
+theorem staticWordZeroGuard_eval_equal_of_checked
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant) (originalGuard candidateGuard : BoolExpr)
+    (claim : StaticWordZeroGuardClaim)
+    (checked : claim.checked context originalGuard candidateGuard = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    originalGuard.eval originalState = candidateGuard.eval candidateState := by
+  simp only [StaticWordZeroGuardClaim.checked, Bool.and_eq_true,
+    Bool.or_eq_true, beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨⟨slotMember, originalAddress⟩, candidateAddress⟩,
+      supportedRelation⟩, originalGuardExact⟩, candidateGuardExact⟩
+  have slotsHold := related.staticWordRelationSlotsMemoryHold context world
+    sourceInvariant originalState candidateState
+  have slotHolds := slotsHold claim.slot (List.contains_iff_mem.mp slotMember)
+  simp only [StaticWordRelationSlotPair.memoryHolds] at slotHolds
+  have compatible : InvariantWP.staticWordRelationSupportsRegisterValueRelation
+      claim.slot.relation .relatedWord = true := by
+    rcases supportedRelation with exactRelation | relatedRelation
+    · rw [exactRelation]
+      decide
+    · rw [relatedRelation]
+      decide
+  have readsRelated :=
+    InvariantWP.StaticWordRelationKind.registerValueRelation_holds_of_holds context world
+      claim.slot.relation .relatedWord _ _ compatible slotHolds
+  simp only [RegisterValueRelation.holds] at readsRelated
+  rw [originalAddress, candidateAddress] at readsRelated
+  have zeroEqual := wordRelated_zero_equal readsRelated
+  rw [originalGuardExact, candidateGuardExact]
+  apply applyBoolNots_eval_equal claim.notCount
+  cases claim.masked with
+  | false =>
+      simpa only [addressWordZeroGuard, BoolExpr.eval, Expr.eval, if_false,
+        machineStateRead32_eq_memoryRead32] using zeroEqual
+  | true =>
+      simpa only [addressWordZeroGuard, BoolExpr.eval, Expr.eval, if_true,
+        machineStateRead32_eq_memoryRead32, BitVec.and_self] using zeroEqual
+
 theorem relatedWordZeroGuard_base_eval_of_true
     (register : Reg) (negated : Bool) (state : MachineState)
     (guardTrue : (relatedWordZeroGuard register negated).eval state = true) :

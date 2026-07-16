@@ -1,11 +1,74 @@
-{ pkgs, prepared, targetNode ? null, targetNodes ? [] }:
+{ pkgs
+, prepared ? null
+, graphFile ? null
+, preparedManifest ? null
+, sourceRoot ? prepared
+, standaloneSourceRoot ? null
+, standaloneModules ? []
+, targetNode ? null
+, targetNodes ? []
+, targetBundle ? false
+}:
 
 let
   lib = pkgs.lib;
-  graph = builtins.fromJSON (builtins.readFile (prepared + "/module-graph.json"));
+  standalone = standaloneSourceRoot != null;
+  standaloneSource = module: standaloneSourceRoot + "/${module}.lean";
+  standaloneImports = module:
+    lib.filter (dependency: dependency != null) (map
+      (line:
+        let matched = builtins.match
+          "^import StageA\\.([A-Za-z0-9_]+)$" line;
+        in if matched == null then null else builtins.head matched)
+      (lib.splitString "\n" (builtins.readFile (standaloneSource module))));
+  standaloneModuleSet = builtins.listToAttrs (map (module: {
+    name = module;
+    value = true;
+  }) standaloneModules);
+  standaloneImportsValid = builtins.all (module:
+    builtins.all (dependency: builtins.hasAttr dependency standaloneModuleSet)
+      (standaloneImports module)
+  ) standaloneModules;
+  standaloneGraph = {
+    format = "stage-a-lean-module-graph-v1";
+    lean.trust = 0;
+    modules = builtins.listToAttrs (map (module:
+      let sourceSha256 = builtins.hashFile "sha256" (standaloneSource module);
+      in {
+        name = module;
+        value = {
+          source = "${module}.lean";
+          source_sha256 = sourceSha256;
+          imports = standaloneImports module;
+        };
+      }
+    ) standaloneModules);
+    nodes = map (module:
+      let sourceSha256 = builtins.hashFile "sha256" (standaloneSource module);
+      in {
+        id = module;
+        modules = [ module ];
+        dependencies = standaloneImports module;
+        resource_class = "light";
+        estimated_memory_mb = 512;
+        source_sha256 = builtins.hashString "sha256" sourceSha256;
+      }
+    ) standaloneModules;
+  };
+  effectiveGraphFile =
+    if graphFile != null then graphFile
+    else if prepared != null then prepared + "/module-graph.json"
+    else null;
+  effectivePreparedManifest =
+    if preparedManifest != null then preparedManifest
+    else if prepared != null then prepared + "/prepared-proof.json"
+    else null;
+  graph = if standalone then standaloneGraph else
+    builtins.fromJSON (builtins.readFile effectiveGraphFile);
   moduleSources = lib.mapAttrs (module: metadata:
     builtins.path {
-      path = prepared + "/${metadata.source}";
+      path = (if standalone then standaloneSourceRoot else sourceRoot)
+        + "/${metadata.source}";
       name = "stage-a-${module}.lean";
     }
   ) graph.modules;
@@ -230,13 +293,71 @@ let
         cp "${source}/module-result.json" "$out/module-result.json"
       ''
   ) selectedTargetNodes;
+  selectedTargetPaths = map (node: nodeDrvs.${node}) selectedTargetNodes;
+  selectedTargetArgs = lib.escapeShellArgs (map toString selectedTargetPaths);
+  selectedTargetBundle = pkgs.runCommand "stage-a-lean-target-bundle"
+    {
+      nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.coreutils ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+    }
+    ''
+      mkdir -p "$out/StageA" "$out/node-results"
+      node_index=0
+      for source in ${selectedTargetArgs}; do
+        for source_file in "$source"/StageA/*.lean "$source"/StageA/*.olean; do
+          destination="$out/StageA/$(basename "$source_file")"
+          if [ -e "$destination" ] && ! cmp -s "$destination" "$source_file"; then
+            echo "conflicting target-bundle module: $(basename "$source_file")" >&2
+            exit 1
+          fi
+          cp -L "$source_file" "$destination"
+        done
+        result_name="$(printf '%06d.json' "$node_index")"
+        cp "$source/module-result.json" "$out/node-results/$result_name"
+        node_index=$((node_index + 1))
+      done
+      lean_version="$(lean --version | head -n 1)"
+      python3 - "$out/node-results" "$out/bundle.json" "$lean_version" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      source = pathlib.Path(sys.argv[1])
+      nodes = [
+          json.loads(path.read_text(encoding="utf-8"))
+          for path in sorted(source.glob("*.json"))
+      ]
+      node_ids = [node.get("id") for node in nodes]
+      if len(node_ids) != len(set(node_ids)):
+          raise SystemExit("target bundle contains duplicate node provenance")
+      pathlib.Path(sys.argv[2]).write_text(
+          json.dumps({
+              "format": "stage-a-lean-target-bundle-v1",
+              "lean_trust": 0,
+              "lean_version": sys.argv[3],
+              "nodes": nodes,
+          }, indent=2, sort_keys=True) + "\n",
+          encoding="utf-8",
+      )
+      PY
+    '';
 in
 assert graph.format == "stage-a-lean-module-graph-v1";
 assert graph.lean.trust == 0;
 assert builtins.length graph.nodes > 0;
+assert !standalone || (standaloneModules != [] && standaloneImportsValid);
+assert !standalone
+  || builtins.length standaloneModules
+    == builtins.length (lib.unique standaloneModules);
+assert standalone || (effectiveGraphFile != null && sourceRoot != null);
+assert builtins.length selectedTargetNodes
+  == builtins.length (lib.unique selectedTargetNodes);
 assert builtins.all (node: builtins.hasAttr node nodeDrvs) selectedTargetNodes;
 assert selectedTargetNodes != [] || acceptanceReady;
-if selectedTargetNodes != [] then selectedNodeResults else
+if selectedTargetNodes != [] then
+  if targetBundle then selectedTargetBundle else selectedNodeResults
+else
 pkgs.runCommand "stage-a-relational-proof-audit"
   {
     nativeBuildInputs = [ pkgs.lean4 pkgs.python3 pkgs.gnutar pkgs.zstd pkgs.coreutils ];
@@ -352,6 +473,6 @@ pkgs.runCommand "stage-a-relational-proof-audit"
     )
     PY
     cp ${rootDependencyPack}/pack.json "$out/dependency-pack.json"
-    cp "${prepared}/module-graph.json" "$out/module-graph.json"
-    cp "${prepared}/prepared-proof.json" "$out/prepared-proof.json"
+    cp "${effectiveGraphFile}" "$out/module-graph.json"
+    cp "${effectivePreparedManifest}" "$out/prepared-proof.json"
   ''

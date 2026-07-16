@@ -1376,6 +1376,10 @@ def _segment_refinement_candidates(
             edge.get("candidate_guard") or {},
             original_bin,
             candidate_bin,
+        ) or _static_word_zero_guard_claim(
+            contract,
+            edge.get("original_guard") or {},
+            edge.get("candidate_guard") or {},
         ) or _paired_exact_guard_claim(
             contract,
             source,
@@ -3010,6 +3014,69 @@ def _related_word_zero_guard_claim(
         "candidate_register": candidate[0],
         "value_relation": relation["relation"],
         "not_count": original[1],
+    }
+
+
+def _static_word_zero_guard_claim(
+    contract: dict[str, Any],
+    original_guard: dict[str, Any],
+    candidate_guard: dict[str, Any],
+) -> dict[str, Any] | None:
+    def parse(expression: dict[str, Any]) -> tuple[int, bool, int] | None:
+        not_count = 0
+        while expression.get("op") == "not":
+            not_count += 1
+            expression = expression.get("value") or {}
+        if expression.get("op") != "equal":
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if right.get("op") == "constant" and int(right.get("value", -1)) == 0:
+            word = left
+        elif left.get("op") == "constant" and int(left.get("value", -1)) == 0:
+            word = right
+        else:
+            return None
+        masked = (
+            word.get("op") == "bit_and"
+            and word.get("left") == word.get("right")
+        )
+        if masked:
+            word = word.get("left") or {}
+        if word.get("op") != "read32":
+            return None
+        address = word.get("address") or {}
+        if address.get("op") != "constant":
+            return None
+        value = int(address.get("value", -1))
+        if value < 0 or value >= 2**32:
+            return None
+        return value, masked, not_count
+
+    original = parse(original_guard)
+    candidate = parse(candidate_guard)
+    if (
+        original is None
+        or candidate is None
+        or original[1:] != candidate[1:]
+    ):
+        return None
+    matches = [
+        slot
+        for slot in contract.get("static_word_relation_slots", [])
+        if int(slot.get("original_address", -1)) == original[0]
+        and int(slot.get("candidate_address", -1)) == candidate[0]
+        and str(slot.get("relation")) in {"exact", "related_word"}
+    ]
+    if len(matches) != 1:
+        return None
+    return {
+        "profile": "static_word_zero_guard_v1",
+        "slot": dict(matches[0]),
+        "original_address": original[0],
+        "candidate_address": candidate[0],
+        "masked": original[1],
+        "not_count": original[2],
     }
 
 def _paired_stack_guard_claim(

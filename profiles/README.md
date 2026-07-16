@@ -52,6 +52,15 @@ does not dispatch on the CRT symbol name. `malloc` and `calloc` use the same
 generic result relation with argument-derived allocation sizes. Their
 `newDynamicRanges` memory effect permits changes only in ranges newly added by
 the checked world transition and preserves all previously visible addresses.
+`memcpy` demonstrates the returning argument-range transfer family. Its three
+cdecl machine words are recovered from the thunk boundary, `EAX` must remain a
+related word, the source range is read-only, and writes are framed to the
+destination range with the third argument as the byte extent. This is not a C
+prototype in the proof core: the profile supplies only ABI words, machine-level
+footprints, result locations, and world effects. A site with a missing argument
+word is rejected before Lean generation, and Lean's contract-aware decoder
+independently reconstructs exactly the selected contract's argument count from
+the PE bytes.
 Object word shapes remain call-site invariants, rather than API-wide layouts;
 the paired environment and continuation `StateRel` must establish every shape
 that later code reads. The `free` contract

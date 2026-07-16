@@ -349,7 +349,11 @@ class StageARelationalContractTests(StageARelationalTestBase):
         self.assertEqual(graph["evidence"]["potential_control_cuts"], [{
             "node_id": 0,
             "operations": ["indirect_call"],
-            "reason": "unresolved_indirect_control_all_canonical_targets",
+            "reason": (
+                "unresolved_indirect_control_"
+                "register_word_without_producer_certificate"
+            ),
+            "provenance": ["register_word_without_producer_certificate"],
             "potential_target_count": 2,
             "target_scope": "all_canonical_code_targets",
         }])

@@ -436,44 +436,30 @@
             root = ./.;
             fileset = ./src/spaghetti_extractor/lean/StageA;
           };
-          stage-a-relational-kernel-cache = pkgs.runCommand
-            "stage-a-relational-kernel-cache"
-            {
-              nativeBuildInputs = [
-                pkgs.lean4
-              ];
-            }
-            ''
-              work="$TMPDIR/relational-kernel"
-              mkdir -p "$out/StageA" "$work"
-              cp -R ${relationalLeanSource}/src/spaghetti_extractor/lean/StageA \
-                "$work/StageA"
-              chmod -R u+w "$work/StageA"
-              cd "$work"
-              export LEAN_PATH=.
-              for module in \
-                Formal \
-                RelationalDecode \
-                RelationalMachine \
-                Relational \
-                RelationalInvariant \
-                RelationalExecution \
-                RelationalImage \
-                RelationalSegment \
-                RelationalComposition \
-                RelationalEnvironment \
-                RelationalCallbacks \
-                RelationalCertificates \
-                RelationalStaticTree
-              do
-                lean -o "StageA/$module.olean" "StageA/$module.lean"
-              done
-              cp StageA/*.lean StageA/*.olean "$out/StageA/"
-              printf '%s\n' \
-                'format=stage-a-relational-precompiled-kernel-v1' \
-                "lean=$(lean --version | head -n 1)" \
-                > "$out/kernel-build.txt"
-            '';
+          relationalKernelModules = [
+            "Formal"
+            "RelationalDecode"
+            "RelationalMachine"
+            "Relational"
+            "RelationalInvariant"
+            "RelationalExecution"
+            "RelationalImage"
+            "RelationalSegment"
+            "RelationalComposition"
+            "RelationalEnvironment"
+            "RelationalCallbacks"
+            "RelationalCertificates"
+            "RelationalStaticTree"
+          ];
+          stage-a-relational-kernel-cache =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              standaloneSourceRoot =
+                relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules = relationalKernelModules;
+              targetNodes = relationalKernelModules;
+              targetBundle = true;
+            };
           mkStageARelationalTest = name: module: testFiles:
             let
               usesLean =
@@ -561,6 +547,28 @@
               ./tests/contract_fixtures.py
               ./tests/pe_fixtures.py
             ];
+          stage-a-relational-tests-build-graph = mkStageARelationalTest
+            "build-graph"
+            "tests.test_stage_a_build_graph"
+            [
+              ./tests/test_stage_a_build_graph.py
+              ./flake.lock
+            ];
+          stage-a-relational-tests-static-word-relations = mkStageARelationalTest
+            "acceptance-static-word-relations"
+            "tests.test_stage_a_static_word_relations"
+            [ ./tests/test_stage_a_static_word_relations.py ];
+          stage-a-relational-tests-external-protocol = mkStageARelationalTest
+            "external-protocol"
+            "tests.test_stage_a_external_protocol"
+            [
+              ./tests/test_stage_a_external_protocol.py
+              ./profiles/pe32-msvcrt-lockstep-v1.json
+            ];
+          stage-a-relational-tests-indirect-control = mkStageARelationalTest
+            "indirect-control"
+            "tests.test_stage_a_indirect_control"
+            [ ./tests/test_stage_a_indirect_control.py ];
           stageARelationalContractSuite = mkStageARelationalTestSuite
             "contract" "tests.test_stage_a_relational_contract"
             "StageARelationalContractTests" ./tests/test_stage_a_relational_contract.py;
@@ -589,6 +597,8 @@
           stage-a-relational-tests-contract-machine-import =
             stageARelationalContractSuite.cases.machine_import_call_contract_validation_fails_closed;
           stage-a-relational-tests-acceptance = stageARelationalAcceptanceSuite.aggregate;
+          stage-a-relational-tests-acceptance-whole-program-kernel =
+            stageARelationalAcceptanceSuite.cases.whole_program_equivalence_kernel_checks_without_sorry;
           stage-a-relational-tests-acceptance-nested-external =
             stageARelationalAcceptanceSuite.cases.nested_external_call_preserves_internal_runtime_frame_end_to_end;
           stage-a-relational-tests-acceptance-direct-stack-read =
@@ -637,6 +647,10 @@
             name = "stage-a-relational-tests";
             paths = [
               stage-a-relational-tests-schema
+              stage-a-relational-tests-build-graph
+              stage-a-relational-tests-static-word-relations
+              stage-a-relational-tests-external-protocol
+              stage-a-relational-tests-indirect-control
               stage-a-relational-tests-contract
               stage-a-relational-tests-state
               stage-a-relational-tests-pipeline
@@ -694,6 +708,10 @@
             stage-a-relational-kernel-cache
             stage-a-relational-tests
             stage-a-relational-tests-schema
+            stage-a-relational-tests-build-graph
+            stage-a-relational-tests-static-word-relations
+            stage-a-relational-tests-external-protocol
+            stage-a-relational-tests-indirect-control
             stage-a-relational-tests-contract
             stage-a-relational-tests-state
             stage-a-relational-tests-pipeline
@@ -703,11 +721,12 @@
             stage-a-relational-tests-lean-dynamic-range-result
             stage-a-relational-tests-contract-machine-import
             stage-a-relational-tests-acceptance
+            stage-a-relational-tests-acceptance-whole-program-kernel
             stage-a-relational-tests-acceptance-nested-external
-              stage-a-relational-tests-acceptance-direct-stack-read
-              stage-a-relational-tests-acceptance-below-frame-stack-read
-              stage-a-relational-tests-acceptance-below-frame-stack-guard
-              stage-a-relational-tests-acceptance-stack-base-related-word
+            stage-a-relational-tests-acceptance-direct-stack-read
+            stage-a-relational-tests-acceptance-below-frame-stack-read
+            stage-a-relational-tests-acceptance-below-frame-stack-guard
+            stage-a-relational-tests-acceptance-stack-base-related-word
             stage-a-relational-tests-state-dynamic-flow-call-boundary
             stage-a-relational-tests-acceptance-representative
             stage-a-relational-tests-acceptance-terminal-return

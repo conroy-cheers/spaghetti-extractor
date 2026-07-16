@@ -508,6 +508,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertIn("theorem pe32ProgramsEquivalent", source)
             self.assertIn("ProductStepRefinement", source)
+            self.assertIn("def PE32ConsoleLaunchWorldV1.Valid", source)
+            self.assertIn("structure PE32ConsoleLaunchStateRel", source)
+            self.assertIn("originalImageMapped : PreferredBaseImageMemory", source)
+            self.assertIn("candidateImageMapped : PreferredBaseImageMemory", source)
             self.assertNotIn("sorry", source)
             result = _run_lean_relational(
                 lean_dir, bundle="RelationalCertificates"
@@ -3051,24 +3055,26 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             }]
             contract.write_text(json.dumps(relation), encoding="utf-8")
 
-            incompatible = stage_a_prepare_relational(
+            related_result = stage_a_prepare_relational(
                 original=original,
                 candidate=candidate,
                 relation_contract=contract,
-                out=root / "incompatible",
+                out=root / "related",
             )
-            self.assertEqual(incompatible["acceptance"]["status"], "incomplete")
-            incompatible_relations = json.loads(
-                (root / "incompatible" / "relational-register-relations.json")
+            self.assertEqual(related_result["acceptance"]["status"], "ready")
+            related_relations = json.loads(
+                (root / "related" / "relational-register-relations.json")
                 .read_text(encoding="utf-8")
             )
-            self.assertNotIn(
-                "static_word_slot",
-                {
-                    claim["kind"]
-                    for region in incompatible_relations["regions"]
-                    for claim in region["output_claims"]
-                },
+            related_claims = [
+                claim
+                for region in related_relations["regions"]
+                for claim in region["output_claims"]
+                if claim["kind"] == "static_word_slot"
+            ]
+            self.assertEqual(len(related_claims), 1)
+            self.assertEqual(
+                related_claims[0]["output"]["relation"], "related_word"
             )
 
             relation["static_word_relation_slots"][0]["relation"] = "exact"
@@ -3211,10 +3217,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 )
             )
             self.assertEqual(
-                segment_source.count(": PairedExactGuardClaim"), 2
+                segment_source.count(": StaticWordZeroGuardClaim"), 2
             )
-            self.assertIn("PairedExactExprWitness.read32", segment_source)
-            self.assertIn("pairedExactGuard_eval_equal_of_checked", segment_source)
+            self.assertIn("relation := .exact", segment_source)
+            self.assertIn("staticWordZeroGuard_eval_equal_of_checked", segment_source)
             module_graph = json.loads(
                 (prepared / "module-graph.json").read_text(encoding="utf-8")
             )

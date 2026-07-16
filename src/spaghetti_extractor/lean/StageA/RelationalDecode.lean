@@ -93,6 +93,98 @@ structure ValueTargetPair where
   relocationOffsets : List Nat := []
 deriving Repr, DecidableEq
 
+def codeTargetNatAddressMatches (candidate : Bool) (pe : PE32)
+    (target : CodeTargetPair) (value : Nat) : Bool :=
+  let primary := if candidate then target.candidateRva else target.originalRva
+  let aliases := if candidate then target.candidateAliases else target.originalAliases
+  value == pe.imageBase + primary ||
+    aliases.any fun alias => value == pe.imageBase + alias.rva
+
+structure BoundedImmutableRelocationTableJumpClaim where
+  valueTargetId : Nat
+  tableOffset : Nat
+  originalBase : Nat
+  candidateBase : Nat
+  upperExclusive : Nat
+  originalIndex : Expr
+  candidateIndex : Expr
+  entryTargetIds : List Nat
+  finiteTargetIds : List Nat
+deriving Repr, DecidableEq
+
+def immutableCodeTargetEntryValid (candidate : Bool) (pe : PE32)
+    (target : CodeTargetPair) (address : Nat) : Bool :=
+  match readImmutableImageWord pe address 4 with
+  | none => false
+  | some value => codeTargetNatAddressMatches candidate pe target value
+
+def BoundedImmutableRelocationTableJumpClaim.entryValid
+    (originalPe candidatePe : PE32) (targets : List CodeTargetPair)
+    (claim : BoundedImmutableRelocationTableJumpClaim) (index : Nat) : Bool :=
+  match claim.entryTargetIds[index]? with
+  | none => false
+  | some targetId =>
+      match targets.find? (fun target => target.id == targetId) with
+      | none => false
+      | some target =>
+          claim.finiteTargetIds.contains targetId &&
+            immutableCodeTargetEntryValid false originalPe target
+              (claim.originalBase + index * 4) &&
+            immutableCodeTargetEntryValid true candidatePe target
+              (claim.candidateBase + index * 4) &&
+            claim.tableOffset + index * 4 < 2 ^ 32
+
+def BoundedImmutableRelocationTableJumpClaim.shapeChecked
+    (values : List ValueTargetPair)
+    (claim : BoundedImmutableRelocationTableJumpClaim) : Bool :=
+  match values.find? (fun value => value.id == claim.valueTargetId) with
+  | none => false
+  | some table =>
+      claim.upperExclusive > 0 &&
+        claim.entryTargetIds.length == claim.upperExclusive &&
+        table.originalValue + claim.tableOffset == claim.originalBase &&
+        table.candidateValue + claim.tableOffset == claim.candidateBase &&
+        decide (claim.tableOffset + claim.upperExclusive * 4 <= table.mappedSize) &&
+        (List.range claim.upperExclusive).all (fun index =>
+          table.relocationOffsets.contains (claim.tableOffset + index * 4)) &&
+        claim.finiteTargetIds.all (fun targetId =>
+          (claim.entryTargetIds.filter (· == targetId)).length > 0) &&
+        claim.entryTargetIds.all claim.finiteTargetIds.contains &&
+        claim.finiteTargetIds.all (fun targetId =>
+          (claim.finiteTargetIds.filter (· == targetId)).length == 1)
+
+def BoundedImmutableRelocationTableJumpClaim.entriesChecked
+    (originalPe candidatePe : PE32) (targets : List CodeTargetPair)
+    (claim : BoundedImmutableRelocationTableJumpClaim) : Bool :=
+  (List.range claim.upperExclusive).all
+    (claim.entryValid originalPe candidatePe targets)
+
+def BoundedImmutableRelocationTableJumpClaim.checked
+    (originalPe candidatePe : PE32) (targets : List CodeTargetPair)
+    (values : List ValueTargetPair)
+    (claim : BoundedImmutableRelocationTableJumpClaim) : Bool :=
+  claim.shapeChecked values &&
+    claim.entriesChecked originalPe candidatePe targets
+
+def BoundedImmutableRelocationTableJumpClaim.EntriesClosed
+    (originalPe candidatePe : PE32) (targets : List CodeTargetPair)
+    (claim : BoundedImmutableRelocationTableJumpClaim) : Prop :=
+  ∀ index, index < claim.upperExclusive ->
+    claim.entryValid originalPe candidatePe targets index = true
+
+theorem boundedImmutableRelocationTableJumpEntriesClosed_of_checked
+    (originalPe candidatePe : PE32) (targets : List CodeTargetPair)
+    (values : List ValueTargetPair)
+    (claim : BoundedImmutableRelocationTableJumpClaim)
+    (checked : claim.checked originalPe candidatePe targets values = true) :
+    claim.EntriesClosed originalPe candidatePe targets := by
+  unfold BoundedImmutableRelocationTableJumpClaim.checked at checked
+  simp only [Bool.and_eq_true] at checked
+  unfold BoundedImmutableRelocationTableJumpClaim.entriesChecked at checked
+  simp only [List.all_eq_true] at checked
+  intro index bounded
+  exact checked.2 index (List.mem_range.mpr bounded)
+
 def normalizeCodeTarget (candidate : Bool) (targets : List CodeTargetPair) (rva : Nat) : Option Nat :=
   (targets.find? fun target =>
     if candidate then target.candidateRva == rva || target.candidateAliases.any (·.rva == rva)
