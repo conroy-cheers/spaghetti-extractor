@@ -1639,6 +1639,7 @@ def _write_relational_segment_refinement_modules(
             theorem_name = f"{prefix}Checked"
             if candidate["certificate_profile"] in {
                 "composable_local_no_write_v1", "composable_direct_call_v1",
+                "composable_known_indirect_call_v1",
                 "composable_direct_call_prepared_writes_v1",
                 "composable_direct_call_stack_writes_v1",
                 "composable_immutable_indirect_jump_v1",
@@ -1649,13 +1650,18 @@ def _write_relational_segment_refinement_modules(
                 direct_call = (
                     candidate["certificate_profile"] == "composable_direct_call_v1"
                 )
+                known_indirect_call = candidate["certificate_profile"] in {
+                    "composable_known_indirect_call_v1",
+                }
                 direct_call_stack_writes = (
-                    candidate["certificate_profile"]
-                    == "composable_direct_call_stack_writes_v1"
+                    candidate["certificate_profile"] in {
+                        "composable_direct_call_stack_writes_v1",
+                    }
                 )
                 direct_call_prepared_writes = (
-                    candidate["certificate_profile"]
-                    == "composable_direct_call_prepared_writes_v1"
+                    candidate["certificate_profile"] in {
+                        "composable_direct_call_prepared_writes_v1",
+                    }
                 )
                 paired_stack_write = (
                     candidate["certificate_profile"]
@@ -1677,7 +1683,7 @@ def _write_relational_segment_refinement_modules(
                 normalized_fast_path = _normalized_behavior_fast_path(
                     contract["regions"][source_index], behaviors[source_index]
                 )
-                if immutable_indirect_jump:
+                if immutable_indirect_jump or known_indirect_call:
                     original_normalized_behavior = (
                         f"productNode{source_index}OriginalNormalized"
                     )
@@ -1695,7 +1701,11 @@ def _write_relational_segment_refinement_modules(
                         f"productNode{source_index}CandidateNormalizedX87"
                     )
                     normalized_register_rewrites = ""
-                    normalized_shape_rewrites = ""
+                    normalized_shape_rewrites = (
+                        f"productNode{source_index}OriginalNormalizedWrites, "
+                        f"productNode{source_index}CandidateNormalizedWrites"
+                        if known_indirect_call else ""
+                    )
                 elif normalized_fast_path:
                     original_normalized_behavior = (
                         f"region{source_index}NormalizedBehavior"
@@ -2672,7 +2682,7 @@ def _write_relational_segment_refinement_modules(
                         "(by decide) "
                         f"{shape_name} {state_name}"
                     )
-                elif direct_call:
+                elif direct_call or known_indirect_call:
                     source_window = _lean_stack_window(
                         candidate["source_stack_window"]
                     )
@@ -2681,6 +2691,81 @@ def _write_relational_segment_refinement_modules(
                     stack_amount = int(candidate["stack_amount"])
                     stack_amount_twos_complement = 2**32 - stack_amount
                     continuation_target = int(candidate["continuation_target_id"])
+                    indirect_target = int(candidate.get("callee_target_id", target_index))
+                    normalized_shape_simp = (
+                        f"{normalized_shape_rewrites}, "
+                        if normalized_shape_rewrites else ""
+                    )
+                    indirect_target_setup = (
+                        f"  rcases "
+                        f"productNode{source_index}ImmutableIndirectCallClosed world "
+                        "originalState candidateState related with\n"
+                        "    \u27e8originalTarget, candidateTarget, originalOutcome, "
+                        "candidateOutcome, originalTargetMatches, "
+                        "candidateTargetMatches\u27e9\n"
+                        "  have originalTargetResolved :\n"
+                        "      resolveMappedCodeTarget false "
+                        "staticProofContext.originalPe.imageBase "
+                        "staticProofContext.codeMap.entries.toList originalTarget = "
+                        f"some {indirect_target} := by\n"
+                        "    simpa using knownIndirectCodeTargetResolved "
+                        "staticProofContext "
+                        f"{indirect_target} false originalTarget (by decide) "
+                        "(by simpa using originalTargetMatches)\n"
+                        "  have candidateTargetResolved :\n"
+                        "      resolveMappedCodeTarget true "
+                        "staticProofContext.candidatePe.imageBase "
+                        "staticProofContext.codeMap.entries.toList candidateTarget = "
+                        f"some {indirect_target} := by\n"
+                        "    simpa using knownIndirectCodeTargetResolved "
+                        "staticProofContext "
+                        f"{indirect_target} true candidateTarget (by decide) "
+                        "(by simpa using candidateTargetMatches)\n"
+                        if known_indirect_call else ""
+                    )
+                    call_shape_body = (
+                        f"  refine \u27e8{original_normalized_behavior}.eval originalState, "
+                        f"{candidate_normalized_behavior}.eval candidateState, "
+                        "?_, ?_, ?_, ?_, ?_, ?_, ?_\u27e9\n"
+                        f"  \u00b7 simp [evalBehavior, {original_normalized_checked}]\n"
+                        f"  \u00b7 simp [evalBehavior, {candidate_normalized_checked}]\n"
+                        "  \u00b7 simp [NormalizedSymbolicBehavior.eval, "
+                        f"{normalized_shape_simp}evalNormalizedWrites,\n"
+                        f"      originalBehavior{source_index}, "
+                        "StageA.Formal.Expr.eval, stackAddressRewrite]\n"
+                        "  \u00b7 simp [NormalizedSymbolicBehavior.eval, "
+                        f"{normalized_shape_simp}evalNormalizedWrites,\n"
+                        f"      candidateBehavior{source_index}, "
+                        "StageA.Formal.Expr.eval, stackAddressRewrite]\n"
+                        "  \u00b7 simp only [NormalizedSymbolicBehavior.eval_outcome]\n"
+                        "    rw [originalOutcome]\n"
+                        f"    simp [PureOutcome.segmentExitFor, originalTargetResolved, {edge_name}]\n"
+                        "  \u00b7 simp only [NormalizedSymbolicBehavior.eval_outcome]\n"
+                        "    rw [candidateOutcome]\n"
+                        f"    simp [PureOutcome.segmentExitFor, candidateTargetResolved, {edge_name}]\n"
+                        "  \u00b7 simp only [NormalizedSymbolicBehavior.eval_outcome]\n"
+                        "    rw [originalOutcome, candidateOutcome]\n"
+                        "    exact knownIndirectCallOutcomesRelated staticProofContext "
+                        f"{indirect_target} region{source_index}.targets "
+                        f"region{source_index}.values originalTarget candidateTarget "
+                        f"{continuation_target} (by decide) (by decide)\n"
+                        "      (by simpa using originalTargetMatches)\n"
+                        "      (by simpa using candidateTargetMatches)\n"
+                        if known_indirect_call else
+                        f"  refine \u27e8{original_normalized_behavior}.eval originalState, "
+                        f"{candidate_normalized_behavior}.eval candidateState, "
+                        "?_, ?_, ?_\u27e9\n"
+                        f"  \u00b7 simp [evalBehavior, {original_normalized_checked}]\n"
+                        f"  \u00b7 simp [evalBehavior, {candidate_normalized_checked}]\n"
+                        "  simp [NormalizedSymbolicBehavior.eval, "
+                        f"{normalized_shape_rewrites}, evalNormalizedWrites,\n"
+                        f"    originalBehavior{source_index}, "
+                        f"candidateBehavior{source_index},\n"
+                        f"NormalizedOutcomeExpr.eval,\n    {edge_name}, "
+                        "PureOutcome.segmentExitFor, PureOutcome.segmentExit, "
+                        "outcomesRelated, StageA.Formal.Expr.eval, "
+                        "stackAddressRewrite]\n"
+                    )
                     direct_call_shape_definition = (
                         f"theorem {shape_name} :\n"
                         "    DirectCallSegmentShapeClosed staticProofContext "
@@ -2693,24 +2778,15 @@ def _write_relational_segment_refinement_modules(
                         "  unfold DirectCallSegmentShapeClosed\n"
                         f"  rw [{local_code_targets_name}, {local_values_name}]\n"
                         "  intro world originalState candidateState related\n"
+                        + indirect_target_setup +
                         "  refine ⟨rfl, ?_⟩\n"
                         "  intro guard\n"
-                        f"  refine ⟨{original_normalized_behavior}.eval originalState, "
-                        f"{candidate_normalized_behavior}.eval candidateState, "
-                        "?_, ?_, ?_⟩\n"
-                        f"  · simp [evalBehavior, {original_normalized_checked}]\n"
-                        f"  · simp [evalBehavior, {candidate_normalized_checked}]\n"
                         "  have stackAddressRewrite (value : Word) :\n"
                         f"      value + BitVec.ofNat 32 {stack_amount_twos_complement} =\n"
                         f"        value - BitVec.ofNat 32 {stack_amount} := by\n"
                         f"    exact word_add_ia32_twos_complement value {stack_amount} "
                         "(by decide)\n"
-                        "  simp [NormalizedSymbolicBehavior.eval, "
-                        f"{normalized_shape_rewrites}, evalNormalizedWrites,\n"
-                        f"    originalBehavior{source_index}, candidateBehavior{source_index},\n"
-                        f"NormalizedOutcomeExpr.eval,\n    {edge_name}, "
-                        "PureOutcome.segmentExitFor, PureOutcome.segmentExit, outcomesRelated, "
-                        "StageA.Formal.Expr.eval, stackAddressRewrite]\n"
+                        + call_shape_body
                     )
                     direct_call_transition_definition = (
                         f"theorem {transition_name} :\n"
@@ -3310,8 +3386,10 @@ def _write_relational_segment_refinement_modules(
         indirect_control_chunk_imports = sorted({
             decoded_control_chunk_by_node[int(candidate["source_region_index"])]
             for candidate in selected
-            if candidate.get("certificate_profile")
-                == "composable_immutable_indirect_jump_v1"
+            if candidate.get("certificate_profile") in {
+                "composable_immutable_indirect_jump_v1",
+                "composable_known_indirect_call_v1",
+            }
         })
         source = (
             "import StageA.RelationalComposition\n"

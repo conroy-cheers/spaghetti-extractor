@@ -802,6 +802,7 @@ def _lean_direct_call_stack_writes_claim(claim: dict[str, Any]) -> str:
         + str(int(claim["original_return_address"]))
         + ", candidateReturnAddress := "
         + str(int(claim["candidate_return_address"]))
+        + ", indirect := " + ("true" if bool(claim.get("indirect")) else "false")
         + " }"
     )
 
@@ -881,6 +882,7 @@ def _lean_direct_call_prepared_writes_claim(claim: dict[str, Any]) -> str:
         + str(int(claim["original_return_address"]))
         + ", candidateReturnAddress := "
         + str(int(claim["candidate_return_address"]))
+        + ", indirect := " + ("true" if bool(claim.get("indirect")) else "false")
         + " }"
     )
 

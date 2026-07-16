@@ -991,13 +991,18 @@ def _direct_call_stack_writes_claim(
     ):
         return None
     return {
-        "profile": "direct_call_stack_writes_v1",
+        "profile": (
+            "known_indirect_call_stack_writes_v1"
+            if bool(call_claim.get("indirect"))
+            else "direct_call_stack_writes_v1"
+        ),
         "stack_writes": stack_writes,
         "stack_amount": stack_amount,
         "callee_target_id": int(call_claim["callee_target_id"]),
         "continuation_target_id": int(call_claim["continuation_target_id"]),
         "original_return_address": int(call_claim["original_return_address"]),
         "candidate_return_address": int(call_claim["candidate_return_address"]),
+        "indirect": bool(call_claim.get("indirect")),
     }
 
 
@@ -1315,7 +1320,11 @@ def _direct_call_prepared_writes_claim(
     ):
         return None
     return {
-        "profile": "direct_call_prepared_writes_v1",
+        "profile": (
+            "known_indirect_call_prepared_writes_v1"
+            if bool(call_claim.get("indirect"))
+            else "direct_call_prepared_writes_v1"
+        ),
         "prepared_writes": prepared_writes,
         "return_window": return_windows[0],
         "stack_amount": stack_amount,
@@ -1323,6 +1332,7 @@ def _direct_call_prepared_writes_claim(
         "continuation_target_id": int(call_claim["continuation_target_id"]),
         "original_return_address": int(call_claim["original_return_address"]),
         "candidate_return_address": int(call_claim["candidate_return_address"]),
+        "indirect": bool(call_claim.get("indirect")),
     }
 
 def _segment_refinement_candidates(
@@ -1497,7 +1507,29 @@ def _segment_refinement_candidates(
             )
             and (not branch_edge or guard_relation_claim is not None)
         )
-        call_claim = edge.get("direct_call_push_claim")
+        direct_call_claim = edge.get("direct_call_push_claim")
+        indirect_call_claim = edge.get("indirect_call_push_claim")
+        known_indirect_call = (
+            not isinstance(direct_call_claim, dict)
+            and isinstance(indirect_call_claim, dict)
+            and edge.get("indirect_target_profile") in {
+                "immutable_relocated_function_pointer_call_v1",
+                "fixed_static_function_pointer_call_v1",
+            }
+            and isinstance(edge.get("indirect_target_claim"), dict)
+            and int(edge["indirect_target_claim"].get("target_id", -1))
+                == int(target["numeric_id"])
+        )
+        call_claim = (
+            direct_call_claim
+            if isinstance(direct_call_claim, dict)
+            else {
+                **indirect_call_claim,
+                "callee_target_id": int(target["numeric_id"]),
+                "indirect": True,
+            }
+            if known_indirect_call else None
+        )
         call_stack_amount = _direct_call_stack_amount(call_claim)
         call_windows = [
             window for window in source.get("stack_windows", [])
@@ -1518,18 +1550,31 @@ def _segment_refinement_candidates(
             original_image_base, candidate_image_base,
             contract.get("static_dynamic_pointer_slots", []),
         )
+        call_outcome_supported = (
+            successors.get("outcome") == "indirect_call"
+            and candidate_successors.get("outcome") == "indirect_call"
+            and int(successors.get("continuation", -1))
+                == int(call_claim.get("continuation_target_id", -2))
+            and int(candidate_successors.get("continuation", -1))
+                == int(call_claim.get("continuation_target_id", -2))
+            and known_indirect_call
+        ) if isinstance(call_claim, dict) and known_indirect_call else (
+            successors.get("outcome") == "call"
+            and candidate_successors.get("outcome") == "call"
+            and int(call_claim.get("callee_target_id", -1))
+                in direct_targets
+            and direct_targets == candidate_direct_targets
+        ) if isinstance(call_claim, dict) else False
         call_prepared_writes_supported = (
             edge.get("kind") == "call"
+            and not known_indirect_call
             and common_transfer_supported
             and isinstance(call_prepared_writes_claim, dict)
             and len(call_windows) == 1
-            and successors.get("outcome") == "call"
-            and candidate_successors.get("outcome") == "call"
+            and call_outcome_supported
             and isinstance(call_claim, dict)
             and int(call_claim.get("callee_target_id", -1))
                 == int(target["numeric_id"])
-            and int(call_claim.get("callee_target_id", -1)) in direct_targets
-            and direct_targets == candidate_direct_targets
             and not target.get("input_import_relations")
             and not target.get("input_dynamic_range_relations")
             and edge.get("original_guard") == {
@@ -1541,16 +1586,14 @@ def _segment_refinement_candidates(
         )
         call_stack_writes_supported = (
             edge.get("kind") == "call"
+            and not known_indirect_call
             and common_transfer_supported
             and isinstance(call_stack_writes_claim, dict)
             and len(call_windows) == 1
-            and successors.get("outcome") == "call"
-            and candidate_successors.get("outcome") == "call"
+            and call_outcome_supported
             and isinstance(call_claim, dict)
             and int(call_claim.get("callee_target_id", -1))
                 == int(target["numeric_id"])
-            and int(call_claim.get("callee_target_id", -1)) in direct_targets
-            and direct_targets == candidate_direct_targets
             and not target.get("input_import_relations")
             and not target.get("input_dynamic_range_relations")
             and edge.get("original_guard") == {
@@ -1564,17 +1607,16 @@ def _segment_refinement_candidates(
             edge.get("kind") == "call"
             and common_transfer_supported
             and isinstance(call_claim, dict)
-            and call_claim.get("profile") == "mapped_direct_call_push_v1"
+            and call_claim.get("profile") in {
+                "mapped_direct_call_push_v1", "mapped_indirect_call_push_v1",
+            }
             and call_stack_amount is not None
             and len(call_windows) == 1
             and memory.get("writes", {}).get("original_count") == 1
             and memory.get("writes", {}).get("candidate_count") == 1
-            and successors.get("outcome") == "call"
-            and candidate_successors.get("outcome") == "call"
+            and call_outcome_supported
             and int(call_claim.get("callee_target_id", -1))
                 == int(target["numeric_id"])
-            and int(call_claim.get("callee_target_id", -1)) in direct_targets
-            and direct_targets == candidate_direct_targets
             and not target.get("input_import_relations")
             and not target.get("input_dynamic_range_relations")
             and edge.get("original_guard") == {
@@ -1757,7 +1799,10 @@ def _segment_refinement_candidates(
                 require(
                     "direct_call_push_missing",
                     isinstance(call_claim, dict)
-                    and call_claim.get("profile") == "mapped_direct_call_push_v1"
+                    and call_claim.get("profile") in {
+                        "mapped_direct_call_push_v1",
+                        "mapped_indirect_call_push_v1",
+                    }
                     and call_stack_amount is not None,
                 )
                 require(
@@ -1777,14 +1822,10 @@ def _segment_refinement_candidates(
                     )
                 require(
                     "direct_call_successor_shape_mismatch",
-                    successors.get("outcome") == "call"
-                    and candidate_successors.get("outcome") == "call"
+                    call_outcome_supported
                     and isinstance(call_claim, dict)
                     and int(call_claim.get("callee_target_id", -1))
-                        == int(target["numeric_id"])
-                    and int(call_claim.get("callee_target_id", -1))
-                        in direct_targets
-                    and direct_targets == candidate_direct_targets,
+                        == int(target["numeric_id"]),
                 )
                 require(
                     "callee_input_import_relation_unsupported",
@@ -1916,6 +1957,8 @@ def _segment_refinement_candidates(
                 if call_prepared_writes_supported
                 else "composable_direct_call_stack_writes_v1"
                 if call_stack_writes_supported
+                else "composable_known_indirect_call_v1"
+                if call_supported and known_indirect_call
                 else "composable_direct_call_v1" if call_supported
                 else "composable_paired_prepared_word_writes_v1"
                 if prepared_writes_supported
@@ -1929,6 +1972,7 @@ def _segment_refinement_candidates(
                 else "composable_local_no_write_v1"
             ),
             "indirect_target_claim": edge.get("indirect_target_claim"),
+            "known_indirect_call": known_indirect_call,
             "import_transfer_claims": import_transfer_claims,
             "dynamic_transfer_claims": dynamic_transfer_claims,
             "dynamic_register_output_claims": dynamic_register_output_claims or [],

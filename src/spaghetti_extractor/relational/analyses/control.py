@@ -494,7 +494,10 @@ def _relational_product_graph(
     covered_node_ids = [item["node_id"] for item in coverage_candidates]
     runtime_call_continuations: dict[int, set[int]] = defaultdict(set)
     for relation_edge in register_relations.get("edges", []):
-        claim = relation_edge.get("direct_call_push_claim")
+        claim = (
+            relation_edge.get("direct_call_push_claim")
+            or relation_edge.get("indirect_call_push_claim")
+        )
         if not isinstance(claim, dict):
             continue
         source_node_id = int(relation_edge["source_region_index"])
@@ -504,7 +507,7 @@ def _relational_product_graph(
             and 0 <= continuation_node_id < len(nodes)
         ):
             raise StageAInputError(
-                "direct-call continuation references an out-of-range product node"
+                "checked call continuation references an out-of-range product node"
             )
         runtime_call_continuations[source_node_id].add(continuation_node_id)
     reachable_node_ids_set = set(root_node_ids)

@@ -1480,6 +1480,12 @@ def _whole_program_acceptance_plan(
                     "composable_paired_prepared_word_writes_v1",
                 }
             ) is False
+            decoded_control = decoded_control_by_node.get(node_id, {})
+            known_indirect_call_profile = (
+                segment is not None
+                and segment.get("certificate_profile")
+                    == "composable_known_indirect_call_v1"
+            )
             call_profile = (
                 not bool(edge.get("infeasible"))
                 and edge.get("kind") == "call"
@@ -1488,9 +1494,19 @@ def _whole_program_acceptance_plan(
                 and segment is not None
                 and segment.get("certificate_profile") in {
                     "composable_direct_call_v1",
+                    "composable_known_indirect_call_v1",
                     "composable_direct_call_prepared_writes_v1",
                     "composable_direct_call_stack_writes_v1",
                 }
+                and (
+                    not known_indirect_call_profile
+                    or decoded_control.get("profile") in {
+                        "immutable_relocated_function_pointer_call_v1",
+                        "fixed_static_function_pointer_call_v1",
+                    }
+                    and int(decoded_control.get("target_id", -1))
+                        == int(edge.get("target_target_id", -2))
+                )
             )
             external_site = external_by_edge.get(edge_id)
             external_profile = (
@@ -1500,7 +1516,6 @@ def _whole_program_acceptance_plan(
                 and edge.get("candidate_guard") == true_guard
                 and external_site is not None
             )
-            decoded_control = decoded_control_by_node.get(node_id, {})
             indirect_jump_profile = (
                 not bool(edge.get("infeasible"))
                 and edge.get("kind") == "jump"
@@ -1535,6 +1550,7 @@ def _whole_program_acceptance_plan(
             expected_target = int(regions[target_node_id]["numeric_id"])
             expected_operation = (
                 "external_call" if external_profile
+                else "indirect_call" if known_indirect_call_profile
                 else "call" if call_profile
                 else "indirect_jump" if indirect_jump_profile
                 else "jump"
@@ -1542,7 +1558,7 @@ def _whole_program_acceptance_plan(
             target_field = "continuation" if external_profile else "target"
             decoded_outcome_mismatch = (
                 any(outcome.get("op") != expected_operation for outcome in outcomes)
-                if indirect_jump_profile else
+                if indirect_jump_profile or known_indirect_call_profile else
                 any(
                     outcome.get("op") != expected_operation
                     or int(outcome.get(target_field, -1)) != expected_target
@@ -1557,7 +1573,7 @@ def _whole_program_acceptance_plan(
                 )
                 continue
             step = {
-                "kind": expected_operation,
+                "kind": "call" if known_indirect_call_profile else expected_operation,
                 "node_id": node_id,
                 "region_index": node_id,
                 "target_id": target_id,
@@ -1572,11 +1588,15 @@ def _whole_program_acceptance_plan(
                 register_edge = register_edge_by_source_target.get(
                     (node_id, target_node_id), {}
                 )
-                direct_call_claim = register_edge.get("direct_call_push_claim")
+                call_push_claim = (
+                    register_edge.get("indirect_call_push_claim")
+                    if known_indirect_call_profile else
+                    register_edge.get("direct_call_push_claim")
+                )
                 continuation = int(outcomes[0].get("continuation", -1))
                 control_rows = control_states_by_node.get(node_id, [])
                 if (
-                    direct_call_claim is None
+                    call_push_claim is None
                     or any(int(outcome.get("continuation", -1)) != continuation for outcome in outcomes)
                     or len(control_rows) != 1
                 ):
@@ -1636,7 +1656,14 @@ def _whole_program_acceptance_plan(
                 step["target_control_state"] = target_control_row
                 step["continuation_target_id"] = continuation
                 step["continuation_node_id"] = continuation_node_id
-                step["direct_call_push_claim"] = direct_call_claim
+                step["call_push_claim"] = call_push_claim
+                step["known_indirect_call"] = known_indirect_call_profile
+                if known_indirect_call_profile:
+                    step["decoded_control"] = {
+                        **decoded_control,
+                        "original_target_expression": outcomes[0]["target"],
+                        "candidate_target_expression": outcomes[1]["target"],
+                    }
                 step["certificate_profile"] = segment["certificate_profile"]
                 step["return_slot_frame_transfer_claims"] = selected_claims
                 step["source_stack_window"] = segment["source_stack_window"]
@@ -2434,7 +2461,7 @@ def _lean_acceptance_running_node(
         edge_id = int(edge["edge_id"])
         target_region_index = int(edge["target_region_index"])
         continuation = int(step["continuation_target_id"])
-        claim = step["direct_call_push_claim"]
+        claim = step["call_push_claim"]
         original_return = int(claim["original_return_address"])
         candidate_return = int(claim["candidate_return_address"])
         stack_amount = int(step["stack_amount"])
@@ -2466,13 +2493,17 @@ def _lean_acceptance_running_node(
             step.get("certificate_profile")
             == "composable_direct_call_prepared_writes_v1"
         )
+        known_indirect_call = bool(step.get("known_indirect_call"))
         combined_prefix_writes = combined_stack_writes or combined_prepared_writes
         writes_claim_name = (
             f"segmentRefinementEdge{edge_id}DirectCallPreparedWritesClaim"
             if combined_prepared_writes
             else f"segmentRefinementEdge{edge_id}DirectCallStackWritesClaim"
         )
-        if _normalized_behavior_fast_path(
+        if known_indirect_call:
+            segment_original_behavior = f"productNode{node_id}OriginalNormalized"
+            segment_candidate_behavior = f"productNode{node_id}CandidateNormalized"
+        elif _normalized_behavior_fast_path(
             regions[region_index], behaviors[region_index]
         ):
             segment_original_behavior = f"region{region_index}NormalizedBehavior"
@@ -2483,6 +2514,58 @@ def _lean_acceptance_running_node(
             )
             segment_candidate_behavior = (
                 f"segmentRefinementEdge{edge_id}CandidateNormalizedBehavior"
+            )
+        known_indirect_setup = ""
+        known_indirect_dispatch = ""
+        if known_indirect_call:
+            decoded_control = step["decoded_control"]
+            indirect_target_id = int(edge["target_target_id"])
+            target_closed = f"productNode{node_id}ImmutableIndirectCallClosed"
+            known_indirect_setup = (
+                f"  rcases {target_closed} world originalState candidateState "
+                "statesRelated with\n"
+                "    ⟨originalTarget, candidateTarget, originalOutcome, "
+                "candidateOutcome, originalTargetMatches, "
+                "candidateTargetMatches⟩\n"
+                "  have originalTargetExpression :\n"
+                f"      ({_lean_semantic_expr(decoded_control['original_target_expression'])}).eval "
+                "originalState = originalTarget := by\n"
+                "    have normalizedOutcome := originalOutcome\n"
+                "    rw [← originalBehaviorSegment] at normalizedOutcome\n"
+                f"    simp only [acceptanceOriginalNormalizedOutcome{node_id}, "
+                "NormalizedOutcomeExpr.eval, PureOutcome.indirectCall.injEq] "
+                "at normalizedOutcome\n"
+                "    exact normalizedOutcome.1\n"
+                "  have candidateTargetExpression :\n"
+                f"      ({_lean_semantic_expr(decoded_control['candidate_target_expression'])}).eval "
+                "candidateState = candidateTarget := by\n"
+                "    have normalizedOutcome := candidateOutcome\n"
+                "    rw [← candidateBehaviorSegment] at normalizedOutcome\n"
+                f"    simp only [acceptanceCandidateNormalizedOutcome{node_id}, "
+                "NormalizedOutcomeExpr.eval, PureOutcome.indirectCall.injEq] "
+                "at normalizedOutcome\n"
+                "    exact normalizedOutcome.1\n"
+                "  have originalTargetResolved : resolveMappedCodeTarget false\n"
+                "      staticProofContext.originalPe.imageBase\n"
+                "      staticProofContext.codeMap.entries.toList originalTarget =\n"
+                f"      some {indirect_target_id} := by\n"
+                "    simpa using knownIndirectCodeTargetResolved staticProofContext "
+                f"{indirect_target_id} false originalTarget (by decide)\n"
+                "      (by simpa using originalTargetMatches)\n"
+                "  have candidateTargetResolved : resolveMappedCodeTarget true\n"
+                "      staticProofContext.candidatePe.imageBase\n"
+                "      staticProofContext.codeMap.entries.toList candidateTarget =\n"
+                f"      some {indirect_target_id} := by\n"
+                "    simpa using knownIndirectCodeTargetResolved staticProofContext "
+                f"{indirect_target_id} true candidateTarget (by decide)\n"
+                "      (by simpa using candidateTargetMatches)\n"
+            )
+            known_indirect_dispatch = (
+                "  rw [originalTargetExpression, candidateTargetExpression]\n"
+                "  simp only [originalWorldProgram, candidateWorldProgram,\n"
+                "    Bool.false_eq_true, if_false, if_true]\n"
+                "  rw [originalTargetResolved, candidateTargetResolved]\n"
+                "  simp only\n"
             )
         frame_memory_body = (
             (
@@ -2569,7 +2652,8 @@ def _lean_acceptance_running_node(
             f"      {segment_original_behavior} := by decide\n"
             f"  have candidateBehaviorSegment : {candidate_behavior} =\n"
             f"      {segment_candidate_behavior} := by decide\n"
-            "  let runtimeFrame : RelationalRuntimeCallFrame := {\n"
+            + known_indirect_setup
+            + "  let runtimeFrame : RelationalRuntimeCallFrame := {\n"
             f"    continuationTargetId := {continuation}\n"
             f"    originalReturnAddress := BitVec.ofNat 32 {original_return}\n"
             f"    candidateReturnAddress := BitVec.ofNat 32 {candidate_return}\n"
@@ -2652,6 +2736,7 @@ def _lean_acceptance_running_node(
             f"        ({original_behavior}.eval originalState).registers\n"
             f"        ({candidate_behavior}.eval candidateState).registers frameOffsetsHold,\n"
             "      outerStackHolds⟩\n"
+            + known_indirect_dispatch
             + _lean_acceptance_running_target(
                 node_id=node_id,
                 region_index=region_index,
@@ -4258,6 +4343,11 @@ def _write_relational_acceptance_modules(
             int(edge["edge_id"])
             for step in selected
             for edge in step["edges"]
+        ]
+        edge_ids.sort()
+        edge_theorems = [
+            f"acceptanceExecutionEdge{edge_id}Refined"
+            for edge_id in edge_ids
         ]
         definitions.extend([
             f"def {ids_name} : List Nat := [{', '.join(map(str, node_ids))}]",

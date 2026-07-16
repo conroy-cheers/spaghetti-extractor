@@ -545,7 +545,7 @@ def _pe32_image_with_relocation_pointer_table(
 
 def _pe32_image_with_immutable_indirect_call(
     data_rva: int, *, callee_rva: int = 0x1030, writable: bool = False,
-    jump: bool = False,
+    jump: bool = False, argument_writes: bool = True,
 ) -> bytes:
     file_alignment = 0x200
     section_alignment = 0x1000
@@ -559,6 +559,8 @@ def _pe32_image_with_immutable_indirect_call(
     source = (
         b"\xff\x25" + struct.pack("<I", image_base + data_rva)
         if jump else
+        b"\xff\x15" + struct.pack("<I", image_base + data_rva)
+        if not argument_writes else
         b"\xc7\x44\x24\x08\x00\x00\x00\x00"
         b"\xc7\x44\x24\x04\x02\x00\x00\x00"
         b"\xc7\x04\x24\x00\x00\x00\x00"
@@ -566,8 +568,9 @@ def _pe32_image_with_immutable_indirect_call(
     )
     code = bytearray(b"\x90" * (callee_rva - text_rva + 1))
     code[:len(source)] = source
+    continuation_offset = len(source)
     if not jump:
-        code[0x1D:0x1F] = b"\xeb\xfe"
+        code[continuation_offset:continuation_offset + 2] = b"\xeb\xfe"
     code[callee_rva - text_rva] = 0xC3
     data = struct.pack("<I", image_base + callee_rva)
 
@@ -581,7 +584,7 @@ def _pe32_image_with_immutable_indirect_call(
         )
 
     relocations = (
-        relocation_block(text_rva, [2 if jump else 25])
+        relocation_block(text_rva, [2 if jump else 2 if not argument_writes else 25])
         + relocation_block(data_rva, [0])
     )
     dos = bytearray(0x80)

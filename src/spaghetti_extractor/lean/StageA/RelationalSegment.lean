@@ -34,6 +34,159 @@ def PureOutcome.segmentExitFor (context : StaticProofContext) (candidate : Bool)
       pure (.internal targetId)
   | outcome => outcome.segmentExit
 
+def codeTargetAddresses (candidate : Bool) (imageBase : Nat)
+    (target : CodeTargetPair) : List Word :=
+  BitVec.ofNat 32 (imageBase + if candidate then target.candidateRva else target.originalRva) ::
+    (if candidate then target.candidateAliases else target.originalAliases).map fun alias =>
+      BitVec.ofNat 32 (imageBase + alias.rva)
+
+theorem codeAddressMatches_iff_mem_codeTargetAddresses (candidate : Bool)
+    (imageBase : Nat) (target : CodeTargetPair) (value : Word) :
+    codeAddressMatches imageBase
+        (if candidate then target.candidateRva else target.originalRva)
+        (if candidate then target.candidateAliases else target.originalAliases) value = true ↔
+      value ∈ codeTargetAddresses candidate imageBase target := by
+  cases candidate with
+  | false =>
+      simp only [codeTargetAddresses, codeAddressMatches, if_false, Bool.or_eq_true,
+        beq_iff_eq, List.mem_cons, List.mem_map, List.any_eq_true]
+      constructor
+      · intro found
+        rcases found with found | ⟨alias, member, found⟩
+        · exact Or.inl found
+        · exact Or.inr ⟨alias, member, found.symm⟩
+      · intro found
+        rcases found with found | ⟨alias, member, found⟩
+        · exact Or.inl found
+        · exact Or.inr ⟨alias, member, found.symm⟩
+  | true =>
+      simp only [codeTargetAddresses, codeAddressMatches, if_true, Bool.or_eq_true,
+        beq_iff_eq, List.mem_cons, List.mem_map, List.any_eq_true]
+      constructor
+      · intro found
+        rcases found with found | ⟨alias, member, found⟩
+        · exact Or.inl found
+        · exact Or.inr ⟨alias, member, found.symm⟩
+      · intro found
+        rcases found with found | ⟨alias, member, found⟩
+        · exact Or.inl found
+        · exact Or.inr ⟨alias, member, found.symm⟩
+
+def knownIndirectCodeTargetChecked (context : StaticProofContext)
+    (targetId : Nat) : Bool :=
+  match context.codeMap.get? targetId with
+  | none => false
+  | some target =>
+      ((codeTargetAddresses false context.originalPe.imageBase target).all fun address =>
+        resolveMappedCodeTarget false context.originalPe.imageBase
+          context.codeMap.entries.toList address == some targetId && address != 0) &&
+      ((codeTargetAddresses true context.candidatePe.imageBase target).all fun address =>
+        resolveMappedCodeTarget true context.candidatePe.imageBase
+          context.codeMap.entries.toList address == some targetId && address != 0)
+
+theorem knownIndirectCodeTargetResolved (context : StaticProofContext)
+    (targetId : Nat) (candidate : Bool) (value : Word)
+    (checked : knownIndirectCodeTargetChecked context targetId = true)
+    (targetMatches : match context.codeMap.get? targetId with
+      | none => false
+      | some target =>
+          codeAddressMatches
+            (if candidate then context.candidatePe.imageBase else context.originalPe.imageBase)
+            (if candidate then target.candidateRva else target.originalRva)
+            (if candidate then target.candidateAliases else target.originalAliases) value) :
+    resolveMappedCodeTarget candidate
+        (if candidate then context.candidatePe.imageBase else context.originalPe.imageBase)
+        context.codeMap.entries.toList value = some targetId := by
+  cases targetResult : context.codeMap.get? targetId with
+  | none => simp [knownIndirectCodeTargetChecked, targetResult] at checked
+  | some target =>
+      simp only [knownIndirectCodeTargetChecked, targetResult, Bool.and_eq_true] at checked
+      simp only [targetResult] at targetMatches
+      have member := (codeAddressMatches_iff_mem_codeTargetAddresses candidate
+        (if candidate then context.candidatePe.imageBase else context.originalPe.imageBase)
+        target value).mp targetMatches
+      cases candidate with
+      | false =>
+          have holds := List.all_eq_true.mp checked.1 value member
+          simp only [Bool.and_eq_true] at holds
+          simpa only [if_false, beq_iff_eq] using holds.1
+      | true =>
+          have holds := List.all_eq_true.mp checked.2 value member
+          simp only [Bool.and_eq_true] at holds
+          simpa only [if_true, beq_iff_eq] using holds.1
+
+theorem knownIndirectCodeTargetNonzero (context : StaticProofContext)
+    (targetId : Nat) (candidate : Bool) (value : Word)
+    (checked : knownIndirectCodeTargetChecked context targetId = true)
+    (targetMatches : match context.codeMap.get? targetId with
+      | none => false
+      | some target =>
+          codeAddressMatches
+            (if candidate then context.candidatePe.imageBase else context.originalPe.imageBase)
+            (if candidate then target.candidateRva else target.originalRva)
+            (if candidate then target.candidateAliases else target.originalAliases) value) :
+    value != 0 := by
+  cases targetResult : context.codeMap.get? targetId with
+  | none => simp [knownIndirectCodeTargetChecked, targetResult] at checked
+  | some target =>
+      simp only [knownIndirectCodeTargetChecked, targetResult, Bool.and_eq_true] at checked
+      simp only [targetResult] at targetMatches
+      have member := (codeAddressMatches_iff_mem_codeTargetAddresses candidate
+        (if candidate then context.candidatePe.imageBase else context.originalPe.imageBase)
+        target value).mp targetMatches
+      cases candidate with
+      | false =>
+          have holds := List.all_eq_true.mp checked.1 value member
+          simp only [Bool.and_eq_true] at holds
+          exact holds.2
+      | true =>
+          have holds := List.all_eq_true.mp checked.2 value member
+          simp only [Bool.and_eq_true] at holds
+          exact holds.2
+
+theorem knownIndirectCallOutcomesRelated (context : StaticProofContext)
+    (targetId : Nat) (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (originalTarget candidateTarget : Word) (continuationTargetId : Nat)
+    (checked : knownIndirectCodeTargetChecked context targetId = true)
+    (targetMember : (match context.codeMap.get? targetId with
+      | none => false
+      | some target => targets.contains target) = true)
+    (originalMatches : match context.codeMap.get? targetId with
+      | none => false
+      | some target => codeAddressMatches context.originalPe.imageBase target.originalRva
+          target.originalAliases originalTarget)
+    (candidateMatches : match context.codeMap.get? targetId with
+      | none => false
+      | some target => codeAddressMatches context.candidatePe.imageBase target.candidateRva
+          target.candidateAliases candidateTarget) :
+    outcomesRelated context.originalPe.imageBase context.candidatePe.imageBase targets values
+      (.indirectCall originalTarget continuationTargetId)
+      (.indirectCall candidateTarget continuationTargetId) = true := by
+  cases targetResult : context.codeMap.get? targetId with
+  | none => simp [targetResult] at targetMember
+  | some target =>
+      simp only [targetResult] at targetMember originalMatches candidateMatches
+      have targetMem := List.contains_iff_mem.mp targetMember
+      have originalNonzero := knownIndirectCodeTargetNonzero context targetId false
+        originalTarget checked (by simpa [targetResult] using originalMatches)
+      have candidateNonzero := knownIndirectCodeTargetNonzero context targetId true
+        candidateTarget checked (by simpa [targetResult] using candidateMatches)
+      have originalNe : originalTarget ≠ 0 := by simpa using originalNonzero
+      have candidateNe : candidateTarget ≠ 0 := by simpa using candidateNonzero
+      have originalZero :
+          (originalTarget == BitVec.ofNat 32 0) = false :=
+        beq_eq_false_iff_ne.mpr (by simpa using originalNe)
+      have candidateZero :
+          (candidateTarget == BitVec.ofNat 32 0) = false :=
+        beq_eq_false_iff_ne.mpr (by simpa using candidateNe)
+      have codeRelated : codePointerRelated context.originalPe.imageBase
+          context.candidatePe.imageBase targets originalTarget candidateTarget = true := by
+        simp only [codePointerRelated, List.any_eq_true]
+        exact ⟨target, targetMem, by simp [originalMatches, candidateMatches]⟩
+      simp only [outcomesRelated, wordRelated]
+      rw [originalZero, candidateZero]
+      simp [codeRelated]
+
 structure RelationalSegmentEdge where
   sourceTargetId : Nat
   exit : RelationalSegmentExit
@@ -894,7 +1047,17 @@ structure DirectCallPreparedWritesClaim where
   continuationTargetId : Nat
   originalReturnAddress : Nat
   candidateReturnAddress : Nat
+  indirect : Bool := false
 deriving Repr, DecidableEq
+
+def normalizedCallOutcomeMatches (indirect : Bool) (calleeTargetId : Nat)
+    (continuationTargetId : Nat) (outcome : NormalizedOutcomeExpr) : Bool :=
+  if indirect then
+    match outcome with
+    | .indirectCall _ continuation => continuation == continuationTargetId
+    | _ => false
+  else
+    outcome == .call calleeTargetId continuationTargetId
 
 def DirectCallPreparedWritesClaim.originalPushAddress
     (claim : DirectCallPreparedWritesClaim) : Expr :=
@@ -946,10 +1109,10 @@ def DirectCallPreparedWritesClaim.frameChecked (context : StaticProofContext)
 def DirectCallPreparedWritesClaim.behaviorChecked
     (claim : DirectCallPreparedWritesClaim)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
-  originalBehavior.outcome ==
-      .call claim.calleeTargetId claim.continuationTargetId &&
-    candidateBehavior.outcome ==
-      .call claim.calleeTargetId claim.continuationTargetId &&
+  normalizedCallOutcomeMatches claim.indirect claim.calleeTargetId
+      claim.continuationTargetId originalBehavior.outcome &&
+    normalizedCallOutcomeMatches claim.indirect claim.calleeTargetId
+      claim.continuationTargetId candidateBehavior.outcome &&
     originalBehavior.registers.esp == claim.originalPushAddress &&
     candidateBehavior.registers.esp == claim.candidatePushAddress &&
     originalBehavior.writes == claim.originalSymbolicWrites &&
@@ -995,6 +1158,7 @@ structure DirectCallStackWritesClaim where
   continuationTargetId : Nat
   originalReturnAddress : Nat
   candidateReturnAddress : Nat
+  indirect : Bool := false
 deriving Repr, DecidableEq
 
 def DirectCallStackWritesClaim.originalPushAddress
@@ -1054,10 +1218,10 @@ def DirectCallStackWritesClaim.frameChecked (context : StaticProofContext)
 def DirectCallStackWritesClaim.behaviorChecked
     (claim : DirectCallStackWritesClaim)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
-  originalBehavior.outcome ==
-      .call claim.calleeTargetId claim.continuationTargetId &&
-    candidateBehavior.outcome ==
-      .call claim.calleeTargetId claim.continuationTargetId &&
+  normalizedCallOutcomeMatches claim.indirect claim.calleeTargetId
+      claim.continuationTargetId originalBehavior.outcome &&
+    normalizedCallOutcomeMatches claim.indirect claim.calleeTargetId
+      claim.continuationTargetId candidateBehavior.outcome &&
     originalBehavior.registers.esp == claim.originalPushAddress &&
     candidateBehavior.registers.esp == claim.candidatePushAddress &&
     originalBehavior.writes == claim.originalSymbolicWrites &&

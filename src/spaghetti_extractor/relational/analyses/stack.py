@@ -1368,9 +1368,17 @@ def _discover_static_call_return_summaries(
     ordinary_successors: list[set[int]] = [set() for _ in relation_rows]
     call_edges: dict[int, dict[str, Any]] = {}
     unsupported_exit = [False] * region_count
+
+    def call_push_claim(edge: dict[str, Any]) -> dict[str, Any] | None:
+        claim = (
+            edge.get("direct_call_push_claim")
+            or edge.get("indirect_call_push_claim")
+        )
+        return claim if isinstance(claim, dict) else None
+
     for edge in edges:
         source = int(edge["source_region_index"])
-        if edge.get("direct_call_push_claim") is not None:
+        if call_push_claim(edge) is not None:
             call_edges[source] = edge
             continue
         if (
@@ -1389,7 +1397,9 @@ def _discover_static_call_return_summaries(
             reverse_dependencies[target].add(source)
     for source, edge in call_edges.items():
         callee = int(edge["target_region_index"])
-        continuation = int(edge["direct_call_push_claim"]["continuation_region_index"])
+        claim = call_push_claim(edge)
+        assert claim is not None
+        continuation = int(claim["continuation_region_index"])
         reverse_dependencies[callee].add(source)
         reverse_dependencies[continuation].add(source)
 
@@ -1409,9 +1419,9 @@ def _discover_static_call_return_summaries(
         if source in call_edges:
             edge = call_edges[source]
             callee = int(edge["target_region_index"])
-            continuation = int(
-                edge["direct_call_push_claim"]["continuation_region_index"]
-            )
+            claim = call_push_claim(edge)
+            assert claim is not None
+            continuation = int(claim["continuation_region_index"])
             if return_sets[callee]:
                 proposed.update(return_sets[continuation])
         else:
@@ -1439,9 +1449,9 @@ def _discover_static_call_return_summaries(
             elif source in call_edges:
                 edge = call_edges[source]
                 callee = int(edge["target_region_index"])
-                continuation = int(
-                    edge["direct_call_push_claim"]["continuation_region_index"]
-                )
+                claim = call_push_claim(edge)
+                assert claim is not None
+                continuation = int(claim["continuation_region_index"])
                 next_closed = closed[callee] and closed[continuation]
             else:
                 successors = ordinary_successors[source]
@@ -1453,7 +1463,9 @@ def _discover_static_call_return_summaries(
     summaries = []
     for source, edge in sorted(call_edges.items()):
         callee = int(edge["target_region_index"])
-        continuation = int(edge["direct_call_push_claim"]["continuation_region_index"])
+        claim = call_push_claim(edge)
+        assert claim is not None
+        continuation = int(claim["continuation_region_index"])
         returns = sorted(return_sets[callee])
         summaries.append({
             "callsite_region_index": source,

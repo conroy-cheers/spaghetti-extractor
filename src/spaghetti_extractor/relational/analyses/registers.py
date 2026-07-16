@@ -1182,6 +1182,13 @@ def _synthesize_register_relations(
             edge.get("indirect_target_profile") ==
             "immutable_relocated_function_pointer_jump_v1"
         )
+        checked_single_target_indirect = (
+            immutable_indirect_jump
+            or edge.get("indirect_target_profile") in {
+                "immutable_relocated_function_pointer_call_v1",
+                "fixed_static_function_pointer_call_v1",
+            }
+        )
         source_claims = {
             claim["register"]: claim
             for claim in relation_rows[source]["exact_output_claims"]
@@ -1209,7 +1216,7 @@ def _synthesize_register_relations(
         supported = (
             not edge["environment_barrier"]
             and not edge["requires_call_stack_proof"]
-            and (not indirect_control or immutable_indirect_jump)
+            and (not indirect_control or checked_single_target_indirect)
             and all(
             _register_relation_implies(
                 output_kinds[source][register], input_kinds[target][register]

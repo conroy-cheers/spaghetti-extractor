@@ -1201,6 +1201,153 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertNotIn("._native.", lean["stdout"])
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
+    def test_known_indirect_call_checks_whole_program_theorem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_image_with_immutable_indirect_call(
+                0x2000, writable=True, argument_writes=False,
+            ))
+            candidate_image = bytearray(_pe32_image_with_immutable_indirect_call(
+                0x3000, writable=True, argument_writes=False,
+            ))
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in ("eax", "ecx", "edx", "ebx", "ebp")
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": 0, "original_rva": 0x1000, "candidate_rva": 0x1000},
+                    {"id": 1, "original_rva": 0x1006, "candidate_rva": 0x1006},
+                    {"id": 2, "original_rva": 0x1030, "candidate_rva": 0x1030},
+                ],
+                "regions": [
+                    {
+                        "id": "indirect-call", "root": True,
+                        "original": {"rva": 0x1000, "size": 6},
+                        "candidate": {"rva": 0x1000, "size": 6},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "continuation-loop", "root": False,
+                        "original": {"rva": 0x1006, "size": 2},
+                        "candidate": {"rva": 0x1006, "size": 2},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                    {
+                        "id": "callee-return", "root": False,
+                        "original": {"rva": 0x1030, "size": 1},
+                        "candidate": {"rva": 0x1030, "size": 1},
+                        "inputs": pairs, "outputs": pairs,
+                    },
+                ],
+                "padding": [{
+                    "id": "call-to-callee-padding", "side": "both",
+                    "rva": 0x1008, "size": 0x28,
+                }],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+
+            struct.pack_into("<I", candidate_image, 0x400, 0x401031)
+            candidate.write_bytes(candidate_image)
+            rejected = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=root / "rejected",
+            )
+            self.assertEqual(rejected["acceptance"]["status"], "incomplete")
+            self.assertEqual(
+                rejected["composition_progress"]["counts"][
+                    "unresolved_indirect_control_nodes"
+                ],
+                1,
+            )
+
+            candidate.write_bytes(_pe32_image_with_immutable_indirect_call(
+                0x3000, writable=True, argument_writes=False,
+            ))
+            prepared = root / "prepared"
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result["status"], "prepared", result)
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            progress = result["composition_progress"]
+            self.assertEqual(progress["status"], "ready_for_lean")
+            self.assertEqual(progress["counts"]["rooted_reachable_nodes"], 3)
+            self.assertEqual(
+                progress["counts"]["rooted_reachable_feasible_edges"], 2
+            )
+            self.assertEqual(progress["counts"]["rooted_refined_segments"], 2)
+            self.assertEqual(
+                progress["counts"]["rooted_decoded_control_frontier_nodes"], 0
+            )
+            self.assertEqual(
+                progress["counts"]["rooted_segment_refinement_frontier_edges"], 0
+            )
+            self.assertEqual(
+                progress["counts"]["rooted_stack_invariant_frontier_nodes"], 0
+            )
+            self.assertEqual(
+                progress["counts"]["unresolved_indirect_control_nodes"], 0
+            )
+            self.assertEqual(progress["frontiers"]["unresolved_indirect_control"], [])
+            self.assertEqual(progress["next_work"], [])
+
+            proof_ir = json.loads(
+                (prepared / "relational-proof-ir.json").read_text(encoding="utf-8")
+            )
+            segment_certificates = [
+                obligation["analysis"]["certificate"]
+                for obligation in proof_ir["obligations"]
+                if obligation.get("kind") == "relational_segment_refinement"
+                and obligation.get("status") == "proved"
+            ]
+            self.assertIn(
+                "composable_known_indirect_call_v1",
+                {
+                    certificate["certificate_profile"]
+                    for certificate in segment_certificates
+                },
+            )
+            segment_source = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted((prepared / "lean" / "StageA").glob(
+                    "RelationalSegmentRefinementChunk*.lean"
+                ))
+            )
+            self.assertIn("productNode0ImmutableIndirectCallClosed", segment_source)
+            self.assertIn("DirectCallSegmentShapeClosed", segment_source)
+            decoded_control_source = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted((prepared / "lean" / "StageA").glob(
+                    "RelationalProductDecodedControlChunk*.lean"
+                ))
+            )
+            self.assertIn("StaticWordSlotIndirectCallTargetClaim", decoded_control_source)
+            self.assertIn(
+                "immutableIndirectCallTargetsClosed_of_staticWordSlot",
+                decoded_control_source,
+            )
+
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_direct_call_with_prepared_stack_word_checks_whole_program_theorem(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

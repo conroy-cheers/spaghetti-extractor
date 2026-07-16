@@ -950,6 +950,26 @@ def _write_relational_product_graph_modules(
                     f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
                     f"  (normalizeSymbolicBehavior true region{region_index}.targets "
                     f"candidateBehavior{region_index}).get (by decide)",
+                    f"theorem {original_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index} = some {original_normalized} := "
+                    "by decide",
+                    f"theorem {candidate_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index} = some {candidate_normalized} := "
+                    "by decide",
+                    f"theorem {original_normalized}X87 : "
+                    f"{original_normalized}.x87 = "
+                    f"originalBehavior{region_index}.x87 := by decide",
+                    f"theorem {candidate_normalized}X87 : "
+                    f"{candidate_normalized}.x87 = "
+                    f"candidateBehavior{region_index}.x87 := by decide",
+                    f"theorem {original_normalized}Writes : "
+                    f"{original_normalized}.writes = "
+                    f"originalBehavior{region_index}.writes := by decide",
+                    f"theorem {candidate_normalized}Writes : "
+                    f"{candidate_normalized}.writes = "
+                    f"candidateBehavior{region_index}.writes := by decide",
                     f"def {claim_name} : ImmutableIndirectCallTargetClaim := {{\n"
                     f"  targetId := {int(candidate['target_id'])}\n"
                     f"  continuationTargetId := {int(candidate['continuation_target_id'])}\n"
@@ -1004,6 +1024,26 @@ def _write_relational_product_graph_modules(
                     f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
                     f"  (normalizeSymbolicBehavior true region{region_index}.targets "
                     f"candidateBehavior{region_index}).get (by decide)",
+                    f"theorem {original_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index} = some {original_normalized} := "
+                    "by decide",
+                    f"theorem {candidate_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index} = some {candidate_normalized} := "
+                    "by decide",
+                    f"theorem {original_normalized}X87 : "
+                    f"{original_normalized}.x87 = "
+                    f"originalBehavior{region_index}.x87 := by decide",
+                    f"theorem {candidate_normalized}X87 : "
+                    f"{candidate_normalized}.x87 = "
+                    f"candidateBehavior{region_index}.x87 := by decide",
+                    f"theorem {original_normalized}Writes : "
+                    f"{original_normalized}.writes = "
+                    f"originalBehavior{region_index}.writes := by decide",
+                    f"theorem {candidate_normalized}Writes : "
+                    f"{candidate_normalized}.writes = "
+                    f"candidateBehavior{region_index}.writes := by decide",
                     f"def {static_claim_name} : StaticWordSlotIndirectCallTargetClaim := {{\n"
                     f"  targetId := {int(candidate['target_id'])}\n"
                     f"  continuationTargetId := {int(candidate['continuation_target_id'])}\n"
