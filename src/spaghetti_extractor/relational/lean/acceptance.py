@@ -22,6 +22,7 @@ from ..analyses.frames import (
     runtime_frame_location_key as location_key,
     runtime_frame_location_payload as location_payload,
 )
+from ..analyses.segments import _import_register_transfer_claims
 from ..analyses.stack import _stack_window_transfer_claims
 from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..contract import _raw_base_relocations
@@ -1416,12 +1417,23 @@ def _whole_program_acceptance_plan(
                         "emit checked target-shaped register output claims for the continuation",
                     )
                     continue
+                return_import_transfers = _import_register_transfer_claims(
+                    contract, behaviors, node_id, target_node_id, []
+                )
+                if return_import_transfers is None:
+                    block(
+                        "return_import_register_transfer_incomplete",
+                        f"return node {node_id} cannot establish continuation "
+                        f"{target_node_id}'s import-register relations",
+                        "emit a checked decoded register-preservation claim for "
+                        "each continuation import binding",
+                    )
+                    continue
                 unsupported_target_families = [
                     field for field in (
                         "bounds",
                         "address_separations",
                         "flag_inputs",
-                        "input_import_relations",
                         "input_dynamic_range_relations",
                     )
                     if target_region.get(field)
@@ -1450,6 +1462,7 @@ def _whole_program_acceptance_plan(
                         control_rows[0]["frame_offsets"][0],
                     "return_slot_frame_transfer_claims": outer_frame_claims,
                     "output_claims": target_output_claims,
+                    "import_transfer_claims": return_import_transfers,
                     "return_frame_claim_index": 0,
                     "stack_window_transfers": stack_transfers,
                     "edges": [],
@@ -2847,6 +2860,63 @@ def _lean_acceptance_running_node(
             _lean_stack_window_transfer_claim(claim)
             for claim in step["stack_window_transfers"]
         )
+        import_claim_rows: list[str] = []
+        import_fact_rows: list[str] = []
+        import_fact_names: list[str] = []
+        import_claim_names: list[str] = []
+        for claim_index, claim in enumerate(step["import_transfer_claims"]):
+            if claim.get("kind") != "preserve":
+                raise StageAInputError(
+                    "whole-program return import transfer requires an existing "
+                    "source import relation"
+                )
+            claim_name = f"returnImportClaim{node_id}_{claim_index}"
+            fact_name = f"returnImportFact{node_id}_{claim_index}"
+            import_claim_names.append(claim_name)
+            import_fact_names.append(fact_name)
+            import_claim_rows.append(
+                f"    let {claim_name} : ImportRegisterPreserveClaim := {{\n"
+                f"      imported := {_lean_external_target(claim['import'])}\n"
+                f"      sourceOriginalRegister := .{claim['source_original_register']}\n"
+                f"      sourceCandidateRegister := .{claim['source_candidate_register']}\n"
+                f"      targetOriginalRegister := .{claim['target_original_register']}\n"
+                f"      targetCandidateRegister := .{claim['target_candidate_register']}\n"
+                "    }"
+            )
+            import_fact_rows.append(
+                f"    have {fact_name} := "
+                "importRegisterPreserveOutputHolds_of_checked\n"
+                f"      staticProofContext world region{region_index}.inputInvariant\n"
+                f"      region{target_region_index}.inputInvariant {original_behavior}\n"
+                f"      {candidate_behavior} {claim_name} (by decide)\n"
+                "      originalState candidateState relatedForTransfer"
+            )
+        import_fact_setup = "\n".join([*import_claim_rows, *import_fact_rows])
+        if import_fact_setup:
+            import_fact_setup += "\n"
+        import_output_proof = (
+            "    have outputImports : importRegisterRelationsHold world\n"
+            f"        region{target_region_index}.inputInvariant.importRegisterRelations\n"
+            f"        ({original_behavior}.eval originalState).registers\n"
+            f"        ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            f"      simpa [RegionRelation.inputInvariant, region{target_region_index},\n"
+            "        importRegisterRelationsHold, "
+            "ImportRegisterPreserveClaim.targetRelation,\n"
+            + "        " + ", ".join(import_claim_names) + "] using "
+            + (
+                import_fact_names[0]
+                if len(import_fact_names) == 1
+                else "⟨" + ", ".join(import_fact_names) + "⟩"
+            )
+            + "\n"
+            if import_fact_names else
+            "    have outputImports : importRegisterRelationsHold world\n"
+            f"        region{target_region_index}.inputInvariant.importRegisterRelations\n"
+            f"        ({original_behavior}.eval originalState).registers\n"
+            f"        ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            f"      simp [RegionRelation.inputInvariant, region{target_region_index},\n"
+            "        importRegisterRelationsHold]\n"
+        )
         target_edge = {
             "target_node_id": target_node_id,
             "target_region_index": target_region_index,
@@ -2897,7 +2967,8 @@ def _lean_acceptance_running_node(
             "        (by simpa [outerFrameClaims] using stackHolds.2.2.2.2.2)\n"
             "        statesRelated\n"
             "    have relatedForTransfer := statesRelated\n"
-            "    rcases statesRelated with\n"
+            + import_fact_setup
+            + "    rcases statesRelated with\n"
             "      ⟨_worldValid, stackRangesValid, _stackMemory, _importsStatic,\n"
             "        _importsComplete, _importsMemory, _originalImmutable,\n"
             "        _candidateImmutable, relatedCore, _inputImportRegisters⟩\n"
@@ -2972,13 +3043,8 @@ def _lean_acceptance_running_node(
             "      simp [originalWritesField, evalNormalizedWrites]\n"
             f"    have candidateWrites : ({candidate_behavior}.eval candidateState).writes = [] := by\n"
             "      simp [candidateWritesField, evalNormalizedWrites]\n"
-            "    have outputImports : importRegisterRelationsHold world\n"
-            f"        region{target_region_index}.inputInvariant.importRegisterRelations\n"
-            f"        ({original_behavior}.eval originalState).registers\n"
-            f"        ({candidate_behavior}.eval candidateState).registers = true := by\n"
-            f"      simp [RegionRelation.inputInvariant, region{target_region_index},\n"
-            "        importRegisterRelationsHold]\n"
-            "    have outputDynamic : activeDynamicRegisterRangeRelationsHold "
+            + import_output_proof
+            + "    have outputDynamic : activeDynamicRegisterRangeRelationsHold "
             "staticProofContext world\n"
             f"        region{target_region_index}.inputInvariant.dynamicRegisterRangeRelations\n"
             f"        (({original_behavior}.eval originalState).nextMachineState "

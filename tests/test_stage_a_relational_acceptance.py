@@ -1505,6 +1505,100 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertNotIn("._native.", lean["stdout"])
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
+    def test_import_register_survives_checked_internal_call_and_return(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            iat_address = 0x400000 + 0x2000 + 0x40
+            code = (
+                b"\x8b\x35" + struct.pack("<I", iat_address)
+                + b"\xe8\x15\x00\x00\x00"
+                + b"\xeb\xfe"
+                + b"\x90" * 0x13
+                + b"\xc3"
+            )
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(_pe32_import_image(code, symbol="GetTickCount"))
+            candidate.write_bytes(_pe32_import_image(code, symbol="GetTickCount"))
+            pairs = [
+                {"original": register, "candidate": register}
+                for register in ("eax", "ebx", "ecx", "edx", "ebp")
+            ]
+            contract = root / "relation.json"
+            contract.write_text(json.dumps({
+                "format": "stage-a-relation-contract-v1",
+                "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
+                "observations": RELATIONAL_OBSERVATIONS,
+                "code_targets": [
+                    {"id": index, "original_rva": rva, "candidate_rva": rva}
+                    for index, rva in enumerate(
+                        (0x1000, 0x1006, 0x100B, 0x1020)
+                    )
+                ],
+                "regions": [
+                    {
+                        "id": name,
+                        "root": index == 0,
+                        "original": {"rva": rva, "size": size},
+                        "candidate": {"rva": rva, "size": size},
+                        "inputs": pairs,
+                        "outputs": pairs,
+                    }
+                    for index, (name, rva, size) in enumerate((
+                        ("iat-seed", 0x1000, 6),
+                        ("internal-call", 0x1006, 5),
+                        ("continuation-loop", 0x100B, 2),
+                        ("internal-return", 0x1020, 1),
+                    ))
+                ],
+                "padding": [{
+                    "id": "internal-alignment",
+                    "side": "both",
+                    "rva": 0x100D,
+                    "size": 0x13,
+                }],
+                "memory_relation": {"mode": "identity"},
+            }), encoding="utf-8")
+            prepared = root / "prepared"
+
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result.get("status"), "prepared", result)
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                result["composition_progress"]["status"], "ready_for_lean", result
+            )
+            import_analysis = json.loads(
+                (prepared / "relational-import-register-invariants.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(import_analysis["counts"]["indirect_import_calls"], 0)
+            self.assertGreaterEqual(
+                import_analysis["counts"]["internal_return_predecessors"], 1
+            )
+            return_step = next(
+                step for step in result["acceptance"]["node_steps"]
+                if step["kind"] == "return"
+            )
+            self.assertEqual(
+                [claim["kind"] for claim in return_step["import_transfer_claims"]],
+                ["preserve"],
+            )
+
+            lean = _run_lean_relational(
+                prepared / "lean", bundle="RelationalAcceptance"
+            )
+            self.assertEqual(lean["status"], "checked", lean)
+            self.assertNotIn("sorryAx", lean["stdout"])
+            self.assertNotIn("._native.", lean["stdout"])
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for whole-program proofs")
     def test_direct_call_with_prepared_stack_word_checks_whole_program_theorem(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

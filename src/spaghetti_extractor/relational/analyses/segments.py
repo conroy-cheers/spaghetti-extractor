@@ -1617,7 +1617,6 @@ def _segment_refinement_candidates(
             and call_outcome_supported
             and int(call_claim.get("callee_target_id", -1))
                 == int(target["numeric_id"])
-            and not target.get("input_import_relations")
             and not target.get("input_dynamic_range_relations")
             and edge.get("original_guard") == {
                 "op": "bool_constant", "value": True,
@@ -1829,7 +1828,11 @@ def _segment_refinement_candidates(
                 )
                 require(
                     "callee_input_import_relation_unsupported",
-                    not target.get("input_import_relations"),
+                    not target.get("input_import_relations")
+                    or (
+                        call_supported
+                        and import_transfer_claims is not None
+                    ),
                 )
                 require(
                     "callee_input_dynamic_range_relation_unsupported",

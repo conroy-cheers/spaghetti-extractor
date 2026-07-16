@@ -2804,8 +2804,14 @@ def _write_relational_segment_refinement_modules(
                         f"region{target_index}.inputInvariant\n"
                         f"      originalBehavior{source_index} "
                         f"candidateBehavior{source_index} :=\n"
-                        "  segmentTransitionClosed_of_direct_call staticProofContext "
-                        f"{edge_name} region{source_index}.inputInvariant "
+                        + (
+                            "  segmentTransitionClosed_of_direct_call_with_imports "
+                            "staticProofContext "
+                            if import_fact_names else
+                            "  segmentTransitionClosed_of_direct_call "
+                            "staticProofContext "
+                        )
+                        + f"{edge_name} region{source_index}.inputInvariant "
                         f"region{target_index}.inputInvariant\n"
                         f"    {source_window} {stack_amount} "
                         f"(BitVec.ofNat 32 {original_return}) "
@@ -2823,8 +2829,13 @@ def _write_relational_segment_refinement_modules(
                         f"(BitVec.ofNat 32 {candidate_return})\n"
                         "      · decide\n"
                         "      · decide)\n"
-                        f"    (by decide) (by decide) (by decide) "
-                        f"{shape_name} {state_name}"
+                        + (
+                            f"    (by decide) (by decide) {shape_name} "
+                            f"{state_name} {import_transfer_name}"
+                            if import_fact_names else
+                            f"    (by decide) (by decide) (by decide) "
+                            f"{shape_name} {state_name}"
+                        )
                     )
                 elif paired_prepared_writes:
                     prepared_claim_name = f"{prefix}PairedPreparedWritesClaim"

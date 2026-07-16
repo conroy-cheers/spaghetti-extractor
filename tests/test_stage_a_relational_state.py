@@ -1681,6 +1681,100 @@ class StageARelationalStateTests(StageARelationalTestBase):
         self.assertEqual(volatile["relations"], [], volatile)
         self.assertEqual(volatile["indirect_import_calls"], [], volatile)
 
+    def test_import_register_inference_composes_checked_internal_returns(self):
+        imported = {"dll": "kernel32.dll", "symbol": "GetTickCount"}
+
+        def identity_registers():
+            return {
+                register: {"op": "input_reg", "reg": register}
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            }
+
+        contract = {"regions": [
+            {"numeric_id": 0}, {"numeric_id": 1},
+            {"numeric_id": 2}, {"numeric_id": 3},
+        ]}
+        behaviors = [
+            {
+                "original_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {"op": "jump", "target": 1},
+                },
+                "candidate_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {"op": "jump", "target": 1},
+                },
+            },
+            {
+                "original_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {"op": "returned"},
+                },
+                "candidate_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {"op": "returned"},
+                },
+            },
+            {
+                "original_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {
+                        "op": "indirect_call",
+                        "target": {"op": "input_reg", "reg": "esi"},
+                        "continuation": 3,
+                    },
+                },
+                "candidate_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {
+                        "op": "indirect_call",
+                        "target": {"op": "input_reg", "reg": "esi"},
+                        "continuation": 3,
+                    },
+                },
+            },
+            {
+                "original_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {"op": "returned"},
+                },
+                "candidate_ir": {
+                    "registers": identity_registers(),
+                    "outcome": {"op": "returned"},
+                },
+            },
+        ]
+        seeds = [{
+            "region_index": 0,
+            "original_register": "esi",
+            "candidate_register": "esi",
+            "import": imported,
+        }]
+
+        without_return = _infer_import_register_invariants(
+            contract, behaviors, seeds
+        )
+        self.assertNotIn(
+            2, {row["region_index"] for row in without_return["relations"]}
+        )
+
+        analysis = _infer_import_register_invariants(
+            contract,
+            behaviors,
+            seeds,
+            internal_return_predecessors=[{
+                "source_region_index": 1,
+                "target_region_index": 2,
+            }],
+        )
+        self.assertEqual(
+            {row["region_index"] for row in analysis["relations"]}, {1, 2, 3}
+        )
+        self.assertEqual(analysis["counts"]["internal_return_predecessors"], 1)
+        self.assertEqual(analysis["counts"]["indirect_import_calls"], 1)
+
     def test_import_register_transfer_claims_are_unique_and_fail_closed(self):
         imported = {"dll": "kernel32.dll", "symbol": "TlsGetValue"}
         relation = {

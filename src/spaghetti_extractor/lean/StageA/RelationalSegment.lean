@@ -3684,6 +3684,54 @@ theorem segmentTransitionClosed_of_direct_call
       sourceInvariant targetInvariant originalBehavior candidateBehavior
       localCodeTargets localCodeTargetsResolved targetDynamicStackRelationsEmpty
 
+theorem segmentTransitionClosed_of_direct_call_with_imports
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (sourceWindow : StackWindowPair) (stackAmount : Nat)
+    (originalReturnAddress candidateReturnAddress : Word)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (localCodeTargets : List CodeTargetPair) (localValues : List ValueTargetPair)
+    (localCodeTargetsResolved :
+      context.codeMap.resolveIds edge.localCodeTargetIds = some localCodeTargets)
+    (localValuesResolved :
+      context.dataMap.resolveIds edge.localValueTargetIds = some localValues)
+    (contextValid : context.StructurallyValid)
+    (sourceWindowMember : sourceWindow ∈ sourceInvariant.stackWindows)
+    (stackAmountAtLeastWord : 4 <= stackAmount)
+    (stackAmountAligned : stackAmount % 4 = 0)
+    (sourceWindowEnoughBelow : stackAmount <= sourceWindow.bytesBelow)
+    (returnAddressesRelated : ∀ world,
+      wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList (context.relationalValueTargets world)
+        originalReturnAddress candidateReturnAddress = true)
+    (targetDynamicRelationsEmpty :
+      targetInvariant.dynamicRegisterRangeRelations = [])
+    (targetDynamicStackRelationsEmpty :
+      targetInvariant.dynamicStackRangeRelations = [])
+    (shape : DirectCallSegmentShapeClosed context edge sourceInvariant sourceWindow
+      stackAmount originalReturnAddress candidateReturnAddress originalBehavior
+      candidateBehavior)
+    (stateTransfer : NoWriteSegmentStateTransferClosed context edge sourceInvariant
+      targetInvariant originalBehavior candidateBehavior)
+    (importTransfer : NoWriteSegmentImportTransferClosed context edge sourceInvariant
+      targetInvariant originalBehavior candidateBehavior) :
+    SegmentTransitionClosed context edge sourceInvariant targetInvariant
+      originalBehavior candidateBehavior := by
+  apply segmentTransitionClosed_of_direct_call_with_transfers context edge
+    sourceInvariant targetInvariant sourceWindow stackAmount originalReturnAddress
+    candidateReturnAddress originalBehavior candidateBehavior localCodeTargets localValues
+    localCodeTargetsResolved localValuesResolved contextValid sourceWindowMember
+    stackAmountAtLeastWord stackAmountAligned sourceWindowEnoughBelow
+    returnAddressesRelated shape stateTransfer importTransfer
+  · unfold NoWriteSegmentDynamicTransferClosed
+    rw [localCodeTargetsResolved]
+    intro world originalState candidateState originalResult candidateResult related
+      originalEval candidateEval guardTrue
+    simp [targetDynamicRelationsEmpty, activeDynamicRegisterRangeRelationsHold]
+  · exact noWriteSegmentDynamicStackTransferClosed_of_empty context edge
+      sourceInvariant targetInvariant originalBehavior candidateBehavior
+      localCodeTargets localCodeTargetsResolved targetDynamicStackRelationsEmpty
+
 theorem segmentTransitionClosed_of_direct_call_stack_writes
     (context : StaticProofContext) (edge : RelationalSegmentEdge)
     (sourceInvariant targetInvariant : StateInvariant)

@@ -604,6 +604,8 @@
             stageARelationalAcceptanceSuite.cases.whole_program_equivalence_kernel_checks_without_sorry;
           stage-a-relational-tests-acceptance-nested-external =
             stageARelationalAcceptanceSuite.cases.nested_external_call_preserves_internal_runtime_frame_end_to_end;
+          stage-a-relational-tests-acceptance-import-register-return =
+            stageARelationalAcceptanceSuite.cases.import_register_survives_checked_internal_call_and_return;
           stage-a-relational-tests-acceptance-direct-stack-read =
             stageARelationalAcceptanceSuite.cases.direct_paired_stack_read_loop_closes_whole_program_theorem;
           stage-a-relational-tests-acceptance-below-frame-stack-read =
@@ -726,6 +728,7 @@
             stage-a-relational-tests-acceptance
             stage-a-relational-tests-acceptance-whole-program-kernel
             stage-a-relational-tests-acceptance-nested-external
+            stage-a-relational-tests-acceptance-import-register-return
             stage-a-relational-tests-acceptance-direct-stack-read
             stage-a-relational-tests-acceptance-below-frame-stack-read
             stage-a-relational-tests-acceptance-below-frame-stack-guard

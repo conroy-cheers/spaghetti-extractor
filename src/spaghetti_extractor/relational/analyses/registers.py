@@ -394,6 +394,8 @@ def _infer_import_register_invariants(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
     seeds: list[dict[str, Any]],
+    *,
+    internal_return_predecessors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     region_by_numeric_id = {
         int(region["numeric_id"]): index
@@ -469,6 +471,35 @@ def _infer_import_register_invariants(
                     "kind": "indirect_external_call_continuation",
                     "environment_barrier": True,
                 })
+
+    existing_edges = {
+        (
+            int(edge["source_region_index"]),
+            int(edge["target_region_index"]),
+            str(edge["kind"]),
+        )
+        for edge in edges
+    }
+    accepted_return_predecessors = 0
+    for predecessor in internal_return_predecessors or []:
+        source_index = int(predecessor.get("source_region_index", -1))
+        target_index = int(predecessor.get("target_region_index", -1))
+        key = (source_index, target_index, "internal_return")
+        if (
+            not 0 <= source_index < len(behaviors)
+            or not 0 <= target_index < len(behaviors)
+            or key in existing_edges
+        ):
+            continue
+        incoming[target_index].append(len(edges))
+        edges.append({
+            "source_region_index": source_index,
+            "target_region_index": target_index,
+            "kind": "internal_return",
+            "environment_barrier": False,
+        })
+        existing_edges.add(key)
+        accepted_return_predecessors += 1
 
     def transferred_source_fact(
         edge: dict[str, Any],
@@ -611,8 +642,33 @@ def _infer_import_register_invariants(
             "seeds": len(seeds),
             "relations": len(relation_rows),
             "indirect_import_calls": len(call_rows),
+            "internal_return_predecessors": accepted_return_predecessors,
         },
     }
+
+
+def _closed_internal_return_predecessors(
+    register_relations: dict[str, Any],
+) -> list[dict[str, int]]:
+    summaries = (
+        register_relations.get("return_slot_analysis", {})
+        .get("call_summary_analysis", {})
+        .get("summaries", [])
+    )
+    result: set[tuple[int, int]] = set()
+    for summary in summaries:
+        if not summary.get("closed"):
+            continue
+        continuation = int(summary.get("continuation_region_index", -1))
+        for return_index in summary.get("return_region_indices", []):
+            result.add((int(return_index), continuation))
+    return [
+        {
+            "source_region_index": source_index,
+            "target_region_index": target_index,
+        }
+        for source_index, target_index in sorted(result)
+    ]
 
 def _attach_import_register_invariants(
     contract: dict[str, Any], analysis: dict[str, Any],

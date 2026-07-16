@@ -133,6 +133,7 @@ from .analyses.segments import (
 from .analyses.registers import (
     _attach_import_register_invariants,
     _attach_import_seed_address_separations,
+    _closed_internal_return_predecessors,
     _exact_index_expression,
     _iat_import_register_seed_candidates,
     _iat_seed_read,
@@ -553,10 +554,6 @@ def stage_a_prove_relational(
             "candidates": import_register_seeds,
         },
     )
-    write_json(
-        out / "relational-import-register-invariants.json",
-        import_register_analysis,
-    )
     normalized = _attach_import_register_invariants(
         normalized, import_register_analysis
     )
@@ -572,6 +569,41 @@ def stage_a_prove_relational(
         import_call_candidates=import_register_analysis["indirect_import_calls"],
         original_bin=original_bin,
         candidate_bin=candidate_bin,
+    )
+    return_predecessors = _closed_internal_return_predecessors(register_relations)
+    composed_import_register_analysis = _infer_import_register_invariants(
+        normalized,
+        behaviors,
+        import_register_seeds,
+        internal_return_predecessors=return_predecessors,
+    )
+    if (
+        composed_import_register_analysis.get("relations")
+        != import_register_analysis.get("relations")
+        or composed_import_register_analysis.get("indirect_import_calls")
+        != import_register_analysis.get("indirect_import_calls")
+    ):
+        import_register_analysis = composed_import_register_analysis
+        normalized = _attach_import_register_invariants(
+            normalized, import_register_analysis
+        )
+        normalized, register_relations = _synthesize_register_relations(
+            normalized,
+            behaviors,
+            original_image_base=original_bin.image_base,
+            candidate_image_base=candidate_bin.image_base,
+            indirect_call_candidates=indirect_call_candidates,
+            import_call_candidates=import_register_analysis[
+                "indirect_import_calls"
+            ],
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+        )
+    else:
+        import_register_analysis = composed_import_register_analysis
+    write_json(
+        out / "relational-import-register-invariants.json",
+        import_register_analysis,
     )
     normalized, stack_window_analysis = _attach_stack_window_invariants(
         normalized, behaviors, register_relations, original_bin, candidate_bin
