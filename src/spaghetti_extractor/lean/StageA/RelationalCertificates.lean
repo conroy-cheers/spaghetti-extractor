@@ -445,6 +445,129 @@ def RelationalRuntimeCallStackHolds (context : StaticProofContext)
           continuations remainingOffsets
   | _, _, _ => False
 
+/-- Preserved import relations carried by every checked runtime call-frame
+inventory.  The concrete frame shape is checked by
+`RelationalRuntimeCallStackHolds`; this predicate tracks only the relation facts
+that must survive while those frames remain active. -/
+def RelationalRuntimeCallImportsHold (world : RelationalWorld) :
+    List ReturnSlotOffsetInventory -> Registers Word -> Registers Word -> Prop
+  | [], _, _ => True
+  | inventory :: inventories, originalRegisters, candidateRegisters =>
+      inventory.preservedImportsHold world originalRegisters candidateRegisters = true ∧
+        RelationalRuntimeCallImportsHold world inventories originalRegisters
+          candidateRegisters
+
+@[simp]
+theorem RelationalRuntimeCallImportsHold.empty (world : RelationalWorld)
+    (originalRegisters candidateRegisters : Registers Word) :
+    RelationalRuntimeCallImportsHold world [] originalRegisters candidateRegisters := by
+  trivial
+
+theorem RelationalRuntimeCallImportsHold.cons (world : RelationalWorld)
+    (inventory : ReturnSlotOffsetInventory)
+    (inventories : List ReturnSlotOffsetInventory)
+    (originalRegisters candidateRegisters : Registers Word)
+    (head : inventory.preservedImportsHold world originalRegisters
+      candidateRegisters = true)
+    (tail : RelationalRuntimeCallImportsHold world inventories originalRegisters
+      candidateRegisters) :
+    RelationalRuntimeCallImportsHold world (inventory :: inventories)
+      originalRegisters candidateRegisters := by
+  exact ⟨head, tail⟩
+
+theorem RelationalRuntimeCallImportsHold.head (world : RelationalWorld)
+    (inventory : ReturnSlotOffsetInventory)
+    (inventories : List ReturnSlotOffsetInventory)
+    (originalRegisters candidateRegisters : Registers Word)
+    (holds : RelationalRuntimeCallImportsHold world (inventory :: inventories)
+      originalRegisters candidateRegisters) :
+    inventory.preservedImportsHold world originalRegisters candidateRegisters = true := by
+  exact holds.1
+
+theorem RelationalRuntimeCallImportsHold.tail (world : RelationalWorld)
+    (inventory : ReturnSlotOffsetInventory)
+    (inventories : List ReturnSlotOffsetInventory)
+    (originalRegisters candidateRegisters : Registers Word)
+    (holds : RelationalRuntimeCallImportsHold world (inventory :: inventories)
+      originalRegisters candidateRegisters) :
+    RelationalRuntimeCallImportsHold world inventories originalRegisters
+      candidateRegisters := by
+  exact holds.2
+
+theorem RelationalRuntimeCallImportsHold.of_registers_eq
+    (world : RelationalWorld)
+    (beforeOriginal beforeCandidate afterOriginal afterCandidate : Registers Word)
+    (inventories : List ReturnSlotOffsetInventory)
+    (holds : RelationalRuntimeCallImportsHold world inventories beforeOriginal
+      beforeCandidate)
+    (originalRegisters : ∀ register,
+      afterOriginal.get register = beforeOriginal.get register)
+    (candidateRegisters : ∀ register,
+      afterCandidate.get register = beforeCandidate.get register) :
+    RelationalRuntimeCallImportsHold world inventories afterOriginal afterCandidate := by
+  induction inventories with
+  | nil => simp [RelationalRuntimeCallImportsHold]
+  | cons inventory inventories ih =>
+      simp only [RelationalRuntimeCallImportsHold] at holds ⊢
+      refine And.intro ?_ (ih holds.2)
+      unfold ReturnSlotOffsetInventory.preservedImportsHold
+        importRegisterRelationsHold at holds ⊢
+      simp only [List.all_eq_true] at holds ⊢
+      intro relation relationMember
+      have relationHolds := holds.1 relation relationMember
+      unfold ImportRegisterRelation.holds at relationHolds ⊢
+      simpa [originalRegisters relation.original,
+        candidateRegisters relation.candidate] using relationHolds
+
+/-- A compact, replayed certificate that one active frame's import relations
+remain valid across an internal paired step. -/
+structure RelationalRuntimeCallImportTransferClaim where
+  source : ReturnSlotOffsetInventory
+  target : ReturnSlotOffsetInventory
+deriving Repr, DecidableEq
+
+def RelationalRuntimeCallImportTransferClaim.checked
+    (claim : RelationalRuntimeCallImportTransferClaim)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
+  claim.source.preservesImportsAcross originalBehavior candidateBehavior &&
+    claim.target.checked &&
+    claim.source.preservedImports == claim.target.preservedImports
+
+theorem RelationalRuntimeCallImportsHold.afterInternal
+    (world : RelationalWorld)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List RelationalRuntimeCallImportTransferClaim)
+    (originalState candidateState : MachineState)
+    (checked : claims.all fun claim =>
+      claim.checked originalBehavior candidateBehavior)
+    (holds : RelationalRuntimeCallImportsHold world
+      (claims.map (fun claim => claim.source)) originalState.registers
+      candidateState.registers) :
+    RelationalRuntimeCallImportsHold world
+      (claims.map (fun claim => claim.target))
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers := by
+  induction claims with
+  | nil => simp
+  | cons claim claims ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      simp only [List.map_cons, RelationalRuntimeCallImportsHold] at holds ⊢
+      simp only [RelationalRuntimeCallImportTransferClaim.checked,
+        Bool.and_eq_true, beq_iff_eq] at checked
+      rcases checked with
+        ⟨⟨⟨sourcePreserved, targetChecked⟩, preservedImportsExact⟩,
+          remainingChecked⟩
+      have sourceAfter :=
+        ReturnSlotOffsetInventory.preservedImportsHold_after_of_checked
+          claim.source world originalBehavior candidateBehavior originalState
+          candidateState sourcePreserved holds.1
+      have targetAfter : claim.target.preservedImportsHold world
+          (originalBehavior.eval originalState).registers
+          (candidateBehavior.eval candidateState).registers = true := by
+        simpa only [ReturnSlotOffsetInventory.preservedImportsHold,
+          preservedImportsExact] using sourceAfter
+      exact ⟨targetAfter, ih remainingChecked holds.2⟩
+
 theorem RelationalRuntimeCallStackHolds.toMixed
     (context : StaticProofContext) (world : RelationalWorld)
     (original candidate : MachineState)
@@ -1070,6 +1193,8 @@ def WorldExecutionsRelated (context : StaticProofContext)
             control.Allows nodeId originalCalls frameOffsets = true ∧
             RelationalRuntimeCallStackHolds context originalState candidateState
               frames originalCalls frameOffsets ∧
+            RelationalRuntimeCallImportsHold originalWorld frameOffsets
+              originalState.registers candidateState.registers ∧
             RelationalRuntimeCallTargetsReachable graph reachability originalCalls ∧
             StateRel context originalWorld invariant originalState candidateState
   | .returned originalState originalWorld,
@@ -1105,6 +1230,8 @@ def WorldExecutionsRelated (context : StaticProofContext)
             control.Allows nodeId originalCalls frameOffsets = true ∧
             RelationalRuntimeCallStackHolds context originalState candidateState
               frames originalCalls frameOffsets ∧
+            RelationalRuntimeCallImportsHold originalWorld frameOffsets
+              originalState.registers candidateState.registers ∧
             RelationalRuntimeCallTargetsReachable graph reachability originalCalls ∧
             StateRel context originalWorld invariant originalState candidateState ∧
             WorldExternalCallbackRuntimesRelated context graph invariants reachability
@@ -1135,6 +1262,8 @@ def WorldExternalProtocolActionsRelated (context : StaticProofContext)
             control.Allows nodeId originalSuspension.calls frameOffsets = true ∧
             RelationalRuntimeCallStackHolds context originalResult.state
               candidateResult.state frames originalSuspension.calls frameOffsets ∧
+            RelationalRuntimeCallImportsHold originalResult.world frameOffsets
+              originalResult.state.registers candidateResult.state.registers ∧
             RelationalRuntimeCallTargetsReachable graph reachability
               originalSuspension.calls ∧
             StateRel context originalResult.world
@@ -1251,8 +1380,8 @@ theorem stepWorldExternalSuspension_related (context : StaticProofContext)
       rcases actionsRelated with
         ⟨resultWorldEqual, nodeId, node, frames, frameOffsets, nodeFound,
           callbackContinuationAllowed, targetFound, reachable, invariantFound, controlAllowed,
-          stackHolds,
-          stackTargetsReachable, statesRelated, resultCallbacksRelated,
+          stackHolds, frameImportsHold, stackTargetsReachable, statesRelated,
+          resultCallbacksRelated,
           resultCallbackFramesHold⟩
       unfold stepWorldExternalSuspension
       rw [originalAction, candidateAction]
@@ -1264,7 +1393,8 @@ theorem stepWorldExternalSuspension_related (context : StaticProofContext)
               refine ⟨True.intro, continuationEqual, callsEqual, ?_,
                 resultWorldEqual, nodeId, node, originalSuspension.site.targetInvariant,
                 frames, frameOffsets, nodeFound, targetFound, reachable, invariantFound,
-                controlAllowed, stackHolds, stackTargetsReachable, statesRelated⟩
+                controlAllowed, stackHolds, frameImportsHold,
+                stackTargetsReachable, statesRelated⟩
               exact congrArg (fun index => index + 1) eventEqual
           | cons candidateCallback candidateCallbacks =>
               simp [WorldExternalCallbackRuntimesRelated] at callbacksRelated
@@ -1281,7 +1411,7 @@ theorem stepWorldExternalSuspension_related (context : StaticProofContext)
                 resultWorldEqual, (by simp), nodeId, node,
                 originalSuspension.site.targetInvariant, frames, frameOffsets, nodeFound,
                 callbackTargetAllowed, targetFound, reachable, invariantFound,
-                controlAllowed, stackHolds,
+                controlAllowed, stackHolds, frameImportsHold,
                 stackTargetsReachable, statesRelated, resultCallbacksRelated,
                 resultCallbackFramesHold⟩
               exact congrArg (fun index => index + 1) eventEqual
@@ -1303,8 +1433,9 @@ theorem stepWorldExternalSuspension_related (context : StaticProofContext)
         entryWorldEqual, (by simp), nodeId, node, originalEntry.entryInvariant, [], [],
         nodeFound, callbackTargetAllowed, targetFound, reachable, invariantFound,
         controlAllowed, ?_, ?_,
-        callbackEntry.2.2.2.2.2.2.2.2.2, ?_, ?_⟩
+        ?_, callbackEntry.2.2.2.2.2.2.2.2.2, ?_, ?_⟩
       · simp [RelationalRuntimeCallStackHolds]
+      · simp [RelationalRuntimeCallImportsHold]
       · simp [RelationalRuntimeCallTargetsReachable]
       · simp only [WorldExternalCallbackRuntimesRelated]
         exact ⟨⟨suspensionRelation, entryRelation,
@@ -1531,6 +1662,8 @@ def RunningProductNodeStepRefined (context : StaticProofContext)
         control.Allows nodeId calls frameOffsets = true ->
         RelationalRuntimeCallStackHolds context originalState candidateState
           frames calls frameOffsets ->
+        RelationalRuntimeCallImportsHold world frameOffsets originalState.registers
+          candidateState.registers ->
         RelationalRuntimeCallTargetsReachable graph reachability calls ->
         StateRel context world invariant originalState candidateState ->
         worldRelationalObservationsRelated context
@@ -1559,6 +1692,8 @@ def CallbackRunningProductNodeStepRefined (context : StaticProofContext)
         control.Allows nodeId calls frameOffsets = true →
         RelationalRuntimeCallStackHolds context originalState candidateState
           frames calls frameOffsets →
+        RelationalRuntimeCallImportsHold world frameOffsets originalState.registers
+          candidateState.registers →
         RelationalRuntimeCallTargetsReachable graph reachability calls →
         StateRel context world invariant originalState candidateState →
         originalCallbacks ≠ [] →
@@ -1630,7 +1765,7 @@ theorem reachableCallbackRunningProductNodesRefined_of_no_protocol_sites
   unfold CallbackRunningProductNodeStepRefined
   rw [nodeFound, invariantFound]
   intro frames calls frameOffsets eventIndex world originalState candidateState
-    originalCallbacks candidateCallbacks controlAllowed stackHolds
+    originalCallbacks candidateCallbacks controlAllowed stackHolds frameImportsHold
     stackTargetsReachable statesRelated callbacksNonempty callbacksRelated
     callbackFramesHold
   exact False.elim
@@ -1794,8 +1929,8 @@ theorem productStepRefinement_of_reachable_nodes (context : StaticProofContext)
       rcases related with
         ⟨targetEqual, callsEqual, eventEqual, worldEqual,
           nodeId, node, invariant, frames, frameOffsets, nodeFound, targetFound,
-          reachable, invariantFound, controlAllowed, stackHolds, stackTargetsReachable,
-          statesRelated⟩
+          reachable, invariantFound, controlAllowed, stackHolds, frameImportsHold,
+          stackTargetsReachable, statesRelated⟩
       subst candidateTarget
       subst candidateCalls
       subst candidateEventIndex
@@ -1807,8 +1942,8 @@ theorem productStepRefinement_of_reachable_nodes (context : StaticProofContext)
       rw [nodeFound, invariantFound] at nodeStep
       subst originalTarget
       exact nodeStep frames originalCalls frameOffsets originalEventIndex originalWorld
-        originalState candidateState controlAllowed stackHolds stackTargetsReachable
-        statesRelated
+        originalState candidateState controlAllowed stackHolds frameImportsHold
+        stackTargetsReachable statesRelated
   case returned.returned originalState originalWorld candidateState candidateWorld =>
       rcases related with ⟨worldEqual, statesRelated⟩
       subst candidateWorld
@@ -1835,8 +1970,8 @@ theorem productStepRefinement_of_reachable_nodes (context : StaticProofContext)
         ⟨targetEqual, callsEqual, eventEqual, worldEqual, callbacksNonempty,
           nodeId, node, invariant, frames, frameOffsets, nodeFound,
           callbackTargetAllowed, targetFound, reachable, invariantFound, controlAllowed,
-          stackHolds,
-          stackTargetsReachable, statesRelated, callbacksRelated, callbackFramesHold⟩
+          stackHolds, frameImportsHold, stackTargetsReachable, statesRelated,
+          callbacksRelated, callbackFramesHold⟩
       subst candidateTarget
       subst candidateCalls
       subst candidateEventIndex
@@ -1849,7 +1984,7 @@ theorem productStepRefinement_of_reachable_nodes (context : StaticProofContext)
       subst originalTarget
       exact nodeStep frames originalCalls frameOffsets originalEventIndex originalWorld
         originalState candidateState originalCallbacks candidateCallbacks
-        controlAllowed stackHolds stackTargetsReachable statesRelated
+        controlAllowed stackHolds frameImportsHold stackTargetsReachable statesRelated
         callbacksNonempty callbacksRelated callbackFramesHold
   case fault.fault => exact ⟨True.intro, True.intro⟩
   all_goals simp [WorldExecutionsRelated] at related
@@ -2052,12 +2187,13 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
         _entrypointRoot, _terminalResultExact⟩
     refine ⟨rfl, rfl, rfl, rfl, launch.rootNodeId, node,
       launch.rootInvariant, [], [], nodeFound, targetFound, ?_, invariantFound,
-      certificate.launchControlAllowed, ?_, ?_, related.stateRel⟩
+      certificate.launchControlAllowed, ?_, ?_, ?_, related.stateRel⟩
     . have allRoots := certificate.reachabilityClosed.2.1.2.1
       unfold RelationalProductReachabilityEvidence.rootsIncluded at allRoots
       exact List.all_eq_true.mp allRoots launch.rootNodeId
         (List.contains_iff_mem.mp rootListed)
     . simp [RelationalRuntimeCallStackHolds]
+    . simp [RelationalRuntimeCallImportsHold]
     . simp [RelationalRuntimeCallTargetsReachable]
   . exact productStepRefinement_of_reachable_nodes context graph invariants reachability
       control callbackTargets original candidate certificate.environmentsRefined

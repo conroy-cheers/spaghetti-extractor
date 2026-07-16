@@ -186,6 +186,20 @@ def _whole_program_acceptance_plan(
             )
 
         max_frame_aliases = 8
+        max_frame_preserved_imports = 8
+
+        def import_relation_key(relation: dict[str, Any]) -> str:
+            return json.dumps({
+                "original": str(relation["original"]),
+                "candidate": str(relation["candidate"]),
+                "import": relation["import"],
+            }, sort_keys=True, separators=(",", ":"))
+
+        def import_relation_payload(key: str) -> dict[str, Any]:
+            payload = json.loads(key)
+            if not isinstance(payload, dict):
+                raise StageAInputError("invalid preserved import relation key")
+            return payload
 
         def inventory_key(payload: dict[str, Any]) -> tuple[
             tuple[str, int, str, int], ...
@@ -194,10 +208,22 @@ def _whole_program_acceptance_plan(
 
         def inventory_payload(
             locations: tuple[tuple[str, int, str, int], ...],
+            preserved_imports: tuple[str, ...] = (),
         ) -> dict[str, Any]:
-            return {
+            payload = {
                 "locations": [location_payload(location) for location in locations],
             }
+            if preserved_imports:
+                payload["preserved_imports"] = [
+                    import_relation_payload(key) for key in preserved_imports
+                ]
+            return payload
+
+        def inventory_import_key(payload: dict[str, Any]) -> tuple[str, ...]:
+            return tuple(sorted(
+                import_relation_key(relation)
+                for relation in payload.get("preserved_imports", [])
+            ))
 
         def choose_location_transfers(
             *, source_node_id: int, target_node_id: int,
@@ -522,8 +548,21 @@ def _whole_program_acceptance_plan(
             target_inventories: tuple[
                 tuple[tuple[str, int, str, int], ...], ...
             ],
+            source_imports: tuple[tuple[str, ...], ...] | None = None,
+            target_imports: tuple[tuple[str, ...], ...] | None = None,
         ) -> list[dict[str, Any]] | None:
             if len(source_inventories) != len(target_inventories):
+                return None
+            source_imports = source_imports or tuple(
+                () for _ in source_inventories
+            )
+            target_imports = target_imports or tuple(
+                () for _ in target_inventories
+            )
+            if (
+                len(source_imports) != len(source_inventories)
+                or len(target_imports) != len(target_inventories)
+            ):
                 return None
             relation_row = register_relations.get("regions", [])[source_node_id]
             local_rules = relation_row.get(
@@ -532,9 +571,13 @@ def _whole_program_acceptance_plan(
             original = behaviors[source_node_id].get("original_ir") or {}
             candidate = behaviors[source_node_id].get("candidate_ir") or {}
             inventory_claims = []
-            for source_inventory, target_inventory in zip(
-                source_inventories, target_inventories, strict=True
+            for source_inventory, target_inventory, source_frame_imports, \
+                    target_frame_imports in zip(
+                source_inventories, target_inventories, source_imports,
+                target_imports, strict=True
             ):
+                if source_frame_imports != target_frame_imports:
+                    return None
                 transfers = []
                 for target_location in target_inventory:
                     candidates = []
@@ -607,8 +650,12 @@ def _whole_program_acceptance_plan(
                     )[0])
                 inventory_claims.append({
                     "profile": "return_slot_frame_inventory_transfer_v1",
-                    "source": inventory_payload(source_inventory),
-                    "target": inventory_payload(target_inventory),
+                    "source": inventory_payload(
+                        source_inventory, source_frame_imports
+                    ),
+                    "target": inventory_payload(
+                        target_inventory, target_frame_imports
+                    ),
                     "transfers": transfers,
                 })
             return inventory_claims
@@ -771,15 +818,17 @@ def _whole_program_acceptance_plan(
         pending: list[tuple[
             int, tuple[int, ...],
             tuple[tuple[tuple[str, int, str, int], ...], ...],
-        ]] = [(roots[0], (), ())]
+            tuple[tuple[str, ...], ...],
+        ]] = [(roots[0], (), (), ())]
         seen: set[tuple[
             int, tuple[int, ...],
             tuple[tuple[tuple[str, int, str, int], ...], ...],
+            tuple[tuple[str, ...], ...],
         ]] = set()
         control_incomplete = False
         while pending and not control_incomplete:
-            node_id, calls, frame_inventories = pending.pop(0)
-            key = (node_id, calls, frame_inventories)
+            node_id, calls, frame_inventories, frame_imports = pending.pop(0)
+            key = (node_id, calls, frame_inventories, frame_imports)
             if key in seen:
                 continue
             if len(seen) >= 512 or len(calls) > 32:
@@ -791,12 +840,17 @@ def _whole_program_acceptance_plan(
                 control_incomplete = True
                 break
             seen.add(key)
-            if len(frame_inventories) != len(calls):
+            if (
+                len(frame_inventories) != len(calls)
+                or len(frame_imports) != len(calls)
+            ):
                 block(
                     "runtime_frame_offset_inventory_incomplete",
                     f"product node {node_id} has {len(calls)} runtime frames but "
-                    f"{len(frame_inventories)} checked return-slot inventories",
-                    "propagate a checked return-slot alias inventory for every live runtime frame",
+                    f"{len(frame_inventories)} checked return-slot inventories and "
+                    f"{len(frame_imports)} preserved-import inventories",
+                    "propagate checked return-slot aliases and preserved-import "
+                    "relations for every live runtime frame",
                 )
                 control_incomplete = True
                 break
@@ -813,12 +867,28 @@ def _whole_program_acceptance_plan(
                 )
                 control_incomplete = True
                 break
+            if any(
+                len(imports) > max_frame_preserved_imports
+                or len(set(imports)) != len(imports)
+                for imports in frame_imports
+            ):
+                block(
+                    "runtime_frame_import_inventory_invalid",
+                    f"product node {node_id} has a duplicate or oversized "
+                    "preserved-import inventory",
+                    "emit no more than eight unique checked import-register "
+                    "relations for every live frame",
+                )
+                control_incomplete = True
+                break
             state = {
                 "node_id": node_id,
                 "calls": list(calls),
                 "frame_offsets": [
-                    inventory_payload(inventory)
-                    for inventory in frame_inventories
+                    inventory_payload(inventory, imports)
+                    for inventory, imports in zip(
+                        frame_inventories, frame_imports, strict=True
+                    )
                 ],
             }
             control_states.append(state)
@@ -1002,6 +1072,7 @@ def _whole_program_acceptance_plan(
                     successor_locations = transfer_locations(
                         node_id, target_node_id, frame_inventories
                     )
+                    successor_imports = frame_imports
                     if successor_locations is None:
                         control_incomplete = True
                         break
@@ -1031,6 +1102,7 @@ def _whole_program_acceptance_plan(
                     successor_locations = (
                         (location_key(seed["offsets"]),), *transferred_outer,
                     )
+                    successor_imports = ((), *frame_imports)
                 elif frame_operation == "return_pop":
                     return_row = register_relations.get("regions", [])[node_id]
                     active_inventory = frame_inventories[0]
@@ -1064,6 +1136,7 @@ def _whole_program_acceptance_plan(
                     if successor_locations is None:
                         control_incomplete = True
                         break
+                    successor_imports = frame_imports[1:]
                 elif frame_operation == "external_pop":
                     active_inventory = frame_inventories[0]
                     if ("esp", 0, "esp", 0) not in active_inventory:
@@ -1095,6 +1168,7 @@ def _whole_program_acceptance_plan(
                         (location_key(claim["target"]),)
                         for claim in outer_claims
                     )
+                    successor_imports = frame_imports[1:]
                 else:
                     successor_locations = external_transfer_locations(
                         node_id, target_node_id, frame_inventories
@@ -1102,7 +1176,11 @@ def _whole_program_acceptance_plan(
                     if successor_locations is None:
                         control_incomplete = True
                         break
-                pending.append((target_node_id, successor_calls, successor_locations))
+                    successor_imports = frame_imports
+                pending.append((
+                    target_node_id, successor_calls, successor_locations,
+                    successor_imports,
+                ))
 
     candidate_by_edge = {
         int(candidate["edge_index"]): candidate for candidate in segment_candidates
@@ -1381,7 +1459,15 @@ def _whole_program_acceptance_plan(
                     for item in target_control_row["frame_offsets"]
                 )
                 outer_frame_claims = internal_transfer_claims(
-                    node_id, source_outer_inventories, target_inventories
+                    node_id, source_outer_inventories, target_inventories,
+                    tuple(
+                        inventory_import_key(item)
+                        for item in control_row["frame_offsets"][1:]
+                    ),
+                    tuple(
+                        inventory_import_key(item)
+                        for item in target_control_row["frame_offsets"]
+                    ),
                 )
                 if outer_frame_claims is None:
                     block(
@@ -1682,7 +1768,15 @@ def _whole_program_acceptance_plan(
                     for item in target_control_row["frame_offsets"][1:]
                 )
                 selected_claims = internal_transfer_claims(
-                    node_id, source_locations, target_inventories
+                    node_id, source_locations, target_inventories,
+                    tuple(
+                        inventory_import_key(item)
+                        for item in control_row["frame_offsets"]
+                    ),
+                    tuple(
+                        inventory_import_key(item)
+                        for item in target_control_row["frame_offsets"][1:]
+                    ),
                 )
                 if selected_claims is None:
                     block(
@@ -1837,6 +1931,14 @@ def _whole_program_acceptance_plan(
                         inventory_key(item)
                         for item in target_control_row["frame_offsets"]
                     ),
+                    tuple(
+                        inventory_import_key(item)
+                        for item in control_row["frame_offsets"]
+                    ),
+                    tuple(
+                        inventory_import_key(item)
+                        for item in target_control_row["frame_offsets"]
+                    ),
                 )
                 if selected_claims is None:
                     block(
@@ -1983,6 +2085,14 @@ def _whole_program_acceptance_plan(
                 source_inventories,
                 tuple(
                     inventory_key(item)
+                    for item in target_row["frame_offsets"]
+                ),
+                tuple(
+                    inventory_import_key(item)
+                    for item in control_row["frame_offsets"]
+                ),
+                tuple(
+                    inventory_import_key(item)
                     for item in target_row["frame_offsets"]
                 ),
             )
@@ -2180,13 +2290,28 @@ def _lean_acceptance_empty_stack(node_id: int) -> str:
     )
 
 def _lean_return_slot_offset_inventory(inventory: dict[str, Any]) -> str:
+    preserved_imports = inventory.get("preserved_imports", [])
+    preserved_imports_field = (
+        ", preservedImports := ["
+        + ", ".join(
+            "{ original := ." + str(relation["original"])
+            + ", candidate := ." + str(relation["candidate"])
+            + ", imported := " + _lean_external_target(relation["import"])
+            + " }"
+            for relation in preserved_imports
+        )
+        + "]"
+        if preserved_imports else ""
+    )
     return (
         "({ locations := ["
         + ", ".join(
             _lean_return_slot_offset_pair(location)
             for location in inventory["locations"]
         )
-        + "] } : ReturnSlotOffsetInventory)"
+        + "]"
+        + preserved_imports_field
+        + " } : ReturnSlotOffsetInventory)"
     )
 
 def _lean_external_return_slot_transfer_claim(claim: dict[str, Any]) -> str:
@@ -2398,6 +2523,12 @@ def _lean_acceptance_running_target(
     frames: str = "[]", calls: str = "[]", frame_offsets: str = "[]",
     stack_targets_proof: str = "(by simp [RelationalRuntimeCallTargetsReachable])",
     target_control_proof: str = "(by decide)",
+    frame_imports_proof: str = (
+        "(by simp [RelationalRuntimeCallImportsHold, "
+        "ReturnSlotOffsetInventory.zero, ReturnSlotOffsetInventory.singleton, "
+        "ReturnSlotOffsetInventory.preservedImportsHold, "
+        "importRegisterRelationsHold])"
+    ),
     observation_proof: str = "True.intro",
     world_equal_proof: str = "rfl",
 ) -> str:
@@ -2414,7 +2545,7 @@ def _lean_acceptance_running_target(
         f"    relationalProductGraph.nodes[{target_node_id}],\n"
         f"    region{target_region_index}.inputInvariant, {frames}, {frame_offsets},\n"
         f"    (by decide), targetNodeTarget, ?_, targetInvariant, {target_control_proof},\n"
-        f"    stackHoldsNext, {stack_targets_proof}, "
+        f"    stackHoldsNext, {frame_imports_proof}, {stack_targets_proof}, "
         "nextStatesRelated⟩\n"
         "  decide"
     )
@@ -2482,7 +2613,7 @@ def _lean_acceptance_running_node(
         f"      {target_id} := by decide\n"
         "  rw [sourceTarget]\n"
         "  intro frames calls frameOffsets eventIndex world originalState candidateState\n"
-        "    controlAllowed stackHolds stackTargetsReachable statesRelated\n"
+        "    controlAllowed stackHolds frameImportsHold stackTargetsReachable statesRelated\n"
         "  have controlMember := controlAllowed\n"
         "  simp only [ProductControlProfile.Allows, Bool.and_eq_true] at controlMember\n"
         "  unfold DecodedWorldProgram.transitionSystem\n"
@@ -3878,6 +4009,30 @@ def _lean_acceptance_running_node(
             f"      rw [evalNormalizedRegisters_get,\n"
             f"        {candidate_product_behavior}RegistersGet]\n"
             "      rfl)\n"
+            "  have frameImportsNext : RelationalRuntimeCallImportsHold world\n"
+            f"      frameOffsets ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers := by\n"
+            "    exact RelationalRuntimeCallImportsHold.of_registers_eq world\n"
+            "      originalState.registers candidateState.registers\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers\n"
+            "      frameOffsets frameImportsHold\n"
+            "      (by\n"
+            "        intro register\n"
+            "        change (evalNormalizedRegisters originalState\n"
+            f"          {original_product_behavior}.registers).get register =\n"
+            "            originalState.registers.get register\n"
+            f"        rw [evalNormalizedRegisters_get,\n"
+            f"          {original_product_behavior}RegistersGet]\n"
+            "        rfl)\n"
+            "      (by\n"
+            "        intro register\n"
+            "        change (evalNormalizedRegisters candidateState\n"
+            f"          {candidate_product_behavior}.registers).get register =\n"
+            "            candidateState.registers.get register\n"
+            f"        rw [evalNormalizedRegisters_get,\n"
+            f"          {candidate_product_behavior}RegistersGet]\n"
+            "        rfl)\n"
             "  have targetControlAllowed : productControlProfile.Allows\n"
             f"      {int(edge['target_node_id'])} calls frameOffsets = true := by\n"
             "    simpa [productControlProfile, ProductControlProfile.Allows] using\n"
@@ -3896,6 +4051,7 @@ def _lean_acceptance_running_node(
                 frame_offsets="frameOffsets",
                 stack_targets_proof="stackTargetsReachable",
                 target_control_proof="targetControlAllowed",
+                frame_imports_proof="frameImportsNext",
             )
         )
     if step["kind"] == "jump":

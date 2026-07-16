@@ -140,6 +140,7 @@ from .analyses.registers import (
     _infer_import_register_invariants,
     _infer_register_output_relation,
     _paired_constant_relation,
+    _propose_internal_callsite_preservation_summaries,
     _refine_contract_bounds,
     _register_relation_implies,
     _register_relation_join,
@@ -570,19 +571,38 @@ def stage_a_prove_relational(
         original_bin=original_bin,
         candidate_bin=candidate_bin,
     )
-    return_predecessors = _closed_internal_return_predecessors(register_relations)
-    composed_import_register_analysis = _infer_import_register_invariants(
-        normalized,
-        behaviors,
-        import_register_seeds,
-        internal_return_predecessors=return_predecessors,
-    )
-    if (
-        composed_import_register_analysis.get("relations")
-        != import_register_analysis.get("relations")
-        or composed_import_register_analysis.get("indirect_import_calls")
-        != import_register_analysis.get("indirect_import_calls")
-    ):
+    callsite_preservation_analysis: dict[str, Any] = {}
+    max_callsite_rounds = max(1, len(normalized.get("regions", [])) + 1)
+    for _ in range(max_callsite_rounds):
+        callsite_preservation_analysis = (
+            _propose_internal_callsite_preservation_summaries(
+                normalized,
+                behaviors,
+                import_register_analysis,
+                register_relations,
+            )
+        )
+        callsite_summary_edges = callsite_preservation_analysis[
+            "proposal_edges"
+        ]
+        return_predecessors = _closed_internal_return_predecessors(
+            register_relations,
+        )
+        composed_import_register_analysis = _infer_import_register_invariants(
+            normalized,
+            behaviors,
+            import_register_seeds,
+            internal_return_predecessors=return_predecessors,
+            callsite_summary_predecessors=callsite_summary_edges,
+        )
+        if (
+            composed_import_register_analysis.get("relations")
+            == import_register_analysis.get("relations")
+            and composed_import_register_analysis.get("indirect_import_calls")
+            == import_register_analysis.get("indirect_import_calls")
+        ):
+            import_register_analysis = composed_import_register_analysis
+            break
         import_register_analysis = composed_import_register_analysis
         normalized = _attach_import_register_invariants(
             normalized, import_register_analysis
@@ -600,7 +620,14 @@ def stage_a_prove_relational(
             candidate_bin=candidate_bin,
         )
     else:
-        import_register_analysis = composed_import_register_analysis
+        callsite_preservation_analysis = {
+            **callsite_preservation_analysis,
+            "status": "incomplete_fixed_point_budget_exhausted",
+        }
+    write_json(
+        out / "relational-callsite-preservation.json",
+        callsite_preservation_analysis,
+    )
     write_json(
         out / "relational-import-register-invariants.json",
         import_register_analysis,

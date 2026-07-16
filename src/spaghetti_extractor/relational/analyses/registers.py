@@ -12,6 +12,10 @@ from ..extraction import (
 )
 from ..model import _semantic_constant_bool, _semantic_hash
 from ..schema import STAGE_A_RELATIONAL_MODEL_ID
+from .callsite import (
+    CALLSITE_PRESERVATION_ANALYSIS_FORMAT,
+    propose_callsite_preserved_register_summary,
+)
 from .control import _constant_read32_address, _immutable_image_u32
 from .external import _semantic_external_target_identity
 from .invariants import _semantic_edges
@@ -32,6 +36,9 @@ _PE32_EXTERNAL_REGISTER_POLICY_ID = "win32-cdecl-stdcall-registers-v1"
 _PE32_EXTERNAL_PRESERVED_REGISTERS = frozenset({
     "ebx", "esi", "edi", "ebp", "esp",
 })
+_CALLSITE_PRESERVATION_ARTIFACT_FORMAT = (
+    "stage-a-relational-callsite-preservation-v1"
+)
 
 
 def _machine_result_invariant_relation(relation: dict[str, Any]) -> str:
@@ -390,12 +397,452 @@ def _attach_import_seed_address_separations(
         ))
     return refined
 
+
+def _callsite_generation_incomplete(
+    callsite: int,
+    code: str,
+    *,
+    node_id: int | None = None,
+    reference: Any = None,
+    nested_reason_codes: list[str] | None = None,
+) -> dict[str, Any]:
+    issue: dict[str, Any] = {"code": code}
+    if node_id is not None:
+        issue["node_id"] = int(node_id)
+    if reference is not None:
+        issue["reference"] = reference
+    if nested_reason_codes:
+        issue["nested_reason_codes"] = sorted(set(nested_reason_codes))
+    return {
+        "format": CALLSITE_PRESERVATION_ANALYSIS_FORMAT,
+        "status": "incomplete",
+        "callsite_id": int(callsite),
+        "reason_codes": [code],
+        "issues": [issue],
+        "certificate": None,
+    }
+
+
+def _translate_callsite_behavior(
+    behavior: dict[str, Any],
+    region_by_target_id: dict[int, int],
+) -> tuple[dict[str, Any], list[str]]:
+    translated = json.loads(json.dumps(behavior))
+    outcome = translated.get("outcome")
+    if not isinstance(outcome, dict):
+        return translated, ["normalized_outcome_missing"]
+    operation = outcome.get("op")
+    target_fields: tuple[str, ...]
+    if operation == "jump":
+        target_fields = ("target",)
+    elif operation == "branch":
+        target_fields = ("taken", "fallthrough")
+    elif operation == "call":
+        target_fields = ("target", "continuation")
+    else:
+        target_fields = ()
+    issues: list[str] = []
+    for field in target_fields:
+        target_id = outcome.get(field)
+        if (
+            not isinstance(target_id, int)
+            or isinstance(target_id, bool)
+            or int(target_id) not in region_by_target_id
+        ):
+            issues.append(f"{field}_target_unmapped")
+            continue
+        outcome[field] = region_by_target_id[int(target_id)]
+    return translated, sorted(set(issues))
+
+
+def _propose_internal_callsite_preservation_summaries(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    import_register_analysis: dict[str, Any],
+    register_relations: dict[str, Any],
+) -> dict[str, Any]:
+    """Propose callsite-local preservation without granting proof authority.
+
+    Static return summaries delimit each callee and its exact return inventory.
+    Normalized control targets are converted to paired region indices, then the
+    standalone analyzer checks syntactic register preservation over that finite
+    graph.  Every result remains untrusted until generated Lean replays it.
+    """
+    regions = contract.get("regions", [])
+    duplicate_target_ids: set[int] = set()
+    region_by_target_id: dict[int, int] = {}
+    for region_index, region in enumerate(regions):
+        target_id = region.get("numeric_id")
+        if not isinstance(target_id, int) or isinstance(target_id, bool):
+            continue
+        if int(target_id) in region_by_target_id:
+            duplicate_target_ids.add(int(target_id))
+            continue
+        region_by_target_id[int(target_id)] = region_index
+    for target_id in duplicate_target_ids:
+        region_by_target_id.pop(target_id, None)
+
+    relations_by_callsite: dict[int, list[dict[str, Any]]] = {}
+    for row in import_register_analysis.get("relations", []):
+        try:
+            callsite = int(row["region_index"])
+            relation = {
+                "original": str(row["original_register"]),
+                "candidate": str(row["candidate_register"]),
+                "import": json.loads(json.dumps(row["import"])),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0 <= callsite < len(behaviors):
+            continue
+        relations_by_callsite.setdefault(callsite, []).append(relation)
+    for callsite, relations in relations_by_callsite.items():
+        relations_by_callsite[callsite] = sorted(
+            {
+                json.dumps(relation, sort_keys=True, separators=(",", ":")):
+                    relation
+                for relation in relations
+            }.values(),
+            key=lambda relation: json.dumps(
+                relation, sort_keys=True, separators=(",", ":")
+            ),
+        )
+
+    raw_summaries = (
+        register_relations.get("return_slot_analysis", {})
+        .get("call_summary_analysis", {})
+        .get("summaries", [])
+    )
+    summaries_by_callsite: dict[int, list[dict[str, Any]]] = {}
+    duplicate_callsites: set[int] = set()
+    for summary in raw_summaries:
+        if not isinstance(summary, dict):
+            continue
+        try:
+            callsite = int(summary["callsite_region_index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        summaries_by_callsite.setdefault(callsite, []).append(summary)
+    summary_by_callsite = {
+        callsite: sorted(
+            summaries,
+            key=lambda summary: json.dumps(
+                summary, sort_keys=True, separators=(",", ":")
+            ),
+        )[0]
+        for callsite, summaries in summaries_by_callsite.items()
+    }
+    duplicate_callsites.update(
+        callsite for callsite, summaries in summaries_by_callsite.items()
+        if len(summaries) != 1
+    )
+
+    translated_behaviors: list[dict[str, Any]] = []
+    translation_issues: dict[int, list[str]] = {}
+    for region_index, behavior_pair in enumerate(behaviors):
+        original, original_issues = _translate_callsite_behavior(
+            behavior_pair.get("original_ir") or {}, region_by_target_id
+        )
+        candidate, candidate_issues = _translate_callsite_behavior(
+            behavior_pair.get("candidate_ir") or {}, region_by_target_id
+        )
+        translated_behaviors.append({
+            "node_id": region_index,
+            "original_ir": original,
+            "candidate_ir": candidate,
+        })
+        issues = sorted(set(original_issues + candidate_issues))
+        if issues:
+            translation_issues[region_index] = issues
+
+    base_control: list[dict[str, Any]] = []
+    for region_index, behavior_pair in enumerate(translated_behaviors):
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        original_op = original_outcome.get("op")
+        candidate_op = candidate_outcome.get("op")
+        successors: list[int] = []
+        exit_row: dict[str, Any]
+        if original_op != candidate_op:
+            exit_row = {"kind": "unsupported"}
+        elif original_op == "jump" and isinstance(original_outcome.get("target"), int):
+            successors = [int(original_outcome["target"])]
+            exit_row = {"kind": "direct"}
+        elif original_op == "branch" and all(
+            isinstance(original_outcome.get(field), int)
+            for field in ("taken", "fallthrough")
+        ):
+            successors = [
+                int(original_outcome["taken"]),
+                int(original_outcome["fallthrough"]),
+            ]
+            exit_row = {"kind": "direct"}
+        elif original_op == "returned":
+            exit_row = {"kind": "return"}
+        elif original_op == "call" and all(
+            isinstance(original_outcome.get(field), int)
+            for field in ("target", "continuation")
+        ):
+            successors = [int(original_outcome["continuation"])]
+            exit_row = {"kind": "nested_call"}
+        elif original_op in {"indirect_call", "indirect_jump"}:
+            exit_row = {"kind": "unresolved_indirect"}
+        else:
+            exit_row = {"kind": "unsupported"}
+        base_control.append({
+            "node_id": region_index,
+            "successors": successors,
+            "exit": exit_row,
+        })
+
+    analysis_cache: dict[tuple[int, str], dict[str, Any]] = {}
+
+    def relation_key(relations: list[dict[str, Any]]) -> str:
+        return json.dumps(relations, sort_keys=True, separators=(",", ":"))
+
+    def summary_shape(
+        callsite: int,
+    ) -> tuple[int, int, list[int]] | None:
+        summary = summary_by_callsite.get(callsite)
+        if summary is None:
+            return None
+        try:
+            callee = int(summary["callee_region_index"])
+            continuation = int(summary["continuation_region_index"])
+            returns = sorted({
+                int(item) for item in summary["return_region_indices"]
+            })
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not (
+            0 <= callsite < len(behaviors)
+            and 0 <= callee < len(behaviors)
+            and 0 <= continuation < len(behaviors)
+            and returns
+            and all(0 <= item < len(behaviors) for item in returns)
+        ):
+            return None
+        return callee, continuation, returns
+
+    def reachable_nested_calls(
+        callee: int,
+    ) -> tuple[list[int], dict[str, Any] | None]:
+        pending = [callee]
+        visited: set[int] = set()
+        nested: set[int] = set()
+        while pending:
+            node = pending.pop()
+            if node in visited:
+                continue
+            if not 0 <= node < len(base_control):
+                return [], _callsite_generation_incomplete(
+                    node, "reachable_control_node_missing", node_id=node
+                )
+            visited.add(node)
+            if node in translation_issues:
+                return [], _callsite_generation_incomplete(
+                    node,
+                    "control_target_unmapped",
+                    node_id=node,
+                    reference=translation_issues[node],
+                )
+            control = base_control[node]
+            exit_kind = control["exit"]["kind"]
+            if exit_kind == "nested_call":
+                nested.add(node)
+            for successor in reversed(control["successors"]):
+                if successor not in visited:
+                    pending.append(successor)
+        return sorted(nested), None
+
+    def build_analysis(
+        callsite: int,
+        requested_relations: list[dict[str, Any]],
+        active: tuple[int, ...] = (),
+    ) -> dict[str, Any]:
+        key = (callsite, relation_key(requested_relations))
+        if callsite in active:
+            return _callsite_generation_incomplete(
+                callsite,
+                "recursive_callsite_summary_dependency",
+                node_id=callsite,
+                reference=list(active) + [callsite],
+            )
+        if key in analysis_cache:
+            return analysis_cache[key]
+        if callsite in duplicate_callsites:
+            result = _callsite_generation_incomplete(
+                callsite, "call_summary_duplicate", node_id=callsite
+            )
+            analysis_cache[key] = result
+            return result
+        summary = summary_by_callsite.get(callsite)
+        if summary is None:
+            result = _callsite_generation_incomplete(
+                callsite, "nested_call_summary_missing", node_id=callsite
+            )
+            analysis_cache[key] = result
+            return result
+        if not summary.get("closed"):
+            result = _callsite_generation_incomplete(
+                callsite, "call_summary_not_closed", node_id=callsite
+            )
+            analysis_cache[key] = result
+            return result
+        shape = summary_shape(callsite)
+        if shape is None:
+            result = _callsite_generation_incomplete(
+                callsite, "call_summary_inventory_invalid", node_id=callsite
+            )
+            analysis_cache[key] = result
+            return result
+        callee, continuation, returns = shape
+        original_call = translated_behaviors[callsite]["original_ir"].get("outcome") or {}
+        candidate_call = translated_behaviors[callsite]["candidate_ir"].get("outcome") or {}
+        expected_call = {
+            "op": "call", "target": callee, "continuation": continuation,
+        }
+        if any(
+            outcome.get(field) != expected_call[field]
+            for outcome in (original_call, candidate_call)
+            for field in expected_call
+        ):
+            result = _callsite_generation_incomplete(
+                callsite, "call_summary_behavior_mismatch", node_id=callsite
+            )
+            analysis_cache[key] = result
+            return result
+
+        dependencies, dependency_issue = reachable_nested_calls(callee)
+        if dependency_issue is not None:
+            result = dict(dependency_issue)
+            result["callsite_id"] = callsite
+            analysis_cache[key] = result
+            return result
+        child_analyses: dict[int, dict[str, Any]] = {}
+        for dependency in dependencies:
+            child = build_analysis(
+                dependency, requested_relations, active + (callsite,)
+            )
+            child_analyses[dependency] = child
+            if child.get("status") != "satisfied":
+                result = _callsite_generation_incomplete(
+                    callsite,
+                    "nested_callsite_summary_incomplete",
+                    node_id=dependency,
+                    reference=dependency,
+                    nested_reason_codes=list(child.get("reason_codes", [])),
+                )
+                analysis_cache[key] = result
+                return result
+
+        control = json.loads(json.dumps(base_control))
+        for dependency, child in child_analyses.items():
+            control[dependency]["exit"]["summary_id"] = child[
+                "certificate"
+            ]["id"]
+        result = propose_callsite_preserved_register_summary(
+            callsite_id=callsite,
+            callee_entry=callee,
+            return_inventory=[{
+                "return_node_id": return_node,
+                "continuation_id": continuation,
+            } for return_node in returns],
+            requested_relations=requested_relations,
+            behaviors=translated_behaviors,
+            control=control,
+            nested_summaries=[
+                child_analyses[dependency]
+                for dependency in sorted(child_analyses)
+            ],
+        )
+        analysis_cache[key] = result
+        return result
+
+    rows: list[dict[str, Any]] = []
+    proposal_edges: list[dict[str, Any]] = []
+    for callsite in sorted(summary_by_callsite):
+        relations = relations_by_callsite.get(callsite, [])
+        shape = summary_shape(callsite)
+        metadata = {
+            "callsite_region_index": callsite,
+            "callee_region_index": shape[0] if shape is not None else None,
+            "continuation_region_index": shape[1] if shape is not None else None,
+            "return_region_indices": shape[2] if shape is not None else [],
+            "requested_relations": relations,
+        }
+        if not relations:
+            rows.append({
+                **metadata,
+                "status": "not_applicable",
+                "reason_codes": ["no_import_register_relations_at_callsite"],
+                "analysis": None,
+            })
+            continue
+        analysis = build_analysis(callsite, relations)
+        rows.append({
+            **metadata,
+            "status": analysis["status"],
+            "reason_codes": analysis["reason_codes"],
+            "analysis": analysis,
+        })
+        if analysis.get("status") != "satisfied" or shape is None:
+            continue
+        certificate = analysis["certificate"]
+        proposal_edges.append({
+            "source_region_index": callsite,
+            "target_region_index": shape[1],
+            "kind": "internal_callsite_preservation_summary",
+            "environment_barrier": False,
+            "proposal_only": True,
+            "certificate_id": certificate["id"],
+            "certificate_hash": certificate["certificate_hash"],
+            "preserved_import_relations": certificate["requested_relations"],
+            "return_region_indices": shape[2],
+        })
+
+    all_certificates = {
+        analysis["certificate"]["id"]: analysis["certificate"]
+        for analysis in analysis_cache.values()
+        if analysis.get("status") == "satisfied"
+    }
+    return {
+        "format": _CALLSITE_PRESERVATION_ARTIFACT_FORMAT,
+        "status": "proposal_requires_generated_lean_replay",
+        "summaries": rows,
+        "certificates": [
+            all_certificates[certificate_id]
+            for certificate_id in sorted(all_certificates)
+        ],
+        "proposal_edges": proposal_edges,
+        "counts": {
+            "call_summaries": len(rows),
+            "satisfied": sum(row["status"] == "satisfied" for row in rows),
+            "incomplete": sum(row["status"] == "incomplete" for row in rows),
+            "not_applicable": sum(
+                row["status"] == "not_applicable" for row in rows
+            ),
+            "proposal_edges": len(proposal_edges),
+            "certificates": len(all_certificates),
+        },
+        "trust": {
+            "role": "analysis_and_certificate_proposal_only",
+            "acceptance_authority": False,
+            "required_replay": (
+                "Lean must replay every normalized behavior, control edge, "
+                "return inventory, nested dependency, and preserved relation"
+            ),
+        },
+    }
+
+
 def _infer_import_register_invariants(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
     seeds: list[dict[str, Any]],
     *,
     internal_return_predecessors: list[dict[str, Any]] | None = None,
+    callsite_summary_predecessors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     region_by_numeric_id = {
         int(region["numeric_id"]): index
@@ -480,7 +927,30 @@ def _infer_import_register_invariants(
         )
         for edge in edges
     }
+    callsite_summary_return_pairs: set[tuple[int, int]] = set()
+    for predecessor in callsite_summary_predecessors or []:
+        if not isinstance(predecessor, dict):
+            continue
+        target_index = predecessor.get("target_region_index")
+        returns = predecessor.get("return_region_indices")
+        if not (
+            isinstance(target_index, int)
+            and not isinstance(target_index, bool)
+            and isinstance(returns, list)
+            and predecessor.get("proposal_only") is True
+            and isinstance(predecessor.get("certificate_id"), str)
+            and isinstance(predecessor.get("certificate_hash"), str)
+            and isinstance(predecessor.get("preserved_import_relations"), list)
+            and predecessor.get("preserved_import_relations")
+        ):
+            continue
+        callsite_summary_return_pairs.update(
+            (return_index, target_index)
+            for return_index in returns
+            if isinstance(return_index, int) and not isinstance(return_index, bool)
+        )
     accepted_return_predecessors = 0
+    superseded_return_predecessors = 0
     for predecessor in internal_return_predecessors or []:
         source_index = int(predecessor.get("source_region_index", -1))
         target_index = int(predecessor.get("target_region_index", -1))
@@ -491,15 +961,80 @@ def _infer_import_register_invariants(
             or key in existing_edges
         ):
             continue
-        incoming[target_index].append(len(edges))
-        edges.append({
+        edge = {
             "source_region_index": source_index,
             "target_region_index": target_index,
             "kind": "internal_return",
             "environment_barrier": False,
-        })
+        }
+        if (source_index, target_index) in callsite_summary_return_pairs:
+            edge["superseded_by_callsite_summary"] = True
+            superseded_return_predecessors += 1
+        else:
+            incoming[target_index].append(len(edges))
+        edges.append(edge)
         existing_edges.add(key)
         accepted_return_predecessors += 1
+
+    accepted_callsite_summary_predecessors = 0
+    for predecessor in callsite_summary_predecessors or []:
+        if not isinstance(predecessor, dict):
+            continue
+        source_value = predecessor.get("source_region_index")
+        target_value = predecessor.get("target_region_index")
+        if not (
+            isinstance(source_value, int)
+            and not isinstance(source_value, bool)
+            and isinstance(target_value, int)
+            and not isinstance(target_value, bool)
+        ):
+            continue
+        source_index = int(source_value)
+        target_index = int(target_value)
+        key = (
+            source_index, target_index,
+            "internal_callsite_preservation_summary",
+        )
+        relations = predecessor.get("preserved_import_relations")
+        if (
+            not 0 <= source_index < len(behaviors)
+            or not 0 <= target_index < len(behaviors)
+            or key in existing_edges
+            or not isinstance(relations, list)
+            or not relations
+            or not isinstance(predecessor.get("certificate_id"), str)
+            or not isinstance(predecessor.get("certificate_hash"), str)
+            or predecessor.get("proposal_only") is not True
+        ):
+            continue
+        allowed_relations: set[
+            tuple[str, str, tuple[str, str, str | int]]
+        ] = set()
+        try:
+            for relation in relations:
+                imported = identity_key(relation["import"])
+                if imported not in identities:
+                    raise ValueError
+                allowed_relations.add((
+                    str(relation["original"]),
+                    str(relation["candidate"]),
+                    imported,
+                ))
+        except (KeyError, TypeError, ValueError):
+            continue
+        incoming[target_index].append(len(edges))
+        edges.append({
+            "source_region_index": source_index,
+            "target_region_index": target_index,
+            "kind": "internal_callsite_preservation_summary",
+            "environment_barrier": False,
+            "proposal_only": True,
+            "certificate_id": predecessor["certificate_id"],
+            "certificate_hash": predecessor["certificate_hash"],
+            "preserved_import_relation_keys": sorted(allowed_relations),
+        })
+        existing_edges.add(key)
+        accepted_callsite_summary_predecessors += 1
 
     def transferred_source_fact(
         edge: dict[str, Any],
@@ -507,6 +1042,11 @@ def _infer_import_register_invariants(
     ) -> tuple[str, str, tuple[str, str, str | int]] | None:
         source_index = int(edge["source_region_index"])
         original_register, candidate_register, imported = target_fact
+        if (
+            edge["kind"] == "internal_callsite_preservation_summary"
+            and target_fact not in set(edge["preserved_import_relation_keys"])
+        ):
+            return None
         original_expression = (
             behaviors[source_index]["original_ir"].get("registers") or {}
         ).get(original_register) or {}
@@ -643,6 +1183,12 @@ def _infer_import_register_invariants(
             "relations": len(relation_rows),
             "indirect_import_calls": len(call_rows),
             "internal_return_predecessors": accepted_return_predecessors,
+            "superseded_internal_return_predecessors": (
+                superseded_return_predecessors
+            ),
+            "callsite_summary_predecessors": (
+                accepted_callsite_summary_predecessors
+            ),
         },
     }
 

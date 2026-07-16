@@ -372,6 +372,44 @@ theorem ReturnSlotOffsetInventory.preservedImportsHold_after_of_checked
       evalNormalizedRegisters_get, candidateRegister, Expr.eval]
     exact candidateAddress
 
+def ReturnSlotOffsetInventory.seedsPreservedImportsFrom
+    (inventory : ReturnSlotOffsetInventory) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
+  inventory.preservesImportsAcross originalBehavior candidateBehavior &&
+    inventory.preservedImports.all sourceInvariant.importRegisterRelations.contains
+
+theorem ReturnSlotOffsetInventory.preservedImportsHold_after_stateRel_of_checked
+    (context : StaticProofContext) (inventory : ReturnSlotOffsetInventory)
+    (world : RelationalWorld) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (originalState candidateState : MachineState)
+    (checked : inventory.seedsPreservedImportsFrom sourceInvariant
+      originalBehavior candidateBehavior = true)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    inventory.preservedImportsHold world
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers = true := by
+  simp only [ReturnSlotOffsetInventory.seedsPreservedImportsFrom,
+    Bool.and_eq_true] at checked
+  rcases checked with ⟨preserves, sourceMembers⟩
+  simp only [List.all_eq_true] at sourceMembers
+  have sourceHolds : inventory.preservedImportsHold world originalState.registers
+      candidateState.registers = true := by
+    unfold ReturnSlotOffsetInventory.preservedImportsHold
+      importRegisterRelationsHold
+    simp only [List.all_eq_true]
+    intro relation relationMember
+    rcases related with
+      ⟨_worldStatic, _stackRangesValid, _stackMemory, _importsStatic,
+        _importsComplete, _importsMemory, _originalImmutable, _candidateImmutable,
+        _relatedCore, importRegisters⟩
+    have invariantHolds := importRegisters.1
+    simp only [importRegisterRelationsHold, List.all_eq_true] at invariantHolds
+    exact invariantHolds relation
+      (by simpa using sourceMembers relation relationMember)
+  exact inventory.preservedImportsHold_after_of_checked world originalBehavior
+    candidateBehavior originalState candidateState preserves sourceHolds
+
 def ReturnSlotOffsetInventory.singleton (location : ReturnSlotOffsetPair) :
     ReturnSlotOffsetInventory := { locations := [location] }
 
