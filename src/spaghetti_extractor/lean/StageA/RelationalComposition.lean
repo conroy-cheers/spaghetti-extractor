@@ -308,19 +308,69 @@ runtime return slot.  The names are proof witnesses for one concrete frame,
 not alternative machine states. -/
 structure ReturnSlotOffsetInventory where
   locations : List ReturnSlotOffsetPair
+  preservedImports : List ImportRegisterRelation := []
 deriving Repr, DecidableEq
 
 def ReturnSlotOffsetInventory.maxLocations : Nat := 8
 
+def ReturnSlotOffsetInventory.maxPreservedImports : Nat := 8
+
 def ReturnSlotOffsetInventory.checked (inventory : ReturnSlotOffsetInventory) : Bool :=
   !inventory.locations.isEmpty &&
     decide inventory.locations.Nodup &&
-    inventory.locations.length <= ReturnSlotOffsetInventory.maxLocations
+    inventory.locations.length <= ReturnSlotOffsetInventory.maxLocations &&
+    decide inventory.preservedImports.Nodup &&
+    inventory.preservedImports.length <= ReturnSlotOffsetInventory.maxPreservedImports
 
 def ReturnSlotOffsetInventory.holds (inventory : ReturnSlotOffsetInventory)
     (frame : RelationalRuntimeCallFrame) (original candidate : Registers Word) : Prop :=
   inventory.locations ≠ [] ∧
     ∀ location ∈ inventory.locations, location.holds frame original candidate
+
+def ReturnSlotOffsetInventory.preservedImportsHold
+    (inventory : ReturnSlotOffsetInventory) (world : RelationalWorld)
+    (original candidate : Registers Word) : Bool :=
+  importRegisterRelationsHold world inventory.preservedImports original candidate
+
+def ReturnSlotOffsetInventory.preservesImportsAcross
+    (inventory : ReturnSlotOffsetInventory)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
+  inventory.checked &&
+    inventory.preservedImports.all fun relation =>
+      originalBehavior.registers.get relation.original == .inputReg relation.original &&
+        candidateBehavior.registers.get relation.candidate == .inputReg relation.candidate
+
+theorem ReturnSlotOffsetInventory.preservedImportsHold_after_of_checked
+    (inventory : ReturnSlotOffsetInventory) (world : RelationalWorld)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (originalState candidateState : MachineState)
+    (checked : inventory.preservesImportsAcross originalBehavior candidateBehavior = true)
+    (holds : inventory.preservedImportsHold world originalState.registers
+      candidateState.registers = true) :
+    inventory.preservedImportsHold world
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers = true := by
+  simp only [ReturnSlotOffsetInventory.preservesImportsAcross, Bool.and_eq_true] at checked
+  have preserved := checked.2
+  unfold ReturnSlotOffsetInventory.preservedImportsHold at holds ⊢
+  simp only [importRegisterRelationsHold, List.all_eq_true] at holds preserved ⊢
+  intro relation relationMember
+  have relationHolds := holds relation relationMember
+  have relationPreserved := preserved relation relationMember
+  simp only [Bool.and_eq_true, beq_iff_eq] at relationPreserved
+  rcases relationPreserved with ⟨originalRegister, candidateRegister⟩
+  simp only [ImportRegisterRelation.holds, List.any_eq_true] at relationHolds ⊢
+  rcases relationHolds with ⟨binding, bindingMember, bindingChecks⟩
+  refine ⟨binding, bindingMember, ?_⟩
+  simp only [Bool.and_eq_true, beq_iff_eq] at bindingChecks ⊢
+  rcases bindingChecks with ⟨⟨imported, originalAddress⟩, candidateAddress⟩
+  refine ⟨⟨imported, ?_⟩, ?_⟩
+  · simp only [NormalizedSymbolicBehavior.eval_registers,
+      evalNormalizedRegisters_get, originalRegister, Expr.eval]
+    exact originalAddress
+  · simp only [NormalizedSymbolicBehavior.eval_registers,
+      evalNormalizedRegisters_get, candidateRegister, Expr.eval]
+    exact candidateAddress
 
 def ReturnSlotOffsetInventory.singleton (location : ReturnSlotOffsetPair) :
     ReturnSlotOffsetInventory := { locations := [location] }
