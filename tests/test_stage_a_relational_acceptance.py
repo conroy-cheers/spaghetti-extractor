@@ -580,6 +580,65 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 for family in finalized["families"]
             ))
 
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for launch-profile proofs")
+    def test_tls_directory_is_parsed_and_rejected_by_console_launch_v1(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = self._write_pe(root / "original.exe", b"\xeb\xfe")
+            candidate = self._write_pe(root / "candidate.exe", b"\xeb\xfe")
+            for image_path in (original, candidate):
+                image = bytearray(image_path.read_bytes())
+                struct.pack_into("<II", image, 0x140, 0x1000, 24)
+                image_path.write_bytes(image)
+
+            contract = self._write_contract(
+                root / "relation.json", region_size=2
+            )
+            prepared = root / "prepared"
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract,
+                out=prepared,
+            )
+
+            self.assertEqual(result["status"], "prepared")
+            self.assertEqual(result["acceptance"]["status"], "incomplete")
+            self.assertIn(
+                "pre_entry_tls_profile_unmet",
+                {
+                    blocker["code"]
+                    for blocker in result["acceptance"]["blockers"]
+                },
+            )
+            original_source = (
+                prepared / "lean" / "StageA" / "RelationalProofOriginal.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn("tlsDirectoryRva := 4096", original_source)
+            self.assertIn("tlsDirectorySize := 24", original_source)
+
+            negative = (
+                prepared / "lean" / "StageA" / "RelationalTlsLaunchNegative.lean"
+            )
+            negative.write_text(
+                "import StageA.RelationalCertificates\n"
+                "import StageA.RelationalStaticContext\n\n"
+                "namespace StageA.GeneratedRelational\n\n"
+                "open StageA.Relational\n\n"
+                "theorem tlsDirectoryParsedFromPeBytes :\n"
+                "    originalPe.tlsDirectoryRva = 4096 ∧\n"
+                "      originalPe.tlsDirectorySize = 24 := by decide\n\n"
+                "theorem tlsConsoleLaunchV1Rejected :\n"
+                "    PE32ConsoleLaunchV1.preEntryTlsAbsent staticProofContext = false :=\n"
+                "  by decide\n\n"
+                "end StageA.GeneratedRelational\n",
+                encoding="utf-8",
+            )
+            checked = _run_lean_relational(
+                prepared / "lean", bundle="RelationalTlsLaunchNegative"
+            )
+            self.assertEqual(checked["status"], "checked", checked)
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for memory-write proofs")
     def test_paired_stack_word_write_loop_closes_whole_program_theorem(self):
         with tempfile.TemporaryDirectory() as temporary:

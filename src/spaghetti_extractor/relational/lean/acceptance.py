@@ -5739,7 +5739,7 @@ def _write_relational_acceptance_modules(
         "theorem consoleLaunchValid :\n"
         "    consoleLaunch.Valid staticProofContext relationalProductGraph\n"
         "      productInvariantTable := by\n"
-        f"  refine ⟨relationalProductGraph.nodes[{root_node_id}],\n"
+        f"  refine ⟨by decide, relationalProductGraph.nodes[{root_node_id}],\n"
         "    (by decide), ?_, ?_, ?_, ?_, ?_, ?_⟩\n"
         "  all_goals decide\n\n"
         + acceptance_certificate_source

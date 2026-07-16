@@ -145,6 +145,8 @@ structure PE32 where
   sizeOfHeaders : Nat
   importDirectoryRva : Nat
   importDirectorySize : Nat
+  tlsDirectoryRva : Nat
+  tlsDirectorySize : Nat
   relocationDirectoryRva : Nat
   relocationDirectorySize : Nat
   sections : List Section
@@ -160,6 +162,8 @@ structure PEMetadata where
   sizeOfHeaders : Nat
   importDirectoryRva : Nat
   importDirectorySize : Nat
+  tlsDirectoryRva : Nat
+  tlsDirectorySize : Nat
   relocationDirectoryRva : Nat
   relocationDirectorySize : Nat
   sections : List Section
@@ -175,6 +179,8 @@ def PE32.metadata (pe : PE32) : PEMetadata := {
   sizeOfHeaders := pe.sizeOfHeaders
   importDirectoryRva := pe.importDirectoryRva
   importDirectorySize := pe.importDirectorySize
+  tlsDirectoryRva := pe.tlsDirectoryRva
+  tlsDirectorySize := pe.tlsDirectorySize
   relocationDirectoryRva := pe.relocationDirectoryRva
   relocationDirectorySize := pe.relocationDirectorySize
   sections := pe.sections
@@ -191,6 +197,8 @@ def PEMetadata.toPE32 (metadata : PEMetadata) (bytes : ByteTree) : PE32 := {
   sizeOfHeaders := metadata.sizeOfHeaders
   importDirectoryRva := metadata.importDirectoryRva
   importDirectorySize := metadata.importDirectorySize
+  tlsDirectoryRva := metadata.tlsDirectoryRva
+  tlsDirectorySize := metadata.tlsDirectorySize
   relocationDirectoryRva := metadata.relocationDirectoryRva
   relocationDirectorySize := metadata.relocationDirectorySize
   sections := metadata.sections
@@ -252,6 +260,8 @@ def parsePEMetadata (bytes : Bytes) : Option PEMetadata := do
   let sizeOfHeaders <- readU32 bytes (optionalOffset + 60)
   let importDirectoryRva <- readU32 bytes (optionalOffset + 104)
   let importDirectorySize <- readU32 bytes (optionalOffset + 108)
+  let tlsDirectoryRva <- readU32 bytes (optionalOffset + 168)
+  let tlsDirectorySize <- readU32 bytes (optionalOffset + 172)
   let relocationDirectoryRva <- readU32 bytes (optionalOffset + 136)
   let relocationDirectorySize <- readU32 bytes (optionalOffset + 140)
   let sections <- parseSections bytes (optionalOffset + optionalSize) sectionCount
@@ -265,6 +275,8 @@ def parsePEMetadata (bytes : Bytes) : Option PEMetadata := do
     sizeOfHeaders,
     importDirectoryRva,
     importDirectorySize,
+    tlsDirectoryRva,
+    tlsDirectorySize,
     relocationDirectoryRva,
     relocationDirectorySize,
     sections,
@@ -320,6 +332,8 @@ def parsePEMetadataTree (bytes : ByteTree) : Option PEMetadata := do
   let sizeOfHeaders <- readTreeU32 bytes (optionalOffset + 60)
   let importDirectoryRva <- readTreeU32 bytes (optionalOffset + 104)
   let importDirectorySize <- readTreeU32 bytes (optionalOffset + 108)
+  let tlsDirectoryRva <- readTreeU32 bytes (optionalOffset + 168)
+  let tlsDirectorySize <- readTreeU32 bytes (optionalOffset + 172)
   let relocationDirectoryRva <- readTreeU32 bytes (optionalOffset + 136)
   let relocationDirectorySize <- readTreeU32 bytes (optionalOffset + 140)
   let sections <- parseTreeSections bytes (optionalOffset + optionalSize) sectionCount
@@ -333,6 +347,8 @@ def parsePEMetadataTree (bytes : ByteTree) : Option PEMetadata := do
     sizeOfHeaders,
     importDirectoryRva,
     importDirectorySize,
+    tlsDirectoryRva,
+    tlsDirectorySize,
     relocationDirectoryRva,
     relocationDirectorySize,
     sections,

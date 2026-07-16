@@ -1995,6 +1995,13 @@ structure PE32ConsoleLaunchV1 where
   rootInvariant : StateInvariant
 deriving Repr, DecidableEq
 
+def PE32ConsoleLaunchV1.preEntryTlsAbsent
+    (context : StaticProofContext) : Bool :=
+  context.originalPe.tlsDirectoryRva == 0 &&
+    context.originalPe.tlsDirectorySize == 0 &&
+    context.candidatePe.tlsDirectoryRva == 0 &&
+    context.candidatePe.tlsDirectorySize == 0
+
 def importIatByteCovered (imports : List PEImport) (rva : Nat) : Bool :=
   imports.any fun imported =>
     imported.iatRva <= rva && rva < imported.iatRva + 4
@@ -2033,8 +2040,8 @@ structure PE32ConsoleLaunchStateRel (context : StaticProofContext)
 def PE32ConsoleLaunchV1.Valid (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (launch : PE32ConsoleLaunchV1) : Prop :=
-  exists node,
-    graph.getNode? launch.rootNodeId = some node ∧
+  PE32ConsoleLaunchV1.preEntryTlsAbsent context = true ∧
+    ∃ node, graph.getNode? launch.rootNodeId = some node ∧
       node.targetId = launch.rootTargetId ∧ node.root = true ∧
       graph.rootNodeIds.contains launch.rootNodeId = true ∧
       invariants.nodeInvariants[launch.rootNodeId]? = some launch.rootInvariant ∧
@@ -2183,7 +2190,7 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
     callbackTargets externalCallSites, ?_, ?_⟩
   . intro world originalState candidateState related
     rcases certificate.launchValid with
-      ⟨node, nodeFound, targetFound, rootFound, rootListed, invariantFound,
+      ⟨_preEntryTlsAbsent, node, nodeFound, targetFound, rootFound, rootListed, invariantFound,
         _entrypointRoot, _terminalResultExact⟩
     refine ⟨rfl, rfl, rfl, rfl, launch.rootNodeId, node,
       launch.rootInvariant, [], [], nodeFound, targetFound, ?_, invariantFound,

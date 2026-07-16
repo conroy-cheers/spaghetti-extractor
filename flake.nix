@@ -675,6 +675,8 @@
             stageARelationalAcceptanceSuite.cases.whole_program_equivalence_kernel_checks_without_sorry;
           stage-a-relational-tests-acceptance-direct-loop =
             stageARelationalAcceptanceSuite.cases.direct_loop_emits_and_checks_closed_whole_program_theorem;
+          stage-a-relational-tests-acceptance-tls-launch =
+            stageARelationalAcceptanceSuite.cases.tls_directory_is_parsed_and_rejected_by_console_launch_v1;
           stage-a-relational-tests-acceptance-nested-external =
             stageARelationalAcceptanceSuite.cases.nested_external_call_preserves_internal_runtime_frame_end_to_end;
           stage-a-relational-tests-acceptance-import-register-return =
@@ -829,6 +831,7 @@
             stage-a-relational-tests-acceptance
             stage-a-relational-tests-acceptance-whole-program-kernel
             stage-a-relational-tests-acceptance-direct-loop
+            stage-a-relational-tests-acceptance-tls-launch
             stage-a-relational-tests-acceptance-nested-external
             stage-a-relational-tests-acceptance-import-register-return
             stage-a-relational-tests-acceptance-direct-stack-read

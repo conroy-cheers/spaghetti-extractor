@@ -297,6 +297,8 @@ def _lean_pe(binary: StageABinary, byte_tree_name: str) -> str:
         + ", sizeOfHeaders := " + str(binary.size_of_headers)
         + ", importDirectoryRva := " + str(int(imports.VirtualAddress))
         + ", importDirectorySize := " + str(int(imports.Size))
+        + ", tlsDirectoryRva := " + str(binary.tls_directory_rva)
+        + ", tlsDirectorySize := " + str(binary.tls_directory_size)
         + ", relocationDirectoryRva := " + str(int(relocations.VirtualAddress))
         + ", relocationDirectorySize := " + str(int(relocations.Size))
         + ", sections := [" + sections + "] }"
