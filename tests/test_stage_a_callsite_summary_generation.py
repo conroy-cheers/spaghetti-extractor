@@ -212,6 +212,119 @@ class StageACallsiteSummaryGenerationTests(unittest.TestCase):
             inferred["counts"]["callsite_summary_predecessors"], 2
         )
 
+    def test_may_reach_candidate_breaks_callsite_summary_loop_deadlock(self):
+        contract = {
+            "regions": [
+                {"numeric_id": region_index}
+                for region_index in range(10)
+            ],
+        }
+        behaviors = [
+            _pair({"op": "jump", "target": 1}),
+            _pair({"op": "jump", "target": 2}),
+            _pair({
+                "op": "indirect_call",
+                "target": {"op": "input_reg", "reg": "esi"},
+                "continuation": 3,
+            }),
+            _pair({"op": "call", "target": 8, "continuation": 4}),
+            _pair({"op": "jump", "target": 5}),
+            _pair({
+                "op": "indirect_call",
+                "target": {"op": "input_reg", "reg": "esi"},
+                "continuation": 6,
+            }),
+            _pair({
+                "op": "branch",
+                "condition": {"op": "bool_constant", "value": True},
+                "taken": 1,
+                "fallthrough": 7,
+            }),
+            _pair({
+                "op": "returned",
+                "target": {"op": "input_reg", "reg": "eax"},
+            }),
+            _pair({"op": "jump", "target": 9}),
+            _pair({
+                "op": "returned",
+                "target": {"op": "input_reg", "reg": "eax"},
+            }),
+        ]
+        seeds = [{
+            "region_index": 0,
+            "original_register": "esi",
+            "candidate_register": "esi",
+            "import": IMPORT,
+        }]
+        register_relations = {
+            "return_slot_analysis": {
+                "call_summary_analysis": {
+                    "summaries": [_summary(3, 8, 4, [9])],
+                },
+            },
+        }
+
+        initial = _infer_import_register_invariants(
+            contract, behaviors, seeds
+        )
+        self.assertEqual(initial["relations"], [], initial)
+        self.assertEqual(
+            [
+                row["region_index"]
+                for row in initial["callsite_candidate_relations"]
+            ],
+            [3],
+        )
+
+        proposals = _propose_internal_callsite_preservation_summaries(
+            contract, behaviors, initial, register_relations
+        )
+        self.assertEqual(proposals["counts"]["satisfied"], 1, proposals)
+        self.assertEqual(proposals["counts"]["proposal_edges"], 1)
+
+        composed = _infer_import_register_invariants(
+            contract,
+            behaviors,
+            seeds,
+            internal_return_predecessors=[{
+                "source_region_index": 9,
+                "target_region_index": 4,
+            }],
+            callsite_summary_predecessors=proposals["proposal_edges"],
+        )
+        relation_regions = {
+            row["region_index"] for row in composed["relations"]
+        }
+        self.assertTrue({1, 2, 3, 4, 5, 6}.issubset(relation_regions))
+        self.assertEqual(composed["counts"]["indirect_import_calls"], 2)
+        self.assertEqual(
+            composed["counts"]["callsite_summary_predecessors"], 1
+        )
+        self.assertEqual(
+            composed["counts"]["superseded_internal_return_predecessors"],
+            1,
+        )
+
+        replayed = _propose_internal_callsite_preservation_summaries(
+            contract, behaviors, composed, register_relations
+        )
+        self.assertEqual(
+            replayed["proposal_edges"], proposals["proposal_edges"]
+        )
+
+        clobbered = copy.deepcopy(behaviors)
+        clobbered[8]["candidate_ir"]["registers"]["esi"] = {
+            "op": "constant", "value": 0,
+        }
+        rejected = _propose_internal_callsite_preservation_summaries(
+            contract, clobbered, initial, register_relations
+        )
+        self.assertEqual(rejected["proposal_edges"], [])
+        self.assertIn(
+            "register_clobbered",
+            rejected["summaries"][0]["reason_codes"],
+        )
+
     def test_clobbered_register_does_not_emit_a_summary_edge(self):
         behaviors = copy.deepcopy(self.behaviors)
         behaviors[2]["candidate_ir"]["registers"]["esi"] = {

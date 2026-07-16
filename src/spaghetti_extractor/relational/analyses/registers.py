@@ -483,19 +483,20 @@ def _propose_internal_callsite_preservation_summaries(
         region_by_target_id.pop(target_id, None)
 
     relations_by_callsite: dict[int, list[dict[str, Any]]] = {}
-    for row in import_register_analysis.get("relations", []):
-        try:
-            callsite = int(row["region_index"])
-            relation = {
-                "original": str(row["original_register"]),
-                "candidate": str(row["candidate_register"]),
-                "import": json.loads(json.dumps(row["import"])),
-            }
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not 0 <= callsite < len(behaviors):
-            continue
-        relations_by_callsite.setdefault(callsite, []).append(relation)
+    for inventory in ("relations", "callsite_candidate_relations"):
+        for row in import_register_analysis.get(inventory, []):
+            try:
+                callsite = int(row["region_index"])
+                relation = {
+                    "original": str(row["original_register"]),
+                    "candidate": str(row["candidate_register"]),
+                    "import": json.loads(json.dumps(row["import"])),
+                }
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not 0 <= callsite < len(behaviors):
+                continue
+            relations_by_callsite.setdefault(callsite, []).append(relation)
     for callsite, relations in relations_by_callsite.items():
         relations_by_callsite[callsite] = sorted(
             {
@@ -925,6 +926,14 @@ def _infer_import_register_invariants(
                     "environment_barrier": True,
                 })
 
+    # Preserve the ordinary decoded predecessor graph separately.  A relation
+    # can reach an internal callsite before it is known to be inductive across
+    # a surrounding loop: the missing loop edge may itself depend on a
+    # callsite-local preservation summary.  These base predecessors support
+    # proposal discovery only.  Return and summary edges below remain required
+    # to close the authoritative must-hold fixed point.
+    base_incoming = [list(edge_indices) for edge_indices in incoming]
+
     existing_edges = {
         (
             int(edge["source_region_index"]),
@@ -1086,33 +1095,46 @@ def _infer_import_register_invariants(
         source_fact = transferred_source_fact(edge, target_fact)
         return source_fact is not None and (source_index, *source_fact) in facts
 
-    facts: set[tuple[int, str, str, tuple[str, str, str | int]]] = set()
-    changed = True
-    while changed:
-        changed = False
-        for target_index, edge_indices in enumerate(incoming):
-            for edge_index in edge_indices:
-                source_index = int(edges[edge_index]["source_region_index"])
-                proposals = set(seed_facts.get(source_index, set()))
-                proposals.update(
-                    (original_register, candidate_register, imported)
-                    for region_index, original_register, candidate_register, imported in facts
-                    if region_index == source_index
-                )
-                for proposal in proposals:
-                    transferred = transferred_source_fact(edges[edge_index], proposal)
-                    candidates = {proposal}
-                    if transferred is not None:
-                        candidates.add((
-                            proposal[0], proposal[1], proposal[2]
-                        ))
-                    for candidate_fact in candidates:
-                        fact = (target_index, *candidate_fact)
-                        if fact not in facts and edge_supports(
-                            edges[edge_index], candidate_fact, facts
+    def grow_facts(
+        predecessor_inventory: list[list[int]],
+    ) -> set[tuple[int, str, str, tuple[str, str, str | int]]]:
+        result: set[
+            tuple[int, str, str, tuple[str, str, str | int]]
+        ] = set()
+        changed = True
+        while changed:
+            changed = False
+            for target_index, edge_indices in enumerate(predecessor_inventory):
+                for edge_index in edge_indices:
+                    source_index = int(
+                        edges[edge_index]["source_region_index"]
+                    )
+                    proposals = set(seed_facts.get(source_index, set()))
+                    proposals.update(
+                        (
+                            original_register,
+                            candidate_register,
+                            imported,
+                        )
+                        for (
+                            region_index,
+                            original_register,
+                            candidate_register,
+                            imported,
+                        ) in result
+                        if region_index == source_index
+                    )
+                    for proposal in proposals:
+                        fact = (target_index, *proposal)
+                        if fact not in result and edge_supports(
+                            edges[edge_index], proposal, result
                         ):
-                            facts.add(fact)
+                            result.add(fact)
                             changed = True
+        return result
+
+    callsite_candidate_facts = grow_facts(base_incoming)
+    facts = grow_facts(incoming)
 
     changed = True
     while changed:
@@ -1138,6 +1160,30 @@ def _infer_import_register_invariants(
             "incoming_edge_indices": incoming[region_index],
             "incoming_edges": [edges[index] for index in incoming[region_index]],
         })
+
+    internal_callsites = {
+        region_index
+        for region_index, behavior_pair in enumerate(behaviors)
+        if (
+            (behavior_pair["original_ir"].get("outcome") or {}).get("op")
+                == "call"
+            and
+            (behavior_pair["candidate_ir"].get("outcome") or {}).get("op")
+                == "call"
+        )
+    }
+    callsite_candidate_rows = [
+        {
+            "region_index": region_index,
+            "original_register": original_register,
+            "candidate_register": candidate_register,
+            "import": identities[imported],
+            "status": "proposal_requires_strict_fixed_point_and_lean_replay",
+        }
+        for region_index, original_register, candidate_register, imported
+        in sorted(callsite_candidate_facts)
+        if region_index in internal_callsites
+    ]
 
     call_rows = []
     facts_by_region: dict[int, list[dict[str, Any]]] = {}
@@ -1183,10 +1229,12 @@ def _infer_import_register_invariants(
         "abi_profile": "pe32-win32-nonvolatile-registers-v1",
         "nonvolatile_registers": sorted(nonvolatile),
         "relations": relation_rows,
+        "callsite_candidate_relations": callsite_candidate_rows,
         "indirect_import_calls": call_rows,
         "counts": {
             "seeds": len(seeds),
             "relations": len(relation_rows),
+            "callsite_candidate_relations": len(callsite_candidate_rows),
             "indirect_import_calls": len(call_rows),
             "internal_return_predecessors": accepted_return_predecessors,
             "superseded_internal_return_predecessors": (
