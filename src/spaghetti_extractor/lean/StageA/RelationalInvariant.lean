@@ -379,7 +379,7 @@ theorem _root_.StageA.Formal.Expr.eval_eq_of_exactMemoryInputs
 
 def registerValueRelationAcceptsExact : RegisterValueRelation → Bool
   | .exact | .relatedWord => true
-  | .codePointer | .dataPointer => false
+  | .codePointer | .fixedCodePointer _ | .dataPointer => false
 
 structure ExactRegisterOutputClaim where
   output : RegisterRelationPair
@@ -705,7 +705,7 @@ theorem ConstantRegisterOutputClaim.holds_of_checked
 
 def registerValueRelationAcceptsEqual : RegisterValueRelation → Bool
   | .exact | .relatedWord => true
-  | .codePointer | .dataPointer => false
+  | .codePointer | .fixedCodePointer _ | .dataPointer => false
 
 theorem RegisterValueRelation.holds_of_eq
     (originalImageBase candidateImageBase : Nat)
@@ -784,6 +784,8 @@ def staticWordRelationSupportsRegisterValueRelation
   | .exact, .exact | .exact, .relatedWord | .relatedWord, .relatedWord |
       .codePointer, .codePointer | .fixedCodePointer _, .codePointer |
       .dataPointer, .dataPointer => true
+  | .fixedCodePointer sourceTargetId, .fixedCodePointer targetTargetId =>
+      sourceTargetId == targetTargetId
   | _, _ => false
 
 theorem StaticWordRelationKind.registerValueRelation_holds_of_holds
@@ -797,7 +799,8 @@ theorem StaticWordRelationKind.registerValueRelation_holds_of_holds
       original candidate = true := by
   cases source <;> cases target <;>
     simp_all [staticWordRelationSupportsRegisterValueRelation,
-      StaticWordRelationKind.holds, RegisterValueRelation.holds, wordRelated_self]
+      StaticWordRelationKind.holds, RegisterValueRelation.holds,
+      codeTargetAddressPairMatches, wordRelated_self]
   exact Or.inr
     (codeTargetIdAddresses_codePointerRelated context _ original candidate holds)
 

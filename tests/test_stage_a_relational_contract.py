@@ -4,6 +4,117 @@ from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORM
 
 
 class StageARelationalContractTests(StageARelationalTestBase):
+    def test_fixed_code_pointer_region_relations_are_normalized(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = _parse_stage_a_pe(
+                self._write_pe(root / "original.exe", b"\xc3")
+            )
+            candidate = _parse_stage_a_pe(
+                self._write_pe(root / "candidate.exe", b"\xc3")
+            )
+            contract_path = self._write_contract(
+                root / "relation.json", region_size=1,
+            )
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            relations = [
+                {"original": "eax", "candidate": "eax", "relation": "exact"},
+                {
+                    "original": "ebx", "candidate": "ebx",
+                    "relation": "code_pointer",
+                },
+                {
+                    "original": "ecx", "candidate": "ecx",
+                    "relation": "data_pointer",
+                },
+                {
+                    "original": "edx", "candidate": "edx",
+                    "relation": "related_word",
+                },
+                {
+                    "original": "esi", "candidate": "esi",
+                    "relation": "fixed_code_pointer", "target_id": 0,
+                },
+            ]
+            contract["regions"][0]["input_relations"] = relations
+            contract["regions"][0]["output_relations"] = relations
+
+            normalized, issues = _normalize_contract(contract, original, candidate)
+
+            self.assertEqual(issues, [])
+            self.assertEqual(normalized["regions"][0]["input_relations"], relations)
+            self.assertEqual(normalized["regions"][0]["output_relations"], relations)
+
+    def test_fixed_code_pointer_region_relations_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = _parse_stage_a_pe(
+                self._write_pe(root / "original.exe", b"\xc3")
+            )
+            candidate = _parse_stage_a_pe(
+                self._write_pe(root / "candidate.exe", b"\xc3")
+            )
+            contract_path = self._write_contract(
+                root / "relation.json", region_size=1,
+            )
+            base = json.loads(contract_path.read_text(encoding="utf-8"))
+            valid = {
+                "original": "esi", "candidate": "esi",
+                "relation": "fixed_code_pointer", "target_id": 0,
+            }
+
+            malformed_relations = {
+                "missing": {key: value for key, value in valid.items()
+                            if key != "target_id"},
+                "unknown": {**valid, "target_id": 1},
+                "negative": {**valid, "target_id": -1},
+            }
+            for relation in (
+                "exact", "code_pointer", "data_pointer", "related_word",
+            ):
+                malformed_relations[f"target on {relation}"] = {
+                    **valid, "relation": relation,
+                }
+            for name, relation in malformed_relations.items():
+                with self.subTest(name=name):
+                    contract = json.loads(json.dumps(base))
+                    contract["regions"][0]["input_relations"] = [relation]
+                    _normalized, issues = _normalize_contract(
+                        contract, original, candidate,
+                    )
+                    self.assertIn(
+                        "register_relation_invalid",
+                        {issue["category"] for issue in issues},
+                    )
+
+            duplicate = json.loads(json.dumps(base))
+            duplicate["code_targets"].append({
+                "id": 0,
+                "original_rva": 0x1000,
+                "candidate_rva": 0x1000,
+            })
+            duplicate["regions"][0]["input_relations"] = [valid]
+            _normalized, duplicate_issues = _normalize_contract(
+                duplicate, original, candidate,
+            )
+            duplicate_categories = {
+                issue["category"] for issue in duplicate_issues
+            }
+            self.assertIn("malformed_code_target", duplicate_categories)
+
+            noncanonical = json.loads(json.dumps(base))
+            noncanonical["code_targets"][0]["id"] = 222
+            noncanonical["regions"][0]["input_relations"] = [{
+                **valid, "target_id": 222,
+            }]
+            _normalized, noncanonical_issues = _normalize_contract(
+                noncanonical, original, candidate,
+            )
+            self.assertIn(
+                "register_relation_invalid",
+                {issue["category"] for issue in noncanonical_issues},
+            )
+
     def test_protocol_callback_control_schema_is_explicit_and_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

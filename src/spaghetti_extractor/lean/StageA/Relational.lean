@@ -127,6 +127,34 @@ def codePointerRelated (originalImageBase candidateImageBase : Nat)
     codeAddressMatches originalImageBase target.originalRva target.originalAliases original &&
     codeAddressMatches candidateImageBase target.candidateRva target.candidateAliases candidate
 
+def fixedCodePointerRelated (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (targetId : Nat)
+    (original candidate : Word) : Bool :=
+  match targets[targetId]? with
+  | none => false
+  | some target =>
+      target.id == targetId &&
+        (codeAddressMatches originalImageBase target.originalRva target.originalAliases original &&
+          codeAddressMatches candidateImageBase target.candidateRva target.candidateAliases candidate)
+
+theorem fixedCodePointerRelated_codePointerRelated
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (targetId : Nat)
+    (original candidate : Word)
+    (fixed : fixedCodePointerRelated originalImageBase candidateImageBase targets targetId
+      original candidate = true) :
+    codePointerRelated originalImageBase candidateImageBase targets
+      original candidate = true := by
+  unfold fixedCodePointerRelated at fixed
+  cases targetResult : targets[targetId]? with
+  | none => simp [targetResult] at fixed
+  | some target =>
+      simp only [targetResult, Bool.and_eq_true] at fixed
+      simp only [codePointerRelated, List.any_eq_true]
+      refine ⟨target, List.mem_of_getElem? targetResult, ?_⟩
+      simp only [Bool.and_eq_true]
+      exact fixed.2
+
 def valueTargetContainsCandidate (target : ValueTargetPair) (address : Word) : Bool :=
   let base := BitVec.ofNat 32 target.candidateValue
   target.mappedSize > 0 && decide (base <= address) &&
@@ -220,34 +248,17 @@ theorem codeTargetAddresses_wordRelated
 
 def codeTargetAddressPairMatches (context : StaticProofContext) (targetId : Nat)
     (original candidate : Word) : Bool :=
-  match context.codeMap.get? targetId with
-  | none => false
-  | some target =>
-      codeAddressMatches context.originalPe.imageBase target.originalRva
-          target.originalAliases original &&
-        codeAddressMatches context.candidatePe.imageBase target.candidateRva
-          target.candidateAliases candidate
+  fixedCodePointerRelated context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList targetId original candidate
 
 theorem codeTargetIdAddresses_codePointerRelated
     (context : StaticProofContext) (targetId : Nat) (original candidate : Word)
     (matchEvidence : codeTargetAddressPairMatches context targetId original candidate = true) :
     codePointerRelated context.originalPe.imageBase context.candidatePe.imageBase
       context.codeMap.entries.toList original candidate = true := by
-  unfold codeTargetAddressPairMatches at matchEvidence
-  cases targetResult : context.codeMap.get? targetId with
-  | none => simp [targetResult] at matchEvidence
-  | some target =>
-      simp only [targetResult, Bool.and_eq_true] at matchEvidence
-      have targetArrayMember : target ∈ context.codeMap.entries := by
-        have indexed := Array.getElem?_eq_some_iff.mp targetResult
-        rcases indexed with ⟨inside, indexed⟩
-        have member := Array.getElem_mem inside
-        rw [indexed] at member
-        exact member
-      have targetMember : target ∈ context.codeMap.entries.toList :=
-        Array.mem_def.mp targetArrayMember
-      simp only [codePointerRelated, List.any_eq_true]
-      exact ⟨target, targetMember, by simp [matchEvidence.1, matchEvidence.2]⟩
+  exact fixedCodePointerRelated_codePointerRelated context.originalPe.imageBase
+    context.candidatePe.imageBase context.codeMap.entries.toList targetId
+    original candidate matchEvidence
 
 theorem codeTargetIdAddresses_wordRelated
     (context : StaticProofContext) (world : RelationalWorld)
@@ -258,13 +269,9 @@ theorem codeTargetIdAddresses_wordRelated
     wordRelated context.originalPe.imageBase context.candidatePe.imageBase
       context.codeMap.entries.toList (context.relationalValueTargets world)
       original candidate = true := by
-  unfold codeTargetAddressPairMatches at matchEvidence
-  cases targetResult : context.codeMap.get? targetId with
-  | none => simp [targetResult] at matchEvidence
-  | some target =>
-      simp only [targetResult, Bool.and_eq_true] at matchEvidence
-      exact codeTargetAddresses_wordRelated context world targetId target original candidate
-        targetResult matchEvidence.1 matchEvidence.2 zeroesAgree
+  have codeRelated := codeTargetIdAddresses_codePointerRelated context targetId
+    original candidate matchEvidence
+  simp [wordRelated, zeroesAgree, codeRelated]
 
 def dataTargetAddressPairMatches (context : StaticProofContext) (targetId : Nat)
     (original candidate : Word) : Bool :=
@@ -4462,6 +4469,7 @@ deriving Repr, DecidableEq
 inductive RegisterValueRelation where
   | exact
   | codePointer
+  | fixedCodePointer (targetId : Nat)
   | dataPointer
   | relatedWord
 deriving Repr, DecidableEq
@@ -4524,11 +4532,26 @@ def RegisterValueRelation.holds
   | .codePointer =>
       (original == BitVec.ofNat 32 0 && candidate == BitVec.ofNat 32 0) ||
         codePointerRelated originalImageBase candidateImageBase targets original candidate
+  | .fixedCodePointer targetId =>
+      fixedCodePointerRelated originalImageBase candidateImageBase targets targetId
+        original candidate
   | .dataPointer =>
       (original == BitVec.ofNat 32 0 && candidate == BitVec.ofNat 32 0) ||
         mappedValueRelated values original candidate
   | .relatedWord =>
       wordRelated originalImageBase candidateImageBase targets values original candidate
+
+theorem RegisterValueRelation.fixedCodePointer_holds_codePointer
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (targetId : Nat) (original candidate : Word)
+    (fixed : RegisterValueRelation.holds originalImageBase candidateImageBase targets values
+      (.fixedCodePointer targetId) original candidate = true) :
+    RegisterValueRelation.holds originalImageBase candidateImageBase targets values
+      .codePointer original candidate = true := by
+  simp only [RegisterValueRelation.holds, Bool.or_eq_true] at fixed ⊢
+  exact Or.inr (fixedCodePointerRelated_codePointerRelated originalImageBase
+    candidateImageBase targets targetId original candidate fixed)
 
 theorem DynamicRegisterRangeRelation.relatedWord_of_zero_offsets
     (context : StaticProofContext) (world : RelationalWorld)
@@ -4602,6 +4625,7 @@ theorem RegisterValueRelation.holds_append_values
   cases relation with
   | exact => simpa [RegisterValueRelation.holds] using related
   | codePointer => simpa [RegisterValueRelation.holds] using related
+  | fixedCodePointer targetId => simpa [RegisterValueRelation.holds] using related
   | dataPointer =>
       simp only [RegisterValueRelation.holds, Bool.or_eq_true] at related ⊢
       exact related.elim Or.inl (fun mapped => Or.inr

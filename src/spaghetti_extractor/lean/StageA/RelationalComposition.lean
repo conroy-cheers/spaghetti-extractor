@@ -2388,10 +2388,14 @@ theorem staticWordSlotIndirectCallTargetsClosed_of_checked
         sourceInvariant originalState candidateState
       have slotHolds := slotsHold claim.slot
         (List.contains_iff_mem.mp slotMember)
+      have targetListResult :
+          context.codeMap.entries.toList[claim.targetId]? = some target := by
+        simpa [StaticCodeMap.get?] using targetResult
       simp only [StaticWordRelationSlotPair.memoryHolds] at slotHolds
       rw [slotRelation] at slotHolds
       simp only [StaticWordRelationKind.holds, codeTargetAddressPairMatches,
-        targetResult, Bool.and_eq_true] at slotHolds
+        fixedCodePointerRelated, targetListResult,
+        Bool.and_eq_true] at slotHolds
       rcases related with
         ⟨_worldStatic, _stackRangesValid, _stackMemory, _importsStatic,
           _importsComplete, _importsMemory, _originalImmutable, _candidateImmutable,
@@ -2447,9 +2451,9 @@ theorem staticWordSlotIndirectCallTargetsClosed_of_checked
         simp only [NormalizedOutcomeExpr.eval]
         rfl
       · rw [originalTargetRead]
-        exact slotHolds.1
+        exact slotHolds.2.1
       · rw [candidateTargetRead]
-        exact slotHolds.2
+        exact slotHolds.2.2
 
 def StaticWordSlotIndirectCallTargetClaim.toImmutable
     (claim : StaticWordSlotIndirectCallTargetClaim) : ImmutableIndirectCallTargetClaim := {
@@ -2839,6 +2843,75 @@ theorem importRegisterIndirectCallTargetsClosed_of_checked
   · rw [candidateOutcome]
     simp only [NormalizedOutcomeExpr.eval, Expr.eval]
     rw [candidateAddress]
+
+structure FixedCodePointerRegisterIndirectCallClaim where
+  targetId : Nat
+  originalRegister : Reg
+  candidateRegister : Reg
+  continuationTargetId : Nat
+deriving Repr, DecidableEq
+
+def FixedCodePointerRegisterIndirectCallClaim.relation
+    (claim : FixedCodePointerRegisterIndirectCallClaim) : RegisterRelationPair := {
+  original := claim.originalRegister
+  candidate := claim.candidateRegister
+  relation := .fixedCodePointer claim.targetId
+}
+
+def FixedCodePointerRegisterIndirectCallClaim.checked
+    (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : FixedCodePointerRegisterIndirectCallClaim) : Bool :=
+  sourceInvariant.registerRelations.contains claim.relation &&
+    originalBehavior.outcome == .indirectCall
+      (.inputReg claim.originalRegister) claim.continuationTargetId &&
+    candidateBehavior.outcome == .indirectCall
+      (.inputReg claim.candidateRegister) claim.continuationTargetId
+
+def FixedCodePointerRegisterIndirectCallTargetsClosed
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : FixedCodePointerRegisterIndirectCallClaim) : Prop :=
+  ∀ world originalState candidateState,
+    StateRel context world sourceInvariant originalState candidateState →
+      ∃ originalTarget candidateTarget,
+        originalBehavior.outcome.eval originalState = .indirectCall
+            originalTarget claim.continuationTargetId ∧
+          candidateBehavior.outcome.eval candidateState = .indirectCall
+            candidateTarget claim.continuationTargetId ∧
+          fixedCodePointerRelated context.originalPe.imageBase
+            context.candidatePe.imageBase context.codeMap.entries.toList
+            claim.targetId originalTarget candidateTarget = true
+
+theorem fixedCodePointerRegisterIndirectCallTargetsClosed_of_checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : FixedCodePointerRegisterIndirectCallClaim)
+    (checked : claim.checked sourceInvariant originalBehavior candidateBehavior = true) :
+    FixedCodePointerRegisterIndirectCallTargetsClosed context sourceInvariant
+      originalBehavior candidateBehavior claim := by
+  simp only [FixedCodePointerRegisterIndirectCallClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with ⟨⟨relationMember, originalOutcome⟩, candidateOutcome⟩
+  intro world originalState candidateState related
+  rcases related with
+    ⟨_worldValid, _stackRangesValid, _stackMemory, _importsStatic,
+      _importsComplete, _importsMemory, _originalImmutable, _candidateImmutable,
+      relatedCore, _importAndDynamicRegisters⟩
+  have registerRelations := relatedCore.1
+  simp only [registerRelationsHold, List.all_eq_true] at registerRelations
+  have relationHolds := registerRelations claim.relation
+    (by simpa using relationMember)
+  change fixedCodePointerRelated context.originalPe.imageBase
+    context.candidatePe.imageBase context.codeMap.entries.toList claim.targetId
+    (originalState.registers.get claim.originalRegister)
+    (candidateState.registers.get claim.candidateRegister) = true at relationHolds
+  refine ⟨originalState.registers.get claim.originalRegister,
+    candidateState.registers.get claim.candidateRegister, ?_, ?_, relationHolds⟩
+  · rw [originalOutcome]
+    simp only [NormalizedOutcomeExpr.eval, Expr.eval]
+  · rw [candidateOutcome]
+    simp only [NormalizedOutcomeExpr.eval, Expr.eval]
 
 structure ImportRegisterSeedClaim where
   imported : ExternalTarget
@@ -6152,6 +6225,7 @@ theorem relatedWordZeroGuard_eval_equal_of_checked
           rw [← zeroEqual] at candidateCheck
           exact beq_iff_eq.mp candidateCheck
     | codePointer => simp [relationKind] at supportedRelation
+    | fixedCodePointer _ => simp [relationKind] at supportedRelation
     | dataPointer => simp [relationKind] at supportedRelation
   rw [originalGuardExact, candidateGuardExact]
   apply applyBoolNots_eval_equal claim.notCount
@@ -6242,6 +6316,16 @@ def importRegisterIndirectCallEdgesMatch (graph : RelationalProductGraph)
   | some node =>
       let expected := some [RelationalDecodedControlEdge.mk .externalCall
         claim.continuationTargetId unconditionalProductGuard]
+      graph.resolveOutgoingControlEdges false node.outgoingEdgeIds == expected &&
+        graph.resolveOutgoingControlEdges true node.outgoingEdgeIds == expected
+
+def fixedCodePointerRegisterIndirectCallEdgesMatch (graph : RelationalProductGraph)
+    (nodeId : Nat) (claim : FixedCodePointerRegisterIndirectCallClaim) : Bool :=
+  match graph.getNode? nodeId with
+  | none => false
+  | some node =>
+      let expected := some [RelationalDecodedControlEdge.mk .call claim.targetId
+        unconditionalProductGuard]
       graph.resolveOutgoingControlEdges false node.outgoingEdgeIds == expected &&
         graph.resolveOutgoingControlEdges true node.outgoingEdgeIds == expected
 
@@ -6346,6 +6430,25 @@ def NodeImportRegisterIndirectCallEdgesComplete (graph : RelationalProductGraph)
     ImportRegisterIndirectCallTargetsClosed region.inputInvariant originalNormalized
       candidateNormalized claim
 
+def NodeFixedCodePointerRegisterIndirectCallEdgesComplete
+    (graph : RelationalProductGraph) (nodeId : Nat) (context : StaticProofContext)
+    (region : RegionRelation) (originalBehavior candidateBehavior : SymbolicBehavior)
+    (originalNormalized candidateNormalized : NormalizedSymbolicBehavior)
+    (claim : FixedCodePointerRegisterIndirectCallClaim) : Prop :=
+  regionBehaviorWithMachineCallContracts context.originalPe context.originalImports
+      context.machineImportCallContracts region.original =
+      some originalBehavior ∧
+    regionBehaviorWithMachineCallContracts context.candidatePe context.candidateImports
+      context.machineImportCallContracts region.candidate =
+      some candidateBehavior ∧
+    normalizeSymbolicBehavior false region.targets originalBehavior =
+      some originalNormalized ∧
+    normalizeSymbolicBehavior true region.targets candidateBehavior =
+      some candidateNormalized ∧
+    fixedCodePointerRegisterIndirectCallEdgesMatch graph nodeId claim = true ∧
+    FixedCodePointerRegisterIndirectCallTargetsClosed context region.inputInvariant
+      originalNormalized candidateNormalized claim
+
 def NodeDynamicRangeIndirectCallEdgesComplete (graph : RelationalProductGraph)
     (nodeId : Nat) (context : StaticProofContext) (region : RegionRelation)
     (originalBehavior candidateBehavior : SymbolicBehavior)
@@ -6378,6 +6481,9 @@ def NodeControlEdgesComplete (graph : RelationalProductGraph) (nodeId : Nat)
     (∃ originalNormalized candidateNormalized claim,
       NodeImportRegisterIndirectCallEdgesComplete graph nodeId context region originalBehavior
         candidateBehavior originalNormalized candidateNormalized claim) ∨
+    (∃ originalNormalized candidateNormalized claim,
+      NodeFixedCodePointerRegisterIndirectCallEdgesComplete graph nodeId context region
+        originalBehavior candidateBehavior originalNormalized candidateNormalized claim) ∨
     (∃ originalNormalized candidateNormalized claim firstEdgeId,
       NodeDynamicRangeIndirectCallEdgesComplete graph nodeId context region originalBehavior
         candidateBehavior originalNormalized candidateNormalized claim firstEdgeId) ∨

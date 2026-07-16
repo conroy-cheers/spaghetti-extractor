@@ -37,8 +37,25 @@ def _lean_relation_constructor(relation: str | None) -> str:
         )
     return relation
 
-def _lean_register_relation_pair(pair: dict[str, str]) -> str:
-    relation = _lean_relation_constructor(pair.get("relation"))
+def _lean_register_relation_pair(pair: dict[str, Any]) -> str:
+    relation_name = pair.get("relation")
+    if relation_name == "fixed_code_pointer":
+        target_id = pair.get("target_id")
+        if (
+            not isinstance(target_id, int)
+            or isinstance(target_id, bool)
+            or target_id < 0
+        ):
+            raise StageAInputError(
+                "fixed_code_pointer register relation requires a nonnegative target_id"
+            )
+        relation = f"fixedCodePointer {target_id}"
+    else:
+        if "target_id" in pair:
+            raise StageAInputError(
+                f"register relation {relation_name!r} does not accept target_id"
+            )
+        relation = _lean_relation_constructor(relation_name)
     return (
         f"{{ original := .{pair['original']}, candidate := .{pair['candidate']}, "
         f"relation := .{relation} }}"

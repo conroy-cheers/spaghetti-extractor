@@ -603,6 +603,7 @@ def _attach_stack_window_invariants(
                 and edge.get("indirect_target_profile") in {
                     "immutable_relocated_function_pointer_call_v1",
                     "fixed_static_function_pointer_call_v1",
+                    "inductive_fixed_code_pointer_register_call_v1",
                 }
             )
         )
@@ -1975,6 +1976,7 @@ def _attach_return_slot_contracts(
                 and edge.get("indirect_target_profile") in {
                     "immutable_relocated_function_pointer_call_v1",
                     "fixed_static_function_pointer_call_v1",
+                    "inductive_fixed_code_pointer_register_call_v1",
                 }
             )
         )

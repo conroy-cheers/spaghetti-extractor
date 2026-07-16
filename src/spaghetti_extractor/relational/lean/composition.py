@@ -1162,11 +1162,11 @@ def _write_relational_product_graph_modules(
                     "    NodeControlEdgesComplete relationalProductGraph "
                     f"{node_id} staticProofContext region{region_index} "
                     f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr "
+                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
                     f"⟨{original_normalized}, {candidate_normalized}, {claim_name}, "
                     f"⟨originalBehavior{region_index}CheckedDecoded, "
                     f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"by decide, {closed_name}⟩⟩)))",
+                    f"by decide, {closed_name}⟩⟩))))",
                 ])
             elif candidate.get("profile") == "dynamic_range_code_pointer_call_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"
@@ -1195,11 +1195,12 @@ def _write_relational_product_graph_modules(
                     "    NodeControlEdgesComplete relationalProductGraph "
                     f"{node_id} staticProofContext region{region_index} "
                     f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
-                    f"  exact Or.inr (Or.inr (Or.inr (Or.inl ⟨{original_normalized}, "
+                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl "
+                    f"⟨{original_normalized}, "
                     f"{candidate_normalized}, {claim_name}, {first_edge_name}, "
                     f"⟨originalBehavior{region_index}CheckedDecoded, "
                     f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"{match_name}, {closed_name}⟩⟩)))",
+                    f"{match_name}, {closed_name}⟩⟩))))",
                 ])
             elif candidate.get("profile") == "inductive_iat_register_call_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"
@@ -1235,6 +1236,45 @@ def _write_relational_product_graph_modules(
                     f"⟨originalBehavior{region_index}CheckedDecoded, "
                     f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
                     f"by decide, {closed_name}⟩⟩))",
+                ])
+            elif candidate.get("profile") == (
+                "inductive_fixed_code_pointer_register_call_v1"
+            ):
+                original_normalized = f"productNode{node_id}OriginalNormalized"
+                candidate_normalized = f"productNode{node_id}CandidateNormalized"
+                claim_name = f"productNode{node_id}FixedCodePointerIndirectCallClaim"
+                closed_name = f"productNode{node_id}FixedCodePointerIndirectCallClosed"
+                definitions.extend([
+                    f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index}).get (by decide)",
+                    f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index}).get (by decide)",
+                    f"def {claim_name} : FixedCodePointerRegisterIndirectCallClaim := {{\n"
+                    f"  targetId := {int(candidate['target_id'])}\n"
+                    f"  originalRegister := .{candidate['original_register']}\n"
+                    f"  candidateRegister := .{candidate['candidate_register']}\n"
+                    f"  continuationTargetId := "
+                    f"{int(candidate['continuation_target_id'])}\n"
+                    "}",
+                    f"theorem {closed_name} :\n"
+                    "    FixedCodePointerRegisterIndirectCallTargetsClosed "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} {candidate_normalized} {claim_name} :=\n"
+                    "  fixedCodePointerRegisterIndirectCallTargetsClosed_of_checked "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} {candidate_normalized} {claim_name} "
+                    "(by decide)",
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+                    f"  exact Or.inr (Or.inr (Or.inr (Or.inl "
+                    f"⟨{original_normalized}, {candidate_normalized}, {claim_name}, "
+                    f"⟨originalBehavior{region_index}CheckedDecoded, "
+                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
+                    f"by decide, {closed_name}⟩⟩)))",
                 ])
             else:
                 definitions.append(

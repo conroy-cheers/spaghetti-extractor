@@ -1276,6 +1276,7 @@ def _whole_program_acceptance_plan(
                     decoded_control.get("profile") not in {
                         "immutable_relocated_function_pointer_call_v1",
                         "fixed_static_function_pointer_call_v1",
+                        "inductive_fixed_code_pointer_register_call_v1",
                     }
                     or original_outcome.get("continuation") !=
                         candidate_outcome.get("continuation")
@@ -1992,6 +1993,7 @@ def _whole_program_acceptance_plan(
                     or decoded_control.get("profile") in {
                         "immutable_relocated_function_pointer_call_v1",
                         "fixed_static_function_pointer_call_v1",
+                        "inductive_fixed_code_pointer_register_call_v1",
                     }
                     and int(decoded_control.get("target_id", -1))
                         == int(edge.get("target_target_id", -2))

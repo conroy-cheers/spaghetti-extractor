@@ -322,6 +322,7 @@ def _attach_register_relation_analysis(
         if edge.get("indirect_target_profile") in {
             "immutable_relocated_function_pointer_call_v1",
             "fixed_static_function_pointer_call_v1",
+            "inductive_fixed_code_pointer_register_call_v1",
         }
     ]
     return_pop_obligations = [
@@ -1515,6 +1516,7 @@ def _segment_refinement_candidates(
             and edge.get("indirect_target_profile") in {
                 "immutable_relocated_function_pointer_call_v1",
                 "fixed_static_function_pointer_call_v1",
+                "inductive_fixed_code_pointer_register_call_v1",
             }
             and isinstance(edge.get("indirect_target_claim"), dict)
             and int(edge["indirect_target_claim"].get("target_id", -1))
@@ -3532,8 +3534,16 @@ def _attach_stack_register_output_claims(
 
 
 def _static_word_relation_supports_register_output(
-    static_relation: str, register_relation: str,
+    slot: dict[str, Any], output: dict[str, Any],
 ) -> bool:
+    static_relation = str(slot.get("relation"))
+    register_relation = str(output.get("relation"))
+    if static_relation == register_relation == "fixed_code_pointer":
+        return (
+            isinstance(slot.get("target_id"), int)
+            and not isinstance(slot.get("target_id"), bool)
+            and slot.get("target_id") == output.get("target_id")
+        )
     return (static_relation, register_relation) in {
         ("exact", "exact"),
         ("exact", "related_word"),
@@ -3582,7 +3592,7 @@ def _attach_static_word_register_output_claims(
                 if int(slot["original_address"]) == original_address
                 and int(slot["candidate_address"]) == candidate_address
                 and _static_word_relation_supports_register_output(
-                    str(slot["relation"]), str(output["relation"])
+                    slot, output
                 )
             ]
             if len(matching_slots) != 1:

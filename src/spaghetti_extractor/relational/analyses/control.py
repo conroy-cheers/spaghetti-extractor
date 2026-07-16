@@ -307,6 +307,7 @@ def _relational_product_graph(
             and indirect_candidate["profile"] in {
                 "immutable_relocated_function_pointer_call_v1",
                 "fixed_static_function_pointer_call_v1",
+                "inductive_fixed_code_pointer_register_call_v1",
             }
         ):
             return [{

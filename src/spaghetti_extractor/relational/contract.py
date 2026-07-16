@@ -814,6 +814,11 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             "original_aliases": sorted({_integer(alias) for alias in original_aliases}),
             "candidate_aliases": sorted({_integer(alias) for alias in candidate_aliases}),
         })
+    canonical_target_ids = {
+        index
+        for index, target in enumerate(normalized_targets)
+        if target["id"] == index
+    }
 
     normalized_regions: list[dict[str, Any]] = []
     region_ids: set[str] = set()
@@ -901,6 +906,20 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         candidate_span = _span(item.get("candidate"))
         inputs = _register_pairs(item.get("inputs"), issues, region_id, "inputs")
         outputs = _register_pairs(item.get("outputs"), issues, region_id, "outputs")
+        input_relations = (
+            _register_relations(
+                item.get("input_relations"), issues, region_id,
+                "input_relations", canonical_target_ids,
+            )
+            if "input_relations" in item else None
+        )
+        output_relations = (
+            _register_relations(
+                item.get("output_relations"), issues, region_id,
+                "output_relations", canonical_target_ids,
+            )
+            if "output_relations" in item else None
+        )
         input_dynamic_range_relations = _dynamic_range_relations(
             item.get("input_dynamic_range_relations", []), issues, region_id,
             "input_dynamic_range_relations",
@@ -1054,6 +1073,10 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
                 "address_separations": address_separations,
                 "root": bool(item.get("root")),
             }
+        if input_relations is not None:
+            normalized_region["input_relations"] = input_relations
+        if output_relations is not None:
+            normalized_region["output_relations"] = output_relations
         if has_function_metadata and not any(
             issue.get("category") == "malformed_region_function_metadata"
             and issue.get("id") == region_id
@@ -2207,6 +2230,74 @@ def _register_pairs(value: Any, issues: list[dict[str, Any]], region: str, famil
         original_seen.add(original_register)
         candidate_seen.add(candidate_register)
         result.append({"original": original_register, "candidate": candidate_register})
+    return result
+
+
+def _register_relations(
+    value: Any,
+    issues: list[dict[str, Any]],
+    region: str,
+    family: str,
+    canonical_target_ids: set[int],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        issues.append({
+            "category": "register_relation_invalid",
+            "region": region,
+            "family": family,
+            "item": value,
+        })
+        return []
+    relation_kinds = {
+        "exact", "code_pointer", "data_pointer", "related_word",
+        "fixed_code_pointer",
+    }
+    result: list[dict[str, Any]] = []
+    original_seen: set[str] = set()
+    candidate_seen: set[str] = set()
+    for item in value:
+        relation = item.get("relation") if isinstance(item, dict) else None
+        has_target_id = isinstance(item, dict) and "target_id" in item
+        target_id = _integer(item.get("target_id")) if has_target_id else None
+        if (
+            not isinstance(item, dict)
+            or item.get("original") not in REGISTERS
+            or item.get("candidate") not in REGISTERS
+            or relation not in relation_kinds
+            or (relation == "fixed_code_pointer" and (
+                target_id is None
+                or target_id < 0
+                or target_id not in canonical_target_ids
+            ))
+            or (relation != "fixed_code_pointer" and has_target_id)
+        ):
+            issues.append({
+                "category": "register_relation_invalid",
+                "region": region,
+                "family": family,
+                "item": item,
+            })
+            continue
+        original_register = str(item["original"])
+        candidate_register = str(item["candidate"])
+        if original_register in original_seen or candidate_register in candidate_seen:
+            issues.append({
+                "category": "register_relation_ambiguous",
+                "region": region,
+                "family": family,
+                "item": item,
+            })
+            continue
+        original_seen.add(original_register)
+        candidate_seen.add(candidate_register)
+        normalized: dict[str, Any] = {
+            "original": original_register,
+            "candidate": candidate_register,
+            "relation": str(relation),
+        }
+        if relation == "fixed_code_pointer":
+            normalized["target_id"] = target_id
+        result.append(normalized)
     return result
 
 _DYNAMIC_WORD_KINDS = {

@@ -586,6 +586,11 @@
               "callsite-preservation-schema"
               "tests.test_stage_a_callsite_preservation_schema"
               [ ./tests/test_stage_a_callsite_preservation_schema.py ];
+          stage-a-relational-tests-register-analysis =
+            mkStageARelationalTest
+              "register-analysis"
+              "tests.test_stage_a_register_analysis"
+              [ ./tests/test_stage_a_register_analysis.py ];
           stage-a-relational-tests-lean-runtime-frame-import-environment =
             mkStageARelationalTest
               "lean-runtime-frame-import-environment"
@@ -683,6 +688,7 @@
               stage-a-relational-tests-callsite-preservation
               stage-a-relational-tests-callsite-summary-generation
               stage-a-relational-tests-callsite-preservation-schema
+              stage-a-relational-tests-register-analysis
               stage-a-relational-tests-lean-runtime-frame-import-environment
               stage-a-relational-tests-acceptance-runtime-frame-import
               stage-a-relational-tests-contract
@@ -749,6 +755,7 @@
             stage-a-relational-tests-callsite-preservation
             stage-a-relational-tests-callsite-summary-generation
             stage-a-relational-tests-callsite-preservation-schema
+            stage-a-relational-tests-register-analysis
             stage-a-relational-tests-lean-runtime-frame-import-environment
             stage-a-relational-tests-acceptance-runtime-frame-import
             stage-a-relational-tests-contract

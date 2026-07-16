@@ -35,8 +35,13 @@ from .stack import (
 
 
 _REGISTER_RELATION_KINDS = {
-    "exact", "code_pointer", "data_pointer", "related_word",
+    "exact", "code_pointer", "data_pointer", "fixed_code_pointer",
+    "related_word",
 }
+RegisterRelation = str | dict[str, Any]
+_X86_GENERAL_REGISTERS = frozenset({
+    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
+})
 _PE32_EXTERNAL_REGISTER_POLICY_ID = "win32-cdecl-stdcall-registers-v1"
 _PE32_EXTERNAL_PRESERVED_REGISTERS = frozenset({
     "ebx", "esi", "edi", "ebp", "esp",
@@ -138,16 +143,53 @@ def _refine_contract_bounds(
                 bound.pop("expression_source", None)
     return refined
 
-def _register_relation_join(relations: list[str]) -> str:
-    unique = set(relations)
-    if not unique:
-        return "related_word"
-    if len(unique) == 1:
-        return next(iter(unique))
-    return "related_word"
+def _register_relation_kind(relation: RegisterRelation) -> str:
+    if isinstance(relation, str):
+        return relation
+    return str(relation.get("relation", "related_word"))
 
-def _register_relation_implies(source: str, target: str) -> bool:
-    return source == target or target == "related_word"
+
+def _register_relation_payload(relation: RegisterRelation) -> dict[str, Any]:
+    kind = _register_relation_kind(relation)
+    if kind == "fixed_code_pointer" and isinstance(relation, dict):
+        target_id = relation.get("target_id")
+        if (
+            isinstance(target_id, int)
+            and not isinstance(target_id, bool)
+            and target_id >= 0
+        ):
+            return {"relation": kind, "target_id": int(target_id)}
+    if kind in _REGISTER_RELATION_KINDS - {"fixed_code_pointer"}:
+        return {"relation": kind}
+    return {"relation": "related_word"}
+
+
+def _register_relation_key(relation: RegisterRelation) -> tuple[str, int | None]:
+    payload = _register_relation_payload(relation)
+    return payload["relation"], payload.get("target_id")
+
+
+def _register_relation_join(relations: list[RegisterRelation]) -> RegisterRelation:
+    if not relations:
+        return "related_word"
+    keys = {_register_relation_key(relation) for relation in relations}
+    if len(keys) != 1:
+        # In particular, fixed targets with different canonical IDs must never
+        # retain either target identity after a join.
+        return "related_word"
+    if _register_relation_kind(relations[0]) == "fixed_code_pointer":
+        return _register_relation_payload(relations[0])
+    return _register_relation_kind(relations[0])
+
+
+def _register_relation_implies(
+    source: RegisterRelation, target: RegisterRelation,
+) -> bool:
+    source_key = _register_relation_key(source)
+    target_key = _register_relation_key(target)
+    if source_key == target_key or target_key[0] == "related_word":
+        return True
+    return source_key[0] == "fixed_code_pointer" and target_key[0] == "code_pointer"
 
 def _paired_constant_relation(
     original_expression: dict[str, Any],
@@ -155,7 +197,7 @@ def _paired_constant_relation(
     contract: dict[str, Any],
     original_image_base: int,
     candidate_image_base: int,
-) -> str | None:
+) -> RegisterRelation | None:
     if (
         original_expression.get("op") != "constant"
         or candidate_expression.get("op") != "constant"
@@ -171,25 +213,47 @@ def _paired_constant_relation(
         for target in contract.get("value_targets", [])
     ):
         return "data_pointer"
-    if any(
-        original_image_base + int(target["original_rva"]) == original_value
-        and candidate_image_base + int(target["candidate_rva"]) == candidate_value
-        for target in contract.get("code_targets", [])
-    ):
+    fixed_matches = [
+        target_id
+        for target_id, target in enumerate(contract.get("code_targets", []))
+        if isinstance(target, dict)
+        and target.get("id") == target_id
+        and original_value in {
+            original_image_base + int(rva)
+            for rva in [
+                target.get("original_rva", -1),
+                *target.get("original_aliases", []),
+            ]
+        }
+        and candidate_value in {
+            candidate_image_base + int(rva)
+            for rva in [
+                target.get("candidate_rva", -1),
+                *target.get("candidate_aliases", []),
+            ]
+        }
+    ]
+    if len(fixed_matches) == 1:
+        return {
+            "relation": "fixed_code_pointer",
+            "target_id": fixed_matches[0],
+        }
+    if fixed_matches:
         return "code_pointer"
     return None
 
 def _infer_register_output_relation(
     original_expression: dict[str, Any],
     candidate_expression: dict[str, Any],
-    input_relations: dict[str, str],
+    input_relations: dict[str, RegisterRelation],
     contract: dict[str, Any],
     original_image_base: int,
     candidate_image_base: int,
     global_values_empty: bool,
     original_bin: StageABinary | None = None,
     candidate_bin: StageABinary | None = None,
-) -> tuple[str, str]:
+    candidate_input_registers: dict[str, str] | None = None,
+) -> tuple[RegisterRelation, str]:
     constant_relation = _paired_constant_relation(
         original_expression,
         candidate_expression,
@@ -204,8 +268,11 @@ def _infer_register_output_relation(
     )
     if static_slot is not None:
         relation = str(static_slot["relation"])
-        if relation in {"fixed_code_pointer", "fixedCodePointer"}:
-            relation = "code_pointer"
+        if relation == "fixed_code_pointer":
+            relation = {
+                "relation": "fixed_code_pointer",
+                "target_id": int(static_slot["target_id"]),
+            }
         return relation, "static_word_slot"
     original_address = _constant_read32_address(original_expression)
     candidate_address = _constant_read32_address(candidate_expression)
@@ -227,20 +294,33 @@ def _infer_register_output_relation(
             )
             if immutable_relation is not None:
                 return immutable_relation, "immutable_image_word"
+    if (
+        original_expression.get("op") == "input_reg"
+        and candidate_expression.get("op") == "input_reg"
+    ):
+        register = str(original_expression.get("reg"))
+        candidate_register = str(candidate_expression.get("reg"))
+        expected_candidate = (candidate_input_registers or {}).get(
+            register, register,
+        )
+        if candidate_register == expected_candidate:
+            return (
+                input_relations.get(register, "related_word"),
+                "identity_transfer",
+            )
     if original_expression == candidate_expression:
-        if original_expression.get("op") == "input_reg":
-            register = str(original_expression.get("reg"))
-            return input_relations.get(register, "related_word"), "identity_transfer"
         dependencies = _semantic_expr_registers(original_expression)
         if _semantic_expr_is_pure(original_expression) and all(
-            input_relations.get(register) == "exact" for register in dependencies
+            _register_relation_kind(input_relations.get(register, "related_word"))
+                == "exact"
+            for register in dependencies
         ):
             return "exact", "lean_exact_memory_free_expression"
         if global_values_empty and _semantic_exact_memory_inputs(
             original_expression,
             {
                 register for register, relation in input_relations.items()
-                if relation == "exact"
+                if _register_relation_kind(relation) == "exact"
             },
         ):
             return "exact", "lean_exact_memory_expression"
@@ -256,13 +336,33 @@ def _matching_static_word_relation_slot(
     candidate_address = _constant_read32_address(candidate_expression)
     if original_address is None or candidate_address is None:
         return None
-    matches = [
-        slot
-        for slot in contract.get("static_word_relation_slots", [])
-        if int(slot.get("original_address", -1)) == original_address
-        and int(slot.get("candidate_address", -1)) == candidate_address
-        and str(slot.get("relation")) in _REGISTER_RELATION_KINDS
-    ]
+    code_targets = contract.get("code_targets", [])
+    matches = []
+    for slot in contract.get("static_word_relation_slots", []):
+        if not isinstance(slot, dict):
+            continue
+        relation = str(slot.get("relation"))
+        valid_fixed_target = False
+        if relation == "fixed_code_pointer":
+            target_id = slot.get("target_id")
+            valid_fixed_target = (
+                isinstance(target_id, int)
+                and not isinstance(target_id, bool)
+                and target_id >= 0
+                and isinstance(code_targets, list)
+                and target_id < len(code_targets)
+                and isinstance(code_targets[target_id], dict)
+                and code_targets[target_id].get("id") == target_id
+            )
+        if (
+            int(slot.get("original_address", -1)) == original_address
+            and int(slot.get("candidate_address", -1)) == candidate_address
+            and (
+                relation in _REGISTER_RELATION_KINDS - {"fixed_code_pointer"}
+                or valid_fixed_target
+            )
+        ):
+            matches.append(slot)
     return dict(matches[0]) if len(matches) == 1 else None
 
 def _iat_seed_read(
@@ -1315,6 +1415,125 @@ def _attach_import_register_invariants(
         region["output_import_relations"] = []
     return refined
 
+
+def _indirect_fixed_code_pointer_register_calls(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    relation_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Propose register-indirect calls justified by a fixed target invariant.
+
+    This inventory is diagnostic/proof-input data only. Product-graph creation
+    must replay the relation and decoded outcomes independently before adding
+    any control edge.
+    """
+    regions = contract.get("regions", [])
+    code_targets = contract.get("code_targets", [])
+    region_by_numeric_id = {
+        int(region["numeric_id"]): region_index
+        for region_index, region in enumerate(regions)
+        if isinstance(region, dict)
+        and isinstance(region.get("numeric_id"), int)
+        and not isinstance(region.get("numeric_id"), bool)
+    }
+    target_ids_by_region_index: dict[int, list[int]] = {}
+    for target_id, target in enumerate(code_targets):
+        if not (
+            isinstance(target, dict)
+            and target.get("id") == target_id
+            and isinstance(target.get("region_index"), int)
+            and not isinstance(target.get("region_index"), bool)
+        ):
+            continue
+        target_ids_by_region_index.setdefault(
+            int(target["region_index"]), []
+        ).append(target_id)
+    result: list[dict[str, Any]] = []
+    for source_index, (behavior_pair, relation_row) in enumerate(zip(
+        behaviors, relation_rows, strict=True,
+    )):
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        original_target = original_outcome.get("target") or {}
+        candidate_target = candidate_outcome.get("target") or {}
+        original_continuation = original_outcome.get("continuation")
+        candidate_continuation = candidate_outcome.get("continuation")
+        if not (
+            original_outcome.get("op") == "indirect_call"
+            and candidate_outcome.get("op") == "indirect_call"
+            and isinstance(original_target, dict)
+            and isinstance(candidate_target, dict)
+            and original_target.get("op") == "input_reg"
+            and candidate_target.get("op") == "input_reg"
+            and isinstance(original_continuation, int)
+            and not isinstance(original_continuation, bool)
+            and original_continuation == candidate_continuation
+        ):
+            continue
+        continuation_index = region_by_numeric_id.get(original_continuation)
+        if continuation_index is None:
+            continue
+        continuation_target_ids = target_ids_by_region_index.get(
+            continuation_index, []
+        )
+        if len(continuation_target_ids) != 1:
+            continue
+        continuation_target_id = continuation_target_ids[0]
+        original_register = str(original_target.get("reg"))
+        candidate_register = str(candidate_target.get("reg"))
+        matches = [
+            relation
+            for relation in relation_row.get("inputs", [])
+            if relation.get("original") == original_register
+            and relation.get("candidate") == candidate_register
+            and relation.get("relation") == "fixed_code_pointer"
+            and isinstance(relation.get("target_id"), int)
+            and not isinstance(relation.get("target_id"), bool)
+        ]
+        if len(matches) != 1:
+            continue
+        target_id = int(matches[0]["target_id"])
+        if not (
+            isinstance(code_targets, list)
+            and 0 <= target_id < len(code_targets)
+            and isinstance(code_targets[target_id], dict)
+            and code_targets[target_id].get("id") == target_id
+        ):
+            continue
+        target = code_targets[target_id]
+        mapped_region_index = target.get("region_index")
+        if "region_index" in target:
+            if not (
+                isinstance(mapped_region_index, int)
+                and not isinstance(mapped_region_index, bool)
+                and 0 <= mapped_region_index < len(regions)
+            ):
+                continue
+            target_region_index = int(mapped_region_index)
+        else:
+            target_region_index = region_by_numeric_id.get(target_id)
+        if target_region_index is None:
+            continue
+        result.append({
+            "profile": "inductive_fixed_code_pointer_register_call_v1",
+            "source_region_index": source_index,
+            "target_region_index": target_region_index,
+            "continuation_region_index": continuation_index,
+            "continuation_target_id": continuation_target_id,
+            "target_id": target_id,
+            "original_register": original_register,
+            "candidate_register": candidate_register,
+        })
+    return sorted(
+        result,
+        key=lambda row: (
+            row["source_region_index"], row["target_id"],
+            row["continuation_region_index"], row["original_register"],
+            row["candidate_register"],
+        ),
+    )
+
+
 def _synthesize_register_relations(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
@@ -1330,7 +1549,12 @@ def _synthesize_register_relations(
     regions = refined["regions"]
     region_by_id = {int(region["numeric_id"]): index for index, region in enumerate(regions)}
     predecessors: list[
-        list[tuple[int, bool, str, frozenset[str], dict[str, str]]]
+        list[
+            tuple[
+                int, bool, str, frozenset[str],
+                dict[str, RegisterRelation],
+            ]
+        ]
     ] = [[] for _ in regions]
     edges: list[dict[str, Any]] = []
     pending_indirect_edges: list[dict[str, Any]] = []
@@ -1374,6 +1598,17 @@ def _synthesize_register_relations(
             return None
         return contracts[0]
 
+    def machine_preserved_registers(
+        contract: dict[str, Any] | None,
+    ) -> frozenset[str]:
+        if contract is None:
+            return frozenset()
+        return frozenset(
+            str(register)
+            for register in contract.get("preserved_registers", [])
+            if str(register) in _X86_GENERAL_REGISTERS
+        )
+
     for source_index, behavior_pair in enumerate(behaviors):
         original_outcome = behavior_pair["original_ir"].get("outcome") or {}
         candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
@@ -1412,7 +1647,10 @@ def _synthesize_register_relations(
             predecessors[target_index].append(
                 (
                     source_index, barrier, str(original_edge["kind"]),
-                    _PE32_EXTERNAL_PRESERVED_REGISTERS,
+                    (
+                        machine_preserved_registers(machine_contract)
+                        if barrier else _PE32_EXTERNAL_PRESERVED_REGISTERS
+                    ),
                     result_relations,
                 )
             )
@@ -1482,7 +1720,7 @@ def _synthesize_register_relations(
             predecessors[target_index].append(
                 (
                     source_index, True, "external_call",
-                    _PE32_EXTERNAL_PRESERVED_REGISTERS,
+                    machine_preserved_registers(machine_contract),
                     result_relations,
                 )
             )
@@ -1587,6 +1825,7 @@ def _synthesize_register_relations(
             and edge.get("indirect_target_profile") in {
                 "immutable_relocated_function_pointer_call_v1",
                 "fixed_static_function_pointer_call_v1",
+                "inductive_fixed_code_pointer_register_call_v1",
             }
         ) else None
 
@@ -1639,6 +1878,13 @@ def _synthesize_register_relations(
         }
         for region in regions
     ]
+    output_pair_candidates = [
+        {
+            str(pair["original"]): str(pair["candidate"])
+            for pair in region.get("outputs", [])
+        }
+        for region in regions
+    ]
     input_kinds = [
         {register: "exact" for register in register_order}
         for _ in regions
@@ -1651,17 +1897,28 @@ def _synthesize_register_relations(
     max_iterations = max(1, len(regions) * len(register_order) + 1)
     converged = False
     for iteration in range(max_iterations):
-        next_outputs: list[dict[str, str]] = []
+        next_outputs: list[dict[str, RegisterRelation]] = []
         next_reasons: list[dict[str, str]] = []
         for region_index, behavior_pair in enumerate(behaviors):
-            kinds: dict[str, str] = {}
+            kinds: dict[str, RegisterRelation] = {}
             reasons: dict[str, str] = {}
             original_registers = behavior_pair["original_ir"]["registers"]
             candidate_registers = behavior_pair["candidate_ir"]["registers"]
             for register in register_order:
+                candidate_register = output_pair_candidates[region_index].get(
+                    register,
+                )
+                if (
+                    register not in original_registers
+                    or candidate_register is None
+                    or candidate_register not in candidate_registers
+                ):
+                    kinds[register] = "related_word"
+                    reasons[register] = "output_register_pair_missing"
+                    continue
                 kinds[register], reasons[register] = _infer_register_output_relation(
                     original_registers[register],
-                    candidate_registers[register],
+                    candidate_registers[candidate_register],
                     input_kinds[region_index],
                     refined,
                     original_image_base,
@@ -1669,16 +1926,17 @@ def _synthesize_register_relations(
                     not refined.get("value_targets"),
                     original_bin,
                     candidate_bin,
+                    input_pair_candidates[region_index],
                 )
             next_outputs.append(kinds)
             next_reasons.append(reasons)
 
-        next_inputs: list[dict[str, str]] = []
+        next_inputs: list[dict[str, RegisterRelation]] = []
         for region_index, region in enumerate(regions):
             incoming = predecessors[region_index]
-            kinds: dict[str, str] = {}
+            kinds: dict[str, RegisterRelation] = {}
             for register in register_order:
-                candidates: list[str] = []
+                candidates: list[RegisterRelation] = []
                 if region.get("root"):
                     candidates.append("exact")
                 for source_index, barrier, _, preserved, results in incoming:
@@ -1736,7 +1994,9 @@ def _synthesize_register_relations(
             {
                 "original": input_pairs[register]["original"],
                 "candidate": input_pairs[register]["candidate"],
-                "relation": input_kinds[region_index][register],
+                **_register_relation_payload(
+                    input_kinds[region_index][register]
+                ),
             }
             for register in register_order
             if register in input_pairs
@@ -1749,7 +2009,9 @@ def _synthesize_register_relations(
             {
                 "original": output_pairs[register]["original"],
                 "candidate": output_pairs[register]["candidate"],
-                "relation": output_kinds[region_index][register],
+                **_register_relation_payload(
+                    output_kinds[region_index][register]
+                ),
             }
             for register in register_order
             if register in output_pairs
@@ -1884,6 +2146,14 @@ def _synthesize_register_relations(
             ),
         })
 
+    # Proposal-only inventory. Unlike the legacy indirect candidates accepted
+    # as inputs above, these rows do not create predecessors or graph edges.
+    indirect_fixed_code_pointer_calls = (
+        _indirect_fixed_code_pointer_register_calls(
+            refined, behaviors, relation_rows,
+        )
+    )
+
     unsupported_edges = 0
     fully_exact_edges = 0
     exact_pair_edge_claims = 0
@@ -1901,6 +2171,7 @@ def _synthesize_register_relations(
             or edge.get("indirect_target_profile") in {
                 "immutable_relocated_function_pointer_call_v1",
                 "fixed_static_function_pointer_call_v1",
+                "inductive_fixed_code_pointer_register_call_v1",
             }
         )
         source_claims = {
@@ -1976,16 +2247,27 @@ def _synthesize_register_relations(
         "regions": len(regions),
         "direct_edges": len(edges),
         "exact_input_relations": sum(
-            kind == "exact" for kinds in input_kinds for kind in kinds.values()
+            _register_relation_kind(kind) == "exact"
+            for kinds in input_kinds for kind in kinds.values()
         ),
         "exact_output_relations": sum(
-            kind == "exact" for kinds in output_kinds for kind in kinds.values()
+            _register_relation_kind(kind) == "exact"
+            for kinds in output_kinds for kind in kinds.values()
         ),
         "code_pointer_output_relations": sum(
-            kind == "code_pointer" for kinds in output_kinds for kind in kinds.values()
+            _register_relation_kind(kind) == "code_pointer"
+            for kinds in output_kinds for kind in kinds.values()
+        ),
+        "fixed_code_pointer_output_relations": sum(
+            _register_relation_kind(kind) == "fixed_code_pointer"
+            for kinds in output_kinds for kind in kinds.values()
+        ),
+        "indirect_fixed_code_pointer_calls": len(
+            indirect_fixed_code_pointer_calls
         ),
         "data_pointer_output_relations": sum(
-            kind == "data_pointer" for kinds in output_kinds for kind in kinds.values()
+            _register_relation_kind(kind) == "data_pointer"
+            for kinds in output_kinds for kind in kinds.values()
         ),
         "lean_exact_output_claims": exact_claims,
         "fully_exact_output_regions": sum(
@@ -2064,6 +2346,7 @@ def _synthesize_register_relations(
             ),
         },
         "return_slot_analysis": return_slot_analysis,
+        "indirect_fixed_code_pointer_calls": indirect_fixed_code_pointer_calls,
         "counts": counts,
         "regions": relation_rows,
         "edges": edges,

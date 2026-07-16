@@ -2,11 +2,48 @@ from tests.stage_a_relational_support import *
 
 from spaghetti_extractor.relational.lean.expressions import (
     _lean_machine_call_memory_size,
+    _lean_register_relation_pair,
+)
+from spaghetti_extractor.relational.lean.common import (
+    _lean_register_relation_pair as _lean_common_register_relation_pair,
 )
 from spaghetti_extractor.relational.model import _semantic_hash
 
 
 class StageARelationalPipelineTests(StageARelationalTestBase):
+    def test_fixed_code_pointer_register_relation_emits_target_and_hashes_it(self):
+        relation = {
+            "original": "esi",
+            "candidate": "esi",
+            "relation": "fixed_code_pointer",
+            "target_id": 222,
+        }
+
+        self.assertEqual(
+            _lean_register_relation_pair(relation),
+            (
+                "{ original := .esi, candidate := .esi, "
+                "relation := .fixedCodePointer 222 }"
+            ),
+        )
+        self.assertEqual(
+            _lean_common_register_relation_pair(relation),
+            _lean_register_relation_pair(relation),
+        )
+        self.assertNotEqual(
+            _semantic_hash(relation),
+            _semantic_hash({**relation, "target_id": 223}),
+        )
+        with self.assertRaises(StageAInputError):
+            _lean_register_relation_pair({
+                key: value for key, value in relation.items()
+                if key != "target_id"
+            })
+        with self.assertRaises(StageAInputError):
+            _lean_register_relation_pair({
+                **relation, "relation": "code_pointer",
+            })
+
     def test_proof_shards_are_bounded_by_region_count_and_estimated_source_size(self):
         self.assertEqual(
             _partition_proof_shards(

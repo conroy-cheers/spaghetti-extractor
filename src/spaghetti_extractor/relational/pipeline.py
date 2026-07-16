@@ -191,6 +191,8 @@ from .contract import (
     _static_word_relation_slots,
     stage_a_generate_relation_contract,
 )
+
+
 from .diagnostics import (
     _check_relational_counterexample,
     _complete_counterexample_assignment,
@@ -392,6 +394,86 @@ from .schema import (
 )
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
+
+
+def _stabilize_fixed_code_pointer_register_calls(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    *,
+    original_image_base: int,
+    candidate_image_base: int,
+    indirect_call_candidates: list[dict[str, Any]],
+    import_call_candidates: list[dict[str, Any]],
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+) -> tuple[
+    dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, Any]
+]:
+    fixed_candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    converged = False
+    round_budget = max(1, len(contract.get("regions", [])) + 1)
+    normalized = contract
+    register_relations: dict[str, Any] = {}
+    for _round in range(round_budget):
+        combined = [*indirect_call_candidates, *fixed_candidates]
+        source_ids = [
+            int(candidate["source_region_index"])
+            for candidate in combined
+        ]
+        if len(source_ids) != len(set(source_ids)):
+            fixed_candidates = []
+            break
+        normalized, register_relations = _synthesize_register_relations(
+            normalized,
+            behaviors,
+            original_image_base=original_image_base,
+            candidate_image_base=candidate_image_base,
+            indirect_call_candidates=combined,
+            import_call_candidates=import_call_candidates,
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+        )
+        proposed = register_relations.get(
+            "indirect_fixed_code_pointer_calls", []
+        )
+        proposal_key = json.dumps(proposed, sort_keys=True, separators=(",", ":"))
+        if proposed == fixed_candidates:
+            converged = True
+            break
+        if proposal_key in seen:
+            fixed_candidates = []
+            break
+        seen.add(proposal_key)
+        fixed_candidates = proposed
+
+    if not converged:
+        fixed_candidates = []
+        normalized, register_relations = _synthesize_register_relations(
+            normalized,
+            behaviors,
+            original_image_base=original_image_base,
+            candidate_image_base=candidate_image_base,
+            indirect_call_candidates=indirect_call_candidates,
+            import_call_candidates=import_call_candidates,
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+        )
+    fixed_point = {
+        "status": (
+            "proposal_requires_generated_lean_replay" if converged else "incomplete"
+        ),
+        "converged": converged,
+        "candidate_count": len(fixed_candidates),
+        "round_budget": round_budget,
+    }
+    register_relations["fixed_code_pointer_call_fixed_point"] = fixed_point
+    return (
+        normalized,
+        register_relations,
+        [*indirect_call_candidates, *fixed_candidates],
+        fixed_point,
+    )
 
 
 def stage_a_prove_relational(
@@ -778,7 +860,12 @@ def stage_a_prove_relational(
     static_word_analysis["initial_code_pointers"] = (
         initial_static_code_pointer_analysis
     )
-    normalized, register_relations = _synthesize_register_relations(
+    (
+        normalized,
+        register_relations,
+        combined_indirect_call_candidates,
+        fixed_register_call_fixed_point,
+    ) = _stabilize_fixed_code_pointer_register_calls(
         normalized,
         behaviors,
         original_image_base=original_bin.image_base,
@@ -788,6 +875,9 @@ def stage_a_prove_relational(
         original_bin=original_bin,
         candidate_bin=candidate_bin,
     )
+    fixed_register_call_candidates = combined_indirect_call_candidates[
+        len(indirect_call_candidates):
+    ]
     normalized, register_relations = _lower_stack_register_relations(
         normalized, register_relations
     )
@@ -796,6 +886,51 @@ def stage_a_prove_relational(
     )
     register_relations = _attach_static_word_register_output_claims(
         normalized, behaviors, register_relations
+    )
+    write_json(
+        out / "relational-indirect-call-targets.json",
+        {
+            "format": "stage-a-relational-indirect-call-targets-v1",
+            "status": fixed_register_call_fixed_point["status"],
+            "candidates": indirect_call_candidates,
+            "fixed_register_candidates": fixed_register_call_candidates,
+            "dynamic_range_candidates": dynamic_call_candidates,
+            "fixed_register_call_fixed_point": fixed_register_call_fixed_point,
+        },
+    )
+    fixed_flow_facts = [
+        {
+            "id": f"{direction}:{region_index}:{relation_index}",
+            "kind": direction,
+            "region_index": region_index,
+            "original_register": relation["original"],
+            "candidate_register": relation["candidate"],
+            "target_id": int(relation["target_id"]),
+        }
+        for region_index, row in enumerate(register_relations.get("regions", []))
+        for direction, relations in (
+            ("input", row.get("inputs", [])),
+            ("output", row.get("outputs", [])),
+        )
+        for relation_index, relation in enumerate(relations)
+        if relation.get("relation") == "fixed_code_pointer"
+        and isinstance(relation.get("target_id"), int)
+        and not isinstance(relation.get("target_id"), bool)
+    ]
+    write_json(
+        out / "relational-fixed-code-pointer-flow.json",
+        {
+            "format": "stage-a-fixed-code-pointer-register-flow-v1",
+            "status": fixed_register_call_fixed_point["status"],
+            "acceptance_authority": False,
+            "facts": fixed_flow_facts,
+            "edge_proposals": fixed_register_call_candidates,
+            "fixed_point": fixed_register_call_fixed_point,
+            "activation": {
+                "state": "pending_generated_lean_replay",
+                "activated_edges": [],
+            },
+        },
     )
     write_json(out / "relational-static-word-relations.json", static_word_analysis)
     write_json(out / "relational-register-relations.json", register_relations)
@@ -859,7 +994,7 @@ def stage_a_prove_relational(
         normalized, behaviors, register_relations, segment_candidates,
         original_image_base=original_bin.image_base,
         candidate_image_base=candidate_bin.image_base,
-        indirect_call_candidates=indirect_call_candidates,
+        indirect_call_candidates=combined_indirect_call_candidates,
         dynamic_call_candidates=dynamic_call_candidates,
         import_register_seeds=import_register_seeds,
         import_call_candidates=import_register_analysis["indirect_import_calls"],
