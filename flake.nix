@@ -572,6 +572,10 @@
               ./tests/test_stage_a_indirect_control.py
               ./tests/test_stage_a_initial_static_code_pointers.py
             ];
+          stage-a-relational-tests-callsite-preservation = mkStageARelationalTest
+            "callsite-preservation"
+            "tests.test_stage_a_callsite_preservation"
+            [ ./tests/test_stage_a_callsite_preservation.py ];
           stageARelationalContractSuite = mkStageARelationalTestSuite
             "contract" "tests.test_stage_a_relational_contract"
             "StageARelationalContractTests" ./tests/test_stage_a_relational_contract.py;
@@ -656,6 +660,7 @@
               stage-a-relational-tests-static-word-relations
               stage-a-relational-tests-external-protocol
               stage-a-relational-tests-indirect-control
+              stage-a-relational-tests-callsite-preservation
               stage-a-relational-tests-contract
               stage-a-relational-tests-state
               stage-a-relational-tests-pipeline
@@ -717,6 +722,7 @@
             stage-a-relational-tests-static-word-relations
             stage-a-relational-tests-external-protocol
             stage-a-relational-tests-indirect-control
+            stage-a-relational-tests-callsite-preservation
             stage-a-relational-tests-contract
             stage-a-relational-tests-state
             stage-a-relational-tests-pipeline
