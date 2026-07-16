@@ -41,6 +41,120 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "none"
+    },
+    {
+      "id": 4,
+      "import": {"dll": "msvcrt.dll", "symbol": "__p___winitenv"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 0,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "fixed", "bytes": 4},
+          "minimum_size": 4,
+          "required_words": [
+            {"offset": 0, "relation": "related_word"}
+          ],
+          "nullable": false
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 5,
+      "import": {"dll": "msvcrt.dll", "symbol": "__set_app_type"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "id": 6,
+      "import": {"dll": "msvcrt.dll", "symbol": "__p__fmode"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 0,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "fixed", "bytes": 4},
+          "minimum_size": 4,
+          "required_words": [
+            {"offset": 0, "relation": "related_word"}
+          ],
+          "nullable": false
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 7,
+      "import": {"dll": "msvcrt.dll", "symbol": "__p__commode"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 0,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "fixed", "bytes": 4},
+          "minimum_size": 4,
+          "required_words": [
+            {"offset": 0, "relation": "related_word"}
+          ],
+          "nullable": false
+        }
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 8,
+      "import": {"dll": "msvcrt.dll", "symbol": "malloc"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "argument", "argument": 0, "scale": 1},
+          "minimum_size": 0,
+          "required_words": [],
+          "nullable": true
+        }
+      ],
+      "memory_effect": "newDynamicRanges",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 9,
+      "import": {"dll": "msvcrt.dll", "symbol": "calloc"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 2,
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {
+            "kind": "product",
+            "left_argument": 0,
+            "right_argument": 1
+          },
+          "minimum_size": 0,
+          "required_words": [],
+          "nullable": true
+        }
+      ],
+      "memory_effect": "newDynamicRanges",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
     }
   ]
 }

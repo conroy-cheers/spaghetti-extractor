@@ -12,11 +12,10 @@ from ..analyses.external import (
     _external_call_site_candidates,
     _semantic_external_target_identity,
 )
-from ..analyses.registers import _target_shaped_register_output_claims
 from ..analyses.stack import _stack_window_transfer_claims
 from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..contract import _raw_base_relocations
-from ..model import _semantic_hash
+from ..model import _semantic_hash, _target_shaped_register_output_claims
 from ..schema import (
     FLAG_BITS,
     RELATIONAL_ACCEPTANCE_THEOREM,
@@ -289,6 +288,21 @@ def _write_sharded_relational_proof(
             )
             definitions.append(f"def originalBehavior{index} : SymbolicBehavior := {behaviors[index]['original']}")
             definitions.append(f"def candidateBehavior{index} : SymbolicBehavior := {behaviors[index]['candidate']}")
+            outcome_condition_support = _lean_outcome_condition_support_source(
+                index, contract["regions"][index], behaviors[index]
+            )
+            if outcome_condition_support:
+                definitions.append(outcome_condition_support)
+            normalized_support = (
+                _lean_compositional_normalized_support_source(
+                    index, contract["regions"][index], behaviors[index]
+                )
+                if _normalized_behavior_fast_path(
+                    contract["regions"][index], behaviors[index]
+                ) else ""
+            )
+            if normalized_support:
+                definitions.append(normalized_support)
             theorems.append(_lean_region_theorem_source(
                 index,
                 contract["regions"][index],
@@ -1340,6 +1354,79 @@ def _lean_normalized_component_setup(
         flag_hypotheses,
     )
 
+def _lean_outcome_condition_support_source(
+    index: int,
+    region: dict[str, Any],
+    behaviors: dict[str, str],
+) -> str:
+    outcome = _lean_normalized_static_outcome(region, behaviors)
+    if outcome is None:
+        return ""
+    name = f"region{index}"
+    branch_parts = _lean_normalized_branch_parts(outcome)
+    if branch_parts is None:
+        return ""
+    condition, _, _ = branch_parts
+    return (
+        f"def {name}OutcomeCondition : BoolExpr := {condition}\n\n"
+        f"theorem {name}OutcomeConditionWithin :\n"
+        f"    {name}OutcomeCondition.flagsWithin {name}.flagInputs = true := by decide\n"
+    )
+
+
+def _lean_compositional_normalized_support_source(
+    index: int,
+    region: dict[str, Any],
+    behaviors: dict[str, str],
+) -> str:
+    outcome = _lean_normalized_static_outcome(region, behaviors)
+    if outcome is None or "flags := some" not in behaviors["original"]:
+        return ""
+    name = f"region{index}"
+    branch_parts = _lean_normalized_branch_parts(outcome)
+    if branch_parts is None:
+        normalized_outcome = outcome
+    else:
+        _, taken, fallthrough = branch_parts
+        normalized_outcome = (
+            "StageA.Relational.NormalizedOutcomeExpr.branch "
+            f"{name}OutcomeCondition {taken} {fallthrough}"
+        )
+    empty_writes = all(
+        _lean_behavior_field(behaviors.get(side, ""), "writes", "comparison") == "[]"
+        for side in ("original", "candidate")
+    )
+    empty_writes_fact = (
+        f"theorem {name}OriginalWritesEmpty : "
+        f"originalBehavior{index}.writes = [] := by rfl\n\n"
+        if empty_writes else ""
+    )
+    return (
+        f"def {name}NormalizedBehavior : NormalizedSymbolicBehavior :=\n"
+        f"  (normalizeSymbolicBehavior false {name}.targets "
+        f"originalBehavior{index}).get (by decide)\n\n"
+        f"theorem {name}NormalizedRegisters : {name}NormalizedBehavior.registers = "
+        f"originalBehavior{index}.registers := by decide\n\n"
+        f"theorem {name}NormalizedX87 : {name}NormalizedBehavior.x87 = "
+        f"originalBehavior{index}.x87 := by decide\n\n"
+        f"theorem {name}NormalizedWrites : {name}NormalizedBehavior.writes = "
+        f"originalBehavior{index}.writes := by decide\n\n"
+        f"def {name}CommonFlags : FlagsExpr := "
+        f"originalBehavior{index}.flags.get (by decide)\n\n"
+        f"theorem {name}NormalizedFlags : {name}NormalizedBehavior.flags = "
+        f"some {name}CommonFlags := by decide\n\n"
+        f"theorem {name}NormalizedOutcome : {name}NormalizedBehavior.outcome = "
+        f"{normalized_outcome} := by decide\n\n"
+        f"theorem {name}OriginalNormalized : normalizeSymbolicBehavior false "
+        f"{name}.targets originalBehavior{index} = some {name}NormalizedBehavior := "
+        "by decide\n\n"
+        f"theorem {name}CandidateNormalized : normalizeSymbolicBehavior true "
+        f"{name}.targets candidateBehavior{index} = some {name}NormalizedBehavior := "
+        "by decide\n\n"
+        + empty_writes_fact
+    )
+
+
 def _lean_compositional_normalized_theorem_source(
     index: int,
     region: dict[str, Any],
@@ -1454,20 +1541,7 @@ def _lean_compositional_normalized_theorem_source(
             f"{name}NormalizedOutcome] using outcomeRelated\n"
         )
 
-    definitions = (
-        f"def {name}NormalizedBehavior : NormalizedSymbolicBehavior :=\n"
-        f"  (normalizeSymbolicBehavior false {name}.targets originalBehavior{index}).get (by decide)\n\n"
-        f"theorem {name}NormalizedRegisters : {name}NormalizedBehavior.registers = originalBehavior{index}.registers := by decide\n\n"
-        f"theorem {name}NormalizedX87 : {name}NormalizedBehavior.x87 = originalBehavior{index}.x87 := by decide\n\n"
-        f"theorem {name}NormalizedWrites : {name}NormalizedBehavior.writes = originalBehavior{index}.writes := by decide\n\n"
-        f"def {name}CommonFlags : FlagsExpr := originalBehavior{index}.flags.get (by decide)\n\n"
-        f"theorem {name}NormalizedFlags : {name}NormalizedBehavior.flags = some {name}CommonFlags := by decide\n\n"
-        + outcome_facts
-        + f"theorem {name}NormalizedOutcome : {name}NormalizedBehavior.outcome = {normalized_outcome} := by decide\n\n"
-        f"theorem {name}OriginalNormalized : normalizeSymbolicBehavior false {name}.targets originalBehavior{index} = some {name}NormalizedBehavior := by decide\n\n"
-        f"theorem {name}CandidateNormalized : normalizeSymbolicBehavior true {name}.targets candidateBehavior{index} = some {name}NormalizedBehavior := by decide\n\n"
-        + empty_writes_fact
-    )
+    definitions = ""
 
     component_specs = (
         (
@@ -1638,7 +1712,7 @@ def _lean_region_theorem_source(
 ) -> str:
     name = f"region{index}"
     theorem_name = f"{name}Checked"
-    if _normalized_behavior_structure_matches(region, behaviors):
+    if _normalized_behavior_fast_path(region, behaviors):
         compositional = _lean_compositional_normalized_theorem_source(
             index,
             region,

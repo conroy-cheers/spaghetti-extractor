@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any
 
 from ..schema import integer as _integer
@@ -357,10 +358,10 @@ def _external_argument_relation_claims(
                 "dynamic-range offsets"
             )
         word = {"offset": original_offset, "kind": "relatedWord"}
-        if word not in relation.get("required_words", []):
+        if word not in relation.get("active_words", []):
             return None, (
                 f"external argument {argument_index} requires relatedWord at dynamic "
-                f"range offset {original_offset}; add it to the source relation and "
+                f"range offset {original_offset}; activate it in the source relation and "
                 "prove it on every incoming edge"
             )
         claims.append({
@@ -666,6 +667,7 @@ def _direct_import_thunk_call_candidates(
             ],
             "import_register_relations": [],
             "dynamic_register_range_relations": [],
+            "dynamic_stack_range_relations": [],
             "bounds": [],
             "flag_bits": source.get("flag_inputs", []),
             "address_separations": [],
@@ -925,6 +927,7 @@ def _external_call_site_candidates(
             "dynamic_register_range_relations": source.get(
                 "output_dynamic_range_relations", []
             ),
+            "dynamic_stack_range_relations": [],
             "bounds": [],
             "flag_bits": source.get("flag_outputs", []),
             "address_separations": [],
@@ -1265,6 +1268,119 @@ def _machine_import_call_contract_analysis(
             "incomplete_call_sites": sum(
                 call["status"] == "incomplete" for call in calls
             ),
+        },
+    }
+
+
+def _attach_external_result_dynamic_invariants(
+    contract: dict[str, Any],
+    external_call_sites: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Attach typed allocation results to external-call continuations.
+
+    External-call discovery is untrusted proposal logic.  The generated Lean
+    environment theorem still checks the machine-call result contract and the
+    continuation StateRel, while every later segment must explicitly preserve
+    or consume this invariant.
+    """
+    updated = deepcopy(contract)
+    contracts_by_id = {
+        int(item["id"]): item
+        for item in updated.get("machine_import_call_contracts", [])
+    }
+    proposals_by_target: dict[int, list[dict[str, Any]]] = {}
+    origins_by_target: dict[int, list[dict[str, int]]] = {}
+    word_kinds = {
+        "related_word": "relatedWord",
+        "code_pointer": "codePointer",
+        "data_pointer": "dataPointer",
+        "nullable_dynamic_pointer": "nullableDynamicPointer",
+    }
+    for site in external_call_sites.get("candidates", []):
+        target_index = int(site["target_region_index"])
+        machine_contract = contracts_by_id.get(int(site["machine_contract_id"]))
+        if machine_contract is None:
+            continue
+        for result in machine_contract.get("result_register_relations", []):
+            if result.get("relation") != "dynamic_range_base":
+                continue
+            relation = {
+                "original": str(result["register"]),
+                "candidate": str(result["register"]),
+                "original_offset": 0,
+                "candidate_offset": 0,
+                "required_words": [
+                    {
+                        "offset": int(word["offset"]),
+                        "kind": word_kinds[str(word["relation"])],
+                    }
+                    for word in result.get("required_words", [])
+                ],
+                # Allocators establish layout and pointer pairing, not initialized
+                # contents. Internal checked writes activate individual words.
+                "active_words": [],
+            }
+            proposals_by_target.setdefault(target_index, []).append(relation)
+            origins_by_target.setdefault(target_index, []).append({
+                "site_id": int(site["id"]),
+                "machine_contract_id": int(site["machine_contract_id"]),
+            })
+
+    attached: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    regions = updated.get("regions", [])
+    for target_index, proposals in sorted(proposals_by_target.items()):
+        unique = {
+            json.dumps(proposal, sort_keys=True, separators=(",", ":"))
+            for proposal in proposals
+        }
+        if not 0 <= target_index < len(regions) or len(unique) != 1:
+            rejected.append({
+                "target_region_index": target_index,
+                "origins": origins_by_target[target_index],
+                "reason": (
+                    "external result target is invalid"
+                    if not 0 <= target_index < len(regions)
+                    else "external result contracts propose incompatible typed ranges"
+                ),
+            })
+            continue
+        proposal = json.loads(next(iter(unique)))
+        target = regions[target_index]
+        existing = target.setdefault("input_dynamic_range_relations", [])
+        conflicts = [
+            relation for relation in existing
+            if relation.get("original") == proposal["original"]
+            or relation.get("candidate") == proposal["candidate"]
+        ]
+        if conflicts and proposal not in conflicts:
+            rejected.append({
+                "target_region_index": target_index,
+                "origins": origins_by_target[target_index],
+                "reason": "typed external result conflicts with an existing range invariant",
+                "existing": conflicts,
+                "proposed": proposal,
+            })
+            continue
+        if proposal not in existing:
+            existing.append(proposal)
+        attached.append({
+            "target_region_index": target_index,
+            "target_region_id": target.get("id"),
+            "relation": proposal,
+            "origins": origins_by_target[target_index],
+        })
+    return updated, {
+        "format": "stage-a-relational-external-result-invariants-v1",
+        "status": (
+            "proposal_requires_generated_lean_replay"
+            if not rejected else "incomplete"
+        ),
+        "attached": attached,
+        "rejected": rejected,
+        "counts": {
+            "attached": len(attached),
+            "rejected": len(rejected),
         },
     }
 

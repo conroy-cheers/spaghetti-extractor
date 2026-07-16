@@ -221,6 +221,11 @@ def _lean_machine_call_memory_size(size: dict[str, Any]) -> str:
         return f".fixed {int(size['bytes'])}"
     if size["kind"] == "argument":
         return f".argument {int(size['argument'])} {int(size['scale'])}"
+    if size["kind"] == "product":
+        return (
+            f".product {int(size['left_argument'])} "
+            f"{int(size['right_argument'])}"
+        )
     raise StageAInputError(f"unsupported machine-call memory size {size!r}")
 
 def _lean_machine_call_memory_footprint(footprint: dict[str, Any]) -> str:
@@ -244,12 +249,32 @@ def _lean_machine_import_call_contract(contract: dict[str, Any]) -> str:
     clobbered = ", ".join(
         f".{register}" for register in contract["clobbered_registers"]
     )
+    def result_relation_kind(relation: dict[str, Any]) -> str:
+        if relation["relation"] == "related_word":
+            return ".relatedWord"
+        if relation["relation"] == "dynamic_range_base":
+            relation_kinds = {
+                "related_word": "relatedWord",
+                "code_pointer": "codePointer",
+                "data_pointer": "dataPointer",
+                "nullable_dynamic_pointer": "nullableDynamicPointer",
+            }
+            required_words = ", ".join(
+                "{ offset := " + str(int(word["offset"]))
+                + ", kind := ." + relation_kinds[word["relation"]] + " }"
+                for word in relation["required_words"]
+            )
+            return (
+                ".dynamicRangeBase "
+                f"({_lean_machine_call_memory_size(relation['size'])}) "
+                f"{int(relation['minimum_size'])} [{required_words}] "
+                f"{str(bool(relation['nullable'])).lower()}"
+            )
+        return f".{relation['relation']}"
+
     result_relations = ", ".join(
         "{ register := ." + relation["register"]
-        + ", relation := ."
-        + ("relatedWord" if relation["relation"] == "related_word"
-           else relation["relation"])
-        + " }"
+        + ", relation := " + result_relation_kind(relation) + " }"
         for relation in contract.get("result_register_relations", [])
     )
     footprints = ", ".join(
@@ -554,6 +579,160 @@ def _lean_semantic_bool_expr(expression: dict[str, Any]) -> str:
         )
     raise StageAInputError(f"unsupported invariant predicate operation {operation!r}")
 
+
+def _lean_paired_static_expr_witness(witness: dict[str, Any]) -> str:
+    kind = str(witness["kind"])
+    if kind == "constant":
+        return (
+            "PairedStaticExprWitness.constant "
+            f"{int(witness['original'])} {int(witness['candidate'])}"
+        )
+    if kind == "read32":
+        return (
+            "PairedStaticExprWitness.read32 "
+            f"{int(witness['original_address'])} "
+            f"{int(witness['candidate_address'])}"
+        )
+    if kind == "binary":
+        operation = {
+            "add": "add",
+            "sub": "sub",
+            "bit_and": "bitAnd",
+            "bit_xor": "bitXor",
+            "shift_left_by": "shiftLeftBy",
+            "shift_right_by": "shiftRightBy",
+            "shift_arithmetic_right_by": "shiftArithmeticRightBy",
+            "bit_or": "bitOr",
+            "unsigned_less_value": "unsignedLessValue",
+            "multiply": "multiply",
+            "multiply_high_unsigned": "multiplyHighUnsigned",
+            "multiply_high_signed": "multiplyHighSigned",
+        }.get(str(witness["operation"]))
+        if operation is None:
+            raise StageAInputError(
+                f"unsupported paired static binary witness {witness!r}"
+            )
+        return (
+            f"PairedStaticExprWitness.binary .{operation} "
+            f"({_lean_paired_static_expr_witness(witness['left'])}) "
+            f"({_lean_paired_static_expr_witness(witness['right'])})"
+        )
+    raise StageAInputError(f"unsupported paired static expression witness {witness!r}")
+
+
+def _lean_paired_exact_expr_witness(witness: dict[str, Any]) -> str:
+    kind = str(witness["kind"])
+    if kind == "input_reg":
+        return (
+            "PairedExactExprWitness.inputReg ."
+            f"{witness['original']} .{witness['candidate']}"
+        )
+    if kind == "input_flag_value":
+        return f"PairedExactExprWitness.inputFlagValue {int(witness['bit'])}"
+    nullary = {
+        "input_fs_base": "inputFsBase",
+        "input_x87_control": "inputX87Control",
+        "input_x87_status": "inputX87Status",
+    }
+    if kind in nullary:
+        return f"PairedExactExprWitness.{nullary[kind]}"
+    if kind == "constant":
+        return f"PairedExactExprWitness.constant {int(witness['value'])}"
+    if kind == "undefined":
+        return f"PairedExactExprWitness.undefined {int(witness['slot'])}"
+    if kind in {"read8", "read32"}:
+        return (
+            f"PairedExactExprWitness.{kind} "
+            f"{int(witness['original_address'])} "
+            f"{int(witness['candidate_address'])}"
+        )
+    if kind in {"read8_at", "read32_at"}:
+        constructor = "read8At" if kind == "read8_at" else "read32At"
+        return (
+            f"PairedExactExprWitness.{constructor} "
+            f"({_lean_paired_static_expr_witness(witness['address'])})"
+        )
+    if kind == "binary":
+        operation = {
+            "add": "add",
+            "sub": "sub",
+            "bit_and": "bitAnd",
+            "bit_xor": "bitXor",
+            "shift_left_by": "shiftLeftBy",
+            "shift_right_by": "shiftRightBy",
+            "shift_arithmetic_right_by": "shiftArithmeticRightBy",
+            "bit_or": "bitOr",
+            "unsigned_less_value": "unsignedLessValue",
+            "multiply": "multiply",
+            "multiply_high_unsigned": "multiplyHighUnsigned",
+            "multiply_high_signed": "multiplyHighSigned",
+        }.get(str(witness["operation"]))
+        if operation is None:
+            raise StageAInputError(
+                f"unsupported paired exact binary witness {witness!r}"
+            )
+        return (
+            f"PairedExactExprWitness.binary .{operation} "
+            f"({_lean_paired_exact_expr_witness(witness['left'])}) "
+            f"({_lean_paired_exact_expr_witness(witness['right'])})"
+        )
+    if kind == "unary":
+        operation = {
+            "bit_not": "bitNot",
+            "lowest_set_bit": "lowestSetBit",
+            "highest_set_bit": "highestSetBit",
+        }.get(str(witness["operation"]))
+        if operation is None:
+            raise StageAInputError(
+                f"unsupported paired exact unary witness {witness!r}"
+            )
+        return (
+            f"PairedExactExprWitness.unary .{operation} "
+            f"({_lean_paired_exact_expr_witness(witness['value'])})"
+        )
+    if kind == "indexed":
+        operation = {
+            "extract_byte": "extractByte",
+            "shift_left": "shiftLeft",
+            "shift_right": "shiftRight",
+            "bit_value": "bitValue",
+        }.get(str(witness["operation"]))
+        if operation is None:
+            raise StageAInputError(
+                f"unsupported paired exact indexed witness {witness!r}"
+            )
+        return (
+            f"PairedExactExprWitness.indexed .{operation} "
+            f"{int(witness['index'])} "
+            f"({_lean_paired_exact_expr_witness(witness['value'])})"
+        )
+    if kind == "if_equal":
+        return (
+            "PairedExactExprWitness.ifEqual "
+            f"({_lean_paired_exact_expr_witness(witness['left'])}) "
+            f"({_lean_paired_exact_expr_witness(witness['right'])}) "
+            f"({_lean_paired_exact_expr_witness(witness['then'])}) "
+            f"({_lean_paired_exact_expr_witness(witness['else'])})"
+        )
+    if kind == "ternary":
+        operation = {
+            "divide_quotient": "divideQuotient",
+            "divide_remainder": "divideRemainder",
+            "division_valid_value": "divisionValidValue",
+        }.get(str(witness["operation"]))
+        if operation is None:
+            raise StageAInputError(
+                f"unsupported paired exact ternary witness {witness!r}"
+            )
+        return (
+            f"PairedExactExprWitness.ternary .{operation} "
+            f"({_lean_paired_exact_expr_witness(witness['high'])}) "
+            f"({_lean_paired_exact_expr_witness(witness['low'])}) "
+            f"({_lean_paired_exact_expr_witness(witness['divisor'])})"
+        )
+    raise StageAInputError(f"unsupported paired exact expression witness {witness!r}")
+
+
 def _lean_stack_window(window: dict[str, Any]) -> str:
     return (
         "{ rangeId := " + str(int(window["range_id"]))
@@ -577,6 +756,10 @@ def _lean_paired_stack_word_value_claim(claim: dict[str, Any]) -> str:
         witness = ".mappedCodeTarget " + str(int(claim["target_id"]))
     elif profile == "mapped_data_target_v1":
         witness = ".mappedDataTarget " + str(int(claim["target_id"]))
+    elif profile == "dynamic_range_v1":
+        witness = ".dynamicRange " + _lean_dynamic_range_relation(
+            claim["relation"]
+        )
     else:
         raise StageAInputError(
             f"unsupported paired stack-word value profile {profile!r}"
@@ -622,6 +805,85 @@ def _lean_direct_call_stack_writes_claim(claim: dict[str, Any]) -> str:
         + " }"
     )
 
+
+def _lean_paired_prepared_word_write_item(write: dict[str, Any]) -> str:
+    if write["kind"] == "stack":
+        return (
+            ".stack " + _lean_stack_window(write["window"])
+            + " " + str(int(write["amount"]))
+            + " " + _lean_paired_stack_word_value_claim(write["value"])
+        )
+    if write["kind"] == "static_word":
+        return (
+            ".staticWord " + str(int(write["slot_id"]))
+            + " " + str(int(write["original_address"]))
+            + " " + str(int(write["candidate_address"]))
+            + " " + _lean_paired_stack_word_value_claim(write["value"])
+        )
+    if write["kind"] == "dynamic_word":
+        relation = write["relation"]
+        return (
+            ".dynamicWord " + _lean_dynamic_range_relation(
+                write["source_relation"]
+            )
+            + " { offset := " + str(int(relation["offset"]))
+            + ", kind := ." + str(relation["kind"]) + " }"
+            + " " + str(int(write["original_amount"]))
+            + " " + str(int(write["candidate_amount"]))
+            + " " + _lean_paired_stack_word_value_claim(write["value"])
+        )
+    if write["kind"] == "static_dynamic_pointer":
+        return (
+            ".staticDynamicPointer " + str(int(write["slot_id"]))
+            + " " + str(int(write["original_address"]))
+            + " " + str(int(write["candidate_address"]))
+            + " " + _lean_dynamic_range_relation(write["source_relation"])
+            + " " + _lean_paired_stack_word_value_claim(write["value"])
+        )
+    raise StageAInputError(
+        f"unsupported paired prepared-word location {write['kind']!r}"
+    )
+
+
+def _lean_paired_prepared_word_writes_claim(claim: dict[str, Any]) -> str:
+    writes = [
+        _lean_paired_prepared_word_write_item(write) for write in claim["writes"]
+    ]
+    return "{ writes := [" + ", ".join(writes) + "] }"
+
+
+def _lean_prepared_dynamic_stack_spill_claim(claim: dict[str, Any]) -> str:
+    suffix = ", ".join(
+        _lean_paired_prepared_word_write_item(write)
+        for write in claim.get("suffix", [])
+    )
+    return (
+        "{ sourceRelation := "
+        + _lean_dynamic_range_relation(claim["source_relation"])
+        + ", targetRelation := "
+        + _lean_dynamic_stack_range_relation(claim["target_relation"])
+        + ", window := " + _lean_stack_window(claim["window"])
+        + ", amount := " + str(int(claim["amount"]))
+        + ", suffix := [" + suffix + "] }"
+    )
+
+
+def _lean_direct_call_prepared_writes_claim(claim: dict[str, Any]) -> str:
+    return (
+        "{ preparedWrites := "
+        + _lean_paired_prepared_word_writes_claim(claim["prepared_writes"])
+        + ", returnWindow := " + _lean_stack_window(claim["return_window"])
+        + ", stackAmount := " + str(int(claim["stack_amount"]))
+        + ", calleeTargetId := " + str(int(claim["callee_target_id"]))
+        + ", continuationTargetId := "
+        + str(int(claim["continuation_target_id"]))
+        + ", originalReturnAddress := "
+        + str(int(claim["original_return_address"]))
+        + ", candidateReturnAddress := "
+        + str(int(claim["candidate_return_address"]))
+        + " }"
+    )
+
 def _lean_state_invariant(invariant: dict[str, Any]) -> str:
     register_relations = ", ".join(
         _lean_register_relation_pair(pair)
@@ -636,6 +898,10 @@ def _lean_state_invariant(invariant: dict[str, Any]) -> str:
     dynamic_relations = ", ".join(
         _lean_dynamic_range_relation(relation)
         for relation in invariant.get("dynamic_register_range_relations", [])
+    )
+    dynamic_stack_relations = ", ".join(
+        _lean_dynamic_stack_range_relation(relation)
+        for relation in invariant.get("dynamic_stack_range_relations", [])
     )
     bounds = ", ".join(
         f"{{ original := .{bound['original']}, candidate := .{bound['candidate']}, "
@@ -664,6 +930,7 @@ def _lean_state_invariant(invariant: dict[str, Any]) -> str:
         "{ registerRelations := [" + register_relations
         + "], importRegisterRelations := [" + import_relations
         + "], dynamicRegisterRangeRelations := [" + dynamic_relations
+        + "], dynamicStackRangeRelations := [" + dynamic_stack_relations
         + "], bounds := [" + bounds
         + "], flagBits := [" + flags
         + "], addressSeparations := [" + separations
@@ -676,12 +943,39 @@ def _lean_dynamic_range_relation(relation: dict[str, Any]) -> str:
         + ", kind := ." + str(word["kind"]) + " }"
         for word in relation.get("required_words", [])
     )
+    active_words = ", ".join(
+        "{ offset := " + str(int(word["offset"]))
+        + ", kind := ." + str(word["kind"]) + " }"
+        for word in relation.get("active_words", relation.get("required_words", []))
+    )
     return (
         "{ original := ." + str(relation["original"])
         + ", candidate := ." + str(relation["candidate"])
         + ", originalOffset := " + str(int(relation.get("original_offset", 0)))
         + ", candidateOffset := " + str(int(relation.get("candidate_offset", 0)))
-        + ", requiredWords := [" + words + "] }"
+        + ", requiredWords := [" + words
+        + "], activeWords := [" + active_words + "] }"
+    )
+
+
+def _lean_dynamic_stack_range_relation(relation: dict[str, Any]) -> str:
+    words = ", ".join(
+        "{ offset := " + str(int(word["offset"]))
+        + ", kind := ." + str(word["kind"]) + " }"
+        for word in relation.get("required_words", [])
+    )
+    active_words = ", ".join(
+        "{ offset := " + str(int(word["offset"]))
+        + ", kind := ." + str(word["kind"]) + " }"
+        for word in relation.get("active_words", relation.get("required_words", []))
+    )
+    return (
+        "{ window := " + _lean_stack_window(relation["window"])
+        + ", stackOffset := " + str(int(relation["stack_offset"]))
+        + ", originalOffset := " + str(int(relation.get("original_offset", 0)))
+        + ", candidateOffset := " + str(int(relation.get("candidate_offset", 0)))
+        + ", requiredWords := [" + words
+        + "], activeWords := [" + active_words + "] }"
     )
 
 def _lean_static_dynamic_pointer_slot(slot: dict[str, Any]) -> str:
@@ -699,12 +993,40 @@ def _lean_static_dynamic_pointer_slot(slot: dict[str, Any]) -> str:
         + ", requiredWords := [" + words + "] }"
     )
 
-def _lean_stack_window_transfer_claim(claim: dict[str, Any]) -> str:
-    adjustment = claim["adjustment"]
-    adjustment_row = (
-        ".identity" if adjustment["kind"] == "identity"
-        else f".{adjustment['kind']} {int(adjustment['amount'])}"
+def _lean_static_word_relation_slot(slot: dict[str, Any]) -> str:
+    relation = {
+        "exact": "exact",
+        "related_word": "relatedWord",
+        "relatedWord": "relatedWord",
+        "code_pointer": "codePointer",
+        "codePointer": "codePointer",
+        "data_pointer": "dataPointer",
+        "dataPointer": "dataPointer",
+    }.get(str(slot["relation"]))
+    if relation is None:
+        raise StageAInputError(
+            f"unsupported static word relation {slot['relation']!r}"
+        )
+    return (
+        "{ id := " + str(int(slot["id"]))
+        + ", originalAddress := BitVec.ofNat 32 "
+        + str(int(slot["original_address"]))
+        + ", candidateAddress := BitVec.ofNat 32 "
+        + str(int(slot["candidate_address"]))
+        + ", relation := ." + relation + " }"
     )
+
+def _lean_stack_adjustment(adjustment: dict[str, Any]) -> str:
+    kind = str(adjustment["kind"])
+    if kind == "identity":
+        return ".identity"
+    if kind not in {"add", "subtract"}:
+        raise StageAInputError(f"unsupported stack adjustment {kind!r}")
+    return f".{kind} {int(adjustment['amount'])}"
+
+
+def _lean_stack_window_transfer_claim(claim: dict[str, Any]) -> str:
+    adjustment_row = _lean_stack_adjustment(claim["adjustment"])
     return (
         "{ source := " + _lean_stack_window(claim["source"])
         + ", target := " + _lean_stack_window(claim["target"])
@@ -782,6 +1104,15 @@ def _lean_register_output_claim(claim: dict[str, Any]) -> str:
             + ", candidateValue := " + str(claim["candidate_value"])
             + " }"
         )
+    if kind == "static_word_slot":
+        return (
+            "InvariantWP.RegisterOutputClaim.staticWordSlot { output := "
+            + _lean_register_relation_pair(claim["output"])
+            + ", slot := " + _lean_static_word_relation_slot(claim["slot"])
+            + ", originalAddress := " + str(claim["original_address"])
+            + ", candidateAddress := " + str(claim["candidate_address"])
+            + " }"
+        )
     if kind == "stack_read32_sub":
         return (
             "InvariantWP.RegisterOutputClaim.stackRead32Sub { output := "
@@ -797,6 +1128,21 @@ def _lean_register_output_claim(claim: dict[str, Any]) -> str:
             + _lean_bool(bool(claim.get("original_direct_address")))
             + ", candidateDirectAddress := "
             + _lean_bool(bool(claim.get("candidate_direct_address")))
+            + " }"
+        )
+    if kind == "stack_read32_relative":
+        return (
+            "InvariantWP.RegisterOutputClaim.stackRead32Relative { output := "
+            + _lean_register_relation_pair(claim["output"])
+            + ", window := " + _lean_stack_window(claim["window"])
+            + ", adjustment := " + _lean_stack_adjustment(claim["adjustment"])
+            + " }"
+        )
+    if kind == "stack_window_identity":
+        return (
+            "InvariantWP.RegisterOutputClaim.stackWindowIdentity { output := "
+            + _lean_register_relation_pair(claim["output"])
+            + ", window := " + _lean_stack_window(claim["window"])
             + " }"
         )
     raise StageAInputError(f"unsupported register output claim {kind!r}")
@@ -847,6 +1193,14 @@ def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
     output_dynamic_relation_rows = ", ".join(
         _lean_dynamic_range_relation(relation)
         for relation in region.get("output_dynamic_range_relations", [])
+    )
+    input_dynamic_stack_relation_rows = ", ".join(
+        _lean_dynamic_stack_range_relation(relation)
+        for relation in region.get("input_dynamic_stack_range_relations", [])
+    )
+    output_dynamic_stack_relation_rows = ", ".join(
+        _lean_dynamic_stack_range_relation(relation)
+        for relation in region.get("output_dynamic_stack_range_relations", [])
     )
     bound_rows = ", ".join(
         f"{{ original := .{bound['original']}, candidate := .{bound['candidate']}, "
@@ -899,6 +1253,8 @@ def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
         f"outputImportRelations := [{output_import_relation_rows}], "
         f"inputDynamicRangeRelations := [{input_dynamic_relation_rows}], "
         f"outputDynamicRangeRelations := [{output_dynamic_relation_rows}], "
+        f"inputDynamicStackRangeRelations := [{input_dynamic_stack_relation_rows}], "
+        f"outputDynamicStackRangeRelations := [{output_dynamic_stack_relation_rows}], "
         f"bounds := [{bound_rows}], "
         f"flagInputs := [{flag_inputs}], flagOutputs := [{flag_outputs}], "
         f"addressSeparations := [{separation_rows}], "

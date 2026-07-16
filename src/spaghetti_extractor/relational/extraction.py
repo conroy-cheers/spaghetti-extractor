@@ -102,6 +102,7 @@ def _relational_loader_facts(binary: StageABinary) -> dict[str, Any]:
         "image_base": binary.image_base,
         "entrypoint_rva": binary.entrypoint_rva,
         "size_of_image": binary.size_of_image,
+        "size_of_headers": binary.size_of_headers,
         "sections": [
             {
                 "name": section.name,

@@ -28,7 +28,11 @@ from .external import (
     _semantic_input_register_offset,
 )
 from .control import _immutable_image_u32
-from ..model import _stack_window_transfer_claims
+from ..model import (
+    _semantic_constant_word,
+    _stack_window_transfer_claims,
+    _target_shaped_register_output_claims,
+)
 
 
 def _proof_ir(original: StageABinary, candidate: StageABinary, contract: dict[str, Any]) -> dict[str, Any]:
@@ -670,6 +674,28 @@ def _paired_stack_word_value_claim(
     original_image_base: int | None = None,
     candidate_image_base: int | None = None,
 ) -> dict[str, Any] | None:
+    dynamic_matches = [
+        relation
+        for relation in source.get("input_dynamic_range_relations", [])
+        if int(relation.get("original_offset", 0)) == 0
+        and int(relation.get("candidate_offset", 0)) == 0
+        and original_value == {
+            "op": "input_reg", "reg": str(relation.get("original")),
+        }
+        and candidate_value == {
+            "op": "input_reg", "reg": str(relation.get("candidate")),
+        }
+    ]
+    if len(dynamic_matches) == 1:
+        return {
+            "profile": "dynamic_range_v1",
+            "original": original_value,
+            "candidate": candidate_value,
+            "relation": dynamic_matches[0],
+        }
+    if len(dynamic_matches) > 1:
+        return None
+
     if (
         original_value == candidate_value
         and _semantic_expr_has_exact_inputs(source, original_value)
@@ -972,6 +998,321 @@ def _direct_call_stack_writes_claim(
         "candidate_return_address": int(call_claim["candidate_return_address"]),
     }
 
+
+def _static_word_value_claim_compatible(
+    relation: str, value_claim: dict[str, Any],
+) -> bool:
+    profile = value_claim.get("profile")
+    if relation == "related_word":
+        return profile in {
+            "exact_inputs_v1", "register_argument_v1",
+            "mapped_code_target_v1", "mapped_data_target_v1",
+            "dynamic_range_v1",
+        }
+    if relation == "exact":
+        return profile == "exact_inputs_v1" or (
+            profile == "register_argument_v1"
+            and ((value_claim.get("claim") or {}).get("relation") or {}).get(
+                "relation"
+            ) == "exact"
+        )
+    if relation == "code_pointer":
+        return profile == "mapped_code_target_v1"
+    if relation == "data_pointer":
+        return profile == "mapped_data_target_v1"
+    return False
+
+
+def _dynamic_word_value_claim_compatible(
+    relation: str, value_claim: dict[str, Any],
+) -> bool:
+    profile = value_claim.get("profile")
+    if relation == "relatedWord":
+        return profile in {
+            "exact_inputs_v1", "register_argument_v1",
+            "mapped_code_target_v1", "mapped_data_target_v1",
+        }
+    if relation == "codePointer":
+        return profile == "mapped_code_target_v1"
+    if relation == "dataPointer":
+        return profile == "mapped_data_target_v1"
+    return False
+
+
+def _paired_prepared_word_writes_claim(
+    source: dict[str, Any], behavior_pair: dict[str, Any],
+    static_word_relation_slots: list[dict[str, Any]],
+    original_image_base: int | None = None,
+    candidate_image_base: int | None = None,
+    static_dynamic_pointer_slots: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    original_writes = (behavior_pair.get("original_ir") or {}).get("writes") or []
+    candidate_writes = (behavior_pair.get("candidate_ir") or {}).get("writes") or []
+    if not original_writes or len(original_writes) != len(candidate_writes):
+        return None
+
+    def register_offset(expression: Any, register: str) -> int | None:
+        if expression == {"op": "input_reg", "reg": register}:
+            return 0
+        if not isinstance(expression, dict) or expression.get("op") != "add":
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if left.get("op") == "constant":
+            left, right = right, left
+        if (
+            left != {"op": "input_reg", "reg": register}
+            or right.get("op") != "constant"
+        ):
+            return None
+        amount = _integer(right.get("value"))
+        return amount if amount is not None and 0 <= amount < 2**31 else None
+
+    items: list[dict[str, Any]] = []
+    for original_write, candidate_write in zip(
+        original_writes, candidate_writes, strict=True
+    ):
+        value_claim = _paired_stack_word_value_claim(
+            source,
+            original_write.get("value") or {},
+            candidate_write.get("value") or {},
+            original_image_base,
+            candidate_image_base,
+        )
+        if value_claim is None:
+            return None
+
+        location_claims: list[dict[str, Any]] = []
+        for window in source.get("stack_windows", []):
+            original_amount = register_offset(
+                original_write.get("address"), str(window.get("original_register"))
+            )
+            candidate_amount = register_offset(
+                candidate_write.get("address"), str(window.get("candidate_register"))
+            )
+            if (
+                original_amount is not None
+                and original_amount == candidate_amount
+                and original_amount % 4 == 0
+                and original_amount + 4 <= int(window.get("bytes_above", -1))
+            ):
+                location_claims.append({
+                    "kind": "stack",
+                    "window": window,
+                    "amount": original_amount,
+                })
+
+        original_address = _semantic_constant_word(
+            original_write.get("address") or {}
+        )
+        candidate_address = _semantic_constant_word(
+            candidate_write.get("address") or {}
+        )
+        if original_address is not None and candidate_address is not None:
+            for slot in static_dynamic_pointer_slots or []:
+                source_relation = value_claim.get("relation") or {}
+                source_words = {
+                    (int(word["offset"]), str(word["kind"]))
+                    for word in source_relation.get("required_words", [])
+                }
+                slot_words = {
+                    (int(word["offset"]), str(word["kind"]))
+                    for word in slot.get("required_words", [])
+                }
+                if (
+                    int(slot["original_address"]) == original_address
+                    and int(slot["candidate_address"]) == candidate_address
+                    and value_claim.get("profile") == "dynamic_range_v1"
+                    and int(source_relation.get("original_offset", -1)) == 0
+                    and int(source_relation.get("candidate_offset", -1)) == 0
+                    and bool(slot_words)
+                    and slot_words <= source_words
+                ):
+                    location_claims.append({
+                        "kind": "static_dynamic_pointer",
+                        "slot_id": int(slot["id"]),
+                        "original_address": original_address,
+                        "candidate_address": candidate_address,
+                        "source_relation": source_relation,
+                    })
+            for slot in static_word_relation_slots:
+                if (
+                    int(slot["original_address"]) == original_address
+                    and int(slot["candidate_address"]) == candidate_address
+                    and _static_word_value_claim_compatible(
+                        str(slot["relation"]), value_claim
+                    )
+                ):
+                    location_claims.append({
+                        "kind": "static_word",
+                        "slot_id": int(slot["id"]),
+                        "original_address": original_address,
+                        "candidate_address": candidate_address,
+                    })
+
+        for source_relation in source.get("input_dynamic_range_relations", []):
+            original_amount = register_offset(
+                original_write.get("address"), str(source_relation.get("original"))
+            )
+            candidate_amount = register_offset(
+                candidate_write.get("address"), str(source_relation.get("candidate"))
+            )
+            if original_amount is None or candidate_amount is None:
+                continue
+            for relation in source_relation.get("required_words", []):
+                relation_offset = int(relation.get("offset", -1))
+                if (
+                    int(source_relation.get("original_offset", 0)) + original_amount
+                        == relation_offset
+                    and int(source_relation.get("candidate_offset", 0)) + candidate_amount
+                        == relation_offset
+                    and _dynamic_word_value_claim_compatible(
+                        str(relation.get("kind")), value_claim
+                    )
+                ):
+                    location_claims.append({
+                        "kind": "dynamic_word",
+                        "source_relation": source_relation,
+                        "relation": relation,
+                        "original_amount": original_amount,
+                        "candidate_amount": candidate_amount,
+                    })
+
+        if len(location_claims) != 1:
+            return None
+        items.append({**location_claims[0], "value": value_claim})
+
+    return {
+        "profile": "paired_prepared_word_writes_v1",
+        "writes": items,
+    }
+
+
+def _prepared_dynamic_stack_spill_claim(
+    source: dict[str, Any], target: dict[str, Any],
+    prepared_writes: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    def stack_window_identity(window: Any) -> tuple[Any, ...] | None:
+        if not isinstance(window, dict):
+            return None
+        return (
+            _integer(window.get("range_id")),
+            str(window.get("original_register")),
+            str(window.get("candidate_register")),
+            _integer(window.get("bytes_below")),
+            _integer(window.get("bytes_above")),
+        )
+
+    if not isinstance(prepared_writes, dict):
+        return None
+    writes = prepared_writes.get("writes") or []
+    if not writes or writes[0].get("kind") != "stack":
+        return None
+    spill = writes[0]
+    value = spill.get("value") or {}
+    if value.get("profile") != "dynamic_range_v1":
+        return None
+    if any(item.get("kind") == "stack" for item in writes[1:]):
+        return None
+    source_relation = value.get("relation")
+    if not isinstance(source_relation, dict):
+        return None
+    target_relations = target.get("input_dynamic_stack_range_relations") or []
+    if len(target_relations) != 1:
+        return None
+    target_relation = target_relations[0]
+    window = spill.get("window")
+    if (
+        stack_window_identity(target_relation.get("window"))
+            != stack_window_identity(window)
+        or stack_window_identity(window) is None
+        or int(target_relation.get("stack_offset", -1))
+            != int(spill.get("amount", -2))
+        or int(target_relation.get("original_offset", 0))
+            != int(source_relation.get("original_offset", 0))
+        or int(target_relation.get("candidate_offset", 0))
+            != int(source_relation.get("candidate_offset", 0))
+    ):
+        return None
+    source_words = {
+        (int(word["offset"]), str(word["kind"]))
+        for word in source_relation.get("required_words", [])
+    }
+    target_words = {
+        (int(word["offset"]), str(word["kind"]))
+        for word in target_relation.get("required_words", [])
+    }
+    source_active_words = {
+        (int(word["offset"]), str(word["kind"]))
+        for word in source_relation.get("active_words", [])
+    }
+    target_active_words = {
+        (int(word["offset"]), str(word["kind"]))
+        for word in target_relation.get("active_words", [])
+    }
+    if not target_words <= source_words or not target_active_words <= source_active_words:
+        return None
+    return {
+        "profile": "prepared_dynamic_stack_spill_v1",
+        "source_relation": source_relation,
+        "target_relation": target_relation,
+        "window": window,
+        "amount": int(spill["amount"]),
+        "suffix": writes[1:],
+    }
+
+
+def _direct_call_prepared_writes_claim(
+    source: dict[str, Any], behavior_pair: dict[str, Any],
+    call_claim: dict[str, Any] | None,
+    static_word_relation_slots: list[dict[str, Any]],
+    original_image_base: int | None = None,
+    candidate_image_base: int | None = None,
+    static_dynamic_pointer_slots: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(call_claim, dict):
+        return None
+    original_ir = behavior_pair.get("original_ir") or {}
+    candidate_ir = behavior_pair.get("candidate_ir") or {}
+    original_writes = original_ir.get("writes") or []
+    candidate_writes = candidate_ir.get("writes") or []
+    if len(original_writes) < 2 or len(original_writes) != len(candidate_writes):
+        return None
+    stack_amount = _direct_call_stack_amount(call_claim)
+    if stack_amount is None:
+        return None
+    return_windows = [
+        window for window in source.get("stack_windows", [])
+        if str(window.get("original_register")) == "esp"
+        and str(window.get("candidate_register")) == "esp"
+        and int(window.get("bytes_below", 0)) >= stack_amount
+    ]
+    if len(return_windows) != 1:
+        return None
+    prefix_pair = {
+        "original_ir": {**original_ir, "writes": original_writes[:-1]},
+        "candidate_ir": {**candidate_ir, "writes": candidate_writes[:-1]},
+    }
+    prepared_writes = _paired_prepared_word_writes_claim(
+        source, prefix_pair, static_word_relation_slots,
+        original_image_base, candidate_image_base,
+        static_dynamic_pointer_slots,
+    )
+    if prepared_writes is None or not any(
+        item["kind"] == "static_word" for item in prepared_writes["writes"]
+    ):
+        return None
+    return {
+        "profile": "direct_call_prepared_writes_v1",
+        "prepared_writes": prepared_writes,
+        "return_window": return_windows[0],
+        "stack_amount": stack_amount,
+        "callee_target_id": int(call_claim["callee_target_id"]),
+        "continuation_target_id": int(call_claim["continuation_target_id"]),
+        "original_return_address": int(call_claim["original_return_address"]),
+        "candidate_return_address": int(call_claim["candidate_return_address"]),
+    }
+
 def _segment_refinement_candidates(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
@@ -1035,7 +1376,18 @@ def _segment_refinement_candidates(
             edge.get("candidate_guard") or {},
             original_bin,
             candidate_bin,
+        ) or _paired_exact_guard_claim(
+            contract,
+            source,
+            edge.get("original_guard") or {},
+            edge.get("candidate_guard") or {},
+            original_bin,
+            candidate_bin,
         ) or _paired_stack_guard_claim(
+            source,
+            edge.get("original_guard") or {},
+            edge.get("candidate_guard") or {},
+        ) or _paired_stack_relative_guard_claim(
             source,
             edge.get("original_guard") or {},
             edge.get("candidate_guard") or {},
@@ -1062,10 +1414,19 @@ def _segment_refinement_candidates(
             register_regions[source_index], dynamic_transfer_claims,
             behaviors[source_index], guard_relation_claim,
         )
-        register_transfer_supported = (
-            bool(register_regions[source_index].get("fully_supported_output_transfer"))
-            or dynamic_register_output_claims is not None
+        target_shaped_register_output_claims = (
+            _target_shaped_register_output_claims(
+                register_regions[source_index], register_regions[target_index]
+            )
+            if not dynamic_register_output_claims else None
         )
+        register_inventory_supported = (
+            target_shaped_register_output_claims is not None
+            if not dynamic_register_output_claims
+            else source.get("output_relations", [])
+                == target.get("input_relations", [])
+        )
+        register_transfer_supported = register_inventory_supported
         flag_transfer_claim = _preserved_input_flags_claim(
             source, target_flags, behaviors[source_index]
         )
@@ -1082,7 +1443,7 @@ def _segment_refinement_candidates(
             )
             and not edge.get("environment_barrier")
             and not edge.get("requires_call_stack_proof")
-            and source.get("output_relations", []) == target.get("input_relations", [])
+            and register_inventory_supported
             and not source.get("output_import_relations")
             and import_transfer_claims is not None
             and dynamic_transfer_claims is not None
@@ -1134,6 +1495,33 @@ def _segment_refinement_candidates(
         call_stack_writes_claim = _direct_call_stack_writes_claim(
             source, behaviors[source_index], call_claim,
             original_image_base, candidate_image_base,
+        )
+        call_prepared_writes_claim = _direct_call_prepared_writes_claim(
+            source, behaviors[source_index], call_claim,
+            contract.get("static_word_relation_slots", []),
+            original_image_base, candidate_image_base,
+            contract.get("static_dynamic_pointer_slots", []),
+        )
+        call_prepared_writes_supported = (
+            edge.get("kind") == "call"
+            and common_transfer_supported
+            and isinstance(call_prepared_writes_claim, dict)
+            and len(call_windows) == 1
+            and successors.get("outcome") == "call"
+            and candidate_successors.get("outcome") == "call"
+            and isinstance(call_claim, dict)
+            and int(call_claim.get("callee_target_id", -1))
+                == int(target["numeric_id"])
+            and int(call_claim.get("callee_target_id", -1)) in direct_targets
+            and direct_targets == candidate_direct_targets
+            and not target.get("input_import_relations")
+            and not target.get("input_dynamic_range_relations")
+            and edge.get("original_guard") == {
+                "op": "bool_constant", "value": True,
+            }
+            and edge.get("candidate_guard") == {
+                "op": "bool_constant", "value": True,
+            }
         )
         call_stack_writes_supported = (
             edge.get("kind") == "call"
@@ -1188,6 +1576,41 @@ def _segment_refinement_candidates(
             source, behaviors[source_index],
             original_image_base, candidate_image_base,
         )
+        prepared_writes_claim = _paired_prepared_word_writes_claim(
+            source, behaviors[source_index],
+            contract.get("static_word_relation_slots", []),
+            original_image_base, candidate_image_base,
+            contract.get("static_dynamic_pointer_slots", []),
+        )
+        prepared_dynamic_stack_spill_claim = (
+            _prepared_dynamic_stack_spill_claim(
+                source, target, prepared_writes_claim,
+            )
+        )
+        prepared_writes_supported = (
+            edge.get("kind") in {"jump", "branch_taken", "branch_fallthrough"}
+            and common_transfer_supported
+            and isinstance(prepared_writes_claim, dict)
+            and any(
+                item.get("kind") != "stack"
+                for item in prepared_writes_claim["writes"]
+            )
+            and memory.get("writes", {}).get("original_count")
+                == len(prepared_writes_claim["writes"])
+            and memory.get("writes", {}).get("candidate_count")
+                == len(prepared_writes_claim["writes"])
+            and successors.get("outcome") in {"jump", "branch"}
+            and candidate_successors.get("outcome") == successors.get("outcome")
+            and isinstance(direct_targets, list)
+            and direct_targets == candidate_direct_targets
+            and int(target["numeric_id"]) in direct_targets
+            and not target.get("input_import_relations")
+            and (
+                not target.get("input_dynamic_stack_range_relations")
+                or isinstance(prepared_dynamic_stack_spill_claim, dict)
+            )
+            and (not branch_edge or guard_relation_claim is not None)
+        )
         stack_write_supported = (
             edge.get("kind") in {"jump", "branch_taken", "branch_fallthrough"}
             and common_transfer_supported
@@ -1221,7 +1644,9 @@ def _segment_refinement_candidates(
             and (not branch_edge or guard_relation_claim is not None)
         )
         segment_supported = (
-            no_write_supported or call_supported or call_stack_writes_supported
+            no_write_supported or call_supported or call_prepared_writes_supported
+            or call_stack_writes_supported
+            or prepared_writes_supported
             or stack_write_supported or stack_writes_supported
         )
         certificate_eligible = segment_supported and source_target is not None
@@ -1259,8 +1684,7 @@ def _segment_refinement_candidates(
             )
             require(
                 "successor_state_relation_mismatch",
-                source.get("output_relations", [])
-                == target.get("input_relations", []),
+                register_inventory_supported,
             )
             require(
                 "source_import_relation_transfer_required",
@@ -1308,7 +1732,9 @@ def _segment_refinement_candidates(
             )
             if edge.get("kind") == "call":
                 attempted_profile = (
-                    "composable_direct_call_stack_writes_v1"
+                    "composable_direct_call_prepared_writes_v1"
+                    if isinstance(call_prepared_writes_claim, dict)
+                    else "composable_direct_call_stack_writes_v1"
                     if max(original_write_count, candidate_write_count) > 1
                     else "composable_direct_call_v1"
                 )
@@ -1325,12 +1751,13 @@ def _segment_refinement_candidates(
                 require(
                     "direct_call_write_shape_mismatch",
                     original_write_count == candidate_write_count == 1
+                    or call_prepared_writes_supported
                     or call_stack_writes_supported,
                 )
                 if max(original_write_count, candidate_write_count) > 1:
                     require(
-                        "direct_call_stack_writes_witness_missing",
-                        call_stack_writes_supported,
+                        "direct_call_prepared_writes_witness_missing",
+                        call_prepared_writes_supported or call_stack_writes_supported,
                     )
                 require(
                     "direct_call_successor_shape_mismatch",
@@ -1365,17 +1792,39 @@ def _segment_refinement_candidates(
                     attempted_profile = "composable_local_no_write_v1"
                     write_claim_supported = True
                 elif original_write_count == candidate_write_count == 1:
-                    attempted_profile = "composable_paired_stack_word_write_v1"
-                    write_claim_supported = isinstance(stack_write_claim, dict)
+                    attempted_profile = (
+                        "composable_paired_prepared_word_writes_v1"
+                        if isinstance(prepared_writes_claim, dict)
+                        and any(
+                            item.get("kind") != "stack"
+                            for item in prepared_writes_claim["writes"]
+                        )
+                        else "composable_paired_stack_word_write_v1"
+                    )
+                    write_claim_supported = (
+                        prepared_writes_supported
+                        or isinstance(stack_write_claim, dict)
+                    )
                     require(
-                        "paired_stack_word_write_witness_missing",
+                        "paired_word_write_witness_missing",
                         write_claim_supported,
                     )
                 else:
-                    attempted_profile = "composable_paired_stack_word_writes_v1"
-                    write_claim_supported = isinstance(stack_writes_claim, dict)
+                    attempted_profile = (
+                        "composable_paired_prepared_word_writes_v1"
+                        if isinstance(prepared_writes_claim, dict)
+                        and any(
+                            item.get("kind") != "stack"
+                            for item in prepared_writes_claim["writes"]
+                        )
+                        else "composable_paired_stack_word_writes_v1"
+                    )
+                    write_claim_supported = (
+                        prepared_writes_supported
+                        or isinstance(stack_writes_claim, dict)
+                    )
                     require(
-                        "paired_stack_word_writes_witness_missing",
+                        "paired_word_writes_witness_missing",
                         write_claim_supported,
                     )
                 require(
@@ -1394,12 +1843,20 @@ def _segment_refinement_candidates(
                 require(
                     "successor_import_relation_unsupported",
                     original_write_count == 0
+                    or prepared_writes_supported
                     or not target.get("input_import_relations"),
                 )
                 require(
                     "successor_dynamic_range_relation_unsupported",
                     original_write_count == 0
+                    or prepared_writes_supported
                     or not target.get("input_dynamic_range_relations"),
+                )
+                require(
+                    "successor_dynamic_stack_relation_unsupported",
+                    original_write_count == 0
+                    or not target.get("input_dynamic_stack_range_relations")
+                    or isinstance(prepared_dynamic_stack_spill_claim, dict),
                 )
                 require(
                     "branch_guard_relation_unsupported",
@@ -1439,9 +1896,13 @@ def _segment_refinement_candidates(
                 int(target["id"]) for target in source.get("values", [])
             ],
             "certificate_profile": (
-                "composable_direct_call_stack_writes_v1"
+                "composable_direct_call_prepared_writes_v1"
+                if call_prepared_writes_supported
+                else "composable_direct_call_stack_writes_v1"
                 if call_stack_writes_supported
                 else "composable_direct_call_v1" if call_supported
+                else "composable_paired_prepared_word_writes_v1"
+                if prepared_writes_supported
                 else "composable_paired_stack_word_write_v1"
                 if stack_write_supported
                 else "composable_paired_stack_word_writes_v1"
@@ -1455,11 +1916,16 @@ def _segment_refinement_candidates(
             "import_transfer_claims": import_transfer_claims,
             "dynamic_transfer_claims": dynamic_transfer_claims,
             "dynamic_register_output_claims": dynamic_register_output_claims or [],
+            "register_output_claims": (
+                target_shaped_register_output_claims or []
+            ),
             "original_guard": edge["original_guard"],
             "candidate_guard": edge["candidate_guard"],
             **({
                 "source_stack_window": (
-                    call_stack_writes_claim["stack_writes"]["window"]
+                    call_prepared_writes_claim["return_window"]
+                    if call_prepared_writes_supported
+                    else call_stack_writes_claim["stack_writes"]["window"]
                     if call_stack_writes_supported else call_windows[0]
                 ),
                 "callee_target_id": int(call_claim["callee_target_id"]),
@@ -1467,7 +1933,12 @@ def _segment_refinement_candidates(
                 "original_return_address": int(call_claim["original_return_address"]),
                 "candidate_return_address": int(call_claim["candidate_return_address"]),
                 "stack_amount": call_stack_amount,
-            } if call_supported or call_stack_writes_supported else {}),
+            } if call_supported or call_stack_writes_supported
+                or call_prepared_writes_supported else {}),
+            "direct_call_prepared_writes_claim": (
+                call_prepared_writes_claim
+                if call_prepared_writes_supported else None
+            ),
             "direct_call_stack_writes_claim": (
                 call_stack_writes_claim if call_stack_writes_supported else None
             ),
@@ -1476,6 +1947,13 @@ def _segment_refinement_candidates(
             ),
             "paired_stack_writes_claim": (
                 stack_writes_claim if stack_writes_supported else None
+            ),
+            "paired_prepared_writes_claim": (
+                prepared_writes_claim if prepared_writes_supported else None
+            ),
+            "prepared_dynamic_stack_spill_claim": (
+                prepared_dynamic_stack_spill_claim
+                if prepared_writes_supported else None
             ),
             "guard_relation_claim": guard_relation_claim,
             "flag_transfer_claim": flag_transfer_claim,
@@ -1593,13 +2071,33 @@ def _dynamic_range_transfer_claims(
     source_relations = contract["regions"][source_index].get(
         "input_dynamic_range_relations", []
     )
+    source_stack_relations = contract["regions"][source_index].get(
+        "input_dynamic_stack_range_relations", []
+    )
     original_registers = behaviors[source_index]["original_ir"].get("registers") or {}
     candidate_registers = behaviors[source_index]["candidate_ir"].get("registers") or {}
+    prepared_writes = _paired_prepared_word_writes_claim(
+        contract["regions"][source_index],
+        behaviors[source_index],
+        contract.get("static_word_relation_slots", []),
+        static_dynamic_pointer_slots=contract.get(
+            "static_dynamic_pointer_slots", []
+        ),
+    )
+    single_dynamic_write = None
+    if isinstance(prepared_writes, dict):
+        writes = prepared_writes.get("writes", [])
+        if len(writes) == 1 and writes[0].get("kind") == "dynamic_word":
+            single_dynamic_write = writes[0]
     claims: list[dict[str, Any]] = []
     for target_relation in target_relations:
         target_words = {
             (int(word["offset"]), str(word["kind"]))
             for word in target_relation.get("required_words", [])
+        }
+        target_active_words = {
+            (int(word["offset"]), str(word["kind"]))
+            for word in target_relation.get("active_words", [])
         }
         matches: list[dict[str, Any]] = []
         original_expression = original_registers.get(
@@ -1613,12 +2111,17 @@ def _dynamic_range_transfer_claims(
                 (int(word["offset"]), str(word["kind"]))
                 for word in source_relation.get("required_words", [])
             }
+            source_active_words = {
+                (int(word["offset"]), str(word["kind"]))
+                for word in source_relation.get("active_words", [])
+            }
             if (
                 int(source_relation.get("original_offset", -1))
                     == int(target_relation.get("original_offset", -2))
                 and int(source_relation.get("candidate_offset", -1))
                     == int(target_relation.get("candidate_offset", -2))
                 and target_words <= source_words
+                and target_active_words <= source_active_words
                 and original_expression == {
                     "op": "input_reg", "reg": source_relation["original"]
                 }
@@ -1627,12 +2130,50 @@ def _dynamic_range_transfer_claims(
                 }
             ):
                 matches.append({
-                    "kind": "preserve",
+                    "kind": (
+                        "prepared_preserve"
+                        if isinstance(prepared_writes, dict)
+                        else "preserve"
+                    ),
                     "source_relation": source_relation,
                     "target_relation": target_relation,
                 })
+            if (
+                single_dynamic_write is not None
+                and single_dynamic_write.get("source_relation") == source_relation
+                and int(source_relation.get("original_offset", -1))
+                    == int(target_relation.get("original_offset", -2))
+                and int(source_relation.get("candidate_offset", -1))
+                    == int(target_relation.get("candidate_offset", -2))
+                and target_words <= source_words
+                and target_active_words == source_active_words | {
+                    (
+                        int(single_dynamic_write["relation"]["offset"]),
+                        str(single_dynamic_write["relation"]["kind"]),
+                    )
+                }
+                and (
+                    int(single_dynamic_write["relation"]["offset"]),
+                    str(single_dynamic_write["relation"]["kind"]),
+                ) not in source_active_words
+                and original_expression == {
+                    "op": "input_reg", "reg": source_relation["original"]
+                }
+                and candidate_expression == {
+                    "op": "input_reg", "reg": source_relation["candidate"]
+                }
+            ):
+                matches.append({
+                    "kind": "activate",
+                    "source_relation": source_relation,
+                    "target_relation": target_relation,
+                    "relation": single_dynamic_write["relation"],
+                    "original_amount": int(single_dynamic_write["original_amount"]),
+                    "candidate_amount": int(single_dynamic_write["candidate_amount"]),
+                    "value": single_dynamic_write["value"],
+                })
             pointer_words = [
-                word for word in source_relation.get("required_words", [])
+                word for word in source_relation.get("active_words", [])
                 if word.get("kind") == "nullableDynamicPointer"
             ]
             for pointer_word in pointer_words:
@@ -1666,6 +2207,7 @@ def _dynamic_range_transfer_claims(
                     and int(target_relation.get("original_offset", -1)) == 0
                     and int(target_relation.get("candidate_offset", -1)) == 0
                     and target_words <= source_words
+                    and not target_active_words
                     and original_expression == original_read
                     and candidate_expression == candidate_read
                     and original_guard == _nonzero_word_guard(original_read)
@@ -1677,6 +2219,50 @@ def _dynamic_range_transfer_claims(
                         "target_relation": target_relation,
                         "pointer_offset": pointer_offset,
                     })
+        for source_relation in source_stack_relations:
+            source_words = {
+                (int(word["offset"]), str(word["kind"]))
+                for word in source_relation.get("required_words", [])
+            }
+            source_active_words = {
+                (int(word["offset"]), str(word["kind"]))
+                for word in source_relation.get("active_words", [])
+            }
+            window = source_relation.get("window") or {}
+            stack_offset = int(source_relation.get("stack_offset", -1))
+
+            def stack_read(register: str) -> dict[str, Any]:
+                address: dict[str, Any] = {
+                    "op": "input_reg", "reg": register,
+                }
+                if stack_offset != 0:
+                    address = {
+                        "op": "add",
+                        "left": address,
+                        "right": {"op": "constant", "value": stack_offset},
+                    }
+                return {"op": "read32", "address": address}
+
+            if (
+                stack_offset >= 0
+                and int(source_relation.get("original_offset", -1))
+                    == int(target_relation.get("original_offset", -2))
+                and int(source_relation.get("candidate_offset", -1))
+                    == int(target_relation.get("candidate_offset", -2))
+                and target_words <= source_words
+                and target_active_words <= source_active_words
+                and original_expression == stack_read(
+                    str(window.get("original_register"))
+                )
+                and candidate_expression == stack_read(
+                    str(window.get("candidate_register"))
+                )
+            ):
+                matches.append({
+                    "kind": "stack_reload",
+                    "source_relation": source_relation,
+                    "target_relation": target_relation,
+                })
         for slot in contract.get("static_dynamic_pointer_slots", []):
             slot_words = {
                 (int(word["offset"]), str(word["kind"]))
@@ -1700,6 +2286,7 @@ def _dynamic_range_transfer_claims(
                 int(target_relation.get("original_offset", -1)) == 0
                 and int(target_relation.get("candidate_offset", -1)) == 0
                 and target_words <= slot_words
+                and not target_active_words
                 and original_expression == original_read
                 and candidate_expression == candidate_read
                 and original_guard == _nonzero_word_guard(original_read)
@@ -1743,7 +2330,9 @@ def _dynamic_range_register_output_claims(
     for output in missing:
         matches = [
             claim for claim in dynamic_transfer_claims
-            if claim.get("kind") in {"nullable_pointer", "static_pointer_seed"}
+            if claim.get("kind") in {
+                "nullable_pointer", "static_pointer_seed", "stack_reload",
+            }
             and claim["target_relation"]["original"] == output["original"]
             and claim["target_relation"]["candidate"] == output["candidate"]
             and int(claim["target_relation"].get("original_offset", -1)) == 0
@@ -1901,6 +2490,18 @@ def _exact_pure_guard_claim(
             original_value = _immutable_image_u32(original_bin, absolute)
             candidate_value = _immutable_image_u32(candidate_bin, absolute)
             return original_value is not None and original_value == candidate_value
+        if operation == "read8":
+            address = expression.get("address") or {}
+            if (
+                original_bin is None
+                or candidate_bin is None
+                or address.get("op") != "constant"
+            ):
+                return False
+            absolute = int(address.get("value", -1))
+            original_value = _immutable_image_u32(original_bin, absolute)
+            candidate_value = _immutable_image_u32(candidate_bin, absolute)
+            return original_value is not None and original_value == candidate_value
         if operation in {
             "add", "sub", "bit_and", "bit_xor", "shift_left_by",
             "shift_right_by", "shift_arithmetic_right_by", "bit_or",
@@ -1956,6 +2557,370 @@ def _exact_pure_guard_claim(
     return {
         "profile": "exact_pure_guard_v1",
         "guard": original_guard,
+    }
+
+
+def _paired_exact_guard_claim(
+    contract: dict[str, Any],
+    source: dict[str, Any],
+    original_guard: dict[str, Any],
+    candidate_guard: dict[str, Any],
+    original_bin: StageABinary | None = None,
+    candidate_bin: StageABinary | None = None,
+) -> dict[str, Any] | None:
+    exact_registers = {
+        (str(relation["original"]), str(relation["candidate"]))
+        for relation in source.get("input_relations", [])
+        if relation.get("relation") == "exact"
+    }
+    allowed_flags = {
+        int(index) for index in source.get("flag_inputs", list(FLAG_BITS))
+    }
+    static_slots = contract.get("static_word_relation_slots", [])
+
+    def paired_static_expression(
+        original: Any, candidate: Any,
+    ) -> tuple[dict[str, Any], int, int] | None:
+        """Recover a side-specific expression using only immutable PE facts."""
+        if not isinstance(original, dict) or not isinstance(candidate, dict):
+            return None
+        operation = original.get("op")
+        if operation != candidate.get("op"):
+            return None
+        if operation == "constant":
+            original_value = _integer(original.get("value")) & 0xFFFFFFFF
+            candidate_value = _integer(candidate.get("value")) & 0xFFFFFFFF
+            return ({
+                "kind": "constant",
+                "original": original_value,
+                "candidate": candidate_value,
+            }, original_value, candidate_value)
+        if operation == "read32":
+            original_address = original.get("address") or {}
+            candidate_address = candidate.get("address") or {}
+            if (
+                original_bin is None
+                or candidate_bin is None
+                or original_address.get("op") != "constant"
+                or candidate_address.get("op") != "constant"
+            ):
+                return None
+            original_absolute = _integer(original_address.get("value"))
+            candidate_absolute = _integer(candidate_address.get("value"))
+            original_value = _immutable_image_u32(original_bin, original_absolute)
+            candidate_value = _immutable_image_u32(candidate_bin, candidate_absolute)
+            if original_value is None or candidate_value is None:
+                return None
+            return ({
+                "kind": "read32",
+                "original_address": original_absolute,
+                "candidate_address": candidate_absolute,
+            }, original_value, candidate_value)
+        if operation in {
+            "add", "sub", "bit_and", "bit_xor", "shift_left_by",
+            "shift_right_by", "shift_arithmetic_right_by", "bit_or",
+            "unsigned_less_value", "multiply", "multiply_high_unsigned",
+            "multiply_high_signed",
+        }:
+            left = paired_static_expression(
+                original.get("left"), candidate.get("left")
+            )
+            right = paired_static_expression(
+                original.get("right"), candidate.get("right")
+            )
+            if left is None or right is None:
+                return None
+
+            def evaluate(left_value: int, right_value: int) -> int:
+                mask = 0xFFFFFFFF
+                if operation == "add":
+                    return (left_value + right_value) & mask
+                if operation == "sub":
+                    return (left_value - right_value) & mask
+                if operation == "bit_and":
+                    return left_value & right_value
+                if operation == "bit_xor":
+                    return left_value ^ right_value
+                if operation == "bit_or":
+                    return left_value | right_value
+                if operation == "shift_left_by":
+                    return (left_value << (right_value % 32)) & mask
+                if operation == "shift_right_by":
+                    return left_value >> (right_value % 32)
+                if operation == "shift_arithmetic_right_by":
+                    signed = (
+                        left_value if left_value < 0x80000000
+                        else left_value - 0x100000000
+                    )
+                    return (signed >> (right_value % 32)) & mask
+                if operation == "unsigned_less_value":
+                    return int(left_value < right_value)
+                product = left_value * right_value
+                if operation == "multiply":
+                    return product & mask
+                if operation == "multiply_high_unsigned":
+                    return (product >> 32) & mask
+                signed_left = (
+                    left_value if left_value < 0x80000000
+                    else left_value - 0x100000000
+                )
+                signed_right = (
+                    right_value if right_value < 0x80000000
+                    else right_value - 0x100000000
+                )
+                return ((signed_left * signed_right) >> 32) & mask
+
+            original_value = evaluate(left[1], right[1])
+            candidate_value = evaluate(left[2], right[2])
+            return ({
+                "kind": "binary",
+                "operation": operation,
+                "left": left[0],
+                "right": right[0],
+            }, original_value, candidate_value)
+        return None
+
+    def paired_constant_read(
+        original_expression: dict[str, Any],
+        candidate_expression: dict[str, Any],
+        kind: str,
+    ) -> dict[str, Any] | None:
+        original_address = original_expression.get("address") or {}
+        candidate_address = candidate_expression.get("address") or {}
+        if (
+            original_address.get("op") != "constant"
+            or candidate_address.get("op") != "constant"
+        ):
+            return None
+        original_absolute = int(original_address.get("value", -1))
+        candidate_absolute = int(candidate_address.get("value", -1))
+        if original_bin is not None and candidate_bin is not None:
+            original_value = _immutable_image_u32(original_bin, original_absolute)
+            candidate_value = _immutable_image_u32(candidate_bin, candidate_absolute)
+            if original_value is not None and original_value == candidate_value:
+                return {
+                    "kind": kind,
+                    "original_address": original_absolute,
+                    "candidate_address": candidate_absolute,
+                }
+        matching_slots = [
+            slot for slot in static_slots
+            if slot.get("relation") == "exact"
+            and int(slot.get("original_address", -1)) == original_absolute
+            and int(slot.get("candidate_address", -1)) == candidate_absolute
+        ]
+        if len(matching_slots) != 1:
+            return None
+        return {
+            "kind": kind,
+            "original_address": original_absolute,
+            "candidate_address": candidate_absolute,
+        }
+
+    def paired_expression(
+        original: Any, candidate: Any,
+    ) -> dict[str, Any] | None:
+        if not isinstance(original, dict) or not isinstance(candidate, dict):
+            return None
+        operation = original.get("op")
+        if operation != candidate.get("op"):
+            return None
+        if operation == "input_reg":
+            original_register = str(original.get("reg"))
+            candidate_register = str(candidate.get("reg"))
+            if (original_register, candidate_register) not in exact_registers:
+                return None
+            return {
+                "kind": "input_reg",
+                "original": original_register,
+                "candidate": candidate_register,
+            }
+        if operation == "input_flag_value":
+            original_bit = _integer(original.get("bit"))
+            candidate_bit = _integer(candidate.get("bit"))
+            if original_bit != candidate_bit or original_bit not in allowed_flags:
+                return None
+            return {"kind": "input_flag_value", "bit": original_bit}
+        if operation in {
+            "input_fs_base", "input_x87_control", "input_x87_status",
+        }:
+            return {"kind": operation}
+        if operation == "constant":
+            original_value = _integer(original.get("value"))
+            if original_value != _integer(candidate.get("value")):
+                return None
+            return {"kind": "constant", "value": original_value}
+        if operation == "undefined":
+            original_slot = _integer(original.get("slot"))
+            if original_slot != _integer(candidate.get("slot")):
+                return None
+            return {"kind": "undefined", "slot": original_slot}
+        if operation in {"read8", "read32"}:
+            direct = paired_constant_read(original, candidate, operation)
+            if direct is not None:
+                return direct
+            address = paired_static_expression(
+                original.get("address"), candidate.get("address")
+            )
+            if address is None or original_bin is None or candidate_bin is None:
+                return None
+            original_value = _immutable_image_u32(original_bin, address[1])
+            candidate_value = _immutable_image_u32(candidate_bin, address[2])
+            if original_value is None or original_value != candidate_value:
+                return None
+            return {
+                "kind": f"{operation}_at",
+                "address": address[0],
+            }
+        if operation in {
+            "add", "sub", "bit_and", "bit_xor", "shift_left_by",
+            "shift_right_by", "shift_arithmetic_right_by", "bit_or",
+            "unsigned_less_value", "multiply", "multiply_high_unsigned",
+            "multiply_high_signed",
+        }:
+            left = paired_expression(original.get("left"), candidate.get("left"))
+            right = paired_expression(original.get("right"), candidate.get("right"))
+            if left is None or right is None:
+                return None
+            return {
+                "kind": "binary", "operation": operation,
+                "left": left, "right": right,
+            }
+        if operation in {"bit_not", "lowest_set_bit", "highest_set_bit"}:
+            value = paired_expression(original.get("value"), candidate.get("value"))
+            if value is None:
+                return None
+            return {"kind": "unary", "operation": operation, "value": value}
+        if operation in {
+            "extract_byte", "shift_left", "shift_right", "bit_value",
+        }:
+            metadata_key = "index" if operation in {
+                "extract_byte", "bit_value",
+            } else "amount"
+            index = _integer(original.get(metadata_key))
+            if index != _integer(candidate.get(metadata_key)):
+                return None
+            value = paired_expression(original.get("value"), candidate.get("value"))
+            if value is None:
+                return None
+            return {
+                "kind": "indexed", "operation": operation,
+                "index": index, "value": value,
+            }
+        if operation == "if_equal":
+            children = {
+                field: paired_expression(original.get(field), candidate.get(field))
+                for field in ("left", "right", "then", "else")
+            }
+            if any(value is None for value in children.values()):
+                return None
+            return {"kind": "if_equal", **children}
+        if operation in {
+            "divide_quotient", "divide_remainder", "division_valid_value",
+        }:
+            children = {
+                field: paired_expression(original.get(field), candidate.get(field))
+                for field in ("high", "low", "divisor")
+            }
+            if any(value is None for value in children.values()):
+                return None
+            return {"kind": "ternary", "operation": operation, **children}
+        return None
+
+    def constant(value: int) -> dict[str, Any]:
+        return {"kind": "constant", "value": value}
+
+    def paired_boolean(
+        original: Any, candidate: Any,
+    ) -> dict[str, Any] | None:
+        if not isinstance(original, dict) or not isinstance(candidate, dict):
+            return None
+        operation = original.get("op")
+        if operation != candidate.get("op"):
+            return None
+        if operation == "equal":
+            left = paired_expression(original.get("left"), candidate.get("left"))
+            right = paired_expression(original.get("right"), candidate.get("right"))
+            if left is None or right is None:
+                return None
+            return {
+                "kind": "if_equal", "left": left, "right": right,
+                "then": constant(1), "else": constant(0),
+            }
+        if operation == "unsigned_less":
+            left = paired_expression(original.get("left"), candidate.get("left"))
+            right = paired_expression(original.get("right"), candidate.get("right"))
+            if left is None or right is None:
+                return None
+            return {
+                "kind": "binary", "operation": "unsigned_less_value",
+                "left": left, "right": right,
+            }
+        if operation == "not":
+            value = paired_boolean(original.get("value"), candidate.get("value"))
+            if value is None:
+                return None
+            return {
+                "kind": "if_equal", "left": value, "right": constant(0),
+                "then": constant(1), "else": constant(0),
+            }
+        if operation in {"and", "or", "xor"}:
+            left = paired_boolean(original.get("left"), candidate.get("left"))
+            right = paired_boolean(original.get("right"), candidate.get("right"))
+            if left is None or right is None:
+                return None
+            return {
+                "kind": "binary",
+                "operation": {"and": "bit_and", "or": "bit_or",
+                              "xor": "bit_xor"}[operation],
+                "left": left, "right": right,
+            }
+        if operation == "msb":
+            value = paired_expression(original.get("value"), candidate.get("value"))
+            if value is None:
+                return None
+            return {
+                "kind": "indexed", "operation": "bit_value",
+                "index": 31, "value": value,
+            }
+        if operation == "bit":
+            index = _integer(original.get("index"))
+            if index != _integer(candidate.get("index")):
+                return None
+            value = paired_expression(original.get("value"), candidate.get("value"))
+            if value is None:
+                return None
+            return {
+                "kind": "indexed", "operation": "bit_value",
+                "index": index, "value": value,
+            }
+        if operation == "input_flag":
+            original_index = _integer(original.get("index"))
+            candidate_index = _integer(candidate.get("index"))
+            if original_index != candidate_index or original_index not in allowed_flags:
+                return None
+            return {"kind": "input_flag_value", "bit": original_index}
+        if operation == "division_valid":
+            children = {
+                field: paired_expression(original.get(field), candidate.get(field))
+                for field in ("high", "low", "divisor")
+            }
+            if any(value is None for value in children.values()):
+                return None
+            return {
+                "kind": "ternary", "operation": "division_valid_value",
+                **children,
+            }
+        return None
+
+    witness = paired_boolean(original_guard, candidate_guard)
+    if witness is None:
+        return None
+    return {
+        "profile": "paired_exact_guard_v1",
+        "original_guard": original_guard,
+        "candidate_guard": candidate_guard,
+        "witness": witness,
     }
 
 
@@ -2121,6 +3086,112 @@ def _paired_stack_guard_claim(
         "not_count": original[2],
     }
 
+
+def _paired_stack_relative_guard_claim(
+    source: dict[str, Any],
+    original_guard: dict[str, Any],
+    candidate_guard: dict[str, Any],
+) -> dict[str, Any] | None:
+    windows = source.get("stack_windows", [])
+    if not windows:
+        return None
+
+    def register_adjustment(
+        address: Any,
+    ) -> tuple[str, dict[str, Any]] | None:
+        if not isinstance(address, dict):
+            return None
+        if address.get("op") == "input_reg":
+            return str(address.get("reg")), {"kind": "identity"}
+        operation = str(address.get("op"))
+        register = address.get("left") or {}
+        constant = address.get("right") or {}
+        if (
+            operation not in {"add", "sub"}
+            or register.get("op") != "input_reg"
+            or constant.get("op") != "constant"
+        ):
+            return None
+        value = int(constant.get("value", -1))
+        if value < 0 or value >= 2**32:
+            return None
+        if operation == "sub":
+            adjustment = {"kind": "subtract", "amount": value}
+        elif value >= 2**31:
+            adjustment = {"kind": "subtract", "amount": 2**32 - value}
+        else:
+            adjustment = {"kind": "add", "amount": value}
+        return str(register.get("reg")), adjustment
+
+    def parse(
+        expression: dict[str, Any],
+    ) -> tuple[str, dict[str, Any], dict[str, Any], bool, int] | None:
+        not_count = 0
+        while expression.get("op") == "not":
+            not_count += 1
+            expression = expression.get("value") or {}
+        if expression.get("op") != "equal":
+            return None
+        left = expression.get("left") or {}
+        right = expression.get("right") or {}
+        if right.get("op") == "constant" and int(right.get("value", -1)) == 0:
+            word = left
+        elif left.get("op") == "constant" and int(left.get("value", -1)) == 0:
+            word = right
+        else:
+            return None
+        masked = word.get("op") == "bit_and" and word.get("left") == word.get("right")
+        if masked:
+            word = word.get("left") or {}
+        read = word
+        address = read.get("address") or {}
+        if read.get("op") != "read32":
+            return None
+        parsed = register_adjustment(address)
+        if parsed is None:
+            return None
+        return parsed[0], parsed[1], address, masked, not_count
+
+    original = parse(original_guard)
+    candidate = parse(candidate_guard)
+    if (
+        original is None
+        or candidate is None
+        or original[1] != candidate[1]
+        or original[3:] != candidate[3:]
+    ):
+        return None
+    adjustment = original[1]
+
+    def covered(window: dict[str, Any]) -> bool:
+        kind = adjustment["kind"]
+        amount = int(adjustment.get("amount", 0))
+        if kind == "identity":
+            return 4 <= int(window.get("bytes_above", -1))
+        if amount % 4 != 0:
+            return False
+        if kind == "add":
+            return amount + 4 <= int(window.get("bytes_above", -1))
+        return 4 <= amount <= int(window.get("bytes_below", -1))
+
+    matches = [
+        window for window in windows
+        if str(window.get("original_register")) == original[0]
+        and str(window.get("candidate_register")) == candidate[0]
+        and covered(window)
+    ]
+    if len(matches) != 1:
+        return None
+    return {
+        "profile": "paired_stack_read_relative_guard_v1",
+        "window": matches[0],
+        "adjustment": adjustment,
+        "original_address": original[2],
+        "candidate_address": candidate[2],
+        "masked": original[3],
+        "not_count": original[4],
+    }
+
 def _stack_read32_sub_output_claim(
     region: dict[str, Any],
     output: dict[str, Any],
@@ -2201,6 +3272,76 @@ def _stack_read32_sub_output_claim(
         "candidate_direct_address": candidate[4],
     }
 
+
+def _stack_read32_relative_output_claim(
+    region: dict[str, Any],
+    output: dict[str, Any],
+    original_expression: dict[str, Any],
+    candidate_expression: dict[str, Any],
+) -> dict[str, Any] | None:
+    def parse(expression: dict[str, Any]) -> tuple[str, str, int] | None:
+        if expression.get("op") != "read32":
+            return None
+        address = expression.get("address") or {}
+        if address.get("op") == "input_reg":
+            return str(address.get("reg")), "identity", 0
+        if address.get("op") not in {"add", "sub"}:
+            return None
+        register = address.get("left") or {}
+        constant = address.get("right") or {}
+        if address.get("op") == "add" and register.get("op") == "constant":
+            register, constant = constant, register
+        if register.get("op") != "input_reg" or constant.get("op") != "constant":
+            return None
+        value = int(constant.get("value", -1))
+        if not 0 <= value < 2**32:
+            return None
+        if address.get("op") == "sub":
+            return str(register.get("reg")), "subtract", value
+        if value < 2**31:
+            return str(register.get("reg")), "add", value
+        return str(register.get("reg")), "subtract", 2**32 - value
+
+    original = parse(original_expression)
+    candidate = parse(candidate_expression)
+    if (
+        original is None
+        or candidate is None
+        or original[1:] != candidate[1:]
+        or output.get("relation") != "related_word"
+    ):
+        return None
+    adjustment, amount = original[1], original[2]
+    matches = []
+    for window in region.get("stack_windows", []):
+        if (
+            str(window.get("original_register")) != original[0]
+            or str(window.get("candidate_register")) != candidate[0]
+        ):
+            continue
+        if adjustment == "identity":
+            valid = 4 <= int(window.get("bytes_above", -1))
+        elif adjustment == "add":
+            valid = amount % 4 == 0 and amount + 4 <= int(
+                window.get("bytes_above", -1)
+            )
+        else:
+            valid = (
+                4 <= amount
+                and amount % 4 == 0
+                and amount <= int(window.get("bytes_below", -1))
+            )
+        if valid:
+            matches.append(window)
+    if len(matches) != 1:
+        return None
+    return {
+        "kind": "stack_read32_relative",
+        "output": output,
+        "window": matches[0],
+        "adjustment": {"kind": adjustment, "amount": amount},
+    }
+
 def _attach_stack_register_output_claims(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
@@ -2224,11 +3365,35 @@ def _attach_stack_register_output_claims(
             claim = _stack_read32_sub_output_claim(
                 region, output, original_expression, candidate_expression
             )
+            if claim is None:
+                claim = _stack_read32_relative_output_claim(
+                    region, output, original_expression, candidate_expression
+                )
             if claim is not None:
                 # A checked stack-window read is composable under StateRel. It
                 # therefore supersedes a local exact-memory claim synthesized
                 # before stack provenance was available.
                 existing[key] = claim
+                continue
+            if (
+                output.get("relation") == "related_word"
+                and original_expression.get("op") == "input_reg"
+                and candidate_expression.get("op") == "input_reg"
+            ):
+                matching_windows = [
+                    window for window in region.get("stack_windows", [])
+                    if str(window.get("original_register")) ==
+                        str(original_expression.get("reg"))
+                    and str(window.get("candidate_register")) ==
+                        str(candidate_expression.get("reg"))
+                    and int(window.get("bytes_above", 0)) > 0
+                ]
+                if len(matching_windows) == 1:
+                    existing[key] = {
+                        "kind": "stack_window_identity",
+                        "output": output,
+                        "window": matching_windows[0],
+                    }
         row["output_claims"] = [
             existing[(str(output["original"]), str(output["candidate"]))]
             for output in row.get("outputs", [])
@@ -2237,6 +3402,94 @@ def _attach_stack_register_output_claims(
         row["fully_supported_output_transfer"] = (
             len(row["output_claims"]) == len(row["outputs"])
         )
+    return register_relations
+
+
+def _static_word_relation_supports_register_output(
+    static_relation: str, register_relation: str,
+) -> bool:
+    return (static_relation, register_relation) in {
+        ("exact", "exact"),
+        ("exact", "related_word"),
+        ("related_word", "related_word"),
+        ("code_pointer", "code_pointer"),
+        ("data_pointer", "data_pointer"),
+    }
+
+
+def _attach_static_word_register_output_claims(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    register_relations: dict[str, Any],
+) -> dict[str, Any]:
+    slots = contract.get("static_word_relation_slots", [])
+    for region_index, row in enumerate(register_relations.get("regions", [])):
+        existing = {
+            (str(claim["output"]["original"]), str(claim["output"]["candidate"])):
+                claim
+            for claim in row.get("output_claims", [])
+        }
+        for output in row.get("outputs", []):
+            key = (str(output["original"]), str(output["candidate"]))
+            if (
+                key in existing
+                and existing[key].get("kind") != "exact_memory"
+            ):
+                continue
+            original_expression = behaviors[region_index]["original_ir"]["registers"][
+                output["original"]
+            ]
+            candidate_expression = behaviors[region_index]["candidate_ir"]["registers"][
+                output["candidate"]
+            ]
+            if (
+                original_expression.get("op") != "read32"
+                or candidate_expression.get("op") != "read32"
+                or (original_expression.get("address") or {}).get("op") != "constant"
+                or (candidate_expression.get("address") or {}).get("op") != "constant"
+            ):
+                continue
+            original_address = int(original_expression["address"]["value"])
+            candidate_address = int(candidate_expression["address"]["value"])
+            matching_slots = [
+                slot for slot in slots
+                if int(slot["original_address"]) == original_address
+                and int(slot["candidate_address"]) == candidate_address
+                and _static_word_relation_supports_register_output(
+                    str(slot["relation"]), str(output["relation"])
+                )
+            ]
+            if len(matching_slots) != 1:
+                continue
+            existing[key] = {
+                "kind": "static_word_slot",
+                "output": output,
+                "slot": matching_slots[0],
+                "original_address": original_address,
+                "candidate_address": candidate_address,
+            }
+        row["output_claims"] = [
+            existing[(str(output["original"]), str(output["candidate"]))]
+            for output in row.get("outputs", [])
+            if (str(output["original"]), str(output["candidate"])) in existing
+        ]
+        row["fully_supported_output_transfer"] = (
+            len(row["output_claims"]) == len(row["outputs"])
+        )
+    counts = register_relations.get("counts", {})
+    counts["register_output_claims"] = sum(
+        len(row.get("output_claims", []))
+        for row in register_relations.get("regions", [])
+    )
+    counts["static_word_slot_output_claims"] = sum(
+        claim.get("kind") == "static_word_slot"
+        for row in register_relations.get("regions", [])
+        for claim in row.get("output_claims", [])
+    )
+    counts["fully_supported_output_regions"] = sum(
+        bool(row.get("fully_supported_output_transfer"))
+        for row in register_relations.get("regions", [])
+    )
     return register_relations
 
 def _lower_stack_register_relations(

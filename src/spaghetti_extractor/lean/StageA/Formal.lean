@@ -142,6 +142,7 @@ structure PE32 where
   sectionAlignment : Nat
   fileAlignment : Nat
   sizeOfImage : Nat
+  sizeOfHeaders : Nat
   importDirectoryRva : Nat
   importDirectorySize : Nat
   relocationDirectoryRva : Nat
@@ -156,6 +157,7 @@ structure PEMetadata where
   sectionAlignment : Nat
   fileAlignment : Nat
   sizeOfImage : Nat
+  sizeOfHeaders : Nat
   importDirectoryRva : Nat
   importDirectorySize : Nat
   relocationDirectoryRva : Nat
@@ -170,6 +172,7 @@ def PE32.metadata (pe : PE32) : PEMetadata := {
   sectionAlignment := pe.sectionAlignment
   fileAlignment := pe.fileAlignment
   sizeOfImage := pe.sizeOfImage
+  sizeOfHeaders := pe.sizeOfHeaders
   importDirectoryRva := pe.importDirectoryRva
   importDirectorySize := pe.importDirectorySize
   relocationDirectoryRva := pe.relocationDirectoryRva
@@ -185,6 +188,7 @@ def PEMetadata.toPE32 (metadata : PEMetadata) (bytes : ByteTree) : PE32 := {
   sectionAlignment := metadata.sectionAlignment
   fileAlignment := metadata.fileAlignment
   sizeOfImage := metadata.sizeOfImage
+  sizeOfHeaders := metadata.sizeOfHeaders
   importDirectoryRva := metadata.importDirectoryRva
   importDirectorySize := metadata.importDirectorySize
   relocationDirectoryRva := metadata.relocationDirectoryRva
@@ -245,6 +249,7 @@ def parsePEMetadata (bytes : Bytes) : Option PEMetadata := do
   let sectionAlignment <- readU32 bytes (optionalOffset + 32)
   let fileAlignment <- readU32 bytes (optionalOffset + 36)
   let sizeOfImage <- readU32 bytes (optionalOffset + 56)
+  let sizeOfHeaders <- readU32 bytes (optionalOffset + 60)
   let importDirectoryRva <- readU32 bytes (optionalOffset + 104)
   let importDirectorySize <- readU32 bytes (optionalOffset + 108)
   let relocationDirectoryRva <- readU32 bytes (optionalOffset + 136)
@@ -257,6 +262,7 @@ def parsePEMetadata (bytes : Bytes) : Option PEMetadata := do
     sectionAlignment,
     fileAlignment,
     sizeOfImage,
+    sizeOfHeaders,
     importDirectoryRva,
     importDirectorySize,
     relocationDirectoryRva,
@@ -311,6 +317,7 @@ def parsePEMetadataTree (bytes : ByteTree) : Option PEMetadata := do
   let sectionAlignment <- readTreeU32 bytes (optionalOffset + 32)
   let fileAlignment <- readTreeU32 bytes (optionalOffset + 36)
   let sizeOfImage <- readTreeU32 bytes (optionalOffset + 56)
+  let sizeOfHeaders <- readTreeU32 bytes (optionalOffset + 60)
   let importDirectoryRva <- readTreeU32 bytes (optionalOffset + 104)
   let importDirectorySize <- readTreeU32 bytes (optionalOffset + 108)
   let relocationDirectoryRva <- readTreeU32 bytes (optionalOffset + 136)
@@ -323,6 +330,7 @@ def parsePEMetadataTree (bytes : ByteTree) : Option PEMetadata := do
     sectionAlignment,
     fileAlignment,
     sizeOfImage,
+    sizeOfHeaders,
     importDirectoryRva,
     importDirectorySize,
     relocationDirectoryRva,
@@ -346,13 +354,16 @@ def sectionBytes (pe : PE32) (sec : Section) : Option Bytes :=
     pe.bytes.readBytes sec.rawPointer sec.mappedSize
 
 def rvaByte (pe : PE32) (rva : Nat) : Option Byte := do
-  let sec <- pe.sections.find? (fun sec =>
-    sec.virtualAddress <= rva && rva < sec.virtualAddress + sec.mappedSize)
-  let offset := rva - sec.virtualAddress
-  if offset < sec.rawSize then
-    pe.bytes.readByte (sec.rawPointer + offset)
+  if rva < pe.sizeOfHeaders then
+    pe.bytes.readByte rva
   else
-    pure 0
+    let sec <- pe.sections.find? (fun sec =>
+      sec.virtualAddress <= rva && rva < sec.virtualAddress + sec.mappedSize)
+    let offset := rva - sec.virtualAddress
+    if offset < sec.rawSize then
+      pe.bytes.readByte (sec.rawPointer + offset)
+    else
+      pure 0
 
 def readRvaU16 (pe : PE32) (rva : Nat) : Option Nat := do
   let b0 <- rvaByte pe rva
@@ -376,9 +387,10 @@ def readImmutableImageWord (pe : PE32) (absolute size : Nat) : Option Nat := do
   if absolute < pe.imageBase || size = 0 || absolute + size > 2^32 then none else
   let rva := absolute - pe.imageBase
   if rva + size > pe.sizeOfImage then none else
-  let _ <- pe.sections.find? fun sec =>
-    !sec.writable && sec.virtualAddress <= rva &&
-      rva + size <= sec.virtualAddress + sec.mappedSize
+  if !(rva + size <= pe.sizeOfHeaders) then
+    let _ <- pe.sections.find? fun sec =>
+      !sec.writable && sec.virtualAddress <= rva &&
+        rva + size <= sec.virtualAddress + sec.mappedSize
   readRvaLittleEndian pe rva size
 
 theorem readImmutableImageWord_bounds (pe : PE32) (absolute size expected : Nat)
@@ -390,6 +402,43 @@ theorem readImmutableImageWord_bounds (pe : PE32) (absolute size expected : Nat)
   · simp at checked
   · simp_all
     omega
+
+theorem readImmutableImageWord_region (pe : PE32) (absolute size expected : Nat)
+    (checked : readImmutableImageWord pe absolute size = some expected) :
+    absolute + size <= pe.imageBase + pe.sizeOfHeaders ∨
+      ∃ sec, sec ∈ pe.sections ∧ sec.writable = false ∧
+        pe.imageBase + sec.virtualAddress <= absolute ∧
+        absolute + size <= pe.imageBase + sec.virtualAddress + sec.mappedSize := by
+  have bounds := readImmutableImageWord_bounds pe absolute size expected checked
+  unfold readImmutableImageWord at checked
+  split at checked
+  · simp at checked
+  · dsimp only at checked
+    split at checked
+    · simp at checked
+    · split at checked
+      · right
+        cases found : pe.sections.find? (fun sec =>
+              !sec.writable && sec.virtualAddress <= absolute - pe.imageBase &&
+                absolute - pe.imageBase + size <=
+                  sec.virtualAddress + sec.mappedSize) with
+        | none => simp [found] at checked
+        | some sec =>
+            have member := List.mem_of_find?_eq_some found
+            have predicate := List.find?_some
+              (p := fun candidate : Section =>
+                !candidate.writable &&
+                  candidate.virtualAddress <= absolute - pe.imageBase &&
+                  absolute - pe.imageBase + size <=
+                    candidate.virtualAddress + candidate.mappedSize)
+              (a := sec) found
+            simp only [Bool.and_eq_true, decide_eq_true_eq] at predicate
+            have immutable := predicate.1.1
+            rw [Bool.not_eq_true'] at immutable
+            refine ⟨sec, member, immutable, ?_, ?_⟩ <;> omega
+      · left
+        simp_all
+        omega
 
 def readCStringRva : PE32 -> Nat -> Nat -> Option Bytes
   | _, _, 0 => none
@@ -3144,6 +3193,7 @@ structure LoaderShape where
   sectionAlignment : Nat
   fileAlignment : Nat
   sizeOfImage : Nat
+  sizeOfHeaders : Nat
   executableVirtualAddress : Nat
   sections : List Section
   imports : List PEImport
@@ -3166,6 +3216,7 @@ def loaderShape (pe : PE32) : Option LoaderShape := do
     sectionAlignment := pe.sectionAlignment,
     fileAlignment := pe.fileAlignment,
     sizeOfImage := pe.sizeOfImage,
+    sizeOfHeaders := pe.sizeOfHeaders,
     executableVirtualAddress := sec.virtualAddress,
     sections := pe.sections,
     imports,

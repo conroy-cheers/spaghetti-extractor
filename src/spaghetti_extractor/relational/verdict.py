@@ -268,6 +268,11 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
             if (out / "relational-memory-contracts.json").is_file()
             else None
         ),
+        "static_word_relations_sha256": (
+            sha256_file(out / "relational-static-word-relations.json")
+            if (out / "relational-static-word-relations.json").is_file()
+            else None
+        ),
         "register_relations_sha256": (
             sha256_file(out / "relational-register-relations.json")
             if (out / "relational-register-relations.json").is_file()

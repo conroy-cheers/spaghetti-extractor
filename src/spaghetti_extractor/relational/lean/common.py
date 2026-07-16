@@ -277,6 +277,7 @@ def _lean_pe(binary: StageABinary, byte_tree_name: str) -> str:
         + ", sectionAlignment := " + str(int(pe.OPTIONAL_HEADER.SectionAlignment))
         + ", fileAlignment := " + str(int(pe.OPTIONAL_HEADER.FileAlignment))
         + ", sizeOfImage := " + str(binary.size_of_image)
+        + ", sizeOfHeaders := " + str(binary.size_of_headers)
         + ", importDirectoryRva := " + str(int(imports.VirtualAddress))
         + ", importDirectorySize := " + str(int(imports.Size))
         + ", relocationDirectoryRva := " + str(int(relocations.VirtualAddress))

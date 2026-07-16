@@ -76,6 +76,7 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                     "relational-register-relations.json",
                     "relational-stack-windows.json",
                     "relational-memory-contracts.json",
+                    "relational-static-word-relations.json",
                     "relational-invariants.json",
                 ],
                 "producer": "state-and-frame-analysis",
@@ -155,6 +156,7 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "owned_paths": [
                     "src/spaghetti_extractor/relational/analyses/registers.py",
                     "src/spaghetti_extractor/relational/analyses/stack.py",
+                    "src/spaghetti_extractor/relational/analyses/memory.py",
                     "src/spaghetti_extractor/relational/analyses/invariants.py",
                     "src/spaghetti_extractor/relational/analyses/frames.py",
                 ],

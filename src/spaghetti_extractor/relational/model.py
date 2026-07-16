@@ -65,6 +65,57 @@ def _semantic_constant_bool(expression: dict[str, Any]) -> bool | None:
     return None
 
 
+def _target_shaped_register_output_claims(
+    source: dict[str, Any], target: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Build checked source claims whose outputs are exactly the target inventory."""
+    existing_by_register = {
+        str(claim["output"]["original"]): claim
+        for claim in source.get("output_claims", [])
+    }
+    exact_by_register = {
+        str(claim["register"]): claim
+        for claim in source.get("exact_output_claims", [])
+    }
+    source_outputs = {
+        str(relation["original"]): relation
+        for relation in source.get("outputs", [])
+    }
+    claims: list[dict[str, Any]] = []
+    for target_relation in target.get("inputs", []):
+        register = str(target_relation["original"])
+        existing = existing_by_register.get(register)
+        if existing is not None and existing.get("output") == target_relation:
+            claims.append(existing)
+            continue
+        if (
+            existing is not None
+            and existing.get("kind") in {
+                "constant", "immutable_image_word", "static_word_slot",
+            }
+            and target_relation.get("relation") == "related_word"
+            and existing.get("output", {}).get("candidate")
+                == target_relation.get("candidate")
+        ):
+            claims.append({**existing, "output": target_relation})
+            continue
+        exact = exact_by_register.get(register)
+        source_output = source_outputs.get(register)
+        if (
+            exact is None
+            or source_output is None
+            or source_output.get("candidate") != target_relation.get("candidate")
+            or target_relation.get("relation") not in {"exact", "related_word"}
+        ):
+            return None
+        claims.append({
+            "kind": "exact_expression",
+            "output": target_relation,
+            "expression": exact["expression"],
+        })
+    return claims
+
+
 def _stack_window_transfer_claims(
     source: dict[str, Any],
     target: dict[str, Any],
@@ -115,40 +166,49 @@ def _stack_window_transfer_claims(
 
     claims: list[dict[str, Any]] = []
     for target_window in target_windows:
-        original_adjustment = adjustment(
-            original_registers.get(target_window["original_register"]),
-            str(target_window["original_register"]),
-        )
-        candidate_adjustment = adjustment(
-            candidate_registers.get(target_window["candidate_register"]),
-            str(target_window["candidate_register"]),
-        )
-        if original_adjustment is None or original_adjustment != candidate_adjustment:
-            return None
-        amount = int(original_adjustment["amount"])
-        if original_adjustment["kind"] == "add":
-            required_below = max(int(target_window.get("bytes_below", 0)) - amount, 0)
-            required_above = int(target_window["bytes_above"]) + amount
-        elif original_adjustment["kind"] == "subtract":
-            required_below = int(target_window.get("bytes_below", 0)) + amount
-            required_above = max(int(target_window["bytes_above"]) - amount, 0)
-        else:
-            required_below = int(target_window.get("bytes_below", 0))
-            required_above = int(target_window["bytes_above"])
-        matches = [
-            window for window in source_windows
-            if int(window.get("range_id", -1)) == int(target_window.get("range_id", -2))
-            and str(window.get("original_register"))
-                == str(target_window.get("original_register"))
-            and str(window.get("candidate_register"))
-                == str(target_window.get("candidate_register"))
-            and int(window.get("bytes_below", 0)) >= required_below
-            and int(window.get("bytes_above", 0)) >= required_above
-        ]
+        matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for source_window in source_windows:
+            if int(source_window.get("range_id", -1)) != int(
+                target_window.get("range_id", -2)
+            ):
+                continue
+            original_adjustment = adjustment(
+                original_registers.get(target_window["original_register"]),
+                str(source_window["original_register"]),
+            )
+            candidate_adjustment = adjustment(
+                candidate_registers.get(target_window["candidate_register"]),
+                str(source_window["candidate_register"]),
+            )
+            if (
+                original_adjustment is None
+                or original_adjustment != candidate_adjustment
+            ):
+                continue
+            amount = int(original_adjustment["amount"])
+            if original_adjustment["kind"] == "add":
+                required_below = max(
+                    int(target_window.get("bytes_below", 0)) - amount, 0
+                )
+                required_above = int(target_window["bytes_above"]) + amount
+            elif original_adjustment["kind"] == "subtract":
+                required_below = int(target_window.get("bytes_below", 0)) + amount
+                required_above = max(
+                    int(target_window["bytes_above"]) - amount, 0
+                )
+            else:
+                required_below = int(target_window.get("bytes_below", 0))
+                required_above = int(target_window["bytes_above"])
+            if (
+                int(source_window.get("bytes_below", 0)) >= required_below
+                and int(source_window.get("bytes_above", 0)) >= required_above
+            ):
+                matches.append((source_window, original_adjustment))
         if len(matches) != 1:
             return None
+        source_window, original_adjustment = matches[0]
         claims.append({
-            "source": matches[0],
+            "source": source_window,
             "target": target_window,
             "adjustment": original_adjustment,
         })

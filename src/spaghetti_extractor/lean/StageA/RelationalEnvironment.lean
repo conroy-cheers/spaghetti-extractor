@@ -258,6 +258,85 @@ theorem externalReturnSlotTransferHolds_of_checked
   refine ⟨resultOffsets, framesPreserved ?_⟩
   simpa [RelationalBehavior.nextMachineState] using internalMemory
 
+structure ExternalReturnSlotInventoryTransferClaim where
+  source : ReturnSlotOffsetInventory
+  target : ReturnSlotOffsetInventory
+  transfers : List ExternalReturnSlotTransferClaim
+deriving Repr, DecidableEq
+
+def ExternalReturnSlotInventoryTransferClaim.checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (contract : MachineImportCallContract)
+    (claim : ExternalReturnSlotInventoryTransferClaim) : Bool :=
+  claim.source.checked && claim.target.checked &&
+    claim.transfers.all (fun transfer =>
+      claim.source.locations.contains transfer.source) &&
+    claim.transfers.map (fun transfer => transfer.resultRule.target) ==
+      claim.target.locations &&
+    claim.transfers.all (fun transfer =>
+      transfer.checked originalBehavior candidateBehavior contract)
+
+theorem externalReturnSlotInventoryTransferHolds_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (contract : MachineImportCallContract)
+    (claim : ExternalReturnSlotInventoryTransferClaim)
+    (frame : RelationalRuntimeCallFrame) (originalState candidateState : MachineState)
+    (originalResult candidateResult : MachineState)
+    (checked : claim.checked originalBehavior candidateBehavior contract = true)
+    (sourceOffsets : claim.source.holds frame originalState.registers
+      candidateState.registers)
+    (sourceMemory : frame.memoryHolds originalState.memory candidateState.memory)
+    (originalAbi : machineCallAbiResultHolds contract
+      ((originalBehavior.eval originalState).nextMachineState originalState)
+      originalResult = true)
+    (candidateAbi : machineCallAbiResultHolds contract
+      ((candidateBehavior.eval candidateState).nextMachineState candidateState)
+      candidateResult = true)
+    (framesPreserved : frame.memoryHolds
+        ((originalBehavior.eval originalState).nextMachineState originalState).memory
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory →
+      frame.memoryHolds originalResult.memory candidateResult.memory) :
+    claim.target.holds frame originalResult.registers candidateResult.registers ∧
+      frame.memoryHolds originalResult.memory candidateResult.memory := by
+  simp only [ExternalReturnSlotInventoryTransferClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨_sourceChecked, targetChecked⟩, sourcesListed⟩, targetsExact⟩,
+      transfersChecked⟩
+  have transferResult (transfer : ExternalReturnSlotTransferClaim)
+      (member : transfer ∈ claim.transfers) :
+      transfer.resultRule.target.holds frame originalResult.registers
+          candidateResult.registers ∧
+        frame.memoryHolds originalResult.memory candidateResult.memory := by
+    have sourceMember : transfer.source ∈ claim.source.locations :=
+      List.contains_iff_mem.mp
+        (List.all_eq_true.mp sourcesListed transfer member)
+    exact externalReturnSlotTransferHolds_of_checked originalBehavior
+      candidateBehavior contract transfer frame originalState candidateState
+      originalResult candidateResult
+      (List.all_eq_true.mp transfersChecked transfer member)
+      (claim.source.holds_member frame originalState.registers candidateState.registers
+        transfer.source sourceOffsets sourceMember)
+      sourceMemory originalAbi candidateAbi framesPreserved
+  constructor
+  · refine ⟨claim.target.checked_nonempty targetChecked, ?_⟩
+    intro target targetMember
+    have mappedMember : target ∈
+        claim.transfers.map (fun transfer => transfer.resultRule.target) := by
+      rw [targetsExact]
+      exact targetMember
+    rcases List.mem_map.mp mappedMember with ⟨transfer, member, targetEqual⟩
+    simpa [targetEqual] using (transferResult transfer member).1
+  · cases transfersResult : claim.transfers with
+    | nil =>
+        have targetEmpty : claim.target.locations = [] := by
+          rw [← targetsExact, transfersResult]
+          rfl
+        exact False.elim
+          (claim.target.checked_nonempty targetChecked targetEmpty)
+    | cons transfer transfers =>
+        exact (transferResult transfer (by simp [transfersResult])).2
+
 structure ExternalJumpReturnSlotTransferClaim where
   source : ReturnSlotOffsetPair
   internalTarget : ReturnSlotOffsetPair
@@ -335,6 +414,89 @@ theorem externalJumpReturnSlotTransferHolds_of_checked
   simpa [normalizeImportReturnSlotState, RelationalBehavior.nextMachineState]
     using internalMemory
 
+structure ExternalJumpReturnSlotInventoryTransferClaim where
+  source : ReturnSlotOffsetInventory
+  target : ReturnSlotOffsetInventory
+  transfers : List ExternalJumpReturnSlotTransferClaim
+deriving Repr, DecidableEq
+
+def ExternalJumpReturnSlotInventoryTransferClaim.checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (contract : MachineImportCallContract)
+    (claim : ExternalJumpReturnSlotInventoryTransferClaim) : Bool :=
+  claim.source.checked && claim.target.checked &&
+    claim.transfers.all (fun transfer =>
+      claim.source.locations.contains transfer.source) &&
+    claim.transfers.map (fun transfer => transfer.resultRule.target) ==
+      claim.target.locations &&
+    claim.transfers.all (fun transfer =>
+      transfer.checked originalBehavior candidateBehavior contract)
+
+theorem externalJumpReturnSlotInventoryTransferHolds_of_checked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (contract : MachineImportCallContract)
+    (claim : ExternalJumpReturnSlotInventoryTransferClaim)
+    (frame : RelationalRuntimeCallFrame) (originalState candidateState : MachineState)
+    (originalResult candidateResult : MachineState)
+    (checked : claim.checked originalBehavior candidateBehavior contract = true)
+    (sourceOffsets : claim.source.holds frame originalState.registers
+      candidateState.registers)
+    (sourceMemory : frame.memoryHolds originalState.memory candidateState.memory)
+    (originalAbi : machineCallAbiResultHolds contract
+      (normalizeImportReturnSlotState
+        ((originalBehavior.eval originalState).nextMachineState originalState))
+      originalResult = true)
+    (candidateAbi : machineCallAbiResultHolds contract
+      (normalizeImportReturnSlotState
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState))
+      candidateResult = true)
+    (framesPreserved : frame.memoryHolds
+        (normalizeImportReturnSlotState
+          ((originalBehavior.eval originalState).nextMachineState originalState)).memory
+        (normalizeImportReturnSlotState
+          ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory →
+      frame.memoryHolds originalResult.memory candidateResult.memory) :
+    claim.target.holds frame originalResult.registers candidateResult.registers ∧
+      frame.memoryHolds originalResult.memory candidateResult.memory := by
+  simp only [ExternalJumpReturnSlotInventoryTransferClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨_sourceChecked, targetChecked⟩, sourcesListed⟩, targetsExact⟩,
+      transfersChecked⟩
+  have transferResult (transfer : ExternalJumpReturnSlotTransferClaim)
+      (member : transfer ∈ claim.transfers) :
+      transfer.resultRule.target.holds frame originalResult.registers
+          candidateResult.registers ∧
+        frame.memoryHolds originalResult.memory candidateResult.memory := by
+    have sourceMember : transfer.source ∈ claim.source.locations :=
+      List.contains_iff_mem.mp
+        (List.all_eq_true.mp sourcesListed transfer member)
+    exact externalJumpReturnSlotTransferHolds_of_checked originalBehavior
+      candidateBehavior contract transfer frame originalState candidateState
+      originalResult candidateResult
+      (List.all_eq_true.mp transfersChecked transfer member)
+      (claim.source.holds_member frame originalState.registers candidateState.registers
+        transfer.source sourceOffsets sourceMember)
+      sourceMemory originalAbi candidateAbi framesPreserved
+  constructor
+  · refine ⟨claim.target.checked_nonempty targetChecked, ?_⟩
+    intro target targetMember
+    have mappedMember : target ∈
+        claim.transfers.map (fun transfer => transfer.resultRule.target) := by
+      rw [targetsExact]
+      exact targetMember
+    rcases List.mem_map.mp mappedMember with ⟨transfer, member, targetEqual⟩
+    simpa [targetEqual] using (transferResult transfer member).1
+  · cases transfersResult : claim.transfers with
+    | nil =>
+        have targetEmpty : claim.target.locations = [] := by
+          rw [← targetsExact, transfersResult]
+          rfl
+        exact False.elim
+          (claim.target.checked_nonempty targetChecked targetEmpty)
+    | cons transfer transfers =>
+        exact (transferResult transfer (by simp [transfersResult])).2
+
 def MachineCallMemorySize.bytes? (arguments : List Word) :
     MachineCallMemorySize -> Option Nat
   | .fixed bytes => some bytes
@@ -344,6 +506,12 @@ def MachineCallMemorySize.bytes? (arguments : List Word) :
       | some value =>
           let bytes := value.toNat * scale
           if bytes < 2^32 then some bytes else none
+  | .product leftIndex rightIndex =>
+      match arguments[leftIndex]?, arguments[rightIndex]? with
+      | some left, some right =>
+          let bytes := left.toNat * right.toNat
+          if bytes < 2^32 then some bytes else none
+      | _, _ => none
 
 def MachineCallMemoryFootprint.range? (arguments : List Word)
     (footprint : MachineCallMemoryFootprint) : Option (Nat × Nat) :=
@@ -380,6 +548,26 @@ def machineCallMemoryEffectHolds (contract : MachineImportCallContract)
           (contract.memoryFootprints.any fun footprint =>
             footprint.access == .write && footprint.contains arguments address) = false →
           after address = before address
+  | .newDynamicRanges => False
+
+def DynamicAddressRangePair.containsAddress (candidate : Bool)
+    (range : DynamicAddressRangePair) (address : Word) : Bool :=
+  let base := range.sideBase candidate
+  base.toNat <= address.toNat && address.toNat < base.toNat + range.size
+
+def newDynamicRangeAddress (candidate : Bool) (before after : RelationalWorld)
+    (address : Word) : Bool :=
+  after.dynamicRanges.any fun range =>
+    !before.dynamicRanges.contains range && range.containsAddress candidate address
+
+def machineCallMemoryEffectHoldsWithWorld (candidate : Bool)
+    (contract : MachineImportCallContract) (arguments : List Word)
+    (beforeWorld afterWorld : RelationalWorld) (before after : Memory) : Prop :=
+  match contract.memoryEffect with
+  | .newDynamicRanges =>
+      ∀ address, newDynamicRangeAddress candidate beforeWorld afterWorld address = false →
+        after address = before address
+  | _ => machineCallMemoryEffectHolds contract arguments before after
 
 def opaqueResourcesExtend (before after : RelationalWorld) : Prop :=
   forall resource, resource ∈ before.opaqueResources ->
@@ -457,13 +645,46 @@ def machineCallResultConforms (candidate : Bool) (context : StaticProofContext)
     (result : WorldExternalResult) : Prop :=
   contract.disposition = .returns ∧
     machineCallAbiResultHolds contract event.state result.state = true ∧
-    machineCallMemoryEffectHolds contract event.arguments
-      event.state.memory result.state.memory ∧
+    machineCallMemoryEffectHoldsWithWorld candidate contract event.arguments
+      event.world result.world event.state.memory result.state.memory ∧
     machineCallWorldEffectHolds candidate context contract.worldEffect
       event.arguments event.world result.world
 
+def machineCallResultWordKind
+    (kind : MachineCallResultWordRelationKind) : DynamicWordRelationKind :=
+  match kind with
+  | .relatedWord => .relatedWord
+  | .codePointer => .codePointer
+  | .dataPointer => .dataPointer
+  | .nullableDynamicPointer => .nullableDynamicPointer
+
+def machineCallResultWordsHold (range : DynamicAddressRangePair)
+    (requiredWords : List MachineCallResultWordRelation) : Bool :=
+  requiredWords.all fun word =>
+    range.wordRelations.contains {
+      offset := word.offset
+      kind := machineCallResultWordKind word.kind
+    }
+
+def dynamicRangeBaseResultHolds (arguments : List Word)
+    (world : RelationalWorld) (size : MachineCallMemorySize)
+    (minimumSize : Nat) (requiredWords : List MachineCallResultWordRelation)
+    (nullable : Bool)
+    (original candidate : Word) : Bool :=
+  match size.bytes? arguments with
+  | none => false
+  | some allocationSize =>
+      (nullable && original == BitVec.ofNat 32 0 &&
+          candidate == BitVec.ofNat 32 0) ||
+        (minimumSize <= allocationSize &&
+          world.dynamicRanges.any fun range =>
+            original == range.originalBase && candidate == range.candidateBase &&
+              allocationSize <= range.size &&
+              machineCallResultWordsHold range requiredWords)
+
 def MachineCallResultRegisterRelation.holds (context : StaticProofContext)
-    (world : RelationalWorld) (relation : MachineCallResultRegisterRelation)
+    (world : RelationalWorld) (arguments : List Word)
+    (relation : MachineCallResultRegisterRelation)
     (original candidate : MachineState) : Bool :=
   match relation.relation with
   | .exact =>
@@ -474,12 +695,17 @@ def MachineCallResultRegisterRelation.holds (context : StaticProofContext)
         context.codeMap.entries.toList (context.relationalValueTargets world)
         (original.registers.get relation.register)
         (candidate.registers.get relation.register)
+  | .dynamicRangeBase size minimumSize requiredWords nullable =>
+      dynamicRangeBaseResultHolds arguments world size minimumSize requiredWords nullable
+        (original.registers.get relation.register)
+        (candidate.registers.get relation.register)
 
 def machineCallResultRegistersRelated (context : StaticProofContext)
     (world : RelationalWorld) (contract : MachineImportCallContract)
+    (arguments : List Word)
     (original candidate : MachineState) : Bool :=
   contract.resultRegisterRelations.all fun relation =>
-    relation.holds context world original candidate
+    relation.holds context world arguments original candidate
 
 def externalCallArgumentsRelated (context : StaticProofContext)
     (world : RelationalWorld) (original candidate : List Word) : Bool :=
@@ -519,9 +745,10 @@ def ExternalBoundaryStateRel (context : StaticProofContext)
     original.fsBase = candidate.fsBase ∧
     importRegisterRelationsHold world invariant.importRegisterRelations
       original.registers candidate.registers = true ∧
-    dynamicRegisterRangeRelationsHold world
-      invariant.dynamicRegisterRangeRelations original.registers
-      candidate.registers = true
+    activeDynamicRegisterRangeRelationsHold context world
+      invariant.dynamicRegisterRangeRelations original candidate = true ∧
+    activeDynamicStackRangeRelationsHold context world
+      invariant.dynamicStackRangeRelations original candidate = true
 
 def ExternalCallBoundaryRelated (context : StaticProofContext)
     (site : ExternalCallSiteContract) (contract : MachineImportCallContract)
@@ -555,6 +782,7 @@ def ExternalEnvironmentRefinesAt (context : StaticProofContext)
           machineCallResultConforms false context contract originalEvent originalResult ∧
           machineCallResultConforms true context contract candidateEvent candidateResult ∧
           machineCallResultRegistersRelated context originalResult.world contract
+            originalEvent.arguments
             originalResult.state candidateResult.state = true ∧
           StateRel context originalResult.world site.targetInvariant
             originalResult.state candidateResult.state ∧
@@ -1131,6 +1359,7 @@ theorem externalCallResultsRelated
       machineCallResultConforms false context contract originalEvent originalResult ∧
       machineCallResultConforms true context contract candidateEvent candidateResult ∧
       machineCallResultRegistersRelated context originalResult.world contract
+        originalEvent.arguments
         originalResult.state candidateResult.state = true ∧
       StateRel context originalResult.world site.targetInvariant
         originalResult.state candidateResult.state ∧

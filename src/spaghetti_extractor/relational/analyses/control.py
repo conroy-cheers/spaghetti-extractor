@@ -1739,7 +1739,7 @@ def _dynamic_range_indirect_call_candidates(
             if {
                 "offset": required_offset,
                 "kind": "codePointer",
-            } not in relation.get("required_words", []):
+            } not in relation.get("active_words", []):
                 continue
             matches.append(relation)
         if len(matches) != 1:
@@ -1765,13 +1765,14 @@ def _immutable_image_u32(binary: StageABinary, absolute: int) -> int | None:
     if absolute < binary.image_base:
         return None
     rva = absolute - binary.image_base
-    section = next((
-        section for section in binary.sections
-        if not section.writable
+    in_headers = rva + 4 <= binary.size_of_headers
+    in_immutable_section = any(
+        not section.writable
         and section.rva_start <= rva
         and rva + 4 <= section.rva_end
-    ), None)
-    if section is None:
+        for section in binary.sections
+    )
+    if not in_headers and not in_immutable_section:
         return None
     data = binary.pe.get_data(rva, 4)
     if len(data) != 4:

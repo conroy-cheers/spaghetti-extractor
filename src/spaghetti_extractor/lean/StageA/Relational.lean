@@ -228,6 +228,27 @@ def codeTargetAddressPairMatches (context : StaticProofContext) (targetId : Nat)
         codeAddressMatches context.candidatePe.imageBase target.candidateRva
           target.candidateAliases candidate
 
+theorem codeTargetIdAddresses_codePointerRelated
+    (context : StaticProofContext) (targetId : Nat) (original candidate : Word)
+    (matchEvidence : codeTargetAddressPairMatches context targetId original candidate = true) :
+    codePointerRelated context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList original candidate = true := by
+  unfold codeTargetAddressPairMatches at matchEvidence
+  cases targetResult : context.codeMap.get? targetId with
+  | none => simp [targetResult] at matchEvidence
+  | some target =>
+      simp only [targetResult, Bool.and_eq_true] at matchEvidence
+      have targetArrayMember : target ∈ context.codeMap.entries := by
+        have indexed := Array.getElem?_eq_some_iff.mp targetResult
+        rcases indexed with ⟨inside, indexed⟩
+        have member := Array.getElem_mem inside
+        rw [indexed] at member
+        exact member
+      have targetMember : target ∈ context.codeMap.entries.toList :=
+        Array.mem_def.mp targetArrayMember
+      simp only [codePointerRelated, List.any_eq_true]
+      exact ⟨target, targetMember, by simp [matchEvidence.1, matchEvidence.2]⟩
+
 theorem codeTargetIdAddresses_wordRelated
     (context : StaticProofContext) (world : RelationalWorld)
     (targetId : Nat) (original candidate : Word)
@@ -252,6 +273,30 @@ def dataTargetAddressPairMatches (context : StaticProofContext) (targetId : Nat)
   | some target =>
       original == BitVec.ofNat 32 target.originalValue &&
         candidate == BitVec.ofNat 32 target.candidateValue
+
+theorem dataTargetIdAddresses_mappedValueRelated
+    (context : StaticProofContext) (world : RelationalWorld)
+    (targetId : Nat) (original candidate : Word)
+    (matchEvidence : dataTargetAddressPairMatches context targetId original candidate = true) :
+    mappedValueRelated (context.relationalValueTargets world) original candidate = true := by
+  unfold dataTargetAddressPairMatches at matchEvidence
+  cases targetResult : context.dataMap.get? targetId with
+  | none => simp [targetResult] at matchEvidence
+  | some target =>
+      simp only [targetResult, Bool.and_eq_true, beq_iff_eq] at matchEvidence
+      have targetArrayMember : target ∈ context.dataMap.entries := by
+        have indexed := Array.getElem?_eq_some_iff.mp targetResult
+        rcases indexed with ⟨inside, indexed⟩
+        have member := Array.getElem_mem inside
+        rw [indexed] at member
+        exact member
+      have targetMember : target ∈ context.dataMap.entries.toList :=
+        Array.mem_def.mp targetArrayMember
+      simp only [StaticProofContext.relationalValueTargets, mappedValueRelated,
+        List.any_eq_true]
+      refine ⟨target, List.mem_append_left _ targetMember, ?_⟩
+      by_cases zero : target.mappedSize = 0 <;>
+        simp [zero, matchEvidence.1, matchEvidence.2]
 
 theorem dataTargetIdAddresses_wordRelated
     (context : StaticProofContext) (world : RelationalWorld)
@@ -291,14 +336,19 @@ def Memory.read32 (memory : Memory) (address : Word) : Word :=
   let b3 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 3))).shiftLeft 24
   b0 ||| b1 ||| b2 ||| b3
 
-def DynamicWordRelation.holds (context : StaticProofContext)
-    (world : RelationalWorld) (range : DynamicAddressRangePair)
-    (relation : DynamicWordRelation) (original candidate : Memory) : Bool :=
-  let originalWord := Memory.read32 original
-    (range.originalBase + BitVec.ofNat 32 relation.offset)
-  let candidateWord := Memory.read32 candidate
-    (range.candidateBase + BitVec.ofNat 32 relation.offset)
-  match relation.kind with
+@[simp] theorem Memory.read32_extractLsb8 (memory : Memory) (address : Word) :
+    (Memory.read32 memory address).extractLsb' 0 8 = memory address := by
+  unfold Memory.read32
+  generalize memory address = byte0
+  generalize memory (address + BitVec.ofNat 32 1) = byte1
+  generalize memory (address + BitVec.ofNat 32 2) = byte2
+  generalize memory (address + BitVec.ofNat 32 3) = byte3
+  bv_decide
+
+def DynamicWordRelationKind.valuesHold (context : StaticProofContext)
+    (world : RelationalWorld) (owner : DynamicAddressRangePair)
+    (kind : DynamicWordRelationKind) (originalWord candidateWord : Word) : Bool :=
+  match kind with
   | .relatedWord =>
       wordRelated context.originalPe.imageBase context.candidatePe.imageBase
         context.codeMap.entries.toList (context.relationalValueTargets world)
@@ -317,7 +367,16 @@ def DynamicWordRelation.holds (context : StaticProofContext)
           (candidateWord == target.candidateBase) &&
           (!(target.originalBase == BitVec.ofNat 32 0)) &&
           (!(target.candidateBase == BitVec.ofNat 32 0)) &&
-          range.wordRelations.all target.wordRelations.contains
+          owner.wordRelations.all target.wordRelations.contains
+
+def DynamicWordRelation.holds (context : StaticProofContext)
+    (world : RelationalWorld) (range : DynamicAddressRangePair)
+    (relation : DynamicWordRelation) (original candidate : Memory) : Bool :=
+  let originalWord := Memory.read32 original
+    (range.originalBase + BitVec.ofNat 32 relation.offset)
+  let candidateWord := Memory.read32 candidate
+    (range.candidateBase + BitVec.ofNat 32 relation.offset)
+  relation.kind.valuesHold context world range originalWord candidateWord
 
 def DynamicAddressRangePair.wordsHold (context : StaticProofContext)
     (world : RelationalWorld) (range : DynamicAddressRangePair)
@@ -348,10 +407,35 @@ def StaticDynamicPointerSlotsMemoryHold (context : StaticProofContext)
   ∀ slot, slot ∈ context.staticDynamicPointerSlots →
     slot.memoryHolds world original candidate = true
 
-def RelationalDynamicMemoryHold (context : StaticProofContext)
+def StaticWordRelationKind.holds (context : StaticProofContext)
+    (world : RelationalWorld) (relation : StaticWordRelationKind)
+    (originalWord candidateWord : Word) : Bool :=
+  match relation with
+  | .exact => originalWord == candidateWord
+  | .relatedWord =>
+      wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList (context.relationalValueTargets world)
+        originalWord candidateWord
+  | .codePointer =>
+      (originalWord == BitVec.ofNat 32 0 && candidateWord == BitVec.ofNat 32 0) ||
+        codePointerRelated context.originalPe.imageBase context.candidatePe.imageBase
+          context.codeMap.entries.toList originalWord candidateWord
+  | .dataPointer =>
+      (originalWord == BitVec.ofNat 32 0 && candidateWord == BitVec.ofNat 32 0) ||
+        mappedValueRelated (context.relationalValueTargets world)
+          originalWord candidateWord
+
+def StaticWordRelationSlotPair.memoryHolds (context : StaticProofContext)
+    (world : RelationalWorld) (slot : StaticWordRelationSlotPair)
+    (original candidate : Memory) : Bool :=
+  slot.relation.holds context world
+    (Memory.read32 original slot.originalAddress)
+    (Memory.read32 candidate slot.candidateAddress)
+
+def StaticWordRelationSlotsMemoryHold (context : StaticProofContext)
     (world : RelationalWorld) (original candidate : Memory) : Prop :=
-  DynamicRangesMemoryHold context world original candidate ∧
-    StaticDynamicPointerSlotsMemoryHold context world original candidate
+  ∀ slot, slot ∈ context.staticWordRelationSlots →
+    slot.memoryHolds context world original candidate = true
 
 def ImmutableImageWordMemory (pe : PE32) (memory : Memory) : Prop :=
   ∀ absolute expected,
@@ -401,10 +485,44 @@ structure PairedStackWordLocation (world : RelationalWorld) where
   candidateAddressExact :
     candidateAddress = range.candidateBase + BitVec.ofNat 32 offset
 
+structure PairedStaticWordLocation (context : StaticProofContext) where
+  slot : StaticWordRelationSlotPair
+  slotMember : slot ∈ context.staticWordRelationSlots
+  originalAddress : Word
+  candidateAddress : Word
+  originalAddressExact : originalAddress = slot.originalAddress
+  candidateAddressExact : candidateAddress = slot.candidateAddress
+
+structure PairedStaticDynamicPointerLocation (context : StaticProofContext) where
+  slot : StaticDynamicPointerSlotPair
+  slotMember : slot ∈ context.staticDynamicPointerSlots
+  originalAddress : Word
+  candidateAddress : Word
+  originalAddressExact : originalAddress = slot.originalAddress
+  candidateAddressExact : candidateAddress = slot.candidateAddress
+
+structure PairedDynamicWordLocation (world : RelationalWorld) where
+  range : DynamicAddressRangePair
+  relation : DynamicWordRelation
+  rangeMember : range ∈ world.dynamicRanges
+  relationMember : relation ∈ range.wordRelations
+  originalAddress : Word
+  candidateAddress : Word
+  originalAddressExact :
+    originalAddress = range.originalBase + BitVec.ofNat 32 relation.offset
+  candidateAddressExact :
+    candidateAddress = range.candidateBase + BitVec.ofNat 32 relation.offset
+
 def Write32AvoidsWord (wordAddress writeAddress : Word) : Prop :=
   ∀ wordByte, wordByte < 4 → ∀ writeByte, writeByte < 4 →
     wordAddress + BitVec.ofNat 32 wordByte ≠
       writeAddress + BitVec.ofNat 32 writeByte
+
+theorem Write32AvoidsWord.symm {left right : Word}
+    (avoids : Write32AvoidsWord left right) :
+    Write32AvoidsWord right left := by
+  intro rightByte rightByteBefore leftByte leftByteBefore overlap
+  exact avoids leftByte leftByteBefore rightByte rightByteBefore overlap.symm
 
 def WritesAvoidWord (wordAddress : Word) (writes : List (Word × Word)) : Prop :=
   ∀ write, write ∈ writes → Write32AvoidsWord wordAddress write.1
@@ -702,11 +820,23 @@ def stackByteCoveredOriginal (world : RelationalWorld) (address : Word) : Bool :
 def stackByteCoveredCandidate (world : RelationalWorld) (address : Word) : Bool :=
   stackByteCoveredOn true world address
 
+def dynamicByteCoveredOn (candidate : Bool) (world : RelationalWorld)
+    (address : Word) : Bool :=
+  world.dynamicRanges.any fun range =>
+    let base := range.sideBase candidate
+    base.toNat <= address.toNat && address.toNat < base.toNat + range.size
+
+def dynamicByteCoveredOriginal (world : RelationalWorld) (address : Word) : Bool :=
+  dynamicByteCoveredOn false world address
+
+def dynamicByteCoveredCandidate (world : RelationalWorld) (address : Word) : Bool :=
+  dynamicByteCoveredOn true world address
+
 theorem DynamicAddressRangePair.sideBase_noWrap_of_disjoint
     (context : StaticProofContext) (candidate : Bool)
     (range : DynamicAddressRangePair)
     (valid : range.disjointFromImages context = true) :
-    (range.sideBase candidate).toNat + range.size <= 2 ^ 32 := by
+    (range.sideBase candidate).toNat + range.size < 2 ^ 32 := by
   simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
     Bool.or_eq_true, decide_eq_true_eq] at valid
   rcases valid with
@@ -739,6 +869,34 @@ theorem stackByteCoveredOn_of_range_word_byte
       Nat.mod_eq_of_lt (by omega :
         (range.sideBase candidate).toNat + offset + byte < 2 ^ 32)]
   simp only [stackByteCoveredOn, List.any_eq_true]
+  refine ⟨range, rangeMember, ?_⟩
+  simp only [addressNat, Bool.and_eq_true, decide_eq_true_eq]
+  omega
+
+theorem dynamicByteCoveredOn_of_range_word_byte
+    (context : StaticProofContext) (candidate : Bool)
+    (world : RelationalWorld) (range : DynamicAddressRangePair)
+    (rangeMember : range ∈ world.dynamicRanges)
+    (rangeValid : range.disjointFromImages context = true)
+    (offset byte : Nat) (inside : offset + 4 <= range.size)
+    (byteBefore : byte < 4) :
+    dynamicByteCoveredOn candidate world
+      (range.sideBase candidate + BitVec.ofNat 32 offset + BitVec.ofNat 32 byte) =
+        true := by
+  have noWrap := DynamicAddressRangePair.sideBase_noWrap_of_disjoint
+    context candidate range rangeValid
+  have addressNat :
+      (range.sideBase candidate + BitVec.ofNat 32 offset +
+          BitVec.ofNat 32 byte).toNat =
+        (range.sideBase candidate).toNat + offset + byte := by
+    simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt (by omega : offset < 2 ^ 32),
+      Nat.mod_eq_of_lt (by omega : byte < 2 ^ 32),
+      Nat.mod_eq_of_lt (by omega :
+        (range.sideBase candidate).toNat + offset < 2 ^ 32),
+      Nat.mod_eq_of_lt (by omega :
+        (range.sideBase candidate).toNat + offset + byte < 2 ^ 32)]
+  simp only [dynamicByteCoveredOn, List.any_eq_true]
   refine ⟨range, rangeMember, ?_⟩
   simp only [addressNat, Bool.and_eq_true, decide_eq_true_eq]
   omega
@@ -777,6 +935,40 @@ theorem Memory.write32_apply_of_stackByteUncovered
       BitVec.ofNat 32 3 := by simpa [writeAddress] using h3
   simp [Memory.write32, h0', h1', h2', h3']
 
+theorem Memory.write32_apply_of_dynamicByteUncovered
+    (context : StaticProofContext) (candidate : Bool)
+    (world : RelationalWorld) (range : DynamicAddressRangePair)
+    (rangeMember : range ∈ world.dynamicRanges)
+    (rangeValid : range.disjointFromImages context = true)
+    (offset : Nat) (inside : offset + 4 <= range.size)
+    (memory : Memory) (value query : Word)
+    (uncovered : dynamicByteCoveredOn candidate world query = false) :
+    memory.write32 (range.sideBase candidate + BitVec.ofNat 32 offset) value query =
+      memory query := by
+  let writeAddress := range.sideBase candidate + BitVec.ofNat 32 offset
+  have avoids (byte : Nat) (byteBefore : byte < 4) :
+      query ≠ writeAddress + BitVec.ofNat 32 byte := by
+    intro overlap
+    have covered := dynamicByteCoveredOn_of_range_word_byte context candidate world
+      range rangeMember rangeValid offset byte inside byteBefore
+    change dynamicByteCoveredOn candidate world
+      (writeAddress + BitVec.ofNat 32 byte) = true at covered
+    rw [← overlap, uncovered] at covered
+    contradiction
+  have h0 := avoids 0 (by omega)
+  have h1 := avoids 1 (by omega)
+  have h2 := avoids 2 (by omega)
+  have h3 := avoids 3 (by omega)
+  have h0' : query ≠ range.sideBase candidate + BitVec.ofNat 32 offset := by
+    simpa [writeAddress] using h0
+  have h1' : query ≠ range.sideBase candidate + BitVec.ofNat 32 offset +
+      BitVec.ofNat 32 1 := by simpa [writeAddress] using h1
+  have h2' : query ≠ range.sideBase candidate + BitVec.ofNat 32 offset +
+      BitVec.ofNat 32 2 := by simpa [writeAddress] using h2
+  have h3' : query ≠ range.sideBase candidate + BitVec.ofNat 32 offset +
+      BitVec.ofNat 32 3 := by simpa [writeAddress] using h3
+  simp [Memory.write32, h0', h1', h2', h3']
+
 theorem write32AvoidsWord_of_stackBytesUncovered
     (context : StaticProofContext) (candidate : Bool)
     (world : RelationalWorld) (range : DynamicAddressRangePair)
@@ -791,6 +983,24 @@ theorem write32AvoidsWord_of_stackBytesUncovered
       (range.sideBase candidate + BitVec.ofNat 32 offset) := by
   intro wordByte wordByteBefore writeByte writeByteBefore overlap
   have covered := stackByteCoveredOn_of_range_word_byte context candidate world
+    range rangeMember rangeValid offset writeByte inside writeByteBefore
+  rw [← overlap, uncovered wordByte wordByteBefore] at covered
+  contradiction
+
+theorem write32AvoidsWord_of_dynamicBytesUncovered
+    (context : StaticProofContext) (candidate : Bool)
+    (world : RelationalWorld) (range : DynamicAddressRangePair)
+    (rangeMember : range ∈ world.dynamicRanges)
+    (rangeValid : range.disjointFromImages context = true)
+    (offset : Nat) (inside : offset + 4 <= range.size)
+    (wordAddress : Word)
+    (uncovered : ∀ byte, byte < 4 →
+      dynamicByteCoveredOn candidate world
+        (wordAddress + BitVec.ofNat 32 byte) = false) :
+    Write32AvoidsWord wordAddress
+      (range.sideBase candidate + BitVec.ofNat 32 offset) := by
+  intro wordByte wordByteBefore writeByte writeByteBefore overlap
+  have covered := dynamicByteCoveredOn_of_range_word_byte context candidate world
     range rangeMember rangeValid offset writeByte inside writeByteBefore
   rw [← overlap, uncovered wordByte wordByteBefore] at covered
   contradiction
@@ -905,6 +1115,96 @@ theorem stackRangeWordWriteAvoidsOtherWord
       omega
     omega
   · simp only [dynamicAddressRangesDisjointOn, List.all_eq_true] at rangesDisjoint
+    have row := rangesDisjoint writeRange writeRangeMember queryRange queryRangeMember
+    simp only [Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at row
+    rcases row with idsEqual | separated
+    · exact (sameId idsEqual.symm).elim
+    · have separated' :
+          (writeRange.sideBase candidate).toNat + writeRange.size <=
+              (queryRange.sideBase candidate).toNat ∨
+            (queryRange.sideBase candidate).toNat + queryRange.size <=
+              (writeRange.sideBase candidate).toNat := by
+        simpa [DynamicAddressRangePair.sideBase] using separated
+      omega
+
+theorem dynamicRangeWordWriteAvoidsOtherWord
+    (context : StaticProofContext) (candidate : Bool)
+    (world : RelationalWorld)
+    (rangesValid : world.dynamicRangesValid context = true)
+    (writeRange queryRange : DynamicAddressRangePair)
+    (writeRangeMember : writeRange ∈ world.dynamicRanges)
+    (queryRangeMember : queryRange ∈ world.dynamicRanges)
+    (writeRelation queryRelation : DynamicWordRelation)
+    (writeRelationMember : writeRelation ∈ writeRange.wordRelations)
+    (queryRelationMember : queryRelation ∈ queryRange.wordRelations)
+    (different : queryRange ≠ writeRange ∨ queryRelation ≠ writeRelation) :
+    Write32AvoidsWord
+      (queryRange.sideBase candidate + BitVec.ofNat 32 queryRelation.offset)
+      (writeRange.sideBase candidate + BitVec.ofNat 32 writeRelation.offset) := by
+  simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+    List.all_eq_true] at rangesValid
+  have idsUnique := rangesValid.1.1.1.1.1.1
+  have writeValid := rangesValid.1.1.1.1.1.2 writeRange writeRangeMember
+  have queryValid := rangesValid.1.1.1.1.1.2 queryRange queryRangeMember
+  have writeWordsValid := rangesValid.1.1.1.1.2 writeRange writeRangeMember
+  have queryWordsValid := rangesValid.1.1.1.1.2 queryRange queryRangeMember
+  simp only [DynamicAddressRangePair.wordRelationsValid, List.all_eq_true]
+    at writeWordsValid queryWordsValid
+  have writeRelationValid := writeWordsValid writeRelation writeRelationMember
+  have queryRelationValid := queryWordsValid queryRelation queryRelationMember
+  simp only [DynamicAddressRangePair.wordRelationsValid, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at writeRelationValid queryRelationValid
+  have writeInside := writeRelationValid.1
+  have queryInside := queryRelationValid.1
+  have writeNoWrap := DynamicAddressRangePair.sideBase_noWrap_of_disjoint
+    context candidate writeRange writeValid
+  have queryNoWrap := DynamicAddressRangePair.sideBase_noWrap_of_disjoint
+    context candidate queryRange queryValid
+  have rangesDisjoint :
+      dynamicAddressRangesDisjointOn candidate world.dynamicRanges = true := by
+    cases candidate
+    · exact rangesValid.1.1.1.2
+    · exact rangesValid.1.1.2
+  intro queryByte queryByteBefore writeByte writeByteBefore overlap
+  have overlapNat := congrArg BitVec.toNat overlap
+  have writeOffsetBefore : writeRelation.offset < 2 ^ 32 := by omega
+  have queryOffsetBefore : queryRelation.offset < 2 ^ 32 := by omega
+  have writeByteSmall : writeByte < 2 ^ 32 := by omega
+  have queryByteSmall : queryByte < 2 ^ 32 := by omega
+  have writeBaseOffsetBefore :
+      (writeRange.sideBase candidate).toNat + writeRelation.offset < 2 ^ 32 := by
+    omega
+  have queryBaseOffsetBefore :
+      (queryRange.sideBase candidate).toNat + queryRelation.offset < 2 ^ 32 := by
+    omega
+  have writeAddressBefore :
+      (writeRange.sideBase candidate).toNat + writeRelation.offset + writeByte <
+        2 ^ 32 := by omega
+  have queryAddressBefore :
+      (queryRange.sideBase candidate).toNat + queryRelation.offset + queryByte <
+        2 ^ 32 := by omega
+  simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+    Nat.mod_eq_of_lt writeOffsetBefore,
+    Nat.mod_eq_of_lt queryOffsetBefore,
+    Nat.mod_eq_of_lt writeByteSmall,
+    Nat.mod_eq_of_lt queryByteSmall,
+    Nat.mod_eq_of_lt writeBaseOffsetBefore,
+    Nat.mod_eq_of_lt queryBaseOffsetBefore,
+    Nat.mod_eq_of_lt writeAddressBefore,
+    Nat.mod_eq_of_lt queryAddressBefore] at overlapNat
+  by_cases sameId : queryRange.id = writeRange.id
+  · have sameRange := dynamicAddressRange_eq_of_same_id world.dynamicRanges
+      idsUnique queryRange writeRange queryRangeMember writeRangeMember sameId
+    subst queryRange
+    simp only [ne_eq, not_true_eq_false, false_or] at different
+    have relationRow := queryRelationValid.2 writeRelation writeRelationMember
+    simp only [Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at relationRow
+    rcases relationRow with (sameRelation | queryBefore) | writeBefore
+    · exact (different sameRelation.symm).elim
+    · omega
+    · omega
+  · simp only [dynamicAddressRangesDisjointOn, List.all_eq_true]
+      at rangesDisjoint
     have row := rangesDisjoint writeRange writeRangeMember queryRange queryRangeMember
     simp only [Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at row
     rcases row with idsEqual | separated
@@ -1039,7 +1339,7 @@ theorem StackRangesMemoryHold.afterPairedWordWrite
 theorem stackRangeWordWriteAvoidsImageWord
     (rangeBase : Word) (rangeSize imageBase imageSize : Nat)
     (offset : Nat) (inside : offset + 4 <= rangeSize)
-    (rangeNoWrap : rangeBase.toNat + rangeSize <= 2 ^ 32)
+    (rangeNoWrap : rangeBase.toNat + rangeSize < 2 ^ 32)
     (rangeDisjoint : rangeBase.toNat + rangeSize <= imageBase ∨
       imageBase + imageSize <= rangeBase.toNat)
     (wordAddress : Word)
@@ -1069,7 +1369,7 @@ theorem stackRangeWordWriteAvoidsImageWord
 theorem ImmutableImageWordMemory.afterStackWordWrite
     (pe : PE32) (memory : Memory)
     (rangeBase : Word) (rangeSize offset : Nat) (value : Word)
-    (rangeNoWrap : rangeBase.toNat + rangeSize <= 2 ^ 32)
+    (rangeNoWrap : rangeBase.toNat + rangeSize < 2 ^ 32)
     (rangeDisjoint : rangeBase.toNat + rangeSize <= pe.imageBase ∨
       pe.imageBase + pe.sizeOfImage <= rangeBase.toNat)
     (inside : offset + 4 <= rangeSize)
@@ -1112,10 +1412,10 @@ theorem ImportAddressPair.candidateIatWordBounds
   split at valid <;> simp_all
   omega
 
-theorem ImportAddressesMemoryHold.afterPairedStackWordWrite
+theorem ImportAddressesMemoryHold.afterPairedRangeWordWrite
     (context : StaticProofContext) (world : RelationalWorld)
     (original candidate : Memory)
-    (range : DynamicAddressRangePair) (rangeMember : range ∈ world.stackRanges)
+    (range : DynamicAddressRangePair)
     (rangeValid : range.disjointFromImages context = true)
     (offset : Nat) (inside : offset + 4 <= range.size)
     (originalValue candidateValue : Word)
@@ -1169,6 +1469,38 @@ theorem ImportAddressesMemoryHold.afterPairedStackWordWrite
   rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
     Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
   exact prior
+
+theorem ImportAddressesMemoryHold.afterPairedStackWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (range : DynamicAddressRangePair) (_rangeMember : range ∈ world.stackRanges)
+    (rangeValid : range.disjointFromImages context = true)
+    (offset : Nat) (inside : offset + 4 <= range.size)
+    (originalValue candidateValue : Word)
+    (importsStatic : world.importAddressesStaticValid context = true)
+    (importsMemory : ImportAddressesMemoryHold context world original candidate) :
+    ImportAddressesMemoryHold context world
+      (original.write32 (range.originalBase + BitVec.ofNat 32 offset) originalValue)
+      (candidate.write32 (range.candidateBase + BitVec.ofNat 32 offset)
+        candidateValue) :=
+  ImportAddressesMemoryHold.afterPairedRangeWordWrite context world original candidate
+    range rangeValid offset inside originalValue candidateValue importsStatic importsMemory
+
+theorem ImportAddressesMemoryHold.afterPairedDynamicWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (range : DynamicAddressRangePair) (_rangeMember : range ∈ world.dynamicRanges)
+    (rangeValid : range.disjointFromImages context = true)
+    (offset : Nat) (inside : offset + 4 <= range.size)
+    (originalValue candidateValue : Word)
+    (importsStatic : world.importAddressesStaticValid context = true)
+    (importsMemory : ImportAddressesMemoryHold context world original candidate) :
+    ImportAddressesMemoryHold context world
+      (original.write32 (range.originalBase + BitVec.ofNat 32 offset) originalValue)
+      (candidate.write32 (range.candidateBase + BitVec.ofNat 32 offset)
+        candidateValue) :=
+  ImportAddressesMemoryHold.afterPairedRangeWordWrite context world original candidate
+    range rangeValid offset inside originalValue candidateValue importsStatic importsMemory
 
 theorem stackRangeWordWriteAvoidsDynamicRangeWord
     (context : StaticProofContext) (candidateSide : Bool)
@@ -1230,6 +1562,51 @@ theorem stackRangeWordWriteAvoidsDynamicRangeWord
   · simp [dynamicAddressNat]
     omega
 
+theorem StackRangesMemoryHold.afterPairedDynamicWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (stackRangesValid : world.stackRangesValid context = true)
+    (dynamicRangesValid : world.dynamicRangesValid context = true)
+    (writeRange : DynamicAddressRangePair)
+    (writeRangeMember : writeRange ∈ world.dynamicRanges)
+    (writeRelation : DynamicWordRelation)
+    (writeRelationMember : writeRelation ∈ writeRange.wordRelations)
+    (originalValue candidateValue : Word)
+    (related : StackRangesMemoryHold context world original candidate) :
+    StackRangesMemoryHold context world
+      (original.write32
+        (writeRange.originalBase + BitVec.ofNat 32 writeRelation.offset)
+        originalValue)
+      (candidate.write32
+        (writeRange.candidateBase + BitVec.ofNat 32 writeRelation.offset)
+        candidateValue) := by
+  have dynamicRangesShape := dynamicRangesValid
+  simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+    List.all_eq_true] at dynamicRangesShape
+  have writeRangeValid : writeRange.disjointFromImages context = true := by
+    exact dynamicRangesShape.1.1.1.1.1.2 writeRange writeRangeMember
+  have writeRelationsValid : writeRange.wordRelationsValid = true := by
+    exact dynamicRangesShape.1.1.1.1.2 writeRange writeRangeMember
+  simp only [DynamicAddressRangePair.wordRelationsValid, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at writeRelationsValid
+  have writeInside := (writeRelationsValid writeRelation writeRelationMember).1
+  intro stackRange stackRangeMember stackOffset stackInside stackAligned
+  have stackRangeValid : stackRange.disjointFromImages context = true := by
+    simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at stackRangesValid
+    exact (stackRangesValid.1.1.2 stackRange stackRangeMember).1.1.1
+  have originalAvoids := (stackRangeWordWriteAvoidsDynamicRangeWord context false
+    world dynamicRangesValid stackRange writeRange stackRangeMember writeRangeMember
+    stackRangeValid stackOffset writeRelation.offset stackInside writeInside).symm
+  have candidateAvoids := (stackRangeWordWriteAvoidsDynamicRangeWord context true
+    world dynamicRangesValid stackRange writeRange stackRangeMember writeRangeMember
+    stackRangeValid stackOffset writeRelation.offset stackInside writeInside).symm
+  rw [Memory.read32_write32_of_avoids _ _ _ _
+      (by simpa [DynamicAddressRangePair.sideBase] using originalAvoids),
+    Memory.read32_write32_of_avoids _ _ _ _
+      (by simpa [DynamicAddressRangePair.sideBase] using candidateAvoids)]
+  exact related stackRange stackRangeMember stackOffset stackInside stackAligned
+
 theorem DynamicRangesMemoryHold.afterPairedStackWordWrite
     (context : StaticProofContext) (world : RelationalWorld)
     (original candidate : Memory)
@@ -1257,7 +1634,7 @@ theorem DynamicRangesMemoryHold.afterPairedStackWordWrite
   intro relation relationMember
   have relationValid := wordRelationsValid relation relationMember
   simp only [Bool.and_eq_true, decide_eq_true_eq] at relationValid
-  have relationInside := relationValid.1.1
+  have relationInside := relationValid.1
   have originalAvoids := stackRangeWordWriteAvoidsDynamicRangeWord context false
     world dynamicValid stackRange dynamicRange stackMember dynamicMember stackValid
     stackOffset relation.offset stackInside relationInside
@@ -1278,6 +1655,89 @@ theorem DynamicRangesMemoryHold.afterPairedStackWordWrite
     Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids']
   exact priorRelation
 
+theorem DynamicRangesMemoryHold.afterPairedDynamicWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (rangesValid : world.dynamicRangesValid context = true)
+    (writeRange : DynamicAddressRangePair)
+    (writeRangeMember : writeRange ∈ world.dynamicRanges)
+    (writeRelation : DynamicWordRelation)
+    (writeRelationMember : writeRelation ∈ writeRange.wordRelations)
+    (originalValue candidateValue : Word)
+    (valuesRelated : writeRelation.kind.valuesHold context world writeRange
+      originalValue candidateValue = true)
+    (related : DynamicRangesMemoryHold context world original candidate) :
+    DynamicRangesMemoryHold context world
+      (original.write32
+        (writeRange.originalBase + BitVec.ofNat 32 writeRelation.offset)
+        originalValue)
+      (candidate.write32
+        (writeRange.candidateBase + BitVec.ofNat 32 writeRelation.offset)
+        candidateValue) := by
+  have writeRangeValid : writeRange.disjointFromImages context = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.1.2 writeRange writeRangeMember
+  have writeRelationsValid : writeRange.wordRelationsValid = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.2 writeRange writeRangeMember
+  simp only [DynamicAddressRangePair.wordRelationsValid, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at writeRelationsValid
+  have writeInside := (writeRelationsValid writeRelation writeRelationMember).1
+  have originalFits := DynamicAddressRangePair.wordAddress_fits context false
+    writeRange writeRangeValid writeRelation.offset writeInside
+  have candidateFits := DynamicAddressRangePair.wordAddress_fits context true
+    writeRange writeRangeValid writeRelation.offset writeInside
+  have originalFits' :
+      (writeRange.originalBase + BitVec.ofNat 32 writeRelation.offset).toNat + 4 <=
+        2 ^ 32 := by
+    simpa [DynamicAddressRangePair.sideBase] using originalFits
+  have candidateFits' :
+      (writeRange.candidateBase + BitVec.ofNat 32 writeRelation.offset).toNat + 4 <=
+        2 ^ 32 := by
+    simpa [DynamicAddressRangePair.sideBase] using candidateFits
+  intro queryRange queryRangeMember
+  have prior := related queryRange queryRangeMember
+  simp only [DynamicAddressRangePair.wordsHold, List.all_eq_true] at prior ⊢
+  intro queryRelation queryRelationMember
+  by_cases sameRange : queryRange = writeRange
+  · subst queryRange
+    by_cases sameRelation : queryRelation = writeRelation
+    · subst queryRelation
+      simp only [DynamicWordRelation.holds]
+      rw [Memory.read32_write32_same_of_fits _ _ _ originalFits',
+        Memory.read32_write32_same_of_fits _ _ _ candidateFits']
+      exact valuesRelated
+    · have originalAvoids := dynamicRangeWordWriteAvoidsOtherWord context false
+        world rangesValid writeRange writeRange writeRangeMember writeRangeMember
+        writeRelation queryRelation writeRelationMember queryRelationMember
+        (Or.inr sameRelation)
+      have candidateAvoids := dynamicRangeWordWriteAvoidsOtherWord context true
+        world rangesValid writeRange writeRange writeRangeMember writeRangeMember
+        writeRelation queryRelation writeRelationMember queryRelationMember
+        (Or.inr sameRelation)
+      unfold DynamicWordRelation.holds
+      rw [Memory.read32_write32_of_avoids _ _ _ _
+          (by simpa [DynamicAddressRangePair.sideBase] using originalAvoids),
+        Memory.read32_write32_of_avoids _ _ _ _
+          (by simpa [DynamicAddressRangePair.sideBase] using candidateAvoids)]
+      exact prior queryRelation queryRelationMember
+  · have originalAvoids := dynamicRangeWordWriteAvoidsOtherWord context false
+      world rangesValid writeRange queryRange writeRangeMember queryRangeMember
+      writeRelation queryRelation writeRelationMember queryRelationMember
+      (Or.inl sameRange)
+    have candidateAvoids := dynamicRangeWordWriteAvoidsOtherWord context true
+      world rangesValid writeRange queryRange writeRangeMember queryRangeMember
+      writeRelation queryRelation writeRelationMember queryRelationMember
+      (Or.inl sameRange)
+    unfold DynamicWordRelation.holds
+    rw [Memory.read32_write32_of_avoids _ _ _ _
+        (by simpa [DynamicAddressRangePair.sideBase] using originalAvoids),
+      Memory.read32_write32_of_avoids _ _ _ _
+        (by simpa [DynamicAddressRangePair.sideBase] using candidateAvoids)]
+    exact prior queryRelation queryRelationMember
+
 theorem writableStaticWordInPe_bounds (pe : PE32) (address : Word)
     (writable : writableStaticWordInPe pe address = true) :
     pe.imageBase <= address.toNat ∧
@@ -1286,6 +1746,707 @@ theorem writableStaticWordInPe_bounds (pe : PE32) (address : Word)
   simp only [writableStaticWordInPe, Bool.and_eq_true,
     decide_eq_true_eq] at writable
   exact ⟨writable.1.1.1, writable.1.2, writable.1.1.2⟩
+
+theorem write32AvoidsWord_of_nat_disjoint
+    (wordAddress writeAddress : Word)
+    (wordFits : wordAddress.toNat + 4 <= 2 ^ 32)
+    (writeFits : writeAddress.toNat + 4 <= 2 ^ 32)
+    (disjoint : wordAddress.toNat + 4 <= writeAddress.toNat ∨
+      writeAddress.toNat + 4 <= wordAddress.toNat) :
+    Write32AvoidsWord wordAddress writeAddress := by
+  intro wordByte wordByteBefore writeByte writeByteBefore overlap
+  have overlapNat := congrArg BitVec.toNat overlap
+  have wordByteSmall : wordByte < 2 ^ 32 := by omega
+  have writeByteSmall : writeByte < 2 ^ 32 := by omega
+  have wordAddressBefore : wordAddress.toNat + wordByte < 2 ^ 32 := by omega
+  have writeAddressBefore : writeAddress.toNat + writeByte < 2 ^ 32 := by omega
+  simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+    Nat.mod_eq_of_lt wordByteSmall, Nat.mod_eq_of_lt writeByteSmall,
+    Nat.mod_eq_of_lt wordAddressBefore,
+    Nat.mod_eq_of_lt writeAddressBefore] at overlapNat
+  omega
+
+theorem StaticWordRelationSlotPair.valid_of_member
+    (context : StaticProofContext) (slot : StaticWordRelationSlotPair)
+    (slotsValid : staticWordRelationSlotsValid context = true)
+    (member : slot ∈ context.staticWordRelationSlots) :
+    slot.valid context = true := by
+  simp only [staticWordRelationSlotsValid, Bool.and_eq_true,
+    List.all_eq_true] at slotsValid
+  exact slotsValid.2 slot member
+
+theorem StaticWordRelationSlotPair.originalBounds
+    (context : StaticProofContext) (slot : StaticWordRelationSlotPair)
+    (valid : slot.valid context = true) :
+    context.originalPe.imageBase <= slot.originalAddress.toNat ∧
+      slot.originalAddress.toNat + 4 <=
+        context.originalPe.imageBase + context.originalPe.sizeOfImage ∧
+      slot.originalAddress.toNat + 4 <= 2 ^ 32 := by
+  simp only [StaticWordRelationSlotPair.valid, Bool.and_eq_true] at valid
+  exact writableStaticWordInPe_bounds context.originalPe slot.originalAddress
+    valid.1.1.1.1.1.2
+
+theorem StaticWordRelationSlotPair.candidateBounds
+    (context : StaticProofContext) (slot : StaticWordRelationSlotPair)
+    (valid : slot.valid context = true) :
+    context.candidatePe.imageBase <= slot.candidateAddress.toNat ∧
+      slot.candidateAddress.toNat + 4 <=
+        context.candidatePe.imageBase + context.candidatePe.sizeOfImage ∧
+      slot.candidateAddress.toNat + 4 <= 2 ^ 32 := by
+  simp only [StaticWordRelationSlotPair.valid, Bool.and_eq_true] at valid
+  exact writableStaticWordInPe_bounds context.candidatePe slot.candidateAddress
+    valid.1.1.1.1.2
+
+theorem StaticWordRelationSlotsMemoryHold.afterPairedStaticWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (slotsValid : staticWordRelationSlotsValid context = true)
+    (writeSlot : StaticWordRelationSlotPair)
+    (writeMember : writeSlot ∈ context.staticWordRelationSlots)
+    (originalValue candidateValue : Word)
+    (valuesRelated : writeSlot.relation.holds context world
+      originalValue candidateValue = true)
+    (related : StaticWordRelationSlotsMemoryHold context world original candidate) :
+    StaticWordRelationSlotsMemoryHold context world
+      (original.write32 writeSlot.originalAddress originalValue)
+      (candidate.write32 writeSlot.candidateAddress candidateValue) := by
+  intro querySlot queryMember
+  have slotsShape := slotsValid
+  simp only [staticWordRelationSlotsValid, Bool.and_eq_true] at slotsShape
+  by_cases sameSlot : querySlot = writeSlot
+  · subst querySlot
+    have writeValid := writeSlot.valid_of_member context slotsValid writeMember
+    have originalFits := (writeSlot.originalBounds context writeValid).2.2
+    have candidateFits := (writeSlot.candidateBounds context writeValid).2.2
+    unfold StaticWordRelationSlotPair.memoryHolds
+    rw [Memory.read32_write32_same_of_fits _ _ _ originalFits,
+      Memory.read32_write32_same_of_fits _ _ _ candidateFits]
+    exact valuesRelated
+  · have unique : staticWordRelationSlotIdsUnique
+        context.staticWordRelationSlots = true := by
+      exact slotsShape.1.1.1.1.1
+    have differentId : querySlot.id ≠ writeSlot.id := by
+      intro sameId
+      exact sameSlot (staticWordRelationSlot_eq_of_same_id
+        context.staticWordRelationSlots unique querySlot writeSlot
+        queryMember writeMember sameId)
+    have separatedOriginal :
+        querySlot.originalAddress.toNat + 4 <= writeSlot.originalAddress.toNat ∨
+          writeSlot.originalAddress.toNat + 4 <=
+            querySlot.originalAddress.toNat := by
+      have disjoint : staticWordRelationSlotsDisjointOn false
+          context.staticWordRelationSlots = true := by
+        exact slotsShape.1.1.1.1.2
+      simp only [staticWordRelationSlotsDisjointOn, List.all_eq_true] at disjoint
+      have pair := disjoint querySlot queryMember writeSlot writeMember
+      simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.false_eq_true,
+        if_false] at pair
+      rcases pair with sameId | separated
+      · exact False.elim (differentId (beq_iff_eq.mp sameId))
+      · exact separated
+    have separatedCandidate :
+        querySlot.candidateAddress.toNat + 4 <= writeSlot.candidateAddress.toNat ∨
+          writeSlot.candidateAddress.toNat + 4 <=
+            querySlot.candidateAddress.toNat := by
+      have disjoint : staticWordRelationSlotsDisjointOn true
+          context.staticWordRelationSlots = true := by
+        exact slotsShape.1.1.1.2
+      simp only [staticWordRelationSlotsDisjointOn, List.all_eq_true] at disjoint
+      have pair := disjoint querySlot queryMember writeSlot writeMember
+      simp only [Bool.or_eq_true, decide_eq_true_eq, if_true] at pair
+      rcases pair with sameId | separated
+      · exact False.elim (differentId (beq_iff_eq.mp sameId))
+      · exact separated
+    have queryValid := querySlot.valid_of_member context slotsValid queryMember
+    have writeValid := writeSlot.valid_of_member context slotsValid writeMember
+    have originalAvoids := write32AvoidsWord_of_nat_disjoint
+      querySlot.originalAddress writeSlot.originalAddress
+      (querySlot.originalBounds context queryValid).2.2
+      (writeSlot.originalBounds context writeValid).2.2 separatedOriginal
+    have candidateAvoids := write32AvoidsWord_of_nat_disjoint
+      querySlot.candidateAddress writeSlot.candidateAddress
+      (querySlot.candidateBounds context queryValid).2.2
+      (writeSlot.candidateBounds context writeValid).2.2 separatedCandidate
+    have prior := related querySlot queryMember
+    unfold StaticWordRelationSlotPair.memoryHolds at prior ⊢
+    rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+      Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+    exact prior
+
+theorem StackRangesMemoryHold.afterPairedStaticWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (rangesValid : world.stackRangesValid context = true)
+    (slotsValid : staticWordRelationSlotsValid context = true)
+    (writeSlot : StaticWordRelationSlotPair)
+    (writeMember : writeSlot ∈ context.staticWordRelationSlots)
+    (originalValue candidateValue : Word)
+    (related : StackRangesMemoryHold context world original candidate) :
+    StackRangesMemoryHold context world
+      (original.write32 writeSlot.originalAddress originalValue)
+      (candidate.write32 writeSlot.candidateAddress candidateValue) := by
+  intro range rangeMember offset inside aligned
+  have rangeValid : range.disjointFromImages context = true := by
+    simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact (rangesValid.1.1.2 range rangeMember).1.1.1
+  have writeValid := writeSlot.valid_of_member context slotsValid writeMember
+  have originalBounds := writeSlot.originalBounds context writeValid
+  have candidateBounds := writeSlot.candidateBounds context writeValid
+  have rangeShape := rangeValid
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+    Bool.or_eq_true, decide_eq_true_eq] at rangeShape
+  rcases rangeShape with
+    ⟨⟨⟨⟨_nonempty, originalNoWrap⟩, candidateNoWrap⟩,
+      originalDisjoint⟩, candidateDisjoint⟩
+  have originalAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.originalBase range.size context.originalPe.imageBase
+    context.originalPe.sizeOfImage offset inside originalNoWrap originalDisjoint
+    writeSlot.originalAddress originalBounds.1 originalBounds.2.1
+    originalBounds.2.2).symm
+  have candidateAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.candidateBase range.size context.candidatePe.imageBase
+    context.candidatePe.sizeOfImage offset inside candidateNoWrap candidateDisjoint
+    writeSlot.candidateAddress candidateBounds.1 candidateBounds.2.1
+    candidateBounds.2.2).symm
+  rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact related range rangeMember offset inside aligned
+
+theorem DynamicRangesMemoryHold.afterPairedStaticWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (rangesValid : world.dynamicRangesValid context = true)
+    (slotsValid : staticWordRelationSlotsValid context = true)
+    (writeSlot : StaticWordRelationSlotPair)
+    (writeMember : writeSlot ∈ context.staticWordRelationSlots)
+    (originalValue candidateValue : Word)
+    (related : DynamicRangesMemoryHold context world original candidate) :
+    DynamicRangesMemoryHold context world
+      (original.write32 writeSlot.originalAddress originalValue)
+      (candidate.write32 writeSlot.candidateAddress candidateValue) := by
+  intro range rangeMember
+  have rangeValid : range.disjointFromImages context = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.1.2 range rangeMember
+  have wordRelationsValid : range.wordRelationsValid = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.2 range rangeMember
+  have writeValid := writeSlot.valid_of_member context slotsValid writeMember
+  have originalBounds := writeSlot.originalBounds context writeValid
+  have candidateBounds := writeSlot.candidateBounds context writeValid
+  have rangeShape := rangeValid
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+    Bool.or_eq_true, decide_eq_true_eq] at rangeShape
+  rcases rangeShape with
+    ⟨⟨⟨⟨_nonempty, originalNoWrap⟩, candidateNoWrap⟩,
+      originalDisjoint⟩, candidateDisjoint⟩
+  have prior := related range rangeMember
+  simp only [DynamicAddressRangePair.wordsHold, List.all_eq_true] at prior ⊢
+  simp only [DynamicAddressRangePair.wordRelationsValid,
+    List.all_eq_true] at wordRelationsValid
+  intro relation relationMember
+  have relationShape := wordRelationsValid relation relationMember
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at relationShape
+  have relationInside := relationShape.1
+  have originalAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.originalBase range.size context.originalPe.imageBase
+    context.originalPe.sizeOfImage relation.offset relationInside
+    originalNoWrap originalDisjoint writeSlot.originalAddress
+    originalBounds.1 originalBounds.2.1 originalBounds.2.2).symm
+  have candidateAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.candidateBase range.size context.candidatePe.imageBase
+    context.candidatePe.sizeOfImage relation.offset relationInside
+    candidateNoWrap candidateDisjoint writeSlot.candidateAddress
+    candidateBounds.1 candidateBounds.2.1 candidateBounds.2.2).symm
+  have priorRelation := prior relation relationMember
+  unfold DynamicWordRelation.holds at priorRelation ⊢
+  rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact priorRelation
+
+theorem StaticDynamicPointerSlotPair.originalBounds
+    (context : StaticProofContext) (slot : StaticDynamicPointerSlotPair)
+    (valid : slot.valid context = true) :
+    context.originalPe.imageBase <= slot.originalAddress.toNat ∧
+      slot.originalAddress.toNat + 4 <=
+        context.originalPe.imageBase + context.originalPe.sizeOfImage ∧
+      slot.originalAddress.toNat + 4 <= 2 ^ 32 := by
+  simp only [StaticDynamicPointerSlotPair.valid, Bool.and_eq_true] at valid
+  exact writableStaticWordInPe_bounds context.originalPe slot.originalAddress
+    valid.1.1.1.1.1.1.2
+
+theorem StaticDynamicPointerSlotPair.candidateBounds
+    (context : StaticProofContext) (slot : StaticDynamicPointerSlotPair)
+    (valid : slot.valid context = true) :
+    context.candidatePe.imageBase <= slot.candidateAddress.toNat ∧
+      slot.candidateAddress.toNat + 4 <=
+        context.candidatePe.imageBase + context.candidatePe.sizeOfImage ∧
+      slot.candidateAddress.toNat + 4 <= 2 ^ 32 := by
+  simp only [StaticDynamicPointerSlotPair.valid, Bool.and_eq_true] at valid
+  exact writableStaticWordInPe_bounds context.candidatePe slot.candidateAddress
+    valid.1.1.1.1.1.2
+
+theorem StaticDynamicPointerSlotPair.valid_of_member
+    (context : StaticProofContext) (slot : StaticDynamicPointerSlotPair)
+    (slotsValid : staticDynamicPointerSlotsValid context = true)
+    (member : slot ∈ context.staticDynamicPointerSlots) :
+    slot.valid context = true := by
+  simp only [staticDynamicPointerSlotsValid, Bool.and_eq_true,
+    List.all_eq_true] at slotsValid
+  exact slotsValid.2 slot member
+
+theorem StaticDynamicPointerSlotsMemoryHold.afterPairedStaticDynamicPointerWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (slotsValid : staticDynamicPointerSlotsValid context = true)
+    (rangesValid : world.dynamicRangesValid context = true)
+    (writeSlot : StaticDynamicPointerSlotPair)
+    (writeMember : writeSlot ∈ context.staticDynamicPointerSlots)
+    (range : DynamicAddressRangePair) (rangeMember : range ∈ world.dynamicRanges)
+    (requiredWords : writeSlot.requiredWords.all range.wordRelations.contains = true)
+    (related : StaticDynamicPointerSlotsMemoryHold context world original candidate) :
+    StaticDynamicPointerSlotsMemoryHold context world
+      (original.write32 writeSlot.originalAddress range.originalBase)
+      (candidate.write32 writeSlot.candidateAddress range.candidateBase) := by
+  intro querySlot queryMember
+  have rangeValid : range.disjointFromImages context = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.1.2 range rangeMember
+  have rangeShape := rangeValid
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true] at rangeShape
+  have originalNonzero := rangeShape.1.1.1.1.1.2
+  have candidateNonzero := rangeShape.1.1.1.1.2
+  have slotsShape := slotsValid
+  simp only [staticDynamicPointerSlotsValid, Bool.and_eq_true] at slotsShape
+  by_cases sameSlot : querySlot = writeSlot
+  · subst querySlot
+    have writeValid := writeSlot.valid_of_member context slotsValid writeMember
+    have originalFits := (writeSlot.originalBounds context writeValid).2.2
+    have candidateFits := (writeSlot.candidateBounds context writeValid).2.2
+    unfold StaticDynamicPointerSlotPair.memoryHolds
+    rw [Memory.read32_write32_same_of_fits _ _ _ originalFits,
+      Memory.read32_write32_same_of_fits _ _ _ candidateFits]
+    simp only [Bool.or_eq_true, Bool.and_eq_true, List.any_eq_true, beq_iff_eq]
+    apply Or.inr
+    refine ⟨range, rangeMember, ?_⟩
+    exact ⟨⟨⟨⟨rfl, rfl⟩, originalNonzero⟩,
+      candidateNonzero⟩, requiredWords⟩
+  · have unique : staticDynamicPointerSlotIdsUnique
+        context.staticDynamicPointerSlots = true := slotsShape.1.1.1
+    have differentId : querySlot.id ≠ writeSlot.id := by
+      intro sameId
+      exact sameSlot (staticDynamicPointerSlot_eq_of_same_id
+        context.staticDynamicPointerSlots unique querySlot writeSlot
+        queryMember writeMember sameId)
+    have separatedOriginal :
+        querySlot.originalAddress.toNat + 4 <= writeSlot.originalAddress.toNat ∨
+          writeSlot.originalAddress.toNat + 4 <= querySlot.originalAddress.toNat := by
+      have disjoint : staticDynamicPointerSlotsDisjointOn false
+          context.staticDynamicPointerSlots = true := slotsShape.1.1.2
+      simp only [staticDynamicPointerSlotsDisjointOn, List.all_eq_true] at disjoint
+      have pair := disjoint querySlot queryMember writeSlot writeMember
+      simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.false_eq_true,
+        if_false] at pair
+      exact pair.resolve_left (fun same => differentId (beq_iff_eq.mp same))
+    have separatedCandidate :
+        querySlot.candidateAddress.toNat + 4 <= writeSlot.candidateAddress.toNat ∨
+          writeSlot.candidateAddress.toNat + 4 <= querySlot.candidateAddress.toNat := by
+      have disjoint : staticDynamicPointerSlotsDisjointOn true
+          context.staticDynamicPointerSlots = true := slotsShape.1.2
+      simp only [staticDynamicPointerSlotsDisjointOn, List.all_eq_true] at disjoint
+      have pair := disjoint querySlot queryMember writeSlot writeMember
+      simp only [Bool.or_eq_true, decide_eq_true_eq, if_true] at pair
+      exact pair.resolve_left (fun same => differentId (beq_iff_eq.mp same))
+    have queryValid := querySlot.valid_of_member context slotsValid queryMember
+    have writeValid := writeSlot.valid_of_member context slotsValid writeMember
+    have originalAvoids := write32AvoidsWord_of_nat_disjoint
+      querySlot.originalAddress writeSlot.originalAddress
+      (querySlot.originalBounds context queryValid).2.2
+      (writeSlot.originalBounds context writeValid).2.2 separatedOriginal
+    have candidateAvoids := write32AvoidsWord_of_nat_disjoint
+      querySlot.candidateAddress writeSlot.candidateAddress
+      (querySlot.candidateBounds context queryValid).2.2
+      (writeSlot.candidateBounds context writeValid).2.2 separatedCandidate
+    have prior := related querySlot queryMember
+    unfold StaticDynamicPointerSlotPair.memoryHolds at prior ⊢
+    rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+      Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+    exact prior
+
+theorem StackRangesMemoryHold.afterPairedStaticDynamicPointerWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (rangesValid : world.stackRangesValid context = true)
+    (slotsValid : staticDynamicPointerSlotsValid context = true)
+    (writeSlot : StaticDynamicPointerSlotPair)
+    (writeMember : writeSlot ∈ context.staticDynamicPointerSlots)
+    (originalValue candidateValue : Word)
+    (related : StackRangesMemoryHold context world original candidate) :
+    StackRangesMemoryHold context world
+      (original.write32 writeSlot.originalAddress originalValue)
+      (candidate.write32 writeSlot.candidateAddress candidateValue) := by
+  intro range rangeMember offset inside aligned
+  have rangeValid : range.disjointFromImages context = true := by
+    simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact (rangesValid.1.1.2 range rangeMember).1.1.1
+  have writeValid := writeSlot.valid_of_member context slotsValid writeMember
+  have originalBounds := writeSlot.originalBounds context writeValid
+  have candidateBounds := writeSlot.candidateBounds context writeValid
+  have rangeShape := rangeValid
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+    Bool.or_eq_true, decide_eq_true_eq] at rangeShape
+  rcases rangeShape with
+    ⟨⟨⟨⟨_nonempty, originalNoWrap⟩, candidateNoWrap⟩,
+      originalDisjoint⟩, candidateDisjoint⟩
+  have originalAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.originalBase range.size context.originalPe.imageBase
+    context.originalPe.sizeOfImage offset inside originalNoWrap originalDisjoint
+    writeSlot.originalAddress originalBounds.1 originalBounds.2.1
+    originalBounds.2.2).symm
+  have candidateAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.candidateBase range.size context.candidatePe.imageBase
+    context.candidatePe.sizeOfImage offset inside candidateNoWrap candidateDisjoint
+    writeSlot.candidateAddress candidateBounds.1 candidateBounds.2.1
+    candidateBounds.2.2).symm
+  rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact related range rangeMember offset inside aligned
+
+theorem DynamicRangesMemoryHold.afterPairedStaticDynamicPointerWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (rangesValid : world.dynamicRangesValid context = true)
+    (slotsValid : staticDynamicPointerSlotsValid context = true)
+    (writeSlot : StaticDynamicPointerSlotPair)
+    (writeMember : writeSlot ∈ context.staticDynamicPointerSlots)
+    (originalValue candidateValue : Word)
+    (related : DynamicRangesMemoryHold context world original candidate) :
+    DynamicRangesMemoryHold context world
+      (original.write32 writeSlot.originalAddress originalValue)
+      (candidate.write32 writeSlot.candidateAddress candidateValue) := by
+  intro range rangeMember
+  have rangeValid : range.disjointFromImages context = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.1.2 range rangeMember
+  have wordRelationsValid : range.wordRelationsValid = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.2 range rangeMember
+  have writeValid := writeSlot.valid_of_member context slotsValid writeMember
+  have originalBounds := writeSlot.originalBounds context writeValid
+  have candidateBounds := writeSlot.candidateBounds context writeValid
+  have rangeShape := rangeValid
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+    Bool.or_eq_true, decide_eq_true_eq] at rangeShape
+  rcases rangeShape with
+    ⟨⟨⟨⟨_nonempty, originalNoWrap⟩, candidateNoWrap⟩,
+      originalDisjoint⟩, candidateDisjoint⟩
+  have prior := related range rangeMember
+  simp only [DynamicAddressRangePair.wordsHold, List.all_eq_true] at prior ⊢
+  simp only [DynamicAddressRangePair.wordRelationsValid,
+    List.all_eq_true] at wordRelationsValid
+  intro relation relationMember
+  have relationShape := wordRelationsValid relation relationMember
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at relationShape
+  have originalAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.originalBase range.size context.originalPe.imageBase
+    context.originalPe.sizeOfImage relation.offset relationShape.1
+    originalNoWrap originalDisjoint writeSlot.originalAddress
+    originalBounds.1 originalBounds.2.1 originalBounds.2.2).symm
+  have candidateAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.candidateBase range.size context.candidatePe.imageBase
+    context.candidatePe.sizeOfImage relation.offset relationShape.1
+    candidateNoWrap candidateDisjoint writeSlot.candidateAddress
+    candidateBounds.1 candidateBounds.2.1 candidateBounds.2.2).symm
+  have priorRelation := prior relation relationMember
+  unfold DynamicWordRelation.holds at priorRelation ⊢
+  rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact priorRelation
+
+theorem importIatWordWriteAvoidsStaticDynamicPointer
+    (pe : PE32) (imports : List PEImport) (imported : PEImport)
+    (iatRva : Nat) (slotAddress : Word)
+    (importMember : imported ∈ imports)
+    (sameIat : imported.iatRva = iatRva)
+    (iatFits : pe.imageBase + iatRva + 4 <= 2 ^ 32)
+    (slotFits : slotAddress.toNat + 4 <= 2 ^ 32)
+    (notIat : staticWordOverlapsImportIat pe imports slotAddress = false) :
+    Write32AvoidsWord (BitVec.ofNat 32 (pe.imageBase + iatRva)) slotAddress := by
+  have predicateFalse := Bool.eq_false_iff.mpr
+    (List.any_eq_false.mp notIat imported importMember)
+  simp [sameIat] at predicateFalse
+  have separated : slotAddress.toNat + 4 <= pe.imageBase + iatRva ∨
+      pe.imageBase + iatRva + 4 <= slotAddress.toNat := by
+    omega
+  have iatBefore : pe.imageBase + iatRva < 2 ^ 32 := by omega
+  have iatAddressNat :
+      (BitVec.ofNat 32 (pe.imageBase + iatRva) : Word).toNat =
+        pe.imageBase + iatRva := by
+    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt iatBefore]
+  exact write32AvoidsWord_of_nat_disjoint
+    (BitVec.ofNat 32 (pe.imageBase + iatRva)) slotAddress
+    (by simpa [iatAddressNat] using iatFits) slotFits
+    (by simpa [iatAddressNat] using separated.elim Or.inr Or.inl)
+
+theorem ImportAddressesMemoryHold.afterPairedStaticDynamicPointerWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (importsStatic : world.importAddressesStaticValid context = true)
+    (slotsValid : staticDynamicPointerSlotsValid context = true)
+    (writeSlot : StaticDynamicPointerSlotPair)
+    (writeMember : writeSlot ∈ context.staticDynamicPointerSlots)
+    (originalValue candidateValue : Word)
+    (related : ImportAddressesMemoryHold context world original candidate) :
+    ImportAddressesMemoryHold context world
+      (original.write32 writeSlot.originalAddress originalValue)
+      (candidate.write32 writeSlot.candidateAddress candidateValue) := by
+  intro binding bindingMember
+  have importsShape := importsStatic
+  simp only [RelationalWorld.importAddressesStaticValid, Bool.and_eq_true,
+    List.all_eq_true] at importsShape
+  have bindingValid := importsShape.2 binding bindingMember
+  have writeValid := writeSlot.valid_of_member context slotsValid writeMember
+  have writeShape := writeValid
+  simp only [StaticDynamicPointerSlotPair.valid, Bool.and_eq_true] at writeShape
+  have originalNotIat := writeShape.1.1.1.1.2
+  have candidateNotIat := writeShape.1.1.1.2
+  rw [Bool.not_eq_true'] at originalNotIat candidateNotIat
+  rcases binding.originalImportWitness context bindingValid with
+    ⟨originalImport, originalImportMember, originalSameIat⟩
+  rcases binding.candidateImportWitness context bindingValid with
+    ⟨candidateImport, candidateImportMember, candidateSameIat⟩
+  have originalAvoids := importIatWordWriteAvoidsStaticDynamicPointer
+    context.originalPe context.originalImports originalImport binding.originalIatRva
+    writeSlot.originalAddress originalImportMember originalSameIat
+    (binding.originalIatWordBounds context bindingValid).2.2
+    (writeSlot.originalBounds context writeValid).2.2 originalNotIat
+  have candidateAvoids := importIatWordWriteAvoidsStaticDynamicPointer
+    context.candidatePe context.candidateImports candidateImport binding.candidateIatRva
+    writeSlot.candidateAddress candidateImportMember candidateSameIat
+    (binding.candidateIatWordBounds context bindingValid).2.2
+    (writeSlot.candidateBounds context writeValid).2.2 candidateNotIat
+  have prior := related binding bindingMember
+  unfold ImportAddressPair.memoryHolds at prior ⊢
+  rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact prior
+
+theorem StaticWordRelationSlotsMemoryHold.afterPairedStaticDynamicPointerWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (pointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (wordSlotsValid : staticWordRelationSlotsValid context = true)
+    (writeSlot : StaticDynamicPointerSlotPair)
+    (writeMember : writeSlot ∈ context.staticDynamicPointerSlots)
+    (originalValue candidateValue : Word)
+    (related : StaticWordRelationSlotsMemoryHold context world original candidate) :
+    StaticWordRelationSlotsMemoryHold context world
+      (original.write32 writeSlot.originalAddress originalValue)
+      (candidate.write32 writeSlot.candidateAddress candidateValue) := by
+  intro querySlot queryMember
+  have pointerValid := writeSlot.valid_of_member context pointerSlotsValid writeMember
+  have wordShape := wordSlotsValid
+  simp only [staticWordRelationSlotsValid, Bool.and_eq_true,
+    List.all_eq_true] at wordShape
+  have queryValid := wordShape.2 querySlot queryMember
+  have originalCross := wordShape.1.1.2
+  have candidateCross := wordShape.1.2
+  simp only [staticWordRelationSlotsCrossDisjointOn,
+    List.all_eq_true] at originalCross candidateCross
+  have originalSeparated := originalCross querySlot queryMember writeSlot writeMember
+  have candidateSeparated := candidateCross querySlot queryMember writeSlot writeMember
+  simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.false_eq_true,
+    if_false] at originalSeparated
+  simp only [Bool.or_eq_true, decide_eq_true_eq, if_true] at candidateSeparated
+  have originalAvoids := write32AvoidsWord_of_nat_disjoint
+    querySlot.originalAddress writeSlot.originalAddress
+    (querySlot.originalBounds context queryValid).2.2
+    (writeSlot.originalBounds context pointerValid).2.2
+    originalSeparated
+  have candidateAvoids := write32AvoidsWord_of_nat_disjoint
+    querySlot.candidateAddress writeSlot.candidateAddress
+    (querySlot.candidateBounds context queryValid).2.2
+    (writeSlot.candidateBounds context pointerValid).2.2
+    candidateSeparated
+  have prior := related querySlot queryMember
+  unfold StaticWordRelationSlotPair.memoryHolds at prior ⊢
+  rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact prior
+
+theorem StaticDynamicPointerSlotsMemoryHold.afterPairedStaticWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (pointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (wordSlotsValid : staticWordRelationSlotsValid context = true)
+    (writeSlot : StaticWordRelationSlotPair)
+    (writeMember : writeSlot ∈ context.staticWordRelationSlots)
+    (originalValue candidateValue : Word)
+    (related : StaticDynamicPointerSlotsMemoryHold context world original candidate) :
+    StaticDynamicPointerSlotsMemoryHold context world
+      (original.write32 writeSlot.originalAddress originalValue)
+      (candidate.write32 writeSlot.candidateAddress candidateValue) := by
+  intro querySlot queryMember
+  have pointerShape := pointerSlotsValid
+  simp only [staticDynamicPointerSlotsValid, Bool.and_eq_true,
+    List.all_eq_true] at pointerShape
+  have queryValid := pointerShape.2 querySlot queryMember
+  have writeValid := writeSlot.valid_of_member context wordSlotsValid writeMember
+  have wordShape := wordSlotsValid
+  simp only [staticWordRelationSlotsValid, Bool.and_eq_true] at wordShape
+  have originalCross := wordShape.1.1.2
+  have candidateCross := wordShape.1.2
+  simp only [staticWordRelationSlotsCrossDisjointOn,
+    List.all_eq_true] at originalCross candidateCross
+  have originalSeparated := originalCross writeSlot writeMember querySlot queryMember
+  have candidateSeparated := candidateCross writeSlot writeMember querySlot queryMember
+  simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.false_eq_true,
+    if_false] at originalSeparated
+  simp only [Bool.or_eq_true, decide_eq_true_eq, if_true] at candidateSeparated
+  have originalAvoids := write32AvoidsWord_of_nat_disjoint
+    querySlot.originalAddress writeSlot.originalAddress
+    (querySlot.originalBounds context queryValid).2.2
+    (writeSlot.originalBounds context writeValid).2.2
+    (originalSeparated.elim Or.inr Or.inl)
+  have candidateAvoids := write32AvoidsWord_of_nat_disjoint
+    querySlot.candidateAddress writeSlot.candidateAddress
+    (querySlot.candidateBounds context queryValid).2.2
+    (writeSlot.candidateBounds context writeValid).2.2
+    (candidateSeparated.elim Or.inr Or.inl)
+  have prior := related querySlot queryMember
+  unfold StaticDynamicPointerSlotPair.memoryHolds at prior ⊢
+  rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact prior
+
+theorem importIatWordWriteAvoidsStaticWord
+    (pe : PE32) (imports : List PEImport) (imported : PEImport)
+    (iatRva : Nat) (slotAddress : Word)
+    (importMember : imported ∈ imports)
+    (sameIat : imported.iatRva = iatRva)
+    (iatFits : pe.imageBase + iatRva + 4 <= 2 ^ 32)
+    (slotFits : slotAddress.toNat + 4 <= 2 ^ 32)
+    (notIat : staticWordOverlapsImportIat pe imports slotAddress = false) :
+    Write32AvoidsWord (BitVec.ofNat 32 (pe.imageBase + iatRva)) slotAddress := by
+  have predicateFalse := Bool.eq_false_iff.mpr
+    (List.any_eq_false.mp notIat imported importMember)
+  simp [sameIat] at predicateFalse
+  have separated : slotAddress.toNat + 4 <= pe.imageBase + iatRva ∨
+      pe.imageBase + iatRva + 4 <= slotAddress.toNat := by
+    omega
+  have iatBefore : pe.imageBase + iatRva < 2 ^ 32 := by omega
+  have iatAddressNat :
+      (BitVec.ofNat 32 (pe.imageBase + iatRva) : Word).toNat =
+        pe.imageBase + iatRva := by
+    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt iatBefore]
+  exact write32AvoidsWord_of_nat_disjoint
+    (BitVec.ofNat 32 (pe.imageBase + iatRva)) slotAddress
+    (by simpa [iatAddressNat] using iatFits) slotFits
+    (by simpa [iatAddressNat] using separated.elim Or.inr Or.inl)
+
+theorem ImportAddressesMemoryHold.afterPairedStaticWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (importsStatic : world.importAddressesStaticValid context = true)
+    (slotsValid : staticWordRelationSlotsValid context = true)
+    (writeSlot : StaticWordRelationSlotPair)
+    (writeMember : writeSlot ∈ context.staticWordRelationSlots)
+    (originalValue candidateValue : Word)
+    (related : ImportAddressesMemoryHold context world original candidate) :
+    ImportAddressesMemoryHold context world
+      (original.write32 writeSlot.originalAddress originalValue)
+      (candidate.write32 writeSlot.candidateAddress candidateValue) := by
+  intro binding bindingMember
+  have importsShape := importsStatic
+  simp only [RelationalWorld.importAddressesStaticValid, Bool.and_eq_true,
+    List.all_eq_true] at importsShape
+  have bindingValid := importsShape.2 binding bindingMember
+  have writeValid := writeSlot.valid_of_member context slotsValid writeMember
+  have writeShape := writeValid
+  simp only [StaticWordRelationSlotPair.valid, Bool.and_eq_true] at writeShape
+  have originalNotIat := writeShape.1.1.1.2
+  have candidateNotIat := writeShape.1.1.2
+  rw [Bool.not_eq_true'] at originalNotIat candidateNotIat
+  rcases binding.originalImportWitness context bindingValid with
+    ⟨originalImport, originalImportMember, originalSameIat⟩
+  rcases binding.candidateImportWitness context bindingValid with
+    ⟨candidateImport, candidateImportMember, candidateSameIat⟩
+  have originalAvoids := importIatWordWriteAvoidsStaticWord
+    context.originalPe context.originalImports originalImport binding.originalIatRva
+    writeSlot.originalAddress originalImportMember originalSameIat
+    (binding.originalIatWordBounds context bindingValid).2.2
+    (writeSlot.originalBounds context writeValid).2.2 originalNotIat
+  have candidateAvoids := importIatWordWriteAvoidsStaticWord
+    context.candidatePe context.candidateImports candidateImport binding.candidateIatRva
+    writeSlot.candidateAddress candidateImportMember candidateSameIat
+    (binding.candidateIatWordBounds context bindingValid).2.2
+    (writeSlot.candidateBounds context writeValid).2.2 candidateNotIat
+  have prior := related binding bindingMember
+  unfold ImportAddressPair.memoryHolds at prior ⊢
+  rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact prior
+
+theorem staticWordWriteAvoidsImmutableImageWord
+    (pe : PE32) (slotAddress : Word) (absolute expected : Nat)
+    (slotFits : slotAddress.toNat + 4 <= 2 ^ 32)
+    (notImmutable : staticWordOverlapsImmutableSection pe slotAddress = false)
+    (checked : readImmutableImageWord pe absolute 4 = some expected) :
+    Write32AvoidsWord (BitVec.ofNat 32 absolute) slotAddress := by
+  have bounds := readImmutableImageWord_bounds pe absolute 4 expected checked
+  have absoluteBefore : absolute < 2 ^ 32 := by omega
+  have addressNat : (BitVec.ofNat 32 absolute : Word).toNat = absolute := by
+    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt absoluteBefore]
+  rcases readImmutableImageWord_region pe absolute 4 expected checked with
+    header | sectionCase
+  · have headerDisjoint :
+        slotAddress.toNat + 4 <= pe.imageBase ∨
+          pe.imageBase + pe.sizeOfHeaders <= slotAddress.toNat := by
+      have noOverlap := notImmutable
+      simp [staticWordOverlapsImmutableSection] at noOverlap
+      omega
+    have separated : absolute + 4 <= slotAddress.toNat ∨
+        slotAddress.toNat + 4 <= absolute := by
+      omega
+    exact write32AvoidsWord_of_nat_disjoint (BitVec.ofNat 32 absolute)
+      slotAddress (by simpa [addressNat] using bounds.2.1) slotFits
+      (by simpa [addressNat] using separated)
+  · rcases sectionCase with
+      ⟨sec, sectionMember, immutable, sectionLower, sectionUpper⟩
+    have noOverlap := notImmutable
+    simp [staticWordOverlapsImmutableSection] at noOverlap
+    have listFalse := noOverlap.2
+    have separated : absolute + 4 <= slotAddress.toNat ∨
+        slotAddress.toNat + 4 <= absolute := by
+      by_cases beforeSectionEnd :
+          slotAddress.toNat <
+            pe.imageBase + sec.virtualAddress + sec.mappedSize
+      · have slotBeforeSection :=
+          listFalse sec sectionMember immutable beforeSectionEnd
+        omega
+      · omega
+    exact write32AvoidsWord_of_nat_disjoint (BitVec.ofNat 32 absolute)
+      slotAddress (by simpa [addressNat] using bounds.2.1) slotFits
+      (by simpa [addressNat] using separated)
+
+theorem ImmutableImageWordMemory.afterStaticWordWrite
+    (pe : PE32) (memory : Memory) (slotAddress value : Word)
+    (slotFits : slotAddress.toNat + 4 <= 2 ^ 32)
+    (notImmutable : staticWordOverlapsImmutableSection pe slotAddress = false)
+    (immutable : ImmutableImageWordMemory pe memory) :
+    ImmutableImageWordMemory pe (memory.write32 slotAddress value) := by
+  intro absolute expected checked
+  have avoids := staticWordWriteAvoidsImmutableImageWord pe slotAddress
+    absolute expected slotFits notImmutable checked
+  rw [Memory.read32_write32_of_avoids _ _ _ _ avoids]
+  exact immutable absolute expected checked
 
 theorem StaticDynamicPointerSlotsMemoryHold.afterPairedStackWordWrite
     (context : StaticProofContext) (world : RelationalWorld)
@@ -1311,8 +2472,8 @@ theorem StaticDynamicPointerSlotsMemoryHold.afterPairedStackWordWrite
   intro slot slotMember
   have slotValid := slotsValid.2 slot slotMember
   simp only [StaticDynamicPointerSlotPair.valid, Bool.and_eq_true] at slotValid
-  have originalWritable := slotValid.1.1.1.1.2
-  have candidateWritable := slotValid.1.1.1.2
+  have originalWritable := slotValid.1.1.1.1.1.1.2
+  have candidateWritable := slotValid.1.1.1.1.1.2
   have originalBounds := writableStaticWordInPe_bounds context.originalPe
     slot.originalAddress originalWritable
   have candidateBounds := writableStaticWordInPe_bounds context.candidatePe
@@ -1331,28 +2492,95 @@ theorem StaticDynamicPointerSlotsMemoryHold.afterPairedStackWordWrite
     Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
   exact prior
 
+theorem StaticWordRelationSlotsMemoryHold.afterPairedStackWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (slotsValid : staticWordRelationSlotsValid context = true)
+    (stackRange : DynamicAddressRangePair)
+    (stackValid : stackRange.disjointFromImages context = true)
+    (stackOffset : Nat) (stackInside : stackOffset + 4 <= stackRange.size)
+    (originalValue candidateValue : Word)
+    (related : StaticWordRelationSlotsMemoryHold context world original candidate) :
+    StaticWordRelationSlotsMemoryHold context world
+      (original.write32
+        (stackRange.originalBase + BitVec.ofNat 32 stackOffset) originalValue)
+      (candidate.write32
+        (stackRange.candidateBase + BitVec.ofNat 32 stackOffset) candidateValue) := by
+  simp only [staticWordRelationSlotsValid, Bool.and_eq_true,
+    List.all_eq_true] at slotsValid
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+    Bool.or_eq_true, decide_eq_true_eq] at stackValid
+  rcases stackValid with
+    ⟨⟨⟨⟨_rangeNonempty, originalNoWrap⟩, candidateNoWrap⟩,
+      originalDisjoint⟩, candidateDisjoint⟩
+  intro slot slotMember
+  have slotValid := slotsValid.2 slot slotMember
+  simp only [StaticWordRelationSlotPair.valid, Bool.and_eq_true] at slotValid
+  have originalWritable := slotValid.1.1.1.1.1.2
+  have candidateWritable := slotValid.1.1.1.1.2
+  have originalBounds := writableStaticWordInPe_bounds context.originalPe
+    slot.originalAddress originalWritable
+  have candidateBounds := writableStaticWordInPe_bounds context.candidatePe
+    slot.candidateAddress candidateWritable
+  have originalAvoids := stackRangeWordWriteAvoidsImageWord stackRange.originalBase
+    stackRange.size context.originalPe.imageBase context.originalPe.sizeOfImage
+    stackOffset stackInside originalNoWrap originalDisjoint slot.originalAddress
+    originalBounds.1 originalBounds.2.1 originalBounds.2.2
+  have candidateAvoids := stackRangeWordWriteAvoidsImageWord stackRange.candidateBase
+    stackRange.size context.candidatePe.imageBase context.candidatePe.sizeOfImage
+    stackOffset stackInside candidateNoWrap candidateDisjoint slot.candidateAddress
+    candidateBounds.1 candidateBounds.2.1 candidateBounds.2.2
+  have prior := related slot slotMember
+  unfold StaticWordRelationSlotPair.memoryHolds at prior ⊢
+  rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact prior
+
+def staticDynamicPointerSlotByteCoveredOn (candidate : Bool)
+    (context : StaticProofContext) (address : Word) : Bool :=
+  context.staticDynamicPointerSlots.any fun slot =>
+    let base := if candidate then slot.candidateAddress else slot.originalAddress
+    base.toNat <= address.toNat && address.toNat < base.toNat + 4
+
 def staticDynamicPointerSlotByteCoveredOriginal (context : StaticProofContext)
     (address : Word) : Bool :=
-  context.staticDynamicPointerSlots.any fun slot =>
-    slot.originalAddress.toNat <= address.toNat &&
-      address.toNat < slot.originalAddress.toNat + 4
+  staticDynamicPointerSlotByteCoveredOn false context address
 
 def staticDynamicPointerSlotByteCoveredCandidate (context : StaticProofContext)
     (address : Word) : Bool :=
-  context.staticDynamicPointerSlots.any fun slot =>
-    slot.candidateAddress.toNat <= address.toNat &&
-      address.toNat < slot.candidateAddress.toNat + 4
+  staticDynamicPointerSlotByteCoveredOn true context address
+
+def staticWordRelationSlotByteCoveredOn (candidate : Bool)
+    (context : StaticProofContext) (address : Word) : Bool :=
+  context.staticWordRelationSlots.any fun slot =>
+    let base := if candidate then slot.candidateAddress else slot.originalAddress
+    base.toNat <= address.toNat && address.toNat < base.toNat + 4
+
+def staticWordRelationSlotByteCoveredOriginal (context : StaticProofContext)
+    (address : Word) : Bool :=
+  staticWordRelationSlotByteCoveredOn false context address
+
+def staticWordRelationSlotByteCoveredCandidate (context : StaticProofContext)
+    (address : Word) : Bool :=
+  staticWordRelationSlotByteCoveredOn true context address
+
+def ordinaryOriginalMemoryAddressExcluded (context : StaticProofContext)
+    (world : RelationalWorld) (address : Word) : Bool :=
+  importIatByteCoveredOriginal context world address ||
+    stackByteCoveredOriginal world address ||
+    dynamicByteCoveredOriginal world address ||
+    staticDynamicPointerSlotByteCoveredOriginal context address ||
+    staticWordRelationSlotByteCoveredOriginal context address
 
 def ordinaryMemoryAddressExcluded (context : StaticProofContext)
     (world : RelationalWorld) (values : List ValueTargetPair)
     (candidateAddress : Word) : Bool :=
   importIatByteCoveredCandidate context world candidateAddress ||
-    importIatByteCoveredOriginal context world
-      (normalizeDataAddress values candidateAddress) ||
     stackByteCoveredCandidate world candidateAddress ||
-    stackByteCoveredOriginal world (normalizeDataAddress values candidateAddress) ||
+    dynamicByteCoveredCandidate world candidateAddress ||
     staticDynamicPointerSlotByteCoveredCandidate context candidateAddress ||
-    staticDynamicPointerSlotByteCoveredOriginal context
+    staticWordRelationSlotByteCoveredCandidate context candidateAddress ||
+    ordinaryOriginalMemoryAddressExcluded context world
       (normalizeDataAddress values candidateAddress)
 
 def ordinaryMemoryWordExcluded (context : StaticProofContext)
@@ -1362,8 +2590,178 @@ def ordinaryMemoryWordExcluded (context : StaticProofContext)
       ordinaryMemoryAddressExcluded context world values
         (candidateAddress + BitVec.ofNat 32 offset)) ||
     (List.range 4).any fun offset =>
-      stackByteCoveredOriginal world
+      ordinaryOriginalMemoryAddressExcluded context world
         (normalizeDataAddress values candidateAddress + BitVec.ofNat 32 offset)
+
+theorem staticWordRelationSlotByteCoveredOn_of_slot_byte
+    (context : StaticProofContext) (candidate : Bool)
+    (slot : StaticWordRelationSlotPair)
+    (member : slot ∈ context.staticWordRelationSlots)
+    (valid : slot.valid context = true) (byte : Nat) (byteBefore : byte < 4) :
+    staticWordRelationSlotByteCoveredOn candidate context
+      ((if candidate then slot.candidateAddress else slot.originalAddress) +
+        BitVec.ofNat 32 byte) = true := by
+  have sideFits :
+      (if candidate then slot.candidateAddress else slot.originalAddress).toNat + 4 <=
+        2 ^ 32 := by
+    cases candidate
+    · simpa using (slot.originalBounds context valid).2.2
+    · simpa using (slot.candidateBounds context valid).2.2
+  have byteSmall : byte < 2 ^ 32 := by omega
+  have addressBefore :
+      (if candidate then slot.candidateAddress else slot.originalAddress).toNat +
+          byte < 2 ^ 32 := by
+    omega
+  have addressNat :
+      ((if candidate then slot.candidateAddress else slot.originalAddress) +
+          BitVec.ofNat 32 byte).toNat =
+        (if candidate then slot.candidateAddress else slot.originalAddress).toNat +
+          byte := by
+    simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt byteSmall, Nat.mod_eq_of_lt addressBefore]
+  simp only [staticWordRelationSlotByteCoveredOn, List.any_eq_true]
+  refine ⟨slot, member, ?_⟩
+  simp only [addressNat, Bool.and_eq_true, decide_eq_true_eq]
+  omega
+
+theorem Memory.write32_apply_of_staticWordSlotByteUncovered
+    (context : StaticProofContext) (candidate : Bool)
+    (slot : StaticWordRelationSlotPair)
+    (member : slot ∈ context.staticWordRelationSlots)
+    (valid : slot.valid context = true)
+    (memory : Memory) (value query : Word)
+    (uncovered : staticWordRelationSlotByteCoveredOn candidate context query = false) :
+    memory.write32
+        (if candidate then slot.candidateAddress else slot.originalAddress) value query =
+      memory query := by
+  let writeAddress := if candidate then slot.candidateAddress else slot.originalAddress
+  have avoids (byte : Nat) (byteBefore : byte < 4) :
+      query ≠ writeAddress + BitVec.ofNat 32 byte := by
+    intro overlap
+    have covered := staticWordRelationSlotByteCoveredOn_of_slot_byte
+      context candidate slot member valid byte byteBefore
+    change staticWordRelationSlotByteCoveredOn candidate context
+      (writeAddress + BitVec.ofNat 32 byte) = true at covered
+    rw [← overlap, uncovered] at covered
+    contradiction
+  have h0 := avoids 0 (by omega)
+  have h1 := avoids 1 (by omega)
+  have h2 := avoids 2 (by omega)
+  have h3 := avoids 3 (by omega)
+  have h0' : query ≠
+      (if candidate then slot.candidateAddress else slot.originalAddress) := by
+    simpa [writeAddress] using h0
+  have h1' : query ≠
+      (if candidate then slot.candidateAddress else slot.originalAddress) +
+        BitVec.ofNat 32 1 := by simpa [writeAddress] using h1
+  have h2' : query ≠
+      (if candidate then slot.candidateAddress else slot.originalAddress) +
+        BitVec.ofNat 32 2 := by simpa [writeAddress] using h2
+  have h3' : query ≠
+      (if candidate then slot.candidateAddress else slot.originalAddress) +
+        BitVec.ofNat 32 3 := by simpa [writeAddress] using h3
+  simp [Memory.write32, h0', h1', h2', h3']
+
+theorem write32AvoidsWord_of_staticWordSlotBytesUncovered
+    (context : StaticProofContext) (candidate : Bool)
+    (slot : StaticWordRelationSlotPair)
+    (member : slot ∈ context.staticWordRelationSlots)
+    (valid : slot.valid context = true) (wordAddress : Word)
+    (uncovered : ∀ byte, byte < 4 →
+      staticWordRelationSlotByteCoveredOn candidate context
+        (wordAddress + BitVec.ofNat 32 byte) = false) :
+    Write32AvoidsWord wordAddress
+      (if candidate then slot.candidateAddress else slot.originalAddress) := by
+  intro wordByte wordByteBefore writeByte writeByteBefore overlap
+  have covered := staticWordRelationSlotByteCoveredOn_of_slot_byte
+    context candidate slot member valid writeByte writeByteBefore
+  rw [← overlap, uncovered wordByte wordByteBefore] at covered
+  contradiction
+
+theorem staticDynamicPointerSlotByteCoveredOn_of_slot_byte
+    (context : StaticProofContext) (candidate : Bool)
+    (slot : StaticDynamicPointerSlotPair)
+    (member : slot ∈ context.staticDynamicPointerSlots)
+    (valid : slot.valid context = true) (byte : Nat) (byteBefore : byte < 4) :
+    staticDynamicPointerSlotByteCoveredOn candidate context
+      ((if candidate then slot.candidateAddress else slot.originalAddress) +
+        BitVec.ofNat 32 byte) = true := by
+  have sideFits :
+      (if candidate then slot.candidateAddress else slot.originalAddress).toNat + 4 <=
+        2 ^ 32 := by
+    cases candidate
+    · simpa using (slot.originalBounds context valid).2.2
+    · simpa using (slot.candidateBounds context valid).2.2
+  have byteSmall : byte < 2 ^ 32 := by omega
+  have addressBefore :
+      (if candidate then slot.candidateAddress else slot.originalAddress).toNat +
+          byte < 2 ^ 32 := by omega
+  have addressNat :
+      ((if candidate then slot.candidateAddress else slot.originalAddress) +
+          BitVec.ofNat 32 byte).toNat =
+        (if candidate then slot.candidateAddress else slot.originalAddress).toNat +
+          byte := by
+    simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt (by omega : byte < 2 ^ 32),
+      Nat.mod_eq_of_lt addressBefore]
+  simp only [staticDynamicPointerSlotByteCoveredOn, List.any_eq_true]
+  refine ⟨slot, member, ?_⟩
+  simp only [addressNat, Bool.and_eq_true, decide_eq_true_eq]
+  omega
+
+theorem Memory.write32_apply_of_staticDynamicPointerSlotByteUncovered
+    (context : StaticProofContext) (candidate : Bool)
+    (slot : StaticDynamicPointerSlotPair)
+    (member : slot ∈ context.staticDynamicPointerSlots)
+    (valid : slot.valid context = true)
+    (memory : Memory) (value query : Word)
+    (uncovered : staticDynamicPointerSlotByteCoveredOn candidate context query = false) :
+    memory.write32
+        (if candidate then slot.candidateAddress else slot.originalAddress) value query =
+      memory query := by
+  let writeAddress := if candidate then slot.candidateAddress else slot.originalAddress
+  have avoids (byte : Nat) (byteBefore : byte < 4) :
+      query ≠ writeAddress + BitVec.ofNat 32 byte := by
+    intro overlap
+    have covered := staticDynamicPointerSlotByteCoveredOn_of_slot_byte
+      context candidate slot member valid byte byteBefore
+    change staticDynamicPointerSlotByteCoveredOn candidate context
+      (writeAddress + BitVec.ofNat 32 byte) = true at covered
+    rw [← overlap, uncovered] at covered
+    contradiction
+  have h0 := avoids 0 (by omega)
+  have h1 := avoids 1 (by omega)
+  have h2 := avoids 2 (by omega)
+  have h3 := avoids 3 (by omega)
+  have h0' : query ≠
+      (if candidate then slot.candidateAddress else slot.originalAddress) := by
+    simpa [writeAddress] using h0
+  have h1' : query ≠
+      (if candidate then slot.candidateAddress else slot.originalAddress) +
+        BitVec.ofNat 32 1 := by simpa [writeAddress] using h1
+  have h2' : query ≠
+      (if candidate then slot.candidateAddress else slot.originalAddress) +
+        BitVec.ofNat 32 2 := by simpa [writeAddress] using h2
+  have h3' : query ≠
+      (if candidate then slot.candidateAddress else slot.originalAddress) +
+        BitVec.ofNat 32 3 := by simpa [writeAddress] using h3
+  simp [Memory.write32, h0', h1', h2', h3']
+
+theorem write32AvoidsWord_of_staticDynamicPointerSlotBytesUncovered
+    (context : StaticProofContext) (candidate : Bool)
+    (slot : StaticDynamicPointerSlotPair)
+    (member : slot ∈ context.staticDynamicPointerSlots)
+    (valid : slot.valid context = true) (wordAddress : Word)
+    (uncovered : ∀ byte, byte < 4 →
+      staticDynamicPointerSlotByteCoveredOn candidate context
+        (wordAddress + BitVec.ofNat 32 byte) = false) :
+    Write32AvoidsWord wordAddress
+      (if candidate then slot.candidateAddress else slot.originalAddress) := by
+  intro wordByte wordByteBefore writeByte writeByteBefore overlap
+  have covered := staticDynamicPointerSlotByteCoveredOn_of_slot_byte
+    context candidate slot member valid writeByte writeByteBefore
+  rw [← overlap, uncovered wordByte wordByteBefore] at covered
+  contradiction
 
 def relocatedOrdinaryMemoryRelated (context : StaticProofContext)
     (world : RelationalWorld) (targets : List CodeTargetPair)
@@ -1398,8 +2796,8 @@ structure RelationalMemoryFamiliesHold (context : StaticProofContext)
   candidateImmutable : ImmutableImageWordMemory context.candidatePe candidate
   ordinary : ordinaryMemoryRelated context world context.codeMap.entries.toList
     (context.relationalValueTargets world) original candidate
-  dynamicRanges : DynamicRangesMemoryHold context world original candidate
   staticPointerSlots : StaticDynamicPointerSlotsMemoryHold context world original candidate
+  staticWordSlots : StaticWordRelationSlotsMemoryHold context world original candidate
 
 structure PairedMemoryUpdateFrame (context : StaticProofContext)
     (world : RelationalWorld) (original candidate : Memory) where
@@ -1430,14 +2828,14 @@ structure PairedMemoryUpdateFrame (context : StaticProofContext)
         (context.relationalValueTargets world)
         (applyConcreteWrites original originalWrites)
         (applyConcreteWrites candidate candidateWrites)
-  preservesDynamicRanges :
-    DynamicRangesMemoryHold context world original candidate →
-      DynamicRangesMemoryHold context world
-        (applyConcreteWrites original originalWrites)
-        (applyConcreteWrites candidate candidateWrites)
   preservesStaticPointerSlots :
     StaticDynamicPointerSlotsMemoryHold context world original candidate →
       StaticDynamicPointerSlotsMemoryHold context world
+        (applyConcreteWrites original originalWrites)
+        (applyConcreteWrites candidate candidateWrites)
+  preservesStaticWordSlots :
+    StaticWordRelationSlotsMemoryHold context world original candidate →
+      StaticWordRelationSlotsMemoryHold context world
         (applyConcreteWrites original originalWrites)
         (applyConcreteWrites candidate candidateWrites)
 
@@ -1457,9 +2855,9 @@ theorem RelationalMemoryFamiliesHold.afterPairedMemoryUpdate
     candidateImmutable :=
       frame.preservesCandidateImmutable related.candidateImmutable
     ordinary := frame.preservesOrdinary related.ordinary
-    dynamicRanges := frame.preservesDynamicRanges related.dynamicRanges
     staticPointerSlots :=
       frame.preservesStaticPointerSlots related.staticPointerSlots
+    staticWordSlots := frame.preservesStaticWordSlots related.staticWordSlots
   }
 
 theorem stackByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
@@ -1470,7 +2868,8 @@ theorem stackByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
     stackByteCoveredCandidate world candidateAddress = false := by
   apply Bool.eq_false_iff.mpr
   intro covered
-  simp [ordinaryMemoryAddressExcluded, covered] at included
+  simp [ordinaryMemoryAddressExcluded, ordinaryOriginalMemoryAddressExcluded,
+    covered] at included
 
 theorem normalizedStackByteCoveredOriginal_false_of_ordinaryMemoryAddressIncluded
     (context : StaticProofContext) (world : RelationalWorld)
@@ -1481,7 +2880,8 @@ theorem normalizedStackByteCoveredOriginal_false_of_ordinaryMemoryAddressInclude
       (normalizeDataAddress values candidateAddress) = false := by
   apply Bool.eq_false_iff.mpr
   intro covered
-  simp [ordinaryMemoryAddressExcluded, covered] at included
+  simp [ordinaryMemoryAddressExcluded, ordinaryOriginalMemoryAddressExcluded,
+    covered] at included
 
 theorem stackByteCoveredCandidate_false_of_ordinaryMemoryWordIncluded
     (context : StaticProofContext) (world : RelationalWorld)
@@ -1507,9 +2907,172 @@ theorem normalizedWordStackByteCoveredOriginal_false_of_ordinaryMemoryWordInclud
     stackByteCoveredOriginal world
       (normalizeDataAddress values candidateAddress + BitVec.ofNat 32 byte) = false := by
   simp only [ordinaryMemoryWordExcluded, Bool.or_eq_false_iff] at included
-  have noStackExclusion := List.any_eq_false.mp included.2 byte
+  have noOriginalExclusion := Bool.eq_false_iff.mpr
+    (List.any_eq_false.mp included.2 byte
+      (List.mem_range.mpr byteBefore))
+  apply Bool.eq_false_iff.mpr
+  intro covered
+  simp [ordinaryOriginalMemoryAddressExcluded, covered] at noOriginalExclusion
+
+theorem dynamicByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (included : ordinaryMemoryAddressExcluded context world values
+      candidateAddress = false) :
+    dynamicByteCoveredCandidate world candidateAddress = false := by
+  apply Bool.eq_false_iff.mpr
+  intro covered
+  simp [ordinaryMemoryAddressExcluded, ordinaryOriginalMemoryAddressExcluded,
+    covered] at included
+
+theorem normalizedDynamicByteCoveredOriginal_false_of_ordinaryMemoryAddressIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (included : ordinaryMemoryAddressExcluded context world values
+      candidateAddress = false) :
+    dynamicByteCoveredOriginal world
+      (normalizeDataAddress values candidateAddress) = false := by
+  apply Bool.eq_false_iff.mpr
+  intro covered
+  simp [ordinaryMemoryAddressExcluded, ordinaryOriginalMemoryAddressExcluded,
+    covered] at included
+
+theorem dynamicByteCoveredCandidate_false_of_ordinaryMemoryWordIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (byte : Nat) (byteBefore : byte < 4)
+    (included : ordinaryMemoryWordExcluded context world values
+      candidateAddress = false) :
+    dynamicByteCoveredCandidate world
+      (candidateAddress + BitVec.ofNat 32 byte) = false := by
+  simp only [ordinaryMemoryWordExcluded, Bool.or_eq_false_iff] at included
+  have noOrdinaryExclusion := List.any_eq_false.mp included.1 byte
     (List.mem_range.mpr byteBefore)
-  exact Bool.eq_false_iff.mpr noStackExclusion
+  exact dynamicByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+    context world values (candidateAddress + BitVec.ofNat 32 byte)
+    (Bool.eq_false_iff.mpr noOrdinaryExclusion)
+
+theorem normalizedWordDynamicByteCoveredOriginal_false_of_ordinaryMemoryWordIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (byte : Nat) (byteBefore : byte < 4)
+    (included : ordinaryMemoryWordExcluded context world values
+      candidateAddress = false) :
+    dynamicByteCoveredOriginal world
+      (normalizeDataAddress values candidateAddress + BitVec.ofNat 32 byte) = false := by
+  simp only [ordinaryMemoryWordExcluded, Bool.or_eq_false_iff] at included
+  have noOriginalExclusion := Bool.eq_false_iff.mpr
+    (List.any_eq_false.mp included.2 byte
+      (List.mem_range.mpr byteBefore))
+  apply Bool.eq_false_iff.mpr
+  intro covered
+  simp [ordinaryOriginalMemoryAddressExcluded, covered] at noOriginalExclusion
+
+theorem staticDynamicPointerSlotByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (included : ordinaryMemoryAddressExcluded context world values
+      candidateAddress = false) :
+    staticDynamicPointerSlotByteCoveredCandidate context candidateAddress = false := by
+  apply Bool.eq_false_iff.mpr
+  intro covered
+  simp [ordinaryMemoryAddressExcluded, covered] at included
+
+theorem normalizedStaticDynamicPointerSlotByteCoveredOriginal_false_of_ordinaryMemoryAddressIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (included : ordinaryMemoryAddressExcluded context world values
+      candidateAddress = false) :
+    staticDynamicPointerSlotByteCoveredOriginal context
+      (normalizeDataAddress values candidateAddress) = false := by
+  apply Bool.eq_false_iff.mpr
+  intro covered
+  simp [ordinaryMemoryAddressExcluded, ordinaryOriginalMemoryAddressExcluded,
+    covered] at included
+
+theorem staticDynamicPointerSlotByteCoveredCandidate_false_of_ordinaryMemoryWordIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (byte : Nat) (byteBefore : byte < 4)
+    (included : ordinaryMemoryWordExcluded context world values
+      candidateAddress = false) :
+    staticDynamicPointerSlotByteCoveredCandidate context
+      (candidateAddress + BitVec.ofNat 32 byte) = false := by
+  simp only [ordinaryMemoryWordExcluded, Bool.or_eq_false_iff] at included
+  have noOrdinaryExclusion := List.any_eq_false.mp included.1 byte
+    (List.mem_range.mpr byteBefore)
+  exact staticDynamicPointerSlotByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+    context world values (candidateAddress + BitVec.ofNat 32 byte)
+    (Bool.eq_false_iff.mpr noOrdinaryExclusion)
+
+theorem normalizedWordStaticDynamicPointerSlotByteCoveredOriginal_false_of_ordinaryMemoryWordIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (byte : Nat) (byteBefore : byte < 4)
+    (included : ordinaryMemoryWordExcluded context world values
+      candidateAddress = false) :
+    staticDynamicPointerSlotByteCoveredOriginal context
+      (normalizeDataAddress values candidateAddress + BitVec.ofNat 32 byte) = false := by
+  simp only [ordinaryMemoryWordExcluded, Bool.or_eq_false_iff] at included
+  have noOriginalExclusion := Bool.eq_false_iff.mpr
+    (List.any_eq_false.mp included.2 byte
+      (List.mem_range.mpr byteBefore))
+  apply Bool.eq_false_iff.mpr
+  intro covered
+  simp [ordinaryOriginalMemoryAddressExcluded, covered] at noOriginalExclusion
+
+theorem staticWordSlotByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (included : ordinaryMemoryAddressExcluded context world values
+      candidateAddress = false) :
+    staticWordRelationSlotByteCoveredCandidate context candidateAddress = false := by
+  apply Bool.eq_false_iff.mpr
+  intro covered
+  simp [ordinaryMemoryAddressExcluded, covered] at included
+
+theorem normalizedStaticWordSlotByteCoveredOriginal_false_of_ordinaryMemoryAddressIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (included : ordinaryMemoryAddressExcluded context world values
+      candidateAddress = false) :
+    staticWordRelationSlotByteCoveredOriginal context
+      (normalizeDataAddress values candidateAddress) = false := by
+  apply Bool.eq_false_iff.mpr
+  intro covered
+  simp [ordinaryMemoryAddressExcluded, ordinaryOriginalMemoryAddressExcluded,
+    covered] at included
+
+theorem staticWordSlotByteCoveredCandidate_false_of_ordinaryMemoryWordIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (byte : Nat) (byteBefore : byte < 4)
+    (included : ordinaryMemoryWordExcluded context world values
+      candidateAddress = false) :
+    staticWordRelationSlotByteCoveredCandidate context
+      (candidateAddress + BitVec.ofNat 32 byte) = false := by
+  simp only [ordinaryMemoryWordExcluded, Bool.or_eq_false_iff] at included
+  have noOrdinaryExclusion := List.any_eq_false.mp included.1 byte
+    (List.mem_range.mpr byteBefore)
+  exact staticWordSlotByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+    context world values (candidateAddress + BitVec.ofNat 32 byte)
+    (Bool.eq_false_iff.mpr noOrdinaryExclusion)
+
+theorem normalizedWordStaticWordSlotByteCoveredOriginal_false_of_ordinaryMemoryWordIncluded
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (candidateAddress : Word)
+    (byte : Nat) (byteBefore : byte < 4)
+    (included : ordinaryMemoryWordExcluded context world values
+      candidateAddress = false) :
+    staticWordRelationSlotByteCoveredOriginal context
+      (normalizeDataAddress values candidateAddress + BitVec.ofNat 32 byte) = false := by
+  simp only [ordinaryMemoryWordExcluded, Bool.or_eq_false_iff] at included
+  have noOriginalExclusion := Bool.eq_false_iff.mpr
+    (List.any_eq_false.mp included.2 byte
+      (List.mem_range.mpr byteBefore))
+  apply Bool.eq_false_iff.mpr
+  intro covered
+  simp [ordinaryOriginalMemoryAddressExcluded, covered] at noOriginalExclusion
 
 theorem ordinaryMemoryRelated_after_paired_stack_word_write
     (context : StaticProofContext) (world : RelationalWorld)
@@ -1601,6 +3164,273 @@ theorem ordinaryMemoryRelated_after_paired_stack_word_write
     rw [candidatePreserved', originalPreserved']
     exact related address ordinaryIncluded
 
+theorem ordinaryMemoryRelated_after_paired_dynamic_word_write
+    (context : StaticProofContext) (world : RelationalWorld)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (original candidate : Memory)
+    (range : DynamicAddressRangePair) (rangeMember : range ∈ world.dynamicRanges)
+    (rangeValid : range.disjointFromImages context = true)
+    (offset : Nat) (inside : offset + 4 <= range.size)
+    (originalValue candidateValue : Word)
+    (related : ordinaryMemoryRelated context world targets values original candidate) :
+    ordinaryMemoryRelated context world targets values
+      (original.write32 (range.originalBase + BitVec.ofNat 32 offset) originalValue)
+      (candidate.write32 (range.candidateBase + BitVec.ofNat 32 offset)
+        candidateValue) := by
+  by_cases relocations : hasRelocationWords values = true
+  · simp only [ordinaryMemoryRelated, relocations] at related ⊢
+    rcases related with ⟨relatedBytes, relatedWords⟩
+    constructor
+    · intro address relocationIncluded ordinaryIncluded
+      have candidateUncovered :=
+        dynamicByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+          context world values address ordinaryIncluded
+      have originalUncovered :=
+        normalizedDynamicByteCoveredOriginal_false_of_ordinaryMemoryAddressIncluded
+          context world values address ordinaryIncluded
+      have candidatePreserved := Memory.write32_apply_of_dynamicByteUncovered
+        context true world range rangeMember rangeValid offset inside candidate
+        candidateValue address candidateUncovered
+      have originalPreserved := Memory.write32_apply_of_dynamicByteUncovered
+        context false world range rangeMember rangeValid offset inside original
+        originalValue (normalizeDataAddress values address) originalUncovered
+      have candidatePreserved' :
+          candidate.write32 (range.candidateBase + BitVec.ofNat 32 offset)
+              candidateValue address = candidate address := by
+        simpa [DynamicAddressRangePair.sideBase] using candidatePreserved
+      have originalPreserved' :
+          original.write32 (range.originalBase + BitVec.ofNat 32 offset)
+              originalValue (normalizeDataAddress values address) =
+            original (normalizeDataAddress values address) := by
+        simpa [DynamicAddressRangePair.sideBase] using originalPreserved
+      rw [candidatePreserved', originalPreserved']
+      exact relatedBytes address relocationIncluded ordinaryIncluded
+    · intro address relocationStart ordinaryIncluded
+      have candidateAvoids := write32AvoidsWord_of_dynamicBytesUncovered context true
+        world range rangeMember rangeValid offset inside address
+        (fun byte byteBefore =>
+          dynamicByteCoveredCandidate_false_of_ordinaryMemoryWordIncluded
+            context world values address byte byteBefore ordinaryIncluded)
+      have originalAvoids := write32AvoidsWord_of_dynamicBytesUncovered context false
+        world range rangeMember rangeValid offset inside
+        (normalizeDataAddress values address)
+        (fun byte byteBefore =>
+          normalizedWordDynamicByteCoveredOriginal_false_of_ordinaryMemoryWordIncluded
+            context world values address byte byteBefore ordinaryIncluded)
+      have candidateAvoids' : Write32AvoidsWord address
+          (range.candidateBase + BitVec.ofNat 32 offset) := by
+        simpa [DynamicAddressRangePair.sideBase] using candidateAvoids
+      have originalAvoids' : Write32AvoidsWord (normalizeDataAddress values address)
+          (range.originalBase + BitVec.ofNat 32 offset) := by
+        simpa [DynamicAddressRangePair.sideBase] using originalAvoids
+      rw [Memory.read32_write32_of_avoids _ _ _ _ originalAvoids',
+        Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids']
+      exact relatedWords address relocationStart ordinaryIncluded
+  · have noRelocations : hasRelocationWords values = false := by
+      exact Bool.eq_false_iff.mpr relocations
+    simp only [ordinaryMemoryRelated, noRelocations] at related ⊢
+    intro address ordinaryIncluded
+    have candidateUncovered :=
+      dynamicByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+        context world values address ordinaryIncluded
+    have originalUncovered :=
+      normalizedDynamicByteCoveredOriginal_false_of_ordinaryMemoryAddressIncluded
+        context world values address ordinaryIncluded
+    have candidatePreserved := Memory.write32_apply_of_dynamicByteUncovered
+      context true world range rangeMember rangeValid offset inside candidate
+      candidateValue address candidateUncovered
+    have originalPreserved := Memory.write32_apply_of_dynamicByteUncovered
+      context false world range rangeMember rangeValid offset inside original
+      originalValue (normalizeDataAddress values address) originalUncovered
+    have candidatePreserved' :
+        candidate.write32 (range.candidateBase + BitVec.ofNat 32 offset)
+            candidateValue address = candidate address := by
+      simpa [DynamicAddressRangePair.sideBase] using candidatePreserved
+    have originalPreserved' :
+        original.write32 (range.originalBase + BitVec.ofNat 32 offset)
+            originalValue (normalizeDataAddress values address) =
+          original (normalizeDataAddress values address) := by
+      simpa [DynamicAddressRangePair.sideBase] using originalPreserved
+    rw [candidatePreserved', originalPreserved']
+    exact related address ordinaryIncluded
+
+theorem ordinaryMemoryRelated_after_paired_static_word_write
+    (context : StaticProofContext) (world : RelationalWorld)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (original candidate : Memory)
+    (slot : StaticWordRelationSlotPair)
+    (slotMember : slot ∈ context.staticWordRelationSlots)
+    (slotValid : slot.valid context = true)
+    (originalValue candidateValue : Word)
+    (related : ordinaryMemoryRelated context world targets values original candidate) :
+    ordinaryMemoryRelated context world targets values
+      (original.write32 slot.originalAddress originalValue)
+      (candidate.write32 slot.candidateAddress candidateValue) := by
+  by_cases relocations : hasRelocationWords values = true
+  · simp only [ordinaryMemoryRelated, relocations] at related ⊢
+    rcases related with ⟨relatedBytes, relatedWords⟩
+    constructor
+    · intro address relocationIncluded ordinaryIncluded
+      have candidateUncovered :
+          staticWordRelationSlotByteCoveredOn true context address = false := by
+        simpa [staticWordRelationSlotByteCoveredCandidate] using
+          staticWordSlotByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+            context world values address ordinaryIncluded
+      have originalUncovered : staticWordRelationSlotByteCoveredOn false context
+          (normalizeDataAddress values address) = false := by
+        simpa [staticWordRelationSlotByteCoveredOriginal] using
+          normalizedStaticWordSlotByteCoveredOriginal_false_of_ordinaryMemoryAddressIncluded
+            context world values address ordinaryIncluded
+      have candidatePreserved :=
+        Memory.write32_apply_of_staticWordSlotByteUncovered context true slot
+          slotMember slotValid candidate candidateValue address candidateUncovered
+      have originalPreserved :=
+        Memory.write32_apply_of_staticWordSlotByteUncovered context false slot
+          slotMember slotValid original originalValue
+          (normalizeDataAddress values address) originalUncovered
+      rw [show candidate.write32 slot.candidateAddress candidateValue address =
+          candidate address by simpa using candidatePreserved,
+        show original.write32 slot.originalAddress originalValue
+            (normalizeDataAddress values address) =
+          original (normalizeDataAddress values address) by
+            simpa using originalPreserved]
+      exact relatedBytes address relocationIncluded ordinaryIncluded
+    · intro address relocationStart ordinaryIncluded
+      have candidateAvoids :=
+        write32AvoidsWord_of_staticWordSlotBytesUncovered context true slot
+          slotMember slotValid address (fun byte byteBefore => by
+            simpa [staticWordRelationSlotByteCoveredCandidate] using
+              staticWordSlotByteCoveredCandidate_false_of_ordinaryMemoryWordIncluded
+                context world values address byte byteBefore ordinaryIncluded)
+      have originalAvoids :=
+        write32AvoidsWord_of_staticWordSlotBytesUncovered context false slot
+          slotMember slotValid (normalizeDataAddress values address)
+          (fun byte byteBefore => by
+            simpa [staticWordRelationSlotByteCoveredOriginal] using
+              normalizedWordStaticWordSlotByteCoveredOriginal_false_of_ordinaryMemoryWordIncluded
+                context world values address byte byteBefore ordinaryIncluded)
+      rw [Memory.read32_write32_of_avoids _ _ _ _
+          (by simpa using originalAvoids),
+        Memory.read32_write32_of_avoids _ _ _ _
+          (by simpa using candidateAvoids)]
+      exact relatedWords address relocationStart ordinaryIncluded
+  · have noRelocations : hasRelocationWords values = false :=
+      Bool.eq_false_iff.mpr relocations
+    simp only [ordinaryMemoryRelated, noRelocations] at related ⊢
+    intro address ordinaryIncluded
+    have candidateUncovered :
+        staticWordRelationSlotByteCoveredOn true context address = false := by
+      simpa [staticWordRelationSlotByteCoveredCandidate] using
+        staticWordSlotByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+          context world values address ordinaryIncluded
+    have originalUncovered : staticWordRelationSlotByteCoveredOn false context
+        (normalizeDataAddress values address) = false := by
+      simpa [staticWordRelationSlotByteCoveredOriginal] using
+        normalizedStaticWordSlotByteCoveredOriginal_false_of_ordinaryMemoryAddressIncluded
+          context world values address ordinaryIncluded
+    have candidatePreserved :=
+      Memory.write32_apply_of_staticWordSlotByteUncovered context true slot
+        slotMember slotValid candidate candidateValue address candidateUncovered
+    have originalPreserved :=
+      Memory.write32_apply_of_staticWordSlotByteUncovered context false slot
+        slotMember slotValid original originalValue
+        (normalizeDataAddress values address) originalUncovered
+    rw [show candidate.write32 slot.candidateAddress candidateValue address =
+        candidate address by simpa using candidatePreserved,
+      show original.write32 slot.originalAddress originalValue
+          (normalizeDataAddress values address) =
+        original (normalizeDataAddress values address) by
+          simpa using originalPreserved]
+    exact related address ordinaryIncluded
+
+theorem ordinaryMemoryRelated_after_paired_static_dynamic_pointer_write
+    (context : StaticProofContext) (world : RelationalWorld)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (original candidate : Memory)
+    (slot : StaticDynamicPointerSlotPair)
+    (slotMember : slot ∈ context.staticDynamicPointerSlots)
+    (slotValid : slot.valid context = true)
+    (originalValue candidateValue : Word)
+    (related : ordinaryMemoryRelated context world targets values original candidate) :
+    ordinaryMemoryRelated context world targets values
+      (original.write32 slot.originalAddress originalValue)
+      (candidate.write32 slot.candidateAddress candidateValue) := by
+  by_cases relocations : hasRelocationWords values = true
+  · simp only [ordinaryMemoryRelated, relocations] at related ⊢
+    rcases related with ⟨relatedBytes, relatedWords⟩
+    constructor
+    · intro address relocationIncluded ordinaryIncluded
+      have candidateUncovered :
+          staticDynamicPointerSlotByteCoveredOn true context address = false := by
+        simpa [staticDynamicPointerSlotByteCoveredCandidate] using
+          staticDynamicPointerSlotByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+            context world values address ordinaryIncluded
+      have originalUncovered : staticDynamicPointerSlotByteCoveredOn false context
+          (normalizeDataAddress values address) = false := by
+        simpa [staticDynamicPointerSlotByteCoveredOriginal] using
+          normalizedStaticDynamicPointerSlotByteCoveredOriginal_false_of_ordinaryMemoryAddressIncluded
+            context world values address ordinaryIncluded
+      have candidatePreserved :=
+        Memory.write32_apply_of_staticDynamicPointerSlotByteUncovered
+          context true slot slotMember slotValid candidate candidateValue address
+          candidateUncovered
+      have originalPreserved :=
+        Memory.write32_apply_of_staticDynamicPointerSlotByteUncovered
+          context false slot slotMember slotValid original originalValue
+          (normalizeDataAddress values address) originalUncovered
+      rw [show candidate.write32 slot.candidateAddress candidateValue address =
+          candidate address by simpa using candidatePreserved,
+        show original.write32 slot.originalAddress originalValue
+            (normalizeDataAddress values address) =
+          original (normalizeDataAddress values address) by
+            simpa using originalPreserved]
+      exact relatedBytes address relocationIncluded ordinaryIncluded
+    · intro address relocationStart ordinaryIncluded
+      have candidateAvoids :=
+        write32AvoidsWord_of_staticDynamicPointerSlotBytesUncovered
+          context true slot slotMember slotValid address (fun byte byteBefore => by
+            simpa [staticDynamicPointerSlotByteCoveredCandidate] using
+              staticDynamicPointerSlotByteCoveredCandidate_false_of_ordinaryMemoryWordIncluded
+                context world values address byte byteBefore ordinaryIncluded)
+      have originalAvoids :=
+        write32AvoidsWord_of_staticDynamicPointerSlotBytesUncovered
+          context false slot slotMember slotValid
+          (normalizeDataAddress values address) (fun byte byteBefore => by
+            simpa [staticDynamicPointerSlotByteCoveredOriginal] using
+              normalizedWordStaticDynamicPointerSlotByteCoveredOriginal_false_of_ordinaryMemoryWordIncluded
+                context world values address byte byteBefore ordinaryIncluded)
+      rw [Memory.read32_write32_of_avoids _ _ _ _ (by simpa using originalAvoids),
+        Memory.read32_write32_of_avoids _ _ _ _ (by simpa using candidateAvoids)]
+      exact relatedWords address relocationStart ordinaryIncluded
+  · have noRelocations : hasRelocationWords values = false :=
+      Bool.eq_false_iff.mpr relocations
+    simp only [ordinaryMemoryRelated, noRelocations] at related ⊢
+    intro address ordinaryIncluded
+    have candidateUncovered :
+        staticDynamicPointerSlotByteCoveredOn true context address = false := by
+      simpa [staticDynamicPointerSlotByteCoveredCandidate] using
+        staticDynamicPointerSlotByteCoveredCandidate_false_of_ordinaryMemoryAddressIncluded
+          context world values address ordinaryIncluded
+    have originalUncovered : staticDynamicPointerSlotByteCoveredOn false context
+        (normalizeDataAddress values address) = false := by
+      simpa [staticDynamicPointerSlotByteCoveredOriginal] using
+        normalizedStaticDynamicPointerSlotByteCoveredOriginal_false_of_ordinaryMemoryAddressIncluded
+          context world values address ordinaryIncluded
+    have candidatePreserved :=
+      Memory.write32_apply_of_staticDynamicPointerSlotByteUncovered
+        context true slot slotMember slotValid candidate candidateValue address
+        candidateUncovered
+    have originalPreserved :=
+      Memory.write32_apply_of_staticDynamicPointerSlotByteUncovered
+        context false slot slotMember slotValid original originalValue
+        (normalizeDataAddress values address) originalUncovered
+    rw [show candidate.write32 slot.candidateAddress candidateValue address =
+        candidate address by simpa using candidatePreserved,
+      show original.write32 slot.originalAddress originalValue
+          (normalizeDataAddress values address) =
+        original (normalizeDataAddress values address) by simpa using originalPreserved]
+    exact related address ordinaryIncluded
+
 theorem RelationalMemoryFamiliesHold.afterPairedStackWordWrite
     (context : StaticProofContext) (world : RelationalWorld)
     (original candidate : Memory)
@@ -1608,6 +3438,7 @@ theorem RelationalMemoryFamiliesHold.afterPairedStackWordWrite
     (importsStatic : world.importAddressesStaticValid context = true)
     (dynamicRangesValid : world.dynamicRangesValid context = true)
     (staticPointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (staticWordSlotsValid : staticWordRelationSlotsValid context = true)
     (location : PairedStackWordLocation world)
     (locationValid : location.range.disjointFromImages context = true)
     (originalValue candidateValue : Word)
@@ -1666,13 +3497,6 @@ theorem RelationalMemoryFamiliesHold.afterPairedStackWordWrite
             context.codeMap.entries.toList (context.relationalValueTargets world)
             original candidate location.range location.rangeMember locationValid
             location.offset location.inside originalValue candidateValue ordinary
-      preservesDynamicRanges := by
-        intro dynamicRanges
-        simpa [applyConcreteWrites, location.originalAddressExact,
-          location.candidateAddressExact] using
-          DynamicRangesMemoryHold.afterPairedStackWordWrite context world original candidate
-            dynamicRangesValid location.range location.rangeMember locationValid
-            location.offset location.inside originalValue candidateValue dynamicRanges
       preservesStaticPointerSlots := by
         intro staticPointerSlots
         simpa [applyConcreteWrites, location.originalAddressExact,
@@ -1681,6 +3505,273 @@ theorem RelationalMemoryFamiliesHold.afterPairedStackWordWrite
             original candidate staticPointerSlotsValid location.range locationValid
             location.offset location.inside originalValue candidateValue
             staticPointerSlots
+      preservesStaticWordSlots := by
+        intro staticWordSlots
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          StaticWordRelationSlotsMemoryHold.afterPairedStackWordWrite context world
+            original candidate staticWordSlotsValid location.range locationValid
+            location.offset location.inside originalValue candidateValue
+            staticWordSlots
+    } related
+  simpa [applyConcreteWrites] using updated
+
+theorem RelationalMemoryFamiliesHold.afterPairedDynamicWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (stackRangesValid : world.stackRangesValid context = true)
+    (importsStatic : world.importAddressesStaticValid context = true)
+    (dynamicRangesValid : world.dynamicRangesValid context = true)
+    (staticPointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (staticWordSlotsValid : staticWordRelationSlotsValid context = true)
+    (location : PairedDynamicWordLocation world)
+    (originalValue candidateValue : Word)
+    (valuesRelated : location.relation.kind.valuesHold context world location.range
+      originalValue candidateValue = true)
+    (related : RelationalMemoryFamiliesHold context world original candidate) :
+    RelationalMemoryFamiliesHold context world
+      (original.write32 location.originalAddress originalValue)
+      (candidate.write32 location.candidateAddress candidateValue) := by
+  have dynamicRangesShape := dynamicRangesValid
+  simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+    List.all_eq_true] at dynamicRangesShape
+  have rangeValid : location.range.disjointFromImages context = true :=
+    dynamicRangesShape.1.1.1.1.1.2 location.range location.rangeMember
+  have relationsValid : location.range.wordRelationsValid = true :=
+    dynamicRangesShape.1.1.1.1.2 location.range location.rangeMember
+  simp only [DynamicAddressRangePair.wordRelationsValid, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at relationsValid
+  have inside := (relationsValid location.relation location.relationMember).1
+  have originalNoWrap := DynamicAddressRangePair.sideBase_noWrap_of_disjoint
+    context false location.range rangeValid
+  have candidateNoWrap := DynamicAddressRangePair.sideBase_noWrap_of_disjoint
+    context true location.range rangeValid
+  have rangeShape := rangeValid
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+    Bool.or_eq_true, decide_eq_true_eq] at rangeShape
+  have updated := RelationalMemoryFamiliesHold.afterPairedMemoryUpdate
+    context world original candidate {
+      originalWrites := [(location.originalAddress, originalValue)]
+      candidateWrites := [(location.candidateAddress, candidateValue)]
+      preservesStackRanges := by
+        intro stackRanges
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          StackRangesMemoryHold.afterPairedDynamicWordWrite context world
+            original candidate stackRangesValid dynamicRangesValid location.range
+            location.rangeMember location.relation location.relationMember
+            originalValue candidateValue stackRanges
+      preservesImportAddresses := by
+        intro importAddresses
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          ImportAddressesMemoryHold.afterPairedDynamicWordWrite context world
+            original candidate location.range location.rangeMember rangeValid
+            location.relation.offset inside originalValue candidateValue importsStatic
+            importAddresses
+      preservesOriginalImmutable := by
+        intro originalImmutable
+        simpa [applyConcreteWrites, location.originalAddressExact] using
+          ImmutableImageWordMemory.afterStackWordWrite context.originalPe original
+            location.range.originalBase location.range.size location.relation.offset
+            originalValue originalNoWrap rangeShape.1.2 inside originalImmutable
+      preservesCandidateImmutable := by
+        intro candidateImmutable
+        simpa [applyConcreteWrites, location.candidateAddressExact] using
+          ImmutableImageWordMemory.afterStackWordWrite context.candidatePe candidate
+            location.range.candidateBase location.range.size location.relation.offset
+            candidateValue candidateNoWrap rangeShape.2 inside candidateImmutable
+      preservesOrdinary := by
+        intro ordinary
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          ordinaryMemoryRelated_after_paired_dynamic_word_write context world
+            context.codeMap.entries.toList (context.relationalValueTargets world)
+            original candidate location.range location.rangeMember rangeValid
+            location.relation.offset inside originalValue candidateValue ordinary
+      preservesStaticPointerSlots := by
+        intro staticPointerSlots
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          StaticDynamicPointerSlotsMemoryHold.afterPairedStackWordWrite
+            context world original candidate staticPointerSlotsValid location.range
+            rangeValid location.relation.offset inside originalValue candidateValue
+            staticPointerSlots
+      preservesStaticWordSlots := by
+        intro staticWordSlots
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          StaticWordRelationSlotsMemoryHold.afterPairedStackWordWrite context world
+            original candidate staticWordSlotsValid location.range rangeValid
+            location.relation.offset inside originalValue candidateValue
+            staticWordSlots
+    } related
+  simpa [applyConcreteWrites] using updated
+
+theorem RelationalMemoryFamiliesHold.afterPairedStaticWordWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (stackRangesValid : world.stackRangesValid context = true)
+    (importsStatic : world.importAddressesStaticValid context = true)
+    (dynamicRangesValid : world.dynamicRangesValid context = true)
+    (staticPointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (staticWordSlotsValid : staticWordRelationSlotsValid context = true)
+    (location : PairedStaticWordLocation context)
+    (originalValue candidateValue : Word)
+    (valuesRelated : location.slot.relation.holds context world
+      originalValue candidateValue = true)
+    (related : RelationalMemoryFamiliesHold context world original candidate) :
+    RelationalMemoryFamiliesHold context world
+      (original.write32 location.originalAddress originalValue)
+      (candidate.write32 location.candidateAddress candidateValue) := by
+  have slotValid := location.slot.valid_of_member context staticWordSlotsValid
+    location.slotMember
+  have slotShape := slotValid
+  simp only [StaticWordRelationSlotPair.valid, Bool.and_eq_true] at slotShape
+  have originalNotImmutable := slotShape.1.2
+  have candidateNotImmutable := slotShape.2
+  rw [Bool.not_eq_true'] at originalNotImmutable candidateNotImmutable
+  have updated := RelationalMemoryFamiliesHold.afterPairedMemoryUpdate
+    context world original candidate {
+      originalWrites := [(location.originalAddress, originalValue)]
+      candidateWrites := [(location.candidateAddress, candidateValue)]
+      preservesStackRanges := by
+        intro stackRanges
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          StackRangesMemoryHold.afterPairedStaticWordWrite context world
+            original candidate stackRangesValid staticWordSlotsValid location.slot
+            location.slotMember originalValue candidateValue stackRanges
+      preservesImportAddresses := by
+        intro importAddresses
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          ImportAddressesMemoryHold.afterPairedStaticWordWrite context world
+            original candidate importsStatic staticWordSlotsValid location.slot
+            location.slotMember originalValue candidateValue importAddresses
+      preservesOriginalImmutable := by
+        intro originalImmutable
+        simpa [applyConcreteWrites, location.originalAddressExact] using
+          ImmutableImageWordMemory.afterStaticWordWrite context.originalPe original
+            location.slot.originalAddress originalValue
+            (location.slot.originalBounds context slotValid).2.2
+            originalNotImmutable originalImmutable
+      preservesCandidateImmutable := by
+        intro candidateImmutable
+        simpa [applyConcreteWrites, location.candidateAddressExact] using
+          ImmutableImageWordMemory.afterStaticWordWrite context.candidatePe candidate
+            location.slot.candidateAddress candidateValue
+            (location.slot.candidateBounds context slotValid).2.2
+            candidateNotImmutable candidateImmutable
+      preservesOrdinary := by
+        intro ordinary
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          ordinaryMemoryRelated_after_paired_static_word_write context world
+            context.codeMap.entries.toList (context.relationalValueTargets world)
+            original candidate location.slot location.slotMember slotValid
+            originalValue candidateValue ordinary
+      preservesStaticPointerSlots := by
+        intro staticPointerSlots
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          StaticDynamicPointerSlotsMemoryHold.afterPairedStaticWordWrite
+            context world original candidate staticPointerSlotsValid
+            staticWordSlotsValid location.slot location.slotMember
+            originalValue candidateValue staticPointerSlots
+      preservesStaticWordSlots := by
+        intro staticWordSlots
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          StaticWordRelationSlotsMemoryHold.afterPairedStaticWordWrite
+            context world original candidate staticWordSlotsValid location.slot
+            location.slotMember originalValue candidateValue valuesRelated
+            staticWordSlots
+    } related
+  simpa [applyConcreteWrites] using updated
+
+theorem RelationalMemoryFamiliesHold.afterPairedStaticDynamicPointerWrite
+    (context : StaticProofContext) (world : RelationalWorld)
+    (original candidate : Memory)
+    (stackRangesValid : world.stackRangesValid context = true)
+    (importsStatic : world.importAddressesStaticValid context = true)
+    (dynamicRangesValid : world.dynamicRangesValid context = true)
+    (staticPointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (staticWordSlotsValid : staticWordRelationSlotsValid context = true)
+    (location : PairedStaticDynamicPointerLocation context)
+    (range : DynamicAddressRangePair) (rangeMember : range ∈ world.dynamicRanges)
+    (requiredWords : location.slot.requiredWords.all
+      range.wordRelations.contains = true)
+    (related : RelationalMemoryFamiliesHold context world original candidate) :
+    RelationalMemoryFamiliesHold context world
+      (original.write32 location.originalAddress range.originalBase)
+      (candidate.write32 location.candidateAddress range.candidateBase) := by
+  have slotValid := location.slot.valid_of_member context staticPointerSlotsValid
+    location.slotMember
+  have slotShape := slotValid
+  simp only [StaticDynamicPointerSlotPair.valid, Bool.and_eq_true] at slotShape
+  have originalNotImmutable := slotShape.1.1.2
+  have candidateNotImmutable := slotShape.1.2
+  rw [Bool.not_eq_true'] at originalNotImmutable candidateNotImmutable
+  have updated := RelationalMemoryFamiliesHold.afterPairedMemoryUpdate
+    context world original candidate {
+      originalWrites := [(location.originalAddress, range.originalBase)]
+      candidateWrites := [(location.candidateAddress, range.candidateBase)]
+      preservesStackRanges := by
+        intro stackRanges
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          StackRangesMemoryHold.afterPairedStaticDynamicPointerWrite
+            context world original candidate stackRangesValid
+            staticPointerSlotsValid location.slot location.slotMember
+            range.originalBase range.candidateBase stackRanges
+      preservesImportAddresses := by
+        intro importAddresses
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          ImportAddressesMemoryHold.afterPairedStaticDynamicPointerWrite
+            context world original candidate importsStatic staticPointerSlotsValid
+            location.slot location.slotMember range.originalBase range.candidateBase
+            importAddresses
+      preservesOriginalImmutable := by
+        intro originalImmutable
+        simpa [applyConcreteWrites, location.originalAddressExact] using
+          ImmutableImageWordMemory.afterStaticWordWrite context.originalPe original
+            location.slot.originalAddress range.originalBase
+            (location.slot.originalBounds context slotValid).2.2
+            originalNotImmutable originalImmutable
+      preservesCandidateImmutable := by
+        intro candidateImmutable
+        simpa [applyConcreteWrites, location.candidateAddressExact] using
+          ImmutableImageWordMemory.afterStaticWordWrite context.candidatePe candidate
+            location.slot.candidateAddress range.candidateBase
+            (location.slot.candidateBounds context slotValid).2.2
+            candidateNotImmutable candidateImmutable
+      preservesOrdinary := by
+        intro ordinary
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          ordinaryMemoryRelated_after_paired_static_dynamic_pointer_write
+            context world context.codeMap.entries.toList
+            (context.relationalValueTargets world) original candidate
+            location.slot location.slotMember slotValid range.originalBase
+            range.candidateBase ordinary
+      preservesStaticPointerSlots := by
+        intro staticPointerSlots
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          StaticDynamicPointerSlotsMemoryHold.afterPairedStaticDynamicPointerWrite
+            context world original candidate staticPointerSlotsValid
+            dynamicRangesValid location.slot location.slotMember range rangeMember
+            requiredWords staticPointerSlots
+      preservesStaticWordSlots := by
+        intro staticWordSlots
+        simpa [applyConcreteWrites, location.originalAddressExact,
+          location.candidateAddressExact] using
+          StaticWordRelationSlotsMemoryHold.afterPairedStaticDynamicPointerWrite
+            context world original candidate staticPointerSlotsValid
+            staticWordSlotsValid location.slot location.slotMember
+            range.originalBase range.candidateBase staticWordSlots
     } related
   simpa [applyConcreteWrites] using updated
 
@@ -1705,12 +3796,250 @@ def PairedStackWordUpdate.candidateWrite
     (update : PairedStackWordUpdate context world) : Word × Word :=
   (update.location.candidateAddress, update.candidateValue)
 
+structure PairedStaticWordUpdate (context : StaticProofContext)
+    (world : RelationalWorld) where
+  location : PairedStaticWordLocation context
+  originalValue : Word
+  candidateValue : Word
+  valuesRelated : location.slot.relation.holds context world
+    originalValue candidateValue = true
+
+def PairedStaticWordUpdate.originalWrite
+    {context : StaticProofContext} {world : RelationalWorld}
+    (update : PairedStaticWordUpdate context world) : Word × Word :=
+  (update.location.originalAddress, update.originalValue)
+
+def PairedStaticWordUpdate.candidateWrite
+    {context : StaticProofContext} {world : RelationalWorld}
+    (update : PairedStaticWordUpdate context world) : Word × Word :=
+  (update.location.candidateAddress, update.candidateValue)
+
+structure PairedDynamicWordUpdate (context : StaticProofContext)
+    (world : RelationalWorld) where
+  location : PairedDynamicWordLocation world
+  originalValue : Word
+  candidateValue : Word
+  valuesRelated : location.relation.kind.valuesHold context world location.range
+    originalValue candidateValue = true
+
+def PairedDynamicWordUpdate.originalWrite
+    {context : StaticProofContext} {world : RelationalWorld}
+    (update : PairedDynamicWordUpdate context world) : Word × Word :=
+  (update.location.originalAddress, update.originalValue)
+
+def PairedDynamicWordUpdate.candidateWrite
+    {context : StaticProofContext} {world : RelationalWorld}
+    (update : PairedDynamicWordUpdate context world) : Word × Word :=
+  (update.location.candidateAddress, update.candidateValue)
+
+structure PairedStaticDynamicPointerUpdate (context : StaticProofContext)
+    (world : RelationalWorld) where
+  location : PairedStaticDynamicPointerLocation context
+  range : DynamicAddressRangePair
+  rangeMember : range ∈ world.dynamicRanges
+  requiredWords : location.slot.requiredWords.all range.wordRelations.contains = true
+
+def PairedStaticDynamicPointerUpdate.originalWrite
+    {context : StaticProofContext} {world : RelationalWorld}
+    (update : PairedStaticDynamicPointerUpdate context world) : Word × Word :=
+  (update.location.originalAddress, update.range.originalBase)
+
+def PairedStaticDynamicPointerUpdate.candidateWrite
+    {context : StaticProofContext} {world : RelationalWorld}
+    (update : PairedStaticDynamicPointerUpdate context world) : Word × Word :=
+  (update.location.candidateAddress, update.range.candidateBase)
+
+inductive PairedPreparedWordUpdate (context : StaticProofContext)
+    (world : RelationalWorld) where
+  | stack (update : PairedStackWordUpdate context world)
+  | staticWord (update : PairedStaticWordUpdate context world)
+  | dynamicWord (update : PairedDynamicWordUpdate context world)
+  | staticDynamicPointer (update : PairedStaticDynamicPointerUpdate context world)
+
+inductive PreparedWordWriteKind where
+  | stack
+  | staticWord
+  | dynamicWord
+  | staticDynamicPointer
+deriving Repr, DecidableEq
+
+def PairedPreparedWordUpdate.kind
+    {context : StaticProofContext} {world : RelationalWorld} :
+    PairedPreparedWordUpdate context world -> PreparedWordWriteKind
+  | .stack _ => .stack
+  | .staticWord _ => .staticWord
+  | .dynamicWord _ => .dynamicWord
+  | .staticDynamicPointer _ => .staticDynamicPointer
+
+def PairedPreparedWordUpdate.originalWrite
+    {context : StaticProofContext} {world : RelationalWorld} :
+    PairedPreparedWordUpdate context world -> Word × Word
+  | .stack update => update.originalWrite
+  | .staticWord update => update.originalWrite
+  | .dynamicWord update => update.originalWrite
+  | .staticDynamicPointer update => update.originalWrite
+
+def PairedPreparedWordUpdate.candidateWrite
+    {context : StaticProofContext} {world : RelationalWorld} :
+    PairedPreparedWordUpdate context world -> Word × Word
+  | .stack update => update.candidateWrite
+  | .staticWord update => update.candidateWrite
+  | .dynamicWord update => update.candidateWrite
+  | .staticDynamicPointer update => update.candidateWrite
+
+theorem PairedPreparedWordUpdate.avoidsStackLocation_of_nonStack
+    (context : StaticProofContext) (world : RelationalWorld)
+    (worldValid : world.valid context = true)
+    (stackRangesValid : world.stackRangesValid context = true)
+    (staticPointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (staticWordSlotsValid : staticWordRelationSlotsValid context = true)
+    (stackLocation : PairedStackWordLocation world)
+    (stackLocationValid : stackLocation.range.disjointFromImages context = true)
+    (update : PairedPreparedWordUpdate context world)
+    (nonStack : (update.kind != .stack) = true) :
+    Write32AvoidsWord stackLocation.originalAddress update.originalWrite.1 ∧
+      Write32AvoidsWord stackLocation.candidateAddress update.candidateWrite.1 := by
+  cases update with
+  | stack update => simp [PairedPreparedWordUpdate.kind] at nonStack
+  | staticWord update =>
+      have slotValid := update.location.slot.valid_of_member context
+        staticWordSlotsValid update.location.slotMember
+      have originalBounds := update.location.slot.originalBounds context slotValid
+      have candidateBounds := update.location.slot.candidateBounds context slotValid
+      have stackShape := stackLocationValid
+      simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+        Bool.or_eq_true, decide_eq_true_eq] at stackShape
+      rcases stackShape with
+        ⟨⟨⟨⟨_nonempty, originalNoWrap⟩, candidateNoWrap⟩,
+          originalDisjoint⟩, candidateDisjoint⟩
+      have originalAvoids := (stackRangeWordWriteAvoidsImageWord
+        stackLocation.range.originalBase stackLocation.range.size
+        context.originalPe.imageBase context.originalPe.sizeOfImage
+        stackLocation.offset stackLocation.inside originalNoWrap originalDisjoint
+        update.location.slot.originalAddress originalBounds.1 originalBounds.2.1
+        originalBounds.2.2).symm
+      have candidateAvoids := (stackRangeWordWriteAvoidsImageWord
+        stackLocation.range.candidateBase stackLocation.range.size
+        context.candidatePe.imageBase context.candidatePe.sizeOfImage
+        stackLocation.offset stackLocation.inside candidateNoWrap candidateDisjoint
+        update.location.slot.candidateAddress candidateBounds.1 candidateBounds.2.1
+        candidateBounds.2.2).symm
+      constructor
+      · simpa [PairedPreparedWordUpdate.originalWrite,
+          PairedStaticWordUpdate.originalWrite,
+          stackLocation.originalAddressExact,
+          update.location.originalAddressExact] using originalAvoids
+      · simpa [PairedPreparedWordUpdate.candidateWrite,
+          PairedStaticWordUpdate.candidateWrite,
+          stackLocation.candidateAddressExact,
+          update.location.candidateAddressExact] using candidateAvoids
+  | dynamicWord update =>
+      simp only [RelationalWorld.valid, Bool.and_eq_true] at worldValid
+      have dynamicValid : world.dynamicRangesValid context = true :=
+        worldValid.1.1.1.1
+      have dynamicValidForWords := dynamicValid
+      simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+        List.all_eq_true] at dynamicValidForWords
+      have wordRelationsValid := dynamicValidForWords.1.1.1.1.2
+        update.location.range update.location.rangeMember
+      simp only [DynamicAddressRangePair.wordRelationsValid, List.all_eq_true,
+        Bool.and_eq_true, decide_eq_true_eq] at wordRelationsValid
+      have dynamicInside :=
+        (wordRelationsValid update.location.relation
+          update.location.relationMember).1
+      have originalAvoids :=
+        (stackRangeWordWriteAvoidsDynamicRangeWord context false world dynamicValid
+          stackLocation.range update.location.range stackLocation.rangeMember
+          update.location.rangeMember stackLocationValid stackLocation.offset
+          update.location.relation.offset stackLocation.inside
+          dynamicInside).symm
+      have candidateAvoids :=
+        (stackRangeWordWriteAvoidsDynamicRangeWord context true world dynamicValid
+          stackLocation.range update.location.range stackLocation.rangeMember
+          update.location.rangeMember stackLocationValid stackLocation.offset
+          update.location.relation.offset stackLocation.inside
+          dynamicInside).symm
+      constructor
+      · simpa [PairedPreparedWordUpdate.originalWrite,
+          PairedDynamicWordUpdate.originalWrite,
+          stackLocation.originalAddressExact,
+          update.location.originalAddressExact,
+          DynamicAddressRangePair.sideBase] using originalAvoids
+      · simpa [PairedPreparedWordUpdate.candidateWrite,
+          PairedDynamicWordUpdate.candidateWrite,
+          stackLocation.candidateAddressExact,
+          update.location.candidateAddressExact,
+          DynamicAddressRangePair.sideBase] using candidateAvoids
+  | staticDynamicPointer update =>
+      have slotValid := update.location.slot.valid_of_member context
+        staticPointerSlotsValid update.location.slotMember
+      have originalBounds := update.location.slot.originalBounds context slotValid
+      have candidateBounds := update.location.slot.candidateBounds context slotValid
+      have stackShape := stackLocationValid
+      simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+        Bool.or_eq_true, decide_eq_true_eq] at stackShape
+      rcases stackShape with
+        ⟨⟨⟨⟨_nonempty, originalNoWrap⟩, candidateNoWrap⟩,
+          originalDisjoint⟩, candidateDisjoint⟩
+      have originalAvoids := (stackRangeWordWriteAvoidsImageWord
+        stackLocation.range.originalBase stackLocation.range.size
+        context.originalPe.imageBase context.originalPe.sizeOfImage
+        stackLocation.offset stackLocation.inside originalNoWrap originalDisjoint
+        update.location.slot.originalAddress originalBounds.1 originalBounds.2.1
+        originalBounds.2.2).symm
+      have candidateAvoids := (stackRangeWordWriteAvoidsImageWord
+        stackLocation.range.candidateBase stackLocation.range.size
+        context.candidatePe.imageBase context.candidatePe.sizeOfImage
+        stackLocation.offset stackLocation.inside candidateNoWrap candidateDisjoint
+        update.location.slot.candidateAddress candidateBounds.1 candidateBounds.2.1
+        candidateBounds.2.2).symm
+      constructor
+      · simpa [PairedPreparedWordUpdate.originalWrite,
+          PairedStaticDynamicPointerUpdate.originalWrite,
+          stackLocation.originalAddressExact,
+          update.location.originalAddressExact] using originalAvoids
+      · simpa [PairedPreparedWordUpdate.candidateWrite,
+          PairedStaticDynamicPointerUpdate.candidateWrite,
+          stackLocation.candidateAddressExact,
+          update.location.candidateAddressExact] using candidateAvoids
+
+theorem pairedPreparedWordUpdatesAvoidStackLocation_of_all_nonStack
+    (context : StaticProofContext) (world : RelationalWorld)
+    (worldValid : world.valid context = true)
+    (stackRangesValid : world.stackRangesValid context = true)
+    (staticPointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (staticWordSlotsValid : staticWordRelationSlotsValid context = true)
+    (stackLocation : PairedStackWordLocation world)
+    (stackLocationValid : stackLocation.range.disjointFromImages context = true)
+    (updates : List (PairedPreparedWordUpdate context world))
+    (allNonStack : updates.all (fun update => update.kind != .stack) = true) :
+    WritesAvoidWord stackLocation.originalAddress
+        (updates.map PairedPreparedWordUpdate.originalWrite) ∧
+      WritesAvoidWord stackLocation.candidateAddress
+        (updates.map PairedPreparedWordUpdate.candidateWrite) := by
+  constructor
+  · intro write writeMember
+    rcases List.mem_map.mp writeMember with ⟨update, updateMember, rfl⟩
+    have nonStack := List.all_eq_true.mp allNonStack update updateMember
+    exact (update.avoidsStackLocation_of_nonStack context world worldValid
+      stackRangesValid staticPointerSlotsValid staticWordSlotsValid stackLocation
+      stackLocationValid
+      nonStack).1
+  · intro write writeMember
+    rcases List.mem_map.mp writeMember with ⟨update, updateMember, rfl⟩
+    have nonStack := List.all_eq_true.mp allNonStack update updateMember
+    exact (update.avoidsStackLocation_of_nonStack context world worldValid
+      stackRangesValid staticPointerSlotsValid staticWordSlotsValid stackLocation
+      stackLocationValid
+      nonStack).2
+
 theorem RelationalMemoryFamiliesHold.afterPairedStackWordUpdates
     (context : StaticProofContext) (world : RelationalWorld)
     (stackRangesValid : world.stackRangesValid context = true)
     (importsStatic : world.importAddressesStaticValid context = true)
     (dynamicRangesValid : world.dynamicRangesValid context = true)
     (staticPointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (staticWordSlotsValid : staticWordRelationSlotsValid context = true)
     (updates : List (PairedStackWordUpdate context world))
     (original candidate : Memory)
     (related : RelationalMemoryFamiliesHold context world original candidate) :
@@ -1722,7 +4051,7 @@ theorem RelationalMemoryFamiliesHold.afterPairedStackWordUpdates
   | cons update rest induction =>
       have afterHead := RelationalMemoryFamiliesHold.afterPairedStackWordWrite
         context world original candidate stackRangesValid importsStatic
-        dynamicRangesValid staticPointerSlotsValid update.location
+        dynamicRangesValid staticPointerSlotsValid staticWordSlotsValid update.location
         update.locationValid update.originalValue update.candidateValue
         update.valuesRelated related
       simpa [applyConcreteWrites, PairedStackWordUpdate.originalWrite,
@@ -1733,6 +4062,90 @@ theorem RelationalMemoryFamiliesHold.afterPairedStackWordUpdates
           (candidate := candidate.write32 update.location.candidateAddress
             update.candidateValue)
           afterHead
+
+theorem RelationalMemoryFamiliesHold.afterPairedPreparedWordUpdates
+    (context : StaticProofContext) (world : RelationalWorld)
+    (stackRangesValid : world.stackRangesValid context = true)
+    (importsStatic : world.importAddressesStaticValid context = true)
+    (dynamicRangesValid : world.dynamicRangesValid context = true)
+    (staticPointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (staticWordSlotsValid : staticWordRelationSlotsValid context = true)
+    (updates : List (PairedPreparedWordUpdate context world))
+    (original candidate : Memory)
+    (related : RelationalMemoryFamiliesHold context world original candidate) :
+    RelationalMemoryFamiliesHold context world
+      (applyConcreteWrites original
+        (updates.map PairedPreparedWordUpdate.originalWrite))
+      (applyConcreteWrites candidate
+        (updates.map PairedPreparedWordUpdate.candidateWrite)) := by
+  induction updates generalizing original candidate with
+  | nil => simpa [applyConcreteWrites] using related
+  | cons update rest induction =>
+      cases update with
+      | stack update =>
+          have afterHead := RelationalMemoryFamiliesHold.afterPairedStackWordWrite
+            context world original candidate stackRangesValid importsStatic
+            dynamicRangesValid staticPointerSlotsValid staticWordSlotsValid
+            update.location update.locationValid update.originalValue
+            update.candidateValue update.valuesRelated related
+          simpa [applyConcreteWrites, PairedPreparedWordUpdate.originalWrite,
+            PairedPreparedWordUpdate.candidateWrite,
+            PairedStackWordUpdate.originalWrite,
+            PairedStackWordUpdate.candidateWrite] using
+            induction
+              (original := original.write32 update.location.originalAddress
+                update.originalValue)
+              (candidate := candidate.write32 update.location.candidateAddress
+                update.candidateValue)
+              afterHead
+      | staticWord update =>
+          have afterHead := RelationalMemoryFamiliesHold.afterPairedStaticWordWrite
+            context world original candidate stackRangesValid importsStatic
+            dynamicRangesValid staticPointerSlotsValid staticWordSlotsValid
+            update.location update.originalValue update.candidateValue
+            update.valuesRelated related
+          simpa [applyConcreteWrites, PairedPreparedWordUpdate.originalWrite,
+            PairedPreparedWordUpdate.candidateWrite,
+            PairedStaticWordUpdate.originalWrite,
+            PairedStaticWordUpdate.candidateWrite] using
+            induction
+              (original := original.write32 update.location.originalAddress
+                update.originalValue)
+              (candidate := candidate.write32 update.location.candidateAddress
+                update.candidateValue)
+              afterHead
+      | dynamicWord update =>
+          have afterHead := RelationalMemoryFamiliesHold.afterPairedDynamicWordWrite
+            context world original candidate stackRangesValid importsStatic
+            dynamicRangesValid staticPointerSlotsValid staticWordSlotsValid
+            update.location update.originalValue update.candidateValue
+            update.valuesRelated related
+          simpa [applyConcreteWrites, PairedPreparedWordUpdate.originalWrite,
+            PairedPreparedWordUpdate.candidateWrite,
+            PairedDynamicWordUpdate.originalWrite,
+            PairedDynamicWordUpdate.candidateWrite] using
+            induction
+              (original := original.write32 update.location.originalAddress
+                update.originalValue)
+              (candidate := candidate.write32 update.location.candidateAddress
+                update.candidateValue)
+              afterHead
+      | staticDynamicPointer update =>
+          have afterHead :=
+            RelationalMemoryFamiliesHold.afterPairedStaticDynamicPointerWrite
+              context world original candidate stackRangesValid importsStatic
+              dynamicRangesValid staticPointerSlotsValid staticWordSlotsValid
+              update.location update.range update.rangeMember update.requiredWords related
+          simpa [applyConcreteWrites, PairedPreparedWordUpdate.originalWrite,
+            PairedPreparedWordUpdate.candidateWrite,
+            PairedStaticDynamicPointerUpdate.originalWrite,
+            PairedStaticDynamicPointerUpdate.candidateWrite] using
+            induction
+              (original := original.write32 update.location.originalAddress
+                update.range.originalBase)
+              (candidate := candidate.write32 update.location.candidateAddress
+                update.range.candidateBase)
+              afterHead
 
 theorem ordinaryMemoryRelated_after_no_writes
     (context : StaticProofContext) (world : RelationalWorld)
@@ -2069,6 +4482,7 @@ structure DynamicRegisterRangeRelation where
   originalOffset : Nat := 0
   candidateOffset : Nat := 0
   requiredWords : List DynamicWordRelation := []
+  activeWords : List DynamicWordRelation := []
 deriving Repr, DecidableEq
 
 def DynamicRegisterRangeRelation.holds (world : RelationalWorld)
@@ -2079,7 +4493,8 @@ def DynamicRegisterRangeRelation.holds (world : RelationalWorld)
         range.originalBase + BitVec.ofNat 32 relation.originalOffset &&
       candidate.get relation.candidate ==
         range.candidateBase + BitVec.ofNat 32 relation.candidateOffset &&
-      relation.requiredWords.all range.wordRelations.contains
+      relation.requiredWords.all range.wordRelations.contains &&
+      relation.activeWords.all relation.requiredWords.contains
 
 def dynamicRegisterRangeRelationsHold (world : RelationalWorld)
     (relations : List DynamicRegisterRangeRelation)
@@ -2112,6 +4527,60 @@ def RegisterValueRelation.holds
         mappedValueRelated values original candidate
   | .relatedWord =>
       wordRelated originalImageBase candidateImageBase targets values original candidate
+
+theorem DynamicRegisterRangeRelation.relatedWord_of_zero_offsets
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relation : DynamicRegisterRangeRelation) (original candidate : PureState)
+    (worldValid : world.valid context = true)
+    (originalOffset : relation.originalOffset = 0)
+    (candidateOffset : relation.candidateOffset = 0)
+    (holds : relation.holds world original candidate = true) :
+    RegisterValueRelation.holds context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      (context.relationalValueTargets world) .relatedWord
+      (original.get relation.original) (candidate.get relation.candidate) = true := by
+  simp only [DynamicRegisterRangeRelation.holds, List.any_eq_true,
+    Bool.and_eq_true, beq_iff_eq] at holds
+  rcases holds with
+    ⟨range, rangeMember, ⟨⟨⟨originalRegister, candidateRegister⟩,
+      _requiredWords⟩, _activeWords⟩⟩
+  rw [originalOffset] at originalRegister
+  rw [candidateOffset] at candidateRegister
+  simp [BitVec.add_zero] at originalRegister candidateRegister
+  simp only [RelationalWorld.valid, Bool.and_eq_true] at worldValid
+  have dynamicValid : world.dynamicRangesValid context = true := worldValid.1.1.1.1
+  simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+    List.all_eq_true] at dynamicValid
+  have rangeValid := dynamicValid.1.1.1.1.1.2 range rangeMember
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true]
+      at rangeValid
+  have originalNonzero : range.originalBase ≠ BitVec.ofNat 32 0 := by
+    simpa using rangeValid.1.1.1.1.1.2
+  have candidateNonzero : range.candidateBase ≠ BitVec.ofNat 32 0 := by
+    simpa using rangeValid.1.1.1.1.2
+  have mapped : mappedValueRelated (context.relationalValueTargets world)
+      range.originalBase range.candidateBase = true := by
+    unfold StaticProofContext.relationalValueTargets
+    simp only [mappedValueRelated, List.any_append, Bool.or_eq_true]
+    apply Or.inr
+    unfold RelationalWorld.runtimeValueTargets
+    simp only [List.any_append, Bool.or_eq_true]
+    apply Or.inl
+    unfold RelationalWorld.dynamicValueTargets
+    simp only [List.any_map, List.any_eq_true]
+    refine ⟨range, rangeMember, ?_⟩
+    by_cases zero : range.size = 0
+    · simp [DynamicAddressRangePair.valueTarget, zero]
+    · simp [DynamicAddressRangePair.valueTarget, zero]
+  rw [originalRegister, candidateRegister]
+  have originalZeroFalse :
+      (range.originalBase == BitVec.ofNat 32 0) = false :=
+    beq_eq_false_iff_ne.mpr originalNonzero
+  have candidateZeroFalse :
+      (range.candidateBase == BitVec.ofNat 32 0) = false :=
+    beq_eq_false_iff_ne.mpr candidateNonzero
+  simp [RegisterValueRelation.holds, wordRelated, originalZeroFalse,
+    candidateZeroFalse, mapped]
 
 theorem mappedValueRelated_append_left (values extra : List ValueTargetPair)
     (original candidate : Word)
@@ -2161,6 +4630,12 @@ def exactIdentityRegister (relations : List RegisterRelationPair) (register : Re
     relation.original == register && relation.candidate == register &&
       relation.relation == .exact
 
+def exactRegisterPair (relations : List RegisterRelationPair)
+    (originalRegister candidateRegister : Reg) : Bool :=
+  relations.any fun relation =>
+    relation.original == originalRegister && relation.candidate == candidateRegister &&
+      relation.relation == .exact
+
 theorem registerRelationsHold_exact_identity
     (originalImageBase candidateImageBase : Nat)
     (targets : List CodeTargetPair) (values : List ValueTargetPair)
@@ -2175,6 +4650,25 @@ theorem registerRelationsHold_exact_identity
   rcases exact with ⟨relation, member, checks⟩
   have holds := related relation member
   rcases relation with ⟨originalRegister, candidateRegister, relationKind⟩
+  simp only [Bool.and_eq_true, beq_iff_eq] at checks
+  rcases checks with ⟨⟨originalEqual, candidateEqual⟩, relationExact⟩
+  rw [originalEqual, candidateEqual, relationExact] at holds
+  simpa [RegisterValueRelation.holds] using holds
+
+theorem registerRelationsHold_exact_pair
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relations : List RegisterRelationPair) (original candidate : PureState)
+    (originalRegister candidateRegister : Reg)
+    (related : registerRelationsHold originalImageBase candidateImageBase targets values
+      relations original candidate = true)
+    (exact : exactRegisterPair relations originalRegister candidateRegister = true) :
+    original.get originalRegister = candidate.get candidateRegister := by
+  simp only [registerRelationsHold, List.all_eq_true] at related
+  simp only [exactRegisterPair, List.any_eq_true] at exact
+  rcases exact with ⟨relation, member, checks⟩
+  have holds := related relation member
+  rcases relation with ⟨relationOriginal, relationCandidate, relationKind⟩
   simp only [Bool.and_eq_true, beq_iff_eq] at checks
   rcases checks with ⟨⟨originalEqual, candidateEqual⟩, relationExact⟩
   rw [originalEqual, candidateEqual, relationExact] at holds
@@ -2245,9 +4739,194 @@ def StackWindowPair.holds (world : RelationalWorld) (window : StackWindowPair)
         ((original.get window.originalRegister).toNat % 4 == 0 &&
           (candidate.get window.candidateRegister).toNat % 4 == 0))
 
+theorem StackWindowPair.relatedWord_of_holds
+    (context : StaticProofContext) (world : RelationalWorld)
+    (window : StackWindowPair) (original candidate : PureState)
+    (rangesValid : world.stackRangesValid context = true)
+    (bytesAbovePositive : 0 < window.bytesAbove)
+    (holds : window.holds world original candidate = true) :
+    RegisterValueRelation.holds context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      (context.relationalValueTargets world) .relatedWord
+      (original.get window.originalRegister)
+      (candidate.get window.candidateRegister) = true := by
+  cases rangeResult : world.stackRanges.find? (fun range =>
+      range.id == window.rangeId) with
+  | none => simp [StackWindowPair.holds, rangeResult] at holds
+  | some range =>
+      simp only [StackWindowPair.holds, rangeResult, Bool.and_eq_true,
+        beq_iff_eq, decide_eq_true_eq] at holds
+      rcases holds with
+        ⟨⟨⟨⟨⟨originalLower, originalUpper⟩, candidateLower⟩,
+          candidateUpper⟩, pairedOffset⟩, _alignment⟩
+      have rangeMember := List.mem_of_find?_eq_some rangeResult
+      simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
+        List.all_eq_true] at rangesValid
+      have rangeValid := rangesValid.1.1.2 range rangeMember
+      simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+        Bool.or_eq_true, decide_eq_true_eq, beq_iff_eq] at rangeValid
+      rcases rangeValid with
+        ⟨⟨⟨disjoint, _originalBaseAligned⟩, _candidateBaseAligned⟩,
+          _sizeAligned⟩
+      rcases disjoint with
+        ⟨⟨⟨⟨rangeStart, originalNoWrap⟩, candidateNoWrap⟩,
+          _originalDisjoint⟩, _candidateDisjoint⟩
+      have rangeNonempty : 0 < range.size := rangeStart.1.1
+      have originalBaseNonzero :
+          (range.originalBase == BitVec.ofNat 32 0) = false := by
+        simpa using rangeStart.1.2
+      have candidateBaseNonzero :
+          (range.candidateBase == BitVec.ofNat 32 0) = false := by
+        simpa using rangeStart.2
+      let rangeOffset :=
+        (original.get window.originalRegister).toNat - range.originalBase.toNat
+      have originalAtOffset :
+          (original.get window.originalRegister).toNat =
+            range.originalBase.toNat + rangeOffset := by
+        dsimp [rangeOffset]
+        omega
+      have candidateRangeOffset :
+          (candidate.get window.candidateRegister).toNat -
+              range.candidateBase.toNat = rangeOffset := by
+        exact pairedOffset.symm
+      have candidateAtOffset :
+          (candidate.get window.candidateRegister).toNat =
+            range.candidateBase.toNat + rangeOffset := by
+        omega
+      have originalBelowEnd :
+          (original.get window.originalRegister).toNat <
+            range.originalBase.toNat + range.size := by
+        omega
+      have candidateBelowEnd :
+          (candidate.get window.candidateRegister).toNat <
+            range.candidateBase.toNat + range.size := by
+        omega
+      have rangeOffsetInside : rangeOffset < range.size := by
+        omega
+      have originalAddressExact :
+          original.get window.originalRegister =
+            range.originalBase + BitVec.ofNat 32 rangeOffset := by
+        apply BitVec.eq_of_toNat_eq
+        simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt (by omega : rangeOffset < 2 ^ 32),
+          Nat.mod_eq_of_lt (by omega :
+            range.originalBase.toNat + rangeOffset < 2 ^ 32)]
+        exact originalAtOffset
+      have candidateAddressExact :
+          candidate.get window.candidateRegister =
+            range.candidateBase + BitVec.ofNat 32 rangeOffset := by
+        apply BitVec.eq_of_toNat_eq
+        simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt (by omega : rangeOffset < 2 ^ 32),
+          Nat.mod_eq_of_lt (by omega :
+            range.candidateBase.toNat + rangeOffset < 2 ^ 32)]
+        exact candidateAtOffset
+      have originalBaseRoundtrip :
+          BitVec.ofNat 32 range.originalBase.toNat = range.originalBase := by
+        apply BitVec.eq_of_toNat_eq
+        simp [BitVec.toNat_ofNat]
+      have candidateBaseRoundtrip :
+          BitVec.ofNat 32 range.candidateBase.toNat = range.candidateBase := by
+        apply BitVec.eq_of_toNat_eq
+        simp [BitVec.toNat_ofNat]
+      have candidateContained : valueTargetContainsCandidate range.valueTarget
+          (candidate.get window.candidateRegister) = true := by
+        simp only [valueTargetContainsCandidate, DynamicAddressRangePair.valueTarget]
+        simp only [Bool.and_eq_true, decide_eq_true_eq]
+        refine ⟨⟨rangeNonempty, ?_⟩, ?_⟩
+        · rw [candidateBaseRoundtrip, candidateAddressExact]
+          simp only [BitVec.le_def, BitVec.toNat_add, BitVec.toNat_ofNat]
+          rw [Nat.mod_eq_of_lt (by omega : rangeOffset < 2 ^ 32)]
+          rw [Nat.mod_eq_of_lt (by omega :
+            range.candidateBase.toNat + rangeOffset < 2 ^ 32)]
+          omega
+        · rw [candidateBaseRoundtrip]
+          simp only [BitVec.lt_def, BitVec.toNat_add, BitVec.toNat_ofNat]
+          rw [Nat.mod_eq_of_lt (by omega : range.size < 2 ^ 32)]
+          rw [Nat.mod_eq_of_lt candidateNoWrap]
+          exact candidateBelowEnd
+      have mapped : mappedValueRelated (context.relationalValueTargets world)
+          (original.get window.originalRegister)
+          (candidate.get window.candidateRegister) = true := by
+        simp only [mappedValueRelated, List.any_eq_true]
+        refine ⟨range.valueTarget, ?_, ?_⟩
+        · unfold StaticProofContext.relationalValueTargets
+          unfold RelationalWorld.runtimeValueTargets
+          unfold RelationalWorld.stackValueTargets
+          simp only [List.mem_append, List.mem_map]
+          exact Or.inr (Or.inr ⟨range, rangeMember, rfl⟩)
+        · simp only [DynamicAddressRangePair.valueTarget,
+            if_neg (Nat.ne_of_gt rangeNonempty), Bool.or_eq_true,
+            Bool.and_eq_true, beq_iff_eq]
+          apply Or.inr
+          refine ⟨candidateContained, ?_⟩
+          rw [originalBaseRoundtrip, candidateBaseRoundtrip,
+            originalAddressExact, candidateAddressExact,
+            BitVec.add_comm range.candidateBase, BitVec.add_sub_cancel]
+      have originalZeroFalse :
+          (original.get window.originalRegister == BitVec.ofNat 32 0) = false := by
+        apply beq_eq_false_iff_ne.mpr
+        intro zero
+        have zeroNat := congrArg BitVec.toNat zero
+        simp only [BitVec.toNat_ofNat] at zeroNat
+        have baseNonzero := beq_eq_false_iff_ne.mp originalBaseNonzero
+        have basePositive : 0 < range.originalBase.toNat := by
+          apply Nat.pos_of_ne_zero
+          intro baseZero
+          apply baseNonzero
+          apply BitVec.eq_of_toNat_eq
+          simpa [baseZero]
+        omega
+      have candidateZeroFalse :
+          (candidate.get window.candidateRegister == BitVec.ofNat 32 0) = false := by
+        apply beq_eq_false_iff_ne.mpr
+        intro zero
+        have zeroNat := congrArg BitVec.toNat zero
+        simp only [BitVec.toNat_ofNat] at zeroNat
+        have baseNonzero := beq_eq_false_iff_ne.mp candidateBaseNonzero
+        have basePositive : 0 < range.candidateBase.toNat := by
+          apply Nat.pos_of_ne_zero
+          intro baseZero
+          apply baseNonzero
+          apply BitVec.eq_of_toNat_eq
+          simpa [baseZero]
+        omega
+      simp [RegisterValueRelation.holds, wordRelated, originalZeroFalse,
+        candidateZeroFalse, mapped]
+
 def stackWindowsRelated (world : RelationalWorld) (windows : List StackWindowPair)
     (original candidate : PureState) : Bool :=
   windows.all fun window => window.holds world original candidate
+
+structure DynamicStackRangeRelation where
+  window : StackWindowPair
+  stackOffset : Nat
+  originalOffset : Nat := 0
+  candidateOffset : Nat := 0
+  requiredWords : List DynamicWordRelation := []
+  activeWords : List DynamicWordRelation := []
+deriving Repr, DecidableEq
+
+def DynamicStackRangeRelation.holds (world : RelationalWorld)
+    (relation : DynamicStackRangeRelation)
+    (original candidate : MachineState) : Bool :=
+  relation.window.holds world original.registers candidate.registers &&
+    world.dynamicRanges.any fun range =>
+      Memory.read32 original.memory
+          (original.registers.get relation.window.originalRegister +
+            BitVec.ofNat 32 relation.stackOffset) ==
+          range.originalBase + BitVec.ofNat 32 relation.originalOffset &&
+        Memory.read32 candidate.memory
+          (candidate.registers.get relation.window.candidateRegister +
+            BitVec.ofNat 32 relation.stackOffset) ==
+          range.candidateBase + BitVec.ofNat 32 relation.candidateOffset &&
+        relation.requiredWords.all range.wordRelations.contains &&
+        relation.activeWords.all relation.requiredWords.contains
+
+def dynamicStackRangeRelationsHold (world : RelationalWorld)
+    (relations : List DynamicStackRangeRelation)
+    (original candidate : MachineState) : Bool :=
+  relations.all fun relation => relation.holds world original candidate
 
 theorem pairedStackWordLocation_below_window_amount
     (context : StaticProofContext) (world : RelationalWorld)
@@ -2780,11 +5459,680 @@ structure StateInvariant where
   registerRelations : List RegisterRelationPair
   importRegisterRelations : List ImportRegisterRelation := []
   dynamicRegisterRangeRelations : List DynamicRegisterRangeRelation := []
+  dynamicStackRangeRelations : List DynamicStackRangeRelation := []
   flagBits : List Nat := [0, 2, 6, 7, 10, 11]
   bounds : List RegisterBoundPair := []
   addressSeparations : List AddressSeparationPair := []
   stackWindows : List StackWindowPair := []
 deriving Repr, DecidableEq
+
+def dynamicWordRequirementsHold (context : StaticProofContext)
+    (world : RelationalWorld) (range : DynamicAddressRangePair)
+    (requirements : List DynamicWordRelation)
+    (original candidate : Memory) : Bool :=
+  requirements.all fun requirement =>
+    requirement.offset + 4 <= range.size &&
+      requirement.holds context world range original candidate
+
+theorem dynamicWordRequirementsHold_single_after_paired_write
+    (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair) (requirement : DynamicWordRelation)
+    (original candidate : Memory) (originalValue candidateValue : Word)
+    (rangeValid : range.disjointFromImages context = true)
+    (inside : requirement.offset + 4 <= range.size)
+    (valuesRelated : requirement.kind.valuesHold context world range
+      originalValue candidateValue = true) :
+    dynamicWordRequirementsHold context world range [requirement]
+      (original.write32
+        (range.originalBase + BitVec.ofNat 32 requirement.offset) originalValue)
+      (candidate.write32
+        (range.candidateBase + BitVec.ofNat 32 requirement.offset) candidateValue) = true := by
+  have originalFits := DynamicAddressRangePair.wordAddress_fits context false
+    range rangeValid requirement.offset inside
+  have candidateFits := DynamicAddressRangePair.wordAddress_fits context true
+    range rangeValid requirement.offset inside
+  have originalFits' :
+      (range.originalBase + BitVec.ofNat 32 requirement.offset).toNat + 4 <=
+        2 ^ 32 := by
+    simpa [DynamicAddressRangePair.sideBase] using originalFits
+  have candidateFits' :
+      (range.candidateBase + BitVec.ofNat 32 requirement.offset).toNat + 4 <=
+        2 ^ 32 := by
+    simpa [DynamicAddressRangePair.sideBase] using candidateFits
+  simp only [dynamicWordRequirementsHold, List.all_cons, List.all_nil,
+    Bool.and_true, Bool.and_eq_true]
+  constructor
+  · exact decide_eq_true inside
+  · unfold DynamicWordRelation.holds
+    rw [Memory.read32_write32_same_of_fits _ _ _ originalFits',
+      Memory.read32_write32_same_of_fits _ _ _ candidateFits']
+    exact valuesRelated
+
+theorem dynamicWordRequirementsHold_mono
+    (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair)
+    (sourceRequirements targetRequirements : List DynamicWordRelation)
+    (original candidate : Memory)
+    (subset : targetRequirements.all sourceRequirements.contains = true)
+    (sourceHolds : dynamicWordRequirementsHold context world range
+      sourceRequirements original candidate = true) :
+    dynamicWordRequirementsHold context world range targetRequirements
+      original candidate = true := by
+  simp only [dynamicWordRequirementsHold, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at sourceHolds ⊢
+  simp only [List.all_eq_true] at subset
+  intro requirement member
+  have sourceMember : requirement ∈ sourceRequirements :=
+    List.contains_iff_mem.mp (subset requirement member)
+  exact sourceHolds requirement sourceMember
+
+theorem dynamicWordRequirementsHold_after_single_dynamic_write
+    (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair) (writeRelation : DynamicWordRelation)
+    (sourceRequirements targetRequirements : List DynamicWordRelation)
+    (original candidate : Memory) (originalValue candidateValue : Word)
+    (rangesValid : world.dynamicRangesValid context = true)
+    (rangeMember : range ∈ world.dynamicRanges)
+    (writeMember : writeRelation ∈ range.wordRelations)
+    (sourceAvailable : sourceRequirements.all range.wordRelations.contains = true)
+    (targetCovered : (targetRequirements.all fun requirement =>
+      requirement == writeRelation || sourceRequirements.contains requirement) = true)
+    (sourceHolds : dynamicWordRequirementsHold context world range
+      sourceRequirements original candidate = true)
+    (valuesRelated : writeRelation.kind.valuesHold context world range
+      originalValue candidateValue = true) :
+    dynamicWordRequirementsHold context world range targetRequirements
+      (original.write32
+        (range.originalBase + BitVec.ofNat 32 writeRelation.offset) originalValue)
+      (candidate.write32
+        (range.candidateBase + BitVec.ofNat 32 writeRelation.offset) candidateValue) = true := by
+  have rangeValid : range.disjointFromImages context = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.1.2 range rangeMember
+  have relationsValid : range.wordRelationsValid = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.2 range rangeMember
+  simp only [DynamicAddressRangePair.wordRelationsValid, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at relationsValid
+  have writeInside := (relationsValid writeRelation writeMember).1
+  have originalFits := DynamicAddressRangePair.wordAddress_fits context false
+    range rangeValid writeRelation.offset writeInside
+  have candidateFits := DynamicAddressRangePair.wordAddress_fits context true
+    range rangeValid writeRelation.offset writeInside
+  have originalFits' :
+      (range.originalBase + BitVec.ofNat 32 writeRelation.offset).toNat + 4 <=
+        2 ^ 32 := by
+    simpa [DynamicAddressRangePair.sideBase] using originalFits
+  have candidateFits' :
+      (range.candidateBase + BitVec.ofNat 32 writeRelation.offset).toNat + 4 <=
+        2 ^ 32 := by
+    simpa [DynamicAddressRangePair.sideBase] using candidateFits
+  simp only [dynamicWordRequirementsHold, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at sourceHolds ⊢
+  simp only [List.all_eq_true, Bool.or_eq_true, beq_iff_eq] at targetCovered
+  simp only [List.all_eq_true] at sourceAvailable
+  intro requirement requirementMember
+  by_cases same : requirement = writeRelation
+  · subst requirement
+    exact ⟨writeInside, by
+      unfold DynamicWordRelation.holds
+      rw [Memory.read32_write32_same_of_fits _ _ _ originalFits',
+        Memory.read32_write32_same_of_fits _ _ _ candidateFits']
+      exact valuesRelated⟩
+  · have sourceContains : sourceRequirements.contains requirement = true := by
+      rcases targetCovered requirement requirementMember with equal | contained
+      · exact (same equal).elim
+      · exact contained
+    have sourceMember : requirement ∈ sourceRequirements :=
+      List.contains_iff_mem.mp sourceContains
+    have requirementInRange : requirement ∈ range.wordRelations :=
+      List.contains_iff_mem.mp (sourceAvailable requirement sourceMember)
+    have requirementInside := (relationsValid requirement requirementInRange).1
+    have originalAvoids := dynamicRangeWordWriteAvoidsOtherWord context false
+      world rangesValid range range rangeMember rangeMember writeRelation requirement
+      writeMember requirementInRange (Or.inr same)
+    have candidateAvoids := dynamicRangeWordWriteAvoidsOtherWord context true
+      world rangesValid range range rangeMember rangeMember writeRelation requirement
+      writeMember requirementInRange (Or.inr same)
+    refine ⟨requirementInside, ?_⟩
+    unfold DynamicWordRelation.holds
+    rw [Memory.read32_write32_of_avoids _ _ _ _
+        (by simpa [DynamicAddressRangePair.sideBase] using originalAvoids),
+      Memory.read32_write32_of_avoids _ _ _ _
+        (by simpa [DynamicAddressRangePair.sideBase] using candidateAvoids)]
+    exact (sourceHolds requirement sourceMember).2
+
+theorem dynamicWordRequirementsHold_after_stack_update
+    (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair) (requirements : List DynamicWordRelation)
+    (original candidate : Memory) (update : PairedStackWordUpdate context world)
+    (rangesValid : world.dynamicRangesValid context = true)
+    (rangeMember : range ∈ world.dynamicRanges)
+    (sourceHolds : dynamicWordRequirementsHold context world range requirements
+      original candidate = true) :
+    dynamicWordRequirementsHold context world range requirements
+      (original.write32 update.location.originalAddress update.originalValue)
+      (candidate.write32 update.location.candidateAddress update.candidateValue) = true := by
+  simp only [dynamicWordRequirementsHold, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at sourceHolds ⊢
+  intro relation relationMember
+  have prior := sourceHolds relation relationMember
+  have originalAvoids := stackRangeWordWriteAvoidsDynamicRangeWord context false
+    world rangesValid update.location.range range update.location.rangeMember
+    rangeMember update.locationValid update.location.offset relation.offset
+    update.location.inside prior.1
+  have candidateAvoids := stackRangeWordWriteAvoidsDynamicRangeWord context true
+    world rangesValid update.location.range range update.location.rangeMember
+    rangeMember update.locationValid update.location.offset relation.offset
+    update.location.inside prior.1
+  refine ⟨prior.1, ?_⟩
+  unfold DynamicWordRelation.holds at prior ⊢
+  rw [update.location.originalAddressExact, update.location.candidateAddressExact,
+    Memory.read32_write32_of_avoids _ _ _ _
+      (by simpa [DynamicAddressRangePair.sideBase] using originalAvoids),
+    Memory.read32_write32_of_avoids _ _ _ _
+      (by simpa [DynamicAddressRangePair.sideBase] using candidateAvoids)]
+  exact prior.2
+
+theorem dynamicWordRequirementsHold_after_static_word_update
+    (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair) (requirements : List DynamicWordRelation)
+    (original candidate : Memory) (update : PairedStaticWordUpdate context world)
+    (rangesValid : world.dynamicRangesValid context = true)
+    (slotsValid : staticWordRelationSlotsValid context = true)
+    (rangeMember : range ∈ world.dynamicRanges)
+    (sourceHolds : dynamicWordRequirementsHold context world range requirements
+      original candidate = true) :
+    dynamicWordRequirementsHold context world range requirements
+      (original.write32 update.location.originalAddress update.originalValue)
+      (candidate.write32 update.location.candidateAddress update.candidateValue) = true := by
+  have rangeValid : range.disjointFromImages context = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.1.2 range rangeMember
+  have slotValid := update.location.slot.valid_of_member context slotsValid
+    update.location.slotMember
+  have originalBounds := update.location.slot.originalBounds context slotValid
+  have candidateBounds := update.location.slot.candidateBounds context slotValid
+  have rangeShape := rangeValid
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+    Bool.or_eq_true, decide_eq_true_eq] at rangeShape
+  rcases rangeShape with
+    ⟨⟨⟨⟨_nonempty, originalNoWrap⟩, candidateNoWrap⟩,
+      originalDisjoint⟩, candidateDisjoint⟩
+  simp only [dynamicWordRequirementsHold, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at sourceHolds ⊢
+  intro relation relationMember
+  have prior := sourceHolds relation relationMember
+  have originalAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.originalBase range.size context.originalPe.imageBase
+    context.originalPe.sizeOfImage relation.offset prior.1 originalNoWrap
+    originalDisjoint update.location.slot.originalAddress originalBounds.1
+    originalBounds.2.1 originalBounds.2.2).symm
+  have candidateAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.candidateBase range.size context.candidatePe.imageBase
+    context.candidatePe.sizeOfImage relation.offset prior.1 candidateNoWrap
+    candidateDisjoint update.location.slot.candidateAddress candidateBounds.1
+    candidateBounds.2.1 candidateBounds.2.2).symm
+  refine ⟨prior.1, ?_⟩
+  unfold DynamicWordRelation.holds at prior ⊢
+  rw [update.location.originalAddressExact, update.location.candidateAddressExact,
+    Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact prior.2
+
+theorem dynamicWordRequirementsHold_after_static_pointer_update
+    (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair) (requirements : List DynamicWordRelation)
+    (original candidate : Memory)
+    (update : PairedStaticDynamicPointerUpdate context world)
+    (rangesValid : world.dynamicRangesValid context = true)
+    (slotsValid : staticDynamicPointerSlotsValid context = true)
+    (rangeMember : range ∈ world.dynamicRanges)
+    (sourceHolds : dynamicWordRequirementsHold context world range requirements
+      original candidate = true) :
+    dynamicWordRequirementsHold context world range requirements
+      (original.write32 update.location.originalAddress update.range.originalBase)
+      (candidate.write32 update.location.candidateAddress update.range.candidateBase) = true := by
+  have rangeValid : range.disjointFromImages context = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.1.2 range rangeMember
+  have slotValid := update.location.slot.valid_of_member context slotsValid
+    update.location.slotMember
+  have originalBounds := update.location.slot.originalBounds context slotValid
+  have candidateBounds := update.location.slot.candidateBounds context slotValid
+  have rangeShape := rangeValid
+  simp only [DynamicAddressRangePair.disjointFromImages, Bool.and_eq_true,
+    Bool.or_eq_true, decide_eq_true_eq] at rangeShape
+  rcases rangeShape with
+    ⟨⟨⟨⟨_nonempty, originalNoWrap⟩, candidateNoWrap⟩,
+      originalDisjoint⟩, candidateDisjoint⟩
+  simp only [dynamicWordRequirementsHold, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at sourceHolds ⊢
+  intro relation relationMember
+  have prior := sourceHolds relation relationMember
+  have originalAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.originalBase range.size context.originalPe.imageBase
+    context.originalPe.sizeOfImage relation.offset prior.1 originalNoWrap
+    originalDisjoint update.location.slot.originalAddress originalBounds.1
+    originalBounds.2.1 originalBounds.2.2).symm
+  have candidateAvoids := (stackRangeWordWriteAvoidsImageWord
+    range.candidateBase range.size context.candidatePe.imageBase
+    context.candidatePe.sizeOfImage relation.offset prior.1 candidateNoWrap
+    candidateDisjoint update.location.slot.candidateAddress candidateBounds.1
+    candidateBounds.2.1 candidateBounds.2.2).symm
+  refine ⟨prior.1, ?_⟩
+  unfold DynamicWordRelation.holds at prior ⊢
+  rw [update.location.originalAddressExact, update.location.candidateAddressExact,
+    Memory.read32_write32_of_avoids _ _ _ _ originalAvoids,
+    Memory.read32_write32_of_avoids _ _ _ _ candidateAvoids]
+  exact prior.2
+
+theorem dynamicWordRequirementsHold_after_dynamic_update
+    (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair) (requirements : List DynamicWordRelation)
+    (original candidate : Memory) (update : PairedDynamicWordUpdate context world)
+    (rangesValid : world.dynamicRangesValid context = true)
+    (rangeMember : range ∈ world.dynamicRanges)
+    (requirementsAvailable : requirements.all range.wordRelations.contains = true)
+    (sourceHolds : dynamicWordRequirementsHold context world range requirements
+      original candidate = true) :
+    dynamicWordRequirementsHold context world range requirements
+      (original.write32 update.location.originalAddress update.originalValue)
+      (candidate.write32 update.location.candidateAddress update.candidateValue) = true := by
+  have writeRangeValid : update.location.range.disjointFromImages context = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.1.2 update.location.range
+      update.location.rangeMember
+  have writeRelationsValid : update.location.range.wordRelationsValid = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at rangesValid
+    exact rangesValid.1.1.1.1.2 update.location.range
+      update.location.rangeMember
+  simp only [DynamicAddressRangePair.wordRelationsValid, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at writeRelationsValid
+  have writeInside :=
+    (writeRelationsValid update.location.relation
+      update.location.relationMember).1
+  have originalFits := DynamicAddressRangePair.wordAddress_fits context false
+    update.location.range writeRangeValid update.location.relation.offset writeInside
+  have candidateFits := DynamicAddressRangePair.wordAddress_fits context true
+    update.location.range writeRangeValid update.location.relation.offset writeInside
+  have originalFits' : update.location.originalAddress.toNat + 4 <= 2 ^ 32 := by
+    rw [update.location.originalAddressExact]
+    simpa [DynamicAddressRangePair.sideBase] using originalFits
+  have candidateFits' : update.location.candidateAddress.toNat + 4 <= 2 ^ 32 := by
+    rw [update.location.candidateAddressExact]
+    simpa [DynamicAddressRangePair.sideBase] using candidateFits
+  simp only [dynamicWordRequirementsHold, List.all_eq_true,
+    Bool.and_eq_true, decide_eq_true_eq] at sourceHolds ⊢
+  simp only [List.all_eq_true] at requirementsAvailable
+  intro relation relationMember
+  have prior := sourceHolds relation relationMember
+  have relationInRange : relation ∈ range.wordRelations :=
+    List.contains_iff_mem.mp (requirementsAvailable relation relationMember)
+  by_cases sameRange : range = update.location.range
+  · subst range
+    by_cases sameRelation : relation = update.location.relation
+    · subst relation
+      refine ⟨writeInside, ?_⟩
+      unfold DynamicWordRelation.holds
+      rw [← update.location.originalAddressExact,
+        ← update.location.candidateAddressExact,
+        Memory.read32_write32_same_of_fits _ _ _ originalFits',
+        Memory.read32_write32_same_of_fits _ _ _ candidateFits']
+      exact update.valuesRelated
+    · have originalAvoids := dynamicRangeWordWriteAvoidsOtherWord context false
+        world rangesValid update.location.range update.location.range
+        update.location.rangeMember update.location.rangeMember
+        update.location.relation relation update.location.relationMember
+        relationInRange (Or.inr sameRelation)
+      have candidateAvoids := dynamicRangeWordWriteAvoidsOtherWord context true
+        world rangesValid update.location.range update.location.range
+        update.location.rangeMember update.location.rangeMember
+        update.location.relation relation update.location.relationMember
+        relationInRange (Or.inr sameRelation)
+      refine ⟨prior.1, ?_⟩
+      unfold DynamicWordRelation.holds at prior ⊢
+      rw [Memory.read32_write32_of_avoids _ _ _ _
+          (by simpa [update.location.originalAddressExact,
+            DynamicAddressRangePair.sideBase] using originalAvoids),
+        Memory.read32_write32_of_avoids _ _ _ _
+          (by simpa [update.location.candidateAddressExact,
+            DynamicAddressRangePair.sideBase] using candidateAvoids)]
+      exact prior.2
+  · have originalAvoids := dynamicRangeWordWriteAvoidsOtherWord context false
+      world rangesValid update.location.range range update.location.rangeMember
+      rangeMember update.location.relation relation update.location.relationMember
+      relationInRange (Or.inl sameRange)
+    have candidateAvoids := dynamicRangeWordWriteAvoidsOtherWord context true
+      world rangesValid update.location.range range update.location.rangeMember
+      rangeMember update.location.relation relation update.location.relationMember
+      relationInRange (Or.inl sameRange)
+    refine ⟨prior.1, ?_⟩
+    unfold DynamicWordRelation.holds at prior ⊢
+    rw [Memory.read32_write32_of_avoids _ _ _ _
+        (by simpa [update.location.originalAddressExact,
+          DynamicAddressRangePair.sideBase] using originalAvoids),
+      Memory.read32_write32_of_avoids _ _ _ _
+        (by simpa [update.location.candidateAddressExact,
+          DynamicAddressRangePair.sideBase] using candidateAvoids)]
+    exact prior.2
+
+theorem dynamicWordRequirementsHold_after_prepared_updates
+    (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair) (requirements : List DynamicWordRelation)
+    (original candidate : Memory)
+    (updates : List (PairedPreparedWordUpdate context world))
+    (rangesValid : world.dynamicRangesValid context = true)
+    (staticPointerSlotsValid : staticDynamicPointerSlotsValid context = true)
+    (staticWordSlotsValid : staticWordRelationSlotsValid context = true)
+    (rangeMember : range ∈ world.dynamicRanges)
+    (requirementsAvailable : requirements.all range.wordRelations.contains = true)
+    (sourceHolds : dynamicWordRequirementsHold context world range requirements
+      original candidate = true) :
+    dynamicWordRequirementsHold context world range requirements
+      (applyConcreteWrites original
+        (updates.map PairedPreparedWordUpdate.originalWrite))
+      (applyConcreteWrites candidate
+        (updates.map PairedPreparedWordUpdate.candidateWrite)) = true := by
+  induction updates generalizing original candidate with
+  | nil => simpa [applyConcreteWrites] using sourceHolds
+  | cons update rest induction =>
+      have afterHead : dynamicWordRequirementsHold context world range requirements
+          (original.write32 update.originalWrite.1 update.originalWrite.2)
+          (candidate.write32 update.candidateWrite.1 update.candidateWrite.2) = true := by
+        cases update with
+        | stack update =>
+            simpa [PairedPreparedWordUpdate.originalWrite,
+              PairedPreparedWordUpdate.candidateWrite,
+              PairedStackWordUpdate.originalWrite,
+              PairedStackWordUpdate.candidateWrite] using
+              dynamicWordRequirementsHold_after_stack_update context world range
+                requirements original candidate update rangesValid rangeMember sourceHolds
+        | staticWord update =>
+            simpa [PairedPreparedWordUpdate.originalWrite,
+              PairedPreparedWordUpdate.candidateWrite,
+              PairedStaticWordUpdate.originalWrite,
+              PairedStaticWordUpdate.candidateWrite] using
+              dynamicWordRequirementsHold_after_static_word_update context world range
+                requirements original candidate update rangesValid staticWordSlotsValid
+                rangeMember sourceHolds
+        | dynamicWord update =>
+            simpa [PairedPreparedWordUpdate.originalWrite,
+              PairedPreparedWordUpdate.candidateWrite,
+              PairedDynamicWordUpdate.originalWrite,
+              PairedDynamicWordUpdate.candidateWrite] using
+              dynamicWordRequirementsHold_after_dynamic_update context world range
+                requirements original candidate update rangesValid rangeMember
+                requirementsAvailable sourceHolds
+        | staticDynamicPointer update =>
+            simpa [PairedPreparedWordUpdate.originalWrite,
+              PairedPreparedWordUpdate.candidateWrite,
+              PairedStaticDynamicPointerUpdate.originalWrite,
+              PairedStaticDynamicPointerUpdate.candidateWrite] using
+              dynamicWordRequirementsHold_after_static_pointer_update context world
+                range requirements original candidate update rangesValid
+                staticPointerSlotsValid rangeMember sourceHolds
+      simpa [applyConcreteWrites] using
+        induction
+          (original := original.write32 update.originalWrite.1 update.originalWrite.2)
+          (candidate := candidate.write32 update.candidateWrite.1
+            update.candidateWrite.2)
+          afterHead
+
+def DynamicRegisterRangeRelation.activeHolds (context : StaticProofContext)
+    (world : RelationalWorld) (relation : DynamicRegisterRangeRelation)
+    (original candidate : MachineState) : Bool :=
+  world.dynamicRanges.any fun range =>
+      original.registers.get relation.original ==
+          range.originalBase + BitVec.ofNat 32 relation.originalOffset &&
+        candidate.registers.get relation.candidate ==
+          range.candidateBase + BitVec.ofNat 32 relation.candidateOffset &&
+        relation.requiredWords.all range.wordRelations.contains &&
+        relation.activeWords.all relation.requiredWords.contains &&
+        dynamicWordRequirementsHold context world range relation.activeWords
+          original.memory candidate.memory
+
+def activeDynamicRegisterRangeRelationsHold (context : StaticProofContext)
+    (world : RelationalWorld) (relations : List DynamicRegisterRangeRelation)
+    (original candidate : MachineState) : Bool :=
+  relations.all fun relation => relation.activeHolds context world original candidate
+
+def DynamicStackRangeRelation.activeHolds (context : StaticProofContext)
+    (world : RelationalWorld) (relation : DynamicStackRangeRelation)
+    (original candidate : MachineState) : Bool :=
+  relation.window.holds world original.registers candidate.registers &&
+      world.dynamicRanges.any fun range =>
+        Memory.read32 original.memory
+            (original.registers.get relation.window.originalRegister +
+              BitVec.ofNat 32 relation.stackOffset) ==
+            range.originalBase + BitVec.ofNat 32 relation.originalOffset &&
+          Memory.read32 candidate.memory
+            (candidate.registers.get relation.window.candidateRegister +
+              BitVec.ofNat 32 relation.stackOffset) ==
+            range.candidateBase + BitVec.ofNat 32 relation.candidateOffset &&
+          relation.requiredWords.all range.wordRelations.contains &&
+          relation.activeWords.all relation.requiredWords.contains &&
+          dynamicWordRequirementsHold context world range relation.activeWords
+            original.memory candidate.memory
+
+def activeDynamicStackRangeRelationsHold (context : StaticProofContext)
+    (world : RelationalWorld) (relations : List DynamicStackRangeRelation)
+    (original candidate : MachineState) : Bool :=
+  relations.all fun relation => relation.activeHolds context world original candidate
+
+theorem DynamicRegisterRangeRelation.holds_of_activeHolds
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relation : DynamicRegisterRangeRelation) (original candidate : MachineState)
+    (active : relation.activeHolds context world original candidate = true) :
+    relation.holds world original.registers candidate.registers = true := by
+  simp only [DynamicRegisterRangeRelation.activeHolds, List.any_eq_true,
+    Bool.and_eq_true] at active
+  rcases active with ⟨range, member, row⟩
+  unfold DynamicRegisterRangeRelation.holds
+  simp only [List.any_eq_true]
+  refine ⟨range, member, ?_⟩
+  simpa only [Bool.and_eq_true] using row.1
+
+theorem DynamicRegisterRangeRelation.activeHolds_of_holds_empty
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relation : DynamicRegisterRangeRelation) (original candidate : MachineState)
+    (empty : relation.activeWords = [])
+    (holds : relation.holds world original.registers candidate.registers = true) :
+    relation.activeHolds context world original candidate = true := by
+  unfold DynamicRegisterRangeRelation.holds at holds
+  unfold DynamicRegisterRangeRelation.activeHolds
+  rw [empty] at holds ⊢
+  simpa [dynamicWordRequirementsHold] using holds
+
+theorem DynamicStackRangeRelation.holds_of_activeHolds
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relation : DynamicStackRangeRelation) (original candidate : MachineState)
+    (active : relation.activeHolds context world original candidate = true) :
+    relation.holds world original candidate = true := by
+  simp only [DynamicStackRangeRelation.activeHolds, Bool.and_eq_true,
+    List.any_eq_true] at active
+  rcases active with ⟨window, range, member, row⟩
+  unfold DynamicStackRangeRelation.holds
+  simp only [Bool.and_eq_true, List.any_eq_true]
+  refine ⟨window, range, member, ?_⟩
+  simpa only [Bool.and_eq_true] using row.1
+
+theorem dynamicRegisterRangeRelationsHold_of_active
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relations : List DynamicRegisterRangeRelation)
+    (original candidate : MachineState)
+    (active : activeDynamicRegisterRangeRelationsHold context world relations
+      original candidate = true) :
+    dynamicRegisterRangeRelationsHold world relations original.registers
+      candidate.registers = true := by
+  simp only [activeDynamicRegisterRangeRelationsHold, List.all_eq_true] at active
+  simp only [dynamicRegisterRangeRelationsHold, List.all_eq_true]
+  intro relation member
+  exact relation.holds_of_activeHolds context world original candidate
+    (active relation member)
+
+theorem dynamicStackRangeRelationsHold_of_active
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relations : List DynamicStackRangeRelation)
+    (original candidate : MachineState)
+    (active : activeDynamicStackRangeRelationsHold context world relations
+      original candidate = true) :
+    dynamicStackRangeRelationsHold world relations original candidate = true := by
+  simp only [activeDynamicStackRangeRelationsHold, List.all_eq_true] at active
+  simp only [dynamicStackRangeRelationsHold, List.all_eq_true]
+  intro relation member
+  exact relation.holds_of_activeHolds context world original candidate
+    (active relation member)
+
+structure ActiveDynamicInvariantMemoryHold (context : StaticProofContext)
+    (world : RelationalWorld) (invariant : StateInvariant)
+    (original candidate : MachineState) : Prop where
+  registerRanges : activeDynamicRegisterRangeRelationsHold context world
+    invariant.dynamicRegisterRangeRelations original candidate = true
+  stackRanges : activeDynamicStackRangeRelationsHold context world
+    invariant.dynamicStackRangeRelations original candidate = true
+
+structure RelationalDynamicMemoryHold (context : StaticProofContext)
+    (world : RelationalWorld) (invariant : StateInvariant)
+    (original candidate : MachineState) : Prop where
+  staticPointerSlots : StaticDynamicPointerSlotsMemoryHold context world
+    original.memory candidate.memory
+  staticWordSlots : StaticWordRelationSlotsMemoryHold context world
+    original.memory candidate.memory
+  active : ActiveDynamicInvariantMemoryHold context world invariant original candidate
+
+theorem dynamicWordRequirementsHold_of_global
+    (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair) (requirements : List DynamicWordRelation)
+    (original candidate : Memory)
+    (worldValid : world.valid context = true)
+    (rangeMember : range ∈ world.dynamicRanges)
+    (requirementsAvailable : requirements.all range.wordRelations.contains = true)
+    (global : DynamicRangesMemoryHold context world original candidate) :
+    dynamicWordRequirementsHold context world range requirements
+      original candidate = true := by
+  have dynamicValid : world.dynamicRangesValid context = true := by
+    simp only [RelationalWorld.valid, Bool.and_eq_true] at worldValid
+    exact worldValid.1.1.1.1
+  have rangeRelationsValid : range.wordRelationsValid = true := by
+    simp only [RelationalWorld.dynamicRangesValid, Bool.and_eq_true,
+      List.all_eq_true] at dynamicValid
+    exact dynamicValid.1.1.1.1.2 range rangeMember
+  simp only [DynamicAddressRangePair.wordRelationsValid, List.all_eq_true,
+    Bool.and_eq_true] at rangeRelationsValid
+  have rangeWords := global range rangeMember
+  simp only [DynamicAddressRangePair.wordsHold, List.all_eq_true] at rangeWords
+  simp only [dynamicWordRequirementsHold, List.all_eq_true,
+    Bool.and_eq_true]
+  intro requirement requirementMember
+  have available : requirement ∈ range.wordRelations :=
+    List.contains_iff_mem.mp
+      (List.all_eq_true.mp requirementsAvailable requirement requirementMember)
+  have valid := rangeRelationsValid requirement available
+  exact ⟨valid.1, rangeWords requirement available⟩
+
+theorem activeDynamicRegisterRangeRelationsHold_of_global
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relations : List DynamicRegisterRangeRelation)
+    (original candidate : MachineState)
+    (worldValid : world.valid context = true)
+    (locations : dynamicRegisterRangeRelationsHold world relations
+      original.registers candidate.registers = true)
+    (global : DynamicRangesMemoryHold context world
+      original.memory candidate.memory) :
+    activeDynamicRegisterRangeRelationsHold context world relations
+      original candidate = true := by
+  simp only [dynamicRegisterRangeRelationsHold, List.all_eq_true] at locations
+  simp only [activeDynamicRegisterRangeRelationsHold, List.all_eq_true]
+  intro relation relationMember
+  have location := locations relation relationMember
+  simp only [DynamicRegisterRangeRelation.holds, List.any_eq_true,
+    Bool.and_eq_true] at location
+  rcases location with
+    ⟨range, rangeMember, ⟨⟨⟨originalAddress, candidateAddress⟩,
+      requirements⟩, activeSubset⟩⟩
+  have activeAvailable :
+      relation.activeWords.all range.wordRelations.contains = true := by
+    simp only [List.all_eq_true] at requirements activeSubset ⊢
+    intro word wordMember
+    have requiredMember : word ∈ relation.requiredWords :=
+      List.contains_iff_mem.mp (activeSubset word wordMember)
+    exact requirements word requiredMember
+  unfold DynamicRegisterRangeRelation.activeHolds
+  simp only [List.any_eq_true]
+  refine ⟨range, rangeMember, ?_⟩
+  simp only [Bool.and_eq_true]
+  exact ⟨⟨⟨⟨originalAddress, candidateAddress⟩, requirements⟩,
+      activeSubset⟩,
+    dynamicWordRequirementsHold_of_global context world range
+      relation.activeWords original.memory candidate.memory worldValid rangeMember
+      activeAvailable global⟩
+
+theorem activeDynamicStackRangeRelationsHold_of_global
+    (context : StaticProofContext) (world : RelationalWorld)
+    (relations : List DynamicStackRangeRelation)
+    (original candidate : MachineState)
+    (worldValid : world.valid context = true)
+    (locations : dynamicStackRangeRelationsHold world relations
+      original candidate = true)
+    (global : DynamicRangesMemoryHold context world
+      original.memory candidate.memory) :
+    activeDynamicStackRangeRelationsHold context world relations
+      original candidate = true := by
+  simp only [dynamicStackRangeRelationsHold, List.all_eq_true] at locations
+  simp only [activeDynamicStackRangeRelationsHold, List.all_eq_true]
+  intro relation relationMember
+  have location := locations relation relationMember
+  simp only [DynamicStackRangeRelation.holds, Bool.and_eq_true,
+    List.any_eq_true] at location
+  rcases location with
+    ⟨window, range, rangeMember,
+      ⟨⟨⟨originalAddress, candidateAddress⟩, requirements⟩,
+        activeSubset⟩⟩
+  have activeAvailable :
+      relation.activeWords.all range.wordRelations.contains = true := by
+    simp only [List.all_eq_true] at requirements activeSubset ⊢
+    intro word wordMember
+    have requiredMember : word ∈ relation.requiredWords :=
+      List.contains_iff_mem.mp (activeSubset word wordMember)
+    exact requirements word requiredMember
+  unfold DynamicStackRangeRelation.activeHolds
+  simp only [Bool.and_eq_true]
+  refine ⟨window, ?_⟩
+  simp only [List.any_eq_true]
+  refine ⟨range, rangeMember, ?_⟩
+  simp only [Bool.and_eq_true]
+  exact ⟨⟨⟨⟨originalAddress, candidateAddress⟩, requirements⟩,
+      activeSubset⟩,
+    dynamicWordRequirementsHold_of_global context world range
+      relation.activeWords original.memory candidate.memory worldValid rangeMember
+      activeAvailable global⟩
+
+theorem ActiveDynamicInvariantMemoryHold.of_global
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (worldValid : world.valid context = true)
+    (registerLocations : dynamicRegisterRangeRelationsHold world
+      invariant.dynamicRegisterRangeRelations original.registers
+      candidate.registers = true)
+    (stackLocations : dynamicStackRangeRelationsHold world
+      invariant.dynamicStackRangeRelations original candidate = true)
+    (global : DynamicRangesMemoryHold context world
+      original.memory candidate.memory) :
+    ActiveDynamicInvariantMemoryHold context world invariant original candidate := {
+  registerRanges := activeDynamicRegisterRangeRelationsHold_of_global
+    context world invariant.dynamicRegisterRangeRelations original candidate
+    worldValid registerLocations global
+  stackRanges := activeDynamicStackRangeRelationsHold_of_global
+    context world invariant.dynamicStackRangeRelations original candidate
+    worldValid stackLocations global
+}
 
 def StackAddressSeparationClaim.checked (originalPe candidatePe : PE32)
     (invariant : StateInvariant) (claim : StackAddressSeparationClaim) : Bool :=
@@ -3032,8 +6380,6 @@ def StackWindowAffineTransferClaim.checked
   sourceInvariant.stackWindows.contains claim.source &&
     targetInvariant.stackWindows.contains claim.target &&
     claim.source.rangeId == claim.target.rangeId &&
-    claim.source.originalRegister == claim.target.originalRegister &&
-    claim.source.candidateRegister == claim.target.candidateRegister &&
     decide (claim.source.bytesBelow >= claim.adjustment.requiredBelow claim.target) &&
     decide (claim.source.bytesAbove >= claim.adjustment.requiredAbove claim.target) &&
     (match claim.adjustment with
@@ -3064,17 +6410,12 @@ theorem stackWindowAffineTransferHolds_of_checked
   simp only [StackWindowAffineTransferClaim.checked, Bool.and_eq_true,
     decide_eq_true_eq] at checked
   rcases checked with
-    ⟨⟨⟨⟨⟨⟨⟨⟨⟨sourceMember, targetMember⟩, rangeId⟩,
-      originalRegister⟩, candidateRegister⟩,
+    ⟨⟨⟨⟨⟨⟨⟨sourceMember, targetMember⟩, rangeId⟩,
       enoughBelow⟩, enoughAbove⟩, adjustmentSafe⟩,
       originalExpression⟩, candidateExpression⟩
   simp only [stackWindowsRelated, List.all_eq_true] at sourceRelated
   have sourceHolds := sourceRelated claim.source (by simpa using sourceMember)
   have rangeId' := beq_iff_eq.mp rangeId
-  have originalRegister' := beq_iff_eq.mp originalRegister
-  have candidateRegister' := beq_iff_eq.mp candidateRegister
-  rw [originalRegister'] at originalExpression
-  rw [candidateRegister'] at candidateExpression
   cases rangeResult : world.stackRanges.find? (fun range =>
       range.id == claim.target.rangeId) with
   | none =>
@@ -3092,10 +6433,6 @@ theorem stackWindowAffineTransferHolds_of_checked
         ⟨⟨⟨⟨⟨originalLower, originalUpper⟩, candidateLower⟩,
           candidateUpper⟩, pairedOffset⟩,
           ⟨originalAligned, candidateAligned⟩⟩
-      rw [originalRegister'] at originalLower originalUpper pairedOffset
-      rw [originalRegister'] at originalAligned
-      rw [candidateRegister'] at candidateLower candidateUpper pairedOffset
-      rw [candidateRegister'] at candidateAligned
       simp only [RelationalWorld.stackRangesValid, Bool.and_eq_true,
         List.all_eq_true] at rangesValid
       have rangeMember := List.mem_of_find?_eq_some rangeResult
@@ -3105,19 +6442,19 @@ theorem stackWindowAffineTransferHolds_of_checked
       rcases rangeValid with
         ⟨⟨⟨⟨rangeNonempty, originalNoWrap⟩, candidateNoWrap⟩, _⟩, _⟩
       have pairedLinear :
-          (originalState.registers.get claim.target.originalRegister).toNat +
+          (originalState.registers.get claim.source.originalRegister).toNat +
               range.candidateBase.toNat =
-            (candidateState.registers.get claim.target.candidateRegister).toNat +
+            (candidateState.registers.get claim.source.candidateRegister).toNat +
               range.originalBase.toNat := by
         omega
       simp only [StackWindowPair.holds, rangeResult,
         NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get]
       have originalExpression' := StackAdjustment.eval_expression_of_matches
-        claim.adjustment claim.target.originalRegister
+        claim.adjustment claim.source.originalRegister
         (originalBehavior.registers.get claim.target.originalRegister) originalState
         originalExpression
       have candidateExpression' := StackAdjustment.eval_expression_of_matches
-        claim.adjustment claim.target.candidateRegister
+        claim.adjustment claim.source.candidateRegister
         (candidateBehavior.registers.get claim.target.candidateRegister) candidateState
         candidateExpression
       rw [originalExpression', candidateExpression']
@@ -3144,39 +6481,39 @@ theorem stackWindowAffineTransferHolds_of_checked
           rcases adjustmentSafe with
             ⟨⟨targetNonempty, amountFits⟩, amountAligned⟩
           have originalAdjusted :
-              (originalState.registers.get claim.target.originalRegister +
+              (originalState.registers.get claim.source.originalRegister +
                 BitVec.ofNat 32 amount).toNat =
-                (originalState.registers.get claim.target.originalRegister).toNat + amount := by
+                (originalState.registers.get claim.source.originalRegister).toNat + amount := by
             simp [BitVec.toNat_add, BitVec.toNat_ofNat,
               Nat.mod_eq_of_lt (by omega : amount < 2 ^ 32),
               Nat.mod_eq_of_lt (by omega :
-                (originalState.registers.get claim.target.originalRegister).toNat +
+                (originalState.registers.get claim.source.originalRegister).toNat +
                   amount < 2 ^ 32)]
           have candidateAdjusted :
-              (candidateState.registers.get claim.target.candidateRegister +
+              (candidateState.registers.get claim.source.candidateRegister +
                 BitVec.ofNat 32 amount).toNat =
-                (candidateState.registers.get claim.target.candidateRegister).toNat + amount := by
+                (candidateState.registers.get claim.source.candidateRegister).toNat + amount := by
             simp [BitVec.toNat_add, BitVec.toNat_ofNat,
               Nat.mod_eq_of_lt (by omega : amount < 2 ^ 32),
               Nat.mod_eq_of_lt (by omega :
-                (candidateState.registers.get claim.target.candidateRegister).toNat +
+                (candidateState.registers.get claim.source.candidateRegister).toNat +
                   amount < 2 ^ 32)]
           simp only [Bool.and_eq_true, decide_eq_true_eq, originalAdjusted,
             candidateAdjusted]
           have originalTargetLower :
               range.originalBase.toNat + claim.target.bytesBelow <=
-                (originalState.registers.get claim.target.originalRegister).toNat +
+                (originalState.registers.get claim.source.originalRegister).toNat +
                   amount := by omega
           have originalTargetUpper :
-              (originalState.registers.get claim.target.originalRegister).toNat +
+              (originalState.registers.get claim.source.originalRegister).toNat +
                     amount + claim.target.bytesAbove <=
                 range.originalBase.toNat + range.size := by omega
           have candidateTargetLower :
               range.candidateBase.toNat + claim.target.bytesBelow <=
-                (candidateState.registers.get claim.target.candidateRegister).toNat +
+                (candidateState.registers.get claim.source.candidateRegister).toNat +
                   amount := by omega
           have candidateTargetUpper :
-              (candidateState.registers.get claim.target.candidateRegister).toNat +
+              (candidateState.registers.get claim.source.candidateRegister).toNat +
                     amount + claim.target.bytesAbove <=
                 range.candidateBase.toNat + range.size := by omega
           refine ⟨⟨⟨⟨⟨originalTargetLower, originalTargetUpper⟩,
@@ -3199,22 +6536,22 @@ theorem stackWindowAffineTransferHolds_of_checked
             at adjustmentSafe
           rcases adjustmentSafe with ⟨amountFits, amountAligned⟩
           have originalEnough :
-              amount <= (originalState.registers.get claim.target.originalRegister).toNat := by
+              amount <= (originalState.registers.get claim.source.originalRegister).toNat := by
             omega
           have candidateEnough :
-              amount <= (candidateState.registers.get claim.target.candidateRegister).toNat := by
+              amount <= (candidateState.registers.get claim.source.candidateRegister).toNat := by
             omega
           have originalAdjusted :
-              (originalState.registers.get claim.target.originalRegister -
+              (originalState.registers.get claim.source.originalRegister -
                 BitVec.ofNat 32 amount).toNat =
-                (originalState.registers.get claim.target.originalRegister).toNat - amount := by
+                (originalState.registers.get claim.source.originalRegister).toNat - amount := by
             simp [BitVec.toNat_sub, BitVec.toNat_ofNat,
               Nat.mod_eq_of_lt (by omega : amount < 2 ^ 32)]
             omega
           have candidateAdjusted :
-              (candidateState.registers.get claim.target.candidateRegister -
+              (candidateState.registers.get claim.source.candidateRegister -
                 BitVec.ofNat 32 amount).toNat =
-                (candidateState.registers.get claim.target.candidateRegister).toNat - amount := by
+                (candidateState.registers.get claim.source.candidateRegister).toNat - amount := by
             simp [BitVec.toNat_sub, BitVec.toNat_ofNat,
               Nat.mod_eq_of_lt (by omega : amount < 2 ^ 32)]
             omega
@@ -3222,18 +6559,18 @@ theorem stackWindowAffineTransferHolds_of_checked
             candidateAdjusted]
           have originalTargetLower :
               range.originalBase.toNat + claim.target.bytesBelow <=
-                (originalState.registers.get claim.target.originalRegister).toNat -
+                (originalState.registers.get claim.source.originalRegister).toNat -
                   amount := by omega
           have originalTargetUpper :
-              (originalState.registers.get claim.target.originalRegister).toNat -
+              (originalState.registers.get claim.source.originalRegister).toNat -
                     amount + claim.target.bytesAbove <=
                 range.originalBase.toNat + range.size := by omega
           have candidateTargetLower :
               range.candidateBase.toNat + claim.target.bytesBelow <=
-                (candidateState.registers.get claim.target.candidateRegister).toNat -
+                (candidateState.registers.get claim.source.candidateRegister).toNat -
                   amount := by omega
           have candidateTargetUpper :
-              (candidateState.registers.get claim.target.candidateRegister).toNat -
+              (candidateState.registers.get claim.source.candidateRegister).toNat -
                     amount + claim.target.bytesAbove <=
                 range.candidateBase.toNat + range.size := by omega
           refine ⟨⟨⟨⟨⟨originalTargetLower, originalTargetUpper⟩,
@@ -3347,7 +6684,7 @@ def StateRelCoreWithImportMask (context : StaticProofContext)
       original.registers candidate.registers = true ∧
     ordinaryMemoryRelated context world context.codeMap.entries.toList
       (context.relationalValueTargets world) original.memory candidate.memory ∧
-    RelationalDynamicMemoryHold context world original.memory candidate.memory ∧
+    RelationalDynamicMemoryHold context world invariant original candidate ∧
     original.undefinedValue = candidate.undefinedValue ∧
     original.x87 = candidate.x87 ∧
     flagsRelated invariant.flagBits original.eflags candidate.eflags = true ∧
@@ -3367,7 +6704,43 @@ def StateRel (context : StaticProofContext) (world : RelationalWorld)
     (importRegisterRelationsHold world invariant.importRegisterRelations
         original.registers candidate.registers = true ∧
       dynamicRegisterRangeRelationsHold world invariant.dynamicRegisterRangeRelations
-        original.registers candidate.registers = true)
+        original.registers candidate.registers = true ∧
+      dynamicStackRangeRelationsHold world invariant.dynamicStackRangeRelations
+        original candidate = true)
+
+theorem StateRel.dynamicRegisterRangesHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    dynamicRegisterRangeRelationsHold world invariant.dynamicRegisterRangeRelations
+      original.registers candidate.registers = true :=
+  related.2.2.2.2.2.2.2.2.2.2.1
+
+theorem StateRel.dynamicStackRangesHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    dynamicStackRangeRelationsHold world invariant.dynamicStackRangeRelations
+      original candidate = true :=
+  related.2.2.2.2.2.2.2.2.2.2.2
+
+theorem StateRel.activeDynamicRegisterRangesHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    activeDynamicRegisterRangeRelationsHold context world
+      invariant.dynamicRegisterRangeRelations original candidate = true := by
+  rcases related with ⟨_, _, _, _, _, _, _, _, core, _⟩
+  exact core.2.2.2.2.2.1.active.registerRanges
+
+theorem StateRel.activeDynamicStackRangesHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    activeDynamicStackRangeRelationsHold context world
+      invariant.dynamicStackRangeRelations original candidate = true := by
+  rcases related with ⟨_, _, _, _, _, _, _, _, core, _⟩
+  exact core.2.2.2.2.2.1.active.stackRanges
 
 theorem evalInputRegisterOffset (state : MachineState) (register : Reg)
     (offset : Nat) :
@@ -3435,6 +6808,40 @@ theorem registerArgumentWordsRelated_of_checked
     simpa [registerArgumentExpression, evalInputRegisterOffset, offsetZero] using
       relationHolds
 
+theorem registerArgumentWordsEqual_of_checked_exact
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
+    (originalExpression candidateExpression : Expr)
+    (claim : RegisterArgumentClaim)
+    (checked : claim.checked sourceInvariant originalExpression
+      candidateExpression = true)
+    (exact : claim.relation.relation = .exact)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    originalExpression.eval originalState = candidateExpression.eval candidateState := by
+  simp only [RegisterArgumentClaim.checked, Bool.and_eq_true, Bool.or_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨relationMember, _supported⟩, originalExpressionExact⟩,
+      candidateExpressionExact⟩
+  rcases related with
+    ⟨_worldValid, _stackRangesValid, _stackMemory, _importsStatic,
+      _importsComplete, _importsMemory, _originalImmutable, _candidateImmutable,
+      relatedCore, _importAndDynamicRegisters⟩
+  have registerRelations := relatedCore.1
+  simp only [registerRelationsHold, List.all_eq_true] at registerRelations
+  have relationHolds := registerRelations claim.relation
+    (by simpa using relationMember)
+  change claim.relation.relation.holds context.originalPe.imageBase
+    context.candidatePe.imageBase context.codeMap.entries.toList
+    (context.relationalValueTargets world)
+    (originalState.registers.get claim.relation.original)
+    (candidateState.registers.get claim.relation.candidate) = true at relationHolds
+  rw [exact] at relationHolds
+  simp only [RegisterValueRelation.holds, beq_iff_eq] at relationHolds
+  rw [originalExpressionExact, candidateExpressionExact]
+  simp [registerArgumentExpression, evalInputRegisterOffset, relationHolds]
+
 theorem StateRel.ordinaryMemoryRelation
     (context : StaticProofContext) (world : RelationalWorld)
     (invariant : StateInvariant) (original candidate : MachineState)
@@ -3444,13 +6851,21 @@ theorem StateRel.ordinaryMemoryRelation
   rcases related with ⟨_, _, _, _, _, _, _, _, core, _⟩
   exact core.2.2.2.2.1
 
-theorem StateRel.dynamicRangesMemoryHold
+theorem StateRel.originalImmutableImageWordMemory
     (context : StaticProofContext) (world : RelationalWorld)
     (invariant : StateInvariant) (original candidate : MachineState)
     (related : StateRel context world invariant original candidate) :
-    DynamicRangesMemoryHold context world original.memory candidate.memory := by
-  rcases related with ⟨_, _, _, _, _, _, _, _, core, _⟩
-  exact core.2.2.2.2.2.1.1
+    ImmutableImageWordMemory context.originalPe original.memory := by
+  rcases related with ⟨_, _, _, _, _, _, originalImmutable, _, _, _⟩
+  exact originalImmutable
+
+theorem StateRel.candidateImmutableImageWordMemory
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    ImmutableImageWordMemory context.candidatePe candidate.memory := by
+  rcases related with ⟨_, _, _, _, _, _, _, candidateImmutable, _, _⟩
+  exact candidateImmutable
 
 theorem StateRel.staticDynamicPointerSlotsMemoryHold
     (context : StaticProofContext) (world : RelationalWorld)
@@ -3459,7 +6874,16 @@ theorem StateRel.staticDynamicPointerSlotsMemoryHold
     StaticDynamicPointerSlotsMemoryHold context world
       original.memory candidate.memory := by
   rcases related with ⟨_, _, _, _, _, _, _, _, core, _⟩
-  exact core.2.2.2.2.2.1.2
+  exact core.2.2.2.2.2.1.staticPointerSlots
+
+theorem StateRel.staticWordRelationSlotsMemoryHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    StaticWordRelationSlotsMemoryHold context world
+      original.memory candidate.memory := by
+  rcases related with ⟨_, _, _, _, _, _, _, _, core, _⟩
+  exact core.2.2.2.2.2.1.staticWordSlots
 
 theorem StateRel.stackMemoryRead32Related
     (context : StaticProofContext) (world : RelationalWorld)
@@ -3480,6 +6904,36 @@ theorem StateRel.stackMemoryRead32Related
   simp only [stackWindowsRelated, List.all_eq_true] at windowsRelated
   exact stackMemoryRead32Related_of_window context world window original candidate offset
     rangesValid (windowsRelated window windowMember) stackMemory inside aligned
+
+theorem StateRel.stackMemoryRead32BelowRelated
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (window : StackWindowPair) (amount : Nat)
+    (related : StateRel context world invariant original candidate)
+    (windowMember : window ∈ invariant.stackWindows)
+    (amountAtLeastWord : 4 <= amount) (inside : amount <= window.bytesBelow)
+    (aligned : amount % 4 = 0) :
+    wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      (Memory.read32 original.memory
+        (original.registers.get window.originalRegister - BitVec.ofNat 32 amount))
+      (Memory.read32 candidate.memory
+        (candidate.registers.get window.candidateRegister - BitVec.ofNat 32 amount)) =
+      true := by
+  rcases related with
+    ⟨_, rangesValid, stackMemory, _, _, _, _, _, relatedCore, _⟩
+  have windowsRelated := relatedCore.2.2.2.1
+  simp only [stackWindowsRelated, List.all_eq_true] at windowsRelated
+  have windowHolds := windowsRelated window windowMember
+  obtain ⟨location, originalAddress, candidateAddress⟩ :=
+    pairedStackWordLocation_below_window_amount context world window
+      original.registers candidate.registers rangesValid windowHolds amount
+      amountAtLeastWord aligned inside
+  have wordsRelated := stackMemory location.range location.rangeMember
+    location.offset location.inside location.aligned
+  rw [← location.originalAddressExact, ← location.candidateAddressExact,
+    originalAddress, candidateAddress] at wordsRelated
+  exact wordsRelated
 
 theorem registersRelatedValues_self_of_identity
     (originalImageBase candidateImageBase : Nat)
@@ -3568,6 +7022,8 @@ structure RegionRelation where
   outputImportRelations : List ImportRegisterRelation := []
   inputDynamicRangeRelations : List DynamicRegisterRangeRelation := []
   outputDynamicRangeRelations : List DynamicRegisterRangeRelation := []
+  inputDynamicStackRangeRelations : List DynamicStackRangeRelation := []
+  outputDynamicStackRangeRelations : List DynamicStackRangeRelation := []
   bounds : List RegisterBoundPair := []
   addressSeparations : List AddressSeparationPair := []
   stackWindows : List StackWindowPair := []
@@ -3581,6 +7037,7 @@ def RegionRelation.inputInvariant (region : RegionRelation) : StateInvariant := 
   registerRelations := region.inputRelations
   importRegisterRelations := region.inputImportRelations
   dynamicRegisterRangeRelations := region.inputDynamicRangeRelations
+  dynamicStackRangeRelations := region.inputDynamicStackRangeRelations
   flagBits := region.flagInputs
   bounds := region.bounds
   addressSeparations := region.addressSeparations
@@ -3591,6 +7048,7 @@ def RegionRelation.outputInvariant (region : RegionRelation) : StateInvariant :=
   registerRelations := region.outputRelations
   importRegisterRelations := region.outputImportRelations
   dynamicRegisterRangeRelations := region.outputDynamicRangeRelations
+  dynamicStackRangeRelations := region.outputDynamicStackRangeRelations
   flagBits := region.flagOutputs
 }
 

@@ -59,6 +59,7 @@ class RelationalSchemaTests(unittest.TestCase):
                 "proof_ir_sha256": "b",
                 "semantic_ir_sha256": "c",
                 "memory_contracts_sha256": "d",
+                "static_word_relations_sha256": "s",
                 "register_relations_sha256": "e",
                 "stack_windows_sha256": "f",
                 "segment_diagnostics_sha256": "g",
@@ -78,6 +79,23 @@ class RelationalSchemaTests(unittest.TestCase):
         )
         self.assertIn("external-protocol", parsed.workstream_ids)
         self.assertIn("acceptance-integration", parsed.workstream_ids)
+        state_products = next(
+            artifact
+            for artifact in manifest["artifacts"]
+            if artifact["id"] == "state-products"
+        )
+        self.assertIn(
+            "relational-static-word-relations.json", state_products["paths"]
+        )
+        state_workstream = next(
+            workstream
+            for workstream in manifest["workstreams"]
+            if workstream["id"] == "state-and-frame-analysis"
+        )
+        self.assertIn(
+            "src/spaghetti_extractor/relational/analyses/memory.py",
+            state_workstream["owned_paths"],
+        )
         overlapping = deepcopy(manifest)
         overlapping["workstreams"][1]["owned_paths"].append(
             overlapping["workstreams"][0]["owned_paths"][0]

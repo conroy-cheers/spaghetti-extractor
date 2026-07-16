@@ -2,6 +2,162 @@ from tests.stage_a_relational_support import *
 
 
 class StageARelationalLeanTests(StageARelationalTestBase):
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for result-range proofs")
+    def test_dynamic_range_result_relation_is_checked_by_lean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lean_dir = Path(temporary)
+            stage_a = lean_dir / "StageA"
+            stage_a.mkdir()
+            source_root = (
+                Path(__file__).parents[1] / "src" / "spaghetti_extractor" / "lean" / "StageA"
+            )
+            for module in RELATIONAL_KERNEL_MODULES:
+                shutil.copyfile(
+                    source_root / f"{module}.lean",
+                    stage_a / f"{module}.lean",
+                )
+            (stage_a / "DynamicRangeResult.lean").write_text(
+                """import StageA.RelationalEnvironment
+
+namespace StageA.DynamicRangeResult
+
+open StageA.Formal StageA.Relational
+
+def resultRange : DynamicAddressRangePair := {
+  id := 9
+  originalBase := BitVec.ofNat 32 4096
+  candidateBase := BitVec.ofNat 32 8192
+  size := 12
+  wordRelations := [
+    { offset := 0, kind := .relatedWord },
+    { offset := 8, kind := .nullableDynamicPointer }
+  ]
+}
+
+def resultWorld : RelationalWorld := {
+  dynamicRanges := [resultRange]
+}
+
+def resultContract : MachineImportCallContract := {
+  id := 0
+  imported := {
+    dll := [116, 101, 115, 116, 46, 100, 108, 108]
+    name := .symbol [97, 99, 99, 101, 115, 115, 111, 114]
+  }
+  stackArgumentOffsets := []
+  stackResultDelta := 0
+  preservedRegisters := [.ebx, .esi, .edi, .ebp]
+  clobberedRegisters := [.eax, .ecx, .edx]
+  resultRegisterRelations := [{
+    register := .eax
+    relation := .dynamicRangeBase (.fixed 12) 12 [
+      { offset := 0, kind := .relatedWord },
+      { offset := 8, kind := .nullableDynamicPointer }
+    ] false
+  }]
+  memoryEffect := .newDynamicRanges
+  worldEffect := .dynamicRanges
+}
+
+example : resultContract.shapeValid = true := by decide
+
+example : dynamicRangeBaseResultHolds [] resultWorld (.fixed 12) 12 [
+      { offset := 0, kind := .relatedWord },
+      { offset := 8, kind := .nullableDynamicPointer }
+    ] false
+    (BitVec.ofNat 32 4096) (BitVec.ofNat 32 8192) = true := by decide
+
+example : dynamicRangeBaseResultHolds [] resultWorld (.fixed 13) 13 [
+      { offset := 0, kind := .relatedWord },
+      { offset := 8, kind := .nullableDynamicPointer }
+    ] false
+    (BitVec.ofNat 32 4096) (BitVec.ofNat 32 8192) = false := by decide
+
+example : dynamicRangeBaseResultHolds [] resultWorld (.fixed 12) 12 [
+      { offset := 4, kind := .relatedWord }
+    ] false
+    (BitVec.ofNat 32 4096) (BitVec.ofNat 32 8192) = false := by decide
+
+example : dynamicRangeBaseResultHolds [] resultWorld (.fixed 12) 12 [
+      { offset := 0, kind := .relatedWord },
+      { offset := 8, kind := .nullableDynamicPointer }
+    ] false
+    (BitVec.ofNat 32 4096) (BitVec.ofNat 32 12288) = false := by decide
+
+example : dynamicRangeBaseResultHolds
+    [BitVec.ofNat 32 1, BitVec.ofNat 32 12] resultWorld (.product 0 1) 12 [
+      { offset := 0, kind := .relatedWord },
+      { offset := 8, kind := .nullableDynamicPointer }
+    ] true
+    (BitVec.ofNat 32 4096) (BitVec.ofNat 32 8192) = true := by decide
+
+example : dynamicRangeBaseResultHolds
+    [BitVec.ofNat 32 1, BitVec.ofNat 32 12] resultWorld (.product 0 1) 12 [] true
+    (BitVec.ofNat 32 0) (BitVec.ofNat 32 0) = true := by decide
+
+example : dynamicRangeBaseResultHolds
+    [BitVec.ofNat 32 1, BitVec.ofNat 32 12] resultWorld (.product 0 2) 12 [] true
+    (BitVec.ofNat 32 0) (BitVec.ofNat 32 0) = false := by decide
+
+example : newDynamicRangeAddress false {} resultWorld
+    (BitVec.ofNat 32 4096) = true := by decide
+
+example : newDynamicRangeAddress true {} resultWorld
+    (BitVec.ofNat 32 8192) = true := by decide
+
+example : newDynamicRangeAddress false {} resultWorld
+    (BitVec.ofNat 32 4080) = false := by decide
+
+example (before after : Memory)
+    (holds : machineCallMemoryEffectHoldsWithWorld false resultContract []
+      {} resultWorld before after) :
+    after (BitVec.ofNat 32 4080) = before (BitVec.ofNat 32 4080) := by
+  exact holds _ (by decide)
+
+example (context : StaticProofContext) (world : RelationalWorld)
+    (range : DynamicAddressRangePair) (requirement : DynamicWordRelation)
+    (original candidate : Memory) (originalValue candidateValue : Word)
+    (rangeValid : range.disjointFromImages context = true)
+    (inside : requirement.offset + 4 <= range.size)
+    (valuesRelated : requirement.kind.valuesHold context world range
+      originalValue candidateValue = true) :
+    dynamicWordRequirementsHold context world range [requirement]
+      (original.write32
+        (range.originalBase + BitVec.ofNat 32 requirement.offset) originalValue)
+      (candidate.write32
+        (range.candidateBase + BitVec.ofNat 32 requirement.offset) candidateValue) = true :=
+  dynamicWordRequirementsHold_single_after_paired_write context world range
+    requirement original candidate originalValue candidateValue rangeValid inside
+    valuesRelated
+
+example : ({ resultContract with worldEffect := .none }).shapeValid = false := by
+  decide
+
+example : ({ resultContract with resultRegisterRelations := [{
+    register := .eax
+    relation := .dynamicRangeBase (.fixed 4) 4 [
+      { offset := 4, kind := .relatedWord }
+    ] false
+  }] }).shapeValid = false := by decide
+
+example : ({ resultContract with resultRegisterRelations := [{
+    register := .eax
+    relation := .dynamicRangeBase (.fixed 8) 8 [
+      { offset := 0, kind := .relatedWord },
+      { offset := 0, kind := .dataPointer }
+    ] false
+  }] }).shapeValid = false := by decide
+
+end StageA.DynamicRangeResult
+""",
+                encoding="utf-8",
+            )
+
+            result = _run_lean_relational(
+                lean_dir, bundle="DynamicRangeResult"
+            )
+            self.assertEqual(result["status"], "checked", result)
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for world-effect proofs")
     def test_dynamic_range_release_world_effect_is_checked_by_lean(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -215,12 +371,13 @@ example (frame : RelationalRuntimeCallFrame)
 example (context : StaticProofContext) (world : RelationalWorld)
     (original candidate : MachineState)
     (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
-    (offsets : List ReturnSlotOffsetPair)
+    (offsets : List ReturnSlotOffsetInventory)
     (holds : RelationalRuntimeCallStackHolds context original candidate
       frames continuations offsets) :
     RelationalMixedRuntimeStackHolds context world original candidate
       (frames.map RelationalRuntimeFrame.internal)
-      (continuations.map RelationalRuntimeContinuation.internal) offsets :=
+      (continuations.map RelationalRuntimeContinuation.internal)
+      (offsets.map ReturnSlotOffsetInventory.representative) :=
   RelationalRuntimeCallStackHolds.toMixed context world original candidate
     frames continuations offsets holds
 
@@ -567,6 +724,12 @@ def rangeRelation : DynamicRegisterRangeRelation := {
   originalOffset := 8
   candidateOffset := 8
   requiredWords := [{ offset := 12, kind := .codePointer }]
+  activeWords := [{ offset := 12, kind := .codePointer }]
+}
+
+def inactiveRangeRelation : DynamicRegisterRangeRelation := {
+  rangeRelation with
+  activeWords := []
 }
 
 def rangePair : DynamicAddressRangePair := {
@@ -625,6 +788,11 @@ def invariant : StateInvariant := {
   dynamicRegisterRangeRelations := [rangeRelation]
 }
 
+def inactiveInvariant : StateInvariant := {
+  registerRelations := []
+  dynamicRegisterRangeRelations := [inactiveRangeRelation]
+}
+
 def registers : Registers Expr := {
   eax := .inputReg .eax
   ebx := .inputReg .ebx
@@ -660,12 +828,21 @@ def claim : DynamicRangeIndirectCallClaim := {
   continuationTargetId := 9
 }
 
+def inactiveClaim : DynamicRangeIndirectCallClaim := {
+  rangeRelation := inactiveRangeRelation
+  wordOffset := 4
+  continuationTargetId := 9
+}
+
 def preserveClaim : DynamicRegisterRangePreserveClaim := {
   sourceRelation := rangeRelation
   targetRelation := rangeRelation
 }
 
 example : claim.checked invariant originalBehavior candidateBehavior = true := by
+  decide
+
+example : inactiveClaim.checked inactiveInvariant originalBehavior candidateBehavior = false := by
   decide
 
 example : DynamicRangeIndirectCallTargetsClosed invariant originalBehavior
@@ -692,6 +869,7 @@ def argumentRangeRelation : DynamicRegisterRangeRelation := {
   originalOffset := 8
   candidateOffset := 8
   requiredWords := [{ offset := 12, kind := .relatedWord }]
+  activeWords := [{ offset := 12, kind := .relatedWord }]
 }
 
 def argumentInvariant : StateInvariant := {
@@ -775,6 +953,16 @@ def nextRelation : DynamicRegisterRangeRelation := {
   ]
 }
 
+def nextSourceRelation : DynamicRegisterRangeRelation := {
+  nextRelation with
+  activeWords := [{ offset := 8, kind := .nullableDynamicPointer }]
+}
+
+def nextSourceInvariant : StateInvariant := {
+  registerRelations := []
+  dynamicRegisterRangeRelations := [nextSourceRelation]
+}
+
 def nextInvariant : StateInvariant := {
   registerRelations := []
   dynamicRegisterRangeRelations := [nextRelation]
@@ -810,22 +998,22 @@ def originalNextGuard : BoolExpr := dynamicPointerNonzeroGuard .ebx 8
 def candidateNextGuard : BoolExpr := dynamicPointerNonzeroGuard .esi 8
 
 def nextClaim : DynamicRegisterRangeNextClaim := {
-  sourceRelation := nextRelation
+  sourceRelation := nextSourceRelation
   targetRelation := nextRelation
   pointerOffset := 8
 }
 
-example : nextClaim.checked nextInvariant nextInvariant originalNextBehavior
+example : nextClaim.checked nextSourceInvariant nextInvariant originalNextBehavior
     candidateNextBehavior originalNextGuard candidateNextGuard = true := by decide
 
 example (context : StaticProofContext) (world : RelationalWorld)
     (originalState candidateState : MachineState)
-    (related : StateRel context world nextInvariant originalState candidateState)
+    (related : StateRel context world nextSourceInvariant originalState candidateState)
     (guardTrue : originalNextGuard.eval originalState = true) :
     nextClaim.targetRelation.holds world
       (originalNextBehavior.eval originalState).registers
       (candidateNextBehavior.eval candidateState).registers = true :=
-  dynamicRegisterRangeNextOutputHolds_of_checked context world nextInvariant
+  dynamicRegisterRangeNextOutputHolds_of_checked context world nextSourceInvariant
     nextInvariant originalNextBehavior candidateNextBehavior originalNextGuard
     candidateNextGuard nextClaim (by decide) originalState candidateState related
     guardTrue
@@ -1273,6 +1461,109 @@ example (frame : RelationalRuntimeCallFrame) (originalState candidateState : Mac
       (minusEightBehavior.eval candidateState).registers :=
   returnSlotTransferHolds_of_checked minusEightBehavior minusEightBehavior
     returnSlotTransferClaim frame originalState candidateState (by decide) sourceHolds
+
+def ebpReturnSlotAlias : ReturnSlotOffsetPair := {
+  originalRegister := .ebp
+  originalOffset := BitVec.ofNat 32 4
+  candidateRegister := .ebp
+  candidateOffset := BitVec.ofNat 32 4
+}
+
+def espReturnSlotAlias : ReturnSlotOffsetPair := {
+  originalRegister := .esp
+  originalOffset := BitVec.ofNat 32 96
+  candidateRegister := .esp
+  candidateOffset := BitVec.ofNat 32 96
+}
+
+def twoAliasInventory : ReturnSlotOffsetInventory := {
+  locations := [ebpReturnSlotAlias, espReturnSlotAlias]
+}
+
+example : twoAliasInventory.checked = true := by decide
+example : ({ locations := [] } : ReturnSlotOffsetInventory).checked = false := by decide
+example : ({ locations := [ebpReturnSlotAlias, ebpReturnSlotAlias] } :
+    ReturnSlotOffsetInventory).checked = false := by decide
+example : ({ locations := List.replicate 9 ebpReturnSlotAlias } :
+    ReturnSlotOffsetInventory).checked = false := by decide
+
+def aliasRegisters : Registers Expr := {
+  registers with
+  ebp := .sub (.inputReg .esp) (.constant 4)
+  esp := .sub (.inputReg .esp) (.constant 96)
+}
+
+def aliasBehavior : NormalizedSymbolicBehavior := {
+  originalBehavior with registers := aliasRegisters
+}
+
+def ebpAliasTransfer : ReturnSlotFrameTransferClaim := {
+  transfer := {
+    source := ReturnSlotOffsetPair.zero
+    target := ebpReturnSlotAlias
+    originalOutput := .subRight .input 4
+    candidateOutput := .subRight .input 4
+  }
+  memory := .affine {
+    offsets := ReturnSlotOffsetPair.zero
+    originalWrites := []
+    candidateWrites := []
+  }
+}
+
+def espAliasTransfer : ReturnSlotFrameTransferClaim := {
+  transfer := {
+    source := ReturnSlotOffsetPair.zero
+    target := espReturnSlotAlias
+    originalOutput := .subRight .input 96
+    candidateOutput := .subRight .input 96
+  }
+  memory := .affine {
+    offsets := ReturnSlotOffsetPair.zero
+    originalWrites := []
+    candidateWrites := []
+  }
+}
+
+def twoAliasTransfer : ReturnSlotFrameInventoryTransferClaim := {
+  source := ReturnSlotOffsetInventory.zero
+  target := twoAliasInventory
+  transfers := [ebpAliasTransfer, espAliasTransfer]
+}
+
+def aliasInvariant : StateInvariant := {
+  registerRelations := []
+}
+
+example (context : StaticProofContext) :
+    twoAliasTransfer.checked context aliasInvariant aliasBehavior aliasBehavior = true := by
+  rfl
+
+def underJustifiedAliasTransfer : ReturnSlotFrameInventoryTransferClaim := {
+  twoAliasTransfer with transfers := [ebpAliasTransfer]
+}
+
+example (context : StaticProofContext) :
+    underJustifiedAliasTransfer.checked context aliasInvariant aliasBehavior
+      aliasBehavior = false := by
+  rfl
+
+example (context : StaticProofContext) (world : RelationalWorld)
+    (frame : RelationalRuntimeCallFrame) (originalState candidateState : MachineState)
+    (sourceOffsets : ReturnSlotOffsetInventory.zero.holds frame
+      originalState.registers candidateState.registers)
+    (sourceMemory : frame.memoryHolds originalState.memory candidateState.memory)
+    (related : StateRel context world aliasInvariant originalState candidateState) :
+    And
+      (twoAliasInventory.holds frame
+        (aliasBehavior.eval originalState).registers
+        (aliasBehavior.eval candidateState).registers)
+      (frame.memoryHolds
+        ((aliasBehavior.eval originalState).nextMachineState originalState).memory
+        ((aliasBehavior.eval candidateState).nextMachineState candidateState).memory) :=
+  returnSlotFrameInventoryTransferHolds_of_checked context world aliasInvariant
+    aliasBehavior aliasBehavior twoAliasTransfer frame originalState candidateState
+    (by rfl) sourceOffsets sourceMemory related
 
 def returnPopClaim : ReturnPopClaim := {
   originalStackAddress := .add (.inputReg .esp) (.constant 8)

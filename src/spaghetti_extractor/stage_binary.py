@@ -60,6 +60,7 @@ class StageABinary:
     image_base: int
     entrypoint_rva: int
     size_of_image: int
+    size_of_headers: int
     subsystem: str
     sections: tuple[StageASection, ...]
     imports: tuple[StageAImport, ...]
@@ -114,6 +115,7 @@ def _parse_stage_a_pe(path: Path) -> StageABinary:
         image_base=int(pe.OPTIONAL_HEADER.ImageBase),
         entrypoint_rva=int(pe.OPTIONAL_HEADER.AddressOfEntryPoint),
         size_of_image=int(pe.OPTIONAL_HEADER.SizeOfImage),
+        size_of_headers=int(pe.OPTIONAL_HEADER.SizeOfHeaders),
         subsystem=_subsystem_name(int(pe.OPTIONAL_HEADER.Subsystem)),
         sections=sections,
         imports=imports,

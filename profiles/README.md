@@ -40,7 +40,21 @@ preserved. Invocation still requires a separately checked nested external frame;
 registration alone does not authorize callback execution.
 
 `pe32-msvcrt-lockstep-v1.json` starts the CRT lifecycle profile with `free`,
-`atexit`, and the non-returning `_amsg_exit` boundary. The `free` contract
+`atexit`, the non-returning `_amsg_exit` boundary, `__set_app_type`, and the
+process-lifetime storage accessors `__p___winitenv`, `__p__fmode`, and
+`__p__commode`. The accessors demonstrate the generic
+`dynamic_range_base` result relation: `EAX` must name both sides of one checked
+paired range, the range must contain at least four bytes, and its first word
+must satisfy `related_word`. The result relation carries a checked allocation
+size expression, typed required-word relations, and explicit nullability. The
+declaration is data-driven; the proof core
+does not dispatch on the CRT symbol name. `malloc` and `calloc` use the same
+generic result relation with argument-derived allocation sizes. Their
+`newDynamicRanges` memory effect permits changes only in ranges newly added by
+the checked world transition and preserves all previously visible addresses.
+Object word shapes remain call-site invariants, rather than API-wide layouts;
+the paired environment and continuation `StateRel` must establish every shape
+that later code reads. The `free` contract
 requires one cdecl pointer argument and removes the uniquely matching paired
 dynamic range; a null pointer is an exact no-op. It does not treat deallocation
 as an unconstrained memory mutation or leave a released range silently live in

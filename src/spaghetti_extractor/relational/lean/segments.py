@@ -12,11 +12,10 @@ from ..analyses.external import (
     _external_call_site_candidates,
     _semantic_external_target_identity,
 )
-from ..analyses.registers import _target_shaped_register_output_claims
 from ..analyses.stack import _stack_window_transfer_claims
 from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..contract import _raw_base_relocations
-from ..model import _semantic_hash
+from ..model import _semantic_hash, _target_shaped_register_output_claims
 from ..schema import (
     FLAG_BITS,
     RELATIONAL_ACCEPTANCE_THEOREM,
@@ -33,13 +32,19 @@ from .expressions import (
     _lean_acceptance_outcome,
     _lean_dynamic_range_argument_claim,
     _lean_dynamic_range_relation,
+    _lean_dynamic_stack_range_relation,
     _lean_external_target,
     _lean_import_register_seed_claim,
     _lean_machine_import_call_contract,
     _lean_masked_successor_tautology_proof,
+    _lean_direct_call_prepared_writes_claim,
     _lean_direct_call_stack_writes_claim,
+    _lean_paired_prepared_word_writes_claim,
+    _lean_paired_exact_expr_witness,
+    _lean_paired_stack_word_value_claim,
     _lean_paired_stack_word_write_claim,
     _lean_paired_stack_word_writes_claim,
+    _lean_prepared_dynamic_stack_spill_claim,
     _lean_register_argument_claim,
     _lean_register_offset_witness,
     _lean_register_output_claim,
@@ -47,6 +52,7 @@ from .expressions import (
     _lean_semantic_bool_expr,
     _lean_semantic_expr,
     _lean_stack_address_separation_claim,
+    _lean_stack_adjustment,
     _lean_stack_window,
     _lean_stack_window_argument_claim,
     _lean_stack_window_transfer_claim,
@@ -950,7 +956,13 @@ def _write_relational_register_relation_modules(
             output_theorem_name = (
                 f"registerRelationChunk{chunk_index}Region{index}OutputClaimsChecked"
             )
-            state_rel_only_claims = {"immutable_image_word", "stack_read32_sub"}
+            state_rel_only_claims = {
+                "immutable_image_word",
+                "static_word_slot",
+                "stack_read32_sub",
+                "stack_read32_relative",
+                "stack_window_identity",
+            }
             if not any(
                 claim["kind"] in state_rel_only_claims
                 for claim in row["output_claims"]
@@ -1626,10 +1638,12 @@ def _write_relational_segment_refinement_modules(
             theorem_name = f"{prefix}Checked"
             if candidate["certificate_profile"] in {
                 "composable_local_no_write_v1", "composable_direct_call_v1",
+                "composable_direct_call_prepared_writes_v1",
                 "composable_direct_call_stack_writes_v1",
                 "composable_immutable_indirect_jump_v1",
                 "composable_paired_stack_word_write_v1",
                 "composable_paired_stack_word_writes_v1",
+                "composable_paired_prepared_word_writes_v1",
             }:
                 direct_call = (
                     candidate["certificate_profile"] == "composable_direct_call_v1"
@@ -1638,6 +1652,10 @@ def _write_relational_segment_refinement_modules(
                     candidate["certificate_profile"]
                     == "composable_direct_call_stack_writes_v1"
                 )
+                direct_call_prepared_writes = (
+                    candidate["certificate_profile"]
+                    == "composable_direct_call_prepared_writes_v1"
+                )
                 paired_stack_write = (
                     candidate["certificate_profile"]
                     == "composable_paired_stack_word_write_v1"
@@ -1645,6 +1663,10 @@ def _write_relational_segment_refinement_modules(
                 paired_stack_writes = (
                     candidate["certificate_profile"]
                     == "composable_paired_stack_word_writes_v1"
+                )
+                paired_prepared_writes = (
+                    candidate["certificate_profile"]
+                    == "composable_paired_prepared_word_writes_v1"
                 )
                 immutable_indirect_jump = (
                     candidate["certificate_profile"] ==
@@ -1671,6 +1693,7 @@ def _write_relational_segment_refinement_modules(
                         f"productNode{source_index}OriginalNormalizedX87, "
                         f"productNode{source_index}CandidateNormalizedX87"
                     )
+                    normalized_register_rewrites = ""
                     normalized_shape_rewrites = ""
                 elif normalized_fast_path:
                     original_normalized_behavior = (
@@ -1685,6 +1708,9 @@ def _write_relational_segment_refinement_modules(
                     )
                     normalized_x87_rewrites = (
                         f"region{source_index}NormalizedX87"
+                    )
+                    normalized_register_rewrites = (
+                        f"region{source_index}NormalizedRegisters"
                     )
                     normalized_shape_rewrites = (
                         f"region{source_index}NormalizedWrites, "
@@ -1709,6 +1735,12 @@ def _write_relational_segment_refinement_modules(
                     candidate_normalized_x87 = (
                         f"{prefix}CandidateNormalizedX87"
                     )
+                    original_normalized_registers = (
+                        f"{prefix}OriginalNormalizedRegisters"
+                    )
+                    candidate_normalized_registers = (
+                        f"{prefix}CandidateNormalizedRegisters"
+                    )
                     original_normalized_writes = (
                         f"{prefix}OriginalNormalizedWrites"
                     )
@@ -1723,6 +1755,10 @@ def _write_relational_segment_refinement_modules(
                     )
                     normalized_x87_rewrites = (
                         f"{original_normalized_x87}, {candidate_normalized_x87}"
+                    )
+                    normalized_register_rewrites = (
+                        f"{original_normalized_registers}, "
+                        f"{candidate_normalized_registers}"
                     )
                     normalized_shape_rewrites = (
                         f"{original_normalized_writes}, "
@@ -1774,6 +1810,16 @@ def _write_relational_segment_refinement_modules(
                             f"theorem {candidate_normalized_x87} : "
                             f"{candidate_normalized_behavior}.x87 = "
                             f"candidateBehavior{source_index}.x87 := by decide"
+                        ),
+                        (
+                            f"theorem {original_normalized_registers} : "
+                            f"{original_normalized_behavior}.registers = "
+                            f"originalBehavior{source_index}.registers := by decide"
+                        ),
+                        (
+                            f"theorem {candidate_normalized_registers} : "
+                            f"{candidate_normalized_behavior}.registers = "
+                            f"candidateBehavior{source_index}.registers := by decide"
                         ),
                         (
                             f"theorem {original_normalized_writes} : "
@@ -1861,7 +1907,7 @@ def _write_relational_segment_refinement_modules(
                         )
                         dynamic_transfer_facts.append(
                             f"  have {fact_name} := "
-                            "dynamicRegisterRangeNextOutputHolds_of_checked\n"
+                            "dynamicRegisterRangeNextOutputActiveHolds_of_checked\n"
                             f"    staticProofContext world region{source_index}.inputInvariant\n"
                             f"    region{target_index}.inputInvariant "
                             f"{original_normalized_behavior}\n"
@@ -1869,6 +1915,25 @@ def _write_relational_segment_refinement_modules(
                             f"{edge_name}.originalGuard {edge_name}.candidateGuard\n"
                             f"    {claim_name} (by decide) originalState candidateState "
                             "related guardTrue"
+                        )
+                    elif claim["kind"] == "stack_reload":
+                        dynamic_claim_definitions.append(
+                            f"def {claim_name} : DynamicStackRangeReloadClaim := {{\n"
+                            f"  sourceRelation := "
+                            f"{_lean_dynamic_stack_range_relation(claim['source_relation'])}\n"
+                            f"  targetRelation := "
+                            f"{_lean_dynamic_range_relation(claim['target_relation'])}\n"
+                            "}"
+                        )
+                        dynamic_transfer_facts.append(
+                            f"  have {fact_name} := "
+                            "dynamicStackRangeReloadOutputActiveHolds_of_checked\n"
+                            f"    staticProofContext world region{source_index}.inputInvariant\n"
+                            f"    region{target_index}.inputInvariant "
+                            f"{original_normalized_behavior}\n"
+                            f"    {candidate_normalized_behavior} "
+                            f"{claim_name} (by decide) (by decide) (by decide) "
+                            "originalState candidateState related"
                         )
                     elif claim["kind"] == "static_pointer_seed":
                         dynamic_claim_definitions.append(
@@ -1880,7 +1945,7 @@ def _write_relational_segment_refinement_modules(
                         )
                         dynamic_transfer_facts.append(
                             f"  have {fact_name} := "
-                            "staticDynamicPointerSeedOutputHolds_of_checked\n"
+                            "staticDynamicPointerSeedOutputActiveHolds_of_checked\n"
                             f"    staticProofContext world region{source_index}.inputInvariant\n"
                             f"    region{target_index}.inputInvariant "
                             f"{original_normalized_behavior}\n"
@@ -1888,6 +1953,52 @@ def _write_relational_segment_refinement_modules(
                             f"{edge_name}.originalGuard {edge_name}.candidateGuard\n"
                             f"    {claim_name} (by decide) originalState candidateState "
                             "related guardTrue"
+                        )
+                    elif claim["kind"] == "prepared_preserve":
+                        dynamic_claim_definitions.append(
+                            f"def {claim_name} : DynamicRegisterRangePreserveClaim := {{\n"
+                            f"  sourceRelation := "
+                            f"{_lean_dynamic_range_relation(claim['source_relation'])}\n"
+                            f"  targetRelation := "
+                            f"{_lean_dynamic_range_relation(claim['target_relation'])}\n"
+                            "}"
+                        )
+                        dynamic_transfer_facts.append(
+                            f"  have {fact_name} := "
+                            "dynamicRegisterRangePreparedPreserveOutputActiveHolds_of_checked\n"
+                            f"    staticProofContext world region{source_index}.inputInvariant\n"
+                            f"    region{target_index}.inputInvariant "
+                            f"{prefix}PairedPreparedWritesClaim\n"
+                            f"    {original_normalized_behavior} "
+                            f"{candidate_normalized_behavior} {claim_name}\n"
+                            "    staticProofContextChecked (by decide) (by decide) "
+                            "(by decide) (by decide)\n"
+                            "    originalState candidateState related"
+                        )
+                    elif claim["kind"] == "activate":
+                        dynamic_claim_definitions.append(
+                            f"def {claim_name} : DynamicRegisterRangeActivateClaim := {{\n"
+                            f"  sourceRelation := "
+                            f"{_lean_dynamic_range_relation(claim['source_relation'])}\n"
+                            f"  targetRelation := "
+                            f"{_lean_dynamic_range_relation(claim['target_relation'])}\n"
+                            "  relation := { offset := "
+                            f"{int(claim['relation']['offset'])}, kind := "
+                            f".{claim['relation']['kind']} }}\n"
+                            f"  originalAmount := {int(claim['original_amount'])}\n"
+                            f"  candidateAmount := {int(claim['candidate_amount'])}\n"
+                            f"  value := {_lean_paired_stack_word_value_claim(claim['value'])}\n"
+                            "}"
+                        )
+                        dynamic_transfer_facts.append(
+                            f"  have {fact_name} := "
+                            "dynamicRegisterRangeActivateOutputActiveHolds_of_checked\n"
+                            f"    staticProofContext world region{source_index}.inputInvariant\n"
+                            f"    region{target_index}.inputInvariant "
+                            f"{prefix}PairedPreparedWritesClaim\n"
+                            f"    {original_normalized_behavior} "
+                            f"{candidate_normalized_behavior} {claim_name} (by decide)\n"
+                            "    originalState candidateState related"
                         )
                     else:
                         dynamic_claim_definitions.append(
@@ -1900,12 +2011,12 @@ def _write_relational_segment_refinement_modules(
                         )
                         dynamic_transfer_facts.append(
                             f"  have {fact_name} := "
-                            "dynamicRegisterRangePreserveOutputHolds_of_checked\n"
+                            "dynamicRegisterRangePreserveOutputActiveHolds_of_checked\n"
                             f"    staticProofContext world region{source_index}.inputInvariant\n"
                             f"    region{target_index}.inputInvariant "
                             f"{original_normalized_behavior}\n"
                             f"    {candidate_normalized_behavior} {claim_name} (by decide)\n"
-                            "    originalState candidateState related"
+                            "    (by decide) (by decide) originalState candidateState related"
                         )
                 guard_claim = candidate.get("guard_relation_claim")
                 if (
@@ -1940,6 +2051,20 @@ def _write_relational_segment_refinement_modules(
                     )
                 if (
                     guard_claim is not None
+                    and guard_claim["profile"] == "paired_exact_guard_v1"
+                ):
+                    import_claim_definitions.append(
+                        f"def {guard_claim_name} : PairedExactGuardClaim := {{\n"
+                        "  originalGuard := "
+                        f"{_lean_semantic_bool_expr(guard_claim['original_guard'])}\n"
+                        "  candidateGuard := "
+                        f"{_lean_semantic_bool_expr(guard_claim['candidate_guard'])}\n"
+                        "  witness := "
+                        f"{_lean_paired_exact_expr_witness(guard_claim['witness'])}\n"
+                        "}"
+                    )
+                if (
+                    guard_claim is not None
                     and guard_claim["profile"] == "static_dynamic_pointer_guard_v1"
                 ):
                     import_claim_definitions.append(
@@ -1959,6 +2084,25 @@ def _write_relational_segment_refinement_modules(
                         f"  notCount := {int(guard_claim['not_count'])}\n"
                         "}"
                         )
+                if (
+                    guard_claim is not None
+                    and guard_claim["profile"]
+                        == "paired_stack_read_relative_guard_v1"
+                ):
+                    import_claim_definitions.append(
+                        f"def {guard_claim_name} : StackWordZeroRelativeGuardClaim := {{\n"
+                        f"  window := {_lean_stack_window(guard_claim['window'])}\n"
+                        "  adjustment := "
+                        f"{_lean_stack_adjustment(guard_claim['adjustment'])}\n"
+                        "  originalAddress := "
+                        f"{_lean_semantic_expr(guard_claim['original_address'])}\n"
+                        "  candidateAddress := "
+                        f"{_lean_semantic_expr(guard_claim['candidate_address'])}\n"
+                        "  masked := "
+                        f"{'true' if guard_claim['masked'] else 'false'}\n"
+                        f"  notCount := {int(guard_claim['not_count'])}\n"
+                        "}"
+                    )
                 if guard_claim is None:
                     guard_agreement_setup = ""
                 elif guard_claim["profile"] == "related_word_zero_guard_v1":
@@ -1988,10 +2132,31 @@ def _write_relational_segment_refinement_modules(
                         f"{guard_claim_name} (by decide)\n"
                         "    originalState candidateState related\n"
                     )
+                elif guard_claim["profile"] == "paired_exact_guard_v1":
+                    guard_agreement_setup = (
+                        "  have guardAgreement := "
+                        "pairedExactGuard_eval_equal_of_checked\n"
+                        f"    staticProofContext world region{source_index}.inputInvariant\n"
+                        f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
+                        f"{guard_claim_name} (by decide)\n"
+                        "    originalState candidateState related\n"
+                    )
                 elif guard_claim["profile"] == "paired_stack_read_guard_v1":
                     guard_agreement_setup = (
                         "  have guardAgreement := "
                         "stackWordZeroGuard_eval_equal_of_checked\n"
+                        f"    staticProofContext world region{source_index}.inputInvariant\n"
+                        f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
+                        f"{guard_claim_name} (by decide)\n"
+                        "    originalState candidateState related\n"
+                    )
+                elif (
+                    guard_claim["profile"]
+                    == "paired_stack_read_relative_guard_v1"
+                ):
+                    guard_agreement_setup = (
+                        "  have guardAgreement := "
+                        "stackWordZeroRelativeGuard_eval_equal_of_checked\n"
                         f"    staticProofContext world region{source_index}.inputInvariant\n"
                         f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
                         f"{guard_claim_name} (by decide)\n"
@@ -2158,15 +2323,38 @@ def _write_relational_segment_refinement_modules(
                 dynamic_register_outputs = candidate.get(
                     "dynamic_register_output_claims", []
                 )
+                target_output_claims_name = f"{prefix}TargetRegisterOutputClaims"
+                target_output_claims = candidate.get("register_output_claims", [])
+                if dynamic_register_outputs:
+                    register_inventory_definition = ""
+                    register_inventory_statement = (
+                        f"region{source_index}.outputRelations = "
+                        f"region{target_index}.inputRelations"
+                    )
+                else:
+                    target_output_claim_literals = ", ".join(
+                        _lean_register_output_claim(claim)
+                        for claim in target_output_claims
+                    )
+                    register_inventory_definition = (
+                        f"def {target_output_claims_name} : "
+                        "List InvariantWP.RegisterOutputClaim := "
+                        f"[{target_output_claim_literals}]"
+                    )
+                    register_inventory_statement = (
+                        f"{target_output_claims_name}.map "
+                        "InvariantWP.RegisterOutputClaim.output = "
+                        f"region{target_index}.inputRelations"
+                    )
                 if not dynamic_register_outputs:
                     register_transfer_proof = (
                         f"  · rw [RegionRelation.inputInvariant, ← {composition_name}]\n"
-                        "    exact InvariantWP.registerTransferUnderStateRel_of_checked "
+                        "    exact InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims "
                         f"staticProofContext world region{source_index} "
                         f"{original_normalized_behavior} "
                         f"{candidate_normalized_behavior} "
-                        f"registerRelationChunk{chunk_index}Region{source_index}OutputClaims "
-                        "(by decide) (by decide) originalState candidateState "
+                        f"{target_output_claims_name} (by decide) "
+                        "originalState candidateState "
                         "relatedForRegisterTransfer\n"
                     )
                 else:
@@ -2238,7 +2426,17 @@ def _write_relational_segment_refinement_modules(
                         range_theorem = (
                             "staticDynamicPointerSeedOutputHolds_of_checked"
                             if dynamic_claim["kind"] == "static_pointer_seed"
+                            else "dynamicStackRangeReloadOutputHolds_of_checked"
+                            if dynamic_claim["kind"] == "stack_reload"
                             else "dynamicRegisterRangeNextOutputHolds_of_checked"
+                        )
+                        guarded_arguments = (
+                            f"{edge_name}.originalGuard {edge_name}.candidateGuard\n"
+                            if dynamic_claim["kind"] != "stack_reload" else ""
+                        )
+                        guard_proof = (
+                            " guardTrue"
+                            if dynamic_claim["kind"] != "stack_reload" else ""
                         )
                         dynamic_fact_rows.append(
                             f"  have {range_fact} := "
@@ -2247,9 +2445,9 @@ def _write_relational_segment_refinement_modules(
                             f"    region{target_index}.inputInvariant "
                             f"{original_normalized_behavior}\n"
                             f"    {candidate_normalized_behavior} "
-                            f"{edge_name}.originalGuard {edge_name}.candidateGuard\n"
+                            f"{guarded_arguments}"
                             f"    {claim_name} (by decide) originalState candidateState "
-                            "relatedForRegisterTransfer guardTrue\n"
+                            f"relatedForRegisterTransfer{guard_proof}\n"
                             f"  have {word_fact} := "
                             "dynamicRegisterRangeHolds_relatedWord_of_zero_offsets\n"
                             f"    staticProofContext world {claim_name}.targetRelation\n"
@@ -2290,8 +2488,86 @@ def _write_relational_segment_refinement_modules(
                 direct_call_transition_definition = ""
                 paired_stack_write_shape_definition = ""
                 paired_stack_write_transition_definition = ""
+                paired_prepared_write_shape_definition = ""
+                paired_prepared_write_transition_definition = ""
                 immutable_indirect_jump_shape_definition = ""
-                if direct_call_stack_writes:
+                if direct_call_prepared_writes:
+                    prepared_claim_name = (
+                        f"{prefix}DirectCallPreparedWritesClaim"
+                    )
+                    prepared_claim = candidate[
+                        "direct_call_prepared_writes_claim"
+                    ]
+                    assert isinstance(prepared_claim, dict)
+                    stack_amount = int(prepared_claim["stack_amount"])
+                    stack_amount_twos_complement = 2**32 - stack_amount
+                    direct_call_shape_definition = (
+                        f"def {prepared_claim_name} : "
+                        "DirectCallPreparedWritesClaim := "
+                        f"{_lean_direct_call_prepared_writes_claim(prepared_claim)}\n\n"
+                        f"theorem {shape_name} :\n"
+                        "    DirectCallPreparedWritesSegmentShapeClosed "
+                        f"staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"{prepared_claim_name}\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} := by\n"
+                        "  unfold DirectCallPreparedWritesSegmentShapeClosed\n"
+                        f"  rw [{local_code_targets_name}, {local_values_name}]\n"
+                        "  intro world originalState candidateState related\n"
+                        "  refine ⟨rfl, ?_⟩\n"
+                        "  intro guard\n"
+                        f"  refine ⟨{original_normalized_behavior}.eval originalState, "
+                        f"{candidate_normalized_behavior}.eval candidateState, "
+                        "?_, ?_, ?_⟩\n"
+                        f"  · simp [evalBehavior, {original_normalized_checked}]\n"
+                        f"  · simp [evalBehavior, {candidate_normalized_checked}]\n"
+                        "  have stackAddressRewrite (value : Word) :\n"
+                        f"      value + BitVec.ofNat 32 {stack_amount_twos_complement} =\n"
+                        f"        value - BitVec.ofNat 32 {stack_amount} := by\n"
+                        f"    exact word_add_ia32_twos_complement value {stack_amount} "
+                        "(by decide)\n"
+                        "  simp [NormalizedSymbolicBehavior.eval, "
+                        f"{normalized_shape_rewrites}, evalNormalizedWrites,\n"
+                        f"    originalBehavior{source_index}, "
+                        f"candidateBehavior{source_index},\n"
+                        f"    {prepared_claim_name}, "
+                        "DirectCallPreparedWritesClaim.originalWrites,\n"
+                        "    DirectCallPreparedWritesClaim.candidateWrites,\n"
+                        "    DirectCallPreparedWritesClaim.originalPushAddress,\n"
+                        "    DirectCallPreparedWritesClaim.candidatePushAddress,\n"
+                        "    PairedPreparedWordWritesClaim.originalWrites,\n"
+                        "    PairedPreparedWordWritesClaim.candidateWrites,\n"
+                        "    PairedPreparedWordWriteItem.originalAddress,\n"
+                        "    PairedPreparedWordWriteItem.candidateAddress,\n"
+                        "    PairedPreparedWordWriteItem.value, pairedStackWordAddress,\n"
+                        "    NormalizedOutcomeExpr.eval,\n"
+                        f"    {edge_name}, PureOutcome.segmentExitFor,\n"
+                        "    PureOutcome.segmentExit, outcomesRelated, "
+                        "StageA.Formal.Expr.eval, stackAddressRewrite]\n"
+                    )
+                    direct_call_transition_definition = (
+                        f"theorem {transition_name} :\n"
+                        f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} :=\n"
+                        "  segmentTransitionClosed_of_direct_call_prepared_writes "
+                        f"staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    {prepared_claim_name} originalBehavior{source_index} "
+                        f"candidateBehavior{source_index}\n"
+                        f"    {original_normalized_behavior} "
+                        f"{candidate_normalized_behavior}\n"
+                        f"    region{source_index}.targets region{source_index}.values\n"
+                        f"    {local_code_targets_name} {local_values_name} "
+                        "staticProofContextChecked\n"
+                        "    (by decide) (by decide) (by decide) (by decide) "
+                        f"{shape_name} {state_name}"
+                    )
+                elif direct_call_stack_writes:
                     stack_claim_name = f"{prefix}DirectCallStackWritesClaim"
                     stack_claim = candidate["direct_call_stack_writes_claim"]
                     assert isinstance(stack_claim, dict)
@@ -2356,6 +2632,7 @@ def _write_relational_segment_refinement_modules(
                         f"    {local_code_targets_name} {local_values_name} "
                         "staticProofContextChecked\n"
                         "    (by decide) (by decide) (by decide) (by decide) "
+                        "(by decide) "
                         f"{shape_name} {state_name}"
                     )
                 elif direct_call:
@@ -2424,8 +2701,170 @@ def _write_relational_segment_refinement_modules(
                         f"(BitVec.ofNat 32 {candidate_return})\n"
                         "      · decide\n"
                         "      · decide)\n"
-                        f"    (by decide) (by decide) {shape_name} {state_name}"
+                        f"    (by decide) (by decide) (by decide) "
+                        f"{shape_name} {state_name}"
                     )
+                elif paired_prepared_writes:
+                    prepared_claim_name = f"{prefix}PairedPreparedWritesClaim"
+                    prepared_claim = candidate["paired_prepared_writes_claim"]
+                    assert isinstance(prepared_claim, dict)
+                    paired_prepared_write_shape_definition = (
+                        f"def {prepared_claim_name} : PairedPreparedWordWritesClaim := "
+                        f"{_lean_paired_prepared_word_writes_claim(prepared_claim)}\n\n"
+                        f"theorem {shape_name} :\n"
+                        "    PairedPreparedWordWritesSegmentShapeClosed "
+                        f"staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant {prepared_claim_name}\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} := by\n"
+                        "  unfold PairedPreparedWordWritesSegmentShapeClosed\n"
+                        f"  rw [{local_code_targets_name}, {local_values_name}]\n"
+                        "  intro world originalState candidateState related\n"
+                        + guard_shape_setup
+                        + f"  refine ⟨{original_normalized_behavior}.eval originalState, "
+                        f"{candidate_normalized_behavior}.eval candidateState, "
+                        "?_, ?_, ?_⟩\n"
+                        f"  · simp [evalBehavior, {original_normalized_checked}]\n"
+                        f"  · simp [evalBehavior, {candidate_normalized_checked}]\n"
+                        "  simp [NormalizedSymbolicBehavior.eval, "
+                        f"{normalized_shape_rewrites}, evalNormalizedWrites,\n"
+                        f"    originalBehavior{source_index}, candidateBehavior{source_index},\n"
+                        + ("" if guard_claim is None else
+                           f"region{source_index}OutcomeCondition, ")
+                        + "NormalizedOutcomeExpr.eval,\n"
+                        f"    {prepared_claim_name}, "
+                        "PairedPreparedWordWritesClaim.originalWrites,\n"
+                        "    PairedPreparedWordWritesClaim.candidateWrites,\n"
+                        "    PairedPreparedWordWriteItem.originalAddress,\n"
+                        "    PairedPreparedWordWriteItem.candidateAddress,\n"
+                        "    PairedPreparedWordWriteItem.value, pairedStackWordAddress,\n"
+                        f"    pairedDynamicWordAddress, {edge_name}, "
+                        "PureOutcome.segmentExitFor,\n"
+                        "    PureOutcome.segmentExit, outcomesRelated, "
+                        "StageA.Formal.Expr.eval]\n"
+                        + guard_shape_finish
+                    )
+                    spill_claim = candidate.get(
+                        "prepared_dynamic_stack_spill_claim"
+                    )
+                    spill_claim_name = f"{prefix}DynamicStackSpillClaim"
+                    spill_base_name = f"{prefix}SpillBasePreserved"
+                    if isinstance(spill_claim, dict):
+                        paired_prepared_write_shape_definition += (
+                            "\n"
+                            f"def {spill_claim_name} : "
+                            "PreparedDynamicStackRangeSpillClaim := "
+                            f"{_lean_prepared_dynamic_stack_spill_claim(spill_claim)}\n\n"
+                            f"theorem {spill_base_name} :\n"
+                            "    PairedPreparedWordWritesOutputBasePreserved "
+                            f"staticProofContext {edge_name} {spill_claim_name}\n"
+                            f"      originalBehavior{source_index} "
+                            f"candidateBehavior{source_index} := by\n"
+                            "  unfold PairedPreparedWordWritesOutputBasePreserved\n"
+                            f"  rw [{local_code_targets_name}]\n"
+                            "  intro originalState candidateState originalResult "
+                            "candidateResult originalEval candidateEval\n"
+                            f"  simp [evalBehavior, {original_normalized_checked}] "
+                            "at originalEval\n"
+                            f"  simp [evalBehavior, {candidate_normalized_checked}] "
+                            "at candidateEval\n"
+                            "  subst originalResult\n"
+                            "  subst candidateResult\n"
+                            "  simp [NormalizedSymbolicBehavior.eval, "
+                            "evalNormalizedRegisters, "
+                            f"{normalized_register_rewrites}, "
+                            f"{normalized_shape_rewrites}, "
+                            f"originalBehavior{source_index}, "
+                            f"candidateBehavior{source_index}, "
+                            f"{spill_claim_name}, "
+                            "PreparedDynamicStackRangeSpillClaim.window, "
+                            "StageA.Formal.Registers.get, "
+                            "StageA.Formal.Expr.eval]\n"
+                        )
+                    if isinstance(spill_claim, dict) and dynamic_fact_names:
+                        paired_prepared_write_transition_definition = (
+                            f"theorem {transition_name} :\n"
+                            f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                            f"region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      originalBehavior{source_index} "
+                            f"candidateBehavior{source_index} :=\n"
+                            "  segmentTransitionClosed_of_paired_prepared_word_writes_with_dynamic_spill "
+                            f"staticProofContext {edge_name} "
+                            f"region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"    {prepared_claim_name} {spill_claim_name} "
+                            f"originalBehavior{source_index} "
+                            f"candidateBehavior{source_index}\n"
+                            f"    region{source_index}.targets region{source_index}.values\n"
+                            f"    {local_code_targets_name} {local_values_name} "
+                            "staticProofContextChecked\n"
+                            "    (by decide) (by decide) (by decide) (by decide) "
+                            f"{shape_name} {spill_base_name} {state_name} "
+                            f"{dynamic_transfer_name}"
+                        )
+                    elif isinstance(spill_claim, dict):
+                        paired_prepared_write_transition_definition = (
+                            f"theorem {transition_name} :\n"
+                            f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                            f"region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      originalBehavior{source_index} "
+                            f"candidateBehavior{source_index} :=\n"
+                            "  segmentTransitionClosed_of_paired_prepared_word_writes_with_spill "
+                            f"staticProofContext {edge_name} "
+                            f"region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"    {prepared_claim_name} {spill_claim_name} "
+                            f"originalBehavior{source_index} "
+                            f"candidateBehavior{source_index}\n"
+                            f"    region{source_index}.targets region{source_index}.values\n"
+                            f"    {local_code_targets_name} {local_values_name} "
+                            "staticProofContextChecked\n"
+                            "    (by decide) (by decide) (by decide) (by decide) "
+                            "(by decide) "
+                            f"{shape_name} {spill_base_name} {state_name}"
+                        )
+                    elif dynamic_fact_names:
+                        paired_prepared_write_transition_definition = (
+                            f"theorem {transition_name} :\n"
+                            f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                            f"region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      originalBehavior{source_index} "
+                            f"candidateBehavior{source_index} :=\n"
+                            "  segmentTransitionClosed_of_paired_prepared_word_writes_with_dynamic "
+                            f"staticProofContext {edge_name} "
+                            f"region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"    {prepared_claim_name} originalBehavior{source_index} "
+                            f"candidateBehavior{source_index}\n"
+                            f"    region{source_index}.targets region{source_index}.values\n"
+                            f"    {local_code_targets_name} {local_values_name} "
+                            "staticProofContextChecked\n"
+                            "    (by decide) (by decide) (by decide) "
+                            f"{shape_name} {state_name} {dynamic_transfer_name}"
+                        )
+                    else:
+                        paired_prepared_write_transition_definition = (
+                            f"theorem {transition_name} :\n"
+                            f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                            f"region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      originalBehavior{source_index} "
+                            f"candidateBehavior{source_index} :=\n"
+                            "  segmentTransitionClosed_of_paired_prepared_word_writes "
+                            f"staticProofContext {edge_name} "
+                            f"region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"    {prepared_claim_name} originalBehavior{source_index} "
+                            f"candidateBehavior{source_index}\n"
+                            f"    region{source_index}.targets region{source_index}.values\n"
+                            f"    {local_code_targets_name} {local_values_name} "
+                            "staticProofContextChecked\n"
+                            "    (by decide) (by decide) (by decide) (by decide) "
+                            f"{shape_name} {state_name}"
+                        )
                 elif paired_stack_write:
                     stack_claim_name = f"{prefix}PairedStackWriteClaim"
                     stack_claim = candidate["paired_stack_write_claim"]
@@ -2478,6 +2917,7 @@ def _write_relational_segment_refinement_modules(
                         f"    {local_code_targets_name} {local_values_name} "
                         "staticProofContextChecked\n"
                         f"    (by decide) (by decide) (by decide) (by decide) "
+                        "(by decide) "
                         f"{shape_name} {state_name}"
                     )
                 elif paired_stack_writes:
@@ -2536,6 +2976,7 @@ def _write_relational_segment_refinement_modules(
                         f"    {local_code_targets_name} {local_values_name} "
                         "staticProofContextChecked\n"
                         f"    (by decide) (by decide) (by decide) (by decide) "
+                        "(by decide) "
                         f"{shape_name} {state_name}"
                     )
                 elif immutable_indirect_jump:
@@ -2612,10 +3053,14 @@ def _write_relational_segment_refinement_modules(
                         "by decide"
                     ),
                     (
-                        f"theorem {composition_name} : region{source_index}.outputRelations = "
-                        f"region{target_index}.inputRelations := by decide"
+                        register_inventory_definition
+                    ),
+                    (
+                        f"theorem {composition_name} : {register_inventory_statement} "
+                        ":= by decide"
                     ),
                     direct_call_shape_definition
+                    or paired_prepared_write_shape_definition
                     or paired_stack_write_shape_definition
                     or immutable_indirect_jump_shape_definition
                     or (
@@ -2738,12 +3183,13 @@ def _write_relational_segment_refinement_modules(
                             "  subst candidateResult\n"
                             + "\n".join(dynamic_transfer_facts)
                             + "\n  simpa [RegionRelation.inputInvariant, "
-                            f"region{target_index}, dynamicRegisterRangeRelationsHold] using "
+                            f"region{target_index}, activeDynamicRegisterRangeRelationsHold] using "
                             + (dynamic_fact_names[0] if len(dynamic_fact_names) == 1 else
                                "⟨" + ", ".join(dynamic_fact_names) + "⟩")
                         )
                     ]),
                     direct_call_transition_definition
+                    or paired_prepared_write_transition_definition
                     or paired_stack_write_transition_definition
                     or (
                         f"theorem {transition_name} :\n"
@@ -2751,7 +3197,7 @@ def _write_relational_segment_refinement_modules(
                         f"region{source_index}.inputInvariant region{target_index}.inputInvariant\n"
                         f"      originalBehavior{source_index} candidateBehavior{source_index} :=\n"
                         + (
-                            "  segmentTransitionClosed_of_no_write_with_transfers staticProofContext "
+                            "  segmentTransitionClosed_of_no_write_with_imports_and_dynamic staticProofContext "
                             if import_fact_names and dynamic_fact_names else
                             "  segmentTransitionClosed_of_no_write_with_imports staticProofContext "
                             if import_fact_names else
@@ -2766,13 +3212,16 @@ def _write_relational_segment_refinement_modules(
                         f"    {local_code_targets_name} {local_values_name} "
                         + (
                             f"{shape_name} {state_name} {import_transfer_name} "
-                            f"{dynamic_transfer_name}"
+                            f"{dynamic_transfer_name} (by decide)"
                             if import_fact_names and dynamic_fact_names else
-                            f"{shape_name} {state_name} {import_transfer_name} (by decide)"
+                            f"{shape_name} {state_name} {import_transfer_name} "
+                            "(by decide) (by decide)"
                             if import_fact_names else
-                            f"(by decide) {shape_name} {state_name} {dynamic_transfer_name}"
+                            f"(by decide) (by decide) {shape_name} {state_name} "
+                            f"{dynamic_transfer_name}"
                             if dynamic_fact_names else
-                            f"(by decide) (by decide) {shape_name} {state_name}"
+                            f"(by decide) (by decide) (by decide) "
+                            f"{shape_name} {state_name}"
                         )
                     ),
                     (
@@ -2827,7 +3276,8 @@ def _write_relational_segment_refinement_modules(
             "import StageA.RelationalComposition\n"
             "import StageA.RelationalStaticContext\n"
             "import StageA.RelationalStaticContextBase\n"
-            f"import StageA.RelationalProofDirectChunk{chunk_index}\n"
+            f"import StageA.RelationalProofOriginalDecodeChunk{chunk_index}\n"
+            f"import StageA.RelationalProofCandidateDecodeChunk{chunk_index}\n"
             f"import StageA.RelationalRegisterRelationsChunk{chunk_index}\n"
             + "".join(
                 f"import StageA.RelationalRegionChunk{target_chunk}\n"
@@ -3165,10 +3615,12 @@ def _write_relational_external_call_refinement_modules(
                 "}"
             )
             dynamic_fact_rows.append(
-                f"  have {fact_name} := dynamicRegisterRangePreserveOutputHolds_of_checked\n"
+                f"  have {fact_name} := "
+                "dynamicRegisterRangePreserveOutputActiveHolds_of_checked\n"
                 f"    staticProofContext world region{source_index}.inputInvariant\n"
                 f"    externalCallSite{edge_id}.boundaryInvariant {original_normalized}\n"
-                f"    {candidate_normalized} {claim_name} (by decide)\n"
+                f"    {candidate_normalized} {claim_name} (by decide) "
+                "(by decide) (by decide)\n"
                 "    originalState candidateState relatedForRegisterTransfer"
             )
         boundary_fact_setup = "\n".join([*import_fact_rows, *dynamic_fact_rows])
@@ -3186,13 +3638,13 @@ def _write_relational_external_call_refinement_modules(
         )
         dynamic_boundary_proof = (
             f"  · simpa [externalCallSite{edge_id}, "
-            "dynamicRegisterRangeRelationsHold] using "
+            "activeDynamicRegisterRangeRelationsHold] using "
             + (dynamic_fact_names[0] if len(dynamic_fact_names) == 1 else
                "\u27e8" + ", ".join(dynamic_fact_names) + "\u27e9")
             + "\n\n"
             if dynamic_fact_names else
             f"  · simp [externalCallSite{edge_id}, "
-            "dynamicRegisterRangeRelationsHold]\n\n"
+            "activeDynamicRegisterRangeRelationsHold]\n\n"
         )
         support_definitions = dispatch_definitions + "\n\n".join([
             *argument_claim_definitions,
@@ -3362,7 +3814,7 @@ def _write_relational_external_call_refinement_modules(
             f"{candidate_normalized} [{stack_claims}] originalState candidateState "
             "stackRangesValid inputStackWindows (by decide)\n"
             "  refine \u27e8worldValid, stackRangesValid, ?_, ?_, ?_, ?_, ?_, ?_, "
-            "?_, ?_, ?_, ?_\u27e9\n"
+            "?_, ?_, ?_, ?_, ?_\u27e9\n"
             "  · exact InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims\n"
             f"      staticProofContext world region{source_index} {original_normalized} "
             f"{candidate_normalized} {output_claims_name} (by decide)\n"
@@ -3385,6 +3837,8 @@ def _write_relational_external_call_refinement_modules(
             + "  · simpa [RelationalBehavior.nextMachineState] using inputFsBase\n"
             + import_boundary_proof
             + dynamic_boundary_proof
+            + f"  · simp [externalCallSite{edge_id}, "
+            "activeDynamicStackRangeRelationsHold]\n\n"
             + f"theorem {transition_name} :\n"
             f"    ExternalCallTransitionClosed staticProofContext "
             f"externalCallSite{edge_id} {contract_name} {edge_name} "
@@ -3765,7 +4219,7 @@ def _write_relational_external_jump_refinement_modules(
             "NormalizedSymbolicBehavior.eval, evalNormalizedRegisters, "
             "Registers.set, StageA.Formal.Expr.eval] using outputStackWindowsRaw\n"
             "  refine ⟨worldValid, stackRangesValid, outputRegisters, ?_, ?_, "
-            "outputStackWindows, ?_, ?_, ?_, ?_, ?_, ?_⟩\n"
+            "outputStackWindows, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩\n"
             f"  · simp [externalCallSite{site_id}, boundsRelated]\n"
             f"  · simp [externalCallSite{site_id}, addressSeparationsRelated]\n"
             "  · simpa [normalizeImportReturnSlotState, "
@@ -3786,7 +4240,10 @@ def _write_relational_external_jump_refinement_modules(
             + "  · simpa [normalizeImportReturnSlotState, "
             "RelationalBehavior.nextMachineState] using inputFsBase\n"
             f"  · simp [externalCallSite{site_id}, importRegisterRelationsHold]\n"
-            f"  · simp [externalCallSite{site_id}, dynamicRegisterRangeRelationsHold]\n\n"
+            f"  · simp [externalCallSite{site_id}, "
+            "activeDynamicRegisterRangeRelationsHold]\n"
+            f"  · simp [externalCallSite{site_id}, "
+            "activeDynamicStackRangeRelationsHold]\n\n"
             f"theorem {transition_name} :\n"
             f"    ExternalJumpTransitionClosed staticProofContext "
             f"externalCallSite{site_id} {contract_name} region{source_index} "

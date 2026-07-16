@@ -24,46 +24,6 @@ from .stack import (
 )
 
 
-def _target_shaped_register_output_claims(
-    source: dict[str, Any], target: dict[str, Any],
-) -> list[dict[str, Any]] | None:
-    """Build checked source claims whose outputs are exactly the target inventory."""
-    existing_by_register = {
-        str(claim["output"]["original"]): claim
-        for claim in source.get("output_claims", [])
-    }
-    exact_by_register = {
-        str(claim["register"]): claim
-        for claim in source.get("exact_output_claims", [])
-    }
-    source_outputs = {
-        str(relation["original"]): relation
-        for relation in source.get("outputs", [])
-    }
-    claims: list[dict[str, Any]] = []
-    for target_relation in target.get("inputs", []):
-        register = str(target_relation["original"])
-        existing = existing_by_register.get(register)
-        if existing is not None and existing.get("output") == target_relation:
-            claims.append(existing)
-            continue
-        exact = exact_by_register.get(register)
-        source_output = source_outputs.get(register)
-        if (
-            exact is None
-            or source_output is None
-            or source_output.get("candidate") != target_relation.get("candidate")
-            or target_relation.get("relation") not in {"exact", "related_word"}
-        ):
-            return None
-        claims.append({
-            "kind": "exact_expression",
-            "output": target_relation,
-            "expression": exact["expression"],
-        })
-    return claims
-
-
 _REGISTER_RELATION_KINDS = {
     "exact", "code_pointer", "data_pointer", "related_word",
 }
@@ -71,6 +31,10 @@ _PE32_EXTERNAL_REGISTER_POLICY_ID = "win32-cdecl-stdcall-registers-v1"
 _PE32_EXTERNAL_PRESERVED_REGISTERS = frozenset({
     "ebx", "esi", "edi", "ebp", "esp",
 })
+
+
+def _machine_result_invariant_relation(relation: dict[str, Any]) -> str:
+    return "exact" if relation.get("relation") == "exact" else "related_word"
 
 
 def _semantic_index_from_address(
@@ -730,7 +694,8 @@ def _synthesize_register_relations(
             )
             result_relations = (
                 {
-                    str(relation["register"]): str(relation["relation"])
+                    str(relation["register"]):
+                        _machine_result_invariant_relation(relation)
                     for relation in machine_contract.get(
                         "result_register_relations", []
                     )
@@ -797,7 +762,8 @@ def _synthesize_register_relations(
             )
             result_relations = (
                 {
-                    str(relation["register"]): str(relation["relation"])
+                    str(relation["register"]):
+                        _machine_result_invariant_relation(relation)
                     for relation in machine_contract.get(
                         "result_register_relations", []
                     )
@@ -875,7 +841,8 @@ def _synthesize_register_relations(
                 | {"esp"}
             ),
             {
-                str(relation["register"]): str(relation["relation"])
+                str(relation["register"]):
+                    _machine_result_invariant_relation(relation)
                 for relation in contracts[0].get(
                     "result_register_relations", []
                 )
@@ -913,6 +880,20 @@ def _synthesize_register_relations(
         ) else None
 
     register_order = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+    stack_window_input_pairs = [
+        {
+            (str(window["original_register"]), str(window["candidate_register"]))
+            for window in region.get("stack_windows", [])
+        }
+        for region in regions
+    ]
+    input_pair_candidates = [
+        {
+            str(pair["original"]): str(pair["candidate"])
+            for pair in region.get("inputs", [])
+        }
+        for region in regions
+    ]
     input_kinds = [
         {register: "exact" for register in register_order}
         for _ in regions
@@ -968,6 +949,15 @@ def _synthesize_register_relations(
                 if not candidates:
                     candidates.append("related_word")
                 kinds[register] = _register_relation_join(candidates)
+                candidate_register = input_pair_candidates[region_index].get(register)
+                if (
+                    candidate_register is not None
+                    and (register, candidate_register)
+                        in stack_window_input_pairs[region_index]
+                ):
+                    # A stack window relates offsets inside paired concrete
+                    # ranges; it does not imply literal register equality.
+                    kinds[register] = "related_word"
             next_inputs.append(kinds)
         if next_inputs == input_kinds and next_outputs == output_kinds:
             output_reasons = next_reasons

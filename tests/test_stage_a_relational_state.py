@@ -1,7 +1,363 @@
 from tests.stage_a_relational_support import *
+from spaghetti_extractor.relational.analyses.memory import (
+    _dynamic_flow_edge_candidates,
+)
+from spaghetti_extractor.relational.analyses.segments import (
+    _paired_stack_relative_guard_claim,
+)
 
 
 class StageARelationalStateTests(StageARelationalTestBase):
+    def test_dynamic_range_flow_does_not_cross_call_frames(self):
+        relation = {
+            "original": "eax", "candidate": "eax",
+            "original_offset": 0, "candidate_offset": 0,
+            "required_words": [],
+        }
+        contract = {
+            "regions": [
+                {
+                    "inputs": [{"original": "eax", "candidate": "eax"}],
+                    "input_dynamic_range_relations": [relation],
+                },
+                {
+                    "inputs": [{"original": "eax", "candidate": "eax"}],
+                },
+            ],
+            "static_dynamic_pointer_slots": [],
+        }
+        behaviors = [{
+            "original_ir": {
+                "registers": {"eax": {"op": "input_reg", "reg": "eax"}},
+            },
+            "candidate_ir": {
+                "registers": {"eax": {"op": "input_reg", "reg": "eax"}},
+            },
+        }, {}]
+        edge = {
+            "source_region_index": 0,
+            "target_region_index": 1,
+            "kind": "call",
+            "environment_barrier": False,
+            "requires_call_stack_proof": False,
+        }
+
+        self.assertEqual(
+            _dynamic_flow_edge_candidates(contract, behaviors, edge), []
+        )
+        edge["kind"] = "jump"
+        self.assertEqual(
+            _dynamic_flow_edge_candidates(contract, behaviors, edge),
+            [{
+                "relation": {**relation, "active_words": []},
+                "kind": "register_preserve",
+            }],
+        )
+
+    def test_prepared_writes_classify_mixed_stack_and_dynamic_fields(self):
+        stack_window = {
+            "range_id": 0,
+            "original_register": "esp",
+            "candidate_register": "esp",
+            "bytes_below": 4,
+            "bytes_above": 32,
+            "source": "test",
+        }
+        dynamic_relation = {
+            "original": "eax",
+            "candidate": "eax",
+            "original_offset": 0,
+            "candidate_offset": 0,
+            "required_words": [{"offset": 0, "kind": "relatedWord"}],
+            "active_words": [{"offset": 0, "kind": "relatedWord"}],
+        }
+        value = {"op": "input_reg", "reg": "edx"}
+        stack_address = {
+            "op": "add",
+            "left": {"op": "input_reg", "reg": "esp"},
+            "right": {"op": "constant", "value": 4},
+        }
+        behavior = {
+            "original_ir": {"writes": [
+                {"address": stack_address, "value": value},
+                {"address": {"op": "input_reg", "reg": "eax"}, "value": value},
+            ]},
+            "candidate_ir": {"writes": [
+                {"address": stack_address, "value": value},
+                {"address": {"op": "input_reg", "reg": "eax"}, "value": value},
+            ]},
+        }
+        source = {
+            "input_relations": [{
+                "original": "edx", "candidate": "edx", "relation": "exact",
+            }],
+            "stack_windows": [stack_window],
+            "input_dynamic_range_relations": [dynamic_relation],
+        }
+
+        claim = _paired_prepared_word_writes_claim(source, behavior, [])
+
+        self.assertIsNotNone(claim)
+        self.assertEqual(
+            [item["kind"] for item in claim["writes"]],
+            ["stack", "dynamic_word"],
+        )
+        self.assertEqual(claim["writes"][1]["source_relation"], dynamic_relation)
+        self.assertEqual(
+            claim["writes"][1]["relation"],
+            {"offset": 0, "kind": "relatedWord"},
+        )
+
+        ambiguous_source = {
+            **source,
+            "input_dynamic_range_relations": [dynamic_relation, dict(dynamic_relation)],
+        }
+        self.assertIsNone(
+            _paired_prepared_word_writes_claim(ambiguous_source, behavior, [])
+        )
+
+        dynamic_base = {"op": "input_reg", "reg": "eax"}
+        spill_behavior = {
+            "original_ir": {"writes": [
+                {"address": stack_address, "value": dynamic_base},
+                {"address": dynamic_base, "value": value},
+            ]},
+            "candidate_ir": {"writes": [
+                {"address": stack_address, "value": dynamic_base},
+                {"address": dynamic_base, "value": value},
+            ]},
+        }
+        spill_prepared = _paired_prepared_word_writes_claim(
+            source, spill_behavior, [],
+        )
+        self.assertEqual(
+            spill_prepared["writes"][0]["value"]["profile"],
+            "dynamic_range_v1",
+        )
+        target_relation = {
+            "window": stack_window,
+            "stack_offset": 4,
+            "original_offset": 0,
+            "candidate_offset": 0,
+            "required_words": [{"offset": 0, "kind": "relatedWord"}],
+            "active_words": [{"offset": 0, "kind": "relatedWord"}],
+        }
+        spill = _prepared_dynamic_stack_spill_claim(
+            source,
+            {
+                "stack_windows": [stack_window],
+                "input_dynamic_stack_range_relations": [target_relation],
+            },
+            spill_prepared,
+        )
+        self.assertIsNotNone(spill)
+        self.assertEqual(spill["source_relation"], dynamic_relation)
+        self.assertEqual(spill["target_relation"], target_relation)
+        self.assertEqual(
+            [item["kind"] for item in spill["suffix"]], ["dynamic_word"],
+        )
+
+        second_stack_write = {
+            **spill_prepared,
+            "writes": [
+                *spill_prepared["writes"], spill_prepared["writes"][0],
+            ],
+        }
+        self.assertIsNone(
+            _prepared_dynamic_stack_spill_claim(
+                source,
+                {"input_dynamic_stack_range_relations": [target_relation]},
+                second_stack_write,
+            )
+        )
+
+    def test_dynamic_range_transfer_recovers_a_checked_stack_spill(self):
+        window = {
+            "range_id": 0,
+            "original_register": "esp",
+            "candidate_register": "esp",
+            "bytes_below": 0,
+            "bytes_above": 8,
+        }
+        source_relation = {
+            "window": window,
+            "stack_offset": 4,
+            "original_offset": 0,
+            "candidate_offset": 0,
+            "required_words": [{"offset": 0, "kind": "relatedWord"}],
+            "active_words": [{"offset": 0, "kind": "relatedWord"}],
+        }
+        target_relation = {
+            "original": "eax",
+            "candidate": "eax",
+            "original_offset": 0,
+            "candidate_offset": 0,
+            "required_words": [{"offset": 0, "kind": "relatedWord"}],
+            "active_words": [{"offset": 0, "kind": "relatedWord"}],
+        }
+        read = {
+            "op": "read32",
+            "address": {
+                "op": "add",
+                "left": {"op": "input_reg", "reg": "esp"},
+                "right": {"op": "constant", "value": 4},
+            },
+        }
+        contract = {"regions": [
+            {"input_dynamic_stack_range_relations": [source_relation]},
+            {"input_dynamic_range_relations": [target_relation]},
+        ]}
+        behaviors = [{
+            "original_ir": {"registers": {"eax": read}},
+            "candidate_ir": {"registers": {"eax": read}},
+        }]
+
+        claims = _dynamic_range_transfer_claims(
+            contract,
+            behaviors,
+            0,
+            1,
+            {"op": "bool_constant", "value": True},
+            {"op": "bool_constant", "value": True},
+        )
+
+        self.assertEqual(claims, [{
+            "kind": "stack_reload",
+            "source_relation": source_relation,
+            "target_relation": target_relation,
+        }])
+
+        ambiguous_contract = json.loads(json.dumps(contract))
+        ambiguous_contract["regions"][0][
+            "input_dynamic_stack_range_relations"
+        ].append(dict(source_relation))
+        self.assertIsNone(_dynamic_range_transfer_claims(
+            ambiguous_contract,
+            behaviors,
+            0,
+            1,
+            {"op": "bool_constant", "value": True},
+            {"op": "bool_constant", "value": True},
+        ))
+
+    def test_stack_windows_follow_checked_frame_pointer_renaming(self):
+        binary = SimpleNamespace(
+            image_base=0x400000,
+            pe=SimpleNamespace(
+                OPTIONAL_HEADER=SimpleNamespace(SizeOfImage=0x10000),
+            ),
+        )
+        source_window = {
+            "range_id": 0,
+            "original_register": "esp",
+            "candidate_register": "esp",
+            "bytes_below": 4,
+            "bytes_above": 1,
+            "source": "backward_identity_stack_window",
+        }
+        target_window = {
+            **source_window,
+            "original_register": "ebp",
+            "candidate_register": "ebp",
+            "source": "paired_memory_write_seed",
+        }
+        frame_pointer = {"op": "input_reg", "reg": "esp"}
+        claims = _stack_window_transfer_claims(
+            {"stack_windows": [source_window]},
+            {"stack_windows": [target_window]},
+            {
+                "original_ir": {"registers": {"ebp": frame_pointer}},
+                "candidate_ir": {"registers": {"ebp": frame_pointer}},
+            },
+        )
+        self.assertEqual(claims, [{
+            "source": source_window,
+            "target": target_window,
+            "adjustment": {"kind": "identity", "amount": 0},
+        }])
+
+        stack_write = {
+            "address": {
+                "op": "sub",
+                "left": {"op": "input_reg", "reg": "ebp"},
+                "right": {"op": "constant", "value": 4},
+            },
+            "value": {"op": "constant", "value": 1},
+        }
+        behaviors = [
+            {
+                "original_ir": {"registers": {"ebp": frame_pointer}, "writes": []},
+                "candidate_ir": {"registers": {"ebp": frame_pointer}, "writes": []},
+            },
+            {
+                "original_ir": {"registers": {}, "writes": [stack_write]},
+                "candidate_ir": {"registers": {}, "writes": [stack_write]},
+            },
+        ]
+        contract = {"regions": [
+            {"id": "prologue", "address_separations": []},
+            {"id": "frame-write", "address_separations": []},
+        ]}
+        relations = {
+            "regions": [{}, {}],
+            "edges": [{
+                "source_region_index": 0,
+                "target_region_index": 1,
+                "environment_barrier": False,
+            }],
+        }
+        refined, analysis = _attach_stack_window_invariants(
+            contract, behaviors, relations, binary, binary
+        )
+        self.assertEqual(analysis["windows"], 2)
+        self.assertEqual(
+            refined["regions"][0]["stack_windows"][0]["original_register"],
+            "esp",
+        )
+        self.assertEqual(
+            refined["regions"][1]["stack_windows"][0]["original_register"],
+            "ebp",
+        )
+        self.assertEqual(
+            refined["regions"][1]["stack_windows"][0]["bytes_below"], 4
+        )
+
+    def test_stack_windows_reject_unanchored_general_register_accesses(self):
+        binary = SimpleNamespace(
+            image_base=0x400000,
+            pe=SimpleNamespace(
+                OPTIONAL_HEADER=SimpleNamespace(SizeOfImage=0x10000),
+            ),
+        )
+        pointer_write = {
+            "address": {
+                "op": "add",
+                "left": {"op": "input_reg", "reg": "eax"},
+                "right": {"op": "constant", "value": 16},
+            },
+            "value": {"op": "constant", "value": 0},
+        }
+        refined, analysis = _attach_stack_window_invariants(
+            {"regions": [{"id": "pointer-write", "address_separations": []}]},
+            [{
+                "original_ir": {"registers": {}, "writes": [pointer_write]},
+                "candidate_ir": {"registers": {}, "writes": [pointer_write]},
+            }],
+            {"regions": [{}], "edges": []},
+            binary,
+            binary,
+        )
+        self.assertEqual(refined["regions"][0]["stack_windows"], [])
+        self.assertEqual(analysis["unproven_stack_address_seeds"], 1)
+        self.assertIn({
+            "region_index": 0,
+            "original_register": "eax",
+            "candidate_register": "eax",
+            "bytes_below": 0,
+            "bytes_above": 20,
+            "reason": "stack_anchor_provenance_unresolved",
+        }, analysis["frontier"])
+
     def test_stack_read_seeds_follow_only_unique_output_register_mapping(self):
         binary = SimpleNamespace(
             image_base=0x400000,
@@ -1422,6 +1778,58 @@ class StageARelationalStateTests(StageARelationalTestBase):
         }
         self.assertIsNone(
             _paired_stack_guard_claim(source, arithmetic_original, arithmetic_candidate)
+        )
+
+    def test_relative_stack_guard_supports_checked_below_frame_reads(self):
+        window = {
+            "range_id": 0,
+            "original_register": "ebp",
+            "candidate_register": "edi",
+            "bytes_below": 16,
+            "bytes_above": 4,
+        }
+        source = {"stack_windows": [window]}
+
+        def guard(register, amount, not_count=0):
+            address = {
+                "op": "add",
+                "left": {"op": "input_reg", "reg": register},
+                "right": {"op": "constant", "value": 2**32 - amount},
+            }
+            value = {"op": "read32", "address": address}
+            expression = {
+                "op": "equal",
+                "left": {"op": "bit_and", "left": value, "right": value},
+                "right": {"op": "constant", "value": 0},
+            }
+            for _ in range(not_count):
+                expression = {"op": "not", "value": expression}
+            return expression
+
+        original = guard("ebp", 12, not_count=1)
+        candidate = guard("edi", 12, not_count=1)
+        claim = _paired_stack_relative_guard_claim(source, original, candidate)
+        self.assertEqual(claim["profile"], "paired_stack_read_relative_guard_v1")
+        self.assertEqual(claim["adjustment"], {"kind": "subtract", "amount": 12})
+        self.assertEqual(claim["window"], window)
+        self.assertTrue(claim["masked"])
+        self.assertEqual(claim["not_count"], 1)
+
+        self.assertIsNone(
+            _paired_stack_relative_guard_claim(
+                source, original, guard("edi", 8, not_count=1),
+            )
+        )
+        self.assertIsNone(
+            _paired_stack_relative_guard_claim(
+                {"stack_windows": [{**window, "bytes_below": 8}]},
+                original, candidate,
+            )
+        )
+        self.assertIsNone(
+            _paired_stack_relative_guard_claim(
+                {"stack_windows": [window, dict(window)]}, original, candidate,
+            )
         )
 
     def test_stack_read32_sub_output_claim_requires_checked_window(self):

@@ -17,9 +17,16 @@ RELATIONAL_SEGMENT_CERTIFICATE_FORMAT = (
 )
 REGISTERS = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
 MACHINE_CALL_ABI_REGISTERS = REGISTERS - {"esp"}
-MACHINE_CALL_MEMORY_EFFECTS = {"none", "readOnly", "argumentRanges"}
+MACHINE_CALL_MEMORY_EFFECTS = {
+    "none", "readOnly", "argumentRanges", "newDynamicRanges",
+}
 MACHINE_CALL_DISPOSITIONS = {"returns", "terminates", "protocol"}
-MACHINE_CALL_RESULT_RELATIONS = {"exact", "related_word"}
+MACHINE_CALL_RESULT_RELATIONS = {
+    "exact", "related_word", "dynamic_range_base",
+}
+MACHINE_CALL_RESULT_WORD_RELATIONS = {
+    "related_word", "code_pointer", "data_pointer", "nullable_dynamic_pointer",
+}
 MACHINE_CALL_WORLD_EFFECTS = {
     "none", "opaqueResources", "dynamicRanges", "dynamicRangeRelease",
     "callbackRegistration", "tlsState",
@@ -74,6 +81,7 @@ RELATIONAL_PREPARED_REPORT_FILES = (
     "relational-proof-ir.json",
     "relational-semantic-ir.json",
     "relational-memory-contracts.json",
+    "relational-static-word-relations.json",
     "relational-register-relations.json",
     "relational-stack-windows.json",
     "relational-segment-diagnostics.json",
@@ -81,6 +89,7 @@ RELATIONAL_PREPARED_REPORT_FILES = (
     "relational-invariants.json",
     "relational-machine-import-calls.json",
     "relational-external-call-sites.json",
+    "relational-external-result-invariants.json",
     "relational-import-register-invariants.json",
     "relational-import-register-seeds.json",
     "relational-indirect-call-targets.json",
@@ -325,6 +334,7 @@ class PreparedProofDigests:
     proof_ir: str
     semantic_ir: str
     memory_contracts: str
+    static_word_relations: str
     register_relations: str
     stack_windows: str
     segment_diagnostics: str
@@ -342,6 +352,7 @@ class PreparedProofDigests:
             "proof_ir": "proof_ir_sha256",
             "semantic_ir": "semantic_ir_sha256",
             "memory_contracts": "memory_contracts_sha256",
+            "static_word_relations": "static_word_relations_sha256",
             "register_relations": "register_relations_sha256",
             "stack_windows": "stack_windows_sha256",
             "segment_diagnostics": "segment_diagnostics_sha256",

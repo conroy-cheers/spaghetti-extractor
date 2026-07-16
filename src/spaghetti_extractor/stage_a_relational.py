@@ -110,7 +110,9 @@ from .relational.analyses.segments import (
     _import_register_transfer_claims,
     _lower_stack_register_relations,
     _mapped_relocation_image_obligations,
+    _prepared_dynamic_stack_spill_claim,
     _paired_stack_guard_claim,
+    _paired_prepared_word_writes_claim,
     _paired_stack_word_value_claim,
     _paired_stack_word_write_claim,
     _paired_stack_word_writes_claim,
@@ -137,7 +139,6 @@ from .relational.analyses.registers import (
     _semantic_index_from_address,
     _semantic_read_addresses,
     _synthesize_register_relations,
-    _target_shaped_register_output_claims,
 )
 from .relational.analyses.stack import (
     _attach_return_slot_contracts,
@@ -154,6 +155,7 @@ from .relational.analyses.stack import (
     _semantic_read8_after_writes,
     _stack_window_transfer_claims,
 )
+from .relational.analyses.memory import _attach_static_word_relation_slots
 from .relational.contract import (
     _annotate_flag_liveness,
     _assign_region_targets,
@@ -175,6 +177,7 @@ from .relational.contract import (
     _semantic_expr_is_pure,
     _span,
     _static_dynamic_pointer_slots,
+    _static_word_relation_slots,
     stage_a_generate_relation_contract,
 )
 from .relational.diagnostics import (

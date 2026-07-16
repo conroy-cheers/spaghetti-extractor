@@ -10,6 +10,10 @@ from ..model import _stack_window_transfer_claims
 from .external import _register_offset_witness, _semantic_external_target_identity
 
 
+REGISTER_NAMES = frozenset({
+    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
+})
+
 
 
 def _attach_return_write_address_separations(
@@ -118,11 +122,11 @@ def _attach_return_write_address_separations(
     return refined
 
 def _reachable_weighted_nonzero_cycle_nodes(
-    adjacency: dict[int, list[tuple[int, int]]],
-    roots: set[int],
-) -> set[int]:
+    adjacency: dict[tuple[int, str, str], list[tuple[tuple[int, str, str], int]]],
+    roots: set[tuple[int, str, str]],
+) -> set[tuple[int, str, str]]:
     """Find reachable SCCs whose edge weights cannot have one node potential."""
-    reachable: set[int] = set()
+    reachable: set[tuple[int, str, str]] = set()
     pending = list(sorted(roots, reverse=True))
     while pending:
         node = pending.pop()
@@ -134,8 +138,8 @@ def _reachable_weighted_nonzero_cycle_nodes(
             if target not in reachable
         )
 
-    order: list[int] = []
-    visited: set[int] = set()
+    order: list[tuple[int, str, str]] = []
+    visited: set[tuple[int, str, str]] = set()
     for start in sorted(reachable):
         if start in visited:
             continue
@@ -155,18 +159,18 @@ def _reachable_weighted_nonzero_cycle_nodes(
                 if target in reachable and target not in visited
             )
 
-    reverse: dict[int, list[int]] = defaultdict(list)
+    reverse: dict[tuple[int, str, str], list[tuple[int, str, str]]] = defaultdict(list)
     for source in reachable:
         for target, _ in adjacency.get(source, []):
             if target in reachable:
                 reverse[target].append(source)
 
-    result: set[int] = set()
-    assigned: set[int] = set()
+    result: set[tuple[int, str, str]] = set()
+    assigned: set[tuple[int, str, str]] = set()
     for start in reversed(order):
         if start in assigned:
             continue
-        component: set[int] = set()
+        component: set[tuple[int, str, str]] = set()
         pending = [start]
         assigned.add(start)
         while pending:
@@ -253,8 +257,8 @@ def _attach_stack_window_invariants(
         # adjustment; otherwise an IA-32 add can wrap at the top of memory.
         bytes_above = max(bytes_above, 1)
         if (
-            original_register != "esp"
-            or candidate_register != "esp"
+            original_register not in REGISTER_NAMES
+            or candidate_register not in REGISTER_NAMES
             or not 0 <= bytes_below < 2**32
             or not 0 <= bytes_above < 2**32
             or bytes_below + bytes_above == 0
@@ -283,6 +287,16 @@ def _attach_stack_window_invariants(
     }
 
     for region_index, region in enumerate(regions):
+        for relation in region.get("input_dynamic_stack_range_relations", []):
+            window = relation.get("window") or {}
+            add_requirement(
+                region_index,
+                str(window.get("original_register")),
+                str(window.get("candidate_register")),
+                int(window.get("bytes_above", 0)),
+                "declared_dynamic_stack_range_seed",
+                int(window.get("bytes_below", 0)),
+            )
         for separation in region.get("address_separations", []):
             original_register = str(separation["original_register"])
             candidate_register = str(separation["candidate_register"])
@@ -351,6 +365,35 @@ def _attach_stack_window_invariants(
             and candidate_output_counts[candidate_register] == 1
         }
 
+        def paired_access_is_dynamic(
+            original_address: Any, candidate_address: Any, width: int,
+        ) -> bool:
+            original_affine = register_offset(original_address)
+            candidate_affine = register_offset(candidate_address)
+            if original_affine is None or candidate_affine is None or width <= 0:
+                return False
+            for relation in region.get("input_dynamic_range_relations", []):
+                if (
+                    original_affine[0] != str(relation.get("original"))
+                    or candidate_affine[0] != str(relation.get("candidate"))
+                ):
+                    continue
+                original_offset = (
+                    int(relation.get("original_offset", 0)) + original_affine[1]
+                )
+                candidate_offset = (
+                    int(relation.get("candidate_offset", 0)) + candidate_affine[1]
+                )
+                if original_offset != candidate_offset:
+                    continue
+                if any(
+                    int(word.get("offset", -1)) <= original_offset
+                    and original_offset + width <= int(word.get("offset", -1)) + 4
+                    for word in relation.get("required_words", [])
+                ):
+                    return True
+            return False
+
         def candidate_read_path(path: tuple[str, ...]) -> tuple[str, ...]:
             if len(path) >= 2 and path[0] == "registers":
                 return (
@@ -365,6 +408,10 @@ def _attach_stack_window_invariants(
                 continue
             width = original_read.get("width")
             if not isinstance(width, int) or width != candidate_read.get("width"):
+                continue
+            if paired_access_is_dynamic(
+                original_read.get("address"), candidate_read.get("address"), width,
+            ):
                 continue
             original_address = register_offset(original_read.get("address"))
             candidate_address = register_offset(candidate_read.get("address"))
@@ -519,6 +566,10 @@ def _attach_stack_window_invariants(
             for original_write, candidate_write in zip(
                 original_writes, candidate_writes, strict=True
             ):
+                if paired_access_is_dynamic(
+                    original_write.get("address"), candidate_write.get("address"), 4,
+                ):
+                    continue
                 original_address = register_offset(original_write.get("address"))
                 candidate_address = register_offset(candidate_write.get("address"))
                 if original_address is None or candidate_address is None:
@@ -658,9 +709,9 @@ def _attach_stack_window_invariants(
             call["recursive"] = int(call_window_path_exists(
                 int(call["callee_region_index"]), continuation,
             ))
-    def edge_stack_delta(
+    def edge_stack_transfer(
         edge: dict[str, Any], original_register: str, candidate_register: str,
-    ) -> tuple[int | None, str | None]:
+    ) -> tuple[tuple[str, str, int] | None, str | None]:
         source_index = int(edge["source_region_index"])
         original_expression = (
             behaviors[source_index]["original_ir"].get("registers") or {}
@@ -668,8 +719,8 @@ def _attach_stack_window_invariants(
         candidate_expression = (
             behaviors[source_index]["candidate_ir"].get("registers") or {}
         ).get(candidate_register) or {}
-        original_delta = stack_delta(original_expression, original_register)
-        candidate_delta = stack_delta(candidate_expression, candidate_register)
+        original_affine = register_offset(original_expression)
+        candidate_affine = register_offset(candidate_expression)
         environment_delta = 0
         if edge.get("environment_barrier"):
             original_outcome = behaviors[source_index]["original_ir"].get(
@@ -695,52 +746,84 @@ def _attach_stack_window_invariants(
                 return None, "unsupported_environment_stack_transfer"
             environment_delta = int(machine_contract["stack_result_delta"])
         if (
-            original_delta is None
-            or candidate_delta is None
-            or original_delta + environment_delta
-                != candidate_delta + environment_delta
+            original_affine is None
+            or candidate_affine is None
+            or original_affine[1] + environment_delta
+                != candidate_affine[1] + environment_delta
         ):
             return None, "non_identity_or_environment_stack_transfer"
-        return original_delta + environment_delta, None
+        return (
+            original_affine[0], candidate_affine[0],
+            original_affine[1] + environment_delta,
+        ), None
 
-    unbounded_cycle_nodes: dict[tuple[str, str], set[int]] = {}
-    for original_register, candidate_register in sorted({
-        (original_register, candidate_register)
-        for _, original_register, candidate_register in requirements
-    }):
-        adjacency: dict[int, list[tuple[int, int]]] = defaultdict(list)
-        for target_index, target_edges in incoming.items():
-            for edge in target_edges:
-                delta, _ = edge_stack_delta(
-                    edge, original_register, candidate_register
-                )
-                if delta is not None:
-                    adjacency[target_index].append((
-                        int(edge["source_region_index"]), delta,
-                    ))
+    transfer_adjacency: dict[
+        tuple[int, str, str],
+        list[tuple[tuple[int, str, str], int]],
+    ] = defaultdict(list)
+    transfer_pending = list(sorted(requirements, reverse=True))
+    transfer_seen: set[tuple[int, str, str]] = set()
+    while transfer_pending:
+        target_key = transfer_pending.pop()
+        if target_key in transfer_seen:
+            continue
+        transfer_seen.add(target_key)
+        target_index, original_register, candidate_register = target_key
+        for edge in incoming.get(target_index, []):
+            transfer, _ = edge_stack_transfer(
+                edge, original_register, candidate_register
+            )
+            if transfer is None:
+                continue
+            source_original, source_candidate, delta = transfer
+            source_key = (
+                int(edge["source_region_index"]), source_original, source_candidate,
+            )
+            transfer_adjacency[target_key].append((source_key, delta))
+            if source_key not in transfer_seen:
+                transfer_pending.append(source_key)
         if original_register == "esp" and candidate_register == "esp":
-            for continuation, calls in direct_call_continuations.items():
-                for call in calls:
-                    return_stack_delta = call.get("return_stack_delta")
-                    if (
-                        not bool(call.get("recursive"))
-                        and isinstance(return_stack_delta, int)
-                    ):
-                        adjacency[continuation].append((
-                            int(call["callee_region_index"]),
-                            return_stack_delta,
-                        ))
-        for edges in adjacency.values():
-            edges.sort()
-        roots = {
-            region_index
-            for region_index, source_original, source_candidate in requirements
-            if source_original == original_register
-            and source_candidate == candidate_register
-        }
-        unbounded_cycle_nodes[(original_register, candidate_register)] = (
-            _reachable_weighted_nonzero_cycle_nodes(adjacency, roots)
-        )
+            for call in direct_call_continuations.get(target_index, []):
+                return_stack_delta = call.get("return_stack_delta")
+                if (
+                    not bool(call.get("recursive"))
+                    and isinstance(return_stack_delta, int)
+                ):
+                    source_key = (
+                        int(call["callee_region_index"]), "esp", "esp",
+                    )
+                    transfer_adjacency[target_key].append((
+                        source_key, return_stack_delta,
+                    ))
+                    if source_key not in transfer_seen:
+                        transfer_pending.append(source_key)
+    for transfers in transfer_adjacency.values():
+        transfers.sort()
+    unbounded_cycle_nodes = _reachable_weighted_nonzero_cycle_nodes(
+        transfer_adjacency, set(requirements)
+    )
+    stack_anchored = {
+        key for key in transfer_seen | set(requirements)
+        if key[1] == "esp" and key[2] == "esp"
+    }
+    changed = True
+    while changed:
+        changed = False
+        for target_key, transfers in transfer_adjacency.items():
+            if (
+                target_key not in stack_anchored
+                and any(source_key in stack_anchored for source_key, _ in transfers)
+            ):
+                stack_anchored.add(target_key)
+                changed = True
+    unproven_stack_seeds = {
+        key: requirements[key]
+        for key in requirements.keys() - stack_anchored
+    }
+    requirements = {
+        key: value for key, value in requirements.items()
+        if key in stack_anchored
+    }
 
     frontier: list[dict[str, Any]] = []
     frontier_keys: set[tuple[tuple[str, Any], ...]] = set()
@@ -757,6 +840,18 @@ def _attach_stack_window_invariants(
         frontier_keys.add(key)
         frontier.append(row)
 
+    for (region_index, original_register, candidate_register), (
+        bytes_below, bytes_above,
+    ) in sorted(unproven_stack_seeds.items()):
+        add_frontier({
+            "region_index": region_index,
+            "original_register": original_register,
+            "candidate_register": candidate_register,
+            "bytes_below": bytes_below,
+            "bytes_above": bytes_above,
+            "reason": "stack_anchor_provenance_unresolved",
+        })
+
     queue = deque(sorted(requirements))
     queued = set(queue)
     while queue:
@@ -765,9 +860,7 @@ def _attach_stack_window_invariants(
         queued.discard(target_key)
         target_index, original_register, candidate_register = target_key
         bytes_below, bytes_above = requirements[target_key]
-        if target_index in unbounded_cycle_nodes.get(
-            (original_register, candidate_register), set()
-        ):
+        if target_key in unbounded_cycle_nodes:
             add_frontier({
                 "region_index": target_index,
                 "original_register": original_register,
@@ -838,10 +931,10 @@ def _attach_stack_window_invariants(
             continue
         for edge in edges:
             source_index = int(edge["source_region_index"])
-            original_delta, transfer_issue = edge_stack_delta(
+            transfer, transfer_issue = edge_stack_transfer(
                 edge, original_register, candidate_register
             )
-            if original_delta is None:
+            if transfer is None:
                 add_frontier({
                     "region_index": target_index,
                     "source_region_index": source_index,
@@ -852,9 +945,21 @@ def _attach_stack_window_invariants(
                     "reason": transfer_issue,
                 })
                 continue
+            source_original, source_candidate, original_delta = transfer
             source_below = max(bytes_below - original_delta, 0)
             source_above = max(bytes_above + original_delta, 1)
-            source_key = (source_index, original_register, candidate_register)
+            source_key = (source_index, source_original, source_candidate)
+            if source_key not in stack_anchored:
+                add_frontier({
+                    "region_index": target_index,
+                    "source_region_index": source_index,
+                    "original_register": original_register,
+                    "candidate_register": candidate_register,
+                    "bytes_below": bytes_below,
+                    "bytes_above": bytes_above,
+                    "reason": "stack_anchor_provenance_unresolved",
+                })
+                continue
             prior_below, prior_above = requirements.get(source_key, (0, 0))
             required = (
                 max(prior_below, source_below), max(prior_above, source_above)
@@ -914,8 +1019,9 @@ def _attach_stack_window_invariants(
         "propagation_steps": propagation_steps,
         "requirement_updates": requirement_updates,
         "nonzero_stack_delta_cycle_nodes": sum(
-            len(nodes) for nodes in unbounded_cycle_nodes.values()
+            1 for _ in unbounded_cycle_nodes
         ),
+        "unproven_stack_address_seeds": len(unproven_stack_seeds),
         "duplicate_frontier_observations": duplicate_frontier_observations,
         "frontier": frontier,
     }

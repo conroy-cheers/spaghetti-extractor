@@ -387,6 +387,20 @@ structure StaticDynamicPointerSlotPair where
   requiredWords : List DynamicWordRelation
 deriving Repr, DecidableEq
 
+inductive StaticWordRelationKind where
+  | exact
+  | relatedWord
+  | codePointer
+  | dataPointer
+deriving Repr, DecidableEq
+
+structure StaticWordRelationSlotPair where
+  id : Nat
+  originalAddress : Word
+  candidateAddress : Word
+  relation : StaticWordRelationKind
+deriving Repr, DecidableEq
+
 structure DynamicAddressRangePair where
   id : Nat
   originalBase : Word
@@ -497,10 +511,8 @@ def DynamicAddressRangePair.wordRelationsValid
     (range : DynamicAddressRangePair) : Bool :=
   range.wordRelations.all fun relation =>
       relation.offset + 4 <= range.size &&
-        (range.wordRelations.filter (fun other =>
-          other.offset == relation.offset)).length == 1 &&
         range.wordRelations.all fun other =>
-          other.offset == relation.offset ||
+          other == relation ||
             relation.offset + 4 <= other.offset || other.offset + 4 <= relation.offset
 
 def dynamicAddressRangesDisjointOn
@@ -534,6 +546,7 @@ structure StaticProofContext where
   roots : List CutpointPair
   observations : ObservationModel
   staticDynamicPointerSlots : List StaticDynamicPointerSlotPair := []
+  staticWordRelationSlots : List StaticWordRelationSlotPair := []
   machineImportCallContracts : List MachineImportCallContract := []
 deriving Repr, DecidableEq
 
@@ -578,6 +591,13 @@ def staticWordOverlapsImportIat (pe : PE32) (imports : List PEImport)
     let iatStart := pe.imageBase + imported.iatRva
     start < iatStart + 4 && iatStart < start + 4
 
+def staticWordOverlapsImmutableSection (pe : PE32) (address : Word) : Bool :=
+  let start := address.toNat
+  (start < pe.imageBase + pe.sizeOfHeaders && pe.imageBase < start + 4) ||
+    pe.sections.any fun sec =>
+      !sec.writable && start < pe.imageBase + sec.virtualAddress + sec.mappedSize &&
+        pe.imageBase + sec.virtualAddress < start + 4
+
 def StaticDynamicPointerSlotPair.valid (context : StaticProofContext)
     (slot : StaticDynamicPointerSlotPair) : Bool :=
   slot.originalAddress != BitVec.ofNat 32 0 &&
@@ -590,12 +610,35 @@ def StaticDynamicPointerSlotPair.valid (context : StaticProofContext)
     !staticWordOverlapsImportIat context.candidatePe
       context.candidateImportCertificate.imports
       slot.candidateAddress &&
+    !staticWordOverlapsImmutableSection context.originalPe slot.originalAddress &&
+    !staticWordOverlapsImmutableSection context.candidatePe slot.candidateAddress &&
     dynamicWordRelationsShapeValid slot.requiredWords
 
 def staticDynamicPointerSlotIdsUnique
     (slots : List StaticDynamicPointerSlotPair) : Bool :=
   slots.all fun slot =>
     (slots.filter (fun other => other.id == slot.id)).length == 1
+
+theorem staticDynamicPointerSlot_eq_of_same_id
+    (slots : List StaticDynamicPointerSlotPair)
+    (unique : staticDynamicPointerSlotIdsUnique slots = true)
+    (left right : StaticDynamicPointerSlotPair)
+    (leftMember : left ∈ slots) (rightMember : right ∈ slots)
+    (sameId : left.id = right.id) :
+    left = right := by
+  simp only [staticDynamicPointerSlotIdsUnique, List.all_eq_true] at unique
+  have singletonLength := unique left leftMember
+  simp only [beq_iff_eq] at singletonLength
+  have leftFiltered :
+      left ∈ slots.filter (fun other => other.id == left.id) := by
+    exact List.mem_filter.mpr ⟨leftMember, by simp⟩
+  have rightFiltered :
+      right ∈ slots.filter (fun other => other.id == left.id) := by
+    exact List.mem_filter.mpr ⟨rightMember, by simp [sameId]⟩
+  rcases List.length_eq_one_iff.mp singletonLength with ⟨only, filtered⟩
+  rw [filtered] at leftFiltered rightFiltered
+  simp only [List.mem_singleton] at leftFiltered rightFiltered
+  exact leftFiltered.trans rightFiltered.symm
 
 def staticDynamicPointerSlotsDisjointOn (candidate : Bool)
     (slots : List StaticDynamicPointerSlotPair) : Bool :=
@@ -615,6 +658,77 @@ def staticDynamicPointerSlotsValid (context : StaticProofContext) : Bool :=
     context.staticDynamicPointerSlots.all
       (StaticDynamicPointerSlotPair.valid context)
 
+def StaticWordRelationSlotPair.valid (context : StaticProofContext)
+    (slot : StaticWordRelationSlotPair) : Bool :=
+  slot.originalAddress != BitVec.ofNat 32 0 &&
+    slot.candidateAddress != BitVec.ofNat 32 0 &&
+    writableStaticWordInPe context.originalPe slot.originalAddress &&
+    writableStaticWordInPe context.candidatePe slot.candidateAddress &&
+    !staticWordOverlapsImportIat context.originalPe
+      context.originalImportCertificate.imports slot.originalAddress &&
+    !staticWordOverlapsImportIat context.candidatePe
+      context.candidateImportCertificate.imports slot.candidateAddress &&
+    !staticWordOverlapsImmutableSection context.originalPe slot.originalAddress &&
+    !staticWordOverlapsImmutableSection context.candidatePe slot.candidateAddress
+
+def staticWordRelationSlotIdsUnique
+    (slots : List StaticWordRelationSlotPair) : Bool :=
+  slots.all fun slot =>
+    (slots.filter (fun other => other.id == slot.id)).length == 1
+
+theorem staticWordRelationSlot_eq_of_same_id
+    (slots : List StaticWordRelationSlotPair)
+    (unique : staticWordRelationSlotIdsUnique slots = true)
+    (left right : StaticWordRelationSlotPair)
+    (leftMember : left ∈ slots) (rightMember : right ∈ slots)
+    (sameId : left.id = right.id) :
+    left = right := by
+  simp only [staticWordRelationSlotIdsUnique, List.all_eq_true] at unique
+  have singletonLength := unique left leftMember
+  simp only [beq_iff_eq] at singletonLength
+  have leftFiltered :
+      left ∈ slots.filter (fun other => other.id == left.id) := by
+    exact List.mem_filter.mpr ⟨leftMember, by simp⟩
+  have rightFiltered :
+      right ∈ slots.filter (fun other => other.id == left.id) := by
+    exact List.mem_filter.mpr ⟨rightMember, by simp [sameId]⟩
+  rcases List.length_eq_one_iff.mp singletonLength with ⟨only, filtered⟩
+  rw [filtered] at leftFiltered rightFiltered
+  simp only [List.mem_singleton] at leftFiltered rightFiltered
+  exact leftFiltered.trans rightFiltered.symm
+
+def staticWordRelationSlotsDisjointOn (candidate : Bool)
+    (slots : List StaticWordRelationSlotPair) : Bool :=
+  slots.all fun slot =>
+    slots.all fun other =>
+      slot.id == other.id ||
+        let address := if candidate then slot.candidateAddress else slot.originalAddress
+        let otherAddress :=
+          if candidate then other.candidateAddress else other.originalAddress
+        address.toNat + 4 <= otherAddress.toNat ||
+          otherAddress.toNat + 4 <= address.toNat
+
+def staticWordRelationSlotsCrossDisjointOn (candidate : Bool)
+    (wordSlots : List StaticWordRelationSlotPair)
+    (pointerSlots : List StaticDynamicPointerSlotPair) : Bool :=
+  wordSlots.all fun slot =>
+    pointerSlots.all fun other =>
+      let address := if candidate then slot.candidateAddress else slot.originalAddress
+      let otherAddress :=
+        if candidate then other.candidateAddress else other.originalAddress
+      address.toNat + 4 <= otherAddress.toNat ||
+        otherAddress.toNat + 4 <= address.toNat
+
+def staticWordRelationSlotsValid (context : StaticProofContext) : Bool :=
+  staticWordRelationSlotIdsUnique context.staticWordRelationSlots &&
+    staticWordRelationSlotsDisjointOn false context.staticWordRelationSlots &&
+    staticWordRelationSlotsDisjointOn true context.staticWordRelationSlots &&
+    staticWordRelationSlotsCrossDisjointOn false context.staticWordRelationSlots
+      context.staticDynamicPointerSlots &&
+    staticWordRelationSlotsCrossDisjointOn true context.staticWordRelationSlots
+      context.staticDynamicPointerSlots &&
+    context.staticWordRelationSlots.all (StaticWordRelationSlotPair.valid context)
+
 def DynamicAddressRangePair.disjointFromImages (context : StaticProofContext)
     (range : DynamicAddressRangePair) : Bool :=
   let originalBase := range.originalBase.toNat
@@ -624,8 +738,8 @@ def DynamicAddressRangePair.disjointFromImages (context : StaticProofContext)
   range.size > 0 &&
     (!(range.originalBase == BitVec.ofNat 32 0)) &&
     (!(range.candidateBase == BitVec.ofNat 32 0)) &&
-    originalBase + range.size <= 2^32 &&
-    candidateBase + range.size <= 2^32 &&
+    originalBase + range.size < 2^32 &&
+    candidateBase + range.size < 2^32 &&
     (originalBase + range.size <= originalImageBase ||
       originalImageBase + context.originalPe.sizeOfImage <= originalBase) &&
     (candidateBase + range.size <= candidateImageBase ||
@@ -724,9 +838,17 @@ def RelationalWorld.dynamicValueTargets
     (world : RelationalWorld) : List ValueTargetPair :=
   world.dynamicRanges.map DynamicAddressRangePair.valueTarget
 
+def RelationalWorld.stackValueTargets
+    (world : RelationalWorld) : List ValueTargetPair :=
+  world.stackRanges.map DynamicAddressRangePair.valueTarget
+
+def RelationalWorld.runtimeValueTargets
+    (world : RelationalWorld) : List ValueTargetPair :=
+  world.dynamicValueTargets ++ world.stackValueTargets
+
 def StaticProofContext.relationalValueTargets
     (context : StaticProofContext) (world : RelationalWorld) : List ValueTargetPair :=
-  context.dataMap.entries.toList ++ world.dynamicValueTargets
+  context.dataMap.entries.toList ++ world.runtimeValueTargets
 
 def StaticProofContext.originalImports (context : StaticProofContext) : List PEImport :=
   context.originalImportCertificate.imports
@@ -751,6 +873,40 @@ def ImportAddressPair.staticValid (context : StaticProofContext)
         binding.originalAddress != BitVec.ofNat 32 0 &&
         binding.candidateAddress != BitVec.ofNat 32 0
   | _, _ => false
+
+theorem ImportAddressPair.originalImportWitness
+    (context : StaticProofContext) (binding : ImportAddressPair)
+    (valid : binding.staticValid context = true) :
+    ∃ imported, imported ∈ context.originalImports ∧
+      imported.iatRva = binding.originalIatRva := by
+  cases found : importAtIatRva context.originalImports binding.originalIatRva with
+  | none => simp [ImportAddressPair.staticValid, found] at valid
+  | some imported =>
+      refine ⟨imported, ?_, ?_⟩
+      · unfold importAtIatRva at found
+        exact List.mem_of_find?_eq_some found
+      · unfold importAtIatRva at found
+        exact beq_iff_eq.mp (List.find?_some
+          (p := fun candidate : PEImport =>
+            candidate.iatRva == binding.originalIatRva)
+          (a := imported) found)
+
+theorem ImportAddressPair.candidateImportWitness
+    (context : StaticProofContext) (binding : ImportAddressPair)
+    (valid : binding.staticValid context = true) :
+    ∃ imported, imported ∈ context.candidateImports ∧
+      imported.iatRva = binding.candidateIatRva := by
+  cases found : importAtIatRva context.candidateImports binding.candidateIatRva with
+  | none => simp [ImportAddressPair.staticValid, found] at valid
+  | some imported =>
+      refine ⟨imported, ?_, ?_⟩
+      · unfold importAtIatRva at found
+        exact List.mem_of_find?_eq_some found
+      · unfold importAtIatRva at found
+        exact beq_iff_eq.mp (List.find?_some
+          (p := fun candidate : PEImport =>
+            candidate.iatRva == binding.candidateIatRva)
+          (a := imported) found)
 
 def importAddressIdsUnique (bindings : List ImportAddressPair) : Bool :=
   bindings.all fun binding =>
@@ -823,6 +979,7 @@ def StaticProofContext.structureValid (context : StaticProofContext) : Bool :=
     context.codeMap.valid context.originalPe context.candidatePe &&
     context.dataMap.valid context.originalPe context.candidatePe &&
     staticDynamicPointerSlotsValid context &&
+    staticWordRelationSlotsValid context &&
     machineImportCallContractsValid context.originalImportCertificate.imports
       context.machineImportCallContracts &&
     machineImportCallContractsValid context.candidateImportCertificate.imports
@@ -839,6 +996,7 @@ def StaticProofContext.StructurallyValid (context : StaticProofContext) : Prop :
     context.codeMap.IndexedValid context.originalPe context.candidatePe ∧
     context.dataMap.valid context.originalPe context.candidatePe = true ∧
     staticDynamicPointerSlotsValid context = true ∧
+    staticWordRelationSlotsValid context = true ∧
     machineImportCallContractsValid context.originalImportCertificate.imports
       context.machineImportCallContracts = true ∧
     machineImportCallContractsValid context.candidateImportCertificate.imports
@@ -862,6 +1020,8 @@ theorem StaticProofContext.structurallyValid_of_components
     (dataMapChecked : context.dataMap.valid context.originalPe context.candidatePe = true)
     (staticDynamicPointerSlotsChecked :
       staticDynamicPointerSlotsValid context = true)
+    (staticWordRelationSlotsChecked :
+      staticWordRelationSlotsValid context = true)
     (originalMachineCallContractsChecked :
       machineImportCallContractsValid context.originalImportCertificate.imports
         context.machineImportCallContracts = true)
@@ -873,7 +1033,8 @@ theorem StaticProofContext.structurallyValid_of_components
     context.StructurallyValid :=
   ⟨originalParsed, candidateParsed, originalImportsChecked, candidateImportsChecked,
     originalRelocationsParsed, candidateRelocationsParsed, codeMapChecked, dataMapChecked,
-    staticDynamicPointerSlotsChecked, originalMachineCallContractsChecked,
+    staticDynamicPointerSlotsChecked, staticWordRelationSlotsChecked,
+    originalMachineCallContractsChecked,
     candidateMachineCallContractsChecked, rootsChecked, observationsChecked⟩
 
 end StageA.Relational

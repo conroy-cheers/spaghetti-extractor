@@ -44,6 +44,7 @@ from .expressions import (
     _lean_region_separation_setup,
     _lean_region_static_relocation_word_specs,
     _lean_static_dynamic_pointer_slot,
+    _lean_static_word_relation_slot,
     _lean_value_target,
 )
 
@@ -322,6 +323,10 @@ def _lean_static_proof_context_base_source(
         _lean_static_dynamic_pointer_slot(slot)
         for slot in contract.get("static_dynamic_pointer_slots", [])
     )
+    static_word_relation_slots = ", ".join(
+        _lean_static_word_relation_slot(slot)
+        for slot in contract.get("static_word_relation_slots", [])
+    )
     return (
         "import StageA.RelationalProofBase\n"
         "import StageA.RelationalGlobalMappingContext\n\n"
@@ -342,6 +347,7 @@ def _lean_static_proof_context_base_source(
         f"callbacks := {_lean_bool(has_callbacks)}, tls := {_lean_bool(has_tls)} "
         "}\n"
         f"  staticDynamicPointerSlots := [{static_dynamic_pointer_slots}]\n"
+        f"  staticWordRelationSlots := [{static_word_relation_slots}]\n"
         "  machineImportCallContracts\n"
         "}\n\n"
         "end StageA.GeneratedRelational\n"
@@ -744,6 +750,10 @@ def _write_relational_static_context_modules(
             "    staticDynamicPointerSlotsValid staticProofContext = true := by decide"
         ),
         (
+            "theorem staticWordRelationSlotsChecked :\n"
+            "    staticWordRelationSlotsValid staticProofContext = true := by decide"
+        ),
+        (
             "theorem staticOriginalMachineCallContractsChecked :\n"
             "    machineImportCallContractsValid originalImports\n"
             "      staticProofContext.machineImportCallContracts = true := by decide"
@@ -763,6 +773,7 @@ def _write_relational_static_context_modules(
             "    originalParsed candidateParsed originalImportsChecked candidateImportsChecked\n"
             "    originalRelocationsParsed candidateRelocationsParsed staticCodeMapChecked\n"
             "    staticDataMapChecked staticDynamicPointerSlotsChecked\n"
+            "    staticWordRelationSlotsChecked\n"
             "    staticOriginalMachineCallContractsChecked\n"
             "    staticCandidateMachineCallContractsChecked staticRootsChecked\n"
             "    staticObservationsChecked"

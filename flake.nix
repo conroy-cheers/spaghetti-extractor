@@ -29,20 +29,23 @@
               z3-solver
             ]
           );
-          spaghettiExtractorSource = pkgs.lib.fileset.toSource {
+          spaghettiExtractorCoreSource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./pyproject.toml
               ./src
               ./nix/stage-a-lean-graph.nix
-              ./profiles
             ];
           };
-          spaghetti-extractor = pkgs.python3Packages.buildPythonApplication {
+          spaghetti-extractor-core = pkgs.python3Packages.buildPythonApplication {
             pname = "spaghetti-extractor";
             version = "0.1.0";
-            src = spaghettiExtractorSource;
+            src = spaghettiExtractorCoreSource;
             pyproject = true;
+
+            postPatch = ''
+              sed -i '/share\/spaghetti-extractor\/profiles/d' pyproject.toml
+            '';
 
             build-system = with pkgs.python3Packages; [
               setuptools
@@ -56,6 +59,21 @@
 
             doCheck = false;
             pythonImportsCheck = [ "spaghetti_extractor" ];
+          };
+          spaghetti-extractor-profiles = pkgs.runCommand
+            "spaghetti-extractor-profiles"
+            { }
+            ''
+              mkdir -p "$out/share/spaghetti-extractor/profiles"
+              cp ${./profiles}/*.json "$out/share/spaghetti-extractor/profiles/"
+            '';
+          spaghetti-extractor = pkgs.symlinkJoin {
+            name = "spaghetti-extractor-0.1.0";
+            paths = [
+              spaghetti-extractor-core
+              spaghetti-extractor-profiles
+            ];
+            meta.mainProgram = "spaghetti-extractor";
           };
           stageAJqCommonCflags = "-g0 -fno-asynchronous-unwind-tables -fno-ident -fno-inline -fno-inline-functions -fno-inline-small-functions -fno-ipa-cp -fno-ipa-sra -fno-ipa-icf";
           stageAJqOriginalCflags = "-O2 -fno-align-functions -fno-align-labels -fno-align-loops -fno-align-jumps ${stageAJqCommonCflags}";
@@ -263,11 +281,48 @@
                   compiler: { target: $compiler, version: $compiler_version }
                 }' > "$fixture_dir/build-metadata.json"
             '';
+          stage-a-jq-static-map = pkgs.runCommand "stage-a-jq-static-map"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor-core
+              ];
+            }
+            ''
+              fixture_dir="${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
+              mkdir -p "$out"
+              spaghetti-extractor stage-a-generate-map \
+                --original "$fixture_dir/jq-original.exe" \
+                --candidate "$fixture_dir/jq-candidate.exe" \
+                --linker-map-original "$fixture_dir/jq-original.map" \
+                --linker-map-candidate "$fixture_dir/jq-candidate.map" \
+                --original-flags "${stageAJqOriginalCflags}" \
+                --candidate-flags "${stageAJqCandidateCflags}" \
+                --out "$out/jq-block-map.json" \
+                --layout-contract-out "$out/jq-layout-contract.json" \
+                > "$out/generate-map.stdout"
+            '';
+          stage-a-jq-relation-contract = pkgs.runCommand "stage-a-jq-relation-contract"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor-core
+              ];
+            }
+            ''
+              fixture_dir="${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
+              mkdir -p "$out"
+              spaghetti-extractor stage-a-generate-relation-contract \
+                --original "$fixture_dir/jq-original.exe" \
+                --candidate "$fixture_dir/jq-candidate.exe" \
+                --mapping "${stage-a-jq-static-map}/jq-block-map.json" \
+                --external-profile "${./profiles/pe32-kernel32-lockstep-v1.json}" \
+                --external-profile "${./profiles/pe32-msvcrt-lockstep-v1.json}" \
+                --out "$out/jq-relation-contract.json" \
+                > "$out/generate-relation.stdout"
+            '';
           stage-a-jq-prepared-proof = pkgs.runCommand "stage-a-jq-prepared-proof"
             {
               nativeBuildInputs = [
-                spaghetti-extractor
-                pkgs.jq
+                spaghetti-extractor-core
                 pkgs.lean4
               ];
             }
@@ -277,34 +332,18 @@
               mkdir -p "$work"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
-              spaghetti-extractor stage-a-generate-map \
-                --original "$fixture_dir/jq-original.exe" \
-                --candidate "$fixture_dir/jq-candidate.exe" \
-                --linker-map-original "$fixture_dir/jq-original.map" \
-                --linker-map-candidate "$fixture_dir/jq-candidate.map" \
-                --original-flags "${stageAJqOriginalCflags}" \
-                --candidate-flags "${stageAJqCandidateCflags}" \
-                --out "$work/jq-block-map.json" \
-                --layout-contract-out "$work/jq-layout-contract.json" \
-                > "$work/generate-map.stdout"
-              spaghetti-extractor stage-a-generate-relation-contract \
-                --original "$fixture_dir/jq-original.exe" \
-                --candidate "$fixture_dir/jq-candidate.exe" \
-                --mapping "$work/jq-block-map.json" \
-                --external-profile "${./profiles/pe32-kernel32-lockstep-v1.json}" \
-                --external-profile "${./profiles/pe32-msvcrt-lockstep-v1.json}" \
-                --out "$work/jq-relation-contract.json" \
-                > "$work/generate-relation.stdout"
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
                 spaghetti-extractor stage-a-prepare-relational \
                   --original "$fixture_dir/jq-original.exe" \
                   --candidate "$fixture_dir/jq-candidate.exe" \
-                  --relation-contract "$work/jq-relation-contract.json" \
+                  --relation-contract "${stage-a-jq-relation-contract}/jq-relation-contract.json" \
                   --out "$work/relational-v3" \
                   > "$work/relational-v3.stdout"
               mkdir -p "$out/report"
-              cp "$work/jq-block-map.json" "$work/jq-layout-contract.json" \
-                "$work/jq-relation-contract.json" "$out/report/"
+              cp "${stage-a-jq-static-map}/jq-block-map.json" \
+                "${stage-a-jq-static-map}/jq-layout-contract.json" \
+                "${stage-a-jq-relation-contract}/jq-relation-contract.json" \
+                "$out/report/"
               cp -R "$work/relational-v3" "$out/report/relational-v3"
             '';
           stage-a-jq-reference-contract = pkgs.runCommand "stage-a-jq-reference-contract"
@@ -540,26 +579,60 @@
           stage-a-relational-tests-contract = stageARelationalContractSuite.aggregate;
           stage-a-relational-tests-state = stageARelationalStateSuite.aggregate;
           stage-a-relational-tests-pipeline = stageARelationalPipelineSuite.aggregate;
+          stage-a-relational-tests-pipeline-cmov-general-composition =
+            stageARelationalPipelineSuite.cases.cmov_expression_emits_general_compositional_components;
           stage-a-relational-tests-lean = stageARelationalLeanSuite.aggregate;
+          stage-a-relational-tests-lean-return-slot-inventory =
+            stageARelationalLeanSuite.cases.import_register_indirect_call_witness_is_checked_by_lean;
+          stage-a-relational-tests-lean-dynamic-range-result =
+            stageARelationalLeanSuite.cases.dynamic_range_result_relation_is_checked_by_lean;
+          stage-a-relational-tests-contract-machine-import =
+            stageARelationalContractSuite.cases.machine_import_call_contract_validation_fails_closed;
           stage-a-relational-tests-acceptance = stageARelationalAcceptanceSuite.aggregate;
           stage-a-relational-tests-acceptance-nested-external =
             stageARelationalAcceptanceSuite.cases.nested_external_call_preserves_internal_runtime_frame_end_to_end;
           stage-a-relational-tests-acceptance-direct-stack-read =
             stageARelationalAcceptanceSuite.cases.direct_paired_stack_read_loop_closes_whole_program_theorem;
+          stage-a-relational-tests-acceptance-below-frame-stack-read =
+            stageARelationalAcceptanceSuite.cases.below_frame_stack_read_closes_only_for_same_checked_location;
+          stage-a-relational-tests-acceptance-below-frame-stack-guard =
+            stageARelationalAcceptanceSuite.cases.below_frame_zero_guard_closes_only_for_same_checked_location;
+          stage-a-relational-tests-acceptance-stack-base-related-word =
+            stageARelationalAcceptanceSuite.cases.preserved_stack_base_becomes_related_word_at_successor;
+          stage-a-relational-tests-state-dynamic-flow-call-boundary =
+            stageARelationalStateSuite.cases.dynamic_range_flow_does_not_cross_call_frames;
           stage-a-relational-tests-acceptance-representative =
             stageARelationalAcceptanceSuite.cases.representative_control_slice_closes_whole_program_theorem;
           stage-a-relational-tests-acceptance-terminal-return =
             stageARelationalAcceptanceSuite.cases.top_level_return_checks_terminal_invariant_end_to_end;
           stage-a-relational-tests-acceptance-external-loop =
             stageARelationalAcceptanceSuite.cases.external_call_loop_checks_paired_environment_end_to_end;
+          stage-a-relational-tests-acceptance-external-allocation =
+            stageARelationalAcceptanceSuite.cases.external_allocation_and_dynamic_write_close_whole_program_theorem;
           stage-a-relational-tests-acceptance-input-flag-guard =
             stageARelationalAcceptanceSuite.cases.input_flag_guard_closes_only_for_the_same_checked_flag;
           stage-a-relational-tests-acceptance-exact-pure-guard =
             stageARelationalAcceptanceSuite.cases.exact_pure_guard_uses_derived_register_exactness;
+          stage-a-relational-tests-acceptance-exact-to-related =
+            stageARelationalAcceptanceSuite.cases.exact_register_output_weakens_to_related_successor;
+          stage-a-relational-tests-acceptance-exact-register-transfer =
+            stageARelationalAcceptanceSuite.cases.exact_register_transfer_and_cfg_edge_are_checked_by_lean;
           stage-a-relational-tests-acceptance-immutable-image-word =
             stageARelationalAcceptanceSuite.cases.immutable_image_word_load_closes_register_transfer;
+          stage-a-relational-tests-acceptance-static-word-slot =
+            stageARelationalAcceptanceSuite.cases.static_word_slot_load_closes_register_transfer;
+          stage-a-relational-tests-acceptance-paired-static-word-guard =
+            stageARelationalAcceptanceSuite.cases.paired_static_word_guard_closes_whole_program_theorem;
+          stage-a-relational-tests-acceptance-immutable-pe-pointer-chain =
+            stageARelationalAcceptanceSuite.cases.immutable_pe_pointer_chain_guard_closes_whole_program_theorem;
+          stage-a-relational-tests-acceptance-immutable-pe-header =
+            stageARelationalAcceptanceSuite.cases.immutable_mapped_pe_header_read8_closes_exact_guard;
           stage-a-relational-tests-acceptance-direct-call-stack-writes =
             stageARelationalAcceptanceSuite.cases.direct_call_with_prepared_stack_word_checks_whole_program_theorem;
+          stage-a-relational-tests-acceptance-dynamic-spill =
+            stageARelationalAcceptanceSuite.cases.dynamic_base_spill_with_field_write_is_checked_by_lean;
+          stage-a-relational-tests-acceptance-direct-call-static-writes =
+            stageARelationalAcceptanceSuite.cases.direct_call_with_prepared_static_word_checks_whole_program_theorem;
           stage-a-relational-tests = pkgs.symlinkJoin {
             name = "stage-a-relational-tests";
             paths = [
@@ -612,6 +685,8 @@
             stage-a-fixtures-check
             stage-a-fixtures-root
             stage-a-jq-fixtures
+            stage-a-jq-static-map
+            stage-a-jq-relation-contract
             stage-a-jq-prepared-proof
             stage-a-jq-reference-contract
             stage-a-jq-fixtures-check
@@ -622,17 +697,34 @@
             stage-a-relational-tests-contract
             stage-a-relational-tests-state
             stage-a-relational-tests-pipeline
+            stage-a-relational-tests-pipeline-cmov-general-composition
             stage-a-relational-tests-lean
+            stage-a-relational-tests-lean-return-slot-inventory
+            stage-a-relational-tests-lean-dynamic-range-result
+            stage-a-relational-tests-contract-machine-import
             stage-a-relational-tests-acceptance
             stage-a-relational-tests-acceptance-nested-external
-            stage-a-relational-tests-acceptance-direct-stack-read
+              stage-a-relational-tests-acceptance-direct-stack-read
+              stage-a-relational-tests-acceptance-below-frame-stack-read
+              stage-a-relational-tests-acceptance-below-frame-stack-guard
+              stage-a-relational-tests-acceptance-stack-base-related-word
+            stage-a-relational-tests-state-dynamic-flow-call-boundary
             stage-a-relational-tests-acceptance-representative
             stage-a-relational-tests-acceptance-terminal-return
             stage-a-relational-tests-acceptance-external-loop
+            stage-a-relational-tests-acceptance-external-allocation
             stage-a-relational-tests-acceptance-input-flag-guard
             stage-a-relational-tests-acceptance-exact-pure-guard
+            stage-a-relational-tests-acceptance-exact-to-related
+            stage-a-relational-tests-acceptance-exact-register-transfer
             stage-a-relational-tests-acceptance-immutable-image-word
+            stage-a-relational-tests-acceptance-static-word-slot
+            stage-a-relational-tests-acceptance-paired-static-word-guard
+            stage-a-relational-tests-acceptance-immutable-pe-pointer-chain
+            stage-a-relational-tests-acceptance-immutable-pe-header
             stage-a-relational-tests-acceptance-direct-call-stack-writes
+            stage-a-relational-tests-acceptance-dynamic-spill
+            stage-a-relational-tests-acceptance-direct-call-static-writes
             stage-b-jq-skeleton
             stage-b-jq-skeleton-root
             ;

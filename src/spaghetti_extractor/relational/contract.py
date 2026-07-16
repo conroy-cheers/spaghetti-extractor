@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from .schema import (
     MACHINE_CALL_MAX_ARGUMENT_WORDS,
     MACHINE_CALL_MEMORY_EFFECTS,
     MACHINE_CALL_RESULT_RELATIONS,
+    MACHINE_CALL_RESULT_WORD_RELATIONS,
     MACHINE_CALL_WORLD_EFFECTS,
     PROTOCOL_CALLBACK_CONTROL_FORMAT,
     ProtocolCallbackControl,
@@ -684,6 +686,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
     allowed_fields = {
         "format", "model", "environment", "observations", "memory_relation",
         "code_targets", "value_targets", "static_dynamic_pointer_slots",
+        "static_word_relation_slots",
         "machine_import_call_contracts", "protocol_callback_control", "regions",
         "padding", "provenance",
     }
@@ -731,6 +734,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
     targets = contract.get("code_targets")
     value_targets = contract.get("value_targets", [])
     static_dynamic_pointer_slots = contract.get("static_dynamic_pointer_slots", [])
+    static_word_relation_slots = contract.get("static_word_relation_slots", [])
     machine_import_call_contracts = contract.get("machine_import_call_contracts", [])
     protocol_callback_control = contract.get(
         "protocol_callback_control", ProtocolCallbackControl.empty().to_payload()
@@ -752,6 +756,12 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             "severity": "hard",
         })
         static_dynamic_pointer_slots = []
+    if not isinstance(static_word_relation_slots, list):
+        issues.append({
+            "category": "static_word_relation_slots_not_list",
+            "severity": "hard",
+        })
+        static_word_relation_slots = []
     if not isinstance(machine_import_call_contracts, list):
         issues.append({
             "category": "machine_import_call_contracts_not_list",
@@ -835,6 +845,13 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
     normalized_static_dynamic_pointer_slots = _static_dynamic_pointer_slots(
         static_dynamic_pointer_slots, original, candidate, issues,
     )
+    normalized_static_word_relation_slots = _static_word_relation_slots(
+        static_word_relation_slots,
+        normalized_static_dynamic_pointer_slots,
+        original,
+        candidate,
+        issues,
+    )
     normalized_machine_import_call_contracts = _machine_import_call_contracts(
         machine_import_call_contracts, original, candidate, issues,
     )
@@ -890,6 +907,14 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         output_dynamic_range_relations = _dynamic_range_relations(
             item.get("output_dynamic_range_relations", []), issues, region_id,
             "output_dynamic_range_relations",
+        )
+        input_dynamic_stack_range_relations = _dynamic_stack_range_relations(
+            item.get("input_dynamic_stack_range_relations", []), issues,
+            region_id, "input_dynamic_stack_range_relations",
+        )
+        output_dynamic_stack_range_relations = _dynamic_stack_range_relations(
+            item.get("output_dynamic_stack_range_relations", []), issues,
+            region_id, "output_dynamic_stack_range_relations",
         )
         raw_bounds = item.get("bounds", [])
         bounds: list[dict[str, Any]] = []
@@ -1016,6 +1041,10 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
                 "outputs": outputs,
                 "input_dynamic_range_relations": input_dynamic_range_relations,
                 "output_dynamic_range_relations": output_dynamic_range_relations,
+                "input_dynamic_stack_range_relations":
+                    input_dynamic_stack_range_relations,
+                "output_dynamic_stack_range_relations":
+                    output_dynamic_stack_range_relations,
                 "bounds": bounds,
                 "target_ids": [target["id"] for target in region_targets],
                 "code_targets": region_targets,
@@ -1119,6 +1148,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         "code_targets": normalized_targets,
         "value_targets": normalized_value_targets,
         "static_dynamic_pointer_slots": normalized_static_dynamic_pointer_slots,
+        "static_word_relation_slots": normalized_static_word_relation_slots,
         "machine_import_call_contracts": normalized_machine_import_call_contracts,
         "protocol_callback_control": {
             "format": PROTOCOL_CALLBACK_CONTROL_FORMAT,
@@ -1496,6 +1526,175 @@ def _static_dynamic_pointer_slots(
         })
     return sorted(result, key=lambda slot: slot["id"])
 
+def _static_word_relation_slots(
+    value: list[Any],
+    pointer_slots: list[dict[str, Any]],
+    original: StageABinary,
+    candidate: StageABinary,
+    issues: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    ids: set[int] = set()
+    address_ranges: dict[str, list[tuple[int, int]]] = {
+        "original": [
+            (int(slot["original_address"]), int(slot["original_address"]) + 4)
+            for slot in pointer_slots
+        ],
+        "candidate": [
+            (int(slot["candidate_address"]), int(slot["candidate_address"]) + 4)
+            for slot in pointer_slots
+        ],
+    }
+
+    def writable_data_word(binary: StageABinary, address: int) -> bool:
+        rva = address - binary.image_base
+        return 0 < address < 2**32 and address + 4 <= 2**32 and any(
+            section.writable and not section.executable
+            and section.rva_start <= rva
+            and rva + 4 <= section.rva_end
+            for section in binary.sections
+        )
+
+    def overlaps_iat(binary: StageABinary, address: int) -> bool:
+        return any(
+            imported.thunk_rva is not None
+            and address < binary.image_base + int(imported.thunk_rva) + 4
+            and binary.image_base + int(imported.thunk_rva) < address + 4
+            for imported in binary.imports
+        )
+
+    relation_names = {
+        "exact": "exact",
+        "related_word": "related_word",
+        "relatedWord": "related_word",
+        "code_pointer": "code_pointer",
+        "codePointer": "code_pointer",
+        "data_pointer": "data_pointer",
+        "dataPointer": "data_pointer",
+    }
+    for index, item in enumerate(value):
+        slot_id = _integer(item.get("id")) if isinstance(item, dict) else None
+        original_address = (
+            _integer(item.get("original_address")) if isinstance(item, dict) else None
+        )
+        candidate_address = (
+            _integer(item.get("candidate_address")) if isinstance(item, dict) else None
+        )
+        relation = (
+            relation_names.get(str(item.get("relation")))
+            if isinstance(item, dict) else None
+        )
+        if (
+            slot_id is None or slot_id < 0 or slot_id in ids
+            or original_address is None or candidate_address is None
+            or relation is None
+        ):
+            issues.append({
+                "category": "static_word_relation_slot_invalid",
+                "severity": "hard",
+                "index": index,
+                "item": item,
+                "next_action": (
+                    "declare a unique paired writable-static word with one of "
+                    "exact, related_word, code_pointer, or data_pointer"
+                ),
+            })
+            continue
+        side_invalid = False
+        for side, binary, address in (
+            ("original", original, original_address),
+            ("candidate", candidate, candidate_address),
+        ):
+            if not writable_data_word(binary, address):
+                issues.append({
+                    "category": "static_word_relation_slot_not_writable_data",
+                    "severity": "hard",
+                    "index": index,
+                    "side": side,
+                    "address": address,
+                    "next_action": (
+                        "use a four-byte word wholly inside a writable, "
+                        "non-executable mapped PE section"
+                    ),
+                })
+                side_invalid = True
+            if overlaps_iat(binary, address):
+                issues.append({
+                    "category": "static_word_relation_slot_overlaps_iat",
+                    "severity": "hard",
+                    "index": index,
+                    "side": side,
+                    "address": address,
+                    "next_action": "classify this word as an import address instead",
+                })
+                side_invalid = True
+            if any(
+                address < stop and start < address + 4
+                for start, stop in address_ranges[side]
+            ):
+                issues.append({
+                    "category": "static_word_relation_slot_overlap",
+                    "severity": "hard",
+                    "index": index,
+                    "side": side,
+                    "address": address,
+                    "next_action": (
+                        "remove overlap with another static word or dynamic-pointer slot"
+                    ),
+                })
+                side_invalid = True
+        if side_invalid:
+            continue
+        ids.add(slot_id)
+        address_ranges["original"].append((original_address, original_address + 4))
+        address_ranges["candidate"].append((candidate_address, candidate_address + 4))
+        result.append({
+            "id": slot_id,
+            "original_address": original_address,
+            "candidate_address": candidate_address,
+            "relation": relation,
+        })
+    return sorted(result, key=lambda slot: slot["id"])
+
+def _machine_call_memory_size(
+    value: Any, argument_count: int,
+) -> dict[str, int | str] | None:
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("kind")
+    if kind == "fixed":
+        size_bytes = _integer(value.get("bytes"))
+        if size_bytes is not None and 0 < size_bytes < 2**32:
+            return {"kind": "fixed", "bytes": size_bytes}
+        return None
+    if kind == "argument":
+        argument = _integer(value.get("argument"))
+        scale = _integer(value.get("scale", 1))
+        if (
+            argument is not None
+            and 0 <= argument < argument_count
+            and scale is not None
+            and 0 < scale < 2**32
+        ):
+            return {"kind": "argument", "argument": argument, "scale": scale}
+        return None
+    if kind == "product":
+        left_argument = _integer(value.get("left_argument"))
+        right_argument = _integer(value.get("right_argument"))
+        if (
+            left_argument is not None
+            and 0 <= left_argument < argument_count
+            and right_argument is not None
+            and 0 <= right_argument < argument_count
+        ):
+            return {
+                "kind": "product",
+                "left_argument": left_argument,
+                "right_argument": right_argument,
+            }
+    return None
+
+
 def _machine_import_call_contracts(
     value: list[Any],
     original: StageABinary,
@@ -1608,29 +1807,11 @@ def _machine_import_call_contracts(
                     if isinstance(footprint, dict) else None
                 )
                 size = footprint.get("size") if isinstance(footprint, dict) else None
-                size_kind = size.get("kind") if isinstance(size, dict) else None
-                normalized_size: dict[str, Any] | None = None
-                size_key: tuple[Any, ...] | None = None
-                if size_kind == "fixed":
-                    size_bytes = _integer(size.get("bytes"))
-                    if size_bytes is not None and 0 < size_bytes < 2**32:
-                        normalized_size = {"kind": "fixed", "bytes": size_bytes}
-                        size_key = ("fixed", size_bytes)
-                elif size_kind == "argument":
-                    size_argument = _integer(size.get("argument"))
-                    scale = _integer(size.get("scale", 1))
-                    if (
-                        size_argument is not None
-                        and 0 <= size_argument < len(offsets)
-                        and scale is not None
-                        and 0 < scale < 2**32
-                    ):
-                        normalized_size = {
-                            "kind": "argument",
-                            "argument": size_argument,
-                            "scale": scale,
-                        }
-                        size_key = ("argument", size_argument, scale)
+                normalized_size = _machine_call_memory_size(size, len(offsets))
+                size_key = (
+                    tuple(sorted(normalized_size.items()))
+                    if normalized_size is not None else None
+                )
                 key = (
                     access, base_argument, offset, *size_key
                 ) if size_key is not None else None
@@ -1669,13 +1850,18 @@ def _machine_import_call_contracts(
                     and bool(footprints)
                     and any(footprint["access"] == "write" for footprint in footprints)
                 )
+                or (
+                    memory_effect == "newDynamicRanges"
+                    and not footprints
+                    and world_effect == "dynamicRanges"
+                )
             )
         )
         raw_result_relations = (
             item.get("result_register_relations", [])
             if isinstance(item, dict) else None
         )
-        result_relations: list[dict[str, str]] = []
+        result_relations: list[dict[str, Any]] = []
         result_registers: set[str] = set()
         result_relations_valid = isinstance(raw_result_relations, list)
         if isinstance(raw_result_relations, list):
@@ -1686,21 +1872,104 @@ def _machine_import_call_contracts(
                 relation_kind = (
                     relation.get("relation") if isinstance(relation, dict) else None
                 )
+                raw_size = relation.get("size") if isinstance(relation, dict) else None
+                normalized_result_size = _machine_call_memory_size(
+                    raw_size, len(offsets)
+                )
+                minimum_size = (
+                    _integer(relation.get("minimum_size"))
+                    if isinstance(relation, dict) else None
+                )
+                nullable_result = (
+                    relation.get("nullable", False)
+                    if isinstance(relation, dict) else None
+                )
+                raw_required_words = (
+                    relation.get("required_words")
+                    if isinstance(relation, dict) else None
+                )
+                required_words: list[dict[str, Any]] = []
+                required_offsets: set[int] = set()
+                required_words_valid = isinstance(raw_required_words, list)
+                if isinstance(raw_required_words, list):
+                    for required_word in raw_required_words:
+                        required_offset = (
+                            _integer(required_word.get("offset"))
+                            if isinstance(required_word, dict) else None
+                        )
+                        required_kind = (
+                            required_word.get("relation")
+                            if isinstance(required_word, dict) else None
+                        )
+                        if (
+                            required_offset is None
+                            or required_offset < 0
+                            or minimum_size is None
+                            or required_offset + 4 > minimum_size
+                            or required_offset in required_offsets
+                            or required_kind not in MACHINE_CALL_RESULT_WORD_RELATIONS
+                        ):
+                            required_words_valid = False
+                            continue
+                        required_offsets.add(required_offset)
+                        required_words.append({
+                            "offset": required_offset,
+                            "relation": str(required_kind),
+                        })
+                fixed_size_too_small = (
+                    normalized_result_size is not None
+                    and normalized_result_size["kind"] == "fixed"
+                    and minimum_size is not None
+                    and int(normalized_result_size["bytes"]) < minimum_size
+                )
+                dynamic_range_relation_valid = (
+                    relation_kind == "dynamic_range_base"
+                    and normalized_result_size is not None
+                    and minimum_size is not None
+                    and 0 <= minimum_size < 2**32
+                    and not fixed_size_too_small
+                    and required_words_valid
+                    and isinstance(nullable_result, bool)
+                    and world_effect == "dynamicRanges"
+                )
+                scalar_relation_valid = (
+                    relation_kind in {"exact", "related_word"}
+                    and raw_size is None
+                    and minimum_size is None
+                    and raw_required_words is None
+                    and "nullable" not in relation
+                )
                 valid_relation = (
                     register in MACHINE_CALL_ABI_REGISTERS
                     and isinstance(clobbered, list)
                     and register in clobbered
                     and register not in result_registers
                     and relation_kind in MACHINE_CALL_RESULT_RELATIONS
+                    and (scalar_relation_valid or dynamic_range_relation_valid)
                 )
                 if not valid_relation:
                     result_relations_valid = False
                     continue
                 result_registers.add(str(register))
-                result_relations.append({
+                normalized_relation: dict[str, Any] = {
                     "register": str(register),
                     "relation": str(relation_kind),
-                })
+                }
+                if relation_kind == "dynamic_range_base":
+                    assert normalized_result_size is not None
+                    assert minimum_size is not None
+                    normalized_relation["size"] = normalized_result_size
+                    normalized_relation["minimum_size"] = minimum_size
+                    normalized_relation["required_words"] = sorted(
+                        required_words, key=lambda word: word["offset"]
+                    )
+                    normalized_relation["nullable"] = bool(nullable_result)
+                result_relations.append(normalized_relation)
+        if memory_effect == "newDynamicRanges" and not any(
+            relation.get("relation") == "dynamic_range_base"
+            for relation in result_relations
+        ):
+            result_relations_valid = False
         malformed = (
             not isinstance(item, dict)
             or not template_valid
@@ -1836,6 +2105,31 @@ def _register_pairs(value: Any, issues: list[dict[str, Any]], region: str, famil
         result.append({"original": original_register, "candidate": candidate_register})
     return result
 
+_DYNAMIC_WORD_KINDS = {
+    "relatedWord", "codePointer", "dataPointer", "nullableDynamicPointer",
+}
+
+
+def _dynamic_words(value: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
+        return None
+    words: list[dict[str, Any]] = []
+    offsets: set[int] = set()
+    for word in value:
+        offset = _integer(word.get("offset")) if isinstance(word, dict) else None
+        kind = word.get("kind") if isinstance(word, dict) else None
+        if (
+            offset is None
+            or not 0 <= offset < 2**32
+            or kind not in _DYNAMIC_WORD_KINDS
+            or offset in offsets
+        ):
+            return None
+        offsets.add(offset)
+        words.append({"offset": offset, "kind": str(kind)})
+    return sorted(words, key=lambda word: word["offset"])
+
+
 def _dynamic_range_relations(
     value: Any,
     issues: list[dict[str, Any]],
@@ -1857,7 +2151,13 @@ def _dynamic_range_relations(
     for item in value:
         original_offset = _integer(item.get("original_offset")) if isinstance(item, dict) else None
         candidate_offset = _integer(item.get("candidate_offset")) if isinstance(item, dict) else None
-        required_words = item.get("required_words") if isinstance(item, dict) else None
+        required_words_raw = item.get("required_words") if isinstance(item, dict) else None
+        active_words_raw = (
+            item.get("active_words", required_words_raw)
+            if isinstance(item, dict) else None
+        )
+        required_words = _dynamic_words(required_words_raw)
+        active_words = _dynamic_words(active_words_raw)
         if (
             not isinstance(item, dict)
             or item.get("original") not in REGISTERS
@@ -1866,7 +2166,9 @@ def _dynamic_range_relations(
             or candidate_offset is None
             or not 0 <= original_offset < 2**32
             or not 0 <= candidate_offset < 2**32
-            or not isinstance(required_words, list)
+            or required_words is None
+            or active_words is None
+            or any(word not in required_words for word in active_words)
         ):
             issues.append({
                 "category": "dynamic_range_relation_invalid",
@@ -1876,30 +2178,11 @@ def _dynamic_range_relations(
                 "item": item,
             })
             continue
-        words: list[dict[str, Any]] = []
-        word_offsets: set[int] = set()
-        malformed_word = False
-        for word in required_words:
-            offset = _integer(word.get("offset")) if isinstance(word, dict) else None
-            kind = word.get("kind") if isinstance(word, dict) else None
-            if (
-                offset is None
-                or not 0 <= offset < 2**32
-                or kind not in {
-                    "relatedWord", "codePointer", "dataPointer",
-                    "nullableDynamicPointer",
-                }
-                or offset in word_offsets
-            ):
-                malformed_word = True
-                break
-            word_offsets.add(offset)
-            words.append({"offset": offset, "kind": str(kind)})
         key = (
             str(item["original"]), str(item["candidate"]),
             original_offset, candidate_offset,
         )
-        if malformed_word or key in seen:
+        if key in seen:
             issues.append({
                 "category": "dynamic_range_relation_invalid",
                 "severity": "hard",
@@ -1914,8 +2197,102 @@ def _dynamic_range_relations(
             "candidate": key[1],
             "original_offset": original_offset,
             "candidate_offset": candidate_offset,
-            "required_words": sorted(words, key=lambda word: word["offset"]),
+            "required_words": required_words,
+            "active_words": active_words,
         })
+    return result
+
+
+def _dynamic_stack_range_relations(
+    value: Any,
+    issues: list[dict[str, Any]],
+    region: str,
+    family: str,
+) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        issues.append({
+            "category": "dynamic_stack_range_relation_not_list",
+            "severity": "hard",
+            "region": region,
+            "family": family,
+        })
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        window = item.get("window") if isinstance(item, dict) else None
+        stack_offset = _integer(item.get("stack_offset")) if isinstance(item, dict) else None
+        original_offset = _integer(item.get("original_offset")) if isinstance(item, dict) else None
+        candidate_offset = _integer(item.get("candidate_offset")) if isinstance(item, dict) else None
+        required_words_raw = item.get("required_words") if isinstance(item, dict) else None
+        active_words_raw = (
+            item.get("active_words", required_words_raw)
+            if isinstance(item, dict) else None
+        )
+        required_words = _dynamic_words(required_words_raw)
+        active_words = _dynamic_words(active_words_raw)
+        window_valid = (
+            isinstance(window, dict)
+            and _integer(window.get("range_id")) is not None
+            and int(window["range_id"]) >= 0
+            and window.get("original_register") in REGISTERS
+            and window.get("candidate_register") in REGISTERS
+            and _integer(window.get("bytes_below")) is not None
+            and _integer(window.get("bytes_above")) is not None
+            and 0 <= int(window["bytes_below"]) < 2**32
+            and 0 < int(window["bytes_above"]) < 2**32
+        )
+        if (
+            not window_valid
+            or stack_offset is None
+            or original_offset is None
+            or candidate_offset is None
+            or stack_offset < 0
+            or stack_offset % 4 != 0
+            or stack_offset + 4 > int(window["bytes_above"])
+            or not 0 <= original_offset < 2**32
+            or not 0 <= candidate_offset < 2**32
+            or required_words is None
+            or active_words is None
+            or any(word not in required_words for word in active_words)
+        ):
+            issues.append({
+                "category": "dynamic_stack_range_relation_invalid",
+                "severity": "hard",
+                "region": region,
+                "family": family,
+                "item": item,
+            })
+            continue
+        canonical_window = {
+            "range_id": int(window["range_id"]),
+            "original_register": str(window["original_register"]),
+            "candidate_register": str(window["candidate_register"]),
+            "bytes_below": int(window["bytes_below"]),
+            "bytes_above": int(window["bytes_above"]),
+        }
+        normalized = {
+            "window": canonical_window,
+            "stack_offset": stack_offset,
+            "original_offset": original_offset,
+            "candidate_offset": candidate_offset,
+            "required_words": required_words,
+            "active_words": active_words,
+        }
+        key = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+        if key in seen:
+            issues.append({
+                "category": "dynamic_stack_range_relation_invalid",
+                "severity": "hard",
+                "region": region,
+                "family": family,
+                "item": item,
+            })
+            continue
+        seen.add(key)
+        result.append(normalized)
     return result
 
 def _mapped_relocation_offsets(

@@ -58,6 +58,7 @@ from .analyses.control import (
     _relational_product_graph,
 )
 from .analyses.external import (
+    _attach_external_result_dynamic_invariants,
     _attach_external_call_site_analysis,
     _attach_machine_import_call_contract_analysis,
     _machine_import_call_contract_analysis,
@@ -98,10 +99,16 @@ from .analyses.invariants import (
     _substitute_semantic_flag,
     _synthesize_relational_invariants,
 )
+from .analyses.memory import (
+    _attach_dynamic_range_flow_invariants,
+    _attach_static_dynamic_pointer_slots,
+    _attach_static_word_relation_slots,
+)
 from .analyses.segments import (
     _attach_memory_transition_analysis,
     _attach_register_relation_analysis,
     _attach_segment_refinement_analysis,
+    _attach_static_word_register_output_claims,
     _attach_stack_register_output_claims,
     _direct_call_stack_amount,
     _dynamic_range_register_output_claims,
@@ -137,7 +144,6 @@ from .analyses.registers import (
     _semantic_index_from_address,
     _semantic_read_addresses,
     _synthesize_register_relations,
-    _target_shaped_register_output_claims,
 )
 from .analyses.stack import (
     _attach_return_slot_contracts,
@@ -175,6 +181,7 @@ from .contract import (
     _semantic_expr_is_pure,
     _span,
     _static_dynamic_pointer_slots,
+    _static_word_relation_slots,
     stage_a_generate_relation_contract,
 )
 from .diagnostics import (
@@ -563,13 +570,34 @@ def stage_a_prove_relational(
     normalized, stack_window_analysis = _attach_stack_window_invariants(
         normalized, behaviors, register_relations, original_bin, candidate_bin
     )
+    # Stack provenance is discovered from decoded memory accesses and runtime
+    # frames after the initial edge analysis. Replay register synthesis so
+    # stack-derived pointers flow forward as related words instead of exact
+    # values before redundant register atoms are lowered into stack windows.
+    normalized, register_relations = _synthesize_register_relations(
+        normalized,
+        behaviors,
+        original_image_base=original_bin.image_base,
+        candidate_image_base=candidate_bin.image_base,
+        indirect_call_candidates=indirect_call_candidates,
+        import_call_candidates=import_register_analysis["indirect_import_calls"],
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
+    )
     normalized, register_relations = _lower_stack_register_relations(
         normalized, register_relations
     )
     register_relations = _attach_stack_register_output_claims(
         normalized, behaviors, register_relations
     )
+    normalized, static_word_analysis = _attach_static_word_relation_slots(
+        normalized, behaviors, original_bin, candidate_bin
+    )
+    register_relations = _attach_static_word_register_output_claims(
+        normalized, behaviors, register_relations
+    )
     write_json(out / "relational-stack-windows.json", stack_window_analysis)
+    write_json(out / "relational-static-word-relations.json", static_word_analysis)
     write_json(out / "relation-contract.json", normalized)
     write_json(out / "relational-register-relations.json", register_relations)
     proof_ir = _proof_ir(original_bin, candidate_bin, normalized)
@@ -577,6 +605,85 @@ def stage_a_prove_relational(
         normalized, behaviors
     )
     write_json(out / "relational-machine-import-calls.json", machine_call_analysis)
+    external_call_sites = _external_call_site_candidates(
+        normalized, behaviors, register_relations,
+        import_register_analysis["indirect_import_calls"],
+    )
+    normalized, external_result_invariants = (
+        _attach_external_result_dynamic_invariants(normalized, external_call_sites)
+    )
+    write_json(
+        out / "relational-external-result-invariants.json",
+        external_result_invariants,
+    )
+    dynamic_flow_passes: list[dict[str, Any]] = []
+    static_pointer_passes: list[dict[str, Any]] = []
+    lifecycle_converged = False
+    for _lifecycle_iteration in range(max(1, len(normalized.get("regions", [])) + 1)):
+        before = (
+            sum(
+                len(region.get("input_dynamic_range_relations", []))
+                for region in normalized.get("regions", [])
+            ),
+            len(normalized.get("static_dynamic_pointer_slots", [])),
+        )
+        normalized, dynamic_flow_pass = _attach_dynamic_range_flow_invariants(
+            normalized, behaviors, register_relations,
+        )
+        dynamic_flow_passes.append(dynamic_flow_pass)
+        normalized, static_pointer_pass = _attach_static_dynamic_pointer_slots(
+            normalized, behaviors, original_bin, candidate_bin,
+        )
+        static_pointer_passes.append(static_pointer_pass)
+        after = (
+            sum(
+                len(region.get("input_dynamic_range_relations", []))
+                for region in normalized.get("regions", [])
+            ),
+            len(normalized.get("static_dynamic_pointer_slots", [])),
+        )
+        if after == before:
+            lifecycle_converged = True
+            break
+    dynamic_flow_analysis = {
+        "format": "spaghetti-extractor-dynamic-range-lifecycle-v1",
+        "status": (
+            "proposal_requires_generated_lean_replay"
+            if lifecycle_converged
+            and all(item["status"] != "incomplete" for item in dynamic_flow_passes)
+            else "incomplete"
+        ),
+        "converged": lifecycle_converged,
+        "passes": dynamic_flow_passes,
+    }
+    static_dynamic_pointer_analysis = {
+        "format": "spaghetti-extractor-static-dynamic-pointer-lifecycle-v1",
+        "status": (
+            "proposal_requires_generated_lean_replay"
+            if lifecycle_converged
+            and all(item["status"] != "incomplete" for item in static_pointer_passes)
+            else "incomplete"
+        ),
+        "converged": lifecycle_converged,
+        "passes": static_pointer_passes,
+    }
+    write_json(
+        out / "relational-dynamic-range-flow.json",
+        dynamic_flow_analysis,
+    )
+    write_json(
+        out / "relational-static-dynamic-pointer-slots.json",
+        static_dynamic_pointer_analysis,
+    )
+    normalized, static_word_analysis = _attach_static_word_relation_slots(
+        normalized, behaviors, original_bin, candidate_bin,
+    )
+    register_relations = _attach_static_word_register_output_claims(
+        normalized, behaviors, register_relations
+    )
+    write_json(out / "relational-static-word-relations.json", static_word_analysis)
+    write_json(out / "relational-register-relations.json", register_relations)
+    write_json(out / "relation-contract.json", normalized)
     external_call_sites = _external_call_site_candidates(
         normalized, behaviors, register_relations,
         import_register_analysis["indirect_import_calls"],
@@ -713,6 +820,9 @@ def stage_a_prove_relational(
                 "semantic_ir_sha256": sha256_file(out / "relational-semantic-ir.json"),
                 "memory_contracts_sha256": sha256_file(
                     out / "relational-memory-contracts.json"
+                ),
+                "static_word_relations_sha256": sha256_file(
+                    out / "relational-static-word-relations.json"
                 ),
                 "register_relations_sha256": sha256_file(
                     out / "relational-register-relations.json"

@@ -420,6 +420,9 @@ def stage_a_build_relational(
         ),
         "relation_contract_sha256": sha256_file(out / "relation-contract.json"),
         "proof_ir_sha256": sha256_file(out / "relational-proof-ir.json"),
+        "static_word_relations_sha256": sha256_file(
+            out / "relational-static-word-relations.json"
+        ),
         "product_graph_sha256": sha256_file(out / "relational-product-graph.json"),
         "whole_program_acceptance_sha256": sha256_file(
             out / "whole-program-acceptance.json"
@@ -451,6 +454,9 @@ def _finalize_proof_ir(
     theorem: str,
     evidence: dict[str, Any],
 ) -> dict[str, Any]:
+    acceptance_theorem_checked = (
+        theorem_checked and theorem == RELATIONAL_ACCEPTANCE_THEOREM
+    )
     invariant_evidence = {
         **evidence,
         "kind": "lean_checked_inductive_invariant_family",
@@ -460,12 +466,11 @@ def _finalize_proof_ir(
         if obligation["kind"] == "relational_region_equivalence":
             finalized_obligations.append({
                 **obligation,
-                "status": "proved" if theorem_checked else "incomplete",
-                "evidence": evidence if theorem_checked else None,
+                "status": "proved" if acceptance_theorem_checked else "incomplete",
+                "evidence": evidence if acceptance_theorem_checked else None,
             })
         elif (
-            theorem_checked
-            and theorem == RELATIONAL_ACCEPTANCE_THEOREM
+            acceptance_theorem_checked
             and obligation["kind"] in {
                 "product_graph_composition",
                 "whole_program_observational_equivalence",
@@ -487,7 +492,7 @@ def _finalize_proof_ir(
                 },
             })
         elif (
-            theorem_checked
+            acceptance_theorem_checked
             and obligation["kind"] in {
                 "cfg_bound_invariant", "cfg_address_separation_invariant",
             }
@@ -499,7 +504,10 @@ def _finalize_proof_ir(
                 "status": "proved",
                 "evidence": invariant_evidence,
             })
-        elif theorem_checked and obligation["kind"] == "mapped_relocation_image_relation":
+        elif (
+            acceptance_theorem_checked
+            and obligation["kind"] == "mapped_relocation_image_relation"
+        ):
             finalized_obligations.append({
                 **obligation,
                 "status": "proved",
@@ -512,7 +520,7 @@ def _finalize_proof_ir(
                     ),
                 },
             })
-        elif theorem_checked and obligation["kind"] == "static_proof_context":
+        elif acceptance_theorem_checked and obligation["kind"] == "static_proof_context":
             finalized_obligations.append({
                 **obligation,
                 "status": "proved",
@@ -522,7 +530,10 @@ def _finalize_proof_ir(
                     "theorem": "StageA.GeneratedRelational.staticProofContextChecked",
                 },
             })
-        elif theorem_checked and obligation["kind"] == "iat_memory_relation_override":
+        elif (
+            acceptance_theorem_checked
+            and obligation["kind"] == "iat_memory_relation_override"
+        ):
             finalized_obligations.append({
                 **obligation,
                 "status": "proved",
@@ -533,7 +544,7 @@ def _finalize_proof_ir(
                 },
             })
         elif (
-            theorem_checked
+            acceptance_theorem_checked
             and obligation["kind"] == "memory_transition_preservation"
             and obligation.get("analysis", {}).get("status")
                 == "candidate_requires_lean_replay"
@@ -551,7 +562,7 @@ def _finalize_proof_ir(
                 },
             })
         elif (
-            theorem_checked
+            acceptance_theorem_checked
             and obligation["kind"] == "external_call_product_edge_refinement"
             and obligation.get("status") == "pending_lean"
         ):
@@ -586,15 +597,17 @@ def _finalize_proof_ir(
     ]
     finalized = dict(proof_ir)
     finalized["status"] = (
-        "satisfied" if theorem_checked and not assumption_obligations else "incomplete"
+        "satisfied"
+        if acceptance_theorem_checked and not assumption_obligations
+        else "incomplete"
     )
     finalized["families"] = [
-        {"family": "exact_pe_decode", "status": "satisfied" if theorem_checked else "incomplete"},
-        {"family": "x86_semantics", "status": "satisfied" if theorem_checked else "incomplete"},
-        {"family": "executable_coverage", "status": "satisfied" if theorem_checked else "incomplete"},
-        {"family": "roots_and_targets", "status": "satisfied" if theorem_checked else "incomplete"},
-        {"family": "static_proof_context", "status": "satisfied" if theorem_checked else "incomplete"},
-        {"family": "relational_regions", "status": "satisfied" if theorem_checked else "incomplete"},
+        {"family": "exact_pe_decode", "status": "satisfied" if acceptance_theorem_checked else "incomplete"},
+        {"family": "x86_semantics", "status": "satisfied" if acceptance_theorem_checked else "incomplete"},
+        {"family": "executable_coverage", "status": "satisfied" if acceptance_theorem_checked else "incomplete"},
+        {"family": "roots_and_targets", "status": "satisfied" if acceptance_theorem_checked else "incomplete"},
+        {"family": "static_proof_context", "status": "satisfied" if acceptance_theorem_checked else "incomplete"},
+        {"family": "relational_regions", "status": "satisfied" if acceptance_theorem_checked else "incomplete"},
         {
             "family": "segment_refinement",
             "status": "incomplete" if any(
@@ -618,7 +631,7 @@ def _finalize_proof_ir(
         },
         {
             "family": "whole_program_observational_equivalence",
-            "status": "satisfied" if theorem_checked else "incomplete",
+            "status": "satisfied" if acceptance_theorem_checked else "incomplete",
         },
         {
             "family": "cfg_invariants",
@@ -1264,6 +1277,9 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         "proof_ir_sha256": prepared / "relational-proof-ir.json",
         "semantic_ir_sha256": prepared / "relational-semantic-ir.json",
         "memory_contracts_sha256": prepared / "relational-memory-contracts.json",
+        "static_word_relations_sha256": (
+            prepared / "relational-static-word-relations.json"
+        ),
         "register_relations_sha256": prepared / "relational-register-relations.json",
         "stack_windows_sha256": prepared / "relational-stack-windows.json",
         "segment_diagnostics_sha256": (

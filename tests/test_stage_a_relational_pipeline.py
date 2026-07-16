@@ -546,7 +546,7 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             self.assertEqual(result["verdict"], "incomplete")
             self.assertEqual(result["proof"]["lean"]["status"], "checked")
 
-    def test_normalized_register_reflexivity_bridge_is_emitted_for_cmov_expression(self):
+    def test_cmov_expression_emits_general_compositional_components(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             code = bytes.fromhex("eb0039fa89d00f4cc783c01b7cf4c3")
@@ -605,11 +605,18 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
                     "RelationalProofShard*.lean"
                 ))
             )
-            self.assertIn("registersRelatedValues_self_of_identity", proof)
-            self.assertIn("OriginalWritesEmpty", proof)
-            self.assertIn("writes = [] := by rfl", proof)
-            self.assertIn("OutcomeConditionWithin", proof)
-            self.assertIn("outcomesRelated_normalized_branch_of_agreement", proof)
+            definitions = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted((root / "report" / "lean" / "StageA").glob(
+                    "RelationalDefinitionsShard*.lean"
+                ))
+            )
+            self.assertIn("behaviorRegistersEquivalent", proof)
+            self.assertIn("behaviorWritesEquivalent", proof)
+            self.assertIn("behaviorOutcomeEquivalent", proof)
+            self.assertIn("behaviorsEquivalent_of_components", proof)
+            self.assertIn("OutcomeConditionWithin", definitions)
+            self.assertNotIn("region0NormalizedBehavior", proof)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for cross-region flag execution")
     def test_logical_execution_carries_computed_flags_into_the_next_region(self):

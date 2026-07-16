@@ -24,6 +24,7 @@ from spaghetti_extractor.stage_a_relational import (
     _attach_return_write_address_separations,
     _attach_return_slot_contracts,
     _attach_stack_window_invariants,
+    _attach_static_word_relation_slots,
     _attach_register_relation_analysis,
     _assembled_iat_read_candidates,
     _cached_behavior_affected_by_machine_contracts,
@@ -57,7 +58,9 @@ from spaghetti_extractor.stage_a_relational import (
     _nonzero_word_guard,
     _partition_proof_shards,
     _persistent_olean_path,
+    _prepared_dynamic_stack_spill_claim,
     _paired_stack_guard_claim,
+    _paired_prepared_word_writes_claim,
     _paired_stack_word_write_claim,
     _paired_stack_word_writes_claim,
     _relational_nix_build_command,
@@ -75,6 +78,7 @@ from spaghetti_extractor.stage_a_relational import (
     _stack_read32_sub_output_claim,
     _stack_window_transfer_claims,
     _static_dynamic_pointer_slots,
+    _static_word_relation_slots,
     _static_dynamic_pointer_slot_guard_claim,
     _static_dynamic_pointer_seed_diagnostic,
     _synthesize_register_relations,
@@ -400,6 +404,80 @@ def _pe32_image_with_relocated_data(data_rva: int, *, writable: bool = True) -> 
     ))
     headers = (bytes(dos) + b"PE\0\0" + coff + optional_prefix + bytes(directories) + sections).ljust(headers_size, b"\0")
     return headers + code.ljust(0x200, b"\0") + data.ljust(0x200, b"\0") + relocations.ljust(0x200, b"\0")
+
+
+def _pe32_image_with_writable_data(
+    code: bytes, *, relocation_offsets: list[int], data_size: int = 4,
+) -> bytes:
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    headers_size = 0x200
+    text_rva = 0x1000
+    data_rva = 0x2000
+    reloc_rva = 0x3000
+    text_raw = 0x200
+    data_raw = 0x400
+    reloc_raw = 0x600
+    image_base = 0x400000
+    data = b"\0" * data_size
+    relocation_entries = [0x3000 | offset for offset in relocation_offsets]
+    if len(relocation_entries) % 2:
+        relocation_entries.append(0)
+    relocations = (
+        struct.pack("<II", text_rva, 8 + 2 * len(relocation_entries))
+        + struct.pack(
+            "<" + "H" * len(relocation_entries), *relocation_entries,
+        )
+    )
+
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+    coff = struct.pack("<HHIIIHH", 0x014C, 3, 0, 0, 0, 224, 0x010F)
+    optional_prefix = struct.pack(
+        "<HBB" + "I" * 9 + "H" * 6 + "I" * 4 + "H" * 2 + "I" * 6,
+        0x10B, 0, 0, 0x200, 0x400, 0, text_rva, text_rva, data_rva,
+        image_base, section_alignment, file_alignment, 4, 0, 0, 0, 4, 0, 0,
+        0x4000, headers_size, 0, 3, 0, 0x100000, 0x1000, 0x100000,
+        0x1000, 0, 16,
+    )
+    directories = bytearray(16 * 8)
+    struct.pack_into("<II", directories, 5 * 8, reloc_rva, len(relocations))
+    sections = b"".join((
+        struct.pack(
+            "<8sIIIIIIHHI", b".text\0\0\0", len(code), text_rva, 0x200,
+            text_raw, 0, 0, 0, 0, 0x60000020,
+        ),
+        struct.pack(
+            "<8sIIIIIIHHI", b".data\0\0\0", len(data), data_rva, 0x200,
+            data_raw, 0, 0, 0, 0, 0xC0000040,
+        ),
+        struct.pack(
+            "<8sIIIIIIHHI", b".reloc\0\0", len(relocations), reloc_rva,
+            0x200, reloc_raw, 0, 0, 0, 0, 0x42000040,
+        ),
+    ))
+    headers = (
+        bytes(dos) + b"PE\0\0" + coff + optional_prefix + bytes(directories)
+        + sections
+    ).ljust(headers_size, b"\0")
+    return (
+        headers + code.ljust(0x200, b"\0") + data.ljust(0x200, b"\0")
+        + relocations.ljust(0x200, b"\0")
+    )
+
+
+def _pe32_image_with_writable_static_call(*, stored_value: int = 7) -> bytes:
+    image_base = 0x400000
+    data_rva = 0x2000
+    code = (
+        b"\xc7\x05" + struct.pack("<I", image_base + data_rva)
+        + struct.pack("<I", stored_value)
+        + b"\xe8\x02\x00\x00\x00"
+        + b"\xeb\xef"
+        + b"\xc3"
+    )
+    return _pe32_image_with_writable_data(code, relocation_offsets=[2])
 
 
 def _pe32_image_with_relocation_pointer_table(

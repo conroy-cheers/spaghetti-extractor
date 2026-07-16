@@ -433,7 +433,7 @@ def DecodedWorldProgram.transitionSystem (program : DecodedWorldProgram) :
 
 def RelationalRuntimeCallStackHolds (context : StaticProofContext)
     (original candidate : MachineState) :
-    List RelationalRuntimeCallFrame -> List Nat -> List ReturnSlotOffsetPair -> Prop
+    List RelationalRuntimeCallFrame -> List Nat -> List ReturnSlotOffsetInventory -> Prop
   | [], [], [] => True
   | frame :: frames, continuation :: continuations, offsets :: remainingOffsets =>
       frame.continuationTargetId = continuation ∧
@@ -449,12 +449,13 @@ theorem RelationalRuntimeCallStackHolds.toMixed
     (context : StaticProofContext) (world : RelationalWorld)
     (original candidate : MachineState)
     (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
-    (offsets : List ReturnSlotOffsetPair)
+    (offsets : List ReturnSlotOffsetInventory)
     (holds : RelationalRuntimeCallStackHolds context original candidate
       frames continuations offsets) :
     RelationalMixedRuntimeStackHolds context world original candidate
       (frames.map RelationalRuntimeFrame.internal)
-      (continuations.map RelationalRuntimeContinuation.internal) offsets := by
+      (continuations.map RelationalRuntimeContinuation.internal)
+      (offsets.map ReturnSlotOffsetInventory.representative) := by
   induction frames generalizing continuations offsets with
   | nil =>
       cases continuations <;> cases offsets <;>
@@ -472,23 +473,27 @@ theorem RelationalRuntimeCallStackHolds.toMixed
                 RelationalRuntimeFrame.valid, RelationalRuntimeFrame.memoryHolds,
                 ReturnSlotOffsetPair.holdsRuntimeFrame_internal, Bool.and_eq_true]
               exact ⟨by simpa using holds.1, ⟨holds.2.1, holds.2.2.1⟩,
-                holds.2.2.2.1, holds.2.2.2.2.1,
+                holds.2.2.2.1,
+                ReturnSlotOffsetInventory.representative_holds offset frame
+                  original.registers candidate.registers holds.2.2.2.2.1,
                 ih continuations offsets holds.2.2.2.2.2⟩
 
 theorem RelationalRuntimeCallStackHolds.afterInternal
-    (context : StaticProofContext)
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
-    (claims : List ReturnSlotFrameTransferClaim)
+    (claims : List ReturnSlotFrameInventoryTransferClaim)
     (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
     (originalState candidateState : MachineState)
     (checked : claims.all fun claim =>
-      claim.checked originalBehavior candidateBehavior)
+      claim.checked context sourceInvariant originalBehavior candidateBehavior)
     (holds : RelationalRuntimeCallStackHolds context originalState candidateState
-      frames continuations (claims.map (fun claim => claim.transfer.source))) :
+      frames continuations (claims.map (fun claim => claim.source)))
+    (related : StateRel context world sourceInvariant originalState candidateState) :
     RelationalRuntimeCallStackHolds context
       ((originalBehavior.eval originalState).nextMachineState originalState)
       ((candidateBehavior.eval candidateState).nextMachineState candidateState)
-      frames continuations (claims.map (fun claim => claim.transfer.target)) := by
+      frames continuations (claims.map (fun claim => claim.target)) := by
   induction claims generalizing frames continuations with
   | nil =>
       cases frames <;> cases continuations <;>
@@ -503,9 +508,10 @@ theorem RelationalRuntimeCallStackHolds.afterInternal
           | cons continuation continuations =>
               simp only [List.all_cons, Bool.and_eq_true] at checked
               simp only [List.map_cons, RelationalRuntimeCallStackHolds] at holds ⊢
-              have transferred := returnSlotFrameTransferHolds_of_checked
-                originalBehavior candidateBehavior claim frame originalState
-                candidateState checked.1 holds.2.2.2.2.1 holds.2.2.2.1
+              have transferred := returnSlotFrameInventoryTransferHolds_of_checked
+                context world sourceInvariant originalBehavior candidateBehavior claim
+                frame originalState candidateState checked.1 holds.2.2.2.2.1
+                holds.2.2.2.1 related
               exact ⟨holds.1, holds.2.1, holds.2.2.1, transferred.2,
                 transferred.1,
                 ih frames continuations checked.2 holds.2.2.2.2.2⟩
@@ -514,7 +520,7 @@ theorem RelationalRuntimeCallStackHolds.afterExternalCall
     (context : StaticProofContext)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (contract : MachineImportCallContract)
-    (claims : List ExternalReturnSlotTransferClaim)
+    (claims : List ExternalReturnSlotInventoryTransferClaim)
     (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
     (originalState candidateState originalResult candidateResult : MachineState)
     (checked : claims.all fun claim =>
@@ -533,7 +539,7 @@ theorem RelationalRuntimeCallStackHolds.afterExternalCall
           ((candidateBehavior.eval candidateState).nextMachineState candidateState).memory →
         frame.memoryHolds originalResult.memory candidateResult.memory) :
     RelationalRuntimeCallStackHolds context originalResult candidateResult
-      frames continuations (claims.map (fun claim => claim.resultRule.target)) := by
+      frames continuations (claims.map (fun claim => claim.target)) := by
   induction claims generalizing frames continuations with
   | nil =>
       cases frames <;> cases continuations <;>
@@ -548,7 +554,7 @@ theorem RelationalRuntimeCallStackHolds.afterExternalCall
           | cons continuation continuations =>
               simp only [List.all_cons, Bool.and_eq_true] at checked
               simp only [List.map_cons, RelationalRuntimeCallStackHolds] at holds ⊢
-              have transferred := externalReturnSlotTransferHolds_of_checked
+              have transferred := externalReturnSlotInventoryTransferHolds_of_checked
                 originalBehavior candidateBehavior contract claim frame originalState
                 candidateState originalResult candidateResult checked.1
                 holds.2.2.2.2.1 holds.2.2.2.1 originalAbi candidateAbi
@@ -561,7 +567,7 @@ theorem RelationalRuntimeCallStackHolds.afterExternalJump
     (context : StaticProofContext)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
     (contract : MachineImportCallContract)
-    (claims : List ExternalJumpReturnSlotTransferClaim)
+    (claims : List ExternalJumpReturnSlotInventoryTransferClaim)
     (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
     (originalState candidateState originalResult candidateResult : MachineState)
     (checked : claims.all fun claim =>
@@ -584,7 +590,7 @@ theorem RelationalRuntimeCallStackHolds.afterExternalJump
             ((candidateBehavior.eval candidateState).nextMachineState candidateState)).memory →
         frame.memoryHolds originalResult.memory candidateResult.memory) :
     RelationalRuntimeCallStackHolds context originalResult candidateResult
-      frames continuations (claims.map (fun claim => claim.resultRule.target)) := by
+      frames continuations (claims.map (fun claim => claim.target)) := by
   induction claims generalizing frames continuations with
   | nil =>
       cases frames <;> cases continuations <;>
@@ -599,7 +605,7 @@ theorem RelationalRuntimeCallStackHolds.afterExternalJump
           | cons continuation continuations =>
               simp only [List.all_cons, Bool.and_eq_true] at checked
               simp only [List.map_cons, RelationalRuntimeCallStackHolds] at holds ⊢
-              have transferred := externalJumpReturnSlotTransferHolds_of_checked
+              have transferred := externalJumpReturnSlotInventoryTransferHolds_of_checked
                 originalBehavior candidateBehavior contract claim frame originalState
                 candidateState originalResult candidateResult checked.1
                 holds.2.2.2.2.1 holds.2.2.2.1 originalAbi candidateAbi
@@ -621,7 +627,7 @@ theorem RelationalRuntimeCallStackHolds.of_memory_eq
     (context : StaticProofContext)
     (beforeOriginal beforeCandidate afterOriginal afterCandidate : MachineState)
     (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
-    (offsets : List ReturnSlotOffsetPair)
+    (offsets : List ReturnSlotOffsetInventory)
     (holds : RelationalRuntimeCallStackHolds context beforeOriginal beforeCandidate
       frames continuations offsets)
     (originalMemory : afterOriginal.memory = beforeOriginal.memory)
@@ -649,31 +655,42 @@ theorem RelationalRuntimeCallStackHolds.of_memory_eq
                 by simpa [RelationalRuntimeCallFrame.memoryHolds, originalMemory,
                   candidateMemory] using holds.2.2.2.1,
                 by
+                  refine ⟨holds.2.2.2.2.1.1, ?_⟩
+                  intro location member
                   unfold ReturnSlotOffsetPair.holds
-                  rw [originalRegisters offset.originalRegister,
-                    candidateRegisters offset.candidateRegister]
-                  exact holds.2.2.2.2.1,
+                  rw [originalRegisters location.originalRegister,
+                    candidateRegisters location.candidateRegister]
+                  exact holds.2.2.2.2.1.2 location member,
                 ih continuations offsets holds.2.2.2.2.2⟩
 
 structure ProductControlState where
   nodeId : Nat
   calls : List Nat
-  frameOffsets : List ReturnSlotOffsetPair
+  frameOffsets : List ReturnSlotOffsetInventory
 deriving Repr, DecidableEq
+
+def ProductControlState.checked (state : ProductControlState) : Bool :=
+  state.calls.length == state.frameOffsets.length &&
+    state.frameOffsets.all ReturnSlotOffsetInventory.checked
 
 structure ProductControlProfile where
   states : List ProductControlState
 deriving Repr, DecidableEq
 
+def ProductControlProfile.checked (profile : ProductControlProfile) : Bool :=
+  profile.states.all ProductControlState.checked
+
 def ProductControlProfile.lookup (profile : ProductControlProfile)
-    (nodeId : Nat) (calls : List Nat) : Option (List ReturnSlotOffsetPair) := do
+    (nodeId : Nat) (calls : List Nat) : Option (List ReturnSlotOffsetInventory) := do
   let state <- profile.states.find? fun state =>
     state.nodeId == nodeId && state.calls == calls
   pure state.frameOffsets
 
 def ProductControlProfile.Allows (profile : ProductControlProfile)
-    (nodeId : Nat) (calls : List Nat) (frameOffsets : List ReturnSlotOffsetPair) : Bool :=
-  profile.states.contains { nodeId, calls, frameOffsets }
+    (nodeId : Nat) (calls : List Nat)
+    (frameOffsets : List ReturnSlotOffsetInventory) : Bool :=
+  let state : ProductControlState := { nodeId, calls, frameOffsets }
+  profile.checked && profile.states.contains state
 
 structure ProductInvariantTable where
   nodeInvariants : Array StateInvariant

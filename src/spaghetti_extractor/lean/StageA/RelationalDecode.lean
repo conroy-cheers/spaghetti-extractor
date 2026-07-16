@@ -122,6 +122,7 @@ deriving Repr, DecidableEq
 inductive MachineCallMemorySize where
   | fixed (bytes : Nat)
   | argument (index scale : Nat)
+  | product (leftIndex rightIndex : Nat)
 deriving Repr, DecidableEq
 
 structure MachineCallMemoryFootprint where
@@ -136,6 +137,7 @@ inductive MachineCallMemoryEffect where
   | none
   | readOnly
   | argumentRanges
+  | newDynamicRanges
 deriving Repr, DecidableEq
 
 inductive MachineCallWorldEffect where
@@ -153,9 +155,23 @@ inductive MachineCallDisposition where
   | protocol
 deriving Repr, DecidableEq
 
+inductive MachineCallResultWordRelationKind where
+  | relatedWord
+  | codePointer
+  | dataPointer
+  | nullableDynamicPointer
+deriving Repr, DecidableEq
+
+structure MachineCallResultWordRelation where
+  offset : Nat
+  kind : MachineCallResultWordRelationKind
+deriving Repr, DecidableEq
+
 inductive MachineCallResultRelationKind where
   | exact
   | relatedWord
+  | dynamicRangeBase (size : MachineCallMemorySize) (minimumSize : Nat)
+      (requiredWords : List MachineCallResultWordRelation) (nullable : Bool := false)
 deriving Repr, DecidableEq
 
 structure MachineCallResultRegisterRelation where
@@ -184,6 +200,13 @@ def MachineCallMemorySize.shapeValid
     (argumentCount : Nat) : MachineCallMemorySize -> Bool
   | .fixed bytes => 0 < bytes && bytes < 2^32
   | .argument index scale => index < argumentCount && 0 < scale && scale < 2^32
+  | .product leftIndex rightIndex =>
+      leftIndex < argumentCount && rightIndex < argumentCount
+
+def MachineCallMemorySize.canMeetMinimum
+    (minimumSize : Nat) : MachineCallMemorySize -> Bool
+  | .fixed bytes => minimumSize <= bytes
+  | .argument _ _ | .product _ _ => true
 
 def MachineCallMemoryFootprint.shapeValid
     (argumentCount : Nat) (footprint : MachineCallMemoryFootprint) : Bool :=
@@ -202,6 +225,27 @@ def MachineImportCallContract.memoryShapeValid
     | .argumentRanges =>
         !contract.memoryFootprints.isEmpty &&
           contract.memoryFootprints.any (·.access == .write)
+    | .newDynamicRanges =>
+        contract.memoryFootprints.isEmpty &&
+          contract.worldEffect == .dynamicRanges &&
+          contract.resultRegisterRelations.any fun relation =>
+            match relation.relation with
+            | .dynamicRangeBase _ _ _ _ => true
+            | _ => false
+
+def MachineCallResultRelationKind.shapeValid
+    (argumentCount : Nat) (worldEffect : MachineCallWorldEffect) :
+    MachineCallResultRelationKind -> Bool
+  | .exact | .relatedWord => true
+  | .dynamicRangeBase size minimumSize requiredWords _nullable =>
+      worldEffect == .dynamicRanges &&
+        size.shapeValid argumentCount &&
+        size.canMeetMinimum minimumSize &&
+        minimumSize < 2^32 &&
+        (requiredWords.all fun word =>
+          word.offset + 4 <= minimumSize &&
+            (requiredWords.filter
+              (fun other => other.offset == word.offset)).length == 1)
 
 def MachineImportCallContract.shapeValid
     (contract : MachineImportCallContract) : Bool :=
@@ -221,7 +265,9 @@ def MachineImportCallContract.shapeValid
       relation.register != .esp &&
         contract.clobberedRegisters.contains relation.register &&
         (contract.resultRegisterRelations.filter
-          (fun other => other.register == relation.register)).length == 1) &&
+          (fun other => other.register == relation.register)).length == 1 &&
+        relation.relation.shapeValid contract.stackArgumentOffsets.length
+          contract.worldEffect) &&
     (machineCallAbiRegisters.all fun register =>
       contract.preservedRegisters.contains register ||
         contract.clobberedRegisters.contains register) &&

@@ -12,7 +12,6 @@ from ..analyses.external import (
     _external_call_site_candidates,
     _semantic_external_target_identity,
 )
-from ..analyses.registers import _target_shaped_register_output_claims
 from ..analyses.stack import _stack_window_transfer_claims
 from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..contract import _raw_base_relocations

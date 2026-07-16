@@ -922,7 +922,7 @@ class StageARelationalContractTests(StageARelationalTestBase):
         self.assertNotIn("inherited-olean-index", detached)
         self.assertNotIn("inherited-node-result-index", detached)
 
-    def test_nix_finalization_closes_only_checked_external_call_candidates(self):
+    def test_nix_finalization_requires_the_whole_program_theorem(self):
         proof_ir = {
             "status": "incomplete",
             "families": [],
@@ -951,11 +951,8 @@ class StageARelationalContractTests(StageARelationalTestBase):
         )
 
         checked, gap = finalized["obligations"]
-        self.assertEqual(checked["status"], "proved")
-        self.assertEqual(
-            checked["evidence"]["theorem"],
-            "StageA.GeneratedRelational.externalCallEdge7ProductRefinementChecked",
-        )
+        self.assertEqual(checked["status"], "pending_lean")
+        self.assertIsNone(checked.get("evidence"))
         self.assertEqual(gap["status"], "incomplete")
         self.assertEqual(finalized["status"], "incomplete")
         external_family = next(
@@ -964,17 +961,18 @@ class StageARelationalContractTests(StageARelationalTestBase):
         )
         self.assertEqual(external_family["status"], "incomplete")
 
-        proved_only = _finalize_nix_proof_ir(
+        intermediate_only = _finalize_nix_proof_ir(
             {**proof_ir, "obligations": [proof_ir["obligations"][0]]},
             theorem_checked=True,
             theorem="StageA.GeneratedRelational.candidateRelationalImageCertificate",
             result_path=Path("/nix/store/stage-a-test"),
         )
-        proved_family = next(
-            family for family in proved_only["families"]
+        intermediate_family = next(
+            family for family in intermediate_only["families"]
             if family["family"] == "paired_external_environment_refinement"
         )
-        self.assertEqual(proved_family["status"], "satisfied")
+        self.assertEqual(intermediate_family["status"], "incomplete")
+        self.assertEqual(intermediate_only["status"], "incomplete")
 
     def test_behavior_cache_hash_is_owned_by_decode_module(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1027,6 +1025,7 @@ class StageARelationalContractTests(StageARelationalTestBase):
             "original": "ebx", "candidate": "esi",
             "original_offset": 8, "candidate_offset": 8,
             "required_words": [{"offset": 12, "kind": "codePointer"}],
+            "active_words": [{"offset": 12, "kind": "codePointer"}],
         }
         contract = {"regions": [{
             "id": "callback", "input_dynamic_range_relations": [relation],
@@ -1037,6 +1036,13 @@ class StageARelationalContractTests(StageARelationalTestBase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["word_offset"], 4)
         self.assertEqual(candidates[0]["range_relation"], relation)
+        inactive = json.loads(json.dumps(contract))
+        inactive["regions"][0]["input_dynamic_range_relations"][0][
+            "active_words"
+        ] = []
+        self.assertEqual(
+            _dynamic_range_indirect_call_candidates(inactive, behaviors), []
+        )
         missing = {"regions": [{
             "id": "callback", "input_dynamic_range_relations": [],
         }]}
@@ -1068,7 +1074,11 @@ class StageARelationalContractTests(StageARelationalTestBase):
         issues = []
         self.assertEqual(
             _dynamic_range_relations([valid], issues, "region", "input"),
-            [{**valid, "required_words": list(reversed(valid["required_words"]))}],
+            [{
+                **valid,
+                "required_words": list(reversed(valid["required_words"])),
+                "active_words": list(reversed(valid["required_words"])),
+            }],
         )
         self.assertEqual(issues, [])
 
@@ -1088,6 +1098,16 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 [],
             )
             self.assertEqual(malformed_issues[0]["severity"], "hard")
+
+        inactive_issues = []
+        self.assertEqual(
+            _dynamic_range_relations([{
+                **valid,
+                "active_words": [{"offset": 12, "kind": "relatedWord"}],
+            }], inactive_issues, "region", "input"),
+            [],
+        )
+        self.assertEqual(inactive_issues[0]["severity"], "hard")
 
         duplicate_issues = []
         self.assertEqual(
@@ -1161,6 +1181,94 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 {issue["category"] for issue in iat_issues},
             )
 
+    def test_static_word_relation_slots_are_checked_and_inferred(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "fixture.exe"
+            image.write_bytes(_pe32_image_with_relocated_data(0x3000))
+            original = _parse_stage_a_pe(image)
+            candidate = _parse_stage_a_pe(image)
+            valid = {
+                "id": 0,
+                "original_address": 0x403000,
+                "candidate_address": 0x403000,
+                "relation": "exact",
+            }
+            issues: list[dict] = []
+            self.assertEqual(
+                _static_word_relation_slots(
+                    [valid], [], original, candidate, issues
+                ),
+                [valid],
+            )
+            self.assertEqual(issues, [])
+
+            pointer_slot = {
+                "id": 4,
+                "original_address": 0x403000,
+                "candidate_address": 0x403000,
+                "required_words": [{"offset": 0, "kind": "relatedWord"}],
+            }
+            overlap_issues: list[dict] = []
+            self.assertEqual(
+                _static_word_relation_slots(
+                    [valid], [pointer_slot], original, candidate, overlap_issues
+                ),
+                [],
+            )
+            self.assertIn(
+                "static_word_relation_slot_overlap",
+                {issue["category"] for issue in overlap_issues},
+            )
+
+            contract = {
+                "regions": [{
+                    "id": "static-write",
+                    "input_relations": [],
+                    "code_targets": [],
+                    "values": [],
+                }],
+                "static_word_relation_slots": [],
+            }
+            behavior = {
+                "original_ir": {"writes": [{
+                    "address": {"op": "constant", "value": 0x403000},
+                    "value": {"op": "constant", "value": 1},
+                }]},
+                "candidate_ir": {"writes": [{
+                    "address": {"op": "constant", "value": 0x403000},
+                    "value": {"op": "constant", "value": 1},
+                }]},
+            }
+            inferred, analysis = _attach_static_word_relation_slots(
+                contract, [behavior], original, candidate
+            )
+            self.assertEqual(analysis["counts"], {
+                "existing": 0, "inferred": 1, "rejected": 0,
+            })
+            self.assertEqual(inferred["static_word_relation_slots"], [valid])
+
+            related_contract = json.loads(json.dumps(contract))
+            related_contract["regions"][0]["input_relations"] = [{
+                "original": "eax", "candidate": "ebx",
+                "relation": "related_word",
+            }]
+            related_behavior = json.loads(json.dumps(behavior))
+            related_behavior["original_ir"]["writes"][0]["value"] = {
+                "op": "input_reg", "reg": "eax",
+            }
+            related_behavior["candidate_ir"]["writes"][0]["value"] = {
+                "op": "input_reg", "reg": "ebx",
+            }
+            related, related_analysis = _attach_static_word_relation_slots(
+                related_contract, [related_behavior], original, candidate
+            )
+            self.assertEqual(related_analysis["counts"]["inferred"], 1)
+            self.assertEqual(
+                related["static_word_relation_slots"][0]["relation"],
+                "related_word",
+            )
+
     def test_machine_import_call_contract_validation_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1212,6 +1320,101 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 {"register": "eax", "relation": "exact"},
                 {"register": "edx", "relation": "related_word"},
             ])
+
+            dynamic_result = {
+                **valid,
+                "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "size": {"kind": "fixed", "bytes": 12},
+                    "minimum_size": 12,
+                    "required_words": [
+                        {"offset": 0, "relation": "related_word"},
+                        {"offset": 8, "relation": "nullable_dynamic_pointer"},
+                    ],
+                    "nullable": True,
+                }],
+                "world_effect": "dynamicRanges",
+            }
+            dynamic_issues: list[dict] = []
+            normalized_dynamic = _machine_import_call_contracts(
+                [dynamic_result], binary, binary, dynamic_issues
+            )
+            self.assertEqual(dynamic_issues, [])
+            self.assertEqual(
+                normalized_dynamic[0]["result_register_relations"],
+                [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "size": {"kind": "fixed", "bytes": 12},
+                    "minimum_size": 12,
+                    "required_words": [
+                        {"offset": 0, "relation": "related_word"},
+                        {"offset": 8, "relation": "nullable_dynamic_pointer"},
+                    ],
+                    "nullable": True,
+                }],
+            )
+
+            product_result = {
+                **valid,
+                "stack_argument_offsets": [0, 4],
+                "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "size": {
+                        "kind": "product",
+                        "left_argument": 0,
+                        "right_argument": 1,
+                    },
+                    "minimum_size": 12,
+                    "required_words": [
+                        {"offset": 0, "relation": "related_word"},
+                        {"offset": 4, "relation": "data_pointer"},
+                        {"offset": 8, "relation": "nullable_dynamic_pointer"},
+                    ],
+                    "nullable": True,
+                }],
+                "world_effect": "dynamicRanges",
+            }
+            product_issues: list[dict] = []
+            normalized_product = _machine_import_call_contracts(
+                [product_result], binary, binary, product_issues
+            )
+            self.assertEqual(product_issues, [])
+            self.assertEqual(
+                normalized_product[0]["result_register_relations"][0]["size"],
+                {
+                    "kind": "product",
+                    "left_argument": 0,
+                    "right_argument": 1,
+                },
+            )
+
+            zero_sized_result = {
+                **dynamic_result,
+                "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "size": {"kind": "argument", "argument": 0, "scale": 1},
+                    "minimum_size": 0,
+                    "required_words": [],
+                    "nullable": True,
+                }],
+                "memory_effect": "newDynamicRanges",
+                "memory_footprints": [],
+            }
+            zero_sized_issues: list[dict] = []
+            normalized_zero_sized = _machine_import_call_contracts(
+                [zero_sized_result], binary, binary, zero_sized_issues
+            )
+            self.assertEqual(zero_sized_issues, [])
+            self.assertEqual(
+                normalized_zero_sized[0]["result_register_relations"][0][
+                    "minimum_size"
+                ],
+                0,
+            )
 
             optional = {
                 **valid,
@@ -1511,6 +1714,55 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 {**valid, "result_register_relations": [{
                     "register": "eax", "relation": "symbolic",
                 }]},
+                {**dynamic_result, "world_effect": "none"},
+                {**dynamic_result, "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "size": {"kind": "fixed", "bytes": 12},
+                    "minimum_size": 0,
+                    "required_words": [
+                        {"offset": 0, "relation": "related_word"},
+                    ],
+                }]},
+                {**dynamic_result, "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "size": {"kind": "fixed", "bytes": 4},
+                    "minimum_size": 4,
+                    "required_words": [
+                        {"offset": 4, "relation": "related_word"},
+                    ],
+                }]},
+                {**dynamic_result, "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "size": {"kind": "fixed", "bytes": 8},
+                    "minimum_size": 8,
+                    "required_words": [
+                        {"offset": 0, "relation": "related_word"},
+                        {"offset": 0, "relation": "data_pointer"},
+                    ],
+                }]},
+                {**dynamic_result, "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "size": {"kind": "fixed", "bytes": 4},
+                    "minimum_size": 8,
+                    "required_words": [],
+                }]},
+                {**dynamic_result, "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "size": {"kind": "product", "left_argument": 0,
+                             "right_argument": 1},
+                    "minimum_size": 4,
+                    "required_words": [],
+                }]},
+                {**valid, "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "exact",
+                    "minimum_size": 4,
+                }]},
             )
             for malformed in malformed_cases:
                 malformed_issues: list[dict] = []
@@ -1609,6 +1861,7 @@ class StageARelationalContractTests(StageARelationalTestBase):
             "original": "ebx", "candidate": "esi",
             "original_offset": 0, "candidate_offset": 0,
             "required_words": [{"offset": 4, "kind": "codePointer"}],
+            "active_words": [{"offset": 4, "kind": "codePointer"}],
         }
         contract = {"regions": [
             {"input_dynamic_range_relations": [relation]},
@@ -1652,17 +1905,21 @@ class StageARelationalContractTests(StageARelationalTestBase):
         )
 
     def test_dynamic_range_transfer_accepts_checked_nullable_next_pointer(self):
-        relation = {
+        source_relation = {
             "original": "ebx", "candidate": "esi",
             "original_offset": 0, "candidate_offset": 0,
             "required_words": [
                 {"offset": 4, "kind": "codePointer"},
                 {"offset": 8, "kind": "nullableDynamicPointer"},
             ],
+            "active_words": [
+                {"offset": 8, "kind": "nullableDynamicPointer"},
+            ],
         }
+        target_relation = {**source_relation, "active_words": []}
         contract = {"regions": [
-            {"input_dynamic_range_relations": [relation]},
-            {"input_dynamic_range_relations": [relation]},
+            {"input_dynamic_range_relations": [source_relation]},
+            {"input_dynamic_range_relations": [target_relation]},
         ]}
 
         def read(register):
@@ -1697,8 +1954,8 @@ class StageARelationalContractTests(StageARelationalTestBase):
         )
         self.assertEqual(claims, [{
             "kind": "nullable_pointer",
-            "source_relation": relation,
-            "target_relation": relation,
+            "source_relation": source_relation,
+            "target_relation": target_relation,
             "pointer_offset": 8,
         }])
 
@@ -1715,6 +1972,7 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 {"offset": 4, "kind": "codePointer"},
                 {"offset": 8, "kind": "nullableDynamicPointer"},
             ],
+            "active_words": [],
         }
         slot = {
             "id": 5,
