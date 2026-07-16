@@ -4,6 +4,11 @@ import json
 from typing import Any
 
 from ...stage_binary import StageABinary
+from ..callsite_preservation import (
+    CALLSITE_PRESERVATION_ARTIFACT_FORMAT,
+    parse_callsite_preservation_artifact,
+    serialize_callsite_preservation_artifact,
+)
 from ..contract import _import_identity, _semantic_expr_is_pure
 from ..extraction import (
     _assembled_u32_after_register_writes,
@@ -36,11 +41,6 @@ _PE32_EXTERNAL_REGISTER_POLICY_ID = "win32-cdecl-stdcall-registers-v1"
 _PE32_EXTERNAL_PRESERVED_REGISTERS = frozenset({
     "ebx", "esi", "edi", "ebp", "esp",
 })
-_CALLSITE_PRESERVATION_ARTIFACT_FORMAT = (
-    "stage-a-relational-callsite-preservation-v1"
-)
-
-
 def _machine_result_invariant_relation(relation: dict[str, Any]) -> str:
     return "exact" if relation.get("relation") == "exact" else "related_word"
 
@@ -806,8 +806,8 @@ def _propose_internal_callsite_preservation_summaries(
         for analysis in analysis_cache.values()
         if analysis.get("status") == "satisfied"
     }
-    return {
-        "format": _CALLSITE_PRESERVATION_ARTIFACT_FORMAT,
+    payload = {
+        "format": CALLSITE_PRESERVATION_ARTIFACT_FORMAT,
         "status": "proposal_requires_generated_lean_replay",
         "summaries": rows,
         "certificates": [
@@ -834,6 +834,12 @@ def _propose_internal_callsite_preservation_summaries(
             ),
         },
     }
+    return serialize_callsite_preservation_artifact(
+        parse_callsite_preservation_artifact(
+            payload,
+            region_count=len(behaviors),
+        )
+    )
 
 
 def _infer_import_register_invariants(

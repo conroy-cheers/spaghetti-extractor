@@ -20,6 +20,10 @@ import z3
 from ..stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
 from .artifacts import write_text_if_changed as _write_text_if_changed
+from .callsite_preservation import (
+    parse_callsite_preservation_artifact,
+    serialize_callsite_preservation_artifact,
+)
 from .ir import (
     CompositionProgressIR,
     ProductGraphIR,
@@ -624,9 +628,15 @@ def stage_a_prove_relational(
             **callsite_preservation_analysis,
             "status": "incomplete_fixed_point_budget_exhausted",
         }
+    callsite_preservation_artifact = parse_callsite_preservation_artifact(
+        callsite_preservation_analysis,
+        region_count=len(normalized.get("regions", [])),
+    )
     write_json(
         out / "relational-callsite-preservation.json",
-        callsite_preservation_analysis,
+        serialize_callsite_preservation_artifact(
+            callsite_preservation_artifact
+        ),
     )
     write_json(
         out / "relational-import-register-invariants.json",

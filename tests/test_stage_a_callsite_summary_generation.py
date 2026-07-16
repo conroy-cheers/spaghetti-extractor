@@ -5,6 +5,11 @@ from spaghetti_extractor.relational.analyses.registers import (
     _infer_import_register_invariants,
     _propose_internal_callsite_preservation_summaries,
 )
+from spaghetti_extractor.relational.callsite_preservation import (
+    callsite_preservation_artifact_hash,
+    parse_callsite_preservation_artifact,
+    serialize_callsite_preservation_artifact,
+)
 
 
 REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
@@ -141,6 +146,34 @@ class StageACallsiteSummaryGenerationTests(unittest.TestCase):
         self.assertEqual(
             analysis,
             self._generate(register_relations=reordered_relations),
+        )
+
+    def test_relation_input_order_keeps_cache_keys_and_hashes_stable(self):
+        import_analysis = copy.deepcopy(self.import_analysis)
+        import_analysis["relations"].extend({
+            "region_index": callsite,
+            "original_register": "ebx",
+            "candidate_register": "ebx",
+            "import": IMPORT,
+        } for callsite in (0, 4))
+
+        first = self._generate(import_register_analysis=import_analysis)
+        import_analysis["relations"].reverse()
+        second = self._generate(import_register_analysis=import_analysis)
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            [row["certificate_hash"] for row in first["certificates"]],
+            [row["certificate_hash"] for row in second["certificates"]],
+        )
+        parsed = parse_callsite_preservation_artifact(first, region_count=6)
+        self.assertEqual(
+            callsite_preservation_artifact_hash(first, region_count=6),
+            callsite_preservation_artifact_hash(parsed),
+        )
+        self.assertEqual(
+            serialize_callsite_preservation_artifact(parsed),
+            first,
         )
 
     def test_satisfied_edges_are_relation_scoped_untrusted_proposals(self):

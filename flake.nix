@@ -576,6 +576,26 @@
             "callsite-preservation"
             "tests.test_stage_a_callsite_preservation"
             [ ./tests/test_stage_a_callsite_preservation.py ];
+          stage-a-relational-tests-callsite-summary-generation =
+            mkStageARelationalTest
+              "callsite-summary-generation"
+              "tests.test_stage_a_callsite_summary_generation"
+              [ ./tests/test_stage_a_callsite_summary_generation.py ];
+          stage-a-relational-tests-callsite-preservation-schema =
+            mkStageARelationalTest
+              "callsite-preservation-schema"
+              "tests.test_stage_a_callsite_preservation_schema"
+              [ ./tests/test_stage_a_callsite_preservation_schema.py ];
+          stage-a-relational-tests-lean-runtime-frame-import-environment =
+            mkStageARelationalTest
+              "lean-runtime-frame-import-environment"
+              "tests.test_stage_a_runtime_frame_import_environment"
+              [ ./tests/test_stage_a_runtime_frame_import_environment.py ];
+          stage-a-relational-tests-acceptance-runtime-frame-import =
+            mkStageARelationalTest
+              "acceptance-runtime-frame-import"
+              "tests.test_stage_a_runtime_frame_import_acceptance"
+              [ ./tests/test_stage_a_runtime_frame_import_acceptance.py ];
           stageARelationalContractSuite = mkStageARelationalTestSuite
             "contract" "tests.test_stage_a_relational_contract"
             "StageARelationalContractTests" ./tests/test_stage_a_relational_contract.py;
@@ -661,6 +681,10 @@
               stage-a-relational-tests-external-protocol
               stage-a-relational-tests-indirect-control
               stage-a-relational-tests-callsite-preservation
+              stage-a-relational-tests-callsite-summary-generation
+              stage-a-relational-tests-callsite-preservation-schema
+              stage-a-relational-tests-lean-runtime-frame-import-environment
+              stage-a-relational-tests-acceptance-runtime-frame-import
               stage-a-relational-tests-contract
               stage-a-relational-tests-state
               stage-a-relational-tests-pipeline
@@ -723,6 +747,10 @@
             stage-a-relational-tests-external-protocol
             stage-a-relational-tests-indirect-control
             stage-a-relational-tests-callsite-preservation
+            stage-a-relational-tests-callsite-summary-generation
+            stage-a-relational-tests-callsite-preservation-schema
+            stage-a-relational-tests-lean-runtime-frame-import-environment
+            stage-a-relational-tests-acceptance-runtime-frame-import
             stage-a-relational-tests-contract
             stage-a-relational-tests-state
             stage-a-relational-tests-pipeline

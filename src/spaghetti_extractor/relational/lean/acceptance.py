@@ -24,6 +24,9 @@ from ..analyses.frames import (
 )
 from ..analyses.segments import _import_register_transfer_claims
 from ..analyses.stack import _stack_window_transfer_claims
+from ..analyses.registers import (
+    _propose_internal_callsite_preservation_summaries,
+)
 from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..contract import _raw_base_relocations
 from ..model import (
@@ -149,6 +152,45 @@ def _whole_program_acceptance_plan(
             "pe32-console-launch-v1 currently requires exactly one checked entry root",
             "select the PE console entry root and model additional roots separately",
         )
+    callsite_import_analysis = {
+        "relations": [
+            {
+                "region_index": region_index,
+                "original_register": relation["original"],
+                "candidate_register": relation["candidate"],
+                "import": relation["import"],
+            }
+            for region_index, region in enumerate(regions)
+            for relation in region.get("input_import_relations", [])
+        ],
+    }
+    callsite_preservation = _propose_internal_callsite_preservation_summaries(
+        contract, behaviors, callsite_import_analysis, register_relations
+    )
+    callsite_rows_by_node: dict[int, list[dict[str, Any]]] = {}
+    for row in callsite_preservation.get("summaries", []):
+        try:
+            callsite_rows_by_node.setdefault(
+                int(row["callsite_region_index"]), []
+            ).append(row)
+        except (KeyError, TypeError, ValueError):
+            block(
+                "callsite_preservation_certificate_invalid",
+                "the callsite-preservation proposal inventory contains an invalid row",
+                "regenerate one canonical proposal row per internal callsite",
+            )
+    proposal_edges_by_node: dict[int, list[dict[str, Any]]] = {}
+    for edge in callsite_preservation.get("proposal_edges", []):
+        try:
+            proposal_edges_by_node.setdefault(
+                int(edge["source_region_index"]), []
+            ).append(edge)
+        except (KeyError, TypeError, ValueError):
+            block(
+                "callsite_preservation_certificate_invalid",
+                "the callsite-preservation proposal edge inventory contains an invalid row",
+                "regenerate canonical proposal edges from satisfied certificates",
+            )
     control_states: list[dict[str, Any]] = []
     control_states_by_node: dict[int, list[dict[str, Any]]] = {}
     if len(roots) == 1 and len(nodes) == len(behaviors):
@@ -200,6 +242,182 @@ def _whole_program_acceptance_plan(
             if not isinstance(payload, dict):
                 raise StageAInputError("invalid preserved import relation key")
             return payload
+
+        def region_import_keys(region_index: int) -> tuple[str, ...]:
+            return tuple(sorted(
+                import_relation_key(relation)
+                for relation in regions[region_index].get(
+                    "input_import_relations", []
+                )
+            ))
+
+        def certificate_hash(certificate: dict[str, Any]) -> str:
+            unsigned = dict(certificate)
+            unsigned.pop("certificate_hash", None)
+            return sha256_bytes(json.dumps(
+                unsigned, sort_keys=True, separators=(",", ":"),
+                allow_nan=False,
+            ).encode())
+
+        def callsite_preserved_imports(
+            callsite_node_id: int,
+            callee_node_id: int,
+            continuation_node_id: int,
+        ) -> tuple[str, ...] | None:
+            requested = region_import_keys(callsite_node_id)
+            if not requested:
+                return ()
+            rows = callsite_rows_by_node.get(callsite_node_id, [])
+            proposal_edges = proposal_edges_by_node.get(callsite_node_id, [])
+            if len(rows) != 1 or len(proposal_edges) != 1:
+                block(
+                    "callsite_preservation_certificate_ambiguous",
+                    f"internal callsite {callsite_node_id} has {len(rows)} proposal "
+                    f"rows and {len(proposal_edges)} satisfied proposal edges",
+                    "emit exactly one satisfied certificate and proposal edge for "
+                    "the callsite",
+                )
+                return None
+            row = rows[0]
+            analysis = row.get("analysis")
+            certificate = (
+                analysis.get("certificate")
+                if isinstance(analysis, dict) else None
+            )
+            reason_codes = sorted({
+                str(code) for code in row.get("reason_codes", [])
+            } | {
+                str(code)
+                for code in (
+                    analysis.get("reason_codes", [])
+                    if isinstance(analysis, dict) else []
+                )
+            })
+            if (
+                row.get("status") != "satisfied"
+                or not isinstance(analysis, dict)
+                or analysis.get("status") != "satisfied"
+                or not isinstance(certificate, dict)
+            ):
+                code = (
+                    "callsite_preservation_budget_exceeded"
+                    if any(item in {
+                        "node_budget_overflow", "edge_budget_overflow",
+                        "analysis_budget_invalid",
+                    } for item in reason_codes)
+                    else "callsite_preservation_behavior_unmet"
+                )
+                block(
+                    code,
+                    f"internal callsite {callsite_node_id} has no satisfied "
+                    f"preservation certificate ({', '.join(reason_codes) or 'missing'})",
+                    "bound the callee control graph and preserve every requested "
+                    "register on each reachable internal behavior",
+                )
+                return None
+            proposal_edge = proposal_edges[0]
+            try:
+                certificate_relations = tuple(sorted(
+                    import_relation_key(relation)
+                    for relation in certificate["requested_relations"]
+                ))
+                row_relations = tuple(sorted(
+                    import_relation_key(relation)
+                    for relation in row["requested_relations"]
+                ))
+                proposal_relations = tuple(sorted(
+                    import_relation_key(relation)
+                    for relation in proposal_edge["preserved_import_relations"]
+                ))
+                return_inventory = certificate["return_inventory"]
+                return_nodes = tuple(sorted({
+                    int(item["return_node_id"])
+                    for item in return_inventory
+                }))
+                return_continuations = {
+                    int(item["continuation_id"])
+                    for item in return_inventory
+                }
+                supplied_hash = str(certificate["certificate_hash"])
+            except (KeyError, TypeError, ValueError):
+                block(
+                    "callsite_preservation_certificate_invalid",
+                    f"internal callsite {callsite_node_id} has a malformed "
+                    "preservation certificate",
+                    "regenerate the canonical callsite certificate",
+                )
+                return None
+            expected_return_nodes = tuple(sorted({
+                int(item) for item in row.get("return_region_indices", [])
+            }))
+            if (
+                int(certificate.get("callsite_id", -1)) != callsite_node_id
+                or int(certificate.get("callee_entry", -1)) != callee_node_id
+                or int(row.get("callee_region_index", -1)) != callee_node_id
+                or int(row.get("continuation_region_index", -1))
+                    != continuation_node_id
+                or int(proposal_edge.get("target_region_index", -1))
+                    != continuation_node_id
+                or int(proposal_edge.get("source_region_index", -1))
+                    != callsite_node_id
+                or return_continuations != {continuation_node_id}
+                or return_nodes != expected_return_nodes
+                or tuple(sorted(int(item) for item in proposal_edge.get(
+                    "return_region_indices", []
+                ))) != expected_return_nodes
+                or certificate_relations != requested
+                or row_relations != requested
+                or proposal_relations != requested
+                or proposal_edge.get("certificate_id") != certificate.get("id")
+                or proposal_edge.get("certificate_hash") != supplied_hash
+                or supplied_hash != certificate_hash(certificate)
+            ):
+                block(
+                    "callsite_preservation_certificate_mismatch",
+                    f"internal callsite {callsite_node_id}, callee "
+                    f"{callee_node_id}, continuation {continuation_node_id}, and "
+                    "its preservation certificate do not match exactly",
+                    "regenerate the certificate from the exact paired call, callee, "
+                    "return inventory, and continuation",
+                )
+                return None
+            if len(requested) > max_frame_preserved_imports:
+                block(
+                    "runtime_frame_import_budget_exceeded",
+                    f"internal callsite {callsite_node_id} requests "
+                    f"{len(requested)} preserved import relations",
+                    "reduce the requested inventory or deliberately raise the "
+                    "Lean-checked frame budget",
+                )
+                return None
+            original_behavior = behaviors[callsite_node_id].get(
+                "original_ir", {}
+            )
+            candidate_behavior = behaviors[callsite_node_id].get(
+                "candidate_ir", {}
+            )
+            for relation_key in requested:
+                relation = import_relation_payload(relation_key)
+                if (
+                    original_behavior.get("registers", {}).get(
+                        relation["original"]
+                    ) != {
+                        "op": "input_reg", "reg": relation["original"],
+                    }
+                    or candidate_behavior.get("registers", {}).get(
+                        relation["candidate"]
+                    ) != {
+                        "op": "input_reg", "reg": relation["candidate"],
+                    }
+                ):
+                    block(
+                        "callsite_preservation_seed_behavior_clobbered",
+                        f"internal callsite {callsite_node_id} does not preserve "
+                        "a requested register while creating its runtime frame",
+                        "preserve every requested callsite register exactly",
+                    )
+                    return None
+            return requested
 
         def inventory_key(payload: dict[str, Any]) -> tuple[
             tuple[str, int, str, int], ...
@@ -578,6 +796,30 @@ def _whole_program_acceptance_plan(
             ):
                 if source_frame_imports != target_frame_imports:
                     return None
+                for relation_key in source_frame_imports:
+                    relation = import_relation_payload(relation_key)
+                    if (
+                        original.get("registers", {}).get(
+                            relation["original"]
+                        ) != {
+                            "op": "input_reg",
+                            "reg": relation["original"],
+                        }
+                        or candidate.get("registers", {}).get(
+                            relation["candidate"]
+                        ) != {
+                            "op": "input_reg",
+                            "reg": relation["candidate"],
+                        }
+                    ):
+                        block(
+                            "runtime_frame_import_behavior_clobbered",
+                            f"internal product node {source_node_id} does not "
+                            "preserve a requested runtime-frame import register",
+                            "preserve every requested register exactly or remove "
+                            "the unsupported callsite summary",
+                        )
+                        return None
                 transfers = []
                 for target_location in target_inventory:
                     candidates = []
@@ -948,6 +1190,16 @@ def _whole_program_acceptance_plan(
                         "call",
                     ))
             elif operation == "external_call":
+                if any(frame_imports):
+                    block(
+                        "runtime_frame_import_external_crossing_unsupported",
+                        f"external call node {node_id} crosses an active preserved-"
+                        "import runtime frame",
+                        "supply an environment-aware preservation theorem before "
+                        "crossing the external boundary",
+                    )
+                    control_incomplete = True
+                    break
                 if any(
                     original_outcome.get(field) != candidate_outcome.get(field)
                     for field in ("import", "continuation")
@@ -967,6 +1219,16 @@ def _whole_program_acceptance_plan(
                         "external",
                     ))
             elif operation in {"bulk_copy", "atomic_compare_exchange"}:
+                if any(frame_imports):
+                    block(
+                        "runtime_frame_import_external_crossing_unsupported",
+                        f"environment operation node {node_id} crosses an active "
+                        "preserved-import runtime frame",
+                        "supply an environment-aware preservation theorem before "
+                        "crossing the external boundary",
+                    )
+                    control_incomplete = True
+                    break
                 if original_outcome.get("continuation") != candidate_outcome.get(
                     "continuation"
                 ):
@@ -977,6 +1239,16 @@ def _whole_program_acceptance_plan(
                         "external",
                     ))
             elif operation == "external_jump":
+                if any(frame_imports):
+                    block(
+                        "runtime_frame_import_external_crossing_unsupported",
+                        f"external jump node {node_id} crosses an active preserved-"
+                        "import runtime frame",
+                        "use a checked internal return or add an environment-aware "
+                        "preservation theorem",
+                    )
+                    control_incomplete = True
+                    break
                 if original_outcome.get("import") != candidate_outcome.get("import"):
                     control_incomplete = True
                 elif not calls:
@@ -1099,10 +1371,28 @@ def _whole_program_acceptance_plan(
                         )
                         control_incomplete = True
                         break
+                    continuation_node_id = node_by_target.get(
+                        int(successor_calls[0])
+                    )
+                    if continuation_node_id is None:
+                        block(
+                            "direct_call_continuation_unmapped",
+                            f"call transition {node_id}->{target_node_id} has an "
+                            "unmapped continuation",
+                            "close the decoded continuation mapping frontier",
+                        )
+                        control_incomplete = True
+                        break
+                    seeded_imports = callsite_preserved_imports(
+                        node_id, target_node_id, continuation_node_id
+                    )
+                    if seeded_imports is None:
+                        control_incomplete = True
+                        break
                     successor_locations = (
                         (location_key(seed["offsets"]),), *transferred_outer,
                     )
-                    successor_imports = ((), *frame_imports)
+                    successor_imports = (seeded_imports, *frame_imports)
                 elif frame_operation == "return_pop":
                     return_row = register_relations.get("regions", [])[node_id]
                     active_inventory = frame_inventories[0]
@@ -1388,173 +1678,237 @@ def _whole_program_acceptance_plan(
                 or relation_row.get("return_pop_claim") is None
                 or relation_row.get("return_pop_claim", {}).get("profile")
                     != "esp_relative_return_pop_v1"
-                or len(control_rows) != 1
+                or not control_rows
             ):
                 block(
                     "return_node_profile_unmet",
                     f"product node {node_id} is not a checked finite-control return",
-                    "emit a return-pop claim, runtime-frame offsets, and one checked control state",
+                    "emit a return-pop claim and checked runtime-frame control states",
                 )
                 continue
-            calls = list(control_rows[0]["calls"])
-            if calls:
-                active_inventory = inventory_key(
-                    control_rows[0]["frame_offsets"][0]
+            if any(bool(row["calls"]) != bool(control_rows[0]["calls"])
+                   for row in control_rows):
+                block(
+                    "return_control_profile_ambiguous",
+                    f"return node {node_id} is both terminal and internally framed",
+                    "split terminal and internal return targets into distinct product nodes",
                 )
-                return_candidates = [
-                    (location, return_frame_claim_for_location(
-                        relation_row, location
-                    ))
-                    for location in active_inventory
-                ]
-                return_candidates = [
-                    item for item in return_candidates if item[1] is not None
-                ]
-                return_frame_claim = (
-                    sorted(return_candidates, key=lambda item: item[0])[0][1]
-                    if return_candidates else None
-                )
-                if return_frame_claim is None:
-                    block(
-                        "return_runtime_frame_claim_missing",
-                        f"return node {node_id} lacks a checked live-frame return-slot claim",
-                        "emit a return-pop frame claim for the active continuation",
+                continue
+            if control_rows[0]["calls"]:
+                return_cases: list[dict[str, Any]] = []
+                return_cases_complete = True
+                for control_row in control_rows:
+                    calls = list(control_row["calls"])
+                    active_inventory_payload = control_row["frame_offsets"][0]
+                    active_frame_imports = inventory_import_key(
+                        active_inventory_payload
                     )
-                    continue
-                continuation_target_id = int(calls[0])
-                target_node_id = next(
-                    (
-                        candidate_id for candidate_id, candidate_node in enumerate(nodes)
-                        if int(candidate_node["target_id"]) == continuation_target_id
-                    ),
-                    -1,
-                )
-                if target_node_id < 0:
-                    block(
-                        "return_continuation_unmapped",
-                        f"return node {node_id} continuation {continuation_target_id} is unmapped",
-                        "add the continuation to the checked product graph",
+                    active_inventory = inventory_key(active_inventory_payload)
+                    return_candidates = [
+                        (location, return_frame_claim_for_location(
+                            relation_row, location
+                        ))
+                        for location in active_inventory
+                    ]
+                    return_candidates = [
+                        item for item in return_candidates if item[1] is not None
+                    ]
+                    return_frame_claim = (
+                        sorted(return_candidates, key=lambda item: item[0])[0][1]
+                        if return_candidates else None
                     )
-                    continue
-                control_row = control_rows[0]
-                target_control_rows = [
-                    row for row in control_states_by_node.get(target_node_id, [])
-                    if row["calls"] == calls[1:]
-                ]
-                if len(target_control_rows) != 1:
-                    block(
-                        "return_target_control_state_missing",
-                        f"return node {node_id} has no unique checked successor "
-                        "control state for its remaining runtime frames",
-                        "regenerate rooted control closure from the checked return transfer",
+                    if return_frame_claim is None:
+                        block(
+                            "return_runtime_frame_claim_missing",
+                            f"return node {node_id} lacks a checked live-frame "
+                            "return-slot claim",
+                            "emit a return-pop frame claim for every active "
+                            "continuation shape",
+                        )
+                        return_cases_complete = False
+                        break
+                    continuation_target_id = int(calls[0])
+                    target_node_id = node_by_target.get(
+                        continuation_target_id, -1
                     )
-                    continue
-                target_control_row = target_control_rows[0]
-                source_outer_inventories = tuple(
-                    inventory_key(item)
-                    for item in control_row["frame_offsets"][1:]
-                )
-                target_inventories = tuple(
-                    inventory_key(item)
-                    for item in target_control_row["frame_offsets"]
-                )
-                outer_frame_claims = internal_transfer_claims(
-                    node_id, source_outer_inventories, target_inventories,
-                    tuple(
-                        inventory_import_key(item)
+                    if target_node_id < 0:
+                        block(
+                            "return_continuation_unmapped",
+                            f"return node {node_id} continuation "
+                            f"{continuation_target_id} is unmapped",
+                            "add the continuation to the checked product graph",
+                        )
+                        return_cases_complete = False
+                        break
+                    target_control_rows = [
+                        row for row in control_states_by_node.get(
+                            target_node_id, []
+                        )
+                        if row["calls"] == calls[1:]
+                    ]
+                    if len(target_control_rows) != 1:
+                        block(
+                            "return_target_control_state_missing",
+                            f"return node {node_id} has no unique checked successor "
+                            "control state for its remaining runtime frames",
+                            "regenerate rooted control closure from the checked "
+                            "return transfer",
+                        )
+                        return_cases_complete = False
+                        break
+                    target_control_row = target_control_rows[0]
+                    source_outer_inventories = tuple(
+                        inventory_key(item)
                         for item in control_row["frame_offsets"][1:]
-                    ),
-                    tuple(
-                        inventory_import_key(item)
+                    )
+                    target_inventories = tuple(
+                        inventory_key(item)
                         for item in target_control_row["frame_offsets"]
-                    ),
-                )
-                if outer_frame_claims is None:
-                    block(
-                        "return_outer_frame_transfer_incomplete",
-                        f"return node {node_id} cannot preserve every remaining "
-                        "runtime frame",
-                        "emit checked register and memory-footprint transfers for "
-                        "each outer frame",
                     )
+                    outer_frame_claims = internal_transfer_claims(
+                        node_id, source_outer_inventories, target_inventories,
+                        tuple(
+                            inventory_import_key(item)
+                            for item in control_row["frame_offsets"][1:]
+                        ),
+                        tuple(
+                            inventory_import_key(item)
+                            for item in target_control_row["frame_offsets"]
+                        ),
+                    )
+                    if outer_frame_claims is None:
+                        block(
+                            "return_outer_frame_transfer_incomplete",
+                            f"return node {node_id} cannot preserve every "
+                            "remaining runtime frame",
+                            "emit checked register, memory, and import transfers "
+                            "for each outer frame",
+                        )
+                        return_cases_complete = False
+                        break
+                    stack_transfers = _stack_window_transfer_claims(
+                        region, regions[target_node_id], behaviors[node_id]
+                    )
+                    if stack_transfers is None:
+                        block(
+                            "return_stack_window_transfer_incomplete",
+                            f"return node {node_id} cannot establish continuation "
+                            f"{target_node_id}'s stack windows",
+                            "strengthen the checked stack windows or support the "
+                            "decoded ESP transfer",
+                        )
+                        return_cases_complete = False
+                        break
+                    target_region = regions[target_node_id]
+                    target_relation_row = register_relations.get(
+                        "regions", []
+                    )[target_node_id]
+                    target_output_claims = _target_shaped_register_output_claims(
+                        relation_row, target_relation_row
+                    )
+                    if target_output_claims is None:
+                        block(
+                            "return_register_relation_transfer_incomplete",
+                            f"return node {node_id} cannot establish continuation "
+                            f"{target_node_id}'s register relations",
+                            "emit checked target-shaped register output claims "
+                            "for the continuation",
+                        )
+                        return_cases_complete = False
+                        break
+                    target_imports = region_import_keys(target_node_id)
+                    if active_frame_imports:
+                        if active_frame_imports != target_imports:
+                            block(
+                                "return_active_frame_import_mismatch",
+                                f"return node {node_id} active frame imports do not "
+                                f"exactly match continuation {target_node_id}",
+                                "match the callsite certificate to the exact return "
+                                "continuation invariant",
+                            )
+                            return_cases_complete = False
+                            break
+                        return_import_transfers = (
+                            _import_register_transfer_claims(
+                                contract, behaviors, node_id, target_node_id, []
+                            )
+                            or []
+                        )
+                    else:
+                        return_import_transfers = _import_register_transfer_claims(
+                            contract, behaviors, node_id, target_node_id, []
+                        )
+                        if return_import_transfers is None:
+                            block(
+                                "return_import_register_transfer_incomplete",
+                                f"return node {node_id} cannot establish continuation "
+                                f"{target_node_id}'s import-register relations",
+                                "emit a checked decoded register-preservation claim "
+                                "for each continuation import binding",
+                            )
+                            return_cases_complete = False
+                            break
+                    unsupported_target_families = [
+                        field for field in (
+                            "bounds",
+                            "address_separations",
+                            "flag_inputs",
+                            "input_dynamic_range_relations",
+                        )
+                        if target_region.get(field)
+                    ]
+                    if unsupported_target_families:
+                        block(
+                            "return_continuation_invariant_transfer_incomplete",
+                            f"return node {node_id} needs unsupported continuation "
+                            f"invariant families {unsupported_target_families}",
+                            "add checked return transfer claims for these invariant "
+                            "families",
+                        )
+                        return_cases_complete = False
+                        break
+                    return_cases.append({
+                        "control_state": control_row,
+                        "target_control_state": target_control_row,
+                        "target_node_id": target_node_id,
+                        "target_region_index": target_node_id,
+                        "target_target_id": continuation_target_id,
+                        "return_frame_claim": return_frame_claim,
+                        "return_frame_inventory": active_inventory_payload,
+                        "return_slot_frame_transfer_claims": outer_frame_claims,
+                        "output_claims": target_output_claims,
+                        "import_transfer_claims": return_import_transfers,
+                        "active_frame_imports": [
+                            import_relation_payload(key)
+                            for key in active_frame_imports
+                        ],
+                        "stack_window_transfers": stack_transfers,
+                    })
+                if not return_cases_complete:
                     continue
-                stack_transfers = _stack_window_transfer_claims(
-                    region, regions[target_node_id], behaviors[node_id]
-                )
-                if stack_transfers is None:
-                    block(
-                        "return_stack_window_transfer_incomplete",
-                        f"return node {node_id} cannot establish continuation "
-                        f"{target_node_id}'s stack windows",
-                        "strengthen the checked stack windows or support the decoded ESP transfer",
-                    )
-                    continue
-                target_region = regions[target_node_id]
-                target_relation_row = register_relations.get("regions", [
-                ])[target_node_id]
-                target_output_claims = _target_shaped_register_output_claims(
-                    relation_row, target_relation_row
-                )
-                if target_output_claims is None:
-                    block(
-                        "return_register_relation_transfer_incomplete",
-                        f"return node {node_id} cannot establish continuation "
-                        f"{target_node_id}'s register relations",
-                        "emit checked target-shaped register output claims for the continuation",
-                    )
-                    continue
-                return_import_transfers = _import_register_transfer_claims(
-                    contract, behaviors, node_id, target_node_id, []
-                )
-                if return_import_transfers is None:
-                    block(
-                        "return_import_register_transfer_incomplete",
-                        f"return node {node_id} cannot establish continuation "
-                        f"{target_node_id}'s import-register relations",
-                        "emit a checked decoded register-preservation claim for "
-                        "each continuation import binding",
-                    )
-                    continue
-                unsupported_target_families = [
-                    field for field in (
-                        "bounds",
-                        "address_separations",
-                        "flag_inputs",
-                        "input_dynamic_range_relations",
-                    )
-                    if target_region.get(field)
-                ]
-                if unsupported_target_families:
-                    block(
-                        "return_continuation_invariant_transfer_incomplete",
-                        f"return node {node_id} needs unsupported continuation invariant "
-                        f"families {unsupported_target_families}",
-                        "add checked return transfer claims for these invariant families",
-                    )
-                    continue
-                node_steps.append({
+                return_step = {
                     "kind": "return",
                     "node_id": node_id,
                     "region_index": node_id,
                     "target_id": target_id,
-                    "control_state": control_rows[0],
-                    "target_control_state": target_control_row,
-                    "target_node_id": target_node_id,
-                    "target_region_index": target_node_id,
-                    "target_target_id": continuation_target_id,
                     "return_pop_claim": relation_row["return_pop_claim"],
-                    "return_frame_claim": return_frame_claim,
-                    "return_frame_inventory":
-                        control_rows[0]["frame_offsets"][0],
-                    "return_slot_frame_transfer_claims": outer_frame_claims,
-                    "output_claims": target_output_claims,
-                    "import_transfer_claims": return_import_transfers,
                     "return_frame_claim_index": 0,
-                    "stack_window_transfers": stack_transfers,
                     "edges": [],
-                })
+                }
+                if len(return_cases) == 1:
+                    return_step.update(return_cases[0])
+                else:
+                    return_step["cases"] = return_cases
+                node_steps.append(return_step)
                 has_internal_return = True
             else:
+                if len(control_rows) != 1:
+                    block(
+                        "terminal_control_profile_ambiguous",
+                        f"terminal return node {node_id} has multiple control states",
+                        "retain one canonical empty-stack terminal state",
+                    )
+                    continue
                 unsupported_terminal_families = [
                     field for field in (
                         "output_import_relations",
@@ -1729,11 +2083,13 @@ def _whole_program_acceptance_plan(
                     register_edge.get("direct_call_push_claim")
                 )
                 continuation = int(outcomes[0].get("continuation", -1))
+                continuation_node_id = node_by_target.get(continuation)
                 control_rows = control_states_by_node.get(node_id, [])
                 if (
                     call_push_claim is None
                     or any(int(outcome.get("continuation", -1)) != continuation for outcome in outcomes)
                     or len(control_rows) != 1
+                    or continuation_node_id is None
                 ):
                     block(
                         "direct_call_control_profile_unmet",
@@ -1742,6 +2098,11 @@ def _whole_program_acceptance_plan(
                     )
                     continue
                 control_row = control_rows[0]
+                seeded_imports = callsite_preserved_imports(
+                    node_id, target_node_id, continuation_node_id
+                )
+                if seeded_imports is None:
+                    continue
                 source_locations = tuple(
                     inventory_key(item) for item in control_row["frame_offsets"]
                 )
@@ -1753,6 +2114,8 @@ def _whole_program_acceptance_plan(
                     and inventory_key(row["frame_offsets"][0]) == (
                         ("esp", 0, "esp", 0),
                     )
+                    and inventory_import_key(row["frame_offsets"][0])
+                        == seeded_imports
                 ]
                 if len(target_control_rows) != 1:
                     block(
@@ -1786,20 +2149,14 @@ def _whole_program_acceptance_plan(
                         "emit affine register and call-push write-disjointness witnesses",
                     )
                     continue
-                continuation_node_id = node_by_target.get(continuation)
-                if continuation_node_id is None:
-                    block(
-                        "direct_call_continuation_unmapped",
-                        f"call node {node_id} continuation {continuation} has no "
-                        "canonical product node",
-                        "close the decoded continuation mapping frontier",
-                    )
-                    continue
                 step["control_state"] = control_row
                 step["target_control_state"] = target_control_row
                 step["continuation_target_id"] = continuation
                 step["continuation_node_id"] = continuation_node_id
                 step["call_push_claim"] = call_push_claim
+                step["seeded_frame_inventory"] = target_control_row[
+                    "frame_offsets"
+                ][0]
                 step["known_indirect_call"] = known_indirect_call_profile
                 if known_indirect_call_profile:
                     step["decoded_control"] = {
@@ -2518,6 +2875,25 @@ def _lean_return_slot_frame_inventory_transfer_claim(
         + "] }"
     )
 
+def _lean_runtime_call_import_transfer_claim(
+    source: dict[str, Any], target: dict[str, Any],
+) -> str:
+    return (
+        "{ source := " + _lean_return_slot_offset_inventory(source)
+        + ", target := " + _lean_return_slot_offset_inventory(target)
+        + " }"
+    )
+
+def _lean_runtime_call_import_transfer_claims(
+    claims: list[dict[str, Any]],
+) -> str:
+    return "[" + ", ".join(
+        _lean_runtime_call_import_transfer_claim(
+            claim["source"], claim["target"]
+        )
+        for claim in claims
+    ) + "]"
+
 def _lean_acceptance_running_target(
     *, node_id: int, region_index: int, edge: dict[str, Any],
     frames: str = "[]", calls: str = "[]", frame_offsets: str = "[]",
@@ -2660,10 +3036,16 @@ def _lean_acceptance_running_node(
             _lean_return_slot_frame_inventory_transfer_claim(item)
             for item in frame_claims
         ) + "]"
+        frame_import_claims_literal = _lean_runtime_call_import_transfer_claims(
+            frame_claims
+        )
         target_offsets_literal = "[" + ", ".join(
             _lean_return_slot_offset_inventory(item["target"])
             for item in frame_claims
         ) + "]"
+        seeded_frame_inventory_literal = _lean_return_slot_offset_inventory(
+            step["seeded_frame_inventory"]
+        )
         continuation_node_id = int(step["continuation_node_id"])
         combined_stack_writes = (
             step.get("certificate_profile")
@@ -2822,6 +3204,11 @@ def _lean_acceptance_running_node(
             "  rcases controlShape with ⟨rfl, rfl⟩\n"
             f"  let outerFrameClaims : List ReturnSlotFrameInventoryTransferClaim :=\n"
             f"    {frame_claims_literal}\n"
+            f"  let outerFrameImportClaims : List "
+            "RelationalRuntimeCallImportTransferClaim :=\n"
+            f"    {frame_import_claims_literal}\n"
+            f"  let activeFrameInventory : ReturnSlotOffsetInventory :=\n"
+            f"    {seeded_frame_inventory_literal}\n"
             + f"  let sourceWindow : StackWindowPair := {source_window}\n"
             f"  have stackAddressRewrite (value : Word) :\n"
             f"      value + BitVec.ofNat 32 {stack_amount_twos_complement} =\n"
@@ -2903,19 +3290,55 @@ def _lean_acceptance_running_node(
             f"      outerFrameClaims frames {source_calls_literal} originalState\n"
             "      candidateState (by decide)\n"
             "      (by simpa [outerFrameClaims] using stackHolds) statesRelated\n"
+            "  have outerFrameImportsNext : RelationalRuntimeCallImportsHold world\n"
+            f"      {target_offsets_literal}\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers := by\n"
+            "    exact RelationalRuntimeCallImportsHold.afterInternal world\n"
+            f"      {original_behavior} {candidate_behavior} outerFrameImportClaims\n"
+            "      originalState candidateState (by decide)\n"
+            "      (by simpa [outerFrameImportClaims] using frameImportsHold)\n"
+            "  have activeFrameInventoryHolds : activeFrameInventory.holds runtimeFrame\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers := by\n"
+            "    refine And.intro (by decide) ?_\n"
+            "    intro location locationMember\n"
+            "    have locationExact : location = ReturnSlotOffsetPair.zero := by\n"
+            "      simpa [activeFrameInventory] using locationMember\n"
+            "    subst location\n"
+            "    exact frameOffsetsHold\n"
             "  have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
             f"      (({original_behavior}.eval originalState).nextMachineState\n"
             "        originalState)\n"
             f"      (({candidate_behavior}.eval candidateState).nextMachineState\n"
             f"        candidateState) (runtimeFrame :: frames)\n"
             f"      ({continuation} :: {source_calls_literal})\n"
-            f"      (ReturnSlotOffsetInventory.zero :: {target_offsets_literal}) := by\n"
+            f"      (activeFrameInventory :: {target_offsets_literal}) := by\n"
             "    simp only [RelationalRuntimeCallStackHolds]\n"
             "    exact ⟨rfl, frameValid, frameResolves, frameMemory,\n"
-            "      ReturnSlotOffsetInventory.zero_holds runtimeFrame\n"
-            f"        ({original_behavior}.eval originalState).registers\n"
-            f"        ({candidate_behavior}.eval candidateState).registers frameOffsetsHold,\n"
+            "      activeFrameInventoryHolds,\n"
             "      outerStackHolds⟩\n"
+            "  have activeFrameImportSeedChecked :\n"
+            "      activeFrameInventory.seedsPreservedImportsFrom\n"
+            f"        region{region_index}.inputInvariant {original_behavior}\n"
+            f"        {candidate_behavior} = true := by decide\n"
+            "  have activeFrameImportsNext : activeFrameInventory.preservedImportsHold\n"
+            "      world\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            "    exact ReturnSlotOffsetInventory."
+            "preservedImportsHold_after_stateRel_of_checked\n"
+            f"      staticProofContext activeFrameInventory world\n"
+            f"      region{region_index}.inputInvariant {original_behavior}\n"
+            f"      {candidate_behavior} originalState candidateState\n"
+            "      activeFrameImportSeedChecked statesRelated\n"
+            "  have frameImportsNext : RelationalRuntimeCallImportsHold world\n"
+            f"      (activeFrameInventory :: {target_offsets_literal})\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers := by\n"
+            "    exact RelationalRuntimeCallImportsHold.cons world\n"
+            "      activeFrameInventory _ _ _ activeFrameImportsNext\n"
+            "      outerFrameImportsNext\n"
             + known_indirect_dispatch
             + _lean_acceptance_running_target(
                 node_id=node_id,
@@ -2924,7 +3347,7 @@ def _lean_acceptance_running_node(
                 frames="runtimeFrame :: frames",
                 calls=f"{continuation} :: {source_calls_literal}",
                 frame_offsets=(
-                    "ReturnSlotOffsetInventory.zero :: " + target_offsets_literal
+                    "activeFrameInventory :: " + target_offsets_literal
                 ),
                 stack_targets_proof=(
                     "(by simp only [RelationalRuntimeCallTargetsReachable]; "
@@ -2932,9 +3355,83 @@ def _lean_acceptance_running_node(
                     f"relationalProductGraph.nodes[{continuation_node_id}], "
                     "by decide, by decide, by decide⟩, stackTargetsReachable⟩)"
                 ),
+                frame_imports_proof="frameImportsNext",
             )
         )
     if step["kind"] == "return":
+        return_cases = step.get("cases")
+        if return_cases is None:
+            return _lean_acceptance_running_node(
+                {**step, "kind": "return_case"},
+                regions,
+                behaviors,
+                parameterized_environment=parameterized_environment,
+                parameterized_protocol_environment=
+                    parameterized_protocol_environment,
+            )
+        if len(return_cases) == 1:
+            return _lean_acceptance_running_node(
+                {**step, **return_cases[0], "kind": "return_case"},
+                regions,
+                behaviors,
+                parameterized_environment=parameterized_environment,
+                parameterized_protocol_environment=
+                    parameterized_protocol_environment,
+            )
+        case_shapes = []
+        case_bodies = []
+        for case_index, return_case in enumerate(return_cases):
+            calls_literal = "[" + ", ".join(
+                str(int(item))
+                for item in return_case["control_state"]["calls"]
+            ) + "]"
+            offsets_literal = "[" + ", ".join(
+                _lean_return_slot_offset_inventory(item)
+                for item in return_case["control_state"]["frame_offsets"]
+            ) + "]"
+            case_shapes.append(
+                f"(calls = {calls_literal} ∧ frameOffsets = {offsets_literal})"
+            )
+            case_source = _lean_acceptance_running_node(
+                {
+                    **step,
+                    **return_case,
+                    "kind": "return_case",
+                    "control_already_selected": True,
+                },
+                regions,
+                behaviors,
+                parameterized_environment=parameterized_environment,
+                parameterized_protocol_environment=
+                    parameterized_protocol_environment,
+            )
+            if not case_source.startswith(prefix):
+                raise StageAInputError(
+                    f"return case {case_index} did not share its node theorem prefix"
+                )
+            body = case_source[len(prefix):]
+            case_bodies.append("\n".join(
+                "  " + line for line in body.splitlines()
+            ))
+        return (
+            prefix
+            + "  have controlShape : "
+            + " ∨\n      ".join(case_shapes)
+            + " := by\n"
+            "    simpa [productControlProfile] using controlMember.2\n"
+            "  rcases controlShape with "
+            + " | ".join(
+                f"controlCase{case_index}"
+                for case_index in range(len(return_cases))
+            )
+            + "\n"
+            + "\n".join(
+                f"  · rcases controlCase{case_index} with ⟨rfl, rfl⟩\n"
+                + case_body
+                for case_index, case_body in enumerate(case_bodies)
+            )
+        )
+    if step["kind"] == "return_case":
         continuation = int(step["target_target_id"])
         target_node_id = int(step["target_node_id"])
         target_region_index = int(step["target_region_index"])
@@ -2984,6 +3481,13 @@ def _lean_acceptance_running_node(
             _lean_return_slot_offset_inventory(item["target"])
             for item in outer_frame_claims
         ) + "]"
+        frame_import_claims_literal = _lean_runtime_call_import_transfer_claims([
+            {
+                "source": step["return_frame_inventory"],
+                "target": step["return_frame_inventory"],
+            },
+            *outer_frame_claims,
+        ])
         output_claims = ", ".join(
             _lean_register_output_claim(claim) for claim in step["output_claims"]
         )
@@ -3030,6 +3534,15 @@ def _lean_acceptance_running_node(
             f"        region{target_region_index}.inputInvariant.importRegisterRelations\n"
             f"        ({original_behavior}.eval originalState).registers\n"
             f"        ({candidate_behavior}.eval candidateState).registers = true := by\n"
+            f"      simpa [activeFrameInventory,\n"
+            "        ReturnSlotOffsetInventory.preservedImportsHold,\n"
+            f"        RegionRelation.inputInvariant, region{target_region_index}] using\n"
+            "        activeFrameImportsNext\n"
+            if step["active_frame_imports"] else
+            "    have outputImports : importRegisterRelationsHold world\n"
+            f"        region{target_region_index}.inputInvariant.importRegisterRelations\n"
+            f"        ({original_behavior}.eval originalState).registers\n"
+            f"        ({candidate_behavior}.eval candidateState).registers = true := by\n"
             f"      simpa [RegionRelation.inputInvariant, region{target_region_index},\n"
             "        importRegisterRelationsHold, "
             "ImportRegisterPreserveClaim.targetRelation,\n"
@@ -3053,13 +3566,18 @@ def _lean_acceptance_running_node(
             "target_region_index": target_region_index,
             "target_target_id": continuation,
         }
-        return (
-            prefix
-            + f"  have controlShape : calls = {source_calls_literal} ∧\n"
+        selected_control = (
+            ""
+            if step.get("control_already_selected") else
+            f"  have controlShape : calls = {source_calls_literal} ∧\n"
             f"      frameOffsets = {source_offsets_literal} := by\n"
             "    simpa [productControlProfile] using controlMember.2\n"
             "  rcases controlShape with ⟨rfl, rfl⟩\n"
-            "  cases frames with\n"
+        )
+        return (
+            prefix
+            + selected_control
+            + "  cases frames with\n"
             "  | nil => simp [RelationalRuntimeCallStackHolds] at stackHolds\n"
             "  | cons frame tail =>\n"
             "    simp only [RelationalRuntimeCallStackHolds] at stackHolds\n"
@@ -3083,6 +3601,10 @@ def _lean_acceptance_running_node(
             "      at returnTargets\n"
             "    let outerFrameClaims : List ReturnSlotFrameInventoryTransferClaim :=\n"
             f"      {outer_frame_claims_literal}\n"
+            f"    let activeFrameInventory : ReturnSlotOffsetInventory := {frame_inventory}\n"
+            "    let frameImportClaims : List "
+            "RelationalRuntimeCallImportTransferClaim :=\n"
+            f"      {frame_import_claims_literal}\n"
             "    have outerStackHolds : RelationalRuntimeCallStackHolds\n"
             "        staticProofContext\n"
             f"        (({original_behavior}.eval originalState).nextMachineState\n"
@@ -3097,6 +3619,19 @@ def _lean_acceptance_running_node(
             "        (by decide)\n"
             "        (by simpa [outerFrameClaims] using stackHolds.2.2.2.2.2)\n"
             "        statesRelated\n"
+            "    have frameImportsAfterInternal : RelationalRuntimeCallImportsHold world\n"
+            f"        (activeFrameInventory :: {target_offsets_literal})\n"
+            f"        ({original_behavior}.eval originalState).registers\n"
+            f"        ({candidate_behavior}.eval candidateState).registers := by\n"
+            "      exact RelationalRuntimeCallImportsHold.afterInternal world\n"
+            f"        {original_behavior} {candidate_behavior} frameImportClaims\n"
+            "        originalState candidateState (by decide)\n"
+            "        (by simpa [frameImportClaims, activeFrameInventory] using\n"
+            "          frameImportsHold)\n"
+            "    have activeFrameImportsNext := RelationalRuntimeCallImportsHold.head\n"
+            "      world activeFrameInventory _ _ _ frameImportsAfterInternal\n"
+            "    have outerFrameImportsNext := RelationalRuntimeCallImportsHold.tail\n"
+            "      world activeFrameInventory _ _ _ frameImportsAfterInternal\n"
             "    have relatedForTransfer := statesRelated\n"
             + import_fact_setup
             + "    rcases statesRelated with\n"
@@ -3224,6 +3759,7 @@ def _lean_acceptance_running_node(
                     calls=target_calls_literal,
                     frame_offsets=target_offsets_literal,
                     stack_targets_proof="outerTargetsReachable",
+                    frame_imports_proof="outerFrameImportsNext",
                 ).splitlines()
             )
         )
@@ -4071,6 +4607,9 @@ def _lean_acceptance_running_node(
             _lean_return_slot_frame_inventory_transfer_claim(item)
             for item in frame_claims
         ) + "]"
+        frame_import_claims_literal = _lean_runtime_call_import_transfer_claims(
+            frame_claims
+        )
         target_offsets_literal = "[" + ", ".join(
             _lean_return_slot_offset_inventory(item["target"])
             for item in frame_claims
@@ -4083,6 +4622,9 @@ def _lean_acceptance_running_node(
             "  rcases controlShape with ⟨rfl, rfl⟩\n"
             f"  let frameClaims : List ReturnSlotFrameInventoryTransferClaim :=\n"
             f"    {frame_claims_literal}\n"
+            f"  let frameImportClaims : List "
+            "RelationalRuntimeCallImportTransferClaim :=\n"
+            f"    {frame_import_claims_literal}\n"
             + f"  have originalBehaviorSegment : {original_behavior} =\n"
             f"      segmentRefinementEdge{edge_id}OriginalNormalizedBehavior := by decide\n"
             f"  have candidateBehaviorSegment : {candidate_behavior} =\n"
@@ -4113,6 +4655,14 @@ def _lean_acceptance_running_node(
             f"      {original_behavior} {candidate_behavior}\n"
             f"      frameClaims frames {calls_literal} originalState candidateState\n"
             "      (by decide) (by simpa [frameClaims] using stackHolds) statesRelated\n"
+            "  have frameImportsNext : RelationalRuntimeCallImportsHold world\n"
+            f"      {target_offsets_literal}\n"
+            f"      ({original_behavior}.eval originalState).registers\n"
+            f"      ({candidate_behavior}.eval candidateState).registers := by\n"
+            "    exact RelationalRuntimeCallImportsHold.afterInternal world\n"
+            f"      {original_behavior} {candidate_behavior} frameImportClaims\n"
+            "      originalState candidateState (by decide)\n"
+            "      (by simpa [frameImportClaims] using frameImportsHold)\n"
             + _lean_acceptance_running_target(
                 node_id=node_id,
                 region_index=region_index,
@@ -4121,6 +4671,7 @@ def _lean_acceptance_running_node(
                 calls=calls_literal,
                 frame_offsets=target_offsets_literal,
                 stack_targets_proof="stackTargetsReachable",
+                frame_imports_proof="frameImportsNext",
             )
         )
 
@@ -4172,6 +4723,9 @@ def _lean_acceptance_running_node(
             _lean_return_slot_frame_inventory_transfer_claim(item)
             for item in edge["return_slot_frame_transfer_claims"]
         ) + "]"
+        frame_import_claims_literal = _lean_runtime_call_import_transfer_claims(
+            edge["return_slot_frame_transfer_claims"]
+        )
         target_offsets_literal = "[" + ", ".join(
             _lean_return_slot_offset_inventory(item)
             for item in edge["target_control_state"]["frame_offsets"]
@@ -4180,6 +4734,9 @@ def _lean_acceptance_running_node(
             "    let frameClaims : List "
             "ReturnSlotFrameInventoryTransferClaim :=\n"
             f"      {frame_claims_literal}\n"
+            "    let frameImportClaims : List "
+            "RelationalRuntimeCallImportTransferClaim :=\n"
+            f"      {frame_import_claims_literal}\n"
             "    have stackHoldsNext : RelationalRuntimeCallStackHolds\n"
             "        staticProofContext\n"
             f"        (({original_behavior}.eval originalState).nextMachineState\n"
@@ -4192,7 +4749,15 @@ def _lean_acceptance_running_node(
             f"        {original_behavior} {candidate_behavior}\n"
             f"        frameClaims frames {branch_calls_literal} originalState\n"
             "        candidateState (by decide)\n"
-            "        (by simpa [frameClaims] using stackHolds) statesRelated"
+            "        (by simpa [frameClaims] using stackHolds) statesRelated\n"
+            "    have frameImportsNext : RelationalRuntimeCallImportsHold world\n"
+            f"        {target_offsets_literal}\n"
+            f"        ({original_behavior}.eval originalState).registers\n"
+            f"        ({candidate_behavior}.eval candidateState).registers := by\n"
+            "      exact RelationalRuntimeCallImportsHold.afterInternal world\n"
+            f"        {original_behavior} {candidate_behavior} frameImportClaims\n"
+            "        originalState candidateState (by decide)\n"
+            "        (by simpa [frameImportClaims] using frameImportsHold)"
         )
         target_proof = "\n".join(
             "  " + line
@@ -4201,6 +4766,7 @@ def _lean_acceptance_running_node(
                 frames="frames", calls=branch_calls_literal,
                 frame_offsets=target_offsets_literal,
                 stack_targets_proof="stackTargetsReachable",
+                frame_imports_proof="frameImportsNext",
             ).splitlines()
         )
         return (

@@ -650,6 +650,141 @@ def machineCallResultConforms (candidate : Bool) (context : StaticProofContext)
     machineCallWorldEffectHolds candidate context contract.worldEffect
       event.arguments event.world result.world
 
+theorem dynamicRangeReleaseHolds_importAddresses_eq
+    (candidate : Bool) (argumentIndex : Nat) (arguments : List Word)
+    (before after : RelationalWorld)
+    (holds : dynamicRangeReleaseHolds candidate argumentIndex arguments before after) :
+    after.importAddresses = before.importAddresses := by
+  unfold dynamicRangeReleaseHolds at holds
+  split at holds
+  · contradiction
+  · split at holds
+    · simpa only using congrArg RelationalWorld.importAddresses holds
+    · rcases holds with
+        ⟨_range, _rangeMember, _argumentAddress, _dynamicRanges,
+          _stackRanges, _opaqueResources, importAddresses,
+          _registeredCallbacks, _tlsState⟩
+      exact importAddresses
+
+theorem callbackRegistrationHolds_importAddresses_eq
+    (candidate : Bool) (context : StaticProofContext) (argumentIndex : Nat)
+    (arguments : List Word) (before after : RelationalWorld)
+    (holds : callbackRegistrationHolds candidate context argumentIndex arguments
+      before after) :
+    after.importAddresses = before.importAddresses := by
+  unfold callbackRegistrationHolds at holds
+  split at holds
+  · contradiction
+  · rcases holds with
+      ⟨_callback, _registeredCallbacks, _callbackAddress, _callbackValid,
+        _dynamicRanges, _stackRanges, _opaqueResources, importAddresses,
+        _tlsState⟩
+    exact importAddresses
+
+theorem machineCallWorldEffectHolds_importAddresses_eq
+    (candidate : Bool) (context : StaticProofContext)
+    (effect : MachineCallWorldEffect) (arguments : List Word)
+    (before after : RelationalWorld)
+    (holds : machineCallWorldEffectHolds candidate context effect arguments
+      before after) :
+    after.importAddresses = before.importAddresses := by
+  cases effect with
+  | none =>
+      simpa only using congrArg RelationalWorld.importAddresses holds.2
+  | opaqueResources => exact holds.2.2.2.1
+  | dynamicRanges => exact holds.2.2.2.1
+  | dynamicRangeRelease argumentIndex =>
+      exact dynamicRangeReleaseHolds_importAddresses_eq candidate argumentIndex
+        arguments before after holds.2
+  | callbackRegistration argumentIndex =>
+      exact callbackRegistrationHolds_importAddresses_eq candidate context
+        argumentIndex arguments before after holds.2
+  | tlsState => exact holds.2.2.2.2.1
+
+theorem machineCallResultConforms_importAddresses_eq
+    (candidate : Bool) (context : StaticProofContext)
+    (contract : MachineImportCallContract) (event : WorldExternalEvent)
+    (result : WorldExternalResult)
+    (conforms : machineCallResultConforms candidate context contract event result) :
+    result.world.importAddresses = event.world.importAddresses := by
+  exact machineCallWorldEffectHolds_importAddresses_eq candidate context
+    contract.worldEffect event.arguments event.world result.world conforms.2.2.2
+
+/-- A one-fact certificate request for carrying an import binding through one
+exact paired external call.  Exact source/target identity keeps the concrete
+register names and imported target authoritative. -/
+structure ExternalImportRegisterPreservationClaim where
+  source : ImportRegisterRelation
+  target : ImportRegisterRelation
+deriving Repr, DecidableEq
+
+def ExternalImportRegisterPreservationClaim.checked
+    (contract : MachineImportCallContract)
+    (claim : ExternalImportRegisterPreservationClaim) : Bool :=
+  contract.shapeValid &&
+    contract.disposition == .returns &&
+    claim.source == claim.target &&
+    contract.preservedRegisters.contains claim.source.original &&
+    contract.preservedRegisters.contains claim.source.candidate
+
+/-- The lower-layer contract for one original call and one candidate call to
+the same import.  Full result conformance keeps register and world effects tied
+to the machine contract without requiring equal concrete pointer values. -/
+structure ExactExternalCallPairConforms (context : StaticProofContext)
+    (contract : MachineImportCallContract)
+    (originalEvent candidateEvent : WorldExternalEvent)
+    (originalResult candidateResult : WorldExternalResult) : Prop where
+  siteId : originalEvent.siteId = candidateEvent.siteId
+  originalImported : originalEvent.imported = contract.imported
+  candidateImported : candidateEvent.imported = contract.imported
+  eventWorld : originalEvent.world = candidateEvent.world
+  resultWorld : originalResult.world = candidateResult.world
+  originalConforms :
+    machineCallResultConforms false context contract originalEvent originalResult
+  candidateConforms :
+    machineCallResultConforms true context contract candidateEvent candidateResult
+
+theorem externalImportRegisterPreservationHolds_of_checked
+    (context : StaticProofContext) (contract : MachineImportCallContract)
+    (claim : ExternalImportRegisterPreservationClaim)
+    (originalEvent candidateEvent : WorldExternalEvent)
+    (originalResult candidateResult : WorldExternalResult)
+    (checked : claim.checked contract = true)
+    (sourceHolds : claim.source.holds originalEvent.world
+      originalEvent.state.registers candidateEvent.state.registers = true)
+    (pairConforms : ExactExternalCallPairConforms context contract
+      originalEvent candidateEvent originalResult candidateResult) :
+    claim.target.holds originalResult.world originalResult.state.registers
+      candidateResult.state.registers = true := by
+  simp only [ExternalImportRegisterPreservationClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨_contractValid, _returns⟩, sourceTarget⟩, originalPreserved⟩,
+      candidatePreserved⟩
+  have originalRegister := pairConforms.originalConforms.2.1
+  simp only [machineCallAbiResultHolds, Bool.and_eq_true,
+    machineCallPreservedRegistersHold, List.all_eq_true, beq_iff_eq]
+      at originalRegister
+  have originalRegister := originalRegister.2 claim.source.original
+    (List.contains_iff_mem.mp originalPreserved)
+  have candidateRegister := pairConforms.candidateConforms.2.1
+  simp only [machineCallAbiResultHolds, Bool.and_eq_true,
+    machineCallPreservedRegistersHold, List.all_eq_true, beq_iff_eq]
+      at candidateRegister
+  have candidateRegister := candidateRegister.2 claim.source.candidate
+    (List.contains_iff_mem.mp candidatePreserved)
+  have resultImports := machineCallResultConforms_importAddresses_eq false context
+    contract originalEvent originalResult pairConforms.originalConforms
+  rw [← sourceTarget]
+  simp only [ImportRegisterRelation.holds, List.any_eq_true] at sourceHolds ⊢
+  rcases sourceHolds with ⟨binding, bindingMember, bindingChecks⟩
+  refine ⟨binding, ?_, ?_⟩
+  · simpa only [resultImports] using bindingMember
+  · simp only [Bool.and_eq_true, beq_iff_eq] at bindingChecks ⊢
+    rcases bindingChecks with ⟨⟨imported, originalAddress⟩, candidateAddress⟩
+    exact ⟨⟨imported, originalRegister.trans originalAddress⟩,
+      candidateRegister.trans candidateAddress⟩
+
 def machineCallResultWordKind
     (kind : MachineCallResultWordRelationKind) : DynamicWordRelationKind :=
   match kind with
