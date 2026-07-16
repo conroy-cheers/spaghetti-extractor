@@ -1004,9 +1004,13 @@ def _lean_static_word_relation_slot(slot: dict[str, Any]) -> str:
         "dataPointer": "dataPointer",
     }.get(str(slot["relation"]))
     if relation is None:
-        raise StageAInputError(
-            f"unsupported static word relation {slot['relation']!r}"
-        )
+        if str(slot["relation"]) in {"fixed_code_pointer", "fixedCodePointer"}:
+            target_id = int(slot["target_id"])
+            relation = f"fixedCodePointer {target_id}"
+        else:
+            raise StageAInputError(
+                f"unsupported static word relation {slot['relation']!r}"
+            )
     return (
         "{ id := " + str(int(slot["id"]))
         + ", originalAddress := BitVec.ofNat 32 "

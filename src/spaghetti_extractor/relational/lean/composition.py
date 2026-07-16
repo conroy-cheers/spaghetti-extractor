@@ -33,6 +33,7 @@ from .expressions import (
     _lean_import_register_seed_claim,
     _lean_register_offset_write,
     _lean_semantic_bool_expr,
+    _lean_static_word_relation_slot,
     _lean_stack_address_separation_claim,
 )
 from .definitions import (
@@ -968,6 +969,72 @@ def _write_relational_product_graph_modules(
                     "  immutableIndirectCallTargetsClosed_of_checked staticProofContext "
                     f"region{region_index}.inputInvariant {original_normalized} "
                     f"{candidate_normalized} {claim_name} (by decide)",
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+                    f"  exact Or.inr (Or.inl ⟨{original_normalized}, {candidate_normalized}, "
+                    f"{claim_name}, ⟨originalBehavior{region_index}CheckedDecoded, "
+                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
+                    f"by decide, {closed_name}⟩⟩)",
+                ])
+            elif candidate.get("profile") == "fixed_static_function_pointer_call_v1":
+                original_normalized = f"productNode{node_id}OriginalNormalized"
+                candidate_normalized = f"productNode{node_id}CandidateNormalized"
+                static_claim_name = (
+                    f"productNode{node_id}StaticWordSlotIndirectCallClaim"
+                )
+                claim_name = f"productNode{node_id}ImmutableIndirectCallClaim"
+                static_closed_name = (
+                    f"productNode{node_id}StaticWordSlotIndirectCallClosed"
+                )
+                closed_name = f"productNode{node_id}ImmutableIndirectCallClosed"
+                original_writes = ", ".join(
+                    _lean_register_offset_write(write)
+                    for write in candidate["original_writes"]
+                )
+                candidate_writes = ", ".join(
+                    _lean_register_offset_write(write)
+                    for write in candidate["candidate_writes"]
+                )
+                definitions.extend([
+                    f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index}).get (by decide)",
+                    f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index}).get (by decide)",
+                    f"def {static_claim_name} : StaticWordSlotIndirectCallTargetClaim := {{\n"
+                    f"  targetId := {int(candidate['target_id'])}\n"
+                    f"  continuationTargetId := {int(candidate['continuation_target_id'])}\n"
+                    f"  slot := {_lean_static_word_relation_slot(candidate['slot'])}\n"
+                    f"  originalAddress := {int(candidate['original_address'])}\n"
+                    f"  candidateAddress := {int(candidate['candidate_address'])}\n"
+                    f"  originalAssembledRead := "
+                    f"{_lean_bool(bool(candidate['original_assembled_read']))}\n"
+                    f"  candidateAssembledRead := "
+                    f"{_lean_bool(bool(candidate['candidate_assembled_read']))}\n"
+                    f"  originalWrites := [{original_writes}]\n"
+                    f"  candidateWrites := [{candidate_writes}]\n"
+                    "}",
+                    f"def {claim_name} : ImmutableIndirectCallTargetClaim :=\n"
+                    f"  {static_claim_name}.toImmutable",
+                    f"theorem {static_closed_name} :\n"
+                    f"    StaticWordSlotIndirectCallTargetsClosed staticProofContext "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {static_claim_name} :=\n"
+                    "  staticWordSlotIndirectCallTargetsClosed_of_checked "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} {candidate_normalized} {static_claim_name} "
+                    "(by decide)",
+                    f"theorem {closed_name} :\n"
+                    f"    ImmutableIndirectCallTargetsClosed staticProofContext "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} := by\n"
+                    f"  exact immutableIndirectCallTargetsClosed_of_staticWordSlot "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} {candidate_normalized} {static_claim_name} "
+                    f"{static_closed_name}",
                     f"theorem {theorem_name} :\n"
                     "    NodeControlEdgesComplete relationalProductGraph "
                     f"{node_id} staticProofContext region{region_index} "

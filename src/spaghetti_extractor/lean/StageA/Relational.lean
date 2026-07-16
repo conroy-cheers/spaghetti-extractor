@@ -420,6 +420,8 @@ def StaticWordRelationKind.holds (context : StaticProofContext)
       (originalWord == BitVec.ofNat 32 0 && candidateWord == BitVec.ofNat 32 0) ||
         codePointerRelated context.originalPe.imageBase context.candidatePe.imageBase
           context.codeMap.entries.toList originalWord candidateWord
+  | .fixedCodePointer targetId =>
+      codeTargetAddressPairMatches context targetId originalWord candidateWord
   | .dataPointer =>
       (originalWord == BitVec.ofNat 32 0 && candidateWord == BitVec.ofNat 32 0) ||
         mappedValueRelated (context.relationalValueTargets world)
@@ -1784,7 +1786,7 @@ theorem StaticWordRelationSlotPair.originalBounds
       slot.originalAddress.toNat + 4 <= 2 ^ 32 := by
   simp only [StaticWordRelationSlotPair.valid, Bool.and_eq_true] at valid
   exact writableStaticWordInPe_bounds context.originalPe slot.originalAddress
-    valid.1.1.1.1.1.2
+    valid.1.1.1.1.1.1.2
 
 theorem StaticWordRelationSlotPair.candidateBounds
     (context : StaticProofContext) (slot : StaticWordRelationSlotPair)
@@ -1795,7 +1797,7 @@ theorem StaticWordRelationSlotPair.candidateBounds
       slot.candidateAddress.toNat + 4 <= 2 ^ 32 := by
   simp only [StaticWordRelationSlotPair.valid, Bool.and_eq_true] at valid
   exact writableStaticWordInPe_bounds context.candidatePe slot.candidateAddress
-    valid.1.1.1.1.2
+    valid.1.1.1.1.1.2
 
 theorem StaticWordRelationSlotsMemoryHold.afterPairedStaticWordWrite
     (context : StaticProofContext) (world : RelationalWorld)
@@ -2371,8 +2373,8 @@ theorem ImportAddressesMemoryHold.afterPairedStaticWordWrite
   have writeValid := writeSlot.valid_of_member context slotsValid writeMember
   have writeShape := writeValid
   simp only [StaticWordRelationSlotPair.valid, Bool.and_eq_true] at writeShape
-  have originalNotIat := writeShape.1.1.1.2
-  have candidateNotIat := writeShape.1.1.2
+  have originalNotIat := writeShape.1.1.1.1.2
+  have candidateNotIat := writeShape.1.1.1.2
   rw [Bool.not_eq_true'] at originalNotIat candidateNotIat
   rcases binding.originalImportWitness context bindingValid with
     ⟨originalImport, originalImportMember, originalSameIat⟩
@@ -2516,8 +2518,8 @@ theorem StaticWordRelationSlotsMemoryHold.afterPairedStackWordWrite
   intro slot slotMember
   have slotValid := slotsValid.2 slot slotMember
   simp only [StaticWordRelationSlotPair.valid, Bool.and_eq_true] at slotValid
-  have originalWritable := slotValid.1.1.1.1.1.2
-  have candidateWritable := slotValid.1.1.1.1.2
+  have originalWritable := slotValid.1.1.1.1.1.1.2
+  have candidateWritable := slotValid.1.1.1.1.1.2
   have originalBounds := writableStaticWordInPe_bounds context.originalPe
     slot.originalAddress originalWritable
   have candidateBounds := writableStaticWordInPe_bounds context.candidatePe
@@ -3628,8 +3630,8 @@ theorem RelationalMemoryFamiliesHold.afterPairedStaticWordWrite
     location.slotMember
   have slotShape := slotValid
   simp only [StaticWordRelationSlotPair.valid, Bool.and_eq_true] at slotShape
-  have originalNotImmutable := slotShape.1.2
-  have candidateNotImmutable := slotShape.2
+  have originalNotImmutable := slotShape.1.1.2
+  have candidateNotImmutable := slotShape.1.2
   rw [Bool.not_eq_true'] at originalNotImmutable candidateNotImmutable
   have updated := RelationalMemoryFamiliesHold.afterPairedMemoryUpdate
     context world original candidate {

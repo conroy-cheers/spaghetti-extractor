@@ -930,8 +930,10 @@ def _whole_program_acceptance_plan(
             elif operation == "indirect_call":
                 decoded_control = decoded_control_by_node.get(node_id, {})
                 if (
-                    decoded_control.get("profile") !=
-                        "immutable_relocated_function_pointer_call_v1"
+                    decoded_control.get("profile") not in {
+                        "immutable_relocated_function_pointer_call_v1",
+                        "fixed_static_function_pointer_call_v1",
+                    }
                     or original_outcome.get("continuation") !=
                         candidate_outcome.get("continuation")
                 ):

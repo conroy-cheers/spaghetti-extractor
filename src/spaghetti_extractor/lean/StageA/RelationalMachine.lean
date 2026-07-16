@@ -391,6 +391,7 @@ inductive StaticWordRelationKind where
   | exact
   | relatedWord
   | codePointer
+  | fixedCodePointer (targetId : Nat)
   | dataPointer
 deriving Repr, DecidableEq
 
@@ -669,7 +670,10 @@ def StaticWordRelationSlotPair.valid (context : StaticProofContext)
     !staticWordOverlapsImportIat context.candidatePe
       context.candidateImportCertificate.imports slot.candidateAddress &&
     !staticWordOverlapsImmutableSection context.originalPe slot.originalAddress &&
-    !staticWordOverlapsImmutableSection context.candidatePe slot.candidateAddress
+    !staticWordOverlapsImmutableSection context.candidatePe slot.candidateAddress &&
+    match slot.relation with
+    | .fixedCodePointer targetId => (context.codeMap.get? targetId).isSome
+    | _ => true
 
 def staticWordRelationSlotIdsUnique
     (slots : List StaticWordRelationSlotPair) : Bool :=

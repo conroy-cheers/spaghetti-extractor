@@ -319,8 +319,10 @@ def _attach_register_relation_analysis(
             ),
         }
         for edge in register_relations["edges"]
-        if edge.get("indirect_target_profile") ==
-            "immutable_relocated_function_pointer_call_v1"
+        if edge.get("indirect_target_profile") in {
+            "immutable_relocated_function_pointer_call_v1",
+            "fixed_static_function_pointer_call_v1",
+        }
     ]
     return_pop_obligations = [
         {
@@ -1000,7 +1002,7 @@ def _direct_call_stack_writes_claim(
 
 
 def _static_word_value_claim_compatible(
-    relation: str, value_claim: dict[str, Any],
+    relation: str, value_claim: dict[str, Any], *, target_id: int | None = None,
 ) -> bool:
     profile = value_claim.get("profile")
     if relation == "related_word":
@@ -1018,6 +1020,12 @@ def _static_word_value_claim_compatible(
         )
     if relation == "code_pointer":
         return profile == "mapped_code_target_v1"
+    if relation == "fixed_code_pointer":
+        return (
+            profile == "mapped_code_target_v1"
+            and target_id is not None
+            and int(value_claim.get("target_id", -1)) == target_id
+        )
     if relation == "data_pointer":
         return profile == "mapped_data_target_v1"
     return False
@@ -1140,7 +1148,11 @@ def _paired_prepared_word_writes_claim(
                     int(slot["original_address"]) == original_address
                     and int(slot["candidate_address"]) == candidate_address
                     and _static_word_value_claim_compatible(
-                        str(slot["relation"]), value_claim
+                        str(slot["relation"]), value_claim,
+                        target_id=(
+                            int(slot["target_id"])
+                            if "target_id" in slot else None
+                        ),
                     )
                 ):
                     location_claims.append({

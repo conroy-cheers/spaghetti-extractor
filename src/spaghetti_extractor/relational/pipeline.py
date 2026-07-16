@@ -101,6 +101,7 @@ from .analyses.invariants import (
 )
 from .analyses.memory import (
     _attach_dynamic_range_flow_invariants,
+    _attach_initial_static_code_pointer_slots,
     _attach_static_dynamic_pointer_slots,
     _attach_static_word_relation_slots,
 )
@@ -515,6 +516,11 @@ def stage_a_prove_relational(
     )
     behaviors = extracted.behavior_rows()
     normalized = _refine_contract_bounds(extracted.mutable_contract(), behaviors)
+    normalized, initial_static_code_pointer_analysis = (
+        _attach_initial_static_code_pointer_slots(
+            normalized, behaviors, original_bin, candidate_bin
+        )
+    )
     indirect_call_candidates = _immutable_indirect_call_candidates(
         original_bin, candidate_bin, normalized, behaviors
     )
@@ -592,6 +598,9 @@ def stage_a_prove_relational(
     )
     normalized, static_word_analysis = _attach_static_word_relation_slots(
         normalized, behaviors, original_bin, candidate_bin
+    )
+    static_word_analysis["initial_code_pointers"] = (
+        initial_static_code_pointer_analysis
     )
     # Static slots are inferred from paired writes after the first register
     # fixed point. Replay synthesis so equal-address loads do not retain an
@@ -696,6 +705,9 @@ def stage_a_prove_relational(
     )
     normalized, static_word_analysis = _attach_static_word_relation_slots(
         normalized, behaviors, original_bin, candidate_bin,
+    )
+    static_word_analysis["initial_code_pointers"] = (
+        initial_static_code_pointer_analysis
     )
     normalized, register_relations = _synthesize_register_relations(
         normalized,

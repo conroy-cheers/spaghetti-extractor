@@ -851,6 +851,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         original,
         candidate,
         issues,
+        normalized_targets,
     )
     normalized_machine_import_call_contracts = _machine_import_call_contracts(
         machine_import_call_contracts, original, candidate, issues,
@@ -1532,6 +1533,7 @@ def _static_word_relation_slots(
     original: StageABinary,
     candidate: StageABinary,
     issues: list[dict[str, Any]],
+    code_targets: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     ids: set[int] = set()
@@ -1569,6 +1571,8 @@ def _static_word_relation_slots(
         "relatedWord": "related_word",
         "code_pointer": "code_pointer",
         "codePointer": "code_pointer",
+        "fixed_code_pointer": "fixed_code_pointer",
+        "fixedCodePointer": "fixed_code_pointer",
         "data_pointer": "data_pointer",
         "dataPointer": "data_pointer",
     }
@@ -1584,10 +1588,24 @@ def _static_word_relation_slots(
             relation_names.get(str(item.get("relation")))
             if isinstance(item, dict) else None
         )
+        target_id = (
+            _integer(item.get("target_id")) if isinstance(item, dict) else None
+        )
         if (
             slot_id is None or slot_id < 0 or slot_id in ids
             or original_address is None or candidate_address is None
             or relation is None
+            or (
+                relation == "fixed_code_pointer"
+                and (
+                    target_id is None
+                    or target_id < 0
+                    or not any(
+                        int(target["id"]) == target_id
+                        for target in (code_targets or [])
+                    )
+                )
+            )
         ):
             issues.append({
                 "category": "static_word_relation_slot_invalid",
@@ -1596,7 +1614,7 @@ def _static_word_relation_slots(
                 "item": item,
                 "next_action": (
                     "declare a unique paired writable-static word with one of "
-                    "exact, related_word, code_pointer, or data_pointer"
+                    "exact, related_word, code_pointer, fixed_code_pointer, or data_pointer"
                 ),
             })
             continue
@@ -1648,12 +1666,15 @@ def _static_word_relation_slots(
         ids.add(slot_id)
         address_ranges["original"].append((original_address, original_address + 4))
         address_ranges["candidate"].append((candidate_address, candidate_address + 4))
-        result.append({
+        normalized = {
             "id": slot_id,
             "original_address": original_address,
             "candidate_address": candidate_address,
             "relation": relation,
-        })
+        }
+        if relation == "fixed_code_pointer":
+            normalized["target_id"] = target_id
+        result.append(normalized)
     return sorted(result, key=lambda slot: slot["id"])
 
 def _machine_call_memory_size(

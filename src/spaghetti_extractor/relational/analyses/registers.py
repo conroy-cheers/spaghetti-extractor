@@ -195,7 +195,10 @@ def _infer_register_output_relation(
         original_expression, candidate_expression, contract,
     )
     if static_slot is not None:
-        return str(static_slot["relation"]), "static_word_slot"
+        relation = str(static_slot["relation"])
+        if relation in {"fixed_code_pointer", "fixedCodePointer"}:
+            relation = "code_pointer"
+        return relation, "static_word_slot"
     original_address = _constant_read32_address(original_expression)
     candidate_address = _constant_read32_address(candidate_expression)
     if (
@@ -751,8 +754,10 @@ def _synthesize_register_relations(
             target_index = int(indirect_candidate["target_region_index"])
             indirect_kind = (
                 "jump"
-                if indirect_candidate["profile"] ==
-                    "immutable_relocated_function_pointer_jump_v1"
+                if indirect_candidate["profile"] in {
+                    "immutable_relocated_function_pointer_jump_v1",
+                    "fixed_static_function_pointer_jump_v1",
+                }
                 else "call"
             )
             predecessors[target_index].append(
@@ -899,8 +904,10 @@ def _synthesize_register_relations(
             candidate_image_base=candidate_image_base,
         ) if (
             edge["kind"] == "call"
-            and edge.get("indirect_target_profile") ==
-                "immutable_relocated_function_pointer_call_v1"
+            and edge.get("indirect_target_profile") in {
+                "immutable_relocated_function_pointer_call_v1",
+                "fixed_static_function_pointer_call_v1",
+            }
         ) else None
 
     register_order = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")

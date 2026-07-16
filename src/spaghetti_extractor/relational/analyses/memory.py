@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Any
 
 from ...stage_binary import StageABinary
+from ..contract import _raw_base_relocations
 from ..model import _semantic_constant_word
 from .segments import (
     _paired_prepared_word_writes_claim,
@@ -55,6 +56,310 @@ def _initial_u32(binary: StageABinary, address: int) -> int | None:
         return None
     raw = bytes(binary.pe.get_data(rva, 4))
     return int.from_bytes(raw, "little") if len(raw) == 4 else None
+
+
+def _initial_file_u32(binary: StageABinary, address: int) -> int | None:
+    """Read one word only when all four bytes are backed by one PE section."""
+    rva = address - binary.image_base
+    sections = [
+        section for section in binary.sections
+        if section.rva_start <= rva
+        and rva + 4 <= section.rva_start + section.raw_size
+    ]
+    if len(sections) != 1:
+        return None
+    raw = bytes(binary.pe.get_data(rva, 4))
+    return int.from_bytes(raw, "little") if len(raw) == 4 else None
+
+
+def _direct_constant_read32_locations(
+    value: Any, path: tuple[str, ...] = (),
+) -> dict[tuple[str, ...], int]:
+    """Collect direct constant-address word reads by normalized IR path."""
+    if isinstance(value, list):
+        result: dict[tuple[str, ...], int] = {}
+        for index, child in enumerate(value):
+            result.update(
+                _direct_constant_read32_locations(child, (*path, str(index)))
+            )
+        return result
+    if not isinstance(value, dict):
+        return {}
+    if value.get("op") == "read32":
+        address = _semantic_constant_word(value.get("address") or {})
+        if address is not None:
+            return {path: address}
+    result = {}
+    for key in sorted(value):
+        if key != "op":
+            result.update(
+                _direct_constant_read32_locations(value[key], (*path, key))
+            )
+    return result
+
+
+def _highlow_relocation_count(binary: StageABinary, address: int) -> int:
+    rva = address - binary.image_base
+    return sum(
+        relocation["rva"] == rva and relocation["type"] == 3
+        for relocation in _raw_base_relocations(binary)
+    )
+
+
+def _attach_initial_static_code_pointer_slots(
+    contract: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    original: StageABinary,
+    candidate: StageABinary,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Infer launch-fixed writable code-pointer slots from exact PE evidence.
+
+    This is proposal logic only. It pairs direct reads by normalized semantic
+    path and requires a unique canonical code target, raw-file-backed writable
+    slots, one HIGHLOW relocation per word, and a one-to-one address mapping.
+    Generated Lean support must replay these facts before acceptance.
+    """
+    updated = deepcopy(contract)
+    code_targets = list(updated.get("code_targets", []))
+    target_id_counts: dict[int, int] = {}
+    for target in code_targets:
+        try:
+            target_id = int(target["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        target_id_counts[target_id] = target_id_counts.get(target_id, 0) + 1
+
+    def matching_targets(side: str, value: int) -> list[tuple[int, dict[str, Any]]]:
+        matches: list[tuple[int, dict[str, Any]]] = []
+        rva_key = f"{side}_rva"
+        image_base = original.image_base if side == "original" else candidate.image_base
+        for index, target in enumerate(code_targets):
+            try:
+                target_value = image_base + int(target[rva_key])
+                int(target["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if target_value & 0xFFFFFFFF == value:
+                matches.append((index, target))
+        return matches
+
+    proposals: dict[tuple[int, int], dict[str, Any]] = {}
+    rejected: list[dict[str, Any]] = []
+    regions = list(updated.get("regions", []))
+    for region_index, behavior in enumerate(behaviors):
+        original_reads = _direct_constant_read32_locations(
+            behavior.get("original_ir") or {}
+        )
+        candidate_reads = _direct_constant_read32_locations(
+            behavior.get("candidate_ir") or {}
+        )
+        region_id = (
+            regions[region_index].get("id")
+            if region_index < len(regions) and isinstance(regions[region_index], dict)
+            else None
+        )
+        for path in sorted(set(original_reads) & set(candidate_reads)):
+            original_address = original_reads[path]
+            candidate_address = candidate_reads[path]
+            original_writable = _writable_static_word(original, original_address)
+            candidate_writable = _writable_static_word(candidate, candidate_address)
+            # Immutable image words belong to the existing immutable relocation
+            # prover, not this writable launch-slot inference.
+            if not original_writable and not candidate_writable:
+                continue
+            original_value = _initial_file_u32(original, original_address)
+            candidate_value = _initial_file_u32(candidate, candidate_address)
+            if original_value is None and candidate_value is None:
+                continue
+            original_matches = (
+                [] if original_value is None
+                else matching_targets("original", original_value)
+            )
+            candidate_matches = (
+                [] if candidate_value is None
+                else matching_targets("candidate", candidate_value)
+            )
+            if not original_matches and not candidate_matches:
+                continue
+            location = {
+                "region_index": region_index,
+                "region_id": region_id,
+                "semantic_path": list(path),
+                "original_address": original_address,
+                "candidate_address": candidate_address,
+                "original_initial_value": original_value,
+                "candidate_initial_value": candidate_value,
+            }
+            same_target = (
+                len(original_matches) == 1
+                and len(candidate_matches) == 1
+                and original_matches[0][0] == candidate_matches[0][0]
+            )
+            target_id = (
+                int(original_matches[0][1]["id"])
+                if same_target else None
+            )
+            if (
+                not same_target
+                or target_id is None
+                or target_id_counts.get(target_id) != 1
+            ):
+                rejected.append({
+                    **location,
+                    "category": "initial_static_code_pointer_target_ambiguous",
+                    "severity": "hard",
+                    "original_target_ids": sorted({
+                        int(target["id"]) for _, target in original_matches
+                    }),
+                    "candidate_target_ids": sorted({
+                        int(target["id"]) for _, target in candidate_matches
+                    }),
+                    "next_action": (
+                        "provide one canonical code-target pair for both initial "
+                        "words or repair the static code-target map"
+                    ),
+                })
+                continue
+            key = (original_address, candidate_address)
+            proposal = proposals.setdefault(key, {
+                "original_address": original_address,
+                "candidate_address": candidate_address,
+                "target_id": target_id,
+                "uses": [],
+            })
+            proposal["uses"].append(location)
+
+    original_to_candidate: dict[int, set[int]] = {}
+    candidate_to_original: dict[int, set[int]] = {}
+    for original_address, candidate_address in proposals:
+        original_to_candidate.setdefault(original_address, set()).add(candidate_address)
+        candidate_to_original.setdefault(candidate_address, set()).add(original_address)
+    ambiguous_pairs = {
+        pair for pair in proposals
+        if len(original_to_candidate[pair[0]]) != 1
+        or len(candidate_to_original[pair[1]]) != 1
+    }
+
+    existing = [dict(slot) for slot in updated.get("static_word_relation_slots", [])]
+    dynamic_slots = [
+        dict(slot) for slot in updated.get("static_dynamic_pointer_slots", [])
+    ]
+    next_id = max((int(slot["id"]) for slot in existing), default=-1) + 1
+    inferred: list[dict[str, Any]] = []
+    already_present: list[dict[str, Any]] = []
+    for pair, proposal in sorted(proposals.items()):
+        if pair in ambiguous_pairs:
+            rejected.append({
+                "category": "initial_static_code_pointer_slot_mapping_ambiguous",
+                "severity": "hard",
+                **proposal,
+                "candidate_addresses_for_original": sorted(
+                    original_to_candidate[pair[0]]
+                ),
+                "original_addresses_for_candidate": sorted(
+                    candidate_to_original[pair[1]]
+                ),
+                "next_action": (
+                    "provide a one-to-one static slot mapping or repair the "
+                    "normalized read pairing"
+                ),
+            })
+            continue
+        reason = None
+        if not (
+            _writable_static_word(original, pair[0])
+            and _writable_static_word(candidate, pair[1])
+        ):
+            reason = "slot is not writable non-executable PE data on both sides"
+        elif (
+            _initial_file_u32(original, pair[0]) is None
+            or _initial_file_u32(candidate, pair[1]) is None
+        ):
+            reason = "slot word is not fully backed by bytes in one PE section"
+        elif (
+            _highlow_relocation_count(original, pair[0]) != 1
+            or _highlow_relocation_count(candidate, pair[1]) != 1
+        ):
+            reason = "slot does not have exactly one PE HIGHLOW base relocation per side"
+        if reason is not None:
+            rejected.append({
+                "category": "initial_static_code_pointer_slot_inference_rejected",
+                "severity": "hard",
+                **proposal,
+                "reason": reason,
+                "original_highlow_relocations": _highlow_relocation_count(
+                    original, pair[0]
+                ),
+                "candidate_highlow_relocations": _highlow_relocation_count(
+                    candidate, pair[1]
+                ),
+                "next_action": (
+                    "repair the PE slot/relocation evidence or declare no "
+                    "launch-fixed code-pointer relation for this word"
+                ),
+            })
+            continue
+        conflicts = [
+            slot for slot in [*existing, *dynamic_slots]
+            if int(slot["original_address"]) == pair[0]
+            or int(slot["candidate_address"]) == pair[1]
+        ]
+        expected = {
+            "original_address": pair[0],
+            "candidate_address": pair[1],
+            "relation": "fixed_code_pointer",
+            "target_id": proposal["target_id"],
+        }
+        exact_existing = [
+            slot for slot in conflicts
+            if all(slot.get(key) == value for key, value in expected.items())
+        ]
+        if len(conflicts) == 1 and len(exact_existing) == 1:
+            already_present.append(exact_existing[0])
+            continue
+        if conflicts:
+            rejected.append({
+                "category": "initial_static_code_pointer_existing_slot_conflict",
+                "severity": "hard",
+                **proposal,
+                "conflicting_slots": conflicts,
+                "next_action": (
+                    "remove the conflicting slot or provide one explicit checked "
+                    "relation for this original/candidate word pair"
+                ),
+            })
+            continue
+        inferred.append({"id": next_id, **expected})
+        next_id += 1
+
+    updated["static_word_relation_slots"] = sorted(
+        existing + inferred, key=lambda slot: int(slot["id"])
+    )
+    rejected = sorted(
+        rejected,
+        key=lambda item: (
+            str(item.get("category", "")),
+            int(item.get("region_index", -1)),
+            int(item.get("original_address", -1)),
+            int(item.get("candidate_address", -1)),
+            json.dumps(item.get("semantic_path", []), separators=(",", ":")),
+        ),
+    )
+    return updated, {
+        "format": "spaghetti-extractor-initial-static-code-pointer-slots-v1",
+        "status": (
+            "proposal_requires_generated_lean_replay" if not rejected else "incomplete"
+        ),
+        "inferred": inferred,
+        "already_present": already_present,
+        "rejected": rejected,
+        "counts": {
+            "existing": len(existing),
+            "inferred": len(inferred),
+            "already_present": len(already_present),
+            "rejected": len(rejected),
+        },
+    }
 
 
 def _attach_static_dynamic_pointer_slots(

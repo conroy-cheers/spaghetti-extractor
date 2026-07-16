@@ -2014,12 +2014,15 @@ def ImmutableIndirectCallTargetsClosed
   | some target =>
       ∀ world originalState candidateState,
         StateRel context world sourceInvariant originalState candidateState →
-          originalBehavior.outcome.eval originalState = .indirectCall
-              (BitVec.ofNat 32 (context.originalPe.imageBase + target.originalRva))
-              claim.continuationTargetId ∧
-            candidateBehavior.outcome.eval candidateState = .indirectCall
-              (BitVec.ofNat 32 (context.candidatePe.imageBase + target.candidateRva))
-              claim.continuationTargetId
+          ∃ originalTarget candidateTarget,
+            originalBehavior.outcome.eval originalState = .indirectCall
+                originalTarget claim.continuationTargetId ∧
+              candidateBehavior.outcome.eval candidateState = .indirectCall
+                candidateTarget claim.continuationTargetId ∧
+              codeAddressMatches context.originalPe.imageBase target.originalRva
+                target.originalAliases originalTarget = true ∧
+              codeAddressMatches context.candidatePe.imageBase target.candidateRva
+                target.candidateAliases candidateTarget = true
 
 theorem immutableIndirectCallTargetsClosed_of_checked
     (context : StaticProofContext) (sourceInvariant : StateInvariant)
@@ -2099,11 +2102,186 @@ theorem immutableIndirectCallTargetsClosed_of_checked
           candidateState.memory claim.candidateAddress
           (context.candidatePe.imageBase + target.candidateRva) candidateImmutable
           candidateImageWord
-    constructor
+    refine ⟨BitVec.ofNat 32 (context.originalPe.imageBase + target.originalRva),
+      BitVec.ofNat 32 (context.candidatePe.imageBase + target.candidateRva), ?_, ?_,
+      ?_, ?_⟩
     · rw [originalOutcome]
       simp [NormalizedOutcomeExpr.eval, originalTarget]
     · rw [candidateOutcome]
       simp [NormalizedOutcomeExpr.eval, candidateTarget]
+    · simp [codeAddressMatches]
+    · simp [codeAddressMatches]
+
+structure StaticWordSlotIndirectCallTargetClaim where
+  targetId : Nat
+  continuationTargetId : Nat
+  slot : StaticWordRelationSlotPair
+  originalAddress : Nat
+  candidateAddress : Nat
+  originalAssembledRead : Bool
+  candidateAssembledRead : Bool
+  originalWrites : List RegisterOffsetWrite
+  candidateWrites : List RegisterOffsetWrite
+deriving Repr, DecidableEq
+
+def StaticWordSlotIndirectCallTargetClaim.checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : StaticWordSlotIndirectCallTargetClaim) : Bool :=
+  match context.codeMap.get? claim.targetId with
+  | none => false
+  | some _ =>
+      context.staticWordRelationSlots.contains claim.slot &&
+        claim.slot.relation == .fixedCodePointer claim.targetId &&
+        claim.slot.originalAddress == BitVec.ofNat 32 claim.originalAddress &&
+        claim.slot.candidateAddress == BitVec.ofNat 32 claim.candidateAddress &&
+        originalBehavior.outcome == .indirectCall
+          (immutableWordReadExpression claim.originalAssembledRead
+            claim.originalAddress claim.originalWrites)
+          claim.continuationTargetId &&
+        candidateBehavior.outcome == .indirectCall
+          (immutableWordReadExpression claim.candidateAssembledRead
+            claim.candidateAddress claim.candidateWrites)
+          claim.continuationTargetId &&
+        registerOffsetWritesSeparated false sourceInvariant.addressSeparations
+          claim.originalAddress claim.originalWrites &&
+        registerOffsetWritesSeparated true sourceInvariant.addressSeparations
+          claim.candidateAddress claim.candidateWrites
+
+def StaticWordSlotIndirectCallTargetsClosed
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : StaticWordSlotIndirectCallTargetClaim) : Prop :=
+  match context.codeMap.get? claim.targetId with
+  | none => False
+  | some target =>
+      ∀ world originalState candidateState,
+        StateRel context world sourceInvariant originalState candidateState →
+          ∃ originalTarget candidateTarget,
+            originalBehavior.outcome.eval originalState = .indirectCall
+                originalTarget claim.continuationTargetId ∧
+              candidateBehavior.outcome.eval candidateState = .indirectCall
+                candidateTarget claim.continuationTargetId ∧
+              codeAddressMatches context.originalPe.imageBase target.originalRva
+                target.originalAliases originalTarget = true ∧
+              codeAddressMatches context.candidatePe.imageBase target.candidateRva
+                target.candidateAliases candidateTarget = true
+
+theorem staticWordSlotIndirectCallTargetsClosed_of_checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : StaticWordSlotIndirectCallTargetClaim)
+    (checked : claim.checked context sourceInvariant originalBehavior
+      candidateBehavior = true) :
+    StaticWordSlotIndirectCallTargetsClosed context sourceInvariant originalBehavior
+      candidateBehavior claim := by
+  cases targetResult : context.codeMap.get? claim.targetId with
+  | none =>
+      simp [StaticWordSlotIndirectCallTargetClaim.checked, targetResult] at checked
+  | some target =>
+      simp only [StaticWordSlotIndirectCallTargetClaim.checked, targetResult,
+        Bool.and_eq_true, beq_iff_eq] at checked
+      simp only [StaticWordSlotIndirectCallTargetsClosed, targetResult]
+      rcases checked with
+        ⟨⟨⟨⟨⟨⟨⟨slotMember, slotRelation⟩, originalAddress⟩,
+          candidateAddress⟩, originalOutcome⟩, candidateOutcome⟩,
+          originalSeparated⟩, candidateSeparated⟩
+      intro world originalState candidateState related
+      have slotsHold := related.staticWordRelationSlotsMemoryHold context world
+        sourceInvariant originalState candidateState
+      have slotHolds := slotsHold claim.slot
+        (List.contains_iff_mem.mp slotMember)
+      simp only [StaticWordRelationSlotPair.memoryHolds] at slotHolds
+      rw [slotRelation] at slotHolds
+      simp only [StaticWordRelationKind.holds, codeTargetAddressPairMatches,
+        targetResult, Bool.and_eq_true] at slotHolds
+      rcases related with
+        ⟨_worldStatic, _stackRangesValid, _stackMemory, _importsStatic,
+          _importsComplete, _importsMemory, _originalImmutable, _candidateImmutable,
+          relatedCore, _importRegisters⟩
+      rcases relatedCore with
+        ⟨_registers, _bounds, separations, _stackWindows, _memory, _undefined,
+          _x87, _flags, _fsBase⟩
+      have originalSide := addressSeparationsRelated_original
+        sourceInvariant.addressSeparations originalState.registers candidateState.registers
+        separations
+      have candidateSide := addressSeparationsRelated_candidate
+        sourceInvariant.addressSeparations originalState.registers candidateState.registers
+        separations
+      have originalAvoids := registerOffsetWritesAvoidWord_of_checked false
+        sourceInvariant.addressSeparations claim.originalAddress claim.originalWrites
+        originalState originalSide originalSeparated
+      have candidateAvoids := registerOffsetWritesAvoidWord_of_checked true
+        sourceInvariant.addressSeparations claim.candidateAddress claim.candidateWrites
+        candidateState candidateSide candidateSeparated
+      let originalTarget :=
+        (immutableWordReadExpression claim.originalAssembledRead
+          claim.originalAddress claim.originalWrites).eval originalState
+      let candidateTarget :=
+        (immutableWordReadExpression claim.candidateAssembledRead
+          claim.candidateAddress claim.candidateWrites).eval candidateState
+      have originalTargetRead :
+          originalTarget = Memory.read32 originalState.memory claim.slot.originalAddress := by
+        cases assembled : claim.originalAssembledRead with
+        | false =>
+            simp [originalTarget, immutableWordReadExpression, assembled, Expr.eval,
+              machineStateRead32_eq_memoryRead32, originalAddress]
+        | true =>
+            simp only [originalTarget, immutableWordReadExpression, assembled, if_true]
+            rw [Expr.eval_constantRead32AfterWrites]
+            rw [Memory.read32_applyConcreteWrites_of_avoids _ _ _ originalAvoids]
+            rw [originalAddress]
+      have candidateTargetRead :
+          candidateTarget = Memory.read32 candidateState.memory claim.slot.candidateAddress := by
+        cases assembled : claim.candidateAssembledRead with
+        | false =>
+            simp [candidateTarget, immutableWordReadExpression, assembled, Expr.eval,
+              machineStateRead32_eq_memoryRead32, candidateAddress]
+        | true =>
+            simp only [candidateTarget, immutableWordReadExpression, assembled, if_true]
+            rw [Expr.eval_constantRead32AfterWrites]
+            rw [Memory.read32_applyConcreteWrites_of_avoids _ _ _ candidateAvoids]
+            rw [candidateAddress]
+      refine ⟨originalTarget, candidateTarget, ?_, ?_, ?_, ?_⟩
+      · rw [originalOutcome]
+        simp only [NormalizedOutcomeExpr.eval]
+        rfl
+      · rw [candidateOutcome]
+        simp only [NormalizedOutcomeExpr.eval]
+        rfl
+      · rw [originalTargetRead]
+        exact slotHolds.1
+      · rw [candidateTargetRead]
+        exact slotHolds.2
+
+def StaticWordSlotIndirectCallTargetClaim.toImmutable
+    (claim : StaticWordSlotIndirectCallTargetClaim) : ImmutableIndirectCallTargetClaim := {
+  targetId := claim.targetId
+  continuationTargetId := claim.continuationTargetId
+  originalAddress := claim.originalAddress
+  candidateAddress := claim.candidateAddress
+  originalAssembledRead := claim.originalAssembledRead
+  candidateAssembledRead := claim.candidateAssembledRead
+  originalWrites := claim.originalWrites
+  candidateWrites := claim.candidateWrites
+}
+
+theorem immutableIndirectCallTargetsClosed_of_staticWordSlot
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : StaticWordSlotIndirectCallTargetClaim)
+    (closed : StaticWordSlotIndirectCallTargetsClosed context sourceInvariant
+      originalBehavior candidateBehavior claim) :
+    ImmutableIndirectCallTargetsClosed context sourceInvariant originalBehavior
+      candidateBehavior claim.toImmutable := by
+  cases targetResult : context.codeMap.get? claim.targetId with
+  | none =>
+      simp only [StaticWordSlotIndirectCallTargetsClosed, targetResult] at closed
+  | some target =>
+      simp only [StaticWordSlotIndirectCallTargetsClosed, targetResult] at closed
+      simp only [ImmutableIndirectCallTargetsClosed,
+        StaticWordSlotIndirectCallTargetClaim.toImmutable, targetResult]
+      exact closed
 
 structure ImmutableIndirectJumpTargetClaim where
   targetId : Nat

@@ -304,8 +304,10 @@ def _relational_product_graph(
         if (
             operation == "indirect_call"
             and indirect_candidate is not None
-            and indirect_candidate["profile"] ==
-                "immutable_relocated_function_pointer_call_v1"
+            and indirect_candidate["profile"] in {
+                "immutable_relocated_function_pointer_call_v1",
+                "fixed_static_function_pointer_call_v1",
+            }
         ):
             return [{
                 "kind": "call",
@@ -1698,52 +1700,78 @@ def _immutable_indirect_call_candidates(
             continue
         original_word = _immutable_image_u32(original_bin, original_address)
         candidate_word = _immutable_image_u32(candidate_bin, candidate_address)
-        if original_word is None or candidate_word is None:
-            continue
-        matching_targets = [
-            target for target in code_targets
-            if original_word == original_bin.image_base + int(target["original_rva"])
-            and candidate_word == candidate_bin.image_base + int(target["candidate_rva"])
+        fixed_slots = [
+            slot for slot in contract.get("static_word_relation_slots", [])
+            if str(slot.get("relation")) == "fixed_code_pointer"
+            and int(slot.get("original_address", -1)) == original_address
+            and int(slot.get("candidate_address", -1)) == candidate_address
         ]
-        if len(matching_targets) != 1:
-            continue
-        target = matching_targets[0]
-        mapped_words = []
-        for value in contract.get("value_targets", []):
-            original_offset = original_address - int(value["original_value"])
-            candidate_offset = candidate_address - int(value["candidate_value"])
-            if (
-                original_offset == candidate_offset
-                and 0 <= original_offset
-                and original_offset + 4 <= int(value["mapped_size"])
-                and original_offset in {
-                    int(offset) for offset in value.get("relocation_offsets", [])
-                }
-            ):
-                mapped_words.append(value)
-        mapped_word_keys = {
-            (
-                int(value["original_value"]),
-                int(value["candidate_value"]),
-                int(value["mapped_size"]),
-                tuple(int(offset) for offset in value.get("relocation_offsets", [])),
+        target: dict[str, Any]
+        profile: str
+        value_target_id: int | None = None
+        fixed_slot: dict[str, Any] | None = None
+        if original_word is not None and candidate_word is not None:
+            matching_targets = [
+                target for target in code_targets
+                if original_word == original_bin.image_base + int(target["original_rva"])
+                and candidate_word == candidate_bin.image_base + int(target["candidate_rva"])
+            ]
+            if len(matching_targets) != 1:
+                continue
+            target = matching_targets[0]
+            mapped_words = []
+            for value in contract.get("value_targets", []):
+                original_offset = original_address - int(value["original_value"])
+                candidate_offset = candidate_address - int(value["candidate_value"])
+                if (
+                    original_offset == candidate_offset
+                    and 0 <= original_offset
+                    and original_offset + 4 <= int(value["mapped_size"])
+                    and original_offset in {
+                        int(offset) for offset in value.get("relocation_offsets", [])
+                    }
+                ):
+                    mapped_words.append(value)
+            mapped_word_keys = {
+                (
+                    int(value["original_value"]),
+                    int(value["candidate_value"]),
+                    int(value["mapped_size"]),
+                    tuple(int(offset) for offset in value.get("relocation_offsets", [])),
+                )
+                for value in mapped_words
+            }
+            if len(mapped_word_keys) != 1:
+                continue
+            mapped_word = min(mapped_words, key=lambda value: int(value["id"]))
+            value_target_id = int(mapped_word["id"])
+            profile = (
+                "immutable_relocated_function_pointer_call_v1"
+                if operation == "indirect_call"
+                else "immutable_relocated_function_pointer_jump_v1"
             )
-            for value in mapped_words
-        }
-        if len(mapped_word_keys) != 1:
-            continue
-        mapped_word = min(mapped_words, key=lambda value: int(value["id"]))
+        else:
+            if operation != "indirect_call":
+                continue
+            if len(fixed_slots) != 1:
+                continue
+            fixed_slot = fixed_slots[0]
+            fixed_target_id = int(fixed_slots[0]["target_id"])
+            matching_targets = [
+                target for target in code_targets
+                if int(target["id"]) == fixed_target_id
+            ]
+            if len(matching_targets) != 1:
+                continue
+            target = matching_targets[0]
+            profile = "fixed_static_function_pointer_call_v1"
         available_target_ids = {
             int(item["id"]) for item in region.get("code_targets", [])
         }
         if int(target["id"]) not in available_target_ids:
             continue
         row = {
-            "profile": (
-                "immutable_relocated_function_pointer_call_v1"
-                if operation == "indirect_call"
-                else "immutable_relocated_function_pointer_jump_v1"
-            ),
+            "profile": profile,
             "source_region_index": source_index,
             "target_region_index": int(target["region_index"]),
             "target_id": int(target["id"]),
@@ -1753,8 +1781,11 @@ def _immutable_indirect_call_candidates(
             "candidate_assembled_read": candidate_assembled,
             "original_writes": original_writes,
             "candidate_writes": candidate_writes,
-            "value_target_id": int(mapped_word["id"]),
         }
+        if value_target_id is not None:
+            row["value_target_id"] = value_target_id
+        if fixed_slot is not None:
+            row["slot"] = fixed_slot
         if operation == "indirect_call":
             original_continuation = int(original_outcome.get("continuation", -1))
             candidate_continuation = int(candidate_outcome.get("continuation", -1))

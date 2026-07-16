@@ -782,7 +782,8 @@ def staticWordRelationSupportsRegisterValueRelation
     (source : StaticWordRelationKind) (target : RegisterValueRelation) : Bool :=
   match source, target with
   | .exact, .exact | .exact, .relatedWord | .relatedWord, .relatedWord |
-      .codePointer, .codePointer | .dataPointer, .dataPointer => true
+      .codePointer, .codePointer | .fixedCodePointer _, .codePointer |
+      .dataPointer, .dataPointer => true
   | _, _ => false
 
 theorem StaticWordRelationKind.registerValueRelation_holds_of_holds
@@ -797,6 +798,8 @@ theorem StaticWordRelationKind.registerValueRelation_holds_of_holds
   cases source <;> cases target <;>
     simp_all [staticWordRelationSupportsRegisterValueRelation,
       StaticWordRelationKind.holds, RegisterValueRelation.holds, wordRelated_self]
+  exact Or.inr
+    (codeTargetIdAddresses_codePointerRelated context _ original candidate holds)
 
 structure StaticWordSlotRegisterOutputClaim where
   output : RegisterRelationPair

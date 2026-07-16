@@ -567,8 +567,11 @@
             ];
           stage-a-relational-tests-indirect-control = mkStageARelationalTest
             "indirect-control"
-            "tests.test_stage_a_indirect_control"
-            [ ./tests/test_stage_a_indirect_control.py ];
+            "tests.test_stage_a_indirect_control tests.test_stage_a_initial_static_code_pointers"
+            [
+              ./tests/test_stage_a_indirect_control.py
+              ./tests/test_stage_a_initial_static_code_pointers.py
+            ];
           stageARelationalContractSuite = mkStageARelationalTestSuite
             "contract" "tests.test_stage_a_relational_contract"
             "StageARelationalContractTests" ./tests/test_stage_a_relational_contract.py;

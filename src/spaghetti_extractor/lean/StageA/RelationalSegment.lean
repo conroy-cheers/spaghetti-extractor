@@ -267,6 +267,8 @@ def PairedStackWordValueClaim.staticRelationCompatible
       registerClaim.relation.relation == .exact
   | .relatedWord, _ => true
   | .codePointer, .mappedCodeTarget _ => true
+  | .fixedCodePointer targetId, .mappedCodeTarget witnessTargetId =>
+      targetId == witnessTargetId
   | .dataPointer, .mappedDataTarget _ => true
   | _, _ => false
 
@@ -340,6 +342,32 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
                   exact Or.inr (codeTargetIdAddresses_codePointerRelated context targetId
                     (BitVec.ofNat 32 originalWord) (BitVec.ofNat 32 candidateWord)
                     checked.1)
+      | mappedDataTarget targetId =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+      | dynamicRange relation =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+  | fixedCodePointer expectedTargetId =>
+      cases witness with
+      | exactInputs =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+      | registerArgument registerClaim =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+      | mappedCodeTarget targetId =>
+          simp only [PairedStackWordValueClaim.staticRelationCompatible,
+            beq_iff_eq] at compatible
+          subst expectedTargetId
+          unfold PairedStackWordValueClaim.checked at checked
+          cases originalResult : originalValue.constantNat? with
+          | none => simp [originalResult] at checked
+          | some originalWord =>
+              cases candidateResult : candidateValue.constantNat? with
+              | none => simp [originalResult, candidateResult] at checked
+              | some candidateWord =>
+                  simp only [originalResult, candidateResult, Bool.and_eq_true,
+                    beq_iff_eq] at checked
+                  rw [originalValue.eval_of_constantNat? originalWord originalResult,
+                    candidateValue.eval_of_constantNat? candidateWord candidateResult]
+                  exact checked.1
       | mappedDataTarget targetId =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | dynamicRange relation =>
