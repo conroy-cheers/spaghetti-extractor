@@ -10,6 +10,10 @@ from ..contract import _raw_base_relocations
 from ..extraction import _assembled_u32_after_register_writes
 from ..model import _semantic_constant_bool
 from ..schema import RELATIONAL_ACCEPTANCE_THEOREM, integer as _integer
+from .external import (
+    _select_machine_import_call_contract,
+    _semantic_external_target_identity,
+)
 from .invariants import _semantic_edges
 
 
@@ -707,11 +711,18 @@ def _relational_product_graph(
         })
     covered_node_ids = [item["node_id"] for item in coverage_candidates]
     runtime_call_continuations: dict[int, set[int]] = defaultdict(set)
+    runtime_continuation_contributors: dict[
+        tuple[int, int], list[int | None]
+    ] = defaultdict(list)
     for table_candidate in bounded_table_call_candidates or []:
-        runtime_call_continuations[int(table_candidate["source_region_index"])].add(
-            int(table_candidate["continuation_region_index"])
-        )
-    for relation_edge in register_relations.get("edges", []):
+        source_node_id = int(table_candidate["source_region_index"])
+        continuation_node_id = int(table_candidate["continuation_region_index"])
+        runtime_call_continuations[source_node_id].add(continuation_node_id)
+        runtime_continuation_contributors[
+            (source_node_id, continuation_node_id)
+        ].append(None)
+    relation_edges = register_relations.get("edges", [])
+    for relation_edge_index, relation_edge in enumerate(relation_edges):
         claim = (
             relation_edge.get("direct_call_push_claim")
             or relation_edge.get("indirect_call_push_claim")
@@ -728,6 +739,126 @@ def _relational_product_graph(
                 "checked call continuation references an out-of-range product node"
             )
         runtime_call_continuations[source_node_id].add(continuation_node_id)
+        runtime_continuation_contributors[
+            (source_node_id, continuation_node_id)
+        ].append(relation_edge_index)
+
+    external_sites_by_call_edge: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for site in external_call_candidates or []:
+        call_edge_id = _integer(site.get("call_edge_index"))
+        if site.get("site_kind") == "direct_import_thunk" and call_edge_id is not None:
+            external_sites_by_call_edge[call_edge_id].append(site)
+
+    def terminating_call_continuation(
+        source_node_id: int,
+        continuation_node_id: int,
+        relation_edge_index: int,
+    ) -> dict[str, int] | None:
+        relation_edge = relation_edges[relation_edge_index]
+        direct_claim = relation_edge.get("direct_call_push_claim")
+        if (
+            not isinstance(direct_claim, dict)
+            or relation_edge.get("indirect_call_push_claim") is not None
+            or int(relation_edge["source_region_index"]) != source_node_id
+            or int(relation_edge["target_region_index"]) not in range(len(nodes))
+            or int(direct_claim.get("continuation_region_index", -1))
+                != continuation_node_id
+        ):
+            return None
+        sites = external_sites_by_call_edge.get(relation_edge_index, [])
+        if len(sites) != 1:
+            return None
+        site = sites[0]
+        call_target_node_id = int(relation_edge["target_region_index"])
+        external_jump_node_id = _integer(site.get("source_region_index"))
+        external_site_id = _integer(site.get("id"))
+        site_contract_id = _integer(site.get("machine_contract_id"))
+        continuation_target_id = int(node_targets[continuation_node_id]["id"])
+        if (
+            site.get("dispatch_profile") != "checked_direct_import_thunk"
+            or site.get("proof_profile") != "paired_direct_import_thunk_v1"
+            or site.get("status") != "candidate_requires_lean_replay"
+            or _integer(site.get("caller_region_index")) != source_node_id
+            or _integer(site.get("call_target_region_index"))
+                != call_target_node_id
+            or _integer(site.get("target_region_index")) != continuation_node_id
+            or _integer(site.get("continuation_target_id"))
+                != continuation_target_id
+            or external_jump_node_id is None
+            or external_jump_node_id not in range(len(nodes))
+            or external_site_id is None
+            or site_contract_id is None
+        ):
+            return None
+        original_outcome = (
+            behaviors[external_jump_node_id].get("original_ir", {}).get("outcome")
+            or {}
+        )
+        candidate_outcome = (
+            behaviors[external_jump_node_id].get("candidate_ir", {}).get("outcome")
+            or {}
+        )
+        if (
+            original_outcome.get("op") != "external_jump"
+            or candidate_outcome.get("op") != "external_jump"
+        ):
+            return None
+        original_target = _semantic_external_target_identity(
+            original_outcome.get("import")
+        )
+        candidate_target = _semantic_external_target_identity(
+            candidate_outcome.get("import")
+        )
+        machine_contract, _selection_reason = _select_machine_import_call_contract(
+            contract.get("machine_import_call_contracts"),
+            original_target,
+            candidate_target,
+        )
+        machine_contract_id = (
+            _integer(machine_contract.get("id"))
+            if machine_contract is not None else None
+        )
+        if (
+            machine_contract is None
+            or machine_contract_id != site_contract_id
+            or machine_contract.get("disposition") != "terminates"
+        ):
+            return None
+        return {
+            "source_node_id": source_node_id,
+            "continuation_node_id": continuation_node_id,
+            "continuation_target_id": continuation_target_id,
+            "call_edge_id": relation_edge_index,
+            "call_target_node_id": call_target_node_id,
+            "external_jump_node_id": external_jump_node_id,
+            "external_site_id": external_site_id,
+            "machine_contract_id": machine_contract_id,
+        }
+
+    terminating_call_continuations: list[dict[str, int]] = []
+    for (source_node_id, continuation_node_id), contributors in sorted(
+        runtime_continuation_contributors.items()
+    ):
+        # Suppression is safe only when this runtime continuation has one exact
+        # direct-call origin and that origin has one checked terminating site.
+        if len(contributors) != 1 or contributors[0] is None:
+            continue
+        row = terminating_call_continuation(
+            source_node_id, continuation_node_id, contributors[0]
+        )
+        if row is not None:
+            terminating_call_continuations.append(row)
+    terminating_continuations_by_source: dict[int, set[int]] = defaultdict(set)
+    for row in terminating_call_continuations:
+        terminating_continuations_by_source[row["source_node_id"]].add(
+            row["continuation_node_id"]
+        )
+
+    def behavioral_call_continuations(source_node_id: int) -> set[int]:
+        return runtime_call_continuations.get(source_node_id, set()) - (
+            terminating_continuations_by_source.get(source_node_id, set())
+        )
+
     reachable_node_ids_set = set(root_node_ids)
     reachability_worklist = list(root_node_ids)
     worklist_index = 0
@@ -743,7 +874,7 @@ def _relational_product_graph(
             reachable_node_ids_set.add(target_node_id)
             reachability_worklist.append(target_node_id)
         for continuation_node_id in sorted(
-            runtime_call_continuations.get(source_node_id, set())
+            behavioral_call_continuations(source_node_id)
         ):
             if continuation_node_id in reachable_node_ids_set:
                 continue
@@ -786,7 +917,7 @@ def _relational_product_graph(
                 potential_reachable_node_ids_set.add(target_node_id)
                 potential_reachability_worklist.append(target_node_id)
         for continuation_node_id in sorted(
-            runtime_call_continuations.get(source_node_id, set())
+            behavioral_call_continuations(source_node_id)
         ):
             if continuation_node_id in potential_reachable_node_ids_set:
                 continue
@@ -918,6 +1049,7 @@ def _relational_product_graph(
                     runtime_call_continuations.items()
                 )
             ],
+            "terminating_call_continuations": terminating_call_continuations,
             "reachable_decoded_control_frontier_node_ids": (
                 reachable_decoded_control_frontier_node_ids
             ),
@@ -957,6 +1089,9 @@ def _relational_product_graph(
             ),
             "potential_unrepresented_control_edges": (
                 potential_unrepresented_control_edges
+            ),
+            "terminating_call_continuations": len(
+                terminating_call_continuations
             ),
             "reachability_truncated_by_control_frontier": bool(
                 potential_reachable_node_ids_set - reachable_node_ids_set
@@ -1079,6 +1214,84 @@ def _checked_product_reachability_inventories(
             )
         runtime_continuations[source_node_id] = set(continuation_node_ids)
 
+    terminating_fields = {
+        "source_node_id",
+        "continuation_node_id",
+        "continuation_target_id",
+        "call_edge_id",
+        "call_target_node_id",
+        "external_jump_node_id",
+        "external_site_id",
+        "machine_contract_id",
+    }
+    terminating_rows = evidence.get("terminating_call_continuations", [])
+    if not isinstance(terminating_rows, list):
+        raise StageAInputError(
+            "product graph terminating-call continuation inventory is not a list"
+        )
+    terminating_call_continuations: list[dict[str, int]] = []
+    terminating_pairs: set[tuple[int, int]] = set()
+    for raw_row in terminating_rows:
+        if not isinstance(raw_row, dict) or set(raw_row) != terminating_fields:
+            raise StageAInputError(
+                "product graph has a malformed terminating-call continuation row"
+            )
+        parsed = {field: _integer(raw_row.get(field)) for field in terminating_fields}
+        if any(value is None or value < 0 for value in parsed.values()):
+            raise StageAInputError(
+                "product graph terminating-call continuation fields must be non-negative integers"
+            )
+        row = {field: int(value) for field, value in parsed.items()}
+        source_node_id = row["source_node_id"]
+        continuation_node_id = row["continuation_node_id"]
+        call_edge_id = row["call_edge_id"]
+        pair = (source_node_id, continuation_node_id)
+        if (
+            source_node_id not in expected_node_id_set
+            or continuation_node_id not in expected_node_id_set
+            or row["call_target_node_id"] not in expected_node_id_set
+            or row["external_jump_node_id"] not in expected_node_id_set
+            or call_edge_id not in expected_edge_ids
+            or continuation_node_id
+                not in runtime_continuations.get(source_node_id, set())
+            or pair in terminating_pairs
+        ):
+            raise StageAInputError(
+                "product graph has an inconsistent terminating-call continuation row"
+            )
+        call_edge = edges[call_edge_id]
+        if (
+            bool(call_edge["infeasible"])
+            or call_edge.get("kind") != "call"
+            or int(call_edge["source_node_id"]) != source_node_id
+            or int(call_edge["target_node_id"]) != row["call_target_node_id"]
+            or int(nodes[continuation_node_id]["target_id"])
+                != row["continuation_target_id"]
+        ):
+            raise StageAInputError(
+                "product graph terminating-call continuation does not match its call edge"
+            )
+        terminating_pairs.add(pair)
+        terminating_call_continuations.append(row)
+    terminating_call_continuations.sort(key=lambda row: (
+        row["source_node_id"],
+        row["continuation_node_id"],
+        row["call_edge_id"],
+    ))
+    if terminating_rows != terminating_call_continuations:
+        raise StageAInputError(
+            "product graph terminating-call continuation inventory is not canonical"
+        )
+    if int(product_graph["counts"].get(
+        "terminating_call_continuations", 0
+    )) != len(terminating_call_continuations):
+        raise StageAInputError(
+            "product graph terminating-call continuation count is inconsistent"
+        )
+    terminating_by_source: dict[int, set[int]] = defaultdict(set)
+    for source_node_id, continuation_node_id in terminating_pairs:
+        terminating_by_source[source_node_id].add(continuation_node_id)
+
     def closure(extra_successors: dict[int, set[int]] | None = None) -> list[int]:
         reached = set(root_node_ids)
         worklist = list(root_node_ids)
@@ -1088,7 +1301,10 @@ def _checked_product_reachability_inventories(
             cursor += 1
             successors = (
                 feasible_successors[source_node_id]
-                | runtime_continuations.get(source_node_id, set())
+                | (
+                    runtime_continuations.get(source_node_id, set())
+                    - terminating_by_source.get(source_node_id, set())
+                )
                 | (extra_successors or {}).get(source_node_id, set())
             )
             for target_node_id in sorted(successors):
@@ -1287,6 +1503,7 @@ def _checked_product_reachability_inventories(
                 runtime_continuations.items()
             )
         ],
+        "terminating_call_continuations": terminating_call_continuations,
         "potential_control_cuts": canonical_cuts,
     }
 
@@ -1450,6 +1667,9 @@ def _composition_progress(
         "runtime_call_continuations": inventories[
             "runtime_call_continuations"
         ],
+        "terminating_call_continuations": inventories[
+            "terminating_call_continuations"
+        ],
         "conservative_potential_node_ids": potential_node_ids,
         "conservative_potential_feasible_edges": [
             {
@@ -1471,7 +1691,10 @@ def _composition_progress(
         "format": "stage-a-reachability-assurance-v1",
         "status": "control_closed" if reachability_scope_closed else "incomplete",
         "represented_rooted_reachability": {
-            "basis": "submitted_product_edges_and_checked_runtime_continuations",
+            "basis": (
+                "submitted_product_edges_and_checked_runtime_continuations_"
+                "excluding_checked_terminating_calls"
+            ),
             "node_ids": reachable_node_ids,
             "node_count": len(reachable_node_ids),
             "feasible_edge_ids": reachable_edge_ids,
@@ -1636,7 +1859,10 @@ def _composition_progress(
         "metric_policy": {
             "primary": "rooted_product_composition",
             "local_proof_counts_are_secondary": True,
-            "reachability_source": "decoded_behavior_and_checked_runtime_continuations",
+            "reachability_source": (
+                "decoded_behavior_and_checked_runtime_continuations_"
+                "excluding_checked_terminating_calls"
+            ),
             "unresolved_control_fails_closed": True,
             "blocker_totals_are_coverage_bearing": False,
             "blocker_totals_require_comparable_reachability_scope": True,

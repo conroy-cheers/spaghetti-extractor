@@ -144,10 +144,14 @@ def pe32SectionListValid (pe : PE32) : Nat -> Nat -> List Section -> Bool
 
 def pe32HeaderAndImageSizesValid (pe : PE32)
     (header : PE32CheckedHeader) : Bool :=
-  pe32AlignUp header.sectionTableEnd pe.fileAlignment == some pe.sizeOfHeaders &&
-    pe.sizeOfHeaders <= pe.bytes.length &&
-    pe.sizeOfHeaders <= pe.sizeOfImage &&
-    pe32SectionListValid pe pe.sizeOfHeaders pe.sizeOfHeaders pe.sections
+  match pe32AlignUp header.sectionTableEnd pe.fileAlignment with
+  | none => false
+  | some minimumHeaders =>
+      minimumHeaders <= pe.sizeOfHeaders &&
+        pe.sizeOfHeaders % pe.fileAlignment == 0 &&
+        pe.sizeOfHeaders <= pe.bytes.length &&
+        pe.sizeOfHeaders <= pe.sizeOfImage &&
+        pe32SectionListValid pe pe.sizeOfHeaders pe.sizeOfHeaders pe.sections
 
 def pe32EntrypointValid (pe : PE32) : Bool :=
   pe.entrypointRva == 0 ||

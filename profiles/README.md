@@ -44,6 +44,13 @@ operationally. The final theorem remains conditional on external environments
 that satisfy these schemas; changes to a schema alter the relation-contract
 hash and invalidate dependent proof artifacts.
 
+`pe32-kernel32-console-lockstep-v1.json` adds the bounded console protocol used
+by the no-CRT WinAPI hello fixture: `GetStdHandle`, `WriteFile`, and terminal
+`ExitProcess`. The `WriteFile` contract reads exactly the requested source
+range and permits only its optional four-byte count output to change. The
+return from `GetStdHandle` is a paired opaque resource; concrete handles do not
+need to be equal across the two executions.
+
 APIs whose correctness requires an unsupported world feature remain absent.
 Callback registration is not approximated as an opaque resource. The supported
 registration effect consumes one related machine argument, resolves both

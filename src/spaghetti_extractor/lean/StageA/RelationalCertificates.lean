@@ -1230,14 +1230,19 @@ theorem RelationalRuntimeCallStackHolds.afterExternalJump
                 transferred.1,
                 ih frames continuations checked.2 holds.2.2.2.2.2⟩
 
-def RelationalRuntimeCallTargetsReachable (graph : RelationalProductGraph)
-    (reachability : RelationalProductReachabilityEvidence) : List Nat -> Prop
+/-- Runtime return addresses must remain canonical mapped code targets. Whether
+they are behaviorally reachable is checked when a return transition actually
+selects one; a terminating callee may carry a syntactic return address that can
+never execute.  The reachability argument is retained temporarily for generated
+module API compatibility. -/
+def RelationalRuntimeCallTargetsMapped (graph : RelationalProductGraph)
+    (_reachability : RelationalProductReachabilityEvidence) : List Nat -> Prop
   | [] => True
   | continuation :: continuations =>
       (exists nodeId node,
         graph.getNode? nodeId = some node ∧
-          node.targetId = continuation ∧ reachability.contains nodeId = true) ∧
-        RelationalRuntimeCallTargetsReachable graph reachability continuations
+          node.targetId = continuation) ∧
+        RelationalRuntimeCallTargetsMapped graph _reachability continuations
 
 theorem RelationalRuntimeCallStackHolds.of_memory_eq
     (context : StaticProofContext)
@@ -1688,7 +1693,7 @@ def WorldExecutionsRelated (context : StaticProofContext)
               frames originalCalls frameOffsets ∧
             RelationalRuntimeCallFactsHold context originalWorld frameOffsets
               originalState.registers candidateState.registers ∧
-            RelationalRuntimeCallTargetsReachable graph reachability originalCalls ∧
+            RelationalRuntimeCallTargetsMapped graph reachability originalCalls ∧
             StateRel context originalWorld invariant originalState candidateState
   | .returned originalState originalWorld,
       .returned candidateState candidateWorld =>
@@ -1725,7 +1730,7 @@ def WorldExecutionsRelated (context : StaticProofContext)
               frames originalCalls frameOffsets ∧
             RelationalRuntimeCallFactsHold context originalWorld frameOffsets
               originalState.registers candidateState.registers ∧
-            RelationalRuntimeCallTargetsReachable graph reachability originalCalls ∧
+            RelationalRuntimeCallTargetsMapped graph reachability originalCalls ∧
             StateRel context originalWorld invariant originalState candidateState ∧
             WorldExternalCallbackRuntimesRelated context graph invariants reachability
               callbackTargets sites originalCallbacks candidateCallbacks ∧
@@ -1758,7 +1763,7 @@ def WorldExternalProtocolActionsRelated (context : StaticProofContext)
               candidateResult.state frames originalSuspension.calls frameOffsets ∧
             RelationalRuntimeCallFactsHold context originalResult.world frameOffsets
               originalResult.state.registers candidateResult.state.registers ∧
-            RelationalRuntimeCallTargetsReachable graph reachability
+            RelationalRuntimeCallTargetsMapped graph reachability
               originalSuspension.calls ∧
             StateRel context originalResult.world
               originalSuspension.site.targetInvariant originalResult.state
@@ -1931,7 +1936,7 @@ theorem stepWorldExternalSuspension_related (context : StaticProofContext)
       · simp [RelationalRuntimeCallStackHolds]
       · simp [RelationalRuntimeCallFactsHold,
           RelationalRuntimeCallImportsHold, RelationalRuntimeCallRelationsHold]
-      · simp [RelationalRuntimeCallTargetsReachable]
+      · simp [RelationalRuntimeCallTargetsMapped]
       · simp only [WorldExternalCallbackRuntimesRelated]
         exact ⟨⟨suspensionRelation, entryRelation,
           ⟨nodeId, node, nodeFound, callbackTargetAllowed, callbackControlAllowed,
@@ -2159,7 +2164,7 @@ def RunningProductNodeStepRefined (context : StaticProofContext)
           frames calls frameOffsets ->
         RelationalRuntimeCallFactsHold context world frameOffsets originalState.registers
           candidateState.registers ->
-        RelationalRuntimeCallTargetsReachable graph reachability calls ->
+        RelationalRuntimeCallTargetsMapped graph reachability calls ->
         StateRel context world invariant originalState candidateState ->
         worldRelationalObservationsRelated context
             (original.transitionSystem.step
@@ -2189,7 +2194,7 @@ def CallbackRunningProductNodeStepRefined (context : StaticProofContext)
           frames calls frameOffsets →
         RelationalRuntimeCallFactsHold context world frameOffsets originalState.registers
           candidateState.registers →
-        RelationalRuntimeCallTargetsReachable graph reachability calls →
+        RelationalRuntimeCallTargetsMapped graph reachability calls →
         StateRel context world invariant originalState candidateState →
         originalCallbacks ≠ [] →
         WorldExternalCallbackRuntimesRelated context graph invariants reachability
@@ -2534,6 +2539,132 @@ def preferredBaseImageMemory (pe : PE32) : Memory := fun address =>
     | none => BitVec.ofNat 8 0
   else BitVec.ofNat 8 0
 
+def preferredBaseImportWrites (candidate : Bool) (context : StaticProofContext)
+    (world : RelationalWorld) : List (Word × Word) :=
+  world.importAddresses.map fun binding =>
+    if candidate then
+      (BitVec.ofNat 32
+          (context.candidatePe.imageBase + binding.candidateIatRva),
+        binding.candidateAddress)
+    else
+      (BitVec.ofNat 32
+          (context.originalPe.imageBase + binding.originalIatRva),
+        binding.originalAddress)
+
+/-- A concrete preferred-base image with the abstract loader's paired import
+addresses written into its IAT.  The finite launch checkers below establish
+the semantic properties of this proposed memory; construction alone grants no
+proof authority. -/
+def loaderPopulatedPreferredBaseMemory (candidate : Bool)
+    (context : StaticProofContext) (world : RelationalWorld) : Memory :=
+  applyConcreteWrites
+    (preferredBaseImageMemory
+      (if candidate then context.candidatePe else context.originalPe))
+    (preferredBaseImportWrites candidate context world)
+
+/-- Finite replay of `PreferredBaseImageMemory` for one concrete memory. -/
+def preferredBaseImageMemoryChecked (pe : PE32) (imports : List PEImport)
+    (memory : Memory) : Bool :=
+  (List.range pe.sizeOfImage).all fun rva =>
+    importIatByteCovered imports rva ||
+      match rvaByte pe rva with
+      | none => true
+      | some expected =>
+          memory (BitVec.ofNat 32 (pe.imageBase + rva)) ==
+            BitVec.ofNat 8 expected
+
+theorem preferredBaseImageMemory_of_checked (pe : PE32)
+    (imports : List PEImport) (memory : Memory)
+    (checked : preferredBaseImageMemoryChecked pe imports memory = true) :
+    PreferredBaseImageMemory pe imports memory := by
+  intro rva expected rvaBefore notIat byteRead
+  simp only [preferredBaseImageMemoryChecked, List.all_eq_true] at checked
+  have row := checked rva (List.mem_range.mpr rvaBefore)
+  simp [notIat, byteRead] at row
+  exact row
+
+/-- Finite replay of immutable-image words.  `readImmutableImageWord` itself
+checks that every admitted word is wholly contained in the image, so every
+possible start belongs to this bounded inventory. -/
+def immutableImageWordMemoryChecked (pe : PE32) (memory : Memory) : Bool :=
+  match parseImports pe with
+  | none => false
+  | some imports =>
+      (List.range pe.sizeOfImage).all fun rva =>
+        match readImmutableImageWordWithImports pe imports
+            (pe.imageBase + rva) 4 with
+        | none => true
+        | some expected =>
+            Memory.read32 memory (BitVec.ofNat 32 (pe.imageBase + rva)) ==
+              BitVec.ofNat 32 expected
+
+theorem immutableImageWordMemory_of_checked (pe : PE32) (memory : Memory)
+    (checked : immutableImageWordMemoryChecked pe memory = true) :
+    ImmutableImageWordMemory pe memory := by
+  intro absolute expected wordRead
+  have bounds := readImmutableImageWord_bounds pe absolute 4 expected wordRead
+  have rvaBefore : absolute - pe.imageBase < pe.sizeOfImage := by omega
+  cases importsResult : parseImports pe with
+  | none => simp [readImmutableImageWord, importsResult] at wordRead
+  | some imports =>
+    have rawRead : readImmutableImageWordWithImports pe imports absolute 4 =
+        some expected := by
+      simpa [readImmutableImageWord, importsResult] using wordRead
+    simp only [immutableImageWordMemoryChecked, importsResult,
+      List.all_eq_true] at checked
+    have row := checked (absolute - pe.imageBase)
+      (List.mem_range.mpr rvaBefore)
+    have absoluteEq : pe.imageBase + (absolute - pe.imageBase) = absolute := by
+      omega
+    simp [absoluteEq, rawRead] at row
+    exact row
+
+def importAddressesMemoryHoldChecked (context : StaticProofContext)
+    (world : RelationalWorld) (original candidate : Memory) : Bool :=
+  world.importAddresses.all fun binding =>
+    Memory.read32 original
+        (BitVec.ofNat 32
+          (context.originalPe.imageBase + binding.originalIatRva)) ==
+      binding.originalAddress &&
+    Memory.read32 candidate
+        (BitVec.ofNat 32
+          (context.candidatePe.imageBase + binding.candidateIatRva)) ==
+      binding.candidateAddress
+
+theorem importAddressesMemoryHold_of_checked (context : StaticProofContext)
+    (world : RelationalWorld) (original candidate : Memory)
+    (checked : importAddressesMemoryHoldChecked context world original candidate = true) :
+    ImportAddressesMemoryHold context world original candidate := by
+  intro binding member
+  simp only [importAddressesMemoryHoldChecked, List.all_eq_true] at checked
+  have row := checked binding member
+  simpa only [ImportAddressPair.memoryHolds, Bool.and_eq_true, beq_iff_eq]
+    using row
+
+def stackRangesMemoryHoldChecked (context : StaticProofContext)
+    (world : RelationalWorld) (original candidate : Memory) : Bool :=
+  world.stackRanges.all fun range =>
+    (List.range range.size).all fun offset =>
+      if decide (offset + 4 <= range.size) && decide (offset % 4 = 0) then
+        wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+          context.codeMap.entries.toList (context.relationalValueTargets world)
+          (Memory.read32 original
+            (range.originalBase + BitVec.ofNat 32 offset))
+          (Memory.read32 candidate
+            (range.candidateBase + BitVec.ofNat 32 offset))
+      else true
+
+theorem stackRangesMemoryHold_of_checked (context : StaticProofContext)
+    (world : RelationalWorld) (original candidate : Memory)
+    (checked : stackRangesMemoryHoldChecked context world original candidate = true) :
+    StackRangesMemoryHold context world original candidate := by
+  intro range rangeMember offset inside aligned
+  simp only [stackRangesMemoryHoldChecked, List.all_eq_true] at checked
+  have offsetBefore : offset < range.size := by omega
+  have row := checked range rangeMember offset (List.mem_range.mpr offsetBefore)
+  simp [inside, aligned] at row
+  exact row
+
 theorem preferredBaseImageMemory_maps_image (pe : PE32) (imports : List PEImport)
     (bounded : pe.imageBase + pe.sizeOfImage <= 2 ^ 32) :
     PreferredBaseImageMemory pe imports (preferredBaseImageMemory pe) := by
@@ -2555,19 +2686,27 @@ theorem preferredBaseImageMemory_immutable (pe : PE32)
     simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt absoluteBefore]
   have readChecked :
       readRvaLittleEndian pe (absolute - pe.imageBase) 4 = some expected := by
-    unfold readImmutableImageWord at checked
-    split at checked
-    · simp at checked
-    · dsimp only at checked
-      split at checked
-      · simp at checked
-      · split at checked
-        · cases sectionResult : pe.sections.find? (fun sec =>
-              !sec.writable && sec.virtualAddress <= absolute - pe.imageBase &&
-                absolute - pe.imageBase + 4 <= sec.virtualAddress + sec.mappedSize) with
-          | none => simp [sectionResult] at checked
-          | some sec => simpa [sectionResult] using checked
-        · simpa using checked
+    cases importsResult : parseImports pe with
+    | none => simp [readImmutableImageWord, importsResult] at checked
+    | some imports =>
+      have rawChecked : readImmutableImageWordWithImports pe imports absolute 4 =
+          some expected := by
+        simpa [readImmutableImageWord, importsResult] using checked
+      unfold readImmutableImageWordWithImports at rawChecked
+      split at rawChecked
+      · simp at rawChecked
+      · dsimp only at rawChecked
+        split at rawChecked
+        · simp at rawChecked
+        · split at rawChecked
+          · simp at rawChecked
+          · split at rawChecked
+            · cases sectionResult : pe.sections.find? (fun sec =>
+                  !sec.writable && sec.virtualAddress <= absolute - pe.imageBase &&
+                    absolute - pe.imageBase + 4 <= sec.virtualAddress + sec.mappedSize) with
+              | none => simp [sectionResult] at rawChecked
+              | some sec => simpa [sectionResult] using rawChecked
+            · simpa using rawChecked
   have rangeFour : List.range 4 = [0, 1, 2, 3] := by decide
   unfold readRvaLittleEndian at readChecked
   simp only [rangeFour, List.mapM_cons, List.mapM_nil] at readChecked
@@ -2811,7 +2950,7 @@ def PE32ConsoleLaunchStateRelV2 (context : StaticProofContext)
         launch.continuationTargetIds launch.frameOffsets ∧
       RelationalRuntimeCallFactsHold context world launch.frameOffsets
         original.registers candidate.registers ∧
-      RelationalRuntimeCallTargetsReachable graph reachability
+      RelationalRuntimeCallTargetsMapped graph reachability
         launch.continuationTargetIds ∧
       PE32TlsProcessAttachArgumentsHold context original candidate
         launch.tlsCallbackTargetIds frames ∧

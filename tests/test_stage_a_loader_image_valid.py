@@ -78,6 +78,16 @@ def _generic_pe32_image() -> bytes:
     return headers + bytes(text_raw_size)
 
 
+def _expanded_headers_pe32_image() -> bytes:
+    image = bytearray(_generic_pe32_image())
+    image[0x200:0x200] = bytes(0x200)
+    optional_offset = 0x80 + 24
+    section_table_offset = optional_offset + 224
+    struct.pack_into("<I", image, optional_offset + 60, 0x400)
+    struct.pack_into("<I", image, section_table_offset + 20, 0x400)
+    return bytes(image)
+
+
 def _jq_layout_pe32_image() -> bytes:
     file_alignment = 0x200
     section_alignment = 0x1000
@@ -199,6 +209,7 @@ class StageALoaderImageValidTests(unittest.TestCase):
         self,
     ) -> None:
         generic = _generic_pe32_image()
+        expanded_headers = _expanded_headers_pe32_image()
         jq_layout = _jq_layout_pe32_image()
         pe_offset = 0x80
         optional_offset = pe_offset + 24
@@ -242,6 +253,7 @@ class StageALoaderImageValidTests(unittest.TestCase):
 
         tree_definitions = [
             _lean_tree("genericTree", generic),
+            _lean_tree("expandedHeadersTree", expanded_headers),
             _lean_tree("jqLayoutTree", jq_layout),
             *(_lean_tree(name, image) for name, image in mutants.items()),
             _lean_tree("badCachedSizeTree", generic, cached_size=len(generic) + 1),
@@ -291,6 +303,7 @@ def loaderChecked (bytes : ByteTree) : Bool :=
 
 {"".join(tree_definitions)}
 example : loaderChecked genericTree = true := by native_decide
+example : loaderChecked expandedHeadersTree = true := by native_decide
 example : loaderChecked jqLayoutTree = true := by native_decide
 
 {rejected_examples}

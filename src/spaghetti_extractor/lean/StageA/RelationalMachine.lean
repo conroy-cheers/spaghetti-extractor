@@ -983,7 +983,13 @@ def ImportAddressPair.staticValid (context : StaticProofContext)
         context.originalPe.imageBase + binding.originalIatRva + 4 <= 2^32 &&
         context.candidatePe.imageBase + binding.candidateIatRva + 4 <= 2^32 &&
         binding.originalAddress != BitVec.ofNat 32 0 &&
-        binding.candidateAddress != BitVec.ofNat 32 0
+        binding.candidateAddress != BitVec.ofNat 32 0 &&
+        !(context.originalPe.imageBase <= binding.originalAddress.toNat &&
+          binding.originalAddress.toNat <
+            context.originalPe.imageBase + context.originalPe.sizeOfImage) &&
+        !(context.candidatePe.imageBase <= binding.candidateAddress.toNat &&
+          binding.candidateAddress.toNat <
+            context.candidatePe.imageBase + context.candidatePe.sizeOfImage)
   | _, _ => false
 
 theorem ImportAddressPair.originalImportWitness
@@ -1036,7 +1042,9 @@ def importAddressIdentitiesConsistent (bindings : List ImportAddressPair) : Bool
       if other.imported == binding.imported then
         other.originalAddress == binding.originalAddress &&
           other.candidateAddress == binding.candidateAddress
-      else true
+      else
+        other.originalAddress != binding.originalAddress &&
+          other.candidateAddress != binding.candidateAddress
 
 def RelationalWorld.importAddressesStaticValid
     (context : StaticProofContext) (world : RelationalWorld) : Bool :=

@@ -1369,7 +1369,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 for family in finalized["families"]
             ))
 
-    def test_nonidentical_launch_without_checked_memory_model_fails_closed(self):
+    def test_nonidentical_launch_uses_checked_memory_model(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image = _pe32_image(b"\xeb\xfe")
@@ -1389,22 +1389,27 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 out=prepared,
             )
 
-            self.assertEqual(result["acceptance"]["status"], "incomplete", result)
-            self.assertEqual(result["acceptance"]["theorem"], None)
-            blockers = {
-                blocker["code"]: blocker
-                for blocker in result["acceptance"]["blockers"]
-            }
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                result["acceptance"]["theorem"], RELATIONAL_ACCEPTANCE_THEOREM
+            )
+            self.assertEqual(result["acceptance"]["blockers"], [])
+            self.assertEqual(
+                result["acceptance"]["launch_realizability"]["profile"],
+                "paired-preferred-base-import-stack-v1",
+            )
+            launch = (
+                prepared / "lean" / "StageA" /
+                "RelationalLaunchRealizabilityCertificate.lean"
+            ).read_text(encoding="utf-8")
             self.assertIn(
-                "launch_realizability_certificate_unsupported", blockers
+                "def consoleLaunchOriginalMemory", launch
             )
             self.assertIn(
-                "not byte-identical",
-                blockers["launch_realizability_certificate_unsupported"]["message"],
+                "def consoleLaunchCandidateMemory", launch
             )
-            self.assertFalse(
-                (prepared / "lean" / "StageA" /
-                 "RelationalLaunchRealizabilityCertificate.lean").exists()
+            self.assertIn(
+                "ordinaryMemoryCandidateProjection", launch
             )
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for canonical-region proofs")
@@ -3744,12 +3749,132 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertEqual(result["acceptance"]["status"], "ready", result)
             self.assertEqual(
                 [step["kind"] for step in result["acceptance"]["node_steps"]],
-                ["call", "jump", "external_terminate"],
+                ["call", "external_terminate"],
             )
-            terminal_step = result["acceptance"]["node_steps"][2]
+            terminal_step = next(
+                step for step in result["acceptance"]["node_steps"]
+                if step["kind"] == "external_terminate"
+            )
             self.assertEqual(terminal_step["control_state"]["calls"], [1])
             self.assertEqual(
                 terminal_step["machine_contract"]["disposition"], "terminates"
+            )
+            product_graph = json.loads(
+                (prepared / "relational-product-graph.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                product_graph["evidence"]["runtime_call_continuations"],
+                [{"source_node_id": 0, "continuation_node_ids": [1]}],
+            )
+            self.assertEqual(
+                product_graph["evidence"]["terminating_call_continuations"],
+                [{
+                    "source_node_id": 0,
+                    "continuation_node_id": 1,
+                    "continuation_target_id": 1,
+                    "call_edge_id": 0,
+                    "call_target_node_id": 2,
+                    "external_jump_node_id": 2,
+                    "external_site_id": int(terminal_step["external_site"]["id"]),
+                    "machine_contract_id": 0,
+                }],
+            )
+            self.assertEqual(
+                product_graph["evidence"]["declared_reachable_node_ids"],
+                [0, 2],
+            )
+            self.assertEqual(
+                product_graph["evidence"]["potential_reachable_node_ids"],
+                [0, 2],
+            )
+            self.assertEqual(
+                product_graph["evidence"]["reachable_feasible_edge_ids"],
+                [0],
+            )
+            self.assertEqual(
+                result["composition_progress"]["reachability"]["rooted_node_ids"],
+                [0, 2],
+            )
+            register_relations = json.loads(
+                (prepared / "relational-register-relations.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            call_edge = next(
+                edge for edge in register_relations["edges"]
+                if edge["source_region_index"] == 0
+                and edge["target_region_index"] == 2
+            )
+            self.assertNotIn(
+                "returning_external_thunk_contract_id", call_edge
+            )
+            normalized_contract = json.loads(
+                (prepared / "relation-contract.json").read_text(encoding="utf-8")
+            )
+            semantic_ir = json.loads(
+                (prepared / "relational-semantic-ir.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            external_sites = json.loads(
+                (prepared / "relational-external-call-sites.json").read_text(
+                    encoding="utf-8"
+                )
+            )["candidates"]
+            direct_sites = [
+                site for site in external_sites
+                if site.get("site_kind") == "direct_import_thunk"
+            ]
+            self.assertEqual(len(direct_sites), 1)
+            ambiguous_graph = _relational_product_graph(
+                normalized_contract,
+                [
+                    {
+                        "original_ir": region["original"],
+                        "candidate_ir": region["candidate"],
+                    }
+                    for region in semantic_ir["regions"]
+                ],
+                register_relations,
+                [],
+                original_image_base=0x400000,
+                candidate_image_base=0x400000,
+                external_call_candidates=[
+                    *external_sites,
+                    {**direct_sites[0], "id": int(direct_sites[0]["id"]) + 100},
+                ],
+            )
+            self.assertEqual(
+                ambiguous_graph["evidence"]["terminating_call_continuations"],
+                [],
+            )
+            self.assertEqual(
+                ambiguous_graph["evidence"]["declared_reachable_node_ids"],
+                [0, 1, 2],
+            )
+            callsite = json.loads(
+                (prepared / "relational-callsite-preservation.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(callsite["counts"]["proposal_edges"], 0)
+            self.assertEqual(
+                terminal_step["control_state"]["frame_offsets"][0].get(
+                    "import_relations", []
+                ),
+                [],
+            )
+            self.assertEqual(
+                terminal_step["control_state"]["frame_offsets"][0].get(
+                    "register_relations", []
+                ),
+                [],
+            )
+            self.assertEqual(
+                result["acceptance"]["launch_realizability"]["profile"],
+                "paired-preferred-base-import-stack-v1",
             )
             lean = _run_lean_relational(
                 prepared / "lean", bundle="RelationalAcceptance"

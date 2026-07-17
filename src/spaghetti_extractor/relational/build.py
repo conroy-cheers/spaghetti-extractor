@@ -1093,6 +1093,7 @@ def _write_relational_module_graph(
             module.startswith(prefix)
             for module in modules
             for prefix in (
+                "RelationalAcceptanceRegionChunk",
                 "RelationalAcceptanceChunk",
                 "RelationalProductGraphChunk",
                 "RelationalDynamicRangeIndirectCallChunk",

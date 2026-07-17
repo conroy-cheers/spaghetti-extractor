@@ -511,6 +511,55 @@
               spaghetti-extractor stage-a-check-proof \
                 --report "$work/proof" \
                 --out "$work/proof-check.json"
+              jq -e '
+                .format == "stage-a-relational-proof-check-v1" and
+                .status == "pass" and
+                .claim_scope.kind == "whole_program_observational_equivalence" and
+                .claim_scope.whole_program_observational_equivalence == true and
+                .lean_check.status == "checked" and
+                .lean_check.theorem ==
+                  "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                ([.checks[]] | all)
+              ' "$work/proof-check.json" >/dev/null
+              jq -e '
+                .format == "stage-a-relational-verdict-v1" and
+                .verdict == "pass" and
+                .counts.failed == 0 and
+                .counts.incomplete == 0 and
+                .counts.incomplete_assumptions == 0
+              ' "$work/proof/verdict.json" >/dev/null
+              jq -e '
+                .format == "stage-a-whole-program-acceptance-v1" and
+                .status == "ready" and
+                .theorem ==
+                  "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                .required_theorem ==
+                  "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent"
+              ' "$work/proof/whole-program-acceptance.json" >/dev/null
+              jq -e '
+                .format == "stage-a-composition-progress-v1" and
+                .status == "ready_for_lean" and
+                .counts.roots == 1 and
+                .counts.rooted_reachable_nodes == 1 and
+                .counts.rooted_reachable_feasible_edges == 1 and
+                .counts.rooted_refined_segments == 1 and
+                .counts.rooted_segment_refinement_frontier_edges == 0 and
+                .counts.rooted_decoded_control_frontier_nodes == 0 and
+                .counts.unresolved_indirect_control_nodes == 0 and
+                .counts.unsupported_instructions == 0 and
+                .counts.acceptance_blockers == 0
+              ' "$work/proof/composition-progress.json" >/dev/null
+              jq -e '
+                .format == "stage-a-lean-module-graph-v1" and
+                .expected_final_theorem ==
+                  "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                (.approved_axioms | sort) ==
+                  (["propext", "Classical.choice", "Quot.sound"] | sort) and
+                .acceptance.status == "ready" and
+                .acceptance.theorem ==
+                  "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                .acceptance.blockers == []
+              ' "$work/proof/module-graph.json" >/dev/null
               spaghetti-extractor stage-a-export-reference-contract \
                 --original "$fixture_dir/stage-a-loop-original.exe" \
                 --candidate "$fixture_dir/stage-a-loop-candidate.exe" \
@@ -537,6 +586,345 @@
               printf '%s\n' "${stage-a-fixtures}"
             '';
           };
+          stage-a-exit-fixtures = mingw32.stdenv.mkDerivation {
+            pname = "stage-a-exit-fixtures";
+            version = "1";
+            src = ./tools/stage-a-fixtures;
+            dontConfigure = true;
+            dontStrip = true;
+
+            buildPhase = ''
+              runHook preBuild
+              common_flags=(
+                -x assembler-with-cpp
+                -g0
+                -nostdlib
+                -Wl,--exclude-all-symbols
+                -Wl,--subsystem,console
+                -Wl,-e,_mainCRTStartup
+                -Wl,--disable-dynamicbase
+                -Wl,--image-base,0x400000
+                -Wl,--section-alignment,0x1000
+                -Wl,--file-alignment,0x400
+              )
+              $CC "''${common_flags[@]}" -Wl,-Map,exit-original.map \
+                -o exit-original.exe stage_a_exit.S -lkernel32
+              $CC -DSTAGE_A_CANDIDATE "''${common_flags[@]}" \
+                -Wl,-Map,exit-candidate.map \
+                -o exit-candidate.exe stage_a_exit.S -lkernel32
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              runHook preInstall
+              fixture_dir="$out/share/spaghetti-extractor/stage-a-fixtures/exit-distinct"
+              mkdir -p "$fixture_dir"
+              cp exit-original.exe exit-candidate.exe \
+                exit-original.map exit-candidate.map "$fixture_dir/"
+              runHook postInstall
+            '';
+          };
+          stage-a-exit-static-map = pkgs.runCommand "stage-a-exit-static-map"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-core ];
+            }
+            ''
+              fixture_dir="${stage-a-exit-fixtures}/share/spaghetti-extractor/stage-a-fixtures/exit-distinct"
+              mkdir -p "$out"
+              spaghetti-extractor stage-a-generate-map \
+                --original "$fixture_dir/exit-original.exe" \
+                --candidate "$fixture_dir/exit-candidate.exe" \
+                --linker-map-original "$fixture_dir/exit-original.map" \
+                --linker-map-candidate "$fixture_dir/exit-candidate.map" \
+                --original-flags "handwritten-mov-exit-42" \
+                --candidate-flags "handwritten-xor-add-exit-42" \
+                --out "$out/exit-block-map.json" \
+                --layout-contract-out "$out/exit-layout-contract.json" \
+                > "$out/generate-map.stdout"
+            '';
+          stage-a-exit-relation-contract = pkgs.runCommand "stage-a-exit-relation-contract"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-core ];
+            }
+            ''
+              fixture_dir="${stage-a-exit-fixtures}/share/spaghetti-extractor/stage-a-fixtures/exit-distinct"
+              mkdir -p "$out"
+              spaghetti-extractor stage-a-generate-relation-contract \
+                --original "$fixture_dir/exit-original.exe" \
+                --candidate "$fixture_dir/exit-candidate.exe" \
+                --mapping "${stage-a-exit-static-map}/exit-block-map.json" \
+                --external-profile "${./profiles/pe32-kernel32-console-lockstep-v1.json}" \
+                --out "$out/exit-relation-contract.json" \
+                > "$out/generate-relation.stdout"
+            '';
+          stage-a-exit-prepared-proof = pkgs.runCommand "stage-a-exit-prepared-proof"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-core pkgs.lean4 ];
+            }
+            ''
+              fixture_dir="${stage-a-exit-fixtures}/share/spaghetti-extractor/stage-a-fixtures/exit-distinct"
+              work="$TMPDIR/stage-a-exit"
+              mkdir -p "$work"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=4
+              SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/cache" \
+                spaghetti-extractor stage-a-prepare-relational \
+                  --original "$fixture_dir/exit-original.exe" \
+                  --candidate "$fixture_dir/exit-candidate.exe" \
+                  --relation-contract "${stage-a-exit-relation-contract}/exit-relation-contract.json" \
+                  --out "$work/relational-v3" \
+                  > "$work/prepare.stdout"
+              mkdir -p "$out/report"
+              cp "${stage-a-exit-static-map}/exit-block-map.json" \
+                "${stage-a-exit-static-map}/exit-layout-contract.json" \
+                "${stage-a-exit-relation-contract}/exit-relation-contract.json" \
+                "$out/report/"
+              cp -R "$work/relational-v3" "$out/report/relational-v3"
+              cp "$work/prepare.stdout" "$out/report/"
+            '';
+          stage-a-exit-evidence-bundle =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              prepared = stage-a-exit-prepared-proof + "/report/relational-v3";
+              targetNodes = [ "relationalacceptance" ];
+              targetBundle = true;
+            };
+          stage-a-exit-check = pkgs.runCommand "stage-a-exit-check"
+            {
+              nativeBuildInputs = [ pkgs.jq ];
+            }
+            ''
+              prepared="${stage-a-exit-prepared-proof}/report/relational-v3"
+              jq -e '
+                .status == "prepared" and
+                .original_sha256 != .candidate_sha256 and
+                .expected_final_theorem ==
+                  "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                .acceptance.status == "ready" and
+                .acceptance.blockers == [] and
+                .acceptance.launch_realizability.profile ==
+                  "paired-preferred-base-import-stack-v1" and
+                (.acceptance.launch_realizability.import_bindings | length) == 1 and
+                .composition_progress.status == "ready_for_lean" and
+                .composition_progress.counts.roots == 1 and
+                .composition_progress.counts.rooted_reachable_nodes == 2 and
+                .composition_progress.counts.rooted_reachable_feasible_edges == 1 and
+                .composition_progress.counts.rooted_refined_segments == 1 and
+                .composition_progress.counts.acceptance_blockers == 0 and
+                .composition_progress.counts.unsupported_instructions == 0
+              ' "$prepared/prepared-proof.json" >/dev/null
+              jq -e '
+                .format == "stage-a-lean-target-bundle-v1" and
+                .lean_trust == 0 and
+                ([.nodes[].id] | index("relationalacceptance")) != null
+              ' "${stage-a-exit-evidence-bundle}/bundle.json" >/dev/null
+              mkdir -p "$out"
+              cp "$prepared/prepared-proof.json" "$out/"
+              cp "${stage-a-exit-evidence-bundle}/bundle.json" \
+                "$out/evidence-bundle.json"
+            '';
+          stage-a-winapi-hello-fixtures = mingw32.stdenv.mkDerivation {
+            pname = "stage-a-winapi-hello-fixtures";
+            version = "1";
+            src = ./tools/stage-a-fixtures;
+            dontConfigure = true;
+            dontStrip = true;
+
+            buildPhase = ''
+              runHook preBuild
+              common_flags=(
+                -x assembler-with-cpp
+                -g0
+                -nostdlib
+                -Wl,--exclude-all-symbols
+                -Wl,--subsystem,console
+                -Wl,-e,_mainCRTStartup
+                -Wl,--disable-dynamicbase
+                -Wl,--image-base,0x400000
+                -Wl,--section-alignment,0x1000
+                -Wl,--file-alignment,0x400
+              )
+              $CC "''${common_flags[@]}" -Wl,-Map,hello-original.map \
+                -o hello-original.exe stage_a_winapi_hello.S -lkernel32
+              $CC -DSTAGE_A_CANDIDATE "''${common_flags[@]}" \
+                -Wl,-Map,hello-candidate.map \
+                -o hello-candidate.exe stage_a_winapi_hello.S -lkernel32
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              runHook preInstall
+              fixture_dir="$out/share/spaghetti-extractor/stage-a-fixtures/winapi-hello"
+              mkdir -p "$fixture_dir"
+              cp hello-original.exe hello-candidate.exe \
+                hello-original.map hello-candidate.map "$fixture_dir/"
+              runHook postInstall
+            '';
+          };
+          stage-a-winapi-hello-static-map =
+            pkgs.runCommand "stage-a-winapi-hello-static-map"
+              {
+                nativeBuildInputs = [ spaghetti-extractor-core ];
+              }
+              ''
+                fixture_dir="${stage-a-winapi-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/winapi-hello"
+                mkdir -p "$out"
+                spaghetti-extractor stage-a-generate-map \
+                  --original "$fixture_dir/hello-original.exe" \
+                  --candidate "$fixture_dir/hello-candidate.exe" \
+                  --linker-map-original "$fixture_dir/hello-original.map" \
+                  --linker-map-candidate "$fixture_dir/hello-candidate.map" \
+                  --original-flags "handwritten-winapi-console" \
+                  --candidate-flags "handwritten-winapi-console-unused-data-change" \
+                  --out "$out/hello-block-map.json" \
+                  --layout-contract-out "$out/hello-layout-contract.json" \
+                  > "$out/generate-map.stdout"
+              '';
+          stage-a-winapi-hello-relation-contract =
+            pkgs.runCommand "stage-a-winapi-hello-relation-contract"
+              {
+                nativeBuildInputs = [ spaghetti-extractor-core ];
+              }
+              ''
+                fixture_dir="${stage-a-winapi-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/winapi-hello"
+                mkdir -p "$out"
+                spaghetti-extractor stage-a-generate-relation-contract \
+                  --original "$fixture_dir/hello-original.exe" \
+                  --candidate "$fixture_dir/hello-candidate.exe" \
+                  --mapping "${stage-a-winapi-hello-static-map}/hello-block-map.json" \
+                  --external-profile "${./profiles/pe32-kernel32-console-lockstep-v1.json}" \
+                  --out "$out/hello-relation-contract.json" \
+                  > "$out/generate-relation.stdout"
+              '';
+          stage-a-winapi-hello-prepared-proof =
+            pkgs.runCommand "stage-a-winapi-hello-prepared-proof"
+              {
+                nativeBuildInputs = [ spaghetti-extractor-core pkgs.lean4 ];
+              }
+              ''
+                fixture_dir="${stage-a-winapi-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/winapi-hello"
+                work="$TMPDIR/stage-a-winapi-hello"
+                mkdir -p "$work"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=8
+                SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/cache" \
+                  spaghetti-extractor stage-a-prepare-relational \
+                    --original "$fixture_dir/hello-original.exe" \
+                    --candidate "$fixture_dir/hello-candidate.exe" \
+                    --relation-contract "${stage-a-winapi-hello-relation-contract}/hello-relation-contract.json" \
+                    --out "$work/relational-v3" \
+                    > "$work/prepare.stdout"
+                mkdir -p "$out/report"
+                cp "${stage-a-winapi-hello-static-map}/hello-block-map.json" \
+                  "${stage-a-winapi-hello-static-map}/hello-layout-contract.json" \
+                  "${stage-a-winapi-hello-relation-contract}/hello-relation-contract.json" \
+                  "$out/report/"
+                cp -R "$work/relational-v3" "$out/report/relational-v3"
+                cp "$work/prepare.stdout" "$out/report/"
+              '';
+          stage-a-winapi-hello-evidence-bundle =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              prepared =
+                stage-a-winapi-hello-prepared-proof + "/report/relational-v3";
+              targetNodes = [ "relationalacceptance" ];
+              targetBundle = true;
+            };
+          stage-a-winapi-hello-check =
+            pkgs.runCommand "stage-a-winapi-hello-check"
+              {
+                nativeBuildInputs = [ pkgs.jq ];
+              }
+              ''
+                prepared="${stage-a-winapi-hello-prepared-proof}/report/relational-v3"
+                jq -e '
+                  .status == "prepared" and
+                  .original_sha256 != .candidate_sha256 and
+                  .expected_final_theorem ==
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
+                  .acceptance.status == "ready" and
+                  .acceptance.blockers == [] and
+                  .acceptance.launch_realizability.profile ==
+                    "paired-preferred-base-import-stack-v1" and
+                  (.acceptance.launch_realizability.import_bindings | length) == 3 and
+                  .composition_progress.status == "ready_for_lean" and
+                  .composition_progress.counts.roots == 1 and
+                  .composition_progress.counts.rooted_reachable_nodes == 11 and
+                  .composition_progress.counts.rooted_reachable_feasible_edges == 8 and
+                  .composition_progress.counts.rooted_refined_segments == 8 and
+                  .composition_progress.counts.rooted_segment_refinement_frontier_edges == 0 and
+                  .composition_progress.counts.rooted_decoded_control_frontier_nodes == 0 and
+                  .composition_progress.counts.rooted_stack_invariant_frontier_nodes == 0 and
+                  .composition_progress.counts.rooted_relational_call_frame_frontier_nodes == 0 and
+                  .composition_progress.counts.unresolved_indirect_control_nodes == 0 and
+                  .composition_progress.counts.unsupported_instructions == 0 and
+                  .composition_progress.counts.acceptance_blockers == 0
+                ' "$prepared/prepared-proof.json" >/dev/null
+                jq -e '
+                  .format == "stage-a-lean-target-bundle-v1" and
+                  .lean_trust == 0 and
+                  ([.nodes[].id] | index("relationalacceptance")) != null
+                ' "${stage-a-winapi-hello-evidence-bundle}/bundle.json" >/dev/null
+                mkdir -p "$out"
+                cp "$prepared/prepared-proof.json" "$out/"
+                cp "${stage-a-winapi-hello-evidence-bundle}/bundle.json" \
+                  "$out/evidence-bundle.json"
+              '';
+          stage-a-exit-behavior-smoke =
+            pkgs.runCommand "stage-a-exit-behavior-smoke"
+              {
+                nativeBuildInputs = [
+                  pkgs.wineWow64Packages.stable
+                  pkgs.xvfb-run
+                ];
+              }
+              ''
+                test -s "${stage-a-exit-check}/prepared-proof.json"
+                fixture_dir="${stage-a-exit-fixtures}/share/spaghetti-extractor/stage-a-fixtures/exit-distinct"
+                export HOME="$TMPDIR/home"
+                export WINEPREFIX="$TMPDIR/wine"
+                export WINEDEBUG=-all
+                export WINEDLLOVERRIDES="mscoree,mshtml="
+                mkdir -p "$HOME"
+                set +e
+                xvfb-run -a wine "$fixture_dir/exit-candidate.exe" \
+                  > "$TMPDIR/stdout" 2> "$TMPDIR/stderr"
+                status=$?
+                set -e
+                if [ "$status" -ne 42 ]; then
+                  cat "$TMPDIR/stdout" >&2
+                  cat "$TMPDIR/stderr" >&2
+                  echo "candidate exit status was $status, expected 42" >&2
+                  exit 1
+                fi
+                test ! -s "$TMPDIR/stdout"
+                mkdir -p "$out"
+                cp "$TMPDIR/stdout" "$TMPDIR/stderr" "$out/"
+                printf '%s\n' "$status" > "$out/exit-status"
+              '';
+          stage-a-winapi-hello-behavior-smoke =
+            pkgs.runCommand "stage-a-winapi-hello-behavior-smoke"
+              {
+                nativeBuildInputs = [
+                  pkgs.wineWow64Packages.stable
+                  pkgs.xvfb-run
+                ];
+              }
+              ''
+                test -s "${stage-a-winapi-hello-check}/prepared-proof.json"
+                fixture_dir="${stage-a-winapi-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/winapi-hello"
+                export HOME="$TMPDIR/home"
+                export WINEPREFIX="$TMPDIR/wine"
+                export WINEDEBUG=-all
+                export WINEDLLOVERRIDES="mscoree,mshtml="
+                mkdir -p "$HOME"
+                xvfb-run -a wine "$fixture_dir/hello-candidate.exe" \
+                  > "$TMPDIR/stdout" 2> "$TMPDIR/stderr"
+                printf 'Hello, world!\r\n' > "$TMPDIR/expected"
+                cmp "$TMPDIR/expected" "$TMPDIR/stdout"
+                mkdir -p "$out"
+                cp "$TMPDIR/stdout" "$TMPDIR/stderr" "$out/"
+              '';
           stage-a-jq-fixtures = pkgs.runCommand "stage-a-jq-fixtures"
             {
               nativeBuildInputs = [ pkgs.jq ];
@@ -1387,6 +1775,10 @@
             stageARelationalAcceptanceSuite.cases.representative_control_slice_closes_whole_program_theorem;
           stage-a-relational-tests-acceptance-terminal-return =
             stageARelationalAcceptanceSuite.cases.top_level_return_checks_terminal_invariant_end_to_end;
+          stage-a-relational-tests-acceptance-nonidentical-launch =
+            stageARelationalAcceptanceSuite.cases.nonidentical_launch_uses_checked_memory_model;
+          stage-a-relational-tests-acceptance-nonreturning-import-thunk =
+            stageARelationalAcceptanceSuite.cases.nonreturning_import_thunk_terminates_whole_program_end_to_end;
           stage-a-relational-tests-acceptance-external-loop =
             stageARelationalAcceptanceSuite.cases.external_call_loop_checks_paired_environment_end_to_end;
           stage-a-relational-tests-acceptance-external-allocation =
@@ -1517,6 +1909,20 @@
             stage-a-fixtures
             stage-a-fixtures-check
             stage-a-fixtures-root
+            stage-a-exit-fixtures
+            stage-a-exit-static-map
+            stage-a-exit-relation-contract
+            stage-a-exit-prepared-proof
+            stage-a-exit-evidence-bundle
+            stage-a-exit-check
+            stage-a-exit-behavior-smoke
+            stage-a-winapi-hello-fixtures
+            stage-a-winapi-hello-static-map
+            stage-a-winapi-hello-relation-contract
+            stage-a-winapi-hello-prepared-proof
+            stage-a-winapi-hello-evidence-bundle
+            stage-a-winapi-hello-check
+            stage-a-winapi-hello-behavior-smoke
             stage-a-gnu-hello-fixtures
             stage-a-gnu-hello-static-map
             stage-a-gnu-hello-relation-contract
@@ -1608,6 +2014,8 @@
             stage-a-relational-tests-state-dynamic-flow-call-boundary
             stage-a-relational-tests-acceptance-representative
             stage-a-relational-tests-acceptance-terminal-return
+            stage-a-relational-tests-acceptance-nonidentical-launch
+            stage-a-relational-tests-acceptance-nonreturning-import-thunk
             stage-a-relational-tests-acceptance-external-loop
             stage-a-relational-tests-acceptance-external-allocation
             stage-a-relational-tests-acceptance-input-flag-guard
@@ -1680,6 +2088,10 @@
             spaghetti-extractor
             stage-a-isa-conformance-bochs-80386
             stage-a-fixtures-check
+            stage-a-exit-check
+            stage-a-exit-behavior-smoke
+            stage-a-winapi-hello-check
+            stage-a-winapi-hello-behavior-smoke
             stage-a-gnu-hello-preflight
             stage-a-minimal-hello-check
             stage-a-jq-fixtures-check

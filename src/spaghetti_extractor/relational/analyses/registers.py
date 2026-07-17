@@ -2337,6 +2337,12 @@ def _synthesize_register_relations(
         if len(contracts) != 1 or continuation_index is None:
             continue
         contract = contracts[0]
+        if contract.get("disposition") != "returns":
+            # A terminal or protocol import has no ordinary successor state.
+            # Recording it as a returning thunk invents a continuation and can
+            # make runtime-frame propagation reject an otherwise valid terminal
+            # edge (or worse, relate unreachable code after the call).
+            continue
         edge["returning_external_thunk_contract_id"] = int(contract["id"])
         predecessors[continuation_index].append((
             caller_index,

@@ -178,7 +178,7 @@ def _lean_acceptance_callback_return_node(
         "        originalState candidateState controlAllowed (by\n"
         "          simp [RelationalRuntimeCallStackHolds]) (by\n"
         "          simp [RelationalRuntimeCallImportsHold]) (by\n"
-        "          simp [RelationalRuntimeCallTargetsReachable]) statesRelated\n"
+        "          simp [RelationalRuntimeCallTargetsMapped]) statesRelated\n"
         "      have ordinaryNext := ordinaryStep.2\n"
         "      unfold DecodedWorldProgram.transitionSystem at ordinaryNext\n"
         "      simp only [stepWorldExecution] at ordinaryNext\n"

@@ -683,83 +683,6 @@ def readRvaLittleEndian (pe : PE32) (rva size : Nat) : Option Nat := do
   let bytes <- (List.range size).mapM fun offset => rvaByte pe (rva + offset)
   pure (littleEndianValue bytes 0)
 
-def readImmutableImageWord (pe : PE32) (absolute size : Nat) : Option Nat := do
-  if absolute < pe.imageBase || size = 0 || absolute + size > 2^32 then none else
-  let rva := absolute - pe.imageBase
-  if rva + size > pe.sizeOfImage then none else
-  if !(rva + size <= pe.sizeOfHeaders) then
-    let _ <- pe.sections.find? fun sec =>
-      !sec.writable && sec.virtualAddress <= rva &&
-        rva + size <= sec.virtualAddress + sec.mappedSize
-  readRvaLittleEndian pe rva size
-
-/-- Check the exact TLS callback values and null terminator through the
-immutable-image reader.  `ImmutableImageWordMemory` then keeps this launch
-inventory stable while earlier TLS callbacks execute. -/
-def tlsCallbackArrayValuesImmutable (pe : PE32) : Nat -> List Nat -> Bool
-  | address, [] => readImmutableImageWord pe address 4 == some 0
-  | address, callbackRva :: callbackRvas =>
-      readImmutableImageWord pe address 4 == some (pe.imageBase + callbackRva) &&
-        tlsCallbackArrayValuesImmutable pe (address + 4) callbackRvas
-
-def tlsCallbackArrayImmutable (pe : PE32) : Bool :=
-  match parseTlsDirectory32 pe, parseTlsCallbackRvas pe with
-  | some none, some [] => true
-  | some (some tls), some callbackRvas =>
-      if tls.callbacksVa == 0 then callbackRvas.isEmpty
-      else
-        readImmutableImageWord pe
-            (pe.imageBase + pe.tlsDirectoryRva + 12) 4 == some tls.callbacksVa &&
-          tlsCallbackArrayValuesImmutable pe tls.callbacksVa callbackRvas
-  | _, _ => false
-
-theorem readImmutableImageWord_bounds (pe : PE32) (absolute size expected : Nat)
-    (checked : readImmutableImageWord pe absolute size = some expected) :
-    pe.imageBase <= absolute ∧ absolute + size <= 2^32 ∧
-      absolute + size <= pe.imageBase + pe.sizeOfImage := by
-  unfold readImmutableImageWord at checked
-  split at checked
-  · simp at checked
-  · simp_all
-    omega
-
-theorem readImmutableImageWord_region (pe : PE32) (absolute size expected : Nat)
-    (checked : readImmutableImageWord pe absolute size = some expected) :
-    absolute + size <= pe.imageBase + pe.sizeOfHeaders ∨
-      ∃ sec, sec ∈ pe.sections ∧ sec.writable = false ∧
-        pe.imageBase + sec.virtualAddress <= absolute ∧
-        absolute + size <= pe.imageBase + sec.virtualAddress + sec.mappedSize := by
-  have bounds := readImmutableImageWord_bounds pe absolute size expected checked
-  unfold readImmutableImageWord at checked
-  split at checked
-  · simp at checked
-  · dsimp only at checked
-    split at checked
-    · simp at checked
-    · split at checked
-      · right
-        cases found : pe.sections.find? (fun sec =>
-              !sec.writable && sec.virtualAddress <= absolute - pe.imageBase &&
-                absolute - pe.imageBase + size <=
-                  sec.virtualAddress + sec.mappedSize) with
-        | none => simp [found] at checked
-        | some sec =>
-            have member := List.mem_of_find?_eq_some found
-            have predicate := List.find?_some
-              (p := fun candidate : Section =>
-                !candidate.writable &&
-                  candidate.virtualAddress <= absolute - pe.imageBase &&
-                  absolute - pe.imageBase + size <=
-                    candidate.virtualAddress + candidate.mappedSize)
-              (a := sec) found
-            simp only [Bool.and_eq_true, decide_eq_true_eq] at predicate
-            have immutable := predicate.1.1
-            rw [Bool.not_eq_true'] at immutable
-            refine ⟨sec, member, immutable, ?_, ?_⟩ <;> omega
-      · left
-        simp_all
-        omega
-
 def readCStringRva : PE32 -> Nat -> Nat -> Option Bytes
   | _, _, 0 => none
   | pe, rva, fuel + 1 => do
@@ -817,6 +740,103 @@ def parseImports (pe : PE32) : Option (List PEImport) :=
     none
   else
     parseImportDescriptors pe 0 (pe.importDirectorySize / 20 + 1)
+
+def imageRangeExcludesIat (imports : List PEImport) (rva size : Nat) : Bool :=
+  !imports.any fun imported =>
+    rva < imported.iatRva + 4 && imported.iatRva < rva + size
+
+def readImmutableImageWordWithImports (pe : PE32) (imports : List PEImport)
+    (absolute size : Nat) : Option Nat := do
+  if absolute < pe.imageBase || size = 0 || absolute + size > 2^32 then none else
+  let rva := absolute - pe.imageBase
+  if rva + size > pe.sizeOfImage then none else
+  if !imageRangeExcludesIat imports rva size then none else
+  if !(rva + size <= pe.sizeOfHeaders) then
+    let _ <- pe.sections.find? fun sec =>
+      !sec.writable && sec.virtualAddress <= rva &&
+        rva + size <= sec.virtualAddress + sec.mappedSize
+  readRvaLittleEndian pe rva size
+
+def readImmutableImageWord (pe : PE32) (absolute size : Nat) : Option Nat := do
+  let imports <- parseImports pe
+  readImmutableImageWordWithImports pe imports absolute size
+
+/-- Check the exact TLS callback values and null terminator through the
+immutable-image reader.  `ImmutableImageWordMemory` then keeps this launch
+inventory stable while earlier TLS callbacks execute. -/
+def tlsCallbackArrayValuesImmutable (pe : PE32) : Nat -> List Nat -> Bool
+  | address, [] => readImmutableImageWord pe address 4 == some 0
+  | address, callbackRva :: callbackRvas =>
+      readImmutableImageWord pe address 4 == some (pe.imageBase + callbackRva) &&
+        tlsCallbackArrayValuesImmutable pe (address + 4) callbackRvas
+
+def tlsCallbackArrayImmutable (pe : PE32) : Bool :=
+  match parseTlsDirectory32 pe, parseTlsCallbackRvas pe with
+  | some none, some [] => true
+  | some (some tls), some callbackRvas =>
+      if tls.callbacksVa == 0 then callbackRvas.isEmpty
+      else
+        readImmutableImageWord pe
+            (pe.imageBase + pe.tlsDirectoryRva + 12) 4 == some tls.callbacksVa &&
+          tlsCallbackArrayValuesImmutable pe tls.callbacksVa callbackRvas
+  | _, _ => false
+
+theorem readImmutableImageWord_bounds (pe : PE32) (absolute size expected : Nat)
+    (checked : readImmutableImageWord pe absolute size = some expected) :
+    pe.imageBase <= absolute ∧ absolute + size <= 2^32 ∧
+      absolute + size <= pe.imageBase + pe.sizeOfImage := by
+  unfold readImmutableImageWord at checked
+  cases importsResult : parseImports pe with
+  | none => simp [importsResult] at checked
+  | some imports =>
+      simp only [importsResult, Option.bind_some] at checked
+      unfold readImmutableImageWordWithImports at checked
+      split at checked
+      · simp at checked
+      · simp_all
+        omega
+
+theorem readImmutableImageWord_region (pe : PE32) (absolute size expected : Nat)
+    (checked : readImmutableImageWord pe absolute size = some expected) :
+    absolute + size <= pe.imageBase + pe.sizeOfHeaders ∨
+      ∃ sec, sec ∈ pe.sections ∧ sec.writable = false ∧
+        pe.imageBase + sec.virtualAddress <= absolute ∧
+        absolute + size <= pe.imageBase + sec.virtualAddress + sec.mappedSize := by
+  have bounds := readImmutableImageWord_bounds pe absolute size expected checked
+  unfold readImmutableImageWord at checked
+  cases importsResult : parseImports pe with
+  | none => simp [importsResult] at checked
+  | some imports =>
+    simp only [importsResult, Option.bind_some] at checked
+    unfold readImmutableImageWordWithImports at checked
+    split at checked
+    · simp at checked
+    · dsimp only at checked
+      split at checked
+      · simp at checked
+      · split at checked
+        · right
+          cases found : pe.sections.find? (fun sec =>
+                !sec.writable && sec.virtualAddress <= absolute - pe.imageBase &&
+                  absolute - pe.imageBase + size <=
+                    sec.virtualAddress + sec.mappedSize) with
+          | none => simp [found] at checked
+          | some sec =>
+              have member := List.mem_of_find?_eq_some found
+              have predicate := List.find?_some
+                (p := fun candidate : Section =>
+                  !candidate.writable &&
+                    candidate.virtualAddress <= absolute - pe.imageBase &&
+                    absolute - pe.imageBase + size <=
+                      candidate.virtualAddress + candidate.mappedSize)
+                (a := sec) found
+              simp only [Bool.and_eq_true, decide_eq_true_eq] at predicate
+              have immutable := predicate.1.1
+              rw [Bool.not_eq_true'] at immutable
+              refine ⟨sec, member, immutable, ?_, ?_⟩ <;> omega
+        · left
+          simp_all
+          omega
 
 structure ImportThunkCertificate where
   lookupRva : Nat

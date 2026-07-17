@@ -443,6 +443,30 @@ def _whole_program_acceptance_plan(
         max_frame_aliases = 8
         max_frame_preserved_imports = 8
 
+        def terminal_external_jump_target(target_id: int) -> bool:
+            target_node_id = node_by_target.get(target_id)
+            if target_node_id is None:
+                return False
+            original = behaviors[target_node_id].get("original_ir", {})
+            candidate = behaviors[target_node_id].get("candidate_ir", {})
+            original_outcome = original.get("outcome") or {}
+            candidate_outcome = candidate.get("outcome") or {}
+            original_identity = _semantic_external_target_identity(
+                original_outcome.get("import") or {}
+            )
+            candidate_identity = _semantic_external_target_identity(
+                candidate_outcome.get("import") or {}
+            )
+            return (
+                original_outcome.get("op") == "external_jump"
+                and candidate_outcome.get("op") == "external_jump"
+                and original_identity is not None
+                and original_identity == candidate_identity
+                and machine_contract_by_import.get(
+                    original_identity, {}
+                ).get("disposition") == "terminates"
+            )
+
         def import_relation_key(relation: dict[str, Any]) -> str:
             return json.dumps({
                 "original": str(relation["original"]),
@@ -603,6 +627,12 @@ def _whole_program_acceptance_plan(
             callee_node_id: int,
             continuation_node_id: int,
         ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+            if terminal_external_jump_target(
+                int(nodes[callee_node_id]["target_id"])
+            ):
+                # A nonreturning import still has a concrete ABI frame, but no
+                # facts need to survive through a continuation that cannot run.
+                return (), ()
             requested = region_import_keys(callsite_node_id)
             rows = callsite_rows_by_node.get(callsite_node_id, [])
             proposal_edges = proposal_edges_by_node.get(callsite_node_id, [])
@@ -2165,15 +2195,16 @@ def _whole_program_acceptance_plan(
                 external_jump_kind: str | None = None
                 external_jump_cases_complete = True
                 for control_row in control_rows:
-                    continuation_target_id = int(control_row["calls"][0])
+                    calls = control_row["calls"]
+                    continuation_target_id = int(calls[0])
                     external_site = external_thunk_by_source_continuation.get(
                         (node_id, continuation_target_id)
                     )
                     if external_site is None:
                         block(
                             "external_jump_site_missing",
-                            f"import-thunk node {node_id} continuation "
-                            f"{continuation_target_id} lacks a checked site",
+                            f"import-thunk node {node_id} control state "
+                            f"{calls} lacks one checked site",
                             "close the thunk identity, ABI argument, boundary, and continuation evidence",
                         )
                         external_jump_cases_complete = False
@@ -2190,18 +2221,6 @@ def _whole_program_acceptance_plan(
                             f"import-thunk node {node_id} lacks a checked active "
                             "ESP+0 return slot",
                             "propagate every caller return slot into the thunk control state",
-                        )
-                        external_jump_cases_complete = False
-                        break
-                    target_node_id = node_by_target.get(
-                        continuation_target_id, -1
-                    )
-                    if target_node_id < 0:
-                        block(
-                            "external_jump_continuation_unmapped",
-                            f"import-thunk node {node_id} continuation "
-                            f"{continuation_target_id} is unmapped",
-                            "add the continuation to the checked product graph",
                         )
                         external_jump_cases_complete = False
                         break
@@ -2240,6 +2259,18 @@ def _whole_program_acceptance_plan(
                         "decoded_import": outcomes[0].get("import"),
                     }
                     if case_kind == "external_jump":
+                        target_node_id = node_by_target.get(
+                            continuation_target_id, -1
+                        )
+                        if target_node_id < 0:
+                            block(
+                                "external_jump_continuation_unmapped",
+                                f"import-thunk node {node_id} continuation "
+                                f"{continuation_target_id} is unmapped",
+                                "add the continuation to the checked product graph",
+                            )
+                            external_jump_cases_complete = False
+                            break
                         outer_transfers = external_jump_transfer_claims(
                             node_id,
                             continuation_target_id,
@@ -3543,7 +3574,7 @@ def _lean_appended_proof(
     for chunk in reversed(chunks[:-1]):
         proof = (
             f"{theorem} {arguments} {chunk['ids']} ({ids}) "
-            f"{chunk[proof_key]} ({proof})"
+            f"({chunk[proof_key]}) ({proof})"
         )
         ids = f"{chunk['ids']} ++ ({ids})"
     return proof
@@ -3820,7 +3851,7 @@ def _lean_runtime_call_import_transfer_claims(
 def _lean_acceptance_running_target(
     *, node_id: int, region_index: int, edge: dict[str, Any],
     frames: str = "[]", calls: str = "[]", frame_offsets: str = "[]",
-    stack_targets_proof: str = "(by simp [RelationalRuntimeCallTargetsReachable])",
+    stack_targets_proof: str = "(by simp [RelationalRuntimeCallTargetsMapped])",
     target_control_proof: str = "(by decide)",
     frame_imports_proof: str = (
         "(by simp [RelationalRuntimeCallFactsHold, "
@@ -4365,10 +4396,10 @@ def _lean_acceptance_running_node(
                     "activeFrameInventory :: " + target_offsets_literal
                 ),
                 stack_targets_proof=(
-                    "(by simp only [RelationalRuntimeCallTargetsReachable]; "
+                    "(by simp only [RelationalRuntimeCallTargetsMapped]; "
                     f"exact ⟨⟨{continuation_node_id}, "
                     f"relationalProductGraph.nodes[{continuation_node_id}], "
-                    "by decide, by decide, by decide⟩, stackTargetsReachable⟩)"
+                    "by decide, by decide⟩, stackTargetsReachable⟩)"
                 ),
                 frame_imports_proof="frameImportsNext",
             )
@@ -4825,10 +4856,10 @@ def _lean_acceptance_running_node(
             f"        (by simp [RegionRelation.inputInvariant, region{target_region_index},\n"
             "          pairedStatePredicatesHold])\n"
             "    have stackHoldsNext := outerStackHolds\n"
-            "    have outerTargetsReachable : RelationalRuntimeCallTargetsReachable\n"
+            "    have outerTargetsReachable : RelationalRuntimeCallTargetsMapped\n"
             "        relationalProductGraph relationalProductReachabilityEvidence\n"
             f"        {target_calls_literal} := by\n"
-            "      simpa only [RelationalRuntimeCallTargetsReachable] using\n"
+            "      simpa only [RelationalRuntimeCallTargetsMapped] using\n"
             "        stackTargetsReachable.2\n"
             "    simp only [RelationalCallFrame.resolves, Bool.and_eq_true, beq_iff_eq]\n"
             "      at frameResolves\n"
@@ -5190,10 +5221,10 @@ def _lean_acceptance_running_node(
             "          intro outerFrame frameHolds\n"
             "          exact framesPreserved outerFrame (by\n"
             "            simpa [originalEvent, candidateEvent] using frameHolds))\n"
-            "    have outerTargetsReachable : RelationalRuntimeCallTargetsReachable\n"
+            "    have outerTargetsReachable : RelationalRuntimeCallTargetsMapped\n"
             f"        relationalProductGraph relationalProductReachabilityEvidence\n"
             f"        {outer_calls_literal} := by\n"
-            "      simpa only [RelationalRuntimeCallTargetsReachable] using\n"
+            "      simpa only [RelationalRuntimeCallTargetsMapped] using\n"
             "        stackTargetsReachable.2\n"
             "    rw [originalBehaviorCommon, candidateBehaviorCommon]\n"
             "    simp only [originalWorldProgram, candidateWorldProgram]\n"
@@ -6130,6 +6161,84 @@ def _lean_acceptance_execution_edge(
         "  all_goals decide"
     )
 
+def _paired_launch_import_bindings(
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    *,
+    reserved_ranges: list[tuple[int, int]],
+) -> tuple[list[dict[str, Any]], str | None]:
+    def identity(imported: Any) -> tuple[str, str, str | int] | None:
+        if imported.thunk_rva is None:
+            return None
+        dll = str(imported.dll).lower()
+        if imported.symbol is not None:
+            return (dll, "symbol", str(imported.symbol))
+        if imported.ordinal is not None:
+            return (dll, "ordinal", int(imported.ordinal))
+        return None
+
+    original_groups: dict[
+        tuple[str, str, str | int], list[Any]
+    ] = {}
+    candidate_groups: dict[
+        tuple[str, str, str | int], list[Any]
+    ] = {}
+    for imported in original_bin.imports:
+        key = identity(imported)
+        if key is None:
+            return [], "the original import table has an unresolved IAT entry"
+        original_groups.setdefault(key, []).append(imported)
+    for imported in candidate_bin.imports:
+        key = identity(imported)
+        if key is None:
+            return [], "the candidate import table has an unresolved IAT entry"
+        candidate_groups.setdefault(key, []).append(imported)
+    if set(original_groups) != set(candidate_groups):
+        return [], "the images do not have the same normalized import identities"
+    for key in original_groups:
+        if len(original_groups[key]) != len(candidate_groups[key]):
+            return [], f"the import occurrence count differs for {key!r}"
+
+    def allocate(start: int, used: set[int]) -> int | None:
+        address = start
+        while address + 4 <= 2**32:
+            if address not in used and all(
+                address + 4 <= lower or upper <= address
+                for lower, upper in reserved_ranges
+            ):
+                used.add(address)
+                return address
+            address += 0x1000
+        return None
+
+    used: set[int] = set()
+    addresses: dict[tuple[str, str, str | int], tuple[int, int]] = {}
+    for index, key in enumerate(sorted(original_groups, key=repr)):
+        original_address = allocate(0x60000000 + index * 0x1000, used)
+        candidate_address = allocate(0x68000000 + index * 0x1000, used)
+        if original_address is None or candidate_address is None:
+            return [], "no disjoint synthetic import-address range is available"
+        addresses[key] = (original_address, candidate_address)
+
+    bindings: list[dict[str, Any]] = []
+    for key in sorted(original_groups, key=repr):
+        original_address, candidate_address = addresses[key]
+        for original_import, candidate_import in zip(
+            original_groups[key], candidate_groups[key], strict=True
+        ):
+            imported: dict[str, Any] = {"dll": key[0]}
+            imported[key[1]] = key[2]
+            bindings.append({
+                "id": len(bindings),
+                "import": imported,
+                "original_iat_rva": int(original_import.thunk_rva),
+                "candidate_iat_rva": int(candidate_import.thunk_rva),
+                "original_address": original_address,
+                "candidate_address": candidate_address,
+            })
+    return bindings, None
+
+
 def _write_relational_acceptance_modules(
     lean_dir: Path,
     original_bin: StageABinary,
@@ -6225,10 +6334,10 @@ def _write_relational_acceptance_modules(
             for relation in input_relations
         )
         launch_reasons: list[str] = []
-        if original_bin.sha256 != candidate_bin.sha256:
-            launch_reasons.append("the PE images are not byte-identical")
-        if original_bin.imports or candidate_bin.imports:
-            launch_reasons.append("the images have loader-populated imports")
+        if original_bin.image_base != candidate_bin.image_base:
+            launch_reasons.append("the preferred image bases differ")
+        if original_bin.size_of_image != candidate_bin.size_of_image:
+            launch_reasons.append("the preferred image spans differ")
         if launch_plan.get("tls_callback_target_ids"):
             launch_reasons.append("the launch has TLS callback frames")
         if contract.get("value_targets"):
@@ -6245,13 +6354,28 @@ def _write_relational_acceptance_modules(
             "input_dynamic_stack_range_relations",
             "bounds",
             "address_separations",
-            "stack_windows",
             "state_predicates",
         ):
             if root_region.get(key):
                 launch_reasons.append(f"the root invariant has {key}")
         stack_size = 4096
         stack_base = 0x70000000
+        stack_pointer = stack_base + stack_size // 2
+        stack_windows = root_region.get("stack_windows", [])
+        if any(
+            int(window.get("range_id", -1)) != 0
+            or window.get("original_register") != "esp"
+            or window.get("candidate_register") != "esp"
+            or int(window.get("bytes_below", -1)) < 0
+            or int(window.get("bytes_above", -1)) < 0
+            or stack_pointer - int(window.get("bytes_below", 0)) < stack_base
+            or stack_pointer + int(window.get("bytes_above", 0))
+                > stack_base + stack_size
+            for window in stack_windows
+        ):
+            launch_reasons.append(
+                "the root stack windows are outside the bounded ESP launch profile"
+            )
         for image in (original_bin, candidate_bin):
             image_end = image.image_base + image.size_of_image
             if not (
@@ -6260,6 +6384,23 @@ def _write_relational_acceptance_modules(
             ):
                 launch_reasons.append("the canonical launch stack overlaps an image")
                 break
+        import_bindings, import_pair_error = _paired_launch_import_bindings(
+            original_bin,
+            candidate_bin,
+            reserved_ranges=[
+                (
+                    original_bin.image_base,
+                    original_bin.image_base + original_bin.size_of_image,
+                ),
+                (
+                    candidate_bin.image_base,
+                    candidate_bin.image_base + candidate_bin.size_of_image,
+                ),
+                (stack_base, stack_base + stack_size),
+            ],
+        )
+        if import_pair_error is not None:
+            launch_reasons.append(import_pair_error)
         if launch_reasons:
             launch_blocker = {
                 "code": "launch_realizability_certificate_unsupported",
@@ -6280,10 +6421,11 @@ def _write_relational_acceptance_modules(
             }
         else:
             plan["launch_realizability"] = {
-                "profile": "identical-empty-pe32-console-v1",
+                "profile": "paired-preferred-base-import-stack-v1",
                 "stack_base": stack_base,
                 "stack_size": stack_size,
-                "stack_pointer": stack_base + stack_size // 2,
+                "stack_pointer": stack_pointer,
+                "import_bindings": import_bindings,
             }
     write_json(lean_dir.parent / "whole-program-acceptance.json", plan)
     if plan["status"] != "ready":
@@ -6441,6 +6583,17 @@ def _write_relational_acceptance_modules(
     stack_base = int(launch_witness["stack_base"])
     stack_size = int(launch_witness["stack_size"])
     stack_pointer = int(launch_witness["stack_pointer"])
+    import_binding_rows = ", ".join(
+        "{ id := " + str(int(binding["id"]))
+        + ", imported := " + _lean_external_target(binding["import"])
+        + ", originalIatRva := " + str(int(binding["original_iat_rva"]))
+        + ", candidateIatRva := " + str(int(binding["candidate_iat_rva"]))
+        + ", originalAddress := BitVec.ofNat 32 "
+        + str(int(binding["original_address"]))
+        + ", candidateAddress := BitVec.ofNat 32 "
+        + str(int(binding["candidate_address"])) + " }"
+        for binding in launch_witness["import_bindings"]
+    )
     launch_realizability_source = (
         "import StageA.RelationalAcceptanceContext\n\n"
         "namespace StageA.GeneratedRelational\n\n"
@@ -6453,8 +6606,10 @@ def _write_relational_acceptance_modules(
         f"  candidateBase := BitVec.ofNat 32 {stack_base}\n"
         f"  size := {stack_size}\n"
         "}\n\n"
+        f"def consoleLaunchImportAddresses : List ImportAddressPair := [{import_binding_rows}]\n\n"
         "def consoleLaunchWorld : RelationalWorld := {\n"
         "  stackRanges := [consoleLaunchStackRange]\n"
+        "  importAddresses := consoleLaunchImportAddresses\n"
         "}\n\n"
         "def consoleLaunchRegisters : Registers Word := {\n"
         "  eax := BitVec.ofNat 32 0\n"
@@ -6466,9 +6621,21 @@ def _write_relational_acceptance_modules(
         "  ebp := BitVec.ofNat 32 0\n"
         f"  esp := BitVec.ofNat 32 {stack_pointer}\n"
         "}\n\n"
-        "def consoleLaunchState : MachineState := {\n"
+        "def consoleLaunchOriginalMemory : Memory :=\n"
+        "  loaderPopulatedPreferredBaseMemory false staticProofContext consoleLaunchWorld\n\n"
+        "def consoleLaunchCandidateExcludedMemory : Memory :=\n"
+        "  loaderPopulatedPreferredBaseMemory true staticProofContext consoleLaunchWorld\n\n"
+        "def consoleLaunchCandidateMemory : Memory :=\n"
+        "  ordinaryMemoryCandidateProjection staticProofContext consoleLaunchWorld\n"
+        "    (staticProofContext.relationalValueTargets consoleLaunchWorld)\n"
+        "    consoleLaunchOriginalMemory consoleLaunchCandidateExcludedMemory\n\n"
+        "def consoleLaunchOriginalState : MachineState := {\n"
         "  registers := consoleLaunchRegisters\n"
-        "  memory := preferredBaseImageMemory originalPe\n"
+        "  memory := consoleLaunchOriginalMemory\n"
+        "}\n\n"
+        "def consoleLaunchCandidateState : MachineState := {\n"
+        "  registers := consoleLaunchRegisters\n"
+        "  memory := consoleLaunchCandidateMemory\n"
         "}\n\n"
         "theorem consoleLaunchWorldValid :\n"
         "    PE32ConsoleLaunchWorldV1.Valid staticProofContext consoleLaunchWorld := by\n"
@@ -6477,50 +6644,35 @@ def _write_relational_acceptance_modules(
         "    by decide⟩\n\n"
         "theorem consoleLaunchOriginalImageMapped :\n"
         "    PreferredBaseImageMemory staticProofContext.originalPe\n"
-        "      staticProofContext.originalImports consoleLaunchState.memory := by\n"
-        "  simpa [staticProofContext, consoleLaunchState] using\n"
-        "    preferredBaseImageMemory_maps_image originalPe originalImports (by decide)\n\n"
+        "      staticProofContext.originalImports consoleLaunchOriginalState.memory := by\n"
+        "  apply preferredBaseImageMemory_of_checked\n"
+        "  decide\n\n"
         "theorem consoleLaunchCandidateImageMapped :\n"
         "    PreferredBaseImageMemory staticProofContext.candidatePe\n"
-        "      staticProofContext.candidateImports consoleLaunchState.memory := by\n"
-        "  have peEqual : candidatePe = originalPe := by decide\n"
-        "  have importsEqual : candidateImports = originalImports := by decide\n"
-        "  simpa [staticProofContext, consoleLaunchState, peEqual, importsEqual] using\n"
-        "    preferredBaseImageMemory_maps_image originalPe originalImports (by decide)\n\n"
+        "      staticProofContext.candidateImports consoleLaunchCandidateState.memory := by\n"
+        "  apply preferredBaseImageMemory_of_checked\n"
+        "  decide\n\n"
         "theorem consoleLaunchStateRelated :\n"
         "    StateRel staticProofContext consoleLaunchWorld consoleLaunch.rootInvariant\n"
-        "      consoleLaunchState consoleLaunchState := by\n"
+        "      consoleLaunchOriginalState consoleLaunchCandidateState := by\n"
         "  refine ⟨consoleLaunchWorldValid.1, by decide, ?_, by decide, by decide,\n"
         "    ?_, ?_, ?_, ?_, ?_⟩\n"
-        "  · intro range member offset inside aligned\n"
-        "    simp only [consoleLaunchWorld, List.mem_singleton] at member\n"
-        "    subst range\n"
-        "    simpa [consoleLaunchStackRange] using\n"
-        "      wordRelated_self staticProofContext.originalPe.imageBase\n"
-        "        staticProofContext.candidatePe.imageBase\n"
-        "        staticProofContext.codeMap.entries.toList\n"
-        "        (staticProofContext.relationalValueTargets consoleLaunchWorld)\n"
-        "        (Memory.read32 consoleLaunchState.memory\n"
-        f"          (BitVec.ofNat 32 {stack_base} + BitVec.ofNat 32 offset))\n"
-        "  · intro binding member\n"
-        "    simp [consoleLaunchWorld] at member\n"
-        "  · exact preferredBaseImageMemory_immutable originalPe (by decide) (by decide)\n"
-        "  · have peEqual : candidatePe = originalPe := by decide\n"
-        "    simpa [staticProofContext, consoleLaunchState, peEqual] using\n"
-        "      preferredBaseImageMemory_immutable originalPe (by decide) (by decide)\n"
+        "  · apply stackRangesMemoryHold_of_checked\n"
+        "    decide\n"
+        "  · apply importAddressesMemoryHold_of_checked\n"
+        "    decide\n"
+        "  · apply immutableImageWordMemory_of_checked\n"
+        "    decide\n"
+        "  · apply immutableImageWordMemory_of_checked\n"
+        "    decide\n"
         "  · refine ⟨by decide, by decide, by decide, by decide, ?_, ?_, rfl, rfl,\n"
         "      by decide, rfl⟩\n"
-        "    · apply ordinaryMemoryRelated_self_of_identity_targets\n"
-        "      intro target member\n"
-        "      have member' : target ∈ [consoleLaunchStackRange.valueTarget] := by\n"
-        "        simpa [staticProofContext, globalDataMap, globalValueTargetIndex,\n"
-        "          StaticProofContext.relationalValueTargets,\n"
-        "        RelationalWorld.runtimeValueTargets, RelationalWorld.dynamicValueTargets,\n"
-        "        RelationalWorld.stackValueTargets, consoleLaunchWorld,\n"
-        "          consoleLaunchStackRange] using member\n"
-        "      simp only [List.mem_singleton] at member'\n"
-        "      subst target\n"
-        "      rfl\n"
+        "    · exact ordinaryMemoryRelated_projection_without_relocations\n"
+        "        staticProofContext consoleLaunchWorld\n"
+        "        staticProofContext.codeMap.entries.toList\n"
+        "        (staticProofContext.relationalValueTargets consoleLaunchWorld)\n"
+        "        consoleLaunchOriginalMemory consoleLaunchCandidateExcludedMemory\n"
+        "        (by decide)\n"
         "    · refine { staticPointerSlots := ?_, staticWordSlots := ?_, active := ?_ }\n"
         "      · intro slot member\n"
         "        simp [staticProofContext] at member\n"
@@ -6531,14 +6683,15 @@ def _write_relational_acceptance_modules(
         "theorem consoleLaunchRealizable :\n"
         "    consoleLaunch.Realizable staticProofContext relationalProductGraph\n"
         "      relationalProductReachabilityEvidence := by\n"
-        "  refine ⟨consoleLaunchWorld, consoleLaunchState, consoleLaunchState, [],\n"
+        "  refine ⟨consoleLaunchWorld, consoleLaunchOriginalState,\n"
+        "    consoleLaunchCandidateState, [],\n"
         "    consoleLaunchWorldValid, consoleLaunchOriginalImageMapped,\n"
         "    consoleLaunchCandidateImageMapped, ?_, ?_, ?_, ?_,\n"
         "    consoleLaunchStateRelated⟩\n"
         "  all_goals simp [consoleLaunch, RelationalRuntimeCallStackHolds,\n"
         "    PE32ConsoleLaunchV2.continuationTargetIds,\n"
         "    RelationalRuntimeCallFactsHold, RelationalRuntimeCallImportsHold,\n"
-        "    RelationalRuntimeCallRelationsHold, RelationalRuntimeCallTargetsReachable,\n"
+        "    RelationalRuntimeCallRelationsHold, RelationalRuntimeCallTargetsMapped,\n"
         "    PE32TlsProcessAttachArgumentsHold]\n\n"
         "end StageA.GeneratedRelational\n"
     )
@@ -6553,40 +6706,21 @@ def _write_relational_acceptance_modules(
         for region_index in region_indices
     }
     chunk_size = max(
-        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_ACCEPTANCE_CHUNK", "8"))
+        1, int(os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_ACCEPTANCE_CHUNK", "2"))
     )
-    chunks: list[dict[str, str]] = []
-    steps = plan["node_steps"]
-    for chunk_index, offset in enumerate(range(0, len(steps), chunk_size)):
-        selected = steps[offset : offset + chunk_size]
-        module = f"RelationalAcceptanceChunk{chunk_index}"
-        ids_name = f"acceptanceNodeChunk{chunk_index}Ids"
-        edge_ids_name = f"acceptanceEdgeChunk{chunk_index}Ids"
+    region_chunks: list[dict[str, str]] = []
+    for chunk_index, offset in enumerate(range(0, len(nodes), chunk_size)):
+        selected_node_ids = list(range(offset, min(offset + chunk_size, len(nodes))))
+        module = f"RelationalAcceptanceRegionChunk{chunk_index}"
+        ids_name = f"acceptanceRegionNodeChunk{chunk_index}Ids"
         definitions: list[str] = []
         region_theorems: list[str] = []
-        running_theorems: list[str] = []
-        edge_theorems: list[str] = []
-        for step in selected:
-            node_id = int(step["node_id"])
-            region_index = int(step["region_index"])
-            target_id = int(step["target_id"])
-            decode_chunk = decode_chunk_by_region[region_index]
+        for node_id in selected_node_ids:
+            node = nodes[node_id]
+            target_id = int(node["target_id"])
+            region_index = int(contract["regions"][node_id]["numeric_id"])
             region_match = f"acceptanceRegionNode{node_id}Matches"
-            running = f"acceptanceRunningNode{node_id}Refined"
             region_theorems.append(region_match)
-            running_theorems.append(
-                f"{running} originalEnvironment candidateEnvironment "
-                + (
-                    "originalProtocolEnvironment candidateProtocolEnvironment "
-                    if parameterized_protocol_environment else ""
-                )
-                + "environmentRefines"
-                if parameterized_environment else running
-            )
-            edge_theorems.extend(
-                f"acceptanceExecutionEdge{int(edge['edge_id'])}Refined"
-                for edge in step["edges"]
-            )
             definitions.append(
                 f"theorem {region_match} :\n"
                 "    RegionMatchesProductNode staticProofContext relationalProductGraph "
@@ -6603,6 +6737,60 @@ def _write_relational_acceptance_modules(
                 f"some region{region_index} := by decide\n"
                 "  rw [nodeTarget, codeFound, regionFound]\n"
                 "  exact ⟨by decide, by decide, by decide, by decide⟩"
+            )
+        definitions.extend([
+            f"def {ids_name} : List Nat := "
+            f"[{', '.join(map(str, selected_node_ids))}]",
+            (
+                f"theorem acceptanceRegionChunk{chunk_index}Checked :\n"
+                "    AllListedRegionsMatchProductGraph staticProofContext\n"
+                f"      relationalProductGraph allRegions {ids_name} := by\n"
+                f"  exact {_lean_all_listed_proof(region_theorems)}"
+            ),
+        ])
+        source = (
+            "import StageA.RelationalAcceptanceContext\n\n"
+            "namespace StageA.GeneratedRelational\n\n"
+            "open StageA.Formal StageA.Relational\n\n"
+            "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+            + "\n\n".join(definitions)
+            + "\n\nend StageA.GeneratedRelational\n"
+        )
+        _write_text_if_changed(stage_a / f"{module}.lean", source)
+        region_chunks.append({
+            "module": module,
+            "ids": ids_name,
+            "regions": f"acceptanceRegionChunk{chunk_index}Checked",
+        })
+
+    chunks: list[dict[str, str]] = []
+    steps = plan["node_steps"]
+    for chunk_index, offset in enumerate(range(0, len(steps), chunk_size)):
+        selected = steps[offset : offset + chunk_size]
+        module = f"RelationalAcceptanceChunk{chunk_index}"
+        ids_name = f"acceptanceNodeChunk{chunk_index}Ids"
+        edge_ids_name = f"acceptanceEdgeChunk{chunk_index}Ids"
+        definitions: list[str] = []
+        running_theorems: list[str] = []
+        edge_theorems: list[str] = []
+        for step in selected:
+            node_id = int(step["node_id"])
+            region_index = int(step["region_index"])
+            target_id = int(step["target_id"])
+            decode_chunk = decode_chunk_by_region[region_index]
+            running = f"acceptanceRunningNode{node_id}Refined"
+            running_theorems.append(
+                f"{running} originalEnvironment candidateEnvironment "
+                + (
+                    "originalProtocolEnvironment candidateProtocolEnvironment "
+                    if parameterized_protocol_environment else ""
+                )
+                + "environmentRefines"
+                if parameterized_environment else running
+            )
+            edge_theorems.extend(
+                f"acceptanceExecutionEdge{int(edge['edge_id'])}Refined"
+                for edge in step["edges"]
             )
             for side in ("original", "candidate"):
                 side_title = side.capitalize()
@@ -6707,12 +6895,6 @@ def _write_relational_acceptance_modules(
             f"def {ids_name} : List Nat := [{', '.join(map(str, node_ids))}]",
             f"def {edge_ids_name} : List Nat := [{', '.join(map(str, edge_ids))}]",
             (
-                f"theorem acceptanceRegionChunk{chunk_index}Checked :\n"
-                "    AllListedRegionsMatchProductGraph staticProofContext\n"
-                f"      relationalProductGraph allRegions {ids_name} := by\n"
-                f"  exact {_lean_all_listed_proof(region_theorems)}"
-            ),
-            (
                 f"theorem acceptanceRunningChunk{chunk_index}Checked"
                 + (
                     " (originalEnvironment candidateEnvironment : "
@@ -6774,7 +6956,6 @@ def _write_relational_acceptance_modules(
             "module": module,
             "ids": ids_name,
             "edge_ids": edge_ids_name,
-            "regions": f"acceptanceRegionChunk{chunk_index}Checked",
             "running": (
                 f"acceptanceRunningChunk{chunk_index}Checked originalEnvironment "
                 "candidateEnvironment "
@@ -6791,8 +6972,11 @@ def _write_relational_acceptance_modules(
 
     node_ids_expr = _lean_appended_list([chunk["ids"] for chunk in chunks])
     edge_ids_expr = _lean_appended_list([chunk["edge_ids"] for chunk in chunks])
+    region_node_ids_expr = _lean_appended_list(
+        [chunk["ids"] for chunk in region_chunks]
+    )
     region_proof = _lean_appended_proof(
-        chunks, "allListedRegionsMatchProductGraph_append",
+        region_chunks, "allListedRegionsMatchProductGraph_append",
         "staticProofContext relationalProductGraph allRegions", "regions",
     )
     acceptance_original_program = (
@@ -7212,24 +7396,28 @@ def _write_relational_acceptance_modules(
         "import StageA.RelationalISARequirementReplayCertificate\n"
         "import StageA.RelationalPEWorldExecution\n"
         "import StageA.RelationalLaunchRealizabilityCertificate\n"
+        + "".join(
+            f"import StageA.{chunk['module']}\n" for chunk in region_chunks
+        )
         + "".join(f"import StageA.{chunk['module']}\n" for chunk in chunks)
         + "\nnamespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
         "set_option linter.unusedSimpArgs false\n\n"
         f"def allAcceptanceNodeIds : List Nat := {node_ids_expr}\n\n"
+        f"def allAcceptanceRegionNodeIds : List Nat := {region_node_ids_expr}\n\n"
         f"def allAcceptanceEdgeIds : List Nat := {edge_ids_expr}\n\n"
         "theorem allAcceptanceRegionsListed :\n"
         "    AllListedRegionsMatchProductGraph staticProofContext relationalProductGraph\n"
-        "      allRegions allAcceptanceNodeIds := by\n"
-        f"  simpa [allAcceptanceNodeIds] using ({region_proof})\n\n"
-        "theorem allAcceptanceNodeIdsComplete :\n"
-        "    allAcceptanceNodeIds = List.range relationalProductGraph.nodes.size := by\n"
+        "      allRegions allAcceptanceRegionNodeIds := by\n"
+        f"  simpa [allAcceptanceRegionNodeIds] using ({region_proof})\n\n"
+        "theorem allAcceptanceRegionNodeIdsComplete :\n"
+        "    allAcceptanceRegionNodeIds = List.range relationalProductGraph.nodes.size := by\n"
         "  decide\n\n"
         "theorem allRegionsMatchProductGraph :\n"
         "    RegionsMatchProductGraph staticProofContext relationalProductGraph allRegions := by\n"
         "  apply regionsMatchProductGraph_of_listed_range\n"
-        "  rw [← allAcceptanceNodeIdsComplete]\n"
+        "  rw [← allAcceptanceRegionNodeIdsComplete]\n"
         "  exact allAcceptanceRegionsListed\n\n"
         + running_closure_source
         + callback_closure_source

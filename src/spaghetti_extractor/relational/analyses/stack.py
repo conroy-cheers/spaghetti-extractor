@@ -1162,6 +1162,12 @@ def _attach_stack_window_invariants(
             and callee_original_target == callee_candidate_target
             and callee_machine_contract is not None
         ):
+            if callee_machine_contract.get("disposition") == "terminates":
+                # The decoded call still names the syntactic next instruction,
+                # but a checked non-returning import has no runtime continuation.
+                # Adding that impossible return edge can manufacture a weighted
+                # stack cycle through linker padding or a following function.
+                continue
             return_stack_deltas.add(
                 4 + int(callee_machine_contract["stack_result_delta"])
             )

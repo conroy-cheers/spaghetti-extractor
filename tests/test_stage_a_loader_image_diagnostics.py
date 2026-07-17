@@ -49,6 +49,19 @@ class StageALoaderImageDiagnosticTests(unittest.TestCase):
             "diagnostics": [],
         })
 
+    def test_aligned_header_reservation_may_exceed_minimum(self) -> None:
+        image = bytearray(pe32_image(b"\xc3"))
+        image[0x200:0x200] = bytes(0x200)
+        struct.pack_into("<I", image, OPTIONAL_OFFSET + 60, 0x400)
+        struct.pack_into("<I", image, SECTION_TABLE_OFFSET + 20, 0x400)
+
+        result = diagnose_pe32_loader_image(bytes(image))
+
+        self.assertEqual(
+            result.status, StageALoaderDiagnosticStatus.DIAGNOSTIC_CLEAN
+        )
+        self.assertEqual(result.diagnostics, ())
+
     def test_dynamic_base_is_a_conditional_launch_warning(self) -> None:
         image = _set_u16(
             pe32_image(b"\xc3"),
@@ -154,7 +167,7 @@ class StageALoaderImageDiagnosticTests(unittest.TestCase):
             ),
             "inexact SizeOfHeaders": (
                 _set_u32(pe32_image(b"\xc3"), OPTIONAL_OFFSET + 60, 0x400),
-                "size_of_headers_exact",
+                "section_raw_overlaps_headers",
             ),
             "inexact SizeOfImage": (
                 _set_u32(pe32_image(b"\xc3"), OPTIONAL_OFFSET + 56, 0x3000),

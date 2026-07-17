@@ -356,11 +356,11 @@ def _inspect_pe32_loader_image(
             error("low_alignment_mismatch", "sub-page SectionAlignment must equal FileAlignment")
 
     if file_alignment_valid:
-        expected_headers = _align_up(section_table_end, file_alignment)
-        if size_of_headers != expected_headers:
+        minimum_headers = _align_up(section_table_end, file_alignment)
+        if size_of_headers < minimum_headers:
             error(
-                "size_of_headers_exact",
-                f"SizeOfHeaders is 0x{size_of_headers:x}, expected 0x{expected_headers:x}",
+                "size_of_headers_minimum",
+                f"SizeOfHeaders is 0x{size_of_headers:x}, below the 0x{minimum_headers:x} minimum",
             )
         if size_of_headers % file_alignment != 0:
             error("size_of_headers_alignment", "SizeOfHeaders is not FileAlignment-aligned")
