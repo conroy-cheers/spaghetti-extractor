@@ -422,6 +422,15 @@ def structuralEligible (bundle : ProofBundle) : Bool :=
       valueTargetsClosed originalPe candidatePe bundle.regions &&
       flagRelationCompositionClosed bundle.regionIndex bundle.regions
 
+/-- Binds the executable partition checked by `structuralEligible` to the
+exact PE bytes and region inventory used by the whole-program semantics. -/
+def ProofBundle.CoversStaticContext (bundle : ProofBundle)
+    (context : StaticProofContext) (regions : List RegionRelation) : Prop :=
+  bundle.originalBytes = context.originalPe.bytes ∧
+    bundle.candidateBytes = context.candidatePe.bytes ∧
+    bundle.regions = regions ∧
+    structuralEligible bundle = true
+
 theorem structuralEligible_of_checks (bundle : ProofBundle)
     (originalPe candidatePe : PE32)
     (originalParsed : parsePE32Tree bundle.originalBytes = some originalPe)

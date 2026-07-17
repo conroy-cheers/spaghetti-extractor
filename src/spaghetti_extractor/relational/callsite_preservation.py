@@ -16,7 +16,7 @@ from .schema import REGISTERS, SchemaError
 
 
 CALLSITE_PRESERVATION_ARTIFACT_FORMAT = (
-    "stage-a-relational-callsite-preservation-v1"
+    "stage-a-relational-callsite-preservation-v2"
 )
 CALLSITE_PRESERVATION_REQUIRED_REPLAY = (
     "Lean must replay every normalized behavior, control edge, return "
@@ -51,6 +51,21 @@ class ImportRelation:
     original: str
     candidate: str
     import_json: str
+
+
+@dataclass(frozen=True)
+class RegisterRelationOrigin:
+    region_index: int
+    claim_index: int
+    claim_hash: str
+
+
+@dataclass(frozen=True)
+class PreservedRegisterRelation:
+    original: str
+    candidate: str
+    relation_json: str
+    origin: RegisterRelationOrigin
 
 
 @dataclass(frozen=True)
@@ -92,6 +107,7 @@ class CallsiteCertificate:
     callsite_id: int
     callee_entry: int
     requested_relations: tuple[ImportRelation, ...]
+    requested_register_relations: tuple[PreservedRegisterRelation, ...]
     reachable_node_ids: tuple[int, ...]
     reachable_edges: tuple[ReachableEdge, ...]
     return_inventory: tuple[ReturnInventoryEntry, ...]
@@ -128,6 +144,7 @@ class CallsiteSummary:
     continuation_region_index: int | None
     return_region_indices: tuple[int, ...]
     requested_relations: tuple[ImportRelation, ...]
+    requested_register_relations: tuple[PreservedRegisterRelation, ...]
     status: SummaryStatus
     reason_codes: tuple[str, ...]
     analysis: CallsiteAnalysis | None
@@ -140,6 +157,7 @@ class ProposalEdge:
     certificate_id: str
     certificate_hash: str
     preserved_import_relations: tuple[ImportRelation, ...]
+    preserved_register_relations: tuple[PreservedRegisterRelation, ...]
     return_region_indices: tuple[int, ...]
     kind: str = PROPOSAL_EDGE_KIND
     environment_barrier: bool = False
@@ -369,6 +387,115 @@ def _parse_relations(
     return tuple(result)
 
 
+def _register_relation_payload(
+    relation: PreservedRegisterRelation,
+) -> dict[str, Any]:
+    return {
+        "original": relation.original,
+        "candidate": relation.candidate,
+        **json.loads(relation.relation_json),
+        "origin": {
+            "kind": "region_output_claim",
+            "region_index": relation.origin.region_index,
+            "claim_index": relation.origin.claim_index,
+            "claim_hash": relation.origin.claim_hash,
+        },
+    }
+
+
+def _parse_register_relations(
+    value: Any,
+    context: str,
+    *,
+    allow_empty: bool,
+    region_count: int | None,
+) -> tuple[PreservedRegisterRelation, ...]:
+    rows = _objects(value, context)
+    result: list[PreservedRegisterRelation] = []
+    keys: list[str] = []
+    original_owners: set[str] = set()
+    candidate_owners: set[str] = set()
+    for index, row in enumerate(rows):
+        row_context = f"{context}[{index}]"
+        relation_kind = row.get("relation")
+        if relation_kind == "fixed_word":
+            fields = {"original", "candidate", "relation", "value", "origin"}
+        elif relation_kind == "fixed_code_pointer":
+            fields = {
+                "original", "candidate", "relation", "target_id", "origin",
+            }
+        elif relation_kind in {
+            "exact", "code_pointer", "data_pointer", "related_word",
+        }:
+            fields = {"original", "candidate", "relation", "origin"}
+        else:
+            raise SchemaError(f"{row_context}.relation is unsupported")
+        _exact_fields(row, fields, row_context)
+        original = _string(row.get("original"), f"{row_context}.original")
+        candidate = _string(row.get("candidate"), f"{row_context}.candidate")
+        if original not in REGISTERS or candidate not in REGISTERS:
+            raise SchemaError(f"{row_context} must name x86 registers")
+        relation_payload: dict[str, Any] = {"relation": relation_kind}
+        if relation_kind == "fixed_word":
+            value = _integer(row.get("value"), f"{row_context}.value")
+            if not 0 <= value < 2**32:
+                raise SchemaError(f"{row_context}.value must be a 32-bit word")
+            relation_payload["value"] = value
+        elif relation_kind == "fixed_code_pointer":
+            target_id = _integer(
+                row.get("target_id"), f"{row_context}.target_id",
+            )
+            if target_id < 0:
+                raise SchemaError(
+                    f"{row_context}.target_id must be nonnegative"
+                )
+            relation_payload["target_id"] = target_id
+
+        origin_payload = _object(row.get("origin"), f"{row_context}.origin")
+        _exact_fields(
+            origin_payload,
+            {"kind", "region_index", "claim_index", "claim_hash"},
+            f"{row_context}.origin",
+        )
+        if origin_payload.get("kind") != "region_output_claim":
+            raise SchemaError(f"{row_context}.origin.kind is unsupported")
+        origin = RegisterRelationOrigin(
+            region_index=_integer(
+                origin_payload.get("region_index"),
+                f"{row_context}.origin.region_index",
+                region_count=region_count,
+            ),
+            claim_index=_integer(
+                origin_payload.get("claim_index"),
+                f"{row_context}.origin.claim_index",
+            ),
+            claim_hash=_sha256_string(
+                origin_payload.get("claim_hash"),
+                f"{row_context}.origin.claim_hash",
+            ),
+        )
+        relation = PreservedRegisterRelation(
+            original=original,
+            candidate=candidate,
+            relation_json=_canonical_json(relation_payload),
+            origin=origin,
+        )
+        key = _canonical_json(_register_relation_payload(relation))
+        if key in keys:
+            raise SchemaError(f"{context} contains a duplicate relation")
+        if original in original_owners or candidate in candidate_owners:
+            raise SchemaError(f"{context} contains an ambiguous register relation")
+        keys.append(key)
+        original_owners.add(original)
+        candidate_owners.add(candidate)
+        result.append(relation)
+    if not allow_empty and not result:
+        raise SchemaError(f"{context} must not be empty")
+    if keys != sorted(keys):
+        raise SchemaError(f"{context} is not in canonical relation order")
+    return tuple(result)
+
+
 def _parse_return_inventory(
     value: Any,
     context: str,
@@ -536,6 +663,7 @@ def _parse_certificate(
         "callsite_id",
         "callee_entry",
         "requested_relations",
+        "requested_register_relations",
         "reachable_node_ids",
         "reachable_edges",
         "return_inventory",
@@ -562,8 +690,18 @@ def _parse_certificate(
     relations = _parse_relations(
         payload.get("requested_relations"),
         f"{context}.requested_relations",
-        allow_empty=False,
+        allow_empty=True,
     )
+    register_relations = _parse_register_relations(
+        payload.get("requested_register_relations"),
+        f"{context}.requested_register_relations",
+        allow_empty=True,
+        region_count=region_count,
+    )
+    if not relations and not register_relations:
+        raise SchemaError(
+            f"{context} must request at least one preserved relation"
+        )
     reachable_nodes = _region_inventory(
         payload.get("reachable_node_ids"),
         f"{context}.reachable_node_ids",
@@ -640,6 +778,7 @@ def _parse_certificate(
         callsite_id=callsite_id,
         callee_entry=callee_entry,
         requested_relations=relations,
+        requested_register_relations=register_relations,
         reachable_node_ids=reachable_nodes,
         reachable_edges=edges,
         return_inventory=returns,
@@ -791,6 +930,7 @@ def _parse_summary(
             "continuation_region_index",
             "return_region_indices",
             "requested_relations",
+            "requested_register_relations",
             "status",
             "reason_codes",
             "analysis",
@@ -831,6 +971,12 @@ def _parse_summary(
         f"{context}.requested_relations",
         allow_empty=True,
     )
+    register_relations = _parse_register_relations(
+        payload.get("requested_register_relations"),
+        f"{context}.requested_register_relations",
+        allow_empty=True,
+        region_count=region_count,
+    )
     try:
         status = SummaryStatus(payload.get("status"))
     except (TypeError, ValueError) as exc:
@@ -849,14 +995,14 @@ def _parse_summary(
         )
     if status is SummaryStatus.NOT_APPLICABLE:
         if (
-            relations
+            relations or register_relations
             or analysis is not None
-            or reasons != ("no_import_register_relations_at_callsite",)
+            or reasons != ("no_preservable_relations_at_callsite",)
         ):
             raise SchemaError(f"{context} has inconsistent not-applicable state")
     elif analysis is None or analysis.status.value != status.value:
         raise SchemaError(f"{context}.analysis status does not match summary")
-    elif not relations or reasons != analysis.reason_codes:
+    elif not (relations or register_relations) or reasons != analysis.reason_codes:
         raise SchemaError(f"{context} has inconsistent analysis diagnostics")
     if status is SummaryStatus.SATISFIED:
         if not complete_shape or analysis is None or analysis.certificate is None:
@@ -866,6 +1012,7 @@ def _parse_summary(
             certificate.callsite_id != callsite
             or certificate.callee_entry != callee
             or certificate.requested_relations != relations
+            or certificate.requested_register_relations != register_relations
             or tuple(row.return_node_id for row in certificate.return_inventory) != returns
             or any(
                 row.continuation_id != continuation
@@ -879,6 +1026,7 @@ def _parse_summary(
         continuation_region_index=continuation,
         return_region_indices=returns,
         requested_relations=relations,
+        requested_register_relations=register_relations,
         status=status,
         reason_codes=reasons,
         analysis=analysis,
@@ -903,6 +1051,7 @@ def _parse_proposal_edge(
             "certificate_id",
             "certificate_hash",
             "preserved_import_relations",
+            "preserved_register_relations",
             "return_region_indices",
         },
         context,
@@ -913,6 +1062,19 @@ def _parse_proposal_edge(
         raise SchemaError(f"{context}.environment_barrier must be false")
     if payload.get("proposal_only") is not True:
         raise SchemaError(f"{context}.proposal_only must be true")
+    import_relations = _parse_relations(
+        payload.get("preserved_import_relations"),
+        f"{context}.preserved_import_relations",
+        allow_empty=True,
+    )
+    register_relations = _parse_register_relations(
+        payload.get("preserved_register_relations"),
+        f"{context}.preserved_register_relations",
+        allow_empty=True,
+        region_count=region_count,
+    )
+    if not import_relations and not register_relations:
+        raise SchemaError(f"{context} must preserve at least one relation")
     return ProposalEdge(
         source_region_index=_integer(
             payload.get("source_region_index"),
@@ -930,11 +1092,8 @@ def _parse_proposal_edge(
         certificate_hash=_sha256_string(
             payload.get("certificate_hash"), f"{context}.certificate_hash"
         ),
-        preserved_import_relations=_parse_relations(
-            payload.get("preserved_import_relations"),
-            f"{context}.preserved_import_relations",
-            allow_empty=False,
-        ),
+        preserved_import_relations=import_relations,
+        preserved_register_relations=register_relations,
         return_region_indices=_region_inventory(
             payload.get("return_region_indices"),
             f"{context}.return_region_indices",
@@ -1095,6 +1254,8 @@ def parse_callsite_preservation_artifact(
                 or edge.certificate_id != certificate.id
                 or edge.certificate_hash != certificate.certificate_hash
                 or edge.preserved_import_relations != summary.requested_relations
+                or edge.preserved_register_relations
+                    != summary.requested_register_relations
                 or edge.return_region_indices != summary.return_region_indices
             ):
                 raise SchemaError(
@@ -1150,6 +1311,10 @@ def _certificate_payload(certificate: CallsiteCertificate) -> dict[str, Any]:
         "requested_relations": [
             _relation_payload(relation)
             for relation in certificate.requested_relations
+        ],
+        "requested_register_relations": [
+            _register_relation_payload(relation)
+            for relation in certificate.requested_register_relations
         ],
         "reachable_node_ids": list(certificate.reachable_node_ids),
         "reachable_edges": [
@@ -1218,6 +1383,10 @@ def _artifact_payload(
                 _relation_payload(relation)
                 for relation in summary.requested_relations
             ],
+            "requested_register_relations": [
+                _register_relation_payload(relation)
+                for relation in summary.requested_register_relations
+            ],
             "status": summary.status.value,
             "reason_codes": list(summary.reason_codes),
             "analysis": (
@@ -1241,6 +1410,10 @@ def _artifact_payload(
             "preserved_import_relations": [
                 _relation_payload(relation)
                 for relation in edge.preserved_import_relations
+            ],
+            "preserved_register_relations": [
+                _register_relation_payload(relation)
+                for relation in edge.preserved_register_relations
             ],
             "return_region_indices": list(edge.return_region_indices),
         } for edge in artifact.proposal_edges],

@@ -28,6 +28,8 @@ from .schema import (
     RELATION_CONTRACT_FORMAT,
     RELATIONAL_ENVIRONMENT_ID,
     RELATIONAL_OBSERVATIONS,
+    RegionStatePredicate,
+    SchemaError,
     STAGE_A_RELATIONAL_MODEL_ID,
     integer as _integer,
 )
@@ -687,7 +689,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         "format", "model", "environment", "observations", "memory_relation",
         "code_targets", "value_targets", "static_dynamic_pointer_slots",
         "static_word_relation_slots",
-        "machine_import_call_contracts", "protocol_callback_control", "regions",
+        "machine_import_call_contracts", "protocol_callback_control", "launch", "regions",
         "padding", "provenance",
     }
     unknown_fields = sorted(set(contract) - allowed_fields)
@@ -936,6 +938,36 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             item.get("output_dynamic_stack_range_relations", []), issues,
             region_id, "output_dynamic_stack_range_relations",
         )
+        state_predicates: list[dict[str, Any]] | None = None
+        if "state_predicates" in item:
+            raw_state_predicates = item["state_predicates"]
+            state_predicates = []
+            if not isinstance(raw_state_predicates, list):
+                issues.append({
+                    "category": "malformed_region_state_predicates",
+                    "severity": "hard",
+                    "id": region_id,
+                })
+            else:
+                for predicate_index, raw_predicate in enumerate(
+                    raw_state_predicates
+                ):
+                    try:
+                        if not isinstance(raw_predicate, dict):
+                            raise SchemaError(
+                                "region state predicate row must be an object"
+                            )
+                        predicate = RegionStatePredicate.parse(raw_predicate)
+                    except SchemaError as exc:
+                        issues.append({
+                            "category": "malformed_region_state_predicate",
+                            "severity": "hard",
+                            "id": region_id,
+                            "index": predicate_index,
+                            "reason": str(exc),
+                        })
+                    else:
+                        state_predicates.append(predicate.to_payload())
         raw_bounds = item.get("bounds", [])
         bounds: list[dict[str, Any]] = []
         if not isinstance(raw_bounds, list):
@@ -1077,6 +1109,8 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             normalized_region["input_relations"] = input_relations
         if output_relations is not None:
             normalized_region["output_relations"] = output_relations
+        if state_predicates is not None:
+            normalized_region["state_predicates"] = state_predicates
         if has_function_metadata and not any(
             issue.get("category") == "malformed_region_function_metadata"
             and issue.get("id") == region_id
@@ -1165,6 +1199,9 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
             })
         else:
             target["region_index"] = region_index
+    launch = _derive_launch_profile(
+        original, candidate, normalized_targets, issues
+    )
     _annotate_flag_liveness(original, candidate, normalized_regions, issues)
     return {
         "format": RELATION_CONTRACT_FORMAT,
@@ -1181,6 +1218,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
                 key=lambda state: state["target_id"],
             ),
         },
+        "launch": launch,
         "regions": normalized_regions,
         "padding": normalized_padding,
         "environment": {
@@ -1191,6 +1229,215 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         "observations": observations,
         "memory_relation": memory_relation,
     }, issues
+
+
+def _derive_launch_profile(
+    original: StageABinary,
+    candidate: StageABinary,
+    code_targets: list[dict[str, Any]],
+    issues: list[dict[str, Any]],
+) -> dict[str, Any]:
+    def export_payload(binary: StageABinary) -> list[dict[str, Any]] | None:
+        if binary.exports is None:
+            return None
+        return [
+            {
+                "ordinal": exported.ordinal,
+                "name": exported.name,
+                "rva": exported.rva,
+                "kind": exported.kind,
+                "forwarder": exported.forwarder,
+            }
+            for exported in binary.exports
+        ]
+
+    original_exports = export_payload(original)
+    candidate_exports = export_payload(candidate)
+    original_loader_diagnostics = original.loader_diagnostics.as_payload()
+    candidate_loader_diagnostics = candidate.loader_diagnostics.as_payload()
+    for side, binary, exports in (
+        ("original", original, original_exports),
+        ("candidate", candidate, candidate_exports),
+    ):
+        if binary.export_parse_error is not None:
+            issues.append({
+                "category": "console_launch_export_inventory_unparsed",
+                "severity": "hard",
+                "side": side,
+                "observed": binary.export_parse_error,
+                "next_action": (
+                    "repair or explicitly reject the malformed PE export directory"
+                ),
+            })
+        elif exports is None:
+            issues.append({
+                "category": "console_launch_export_inventory_missing",
+                "severity": "hard",
+                "side": side,
+                "next_action": "parse the exact PE export directory before launch",
+            })
+        elif exports:
+            issues.append({
+                "category": "console_launch_exports_unsupported",
+                "severity": "hard",
+                "side": side,
+                "count": len(exports),
+                "examples": exports[:3],
+                "next_action": (
+                    "use an export-aware launch profile that roots every executable "
+                    "export and classifies data exports and forwarders"
+                ),
+            })
+        if binary.is_dll:
+            issues.append({
+                "category": "console_launch_dll_unsupported",
+                "severity": "hard",
+                "side": side,
+                "characteristics": binary.coff_characteristics,
+                "next_action": (
+                    "use a DLL launch profile covering DllMain, exports, TLS events, "
+                    "and supported loader reasons"
+                ),
+            })
+        if binary.tls_callback_array_immutable is False:
+            issues.append({
+                "category": "pre_entry_tls_callback_array_mutable",
+                "severity": "hard",
+                "side": side,
+                "rva": binary.tls_callback_array_rva,
+                "size": binary.tls_callback_array_size,
+                "next_action": (
+                    "place the TLS directory callback pointer, every callback slot, "
+                    "and the null terminator in non-writable image memory, or use a "
+                    "launch profile that rereads and resolves the runtime inventory"
+                ),
+            })
+        hard_loader_diagnostics = [
+            diagnostic
+            for diagnostic in binary.loader_diagnostics.diagnostics
+            if diagnostic.severity.value == "error"
+        ]
+        if hard_loader_diagnostics:
+            issues.append({
+                "category": "loader_image_invalid",
+                "severity": "hard",
+                "side": side,
+                "policy": binary.loader_diagnostics.policy,
+                "diagnostic_codes": [
+                    diagnostic.code for diagnostic in hard_loader_diagnostics
+                ],
+                "diagnostics": [
+                    {
+                        "code": diagnostic.code,
+                        "message": diagnostic.message,
+                    }
+                    for diagnostic in hard_loader_diagnostics
+                ],
+                "next_action": (
+                    "repair the PE32 loader image; Lean loader validation remains "
+                    "the authoritative acceptance check"
+                ),
+            })
+
+    callback_target_ids: list[int] = []
+    parse_errors = [
+        ("original", original.tls_callback_parse_error),
+        ("candidate", candidate.tls_callback_parse_error),
+    ]
+    for side, error in parse_errors:
+        if error is not None:
+            issues.append({
+                "category": "pre_entry_tls_inventory_unparsed",
+                "severity": "hard",
+                "side": side,
+                "observed": error,
+                "next_action": "repair or explicitly reject the malformed PE32 TLS directory",
+            })
+    original_callbacks = original.tls_callback_rvas
+    candidate_callbacks = candidate.tls_callback_rvas
+    if original_callbacks is None or candidate_callbacks is None:
+        return {
+            "profile": "pe32-console-launch-v2-required",
+            "original_is_dll": original.is_dll,
+            "candidate_is_dll": candidate.is_dll,
+            "original_exports": original_exports,
+            "candidate_exports": candidate_exports,
+            "original_export_parse_error": original.export_parse_error,
+            "candidate_export_parse_error": candidate.export_parse_error,
+            "original_loader_diagnostics": original_loader_diagnostics,
+            "candidate_loader_diagnostics": candidate_loader_diagnostics,
+            "tls_callback_target_ids": [],
+            "original_tls_callback_rvas": original_callbacks,
+            "candidate_tls_callback_rvas": candidate_callbacks,
+            "original_tls_callback_array_immutable": (
+                original.tls_callback_array_immutable
+            ),
+            "candidate_tls_callback_array_immutable": (
+                candidate.tls_callback_array_immutable
+            ),
+        }
+    if len(original_callbacks) != len(candidate_callbacks):
+        issues.append({
+            "category": "pre_entry_tls_callback_count_mismatch",
+            "severity": "hard",
+            "original_count": len(original_callbacks),
+            "candidate_count": len(candidate_callbacks),
+            "next_action": "restore a pointwise TLS callback sequence",
+        })
+    else:
+        mapping_complete = True
+        for index, (original_rva, candidate_rva) in enumerate(zip(
+            original_callbacks, candidate_callbacks, strict=True
+        )):
+            matches = [
+                target for target in code_targets
+                if original_rva == int(target["original_rva"])
+                and candidate_rva == int(target["candidate_rva"])
+            ]
+            if len(matches) != 1:
+                mapping_complete = False
+                issues.append({
+                    "category": "pre_entry_tls_callback_mapping_unresolved",
+                    "severity": "hard",
+                    "index": index,
+                    "original_rva": original_rva,
+                    "candidate_rva": candidate_rva,
+                    "matches": len(matches),
+                    "next_action": "add one canonical code-target pair for this TLS callback",
+                })
+            else:
+                callback_target_ids.append(int(matches[0]["id"]))
+        if not mapping_complete:
+            callback_target_ids = []
+    tls_present = any((
+        original.tls_directory_rva,
+        original.tls_directory_size,
+        candidate.tls_directory_rva,
+        candidate.tls_directory_size,
+    ))
+    return {
+        "profile": (
+            "pe32-console-launch-v2-required"
+            if tls_present else "pe32-console-launch-v1"
+        ),
+        "original_is_dll": original.is_dll,
+        "candidate_is_dll": candidate.is_dll,
+        "original_exports": original_exports,
+        "candidate_exports": candidate_exports,
+        "original_export_parse_error": original.export_parse_error,
+        "candidate_export_parse_error": candidate.export_parse_error,
+        "original_loader_diagnostics": original_loader_diagnostics,
+        "candidate_loader_diagnostics": candidate_loader_diagnostics,
+        "tls_callback_target_ids": callback_target_ids,
+        "original_tls_callback_rvas": original_callbacks,
+        "candidate_tls_callback_rvas": candidate_callbacks,
+        "original_tls_callback_array_immutable": (
+            original.tls_callback_array_immutable
+        ),
+        "candidate_tls_callback_array_immutable": (
+            candidate.tls_callback_array_immutable
+        ),
+    }
 
 def _annotate_flag_liveness(
     original: StageABinary,
@@ -2259,7 +2506,7 @@ def _register_relations(
         return []
     relation_kinds = {
         "exact", "code_pointer", "data_pointer", "related_word",
-        "fixed_code_pointer",
+        "fixed_code_pointer", "fixed_word",
     }
     result: list[dict[str, Any]] = []
     original_seen: set[str] = set()
@@ -2268,6 +2515,8 @@ def _register_relations(
         relation = item.get("relation") if isinstance(item, dict) else None
         has_target_id = isinstance(item, dict) and "target_id" in item
         target_id = _integer(item.get("target_id")) if has_target_id else None
+        has_value = isinstance(item, dict) and "value" in item
+        fixed_value = _integer(item.get("value")) if has_value else None
         if (
             not isinstance(item, dict)
             or item.get("original") not in REGISTERS
@@ -2278,7 +2527,11 @@ def _register_relations(
                 or target_id < 0
                 or target_id not in canonical_target_ids
             ))
+            or (relation == "fixed_word" and (
+                fixed_value is None or not 0 <= fixed_value < 2**32
+            ))
             or (relation != "fixed_code_pointer" and has_target_id)
+            or (relation != "fixed_word" and has_value)
         ):
             issues.append({
                 "category": "register_relation_invalid",
@@ -2306,6 +2559,8 @@ def _register_relations(
         }
         if relation == "fixed_code_pointer":
             normalized["target_id"] = target_id
+        if relation == "fixed_word":
+            normalized["value"] = fixed_value
         result.append(normalized)
     return result
 

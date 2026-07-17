@@ -291,6 +291,93 @@ class StageAIndirectControlTests(unittest.TestCase):
                 decoded_source,
             )
 
+    def test_fixed_code_address_jump_has_one_lean_checked_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original, candidate, contract, _behaviors = self._fixture(root)
+            target = contract["code_targets"][1]
+            behaviors = [{
+                "original_ir": {"outcome": {
+                    "op": "indirect_jump",
+                    "target": {
+                        "op": "constant",
+                        "value": original.image_base + int(target["original_rva"]),
+                    },
+                }},
+                "candidate_ir": {"outcome": {
+                    "op": "indirect_jump",
+                    "target": {
+                        "op": "constant",
+                        "value": candidate.image_base + int(target["candidate_rva"]),
+                    },
+                }},
+            }, {
+                "original_ir": {"outcome": {"op": "returned"}},
+                "candidate_ir": {"outcome": {"op": "returned"}},
+            }]
+
+            candidates = _immutable_indirect_call_candidates(
+                original, candidate, contract, behaviors,
+            )
+
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(
+                candidates[0]["profile"],
+                "fixed_code_address_indirect_jump_v1",
+            )
+            self.assertEqual(candidates[0]["target_id"], 1)
+            graph = _relational_product_graph(
+                contract, behaviors,
+                {"edges": [{
+                    "source_region_index": 0,
+                    "target_region_index": 1,
+                    "kind": "jump",
+                    "original_guard": {"op": "bool_constant", "value": True},
+                    "candidate_guard": {"op": "bool_constant", "value": True},
+                }]},
+                [],
+                original_image_base=original.image_base,
+                candidate_image_base=candidate.image_base,
+                indirect_call_candidates=candidates,
+            )
+            self.assertEqual(graph["nodes"][0]["outgoing_edge_ids"], [0])
+            self.assertIn(
+                0, graph["evidence"]["decoded_control_complete_node_ids"]
+            )
+            self.assertEqual(graph["evidence"]["potential_control_cuts"], [])
+            lean_dir = root / "lean"
+            (lean_dir / "StageA").mkdir(parents=True)
+            _write_relational_product_graph_modules(
+                lean_dir, graph, [], [], [[0], [1]],
+            )
+            decoded_source = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted((lean_dir / "StageA").glob(
+                    "RelationalProductDecodedControlChunk*.lean"
+                ))
+            )
+            self.assertIn(
+                "FixedCodeAddressIndirectJumpTargetClaim", decoded_source
+            )
+            self.assertIn(
+                "fixedCodeAddressIndirectJumpTargetsClosed_of_checked",
+                decoded_source,
+            )
+
+            ambiguous = {
+                **contract,
+                "code_targets": [
+                    *contract["code_targets"],
+                    {**target, "id": 2},
+                ],
+            }
+            self.assertEqual(
+                _immutable_indirect_call_candidates(
+                    original, candidate, ambiguous, behaviors,
+                ),
+                [],
+            )
+
     def test_bounded_table_fails_closed_without_complete_static_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -754,6 +754,7 @@ def boolExpr : BoolExpr → Json
 def flags (value : FlagsExpr) : Json := Json.mkObj [
   ("zero", optional boolExpr value.zero),
   ("carry", optional boolExpr value.carry),
+  ("auxiliary", optional boolExpr value.auxiliary),
   ("sign", optional boolExpr value.sign),
   ("overflow", optional boolExpr value.overflow),
   ("parity", optional boolExpr value.parity)]

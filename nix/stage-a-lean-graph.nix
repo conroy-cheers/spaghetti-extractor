@@ -191,9 +191,11 @@ let
                 compile_jobs="$(nproc)"
               fi
               ${lib.optionalString (node.resource_class == "high-memory") ''
-                if [ "$compile_jobs" -gt 2 ]; then
-                  compile_jobs=2
-                fi
+                # Nix already schedules several independent graph nodes per
+                # builder. A jq-sized high-memory module can consume 5-16 GiB,
+                # so compiling two packed modules per derivation can multiply
+                # the machine-level concurrency past its memory capacity.
+                compile_jobs=1
               ''}
               printf '%s\n' ${lib.escapeShellArgs node.modules} | \
                 xargs -r -P "$compile_jobs" -n 1 bash -c '

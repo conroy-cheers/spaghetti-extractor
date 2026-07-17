@@ -134,6 +134,11 @@ def Section.executable (sec : Section) : Bool :=
 def Section.writable (sec : Section) : Bool :=
   Nat.testBit sec.characteristics 31
 
+structure PEDataDirectory where
+  rva : Nat
+  size : Nat
+deriving Repr, DecidableEq
+
 structure PE32 where
   bytes : ByteTree
   peOffset : Nat
@@ -249,6 +254,7 @@ def parsePEMetadata (bytes : Bytes) : Option PEMetadata := do
   let machine <- readU16 bytes (peOffset + 4)
   let sectionCount <- readU16 bytes (peOffset + 6)
   let optionalSize <- readU16 bytes (peOffset + 20)
+  let _characteristics <- readU16 bytes (peOffset + 22)
   let optionalOffset := peOffset + 24
   let magic <- readU16 bytes optionalOffset
   if machine != 0x14c || magic != 0x10b || optionalSize < 224 then none else
@@ -258,6 +264,8 @@ def parsePEMetadata (bytes : Bytes) : Option PEMetadata := do
   let fileAlignment <- readU32 bytes (optionalOffset + 36)
   let sizeOfImage <- readU32 bytes (optionalOffset + 56)
   let sizeOfHeaders <- readU32 bytes (optionalOffset + 60)
+  let numberOfRvaAndSizes <- readU32 bytes (optionalOffset + 92)
+  if numberOfRvaAndSizes > (optionalSize - 96) / 8 then none else
   let importDirectoryRva <- readU32 bytes (optionalOffset + 104)
   let importDirectorySize <- readU32 bytes (optionalOffset + 108)
   let tlsDirectoryRva <- readU32 bytes (optionalOffset + 168)
@@ -321,6 +329,7 @@ def parsePEMetadataTree (bytes : ByteTree) : Option PEMetadata := do
   let machine <- readTreeU16 bytes (peOffset + 4)
   let sectionCount <- readTreeU16 bytes (peOffset + 6)
   let optionalSize <- readTreeU16 bytes (peOffset + 20)
+  let _characteristics <- readTreeU16 bytes (peOffset + 22)
   let optionalOffset := peOffset + 24
   let magic <- readTreeU16 bytes optionalOffset
   if machine != 0x14c || magic != 0x10b || optionalSize < 224 then none else
@@ -330,6 +339,8 @@ def parsePEMetadataTree (bytes : ByteTree) : Option PEMetadata := do
   let fileAlignment <- readTreeU32 bytes (optionalOffset + 36)
   let sizeOfImage <- readTreeU32 bytes (optionalOffset + 56)
   let sizeOfHeaders <- readTreeU32 bytes (optionalOffset + 60)
+  let numberOfRvaAndSizes <- readTreeU32 bytes (optionalOffset + 92)
+  if numberOfRvaAndSizes > (optionalSize - 96) / 8 then none else
   let importDirectoryRva <- readTreeU32 bytes (optionalOffset + 104)
   let importDirectorySize <- readTreeU32 bytes (optionalOffset + 108)
   let tlsDirectoryRva <- readTreeU32 bytes (optionalOffset + 168)
@@ -391,6 +402,279 @@ def readRvaU32 (pe : PE32) (rva : Nat) : Option Nat := do
   let hi <- readRvaU16 pe (rva + 2)
   pure (lo + hi * 65536)
 
+/-- The exact COFF `Characteristics` word backing this parsed PE32 image. -/
+def PE32.characteristics (pe : PE32) : Nat :=
+  (readTreeU16 pe.bytes (pe.peOffset + 22)).getD 0
+
+def PE32.isDll (pe : PE32) : Bool :=
+  Nat.testBit pe.characteristics 13
+
+/-- Read a PE32 data-directory slot from the exact optional-header bytes.  The
+outer `Option` rejects malformed directory metadata; the inner `Option`
+distinguishes an absent slot or an all-zero directory from a present one. -/
+def PE32.dataDirectory (pe : PE32) (index : Nat) : Option (Option PEDataDirectory) := do
+  let optionalSize <- readTreeU16 pe.bytes (pe.peOffset + 20)
+  if optionalSize < 96 then none else
+  let optionalOffset := pe.peOffset + 24
+  let numberOfRvaAndSizes <- readTreeU32 pe.bytes (optionalOffset + 92)
+  let directoryCapacity := (optionalSize - 96) / 8
+  if numberOfRvaAndSizes > directoryCapacity then none
+  else if index >= numberOfRvaAndSizes then pure none
+  else
+    let directoryOffset := optionalOffset + 96 + index * 8
+    let rva <- readTreeU32 pe.bytes directoryOffset
+    let size <- readTreeU32 pe.bytes (directoryOffset + 4)
+    if rva == 0 && size == 0 then pure none
+    else if rva == 0 || size == 0 then none
+    else pure (some { rva, size })
+
+/-- Read one byte whose RVA is backed by an exact file byte.  Unlike
+`rvaByte`, this does not synthesize zeroes for a section's virtual tail, and it
+rejects ambiguous overlapping section mappings. -/
+def exactRvaByte (pe : PE32) (rva : Nat) : Option Byte := do
+  if rva >= pe.sizeOfImage then none
+  else if rva < pe.sizeOfHeaders then
+    pe.bytes.readByte rva
+  else
+    match pe.sections.filter (fun sec =>
+        sec.virtualAddress <= rva && rva < sec.virtualAddress + sec.mappedSize) with
+    | [sec] =>
+        let offset := rva - sec.virtualAddress
+        if offset < sec.rawSize then pe.bytes.readByte (sec.rawPointer + offset)
+        else none
+    | _ => none
+
+def exactRvaSpan (pe : PE32) (rva size : Nat) : Bool :=
+  if rva > pe.sizeOfImage || size > pe.sizeOfImage - rva then false
+  else if size == 0 then true
+  else if rva < pe.sizeOfHeaders then
+    size <= pe.sizeOfHeaders - rva && rva <= pe.bytes.length &&
+      size <= pe.bytes.length - rva
+  else
+    match pe.sections.filter (fun sec =>
+        sec.virtualAddress <= rva &&
+          size <= sec.virtualAddress + sec.mappedSize - rva) with
+    | [sec] =>
+        let offset := rva - sec.virtualAddress
+        offset <= sec.rawSize && size <= sec.rawSize - offset &&
+          sec.rawPointer + offset <= pe.bytes.length &&
+          size <= pe.bytes.length - (sec.rawPointer + offset)
+    | _ => false
+
+def readExactRvaU16 (pe : PE32) (rva : Nat) : Option Nat := do
+  let b0 <- exactRvaByte pe rva
+  let b1 <- exactRvaByte pe (rva + 1)
+  if b0 < 256 && b1 < 256 then pure (b0 + b1 * 256) else none
+
+def readExactRvaU32 (pe : PE32) (rva : Nat) : Option Nat := do
+  let lo <- readExactRvaU16 pe rva
+  let hi <- readExactRvaU16 pe (rva + 2)
+  pure (lo + hi * 65536)
+
+inductive PEExportKind where
+  | executableAddress
+  | dataAddress
+  | forwarder
+  | null
+deriving Repr, DecidableEq
+
+/-- One Export Address Table slot. `rva` is the exact 32-bit EAT value and
+`forwarder` preserves the null-terminated identity bytes without the null. -/
+structure PEExport where
+  rva : Nat
+  kind : PEExportKind
+  forwarder : Option Bytes
+deriving Repr, DecidableEq
+
+structure PEExportDirectory32 where
+  directoryRva : Nat
+  directorySize : Nat
+  characteristics : Nat
+  timeDateStamp : Nat
+  majorVersion : Nat
+  minorVersion : Nat
+  nameRva : Nat
+  ordinalBase : Nat
+  numberOfFunctions : Nat
+  numberOfNames : Nat
+  addressOfFunctionsRva : Nat
+  addressOfNamesRva : Nat
+  addressOfNameOrdinalsRva : Nat
+deriving Repr, DecidableEq
+
+def rvaRangeInside (rva size outerRva outerSize : Nat) : Bool :=
+  outerRva <= rva && rva <= outerRva + outerSize &&
+    size <= outerRva + outerSize - rva
+
+/-- Parse the fixed-width export directory from exact file-backed bytes. -/
+def parseExportDirectory32 (pe : PE32) : Option (Option PEExportDirectory32) := do
+  let dataDirectory <- pe.dataDirectory 0
+  match dataDirectory with
+  | none => pure none
+  | some directory =>
+      if directory.rva > pe.sizeOfImage ||
+          directory.size > pe.sizeOfImage - directory.rva ||
+          directory.size < 40 || !exactRvaSpan pe directory.rva directory.size then
+        none
+      else
+        let characteristics <- readExactRvaU32 pe directory.rva
+        let timeDateStamp <- readExactRvaU32 pe (directory.rva + 4)
+        let majorVersion <- readExactRvaU16 pe (directory.rva + 8)
+        let minorVersion <- readExactRvaU16 pe (directory.rva + 10)
+        let nameRva <- readExactRvaU32 pe (directory.rva + 12)
+        let ordinalBase <- readExactRvaU32 pe (directory.rva + 16)
+        let numberOfFunctions <- readExactRvaU32 pe (directory.rva + 20)
+        let numberOfNames <- readExactRvaU32 pe (directory.rva + 24)
+        let addressOfFunctionsRva <- readExactRvaU32 pe (directory.rva + 28)
+        let addressOfNamesRva <- readExactRvaU32 pe (directory.rva + 32)
+        let addressOfNameOrdinalsRva <- readExactRvaU32 pe (directory.rva + 36)
+        if numberOfNames > numberOfFunctions then none else
+        pure (some {
+          directoryRva := directory.rva,
+          directorySize := directory.size,
+          characteristics,
+          timeDateStamp,
+          majorVersion,
+          minorVersion,
+          nameRva,
+          ordinalBase,
+          numberOfFunctions,
+          numberOfNames,
+          addressOfFunctionsRva,
+          addressOfNamesRva,
+          addressOfNameOrdinalsRva,
+        })
+
+def readExactForwarderIdentityAux (pe : PE32) : Nat -> Nat -> Option Bytes
+  | _, 0 => none
+  | rva, fuel + 1 => do
+      let byte <- exactRvaByte pe rva
+      if byte == 0 then pure []
+      else if byte >= 128 then none
+      else
+        let tail <- readExactForwarderIdentityAux pe (rva + 1) fuel
+        pure (byte :: tail)
+
+def readExactForwarderIdentity
+    (pe : PE32) (directory : PEExportDirectory32) (rva : Nat) : Option Bytes := do
+  if !rvaRangeInside rva 1 directory.directoryRva directory.directorySize then none else
+  let directoryEnd := directory.directoryRva + directory.directorySize
+  let identity <- readExactForwarderIdentityAux pe rva (directoryEnd - rva)
+  if identity.isEmpty then none else pure identity
+
+def PE32.executableRva (pe : PE32) (rva : Nat) : Bool :=
+  match pe.sections.filter (fun sec =>
+      sec.virtualAddress <= rva && rva < sec.virtualAddress + sec.mappedSize) with
+  | [sec] => sec.executable && (exactRvaByte pe rva).isSome
+  | _ => false
+
+def classifyExport
+    (pe : PE32) (directory : PEExportDirectory32) (rva : Nat) : Option PEExport := do
+  if rva == 0 then
+    pure { rva, kind := .null, forwarder := none }
+  else if rvaRangeInside rva 1 directory.directoryRva directory.directorySize then
+    let identity <- readExactForwarderIdentity pe directory rva
+    pure { rva, kind := .forwarder, forwarder := some identity }
+  else if pe.executableRva rva then
+    pure { rva, kind := .executableAddress, forwarder := none }
+  else if (exactRvaByte pe rva).isSome then
+    pure { rva, kind := .dataAddress, forwarder := none }
+  else
+    none
+
+def parseExportsAux (pe : PE32) (directory : PEExportDirectory32) :
+    Nat -> Nat -> Option (List PEExport)
+  | _, 0 => pure []
+  | eatRva, count + 1 => do
+      let targetRva <- readExactRvaU32 pe eatRva
+      let exported <- classifyExport pe directory targetRva
+      let tail <- parseExportsAux pe directory (eatRva + 4) count
+      pure (exported :: tail)
+
+/-- Parse every Export Address Table slot from exact bytes.  Absent and
+zero-function directories produce `some []`; any malformed slot rejects the
+entire export inventory. -/
+def parseExports (pe : PE32) : Option (List PEExport) := do
+  let directory <- parseExportDirectory32 pe
+  match directory with
+  | none => pure []
+  | some exportDirectory =>
+      if exportDirectory.numberOfFunctions == 0 then pure []
+      else
+        let eatSize := exportDirectory.numberOfFunctions * 4
+        if exportDirectory.numberOfFunctions > exportDirectory.directorySize / 4 ||
+            !rvaRangeInside exportDirectory.addressOfFunctionsRva eatSize
+              exportDirectory.directoryRva exportDirectory.directorySize then
+          none
+        else
+          parseExportsAux pe exportDirectory exportDirectory.addressOfFunctionsRva
+            exportDirectory.numberOfFunctions
+
+structure PETlsDirectory32 where
+  rawDataStartVa : Nat
+  rawDataEndVa : Nat
+  indexVa : Nat
+  callbacksVa : Nat
+  zeroFillSize : Nat
+  characteristics : Nat
+deriving Repr, DecidableEq
+
+/-- Parse the fixed-width PE32 TLS directory from mapped image bytes.  The
+outer `Option` reports a malformed directory; the inner `Option` distinguishes
+an absent directory from a present one. -/
+def parseTlsDirectory32 (pe : PE32) : Option (Option PETlsDirectory32) := do
+  if pe.tlsDirectoryRva == 0 && pe.tlsDirectorySize == 0 then
+    pure none
+  else if pe.tlsDirectoryRva == 0 || pe.tlsDirectorySize < 24 then
+    none
+  else
+    let rawDataStartVa <- readRvaU32 pe pe.tlsDirectoryRva
+    let rawDataEndVa <- readRvaU32 pe (pe.tlsDirectoryRva + 4)
+    let indexVa <- readRvaU32 pe (pe.tlsDirectoryRva + 8)
+    let callbacksVa <- readRvaU32 pe (pe.tlsDirectoryRva + 12)
+    let zeroFillSize <- readRvaU32 pe (pe.tlsDirectoryRva + 16)
+    let characteristics <- readRvaU32 pe (pe.tlsDirectoryRva + 20)
+    pure (some {
+      rawDataStartVa,
+      rawDataEndVa,
+      indexVa,
+      callbacksVa,
+      zeroFillSize,
+      characteristics,
+    })
+
+def absoluteImageVaToRva (pe : PE32) (absolute : Nat) : Option Nat :=
+  if pe.imageBase <= absolute && absolute < pe.imageBase + pe.sizeOfImage then
+    some (absolute - pe.imageBase)
+  else
+    none
+
+/-- Read a null-terminated PE32 TLS callback array.  Fuel is the exact number
+of complete 32-bit slots left in the mapped image, so a missing terminator
+fails closed rather than accepting a truncated inventory. -/
+def parseTlsCallbackRvasAux (pe : PE32) : Nat -> Nat -> Option (List Nat)
+  | _, 0 => none
+  | arrayRva, fuel + 1 => do
+      let callbackVa <- readRvaU32 pe arrayRva
+      if callbackVa == 0 then
+        pure []
+      else
+        let callbackRva <- absoluteImageVaToRva pe callbackVa
+        let tail <- parseTlsCallbackRvasAux pe (arrayRva + 4) fuel
+        pure (callbackRva :: tail)
+
+def parseTlsCallbackRvas (pe : PE32) : Option (List Nat) := do
+  let directory <- parseTlsDirectory32 pe
+  match directory with
+  | none => pure []
+  | some tls =>
+      if tls.callbacksVa == 0 then
+        pure []
+      else
+        let callbacksRva <- absoluteImageVaToRva pe tls.callbacksVa
+        let callbackSlots := (pe.sizeOfImage - callbacksRva) / 4
+        parseTlsCallbackRvasAux pe callbacksRva callbackSlots
+
 def littleEndianValue : Bytes -> Nat -> Nat
   | [], _ => 0
   | byte :: tail, shift => byte * 2 ^ shift + littleEndianValue tail (shift + 8)
@@ -408,6 +692,26 @@ def readImmutableImageWord (pe : PE32) (absolute size : Nat) : Option Nat := do
       !sec.writable && sec.virtualAddress <= rva &&
         rva + size <= sec.virtualAddress + sec.mappedSize
   readRvaLittleEndian pe rva size
+
+/-- Check the exact TLS callback values and null terminator through the
+immutable-image reader.  `ImmutableImageWordMemory` then keeps this launch
+inventory stable while earlier TLS callbacks execute. -/
+def tlsCallbackArrayValuesImmutable (pe : PE32) : Nat -> List Nat -> Bool
+  | address, [] => readImmutableImageWord pe address 4 == some 0
+  | address, callbackRva :: callbackRvas =>
+      readImmutableImageWord pe address 4 == some (pe.imageBase + callbackRva) &&
+        tlsCallbackArrayValuesImmutable pe (address + 4) callbackRvas
+
+def tlsCallbackArrayImmutable (pe : PE32) : Bool :=
+  match parseTlsDirectory32 pe, parseTlsCallbackRvas pe with
+  | some none, some [] => true
+  | some (some tls), some callbackRvas =>
+      if tls.callbacksVa == 0 then callbackRvas.isEmpty
+      else
+        readImmutableImageWord pe
+            (pe.imageBase + pe.tlsDirectoryRva + 12) 4 == some tls.callbacksVa &&
+          tlsCallbackArrayValuesImmutable pe tls.callbacksVa callbackRvas
+  | _, _ => false
 
 theorem readImmutableImageWord_bounds (pe : PE32) (absolute size expected : Nat)
     (checked : readImmutableImageWord pe absolute size = some expected) :
@@ -1032,6 +1336,7 @@ theorem BoolExpr.eval_eq_of_flagsWithin (allowed : List Nat)
 structure FlagsExpr where
   zero : Option BoolExpr
   carry : Option BoolExpr
+  auxiliary : Option BoolExpr := none
   sign : Option BoolExpr
   overflow : Option BoolExpr
   parity : Option BoolExpr
@@ -1048,7 +1353,8 @@ def updateFlag (word : Word) (index : Nat) : Option Bool -> Word
 def FlagsExpr.eval (state : MachineState) (flags : FlagsExpr) : Word :=
   let carry := updateFlag state.eflags 0 (flags.carry.map (BoolExpr.eval state))
   let parity := updateFlag carry 2 (flags.parity.map (BoolExpr.eval state))
-  let zero := updateFlag parity 6 (flags.zero.map (BoolExpr.eval state))
+  let auxiliary := updateFlag parity 4 (flags.auxiliary.map (BoolExpr.eval state))
+  let zero := updateFlag auxiliary 6 (flags.zero.map (BoolExpr.eval state))
   let sign := updateFlag zero 7 (flags.sign.map (BoolExpr.eval state))
   updateFlag sign 11 (flags.overflow.map (BoolExpr.eval state))
 
@@ -1117,6 +1423,7 @@ theorem evalFlagBit_eq_of_flagsWithin (allowed : List Nat) (index : Nat)
   rw [updateFlag_extract_preserved _ 11 0 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 7 0 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 6 0 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 4 0 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 2 0 _ (by decide) (by decide)]
   rw [updateFlag_extract_assigned _ 0 _ (by decide) (by decide)]
   cases carry : flags.carry with
@@ -1129,9 +1436,23 @@ theorem evalFlagBit_eq_of_flagsWithin (allowed : List Nat) (index : Nat)
   rw [updateFlag_extract_preserved _ 11 2 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 7 2 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 6 2 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 4 2 _ (by decide) (by decide)]
   rw [updateFlag_extract_assigned _ 2 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 0 2 _ (by decide) (by decide)]
   cases parity : flags.parity with
+  | none => rfl
+  | some value => cases evaluated : value.eval state <;> simp [evalFlagBit, evaluated]
+
+@[simp] theorem FlagsExpr.eval_extract_af (state : MachineState) (flags : FlagsExpr) :
+    (flags.eval state).extractLsb' 4 1 = evalFlagBit state 4 flags.auxiliary := by
+  unfold FlagsExpr.eval
+  rw [updateFlag_extract_preserved _ 11 4 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 7 4 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 6 4 _ (by decide) (by decide)]
+  rw [updateFlag_extract_assigned _ 4 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 2 4 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 0 4 _ (by decide) (by decide)]
+  cases auxiliary : flags.auxiliary with
   | none => rfl
   | some value => cases evaluated : value.eval state <;> simp [evalFlagBit, evaluated]
 
@@ -1141,6 +1462,7 @@ theorem evalFlagBit_eq_of_flagsWithin (allowed : List Nat) (index : Nat)
   rw [updateFlag_extract_preserved _ 11 6 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 7 6 _ (by decide) (by decide)]
   rw [updateFlag_extract_assigned _ 6 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 4 6 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 2 6 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 0 6 _ (by decide) (by decide)]
   cases zero : flags.zero with
@@ -1153,6 +1475,7 @@ theorem evalFlagBit_eq_of_flagsWithin (allowed : List Nat) (index : Nat)
   rw [updateFlag_extract_preserved _ 11 7 _ (by decide) (by decide)]
   rw [updateFlag_extract_assigned _ 7 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 6 7 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 4 7 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 2 7 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 0 7 _ (by decide) (by decide)]
   cases sign : flags.sign with
@@ -1165,6 +1488,7 @@ theorem evalFlagBit_eq_of_flagsWithin (allowed : List Nat) (index : Nat)
   rw [updateFlag_extract_preserved _ 11 10 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 7 10 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 6 10 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 4 10 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 2 10 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 0 10 _ (by decide) (by decide)]
 
@@ -1174,6 +1498,7 @@ theorem evalFlagBit_eq_of_flagsWithin (allowed : List Nat) (index : Nat)
   rw [updateFlag_extract_assigned _ 11 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 7 11 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 6 11 _ (by decide) (by decide)]
+  rw [updateFlag_extract_preserved _ 4 11 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 2 11 _ (by decide) (by decide)]
   rw [updateFlag_extract_preserved _ 0 11 _ (by decide) (by decide)]
   cases overflow : flags.overflow with
@@ -1195,6 +1520,14 @@ theorem FlagsExpr.eval_pf_eq_of_flagsWithin (allowed : List Nat)
     (flags.eval original).extractLsb' 2 1 = (flags.eval candidate).extractLsb' 2 1 := by
   simpa only [FlagsExpr.eval_extract_pf] using
     evalFlagBit_eq_of_flagsWithin allowed 2 original candidate flags.parity within agreement
+
+theorem FlagsExpr.eval_af_eq_of_flagsWithin (allowed : List Nat)
+    (original candidate : MachineState) (flags : FlagsExpr)
+    (within : flagValueWithin allowed 4 flags.auxiliary = true)
+    (agreement : MachineStateAgreement allowed original candidate) :
+    (flags.eval original).extractLsb' 4 1 = (flags.eval candidate).extractLsb' 4 1 := by
+  simpa only [FlagsExpr.eval_extract_af] using
+    evalFlagBit_eq_of_flagsWithin allowed 4 original candidate flags.auxiliary within agreement
 
 theorem FlagsExpr.eval_zf_eq_of_flagsWithin (allowed : List Nat)
     (original candidate : MachineState) (flags : FlagsExpr)
@@ -1263,9 +1596,13 @@ def parityExpression (result : Expr) : BoolExpr :=
           (.xor (.bit result 4)
             (.xor (.bit result 5) (.xor (.bit result 6) (.bit result 7))))))))
 
+def auxiliaryCarryExpression (left right result : Expr) : BoolExpr :=
+  .bit (.bitXor (.bitXor left right) result) 4
+
 def subtractionFlags (left right result : Expr) : FlagsExpr := {
   zero := some (.equal result (.constant 0))
   carry := some (.unsignedLess left right)
+  auxiliary := some (auxiliaryCarryExpression left right result)
   sign := some (.msb result)
   overflow := some (.and (.xor (.msb left) (.msb right)) (.xor (.msb left) (.msb result)))
   parity := some (parityExpression result)
@@ -1274,14 +1611,16 @@ def subtractionFlags (left right result : Expr) : FlagsExpr := {
 def additionFlags (left right result : Expr) : FlagsExpr := {
   zero := some (.equal result (.constant 0))
   carry := some (.unsignedLess result left)
+  auxiliary := some (auxiliaryCarryExpression left right result)
   sign := some (.msb result)
   overflow := some (.and (.not (.xor (.msb left) (.msb right))) (.xor (.msb left) (.msb result)))
   parity := some (parityExpression result)
 }
 
-def logicalFlags (result : Expr) : FlagsExpr := {
+def logicalFlags (undefinedSlot : Nat) (result : Expr) : FlagsExpr := {
   zero := some (.equal result (.constant 0))
   carry := some (.equal (.constant 0) (.constant 1))
+  auxiliary := some (.bit (.undefined undefinedSlot) 0)
   sign := some (.msb result)
   overflow := some (.equal (.constant 0) (.constant 1))
   parity := some (parityExpression result)
@@ -1295,6 +1634,7 @@ def subtractionFlagsWidth (bits : Nat) (left right result : Expr) : FlagsExpr :=
   {
     zero := some (.equal result (.constant 0))
     carry := some (.unsignedLess left right)
+    auxiliary := some (auxiliaryCarryExpression left right result)
     sign := some (.bit result (bits - 1))
     overflow := some (.and (.xor (.bit left (bits - 1)) (.bit right (bits - 1)))
       (.xor (.bit left (bits - 1)) (.bit result (bits - 1))))
@@ -1309,17 +1649,19 @@ def additionFlagsWidth (bits : Nat) (left right result : Expr) : FlagsExpr :=
   {
     zero := some (.equal result (.constant 0))
     carry := some (.unsignedLess result left)
+    auxiliary := some (auxiliaryCarryExpression left right result)
     sign := some (.bit result (bits - 1))
     overflow := some (.and (.not (.xor (.bit left (bits - 1)) (.bit right (bits - 1))))
       (.xor (.bit left (bits - 1)) (.bit result (bits - 1))))
     parity := some (parityExpression result)
   }
 
-def logicalFlagsWidth (bits : Nat) (result : Expr) : FlagsExpr :=
+def logicalFlagsWidth (undefinedSlot bits : Nat) (result : Expr) : FlagsExpr :=
   let result := .bitAnd result (.constant (2 ^ bits - 1))
   {
     zero := some (.equal result (.constant 0))
     carry := some (.equal (.constant 0) (.constant 1))
+    auxiliary := some (.bit (.undefined undefinedSlot) 0)
     sign := some (.bit result (bits - 1))
     overflow := some (.equal (.constant 0) (.constant 1))
     parity := some (parityExpression result)
@@ -1328,6 +1670,7 @@ def logicalFlagsWidth (bits : Nat) (result : Expr) : FlagsExpr :=
 def adcFlags (left right result : Expr) (carryIn : BoolExpr) : FlagsExpr := {
   zero := some (.equal result (.constant 0))
   carry := some (.or (.unsignedLess result left) (.and carryIn (.equal result left)))
+  auxiliary := some (auxiliaryCarryExpression left right result)
   sign := some (.msb result)
   overflow := some (.and (.not (.xor (.msb left) (.msb right))) (.xor (.msb left) (.msb result)))
   parity := some (parityExpression result)
@@ -1336,6 +1679,7 @@ def adcFlags (left right result : Expr) (carryIn : BoolExpr) : FlagsExpr := {
 def sbbFlags (left right result : Expr) (borrowIn : BoolExpr) : FlagsExpr := {
   zero := some (.equal result (.constant 0))
   carry := some (.or (.unsignedLess left right) (.and borrowIn (.equal left right)))
+  auxiliary := some (auxiliaryCarryExpression left right result)
   sign := some (.msb result)
   overflow := some (.and (.xor (.msb left) (.msb right)) (.xor (.msb left) (.msb result)))
   parity := some (parityExpression result)
@@ -2564,6 +2908,17 @@ def conditionExpression (flags : FlagsExpr) : Condition -> Option BoolExpr
       let overflow <- flags.overflow
       pure (.or zero (.xor sign overflow))
 
+def DecodedInstruction.consumesExactly
+    (decoded : DecodedInstruction) (input : Bytes) : Bool :=
+  decoded.size > 0 && decoded.size <= 15 && decoded.size <= input.length &&
+    decoded.trailing == input.drop decoded.size
+
+/-- Fail closed unless the decoder's size and trailing bytes form an exact,
+nonempty IA-32 instruction prefix of the fetched bytes. -/
+def decodeInstructionExact (input : Bytes) : Option DecodedInstruction := do
+  let decoded <- decodeInstruction input
+  if decoded.consumesExactly input then some decoded else none
+
 inductive InstructionResult where
   | next (state : SymbolicBehavior)
   | stop (state : SymbolicBehavior)
@@ -2711,7 +3066,7 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
         state with
         registers := state.registers.set destination (.constant 0)
         comparison := some (.constant 0, .constant 0)
-        flags := some (logicalFlags (.constant 0))
+        flags := some (logicalFlags undefinedSlot (.constant 0))
       })
   | .callRel32 displacement =>
       let stack := state.registers.esp.offset (2 ^ 32 - 4)
@@ -2763,7 +3118,7 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
         match operation with
         | .add => additionFlags left right result
         | .sub | .compare => subtractionFlags left right result
-        | .xor | .and | .or | .test => logicalFlags result
+        | .xor | .and | .or | .test => logicalFlags undefinedSlot result
       let next <-
         match operation with
         | .compare | .test => some state
@@ -2804,6 +3159,7 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
             some {
               zero := some (.equal result (.constant 0))
               carry := some carry
+              auxiliary := some (.bit (.undefined undefinedSlot) 0)
               sign := some (.msb result)
               overflow
               parity := some (parityExpression result)
@@ -2874,7 +3230,7 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
         match operation with
         | .add => additionFlagsWidth bits left right result
         | .sub | .compare => subtractionFlagsWidth bits left right result
-        | .xor | .and | .or | .test => logicalFlagsWidth bits result
+        | .xor | .and | .or | .test => logicalFlagsWidth undefinedSlot bits result
       let next <-
         match operation with
         | .compare | .test => some state
@@ -2901,7 +3257,7 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
         match operation with
         | .add => additionFlagsWidth 8 left right result
         | .sub | .compare => subtractionFlagsWidth 8 left right result
-        | .xor | .and | .or | .test => logicalFlagsWidth 8 result
+        | .xor | .and | .or | .test => logicalFlagsWidth undefinedSlot 8 result
       let next <-
         match operation with
         | .compare | .test => some state
@@ -2996,12 +3352,14 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
         if reverse then {
           zero := some zero
           carry := none
+          auxiliary := some (.bit (.undefined undefinedSlot) 0)
           sign := none
           overflow := none
           parity := none
         } else {
           zero := some (.equal result (.constant 0))
           carry := some zero
+          auxiliary := some (.bit (.undefined undefinedSlot) 0)
           sign := none
           overflow := none
           parity := none
@@ -3047,6 +3405,7 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
       let flags : FlagsExpr := {
         zero := some (.equal (.x87CompareBit left right state.x87.control 2) (.constant 1))
         carry := some (.equal (.x87CompareBit left right state.x87.control 0) (.constant 1))
+        auxiliary := some falseFlag
         sign := some falseFlag
         overflow := some falseFlag
         parity := some (.equal (.x87CompareBit left right state.x87.control 1) (.constant 1))
@@ -3172,7 +3531,7 @@ def executeCode (pe : PE32) (imports : List PEImport) :
   | 0, _, _, _, _ => none
   | _ + 1, _, _, [], state => some (state, [])
   | fuel + 1, undefinedSlot, pc, bytes, state => do
-      let decoded <- decodeInstruction bytes
+      let decoded <- decodeInstructionExact bytes
       let result <- executeInstruction pe imports pc undefinedSlot decoded state
       match result with
       | .next nextState => executeCode pe imports fuel (undefinedSlot + 1) (pc + decoded.size) decoded.trailing nextState

@@ -17,7 +17,10 @@ class StageARuntimeFrameImportAcceptanceTests(StageARelationalTestBase):
                 + b"\xe8\x1b\x00\x00\x00"          # second call, same callee
                 + b"\xeb\xfe"                        # second continuation loop
                 + b"\x90" * 0x19
-                + b"\xc3"                            # shared-callee
+                + b"\xe8\x0b\x00\x00\x00"         # shared calls leaf
+                + b"\xc3"                            # shared continuation
+                + b"\x90" * 0x0A
+                + b"\xc3"                            # leaf return
             )
             original = root / "original.exe"
             candidate = root / "candidate.exe"
@@ -34,7 +37,9 @@ class StageARuntimeFrameImportAcceptanceTests(StageARelationalTestBase):
                 ("import-continuation", 0x100F, 2),
                 ("caller-without-import", 0x1020, 5),
                 ("plain-continuation", 0x1025, 2),
-                ("shared-callee", 0x1040, 1),
+                ("shared-callee-call", 0x1040, 5),
+                ("shared-callee-return", 0x1045, 1),
+                ("leaf-return", 0x1050, 1),
             )
             contract = root / "relation.json"
             contract.write_text(json.dumps({
@@ -69,6 +74,12 @@ class StageARuntimeFrameImportAcceptanceTests(StageARelationalTestBase):
                         "rva": 0x1027,
                         "size": 0x19,
                     },
+                    {
+                        "id": "shared-callee-padding",
+                        "side": "both",
+                        "rva": 0x1046,
+                        "size": 0x0A,
+                    },
                 ],
                 "memory_relation": {"mode": "identity"},
             }), encoding="utf-8")
@@ -83,6 +94,11 @@ class StageARuntimeFrameImportAcceptanceTests(StageARelationalTestBase):
 
             self.assertEqual(result.get("status"), "prepared", result)
             self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                result["composition_progress"]["frontiers"]["stack_invariant"],
+                [],
+                result,
+            )
             normalized = json.loads(
                 (prepared / "relation-contract.json").read_text(encoding="utf-8")
             )
@@ -124,6 +140,12 @@ class StageARuntimeFrameImportAcceptanceTests(StageARelationalTestBase):
                 if step["kind"] == "return"
             )
             self.assertEqual(len(return_step["cases"]), 2)
+            shared_call_step = next(
+                step for step in result["acceptance"]["node_steps"]
+                if step["node_id"] == 6
+            )
+            self.assertEqual(shared_call_step["kind"], "call")
+            self.assertEqual(len(shared_call_step["cases"]), 2)
             return_case_by_target = {
                 case["target_node_id"]: case for case in return_step["cases"]
             }
@@ -144,7 +166,7 @@ class StageARuntimeFrameImportAcceptanceTests(StageARelationalTestBase):
             )
             self.assertIn("seedsPreservedImportsFrom", acceptance_source)
             self.assertIn(
-                "RelationalRuntimeCallImportsHold.afterInternal",
+                "RelationalRuntimeCallFactsHold.afterInternal",
                 acceptance_source,
             )
             self.assertIn("frameContinuation", acceptance_source)

@@ -148,6 +148,78 @@ class StageACallsiteSummaryGenerationTests(unittest.TestCase):
             self._generate(register_relations=reordered_relations),
         )
 
+    def test_callsite_without_requested_facts_needs_no_return_summary(self):
+        register_relations = {
+            "return_slot_analysis": {
+                "call_summary_analysis": {"summaries": []},
+            },
+        }
+
+        analysis = self._generate(
+            import_register_analysis={"relations": []},
+            register_relations=register_relations,
+        )
+
+        self.assertEqual(analysis["counts"], {
+            "call_summaries": 2,
+            "satisfied": 0,
+            "incomplete": 0,
+            "not_applicable": 2,
+            "proposal_edges": 0,
+            "certificates": 0,
+        })
+        self.assertEqual(
+            [row["callsite_region_index"] for row in analysis["summaries"]],
+            [0, 4],
+        )
+        self.assertTrue(all(
+            row["status"] == "not_applicable"
+            and row["reason_codes"] == [
+                "no_preservable_relations_at_callsite"
+            ]
+            for row in analysis["summaries"]
+        ))
+
+    def test_inherited_strong_register_fact_is_carried_across_call(self):
+        inherited = {
+            "original": "esi",
+            "candidate": "esi",
+            "relation": "fixed_code_pointer",
+            "target_id": 7,
+        }
+        register_relations = copy.deepcopy(self.register_relations)
+        register_relations["regions"] = [{} for _ in self.behaviors]
+        register_relations["regions"][0] = {
+            "inputs": [copy.deepcopy(inherited)],
+            "output_claims": [{
+                "kind": "identity",
+                "input": copy.deepcopy(inherited),
+                "output": copy.deepcopy(inherited),
+            }],
+        }
+
+        analysis = self._generate(
+            import_register_analysis={"relations": []},
+            register_relations=register_relations,
+        )
+
+        carried = next(
+            row for row in analysis["summaries"]
+            if row["callsite_region_index"] == 0
+        )
+        self.assertEqual(carried["status"], "satisfied", carried)
+        self.assertEqual(len(carried["requested_register_relations"]), 1)
+        relation = carried["requested_register_relations"][0]
+        self.assertEqual(
+            {key: value for key, value in relation.items() if key != "origin"},
+            inherited,
+        )
+        self.assertEqual(relation["origin"]["region_index"], 0)
+        self.assertEqual(
+            [edge["source_region_index"] for edge in analysis["proposal_edges"]],
+            [0],
+        )
+
     def test_relation_input_order_keeps_cache_keys_and_hashes_stable(self):
         import_analysis = copy.deepcopy(self.import_analysis)
         import_analysis["relations"].extend({
@@ -320,9 +392,13 @@ class StageACallsiteSummaryGenerationTests(unittest.TestCase):
             contract, clobbered, initial, register_relations
         )
         self.assertEqual(rejected["proposal_edges"], [])
+        rejected_callsite = next(
+            row for row in rejected["summaries"]
+            if row["callsite_region_index"] == 3
+        )
         self.assertIn(
             "register_clobbered",
-            rejected["summaries"][0]["reason_codes"],
+            rejected_callsite["reason_codes"],
         )
 
     def test_clobbered_register_does_not_emit_a_summary_edge(self):
@@ -339,6 +415,60 @@ class StageACallsiteSummaryGenerationTests(unittest.TestCase):
             "register_clobbered" in row["reason_codes"]
             for row in analysis["summaries"]
         ))
+
+    def test_direct_external_call_requires_returning_preservation_contract(self):
+        imported = {
+            "dll": "kernel32.dll",
+            "name": {"op": "symbol", "bytes": list(b"GetTickCount")},
+        }
+        behaviors = copy.deepcopy(self.behaviors)
+        behaviors[2] = _pair({
+            "op": "external_call",
+            "import": imported,
+            "continuation": 400,
+        })
+        contract = copy.deepcopy(self.contract)
+        contract["machine_import_call_contracts"] = [{
+            "id": 7,
+            "import": {"dll": "kernel32.dll", "symbol": "GetTickCount"},
+            "disposition": "returns",
+            "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+            "clobbered_registers": ["eax", "ecx", "edx"],
+        }]
+        register_relations = copy.deepcopy(self.register_relations)
+        register_relations["edges"] = [{
+            "source_region_index": 2,
+            "target_region_index": 3,
+            "kind": "external_call",
+            "machine_contract_id": 7,
+        }]
+
+        preserved = self._generate(
+            contract=contract,
+            behaviors=behaviors,
+            register_relations=register_relations,
+        )
+        self.assertEqual(preserved["counts"]["satisfied"], 2, preserved)
+        self.assertEqual(preserved["counts"]["proposal_edges"], 2)
+        self.assertTrue(all(
+            {"source": 2, "target": 3}
+                in row["analysis"]["certificate"]["reachable_edges"]
+            for row in preserved["summaries"]
+        ))
+
+        contract["machine_import_call_contracts"][0][
+            "preserved_registers"
+        ].remove("esi")
+        clobbered = self._generate(
+            contract=contract,
+            behaviors=behaviors,
+            register_relations=register_relations,
+        )
+        self.assertEqual(clobbered["proposal_edges"], [])
+        self.assertTrue(all(
+            "external_call_register_clobbered" in row["reason_codes"]
+            for row in clobbered["summaries"]
+        ), clobbered)
 
     def test_unresolved_control_does_not_emit_a_summary_edge(self):
         behaviors = copy.deepcopy(self.behaviors)

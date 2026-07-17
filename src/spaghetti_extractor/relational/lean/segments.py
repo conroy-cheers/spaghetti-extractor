@@ -18,6 +18,7 @@ from ..contract import _raw_base_relocations
 from ..model import _semantic_hash, _target_shaped_register_output_claims
 from ..schema import (
     FLAG_BITS,
+    REGISTERS,
     RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
 )
@@ -64,6 +65,7 @@ from .expressions import (
 from .definitions import (
     _normalized_behavior_fast_path,
 )
+from .scanner import _lean_reverse_sentinel_scanner_claim
 
 
 def _write_relational_invariant_modules(
@@ -959,6 +961,7 @@ def _write_relational_register_relation_modules(
             )
             state_rel_only_claims = {
                 "immutable_image_word",
+                "fixed_immutable_expression",
                 "static_word_slot",
                 "stack_read32_sub",
                 "stack_read32_relative",
@@ -1618,13 +1621,25 @@ def _write_relational_segment_refinement_modules(
             product_graph["evidence"]["decoded_control_candidates"]
         )
     }
-    grouped: dict[int, list[dict[str, Any]]] = {}
+    grouped: dict[tuple[int, int | None], list[dict[str, Any]]] = {}
     for candidate in candidates:
-        grouped.setdefault(
-            chunk_by_region[int(candidate["source_region_index"])], []
-        ).append(candidate)
+        source_chunk = chunk_by_region[int(candidate["source_region_index"])]
+        isolated_edge = (
+            int(candidate["edge_index"])
+            if candidate.get("certificate_profile")
+            == "composable_register_zero_guard_contradiction_v1"
+            else None
+        )
+        grouped.setdefault((source_chunk, isolated_edge), []).append(candidate)
     modules: list[dict[str, Any]] = []
-    for chunk_index, selected in sorted(grouped.items()):
+    for (chunk_index, isolated_edge), selected in sorted(
+        grouped.items(),
+        key=lambda item: (
+            item[0][0],
+            item[0][1] is not None,
+            item[0][1] or -1,
+        ),
+    ):
         definitions: list[str] = []
         proposition_names: list[str] = []
         theorem_names: list[str] = []
@@ -1646,15 +1661,127 @@ def _write_relational_segment_refinement_modules(
             transition_name = f"{prefix}TransitionChecked"
             proposition_name = f"{prefix}Closed"
             theorem_name = f"{prefix}Checked"
+            if candidate["certificate_profile"] == (
+                "composable_register_zero_guard_contradiction_v1"
+            ):
+                raw_claim = candidate.get(
+                    "register_zero_guard_contradiction_claim"
+                )
+                if not isinstance(raw_claim, dict) or raw_claim.get(
+                    "profile"
+                ) != "register_zero_guard_contradiction_v1":
+                    raise StageAInputError(
+                        "register-zero guard contradiction segment lacks its claim"
+                    )
+                original_register = raw_claim.get("original_register")
+                candidate_register = raw_claim.get("candidate_register")
+                if (
+                    original_register not in REGISTERS
+                    or candidate_register not in REGISTERS
+                ):
+                    raise StageAInputError(
+                        "register-zero guard contradiction claim has an invalid register"
+                    )
+                claim_name = f"{prefix}RegisterZeroGuardContradictionClaim"
+                claim_checked_name = f"{claim_name}Checked"
+                definitions.extend([
+                    (
+                        f"def {edge_name} : RelationalSegmentEdge := {{\n"
+                        f"  sourceTargetId := {source_target_id}\n"
+                        f"  exit := .internal {target_id}\n"
+                        f"  originalSpan := region{source_index}.original\n"
+                        f"  candidateSpan := region{source_index}.candidate\n"
+                        "  localCodeTargetIds := ["
+                        + ", ".join(
+                            str(item)
+                            for item in candidate["local_code_target_ids"]
+                        )
+                        + "]\n  localValueTargetIds := ["
+                        + ", ".join(
+                            str(item)
+                            for item in candidate["local_value_target_ids"]
+                        )
+                        + "]\n"
+                        f"  originalGuard := {_lean_semantic_bool_expr(candidate['original_guard'])}\n"
+                        f"  candidateGuard := {_lean_semantic_bool_expr(candidate['candidate_guard'])}\n"
+                        "}"
+                    ),
+                    (
+                        f"theorem {local_code_targets_name} :\n"
+                        f"    staticProofContext.codeMap.resolveIds "
+                        f"{edge_name}.localCodeTargetIds = "
+                        f"some region{source_index}.targets := by decide"
+                    ),
+                    (
+                        f"theorem {local_values_name} :\n"
+                        f"    staticProofContext.dataMap.resolveIds "
+                        f"{edge_name}.localValueTargetIds = "
+                        f"some region{source_index}.values := by decide"
+                    ),
+                    (
+                        f"def {claim_name} : RegisterZeroGuardContradictionClaim := {{\n"
+                        f"  originalRegister := .{original_register}\n"
+                        f"  candidateRegister := .{candidate_register}\n"
+                        "}"
+                    ),
+                    (
+                        f"theorem {claim_checked_name} :\n"
+                        f"    {claim_name}.checked {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant = true := by decide"
+                    ),
+                    (
+                        f"theorem {transition_name} :\n"
+                        f"    SegmentTransitionClosed staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"      originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} :=\n"
+                        "  segmentTransitionClosed_of_register_zero_guard_contradiction\n"
+                        f"    staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    originalBehavior{source_index} "
+                        f"candidateBehavior{source_index} {claim_name}\n"
+                        f"    region{source_index}.targets region{source_index}.values\n"
+                        f"    {local_code_targets_name} {local_values_name} "
+                        f"{claim_checked_name}"
+                    ),
+                    (
+                        f"def {proposition_name} : Prop :=\n"
+                        f"  RelationalSegmentRefinement staticProofContext "
+                        f"{edge_name} region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant"
+                    ),
+                    (
+                        f"theorem {theorem_name} : {proposition_name} :=\n"
+                        "  relationalSegmentRefinement_of_decoded "
+                        f"staticProofContext {edge_name} "
+                        f"region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    originalBehavior{source_index} "
+                        f"candidateBehavior{source_index}\n"
+                        f"    originalBehavior{source_index}CheckedDecoded "
+                        f"candidateBehavior{source_index}CheckedDecoded "
+                        f"{transition_name}"
+                    ),
+                ])
+                proposition_names.append(proposition_name)
+                theorem_names.append(theorem_name)
+                continue
             if candidate["certificate_profile"] in {
                 "composable_local_no_write_v1", "composable_direct_call_v1",
                 "composable_known_indirect_call_v1",
                 "composable_direct_call_prepared_writes_v1",
                 "composable_direct_call_stack_writes_v1",
                 "composable_immutable_indirect_jump_v1",
+                "composable_fixed_code_address_indirect_jump_v1",
                 "composable_paired_stack_word_write_v1",
                 "composable_paired_stack_word_writes_v1",
                 "composable_paired_prepared_word_writes_v1",
+                "composable_reverse_sentinel_scanner_v1",
+                "composable_reverse_sentinel_scanner_loop_v1",
+                "composable_reverse_sentinel_scanner_exit_v1",
             }:
                 direct_call = (
                     candidate["certificate_profile"] == "composable_direct_call_v1"
@@ -1688,11 +1815,36 @@ def _write_relational_segment_refinement_modules(
                     candidate["certificate_profile"] ==
                     "composable_immutable_indirect_jump_v1"
                 )
+                fixed_code_address_indirect_jump = (
+                    candidate["certificate_profile"] ==
+                    "composable_fixed_code_address_indirect_jump_v1"
+                )
+                reverse_sentinel_scanner_body = (
+                    candidate["certificate_profile"] ==
+                    "composable_reverse_sentinel_scanner_v1"
+                )
+                reverse_sentinel_scanner_loop = (
+                    candidate["certificate_profile"] ==
+                    "composable_reverse_sentinel_scanner_loop_v1"
+                )
+                reverse_sentinel_scanner_exit = (
+                    candidate["certificate_profile"] ==
+                    "composable_reverse_sentinel_scanner_exit_v1"
+                )
+                reverse_sentinel_scanner = (
+                    reverse_sentinel_scanner_body
+                    or reverse_sentinel_scanner_loop
+                    or reverse_sentinel_scanner_exit
+                )
                 normalized_behavior_definitions: list[str] = []
                 normalized_fast_path = _normalized_behavior_fast_path(
                     contract["regions"][source_index], behaviors[source_index]
                 )
-                if immutable_indirect_jump or known_indirect_call:
+                if (
+                    immutable_indirect_jump
+                    or fixed_code_address_indirect_jump
+                    or known_indirect_call
+                ):
                     original_normalized_behavior = (
                         f"productNode{source_index}OriginalNormalized"
                     )
@@ -1867,6 +2019,41 @@ def _write_relational_segment_refinement_modules(
                 import_transfer_name = f"{prefix}ImportTransferChecked"
                 dynamic_transfer_name = f"{prefix}DynamicTransferChecked"
                 guard_claim_name = f"{prefix}GuardClaim"
+                scanner_claim_name = f"{prefix}ReverseSentinelScannerClaim"
+                scanner_claim_checked_name = (
+                    f"{prefix}ReverseSentinelScannerClaimChecked"
+                )
+                scanner_claim_definitions: list[str] = []
+                if reverse_sentinel_scanner:
+                    scanner_claim = candidate.get(
+                        "reverse_sentinel_scanner_claim"
+                    )
+                    if not isinstance(scanner_claim, dict):
+                        raise StageAInputError(
+                            "reverse-sentinel scanner segment lacks its checked claim"
+                        )
+                    scanner_checked_operation = (
+                        "checked" if reverse_sentinel_scanner_body
+                        else "loopChecked" if reverse_sentinel_scanner_loop
+                        else "exitChecked"
+                    )
+                    scanner_checked_head = (
+                        f"{scanner_claim_name}.{scanner_checked_operation} "
+                        + ("staticProofContext " if reverse_sentinel_scanner_body else "")
+                    )
+                    scanner_claim_definitions.extend([
+                        (
+                            f"def {scanner_claim_name} : ReverseSentinelScannerClaim := "
+                            + _lean_reverse_sentinel_scanner_claim(scanner_claim)
+                        ),
+                        (
+                            f"theorem {scanner_claim_checked_name} :\n"
+                            f"    {scanner_checked_head}region{source_index}.inputInvariant "
+                            f"region{target_index}.inputInvariant\n"
+                            f"      {original_normalized_behavior} "
+                            f"{candidate_normalized_behavior} = true := by decide"
+                        ),
+                    ])
                 import_claim_definitions: list[str] = []
                 import_transfer_facts: list[str] = []
                 import_fact_names: list[str] = []
@@ -2227,6 +2414,18 @@ def _write_relational_segment_refinement_modules(
                         f"{guard_claim_name} (by decide)\n"
                         "    originalState candidateState related\n"
                     )
+                elif (
+                    guard_claim["profile"]
+                    == "reverse_sentinel_scanner_guard_v1"
+                ):
+                    guard_agreement_setup = (
+                        "  have guardAgreement := "
+                        "reverseSentinelScannerGuardsAgree_of_checked\n"
+                        f"    staticProofContext region{source_index}.inputInvariant\n"
+                        f"    {edge_name}.originalGuard {edge_name}.candidateGuard "
+                        f"{scanner_claim_name} (by decide)\n"
+                        "    world originalState candidateState related\n"
+                    )
                 else:
                     dynamic_guard_claim_name = (
                         f"{prefix}DynamicClaim{int(guard_claim['claim_index'])}"
@@ -2288,9 +2487,17 @@ def _write_relational_segment_refinement_modules(
                     flag_proof = "  · rfl"
                 else:
                     flag_claim = candidate.get("flag_transfer_claim") or {}
-                    if flag_claim.get("profile") != "preserved_input_flags_v1":
+                    scanner_flags = (
+                        reverse_sentinel_scanner_body
+                        and flag_claim.get("profile")
+                            == "reverse_sentinel_scanner_flags_v1"
+                    )
+                    if (
+                        flag_claim.get("profile") != "preserved_input_flags_v1"
+                        and not scanner_flags
+                    ):
                         raise ValueError(
-                            "nonempty target flags require a preserved-input claim"
+                            "nonempty target flags require a checked transfer claim"
                         )
                     flag_theorems = {
                         0: "evalNormalizedFlags_extract_cf_input_of_checked",
@@ -2306,12 +2513,28 @@ def _write_relational_segment_refinement_modules(
                             f"{indent}· simp only "
                             "[NormalizedSymbolicBehavior.eval_eflags]"
                         )
-                        if bit == 10:
+                        if scanner_flags and bit == 6:
+                            proof_lines.append(
+                                f"{indent}  exact "
+                                "reverseSentinelScannerZeroFlagRelated_of_checked\n"
+                                f"{indent}    staticProofContext "
+                                f"region{source_index}.inputInvariant "
+                                f"region{target_index}.inputInvariant\n"
+                                f"{indent}    {original_normalized_behavior} "
+                                f"{candidate_normalized_behavior} "
+                                f"{scanner_claim_name}\n"
+                                f"{indent}    {scanner_claim_checked_name} world "
+                                "originalState candidateState\n"
+                                f"{indent}    relatedForRegisterTransfer"
+                            )
+                        elif bit == 10:
                             proof_lines.append(
                                 f"{indent}  rw [evalNormalizedFlags_extract_df, "
                                 "evalNormalizedFlags_extract_df]"
                             )
-                        else:
+                        elif not scanner_flags or bit in flag_claim.get(
+                            "preserved_bits", []
+                        ):
                             theorem = flag_theorems[bit]
                             proof_lines.append(
                                 f"{indent}  rw [{theorem} originalState "
@@ -2319,11 +2542,16 @@ def _write_relational_segment_refinement_modules(
                                 f"{theorem} candidateState "
                                 f"{candidate_normalized_behavior}.flags (by decide)]"
                             )
-                        proof_lines.append(
-                            f"{indent}  exact flagsRelated_of_contains "
-                            f"region{source_index}.flagInputs originalState.eflags "
-                            "candidateState.eflags inputFlags (by decide)"
-                        )
+                        else:
+                            raise ValueError(
+                                f"scanner flag {bit} is neither produced nor preserved"
+                            )
+                        if not (scanner_flags and bit == 6):
+                            proof_lines.append(
+                                f"{indent}  exact flagsRelated_of_contains "
+                                f"region{source_index}.flagInputs originalState.eflags "
+                                "candidateState.eflags inputFlags (by decide)"
+                            )
                         proof_lines.append(
                             f"{indent}· "
                             + (
@@ -2379,9 +2607,25 @@ def _write_relational_segment_refinement_modules(
                 dynamic_register_outputs = candidate.get(
                     "dynamic_register_output_claims", []
                 )
+                scanner_register_transfer = candidate.get(
+                    "reverse_sentinel_scanner_register_transfer_claim"
+                )
+                scanner_register_output = (
+                    scanner_register_transfer.get("output")
+                    if isinstance(scanner_register_transfer, dict) else None
+                )
                 target_output_claims_name = f"{prefix}TargetRegisterOutputClaims"
                 target_output_claims = candidate.get("register_output_claims", [])
-                if dynamic_register_outputs:
+                if reverse_sentinel_scanner_body and isinstance(
+                    scanner_register_output, dict
+                ):
+                    if not isinstance(scanner_register_transfer, dict):
+                        raise StageAInputError(
+                            "scanner body lacks its checked register-transfer claim"
+                        )
+                    register_inventory_definition = ""
+                    register_inventory_statement = "True"
+                elif dynamic_register_outputs:
                     register_inventory_definition = ""
                     register_inventory_statement = (
                         f"region{source_index}.outputRelations = "
@@ -2402,7 +2646,78 @@ def _write_relational_segment_refinement_modules(
                         "InvariantWP.RegisterOutputClaim.output = "
                         f"region{target_index}.inputRelations"
                     )
-                if not dynamic_register_outputs:
+                if reverse_sentinel_scanner_body and isinstance(
+                    scanner_register_output, dict
+                ):
+                    ordinary_fact_setup = (
+                        "  have ordinaryRegisterFacts := "
+                        "InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims\n"
+                        f"    staticProofContext world region{source_index} "
+                        f"{original_normalized_behavior} "
+                        f"{candidate_normalized_behavior}\n"
+                        f"    registerRelationChunk{chunk_index}Region{source_index}OutputClaims "
+                        "(by decide) originalState candidateState relatedForRegisterTransfer\n"
+                        "  simp only [registerRelationsHold, List.all_eq_true] "
+                        "at ordinaryRegisterFacts\n"
+                    )
+                    output_facts: dict[tuple[str, str, str], str] = {}
+                    ordinary_fact_rows: list[str] = []
+                    for fact_index, output_claim in enumerate(
+                        register_relations["regions"][source_index].get(
+                            "output_claims", []
+                        )
+                    ):
+                        output = output_claim.get("output")
+                        if not isinstance(output, dict):
+                            continue
+                        fact_name = f"ordinaryRegisterFact{fact_index}"
+                        ordinary_fact_rows.append(
+                            f"  have {fact_name} := ordinaryRegisterFacts "
+                            f"{_lean_register_relation_pair(output)} (by decide)\n"
+                        )
+                        output_facts[(
+                            output["original"], output["candidate"],
+                            output["relation"],
+                        )] = fact_name
+                    scanner_fact_name = "scannerLoadedRegisterFact"
+                    output_facts[(
+                        scanner_register_output["original"],
+                        scanner_register_output["candidate"],
+                        scanner_register_output["relation"],
+                    )] = scanner_fact_name
+                    scanner_fact_setup = (
+                        f"  have {scanner_fact_name} := "
+                        "reverseSentinelScannerLoadedOutputRelated_of_checked\n"
+                        f"    staticProofContext region{source_index}.inputInvariant "
+                        f"region{target_index}.inputInvariant\n"
+                        f"    {original_normalized_behavior} "
+                        f"{candidate_normalized_behavior} {scanner_claim_name}\n"
+                        f"    {scanner_claim_checked_name} world originalState "
+                        "candidateState relatedForRegisterTransfer\n"
+                    )
+                    target_fact_names = [
+                        output_facts[(
+                            output["original"], output["candidate"],
+                            output["relation"],
+                        )]
+                        for output in contract["regions"][target_index].get(
+                            "input_relations", []
+                        )
+                    ]
+                    register_transfer_body = (
+                        ordinary_fact_setup
+                        + "".join(ordinary_fact_rows)
+                        + scanner_fact_setup
+                        + f"  simpa [RegionRelation.inputInvariant, region{target_index}, "
+                        "registerRelationsHold] using (⟨"
+                        + ", ".join(target_fact_names)
+                        + "⟩)\n"
+                    )
+                    register_transfer_proof = (
+                        "  · "
+                        + register_transfer_body.lstrip().replace("\n  ", "\n    ")
+                    )
+                elif not dynamic_register_outputs:
                     register_transfer_proof = (
                         f"  · rw [RegionRelation.inputInvariant, ← {composition_name}]\n"
                         "    exact InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims "
@@ -3115,9 +3430,11 @@ def _write_relational_segment_refinement_modules(
                         "(by decide) "
                         f"{shape_name} {state_name}"
                     )
-                elif immutable_indirect_jump:
+                elif immutable_indirect_jump or fixed_code_address_indirect_jump:
                     target_closed = (
                         f"productNode{source_index}ImmutableIndirectJumpClosed"
+                        if immutable_indirect_jump else
+                        f"productNode{source_index}FixedCodeAddressIndirectJumpClosed"
                     )
                     immutable_indirect_jump_shape_definition = (
                         f"theorem {shape_name} :\n"
@@ -3155,6 +3472,7 @@ def _write_relational_segment_refinement_modules(
                     )
                 definitions.extend([
                     *normalized_behavior_definitions,
+                    *scanner_claim_definitions,
                     *import_claim_definitions,
                     *dynamic_claim_definitions,
                     (
@@ -3251,9 +3569,23 @@ def _write_relational_segment_refinement_modules(
                         "inputStackWindows, inputMemory, _inputDynamicWords, inputUndefined, inputX87, inputFlags, "
                         "inputFsBase⟩\n"
                         + stack_window_setup
-                        + "  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩\n"
+                        + "  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩\n"
                         + register_transfer_proof
-                        + f"  · simp [RegionRelation.inputInvariant, region{target_index}, boundsRelated]\n"
+                        + (
+                            "  · exact reverseSentinelScannerLoopBoundClosed_of_checked\n"
+                            f"      staticProofContext region{source_index}.inputInvariant\n"
+                            f"      region{target_index}.inputInvariant "
+                            f"{original_normalized_behavior}\n"
+                            f"      {candidate_normalized_behavior} "
+                            f"{scanner_claim_name}\n"
+                            f"      {scanner_claim_checked_name} world originalState "
+                            "candidateState\n"
+                            "      relatedForRegisterTransfer guardTrue\n"
+                            if reverse_sentinel_scanner_loop
+                            else
+                            f"  · simp [RegionRelation.inputInvariant, region{target_index}, "
+                            "boundsRelated]\n"
+                        )
                         + stack_separation_proof
                         + stack_window_proof
                         +
@@ -3272,6 +3604,35 @@ def _write_relational_segment_refinement_modules(
                         f"originalBehavior{source_index}, candidateBehavior{source_index}, "
                         "StageA.Formal.X87Expr.eval, StageA.Formal.Expr.eval]\n"
                         + flag_proof
+                        + "\n"
+                        + (
+                            "  · exact "
+                            "reverseSentinelScannerPostconditionClosed_of_checked\n"
+                            f"      staticProofContext region{source_index}.inputInvariant\n"
+                            f"      region{target_index}.inputInvariant "
+                            f"{original_normalized_behavior}\n"
+                            f"      {candidate_normalized_behavior} "
+                            f"{scanner_claim_name}\n"
+                            f"      {scanner_claim_checked_name} world originalState "
+                            "candidateState\n"
+                            "      relatedForRegisterTransfer\n"
+                            if reverse_sentinel_scanner_body
+                            else
+                            "  · exact "
+                            "reverseSentinelScannerFinishedPostconditionClosed_of_checked\n"
+                            f"      staticProofContext region{source_index}.inputInvariant\n"
+                            f"      region{target_index}.inputInvariant "
+                            f"{original_normalized_behavior}\n"
+                            f"      {candidate_normalized_behavior} "
+                            f"{scanner_claim_name}\n"
+                            f"      {scanner_claim_checked_name} world originalState "
+                            "candidateState\n"
+                            "      relatedForRegisterTransfer guardTrue\n"
+                            if reverse_sentinel_scanner_exit
+                            else
+                            f"  · simp [RegionRelation.inputInvariant, region{target_index}, "
+                            "pairedStatePredicatesHold, PairedStatePredicate.holds]\n"
+                        )
                     ),
                     *([] if not import_fact_names else [
                         (
@@ -3383,8 +3744,17 @@ def _write_relational_segment_refinement_modules(
                 f"unsupported segment certificate profile: "
                 f"{candidate.get('certificate_profile')!r}"
             )
-        claims_name = f"segmentRefinementChunk{chunk_index}Claims"
-        checked_name = f"segmentRefinementChunk{chunk_index}Checked"
+        module_suffix = (
+            f"Edge{isolated_edge}"
+            if isolated_edge is not None
+            else f"Chunk{chunk_index}"
+        )
+        claims_name = f"segmentRefinement{module_suffix}Claims"
+        checked_name = (
+            f"segmentRefinement{module_suffix}ClaimsChecked"
+            if isolated_edge is not None
+            else f"segmentRefinement{module_suffix}Checked"
+        )
         definitions.append(
             f"def {claims_name} : List Prop := [{', '.join(proposition_names)}]"
         )
@@ -3397,7 +3767,7 @@ def _write_relational_segment_refinement_modules(
             f"theorem {checked_name} : AllInvariantClaims {claims_name} := by\n"
             f"  exact {proof}"
         )
-        module = f"RelationalSegmentRefinementChunk{chunk_index}"
+        module = f"RelationalSegmentRefinement{module_suffix}"
         target_chunk_imports = sorted({
             chunk_by_region[int(candidate["target_region_index"])]
             for candidate in selected
@@ -3408,16 +3778,27 @@ def _write_relational_segment_refinement_modules(
             for candidate in selected
             if candidate.get("certificate_profile") in {
                 "composable_immutable_indirect_jump_v1",
+                "composable_fixed_code_address_indirect_jump_v1",
                 "composable_known_indirect_call_v1",
             }
         })
+        definitions_source = "\n\n".join(definitions)
+        requires_full_static_context = "staticProofContextChecked" in definitions_source
         source = (
             "import StageA.RelationalComposition\n"
-            "import StageA.RelationalStaticContext\n"
-            "import StageA.RelationalStaticContextBase\n"
+            + (
+                "import StageA.RelationalStaticContext\n"
+                if requires_full_static_context
+                else ""
+            )
+            + "import StageA.RelationalStaticContextBase\n"
             f"import StageA.RelationalProofOriginalDecodeChunk{chunk_index}\n"
             f"import StageA.RelationalProofCandidateDecodeChunk{chunk_index}\n"
-            f"import StageA.RelationalRegisterRelationsChunk{chunk_index}\n"
+            + (
+                f"import StageA.RelationalRegisterRelationsChunk{chunk_index}\n"
+                if isolated_edge is None
+                else ""
+            )
             + "".join(
                 f"import StageA.RelationalRegionChunk{target_chunk}\n"
                 for target_chunk in target_chunk_imports
@@ -3431,7 +3812,7 @@ def _write_relational_segment_refinement_modules(
             "open StageA.Formal StageA.Relational\n\n"
             "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
             "set_option linter.unusedSimpArgs false\n\n"
-            + "\n\n".join(definitions)
+            + definitions_source
             + "\n\nend StageA.GeneratedRelational\n"
         )
         _write_text_if_changed(lean_dir / "StageA" / f"{module}.lean", source)

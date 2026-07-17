@@ -1,16 +1,41 @@
 import StageA.RelationalCallbacks
 import StageA.RelationalExecution
+import StageA.RelationalISAQualification
+import StageA.RelationalImage
+import StageA.RelationalLinkedFrames
+import StageA.RelationalPEExecution
 
 namespace StageA.Relational
 
 open StageA.Formal
+
+inductive ModeledFault where
+  | checkedContinue
+deriving Repr, DecidableEq
+
+/-- A fail-closed proof frontier. These cases mean that Stage A cannot model
+the concrete successor; they are not claims that the represented program
+faulted. A blocked observation is intentionally unrelated to every observation,
+including an identical block on the other side. -/
+inductive ExecutionBlock where
+  | unmappedEip (eip : Word)
+  | missingRegionBehavior (targetId : Nat)
+  | invalidCallbackReturn (observed expected : Word)
+  | unmappedReturnTarget (target : Word)
+  | mismatchedReturnTarget (resolved expected : Nat)
+  | missingExternalSite (sourceTargetId continuationTargetId : Nat)
+  | missingExternalContract (siteId : Nat)
+  | missingRuntimeContinuation
+  | unmappedIndirectControl (target : Word)
+deriving Repr, DecidableEq
 
 inductive WorldRelationalObservable where
   | external (world : RelationalWorld) (imported : ExternalTarget)
       (arguments : List Word)
   | returned (world : RelationalWorld) (result : Word)
   | callback (world : RelationalWorld) (targetId : Nat)
-  | fault
+  | fault (cause : ModeledFault)
+  | proofBlocked (reason : ExecutionBlock)
 deriving Repr, DecidableEq
 
 def worldRelationalObservationsRelated (context : StaticProofContext) :
@@ -27,7 +52,8 @@ def worldRelationalObservationsRelated (context : StaticProofContext) :
   | some (.callback originalWorld originalTarget),
       some (.callback candidateWorld candidateTarget) =>
       originalWorld = candidateWorld ∧ originalTarget = candidateTarget
-  | some .fault, some .fault => True
+  | some (.fault originalCause), some (.fault candidateCause) =>
+      originalCause = candidateCause
   | _, _ => False
 
 structure DecodedWorldProgram where
@@ -55,6 +81,102 @@ def decodedWorldRegionBehavior (program : DecodedWorldProgram)
   let behavior <- regionBehaviorWithMachineCallContracts pe imports
     program.context.machineImportCallContracts span
   evalBehavior program.candidate region.targets state behavior
+
+/-- Execute a cutpoint region by independently fetching each instruction from
+the exact PE image, then apply the same machine-level import contract layer as
+the compositional decoder. -/
+def pe32WorldRegionBehavior (program : DecodedWorldProgram)
+    (targetId : Nat) (state : MachineState) : Option RelationalBehavior := do
+  let region <- regionById program.regions targetId
+  let span := if program.candidate then region.candidate else region.original
+  let pe := if program.candidate then
+    program.context.candidatePe
+  else
+    program.context.originalPe
+  let imports := if program.candidate then
+    program.context.candidateImports
+  else
+    program.context.originalImports
+  let behavior <- executePE32SymbolicSpan pe imports span
+  let behavior <- applyMachineImportCallContracts
+    program.context.machineImportCallContracts behavior
+  evalBehavior program.candidate region.targets state behavior
+
+/-- The generated cutpoint model may be used in acceptance only when it agrees
+pointwise with exact PE instruction fetching for every target and machine
+state. -/
+def DecodedWorldProgram.InstructionSemanticsAdequate
+    (program : DecodedWorldProgram) : Prop :=
+  ∀ targetId state,
+    pe32WorldRegionBehavior program targetId state =
+      decodedWorldRegionBehavior program targetId state
+
+def DecodedWorldProgram.instructionSemanticsAdequateChecked
+    (program : DecodedWorldProgram) : Bool :=
+  let pe := if program.candidate then
+    program.context.candidatePe
+  else
+    program.context.originalPe
+  let imports := if program.candidate then
+    program.context.candidateImports
+  else
+    program.context.originalImports
+  program.regions.all fun region =>
+    regionInstructionAdequateChecked pe imports
+      (if program.candidate then region.candidate else region.original)
+
+theorem DecodedWorldProgram.instructionSemanticsAdequate_of_checked
+    (program : DecodedWorldProgram)
+    (checked : program.instructionSemanticsAdequateChecked = true) :
+    program.InstructionSemanticsAdequate := by
+  intro targetId state
+  cases regionResult : regionById program.regions targetId with
+  | none =>
+      simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult]
+  | some region =>
+      have regionMember : region ∈ program.regions := by
+        have found := regionResult
+        unfold regionById at found
+        exact List.mem_of_find?_eq_some found
+      cases candidateValue : program.candidate
+      all_goals
+        have allChecked := checked
+        simp only [DecodedWorldProgram.instructionSemanticsAdequateChecked,
+          candidateValue, Bool.false_eq_true, if_false, if_true,
+          List.all_eq_true] at allChecked
+        have regionChecked := allChecked region regionMember
+        have adequate := regionInstructionAdequate_of_checked _ _ _ regionChecked
+        rcases adequate with ⟨symbolic, executed, decoded⟩
+        simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+          candidateValue, regionBehaviorWithMachineCallContracts, executed, decoded]
+
+theorem DecodedWorldProgram.instructionSemanticsAdequate_of_regions
+    (program : DecodedWorldProgram)
+    (adequate : AllRegionInstructionAdequate
+      (if program.candidate then program.context.candidatePe
+        else program.context.originalPe)
+      (if program.candidate then program.context.candidateImports
+        else program.context.originalImports)
+      program.candidate program.regions) :
+    program.InstructionSemanticsAdequate := by
+  intro targetId state
+  cases regionResult : regionById program.regions targetId with
+  | none =>
+      simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult]
+  | some region =>
+      have regionMember : region ∈ program.regions := by
+        have found := regionResult
+        unfold regionById at found
+        exact List.mem_of_find?_eq_some found
+      have regionAdequate := allRegionInstructionAdequate_member
+        (if program.candidate then program.context.candidatePe
+          else program.context.originalPe)
+        (if program.candidate then program.context.candidateImports
+          else program.context.originalImports)
+        program.candidate program.regions region adequate regionMember
+      rcases regionAdequate with ⟨symbolic, executed, decoded⟩
+      simp [pe32WorldRegionBehavior, decodedWorldRegionBehavior, regionResult,
+        regionBehaviorWithMachineCallContracts, executed, decoded]
 
 def machineImportArgumentsAtState (contract : MachineImportCallContract)
     (state : MachineState) : List Word :=
@@ -127,7 +249,8 @@ inductive WorldExecution where
   | callbackRunning (targetId : Nat) (state : MachineState) (calls : List Nat)
       (eventIndex : Nat) (world : RelationalWorld)
       (callbacks : List WorldExternalCallbackRuntime)
-  | fault
+  | fault (cause : ModeledFault)
+  | blocked (reason : ExecutionBlock)
 
 def WorldExternalSuspension.request
     (suspension : WorldExternalSuspension) : WorldExternalProtocolRequest := {
@@ -145,6 +268,10 @@ def resumeWorldExecution (callbacks : List WorldExternalCallbackRuntime)
   | [] => .running targetId state calls eventIndex world
   | _ => .callbackRunning targetId state calls eventIndex world callbacks
 
+def blockedWorldTransition (reason : ExecutionBlock) :
+    RelatedTransition WorldExecution WorldRelationalObservable :=
+  { next := .blocked reason, observation := some (.proofBlocked reason) }
+
 def suspendWorldExternalProtocol (program : DecodedWorldProgram)
     (sourceTargetId siteId : Nat)
     (imported : ExternalTarget) (arguments : List Word)
@@ -152,7 +279,7 @@ def suspendWorldExternalProtocol (program : DecodedWorldProgram)
     (eventIndex : Nat) (world : RelationalWorld)
     (callbacks : List WorldExternalCallbackRuntime) : WorldExecution :=
   match program.externalCallSites.find? fun site => site.id == siteId with
-  | none => .fault
+  | none => .blocked (.missingExternalSite sourceTargetId continuationTargetId)
   | some site =>
       let event : WorldExternalEvent := {
         siteId
@@ -200,7 +327,8 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                   } outerCallbacks,
                   observation := none }
               else
-                { next := .fault, observation := some .fault }
+                blockedWorldTransition
+                  (.invalidCallbackReturn target callback.entry.returnAddress)
       | continuation :: tail =>
           match resolveMappedCodeTarget program.candidate
               (if program.candidate then program.context.candidatePe.imageBase
@@ -211,8 +339,8 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                 { next := resumeWorldExecution callbacks continuation state tail eventIndex world,
                   observation := none }
               else
-                { next := .fault, observation := some .fault }
-          | none => { next := .fault, observation := some .fault }
+                blockedWorldTransition (.mismatchedReturnTarget resolved continuation)
+          | none => blockedWorldTransition (.unmappedReturnTarget target)
   | .jump target =>
       { next := resumeWorldExecution callbacks target state calls eventIndex world,
         observation := none }
@@ -227,10 +355,10 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
   | .externalCall imported arguments continuation =>
       match resolveExternalCallSite program.context program.externalCallSites
           sourceTargetId continuation imported with
-      | none => { next := .fault, observation := some .fault }
+      | none => blockedWorldTransition (.missingExternalSite sourceTargetId continuation)
       | some siteId =>
           match resolvedExternalCallContract? program.context program.externalCallSites siteId with
-          | none => { next := .fault, observation := some .fault }
+          | none => blockedWorldTransition (.missingExternalContract siteId)
           | some contract =>
               match contract.disposition with
               | .terminates =>
@@ -254,14 +382,14 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
                     observation := some (.external world imported arguments) }
   | .externalJump imported arguments =>
       match calls with
-      | [] => { next := .fault, observation := some .fault }
+      | [] => blockedWorldTransition .missingRuntimeContinuation
       | continuation :: tail =>
           match resolveExternalCallSite program.context program.externalCallSites
               sourceTargetId continuation imported with
-          | none => { next := .fault, observation := some .fault }
+          | none => blockedWorldTransition (.missingExternalSite sourceTargetId continuation)
           | some siteId =>
               match resolvedExternalCallContract? program.context program.externalCallSites siteId with
-              | none => { next := .fault, observation := some .fault }
+              | none => blockedWorldTransition (.missingExternalContract siteId)
               | some contract =>
                   match contract.disposition with
                   | .terminates =>
@@ -301,15 +429,15 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
             observation := none }
       | none =>
           match resolveWorldImportCall program.candidate program.context world target state with
-          | none => { next := .fault, observation := some .fault }
+          | none => blockedWorldTransition (.unmappedIndirectControl target)
           | some (imported, arguments) =>
               match resolveExternalCallSite program.context program.externalCallSites
                   sourceTargetId continuation imported with
-              | none => { next := .fault, observation := some .fault }
+              | none => blockedWorldTransition (.missingExternalSite sourceTargetId continuation)
               | some siteId =>
                   match resolvedExternalCallContract? program.context
                       program.externalCallSites siteId with
-                  | none => { next := .fault, observation := some .fault }
+                  | none => blockedWorldTransition (.missingExternalContract siteId)
                   | some contract =>
                       match contract.disposition with
                       | .terminates =>
@@ -342,18 +470,18 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
             observation := none }
       | none =>
           match calls with
-          | [] => { next := .fault, observation := some .fault }
+          | [] => blockedWorldTransition (.unmappedIndirectControl target)
           | continuation :: tail =>
               match resolveWorldImportCall program.candidate program.context world target state with
-              | none => { next := .fault, observation := some .fault }
+              | none => blockedWorldTransition (.unmappedIndirectControl target)
               | some (imported, arguments) =>
                   match resolveExternalCallSite program.context program.externalCallSites
                       sourceTargetId continuation imported with
-                  | none => { next := .fault, observation := some .fault }
+                  | none => blockedWorldTransition (.missingExternalSite sourceTargetId continuation)
                   | some siteId =>
                       match resolvedExternalCallContract? program.context
                           program.externalCallSites siteId with
-                      | none => { next := .fault, observation := some .fault }
+                      | none => blockedWorldTransition (.missingExternalContract siteId)
                       | some contract =>
                           match contract.disposition with
                           | .terminates =>
@@ -381,7 +509,8 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
         { next := resumeWorldExecution callbacks continuation state calls eventIndex world,
           observation := none }
       else
-        { next := .fault, observation := some .fault }
+        { next := .fault .checkedContinue,
+          observation := some (.fault .checkedContinue) }
   | .atomicCompareExchange address expected replacement continuation =>
       let memory := Memory.atomicCompareExchange state.memory address expected replacement
       { next := resumeWorldExecution callbacks continuation { state with memory } calls
@@ -408,7 +537,7 @@ def stepWorldExecution (program : DecodedWorldProgram) :
     WorldExecution -> RelatedTransition WorldExecution WorldRelationalObservable
   | .running targetId state calls eventIndex world =>
       match decodedWorldRegionBehavior program targetId state with
-      | none => { next := .fault, observation := some .fault }
+      | none => blockedWorldTransition (.missingRegionBehavior targetId)
       | some behavior =>
           transitionFromWorldOutcome program targetId
             (behavior.nextMachineState state) calls eventIndex world [] behavior.outcome
@@ -419,17 +548,75 @@ def stepWorldExecution (program : DecodedWorldProgram) :
       stepWorldExternalSuspension program suspension callbacks
   | .callbackRunning targetId state calls eventIndex world callbacks =>
       match decodedWorldRegionBehavior program targetId state with
-      | none => { next := .fault, observation := some .fault }
+      | none => blockedWorldTransition (.missingRegionBehavior targetId)
       | some behavior =>
           transitionFromWorldOutcome program targetId
             (behavior.nextMachineState state) calls eventIndex world callbacks
             behavior.outcome
-  | .fault => { next := .fault, observation := none }
+  | .fault cause => { next := .fault cause, observation := none }
+  | .blocked reason => { next := .blocked reason, observation := none }
+
+/-- Whole-program execution whose internal macro-steps are derived from exact
+instruction fetches in the PE image. External transitions are shared with the
+decoded proof model. -/
+def stepPE32WorldExecution (program : DecodedWorldProgram) :
+    WorldExecution -> RelatedTransition WorldExecution WorldRelationalObservable
+  | .running targetId state calls eventIndex world =>
+      match pe32WorldRegionBehavior program targetId state with
+      | none => blockedWorldTransition (.missingRegionBehavior targetId)
+      | some behavior =>
+          transitionFromWorldOutcome program targetId
+            (behavior.nextMachineState state) calls eventIndex world [] behavior.outcome
+  | .returned state world =>
+      { next := .returned state world, observation := none }
+  | .terminated world => { next := .terminated world, observation := none }
+  | .awaitingExternal suspension callbacks =>
+      stepWorldExternalSuspension program suspension callbacks
+  | .callbackRunning targetId state calls eventIndex world callbacks =>
+      match pe32WorldRegionBehavior program targetId state with
+      | none => blockedWorldTransition (.missingRegionBehavior targetId)
+      | some behavior =>
+          transitionFromWorldOutcome program targetId
+            (behavior.nextMachineState state) calls eventIndex world callbacks
+            behavior.outcome
+  | .fault cause => { next := .fault cause, observation := none }
+  | .blocked reason => { next := .blocked reason, observation := none }
+
+theorem stepPE32WorldExecution_eq_stepWorldExecution
+    (program : DecodedWorldProgram)
+    (adequate : program.InstructionSemanticsAdequate) :
+    stepPE32WorldExecution program = stepWorldExecution program := by
+  funext execution
+  cases execution with
+  | running targetId state calls eventIndex world =>
+      simp only [stepPE32WorldExecution, stepWorldExecution]
+      rw [adequate targetId state]
+  | returned state world => rfl
+  | terminated world => rfl
+  | awaitingExternal suspension callbacks => rfl
+  | callbackRunning targetId state calls eventIndex world callbacks =>
+      simp only [stepPE32WorldExecution, stepWorldExecution]
+      rw [adequate targetId state]
+  | fault cause => rfl
+  | blocked reason => rfl
 
 def DecodedWorldProgram.transitionSystem (program : DecodedWorldProgram) :
     RelatedTransitionSystem WorldExecution WorldRelationalObservable := {
   step := stepWorldExecution program
 }
+
+def DecodedWorldProgram.pe32TransitionSystem (program : DecodedWorldProgram) :
+    RelatedTransitionSystem WorldExecution WorldRelationalObservable := {
+  step := stepPE32WorldExecution program
+}
+
+theorem DecodedWorldProgram.pe32TransitionSystem_eq_transitionSystem
+    (program : DecodedWorldProgram)
+    (adequate : program.InstructionSemanticsAdequate) :
+    program.pe32TransitionSystem = program.transitionSystem := by
+  unfold DecodedWorldProgram.pe32TransitionSystem
+    DecodedWorldProgram.transitionSystem
+  rw [stepPE32WorldExecution_eq_stepWorldExecution program adequate]
 
 def RelationalRuntimeCallStackHolds (context : StaticProofContext)
     (original candidate : MachineState) :
@@ -519,6 +706,117 @@ theorem RelationalRuntimeCallImportsHold.of_registers_eq
       simpa [originalRegisters relation.original,
         candidateRegisters relation.candidate] using relationHolds
 
+def RelationalRuntimeCallRelationsHold (context : StaticProofContext)
+    (world : RelationalWorld) :
+    List ReturnSlotOffsetInventory -> Registers Word -> Registers Word -> Prop
+  | [], _, _ => True
+  | inventory :: inventories, originalRegisters, candidateRegisters =>
+      inventory.preservedRelationsHold context world originalRegisters
+          candidateRegisters = true ∧
+        RelationalRuntimeCallRelationsHold context world inventories
+          originalRegisters candidateRegisters
+
+def RelationalRuntimeCallFactsHold (context : StaticProofContext)
+    (world : RelationalWorld) (inventories : List ReturnSlotOffsetInventory)
+    (originalRegisters candidateRegisters : Registers Word) : Prop :=
+  RelationalRuntimeCallImportsHold world inventories originalRegisters
+      candidateRegisters ∧
+    RelationalRuntimeCallRelationsHold context world inventories originalRegisters
+      candidateRegisters
+
+@[simp]
+theorem RelationalRuntimeCallFactsHold.empty (context : StaticProofContext)
+    (world : RelationalWorld) (originalRegisters candidateRegisters : Registers Word) :
+    RelationalRuntimeCallFactsHold context world [] originalRegisters
+      candidateRegisters := by
+  exact ⟨by trivial, by trivial⟩
+
+theorem RelationalRuntimeCallFactsHold.cons (context : StaticProofContext)
+    (world : RelationalWorld) (inventory : ReturnSlotOffsetInventory)
+    (inventories : List ReturnSlotOffsetInventory)
+    (originalRegisters candidateRegisters : Registers Word)
+    (headImports : inventory.preservedImportsHold world originalRegisters
+      candidateRegisters = true)
+    (headRelations : inventory.preservedRelationsHold context world
+      originalRegisters candidateRegisters = true)
+    (tail : RelationalRuntimeCallFactsHold context world inventories
+      originalRegisters candidateRegisters) :
+    RelationalRuntimeCallFactsHold context world (inventory :: inventories)
+      originalRegisters candidateRegisters := by
+  exact ⟨⟨headImports, tail.1⟩, ⟨headRelations, tail.2⟩⟩
+
+theorem RelationalRuntimeCallFactsHold.headImports (context : StaticProofContext)
+    (world : RelationalWorld) (inventory : ReturnSlotOffsetInventory)
+    (inventories : List ReturnSlotOffsetInventory)
+    (originalRegisters candidateRegisters : Registers Word)
+    (holds : RelationalRuntimeCallFactsHold context world
+      (inventory :: inventories) originalRegisters candidateRegisters) :
+    inventory.preservedImportsHold world originalRegisters candidateRegisters = true := by
+  exact holds.1.1
+
+theorem RelationalRuntimeCallFactsHold.headRelations (context : StaticProofContext)
+    (world : RelationalWorld) (inventory : ReturnSlotOffsetInventory)
+    (inventories : List ReturnSlotOffsetInventory)
+    (originalRegisters candidateRegisters : Registers Word)
+    (holds : RelationalRuntimeCallFactsHold context world
+      (inventory :: inventories) originalRegisters candidateRegisters) :
+    inventory.preservedRelationsHold context world originalRegisters
+      candidateRegisters = true := by
+  exact holds.2.1
+
+theorem RelationalRuntimeCallFactsHold.tail (context : StaticProofContext)
+    (world : RelationalWorld) (inventory : ReturnSlotOffsetInventory)
+    (inventories : List ReturnSlotOffsetInventory)
+    (originalRegisters candidateRegisters : Registers Word)
+    (holds : RelationalRuntimeCallFactsHold context world
+      (inventory :: inventories) originalRegisters candidateRegisters) :
+    RelationalRuntimeCallFactsHold context world inventories originalRegisters
+      candidateRegisters := by
+  exact ⟨holds.1.2, holds.2.2⟩
+
+theorem RelationalRuntimeCallRelationsHold.of_registers_eq
+    (context : StaticProofContext) (world : RelationalWorld)
+    (beforeOriginal beforeCandidate afterOriginal afterCandidate : Registers Word)
+    (inventories : List ReturnSlotOffsetInventory)
+    (holds : RelationalRuntimeCallRelationsHold context world inventories
+      beforeOriginal beforeCandidate)
+    (originalRegisters : ∀ register,
+      afterOriginal.get register = beforeOriginal.get register)
+    (candidateRegisters : ∀ register,
+      afterCandidate.get register = beforeCandidate.get register) :
+    RelationalRuntimeCallRelationsHold context world inventories afterOriginal
+      afterCandidate := by
+  induction inventories with
+  | nil => trivial
+  | cons inventory inventories ih =>
+      simp only [RelationalRuntimeCallRelationsHold] at holds ⊢
+      refine And.intro ?_ (ih holds.2)
+      unfold ReturnSlotOffsetInventory.preservedRelationsHold
+        registerRelationsHold at holds ⊢
+      simp only [List.all_eq_true] at holds ⊢
+      intro relation relationMember
+      simpa [originalRegisters relation.original,
+        candidateRegisters relation.candidate] using holds.1 relation relationMember
+
+theorem RelationalRuntimeCallFactsHold.of_registers_eq
+    (context : StaticProofContext) (world : RelationalWorld)
+    (beforeOriginal beforeCandidate afterOriginal afterCandidate : Registers Word)
+    (inventories : List ReturnSlotOffsetInventory)
+    (holds : RelationalRuntimeCallFactsHold context world inventories
+      beforeOriginal beforeCandidate)
+    (originalRegisters : ∀ register,
+      afterOriginal.get register = beforeOriginal.get register)
+    (candidateRegisters : ∀ register,
+      afterCandidate.get register = beforeCandidate.get register) :
+    RelationalRuntimeCallFactsHold context world inventories afterOriginal
+      afterCandidate := by
+  exact ⟨RelationalRuntimeCallImportsHold.of_registers_eq world beforeOriginal
+      beforeCandidate afterOriginal afterCandidate inventories holds.1
+      originalRegisters candidateRegisters,
+    RelationalRuntimeCallRelationsHold.of_registers_eq context world beforeOriginal
+      beforeCandidate afterOriginal afterCandidate inventories holds.2
+      originalRegisters candidateRegisters⟩
+
 /-- A compact, replayed certificate that one active frame's import relations
 remain valid across an internal paired step. -/
 structure RelationalRuntimeCallImportTransferClaim where
@@ -532,6 +830,15 @@ def RelationalRuntimeCallImportTransferClaim.checked
   claim.source.preservesImportsAcross originalBehavior candidateBehavior &&
     claim.target.checked &&
     claim.source.preservedImports == claim.target.preservedImports
+
+def RelationalRuntimeCallImportTransferClaim.factsChecked
+    (context : StaticProofContext)
+    (claim : RelationalRuntimeCallImportTransferClaim)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
+  claim.checked originalBehavior candidateBehavior &&
+    claim.source.preservesRelationsAcross context originalBehavior candidateBehavior &&
+    claim.target.preservedRelationsChecked context &&
+    claim.source.preservedRelations == claim.target.preservedRelations
 
 theorem RelationalRuntimeCallImportsHold.afterInternal
     (world : RelationalWorld)
@@ -567,6 +874,192 @@ theorem RelationalRuntimeCallImportsHold.afterInternal
         simpa only [ReturnSlotOffsetInventory.preservedImportsHold,
           preservedImportsExact] using sourceAfter
       exact ⟨targetAfter, ih remainingChecked holds.2⟩
+
+theorem RelationalRuntimeCallRelationsHold.afterInternal
+    (context : StaticProofContext) (world : RelationalWorld)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List RelationalRuntimeCallImportTransferClaim)
+    (originalState candidateState : MachineState)
+    (checked : claims.all fun claim =>
+      claim.factsChecked context originalBehavior candidateBehavior)
+    (holds : RelationalRuntimeCallRelationsHold context world
+      (claims.map (fun claim => claim.source)) originalState.registers
+      candidateState.registers) :
+    RelationalRuntimeCallRelationsHold context world
+      (claims.map (fun claim => claim.target))
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers := by
+  induction claims with
+  | nil => trivial
+  | cons claim claims ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      simp only [List.map_cons, RelationalRuntimeCallRelationsHold] at holds ⊢
+      simp only [RelationalRuntimeCallImportTransferClaim.factsChecked,
+        Bool.and_eq_true, beq_iff_eq] at checked
+      rcases checked with ⟨claimChecked, remainingChecked⟩
+      rcases claimChecked with
+        ⟨⟨⟨_importsChecked, sourcePreserved⟩, _targetChecked⟩,
+          preservedRelationsExact⟩
+      have sourceAfter :=
+        ReturnSlotOffsetInventory.preservedRelationsHold_after_of_checked
+          context claim.source world originalBehavior candidateBehavior originalState
+          candidateState sourcePreserved holds.1
+      have targetAfter : claim.target.preservedRelationsHold context world
+          (originalBehavior.eval originalState).registers
+          (candidateBehavior.eval candidateState).registers = true := by
+        simpa only [ReturnSlotOffsetInventory.preservedRelationsHold,
+          preservedRelationsExact] using sourceAfter
+      exact ⟨targetAfter, ih remainingChecked holds.2⟩
+
+theorem RelationalRuntimeCallFactsHold.afterInternal
+    (context : StaticProofContext) (world : RelationalWorld)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List RelationalRuntimeCallImportTransferClaim)
+    (originalState candidateState : MachineState)
+    (checked : claims.all fun claim =>
+      claim.factsChecked context originalBehavior candidateBehavior)
+    (holds : RelationalRuntimeCallFactsHold context world
+      (claims.map (fun claim => claim.source)) originalState.registers
+      candidateState.registers) :
+    RelationalRuntimeCallFactsHold context world
+      (claims.map (fun claim => claim.target))
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers := by
+  have importChecked : claims.all fun claim =>
+      claim.checked originalBehavior candidateBehavior := by
+    simp only [List.all_eq_true] at checked ⊢
+    intro claim claimMember
+    have factChecked := checked claim claimMember
+    simp only [RelationalRuntimeCallImportTransferClaim.factsChecked,
+      Bool.and_eq_true] at factChecked
+    exact factChecked.1.1.1
+  exact ⟨RelationalRuntimeCallImportsHold.afterInternal world originalBehavior
+      candidateBehavior claims originalState candidateState importChecked holds.1,
+    RelationalRuntimeCallRelationsHold.afterInternal context world originalBehavior
+      candidateBehavior claims originalState candidateState checked holds.2⟩
+
+def ReturnSlotOffsetInventory.preservesFactsAcrossExternal
+    (context : StaticProofContext) (contract : MachineImportCallContract)
+    (inventory : ReturnSlotOffsetInventory) : Bool :=
+  inventory.preservedImports.isEmpty &&
+    inventory.preservedRelationsChecked context &&
+    inventory.preservedRelations.all fun relation =>
+      (ExternalRegisterRelationPreservationClaim.checked context contract {
+        source := relation
+        target := relation
+      })
+
+theorem ReturnSlotOffsetInventory.preservedRelationsHold_afterExternal
+    (context : StaticProofContext) (contract : MachineImportCallContract)
+    (inventory : ReturnSlotOffsetInventory)
+    (originalEvent candidateEvent : WorldExternalEvent)
+    (originalResult candidateResult : WorldExternalResult)
+    (checked : inventory.preservesFactsAcrossExternal context contract = true)
+    (sourceHolds : inventory.preservedRelationsHold context originalEvent.world
+      originalEvent.state.registers candidateEvent.state.registers = true)
+    (pairConforms : ExactExternalCallPairConforms context contract
+      originalEvent candidateEvent originalResult candidateResult) :
+    inventory.preservedRelationsHold context originalResult.world
+      originalResult.state.registers candidateResult.state.registers = true := by
+  simp only [ReturnSlotOffsetInventory.preservesFactsAcrossExternal,
+    Bool.and_eq_true, List.all_eq_true] at checked
+  unfold ReturnSlotOffsetInventory.preservedRelationsHold
+    registerRelationsHold at sourceHolds ⊢
+  simp only [List.all_eq_true] at sourceHolds ⊢
+  intro relation relationMember
+  exact externalRegisterRelationPreservationHolds_of_checked context contract
+    { source := relation, target := relation }
+    originalEvent candidateEvent originalResult candidateResult
+    (checked.2 relation relationMember) (sourceHolds relation relationMember)
+    pairConforms
+
+theorem ReturnSlotOffsetInventory.preservedRelationsHold_normalizeImportReturnSlot
+    (context : StaticProofContext) (contract : MachineImportCallContract)
+    (inventory : ReturnSlotOffsetInventory) (world : RelationalWorld)
+    (original candidate : MachineState)
+    (checked : inventory.preservesFactsAcrossExternal context contract = true)
+    (holds : inventory.preservedRelationsHold context world
+      original.registers candidate.registers = true) :
+    inventory.preservedRelationsHold context world
+      (normalizeImportReturnSlotState original).registers
+      (normalizeImportReturnSlotState candidate).registers = true := by
+  simp only [ReturnSlotOffsetInventory.preservesFactsAcrossExternal,
+    Bool.and_eq_true, List.all_eq_true] at checked
+  unfold ReturnSlotOffsetInventory.preservedRelationsHold
+    registerRelationsHold at holds ⊢
+  simp only [List.all_eq_true] at holds ⊢
+  intro relation relationMember
+  have relationChecked := checked.2 relation relationMember
+  simp only [ExternalRegisterRelationPreservationClaim.checked,
+    Bool.and_eq_true, beq_iff_eq] at relationChecked
+  have originalNotEsp := relationChecked.1.2
+  have candidateNotEsp := relationChecked.2
+  have relationHolds := holds relation relationMember
+  cases originalRegister : relation.original <;>
+    cases candidateRegister : relation.candidate <;>
+    simp_all [normalizeImportReturnSlotState, StageA.Formal.Registers.get,
+      StageA.Formal.Registers.set]
+
+theorem RelationalRuntimeCallFactsHold.afterExternal
+    (context : StaticProofContext) (contract : MachineImportCallContract)
+    (inventories : List ReturnSlotOffsetInventory)
+    (originalEvent candidateEvent : WorldExternalEvent)
+    (originalResult candidateResult : WorldExternalResult)
+    (checked : inventories.all fun inventory =>
+      inventory.preservesFactsAcrossExternal context contract)
+    (holds : RelationalRuntimeCallFactsHold context originalEvent.world inventories
+      originalEvent.state.registers candidateEvent.state.registers)
+    (pairConforms : ExactExternalCallPairConforms context contract
+      originalEvent candidateEvent originalResult candidateResult) :
+    RelationalRuntimeCallFactsHold context originalResult.world inventories
+      originalResult.state.registers candidateResult.state.registers := by
+  induction inventories with
+  | nil => exact RelationalRuntimeCallFactsHold.empty context originalResult.world _ _
+  | cons inventory inventories ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      have headChecked := checked.1
+      have importsEmpty : inventory.preservedImports = [] := by
+        simp only [ReturnSlotOffsetInventory.preservesFactsAcrossExternal,
+          Bool.and_eq_true] at headChecked
+        simpa using headChecked.1.1
+      have headRelations :=
+        inventory.preservedRelationsHold_afterExternal context contract
+          originalEvent candidateEvent originalResult candidateResult
+          checked.1 holds.2.1 pairConforms
+      have tailFacts := ih checked.2 ⟨holds.1.2, holds.2.2⟩
+      exact RelationalRuntimeCallFactsHold.cons context originalResult.world
+        inventory inventories _ _
+        (by simp [ReturnSlotOffsetInventory.preservedImportsHold,
+          importRegisterRelationsHold, importsEmpty])
+        headRelations tailFacts
+
+theorem RelationalRuntimeCallFactsHold.normalizeImportReturnSlot
+    (context : StaticProofContext) (contract : MachineImportCallContract)
+    (inventories : List ReturnSlotOffsetInventory) (world : RelationalWorld)
+    (original candidate : MachineState)
+    (checked : inventories.all fun inventory =>
+      inventory.preservesFactsAcrossExternal context contract)
+    (holds : RelationalRuntimeCallFactsHold context world inventories
+      original.registers candidate.registers) :
+    RelationalRuntimeCallFactsHold context world inventories
+      (normalizeImportReturnSlotState original).registers
+      (normalizeImportReturnSlotState candidate).registers := by
+  induction inventories with
+  | nil => exact RelationalRuntimeCallFactsHold.empty context world _ _
+  | cons inventory inventories ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at checked
+      have headChecked := checked.1
+      have importsEmpty : inventory.preservedImports = [] := by
+        simp only [ReturnSlotOffsetInventory.preservesFactsAcrossExternal,
+          Bool.and_eq_true] at headChecked
+        simpa using headChecked.1.1
+      have headRelations := inventory.preservedRelationsHold_normalizeImportReturnSlot
+        context contract world original candidate checked.1 holds.2.1
+      have tailFacts := ih checked.2 ⟨holds.1.2, holds.2.2⟩
+      exact RelationalRuntimeCallFactsHold.cons context world inventory inventories _ _
+        (by simp [ReturnSlotOffsetInventory.preservedImportsHold,
+          importRegisterRelationsHold, importsEmpty])
+        headRelations tailFacts
 
 theorem RelationalRuntimeCallStackHolds.toMixed
     (context : StaticProofContext) (world : RelationalWorld)
@@ -1193,7 +1686,7 @@ def WorldExecutionsRelated (context : StaticProofContext)
             control.Allows nodeId originalCalls frameOffsets = true ∧
             RelationalRuntimeCallStackHolds context originalState candidateState
               frames originalCalls frameOffsets ∧
-            RelationalRuntimeCallImportsHold originalWorld frameOffsets
+            RelationalRuntimeCallFactsHold context originalWorld frameOffsets
               originalState.registers candidateState.registers ∧
             RelationalRuntimeCallTargetsReachable graph reachability originalCalls ∧
             StateRel context originalWorld invariant originalState candidateState
@@ -1230,7 +1723,7 @@ def WorldExecutionsRelated (context : StaticProofContext)
             control.Allows nodeId originalCalls frameOffsets = true ∧
             RelationalRuntimeCallStackHolds context originalState candidateState
               frames originalCalls frameOffsets ∧
-            RelationalRuntimeCallImportsHold originalWorld frameOffsets
+            RelationalRuntimeCallFactsHold context originalWorld frameOffsets
               originalState.registers candidateState.registers ∧
             RelationalRuntimeCallTargetsReachable graph reachability originalCalls ∧
             StateRel context originalWorld invariant originalState candidateState ∧
@@ -1238,7 +1731,8 @@ def WorldExecutionsRelated (context : StaticProofContext)
               callbackTargets sites originalCallbacks candidateCallbacks ∧
             WorldExternalCallbackContinuationFramesHold context callbackTargets nodeId
               originalWorld originalState candidateState originalCallbacks candidateCallbacks
-  | .fault, .fault => True
+  | .fault originalCause, .fault candidateCause =>
+      originalCause = candidateCause
   | _, _ => False
 
 def WorldExternalProtocolActionsRelated (context : StaticProofContext)
@@ -1262,7 +1756,7 @@ def WorldExternalProtocolActionsRelated (context : StaticProofContext)
             control.Allows nodeId originalSuspension.calls frameOffsets = true ∧
             RelationalRuntimeCallStackHolds context originalResult.state
               candidateResult.state frames originalSuspension.calls frameOffsets ∧
-            RelationalRuntimeCallImportsHold originalResult.world frameOffsets
+            RelationalRuntimeCallFactsHold context originalResult.world frameOffsets
               originalResult.state.registers candidateResult.state.registers ∧
             RelationalRuntimeCallTargetsReachable graph reachability
               originalSuspension.calls ∧
@@ -1435,7 +1929,8 @@ theorem stepWorldExternalSuspension_related (context : StaticProofContext)
         controlAllowed, ?_, ?_,
         ?_, callbackEntry.2.2.2.2.2.2.2.2.2, ?_, ?_⟩
       · simp [RelationalRuntimeCallStackHolds]
-      · simp [RelationalRuntimeCallImportsHold]
+      · simp [RelationalRuntimeCallFactsHold,
+          RelationalRuntimeCallImportsHold, RelationalRuntimeCallRelationsHold]
       · simp [RelationalRuntimeCallTargetsReachable]
       · simp only [WorldExternalCallbackRuntimesRelated]
         exact ⟨⟨suspensionRelation, entryRelation,
@@ -1662,7 +2157,7 @@ def RunningProductNodeStepRefined (context : StaticProofContext)
         control.Allows nodeId calls frameOffsets = true ->
         RelationalRuntimeCallStackHolds context originalState candidateState
           frames calls frameOffsets ->
-        RelationalRuntimeCallImportsHold world frameOffsets originalState.registers
+        RelationalRuntimeCallFactsHold context world frameOffsets originalState.registers
           candidateState.registers ->
         RelationalRuntimeCallTargetsReachable graph reachability calls ->
         StateRel context world invariant originalState candidateState ->
@@ -1692,7 +2187,7 @@ def CallbackRunningProductNodeStepRefined (context : StaticProofContext)
         control.Allows nodeId calls frameOffsets = true →
         RelationalRuntimeCallStackHolds context originalState candidateState
           frames calls frameOffsets →
-        RelationalRuntimeCallImportsHold world frameOffsets originalState.registers
+        RelationalRuntimeCallFactsHold context world frameOffsets originalState.registers
           candidateState.registers →
         RelationalRuntimeCallTargetsReachable graph reachability calls →
         StateRel context world invariant originalState candidateState →
@@ -1986,7 +2481,7 @@ theorem productStepRefinement_of_reachable_nodes (context : StaticProofContext)
         originalState candidateState originalCallbacks candidateCallbacks
         controlAllowed stackHolds frameImportsHold stackTargetsReachable statesRelated
         callbacksNonempty callbacksRelated callbackFramesHold
-  case fault.fault => exact ⟨True.intro, True.intro⟩
+  case fault.fault => exact ⟨True.intro, related⟩
   all_goals simp [WorldExecutionsRelated] at related
 
 structure PE32ConsoleLaunchV1 where
@@ -2002,6 +2497,19 @@ def PE32ConsoleLaunchV1.preEntryTlsAbsent
     context.candidatePe.tlsDirectoryRva == 0 &&
     context.candidatePe.tlsDirectorySize == 0
 
+/-- The bounded console profile has exactly the entry surfaces it models.
+DLL loader events and nonempty exports require a different launch profile;
+malformed export metadata is rejected rather than treated as an empty table. -/
+def PE32ConsoleImageEntrySurfaceValid (pe : PE32) : Bool :=
+  !pe.isDll &&
+    match parseExports pe with
+    | some [] => true
+    | _ => false
+
+def PE32ConsoleEntrySurfacesValid (context : StaticProofContext) : Bool :=
+  PE32ConsoleImageEntrySurfaceValid context.originalPe &&
+    PE32ConsoleImageEntrySurfaceValid context.candidatePe
+
 def importIatByteCovered (imports : List PEImport) (rva : Nat) : Bool :=
   imports.any fun imported =>
     imported.iatRva <= rva && rva < imported.iatRva + 4
@@ -2015,6 +2523,136 @@ def PreferredBaseImageMemory (pe : PE32) (imports : List PEImport)
     importIatByteCovered imports rva = false ->
     rvaByte pe rva = some expected ->
     memory (BitVec.ofNat 32 (pe.imageBase + rva)) = BitVec.ofNat 8 expected
+
+/-- Deterministic preferred-base memory used by launch-model certificates.
+Loader-populated ranges are overlaid separately; this base contains exactly the
+bytes supplied by `rvaByte` and zero elsewhere. -/
+def preferredBaseImageMemory (pe : PE32) : Memory := fun address =>
+  if pe.imageBase <= address.toNat then
+    match rvaByte pe (address.toNat - pe.imageBase) with
+    | some byte => BitVec.ofNat 8 byte
+    | none => BitVec.ofNat 8 0
+  else BitVec.ofNat 8 0
+
+theorem preferredBaseImageMemory_maps_image (pe : PE32) (imports : List PEImport)
+    (bounded : pe.imageBase + pe.sizeOfImage <= 2 ^ 32) :
+    PreferredBaseImageMemory pe imports (preferredBaseImageMemory pe) := by
+  intro rva expected rvaBefore _notIat byteRead
+  have absoluteBefore : pe.imageBase + rva < 2 ^ 32 := by omega
+  have addressNat :
+      (BitVec.ofNat 32 (pe.imageBase + rva) : Word).toNat = pe.imageBase + rva := by
+    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt absoluteBefore]
+  simp [preferredBaseImageMemory, addressNat, byteRead]
+
+theorem preferredBaseImageMemory_immutable (pe : PE32)
+    (bounded : pe.imageBase + pe.sizeOfImage <= 2 ^ 32)
+    (bytesValid : pe32ByteTreeValid pe.bytes = true) :
+    ImmutableImageWordMemory pe (preferredBaseImageMemory pe) := by
+  intro absolute expected checked
+  have bounds := readImmutableImageWord_bounds pe absolute 4 expected checked
+  have absoluteBefore : absolute < 2 ^ 32 := by omega
+  have addressNat : (BitVec.ofNat 32 absolute : Word).toNat = absolute := by
+    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt absoluteBefore]
+  have readChecked :
+      readRvaLittleEndian pe (absolute - pe.imageBase) 4 = some expected := by
+    unfold readImmutableImageWord at checked
+    split at checked
+    · simp at checked
+    · dsimp only at checked
+      split at checked
+      · simp at checked
+      · split at checked
+        · cases sectionResult : pe.sections.find? (fun sec =>
+              !sec.writable && sec.virtualAddress <= absolute - pe.imageBase &&
+                absolute - pe.imageBase + 4 <= sec.virtualAddress + sec.mappedSize) with
+          | none => simp [sectionResult] at checked
+          | some sec => simpa [sectionResult] using checked
+        · simpa using checked
+  have rangeFour : List.range 4 = [0, 1, 2, 3] := by decide
+  unfold readRvaLittleEndian at readChecked
+  simp only [rangeFour, List.mapM_cons, List.mapM_nil] at readChecked
+  cases byte0Result : rvaByte pe (absolute - pe.imageBase + 0) with
+  | none =>
+    have byte0Read : rvaByte pe (absolute - pe.imageBase) = none := by
+      simpa using byte0Result
+    simp [byte0Read] at readChecked
+  | some byte0 =>
+    have byte0Read : rvaByte pe (absolute - pe.imageBase) = some byte0 := by
+      simpa using byte0Result
+    cases byte1Result : rvaByte pe (absolute - pe.imageBase + 1) with
+    | none => simp [byte0Read, byte1Result] at readChecked
+    | some byte1 =>
+      cases byte2Result : rvaByte pe (absolute - pe.imageBase + 2) with
+      | none => simp [byte0Read, byte1Result, byte2Result] at readChecked
+      | some byte2 =>
+        cases byte3Result : rvaByte pe (absolute - pe.imageBase + 3) with
+        | none =>
+          simp [byte0Read, byte1Result, byte2Result, byte3Result] at readChecked
+        | some byte3 =>
+          have address1Before : absolute + 1 < 2 ^ 32 := by omega
+          have address2Before : absolute + 2 < 2 ^ 32 := by omega
+          have address3Before : absolute + 3 < 2 ^ 32 := by omega
+          have address1Nat :
+              ((BitVec.ofNat 32 absolute : Word) + BitVec.ofNat 32 1).toNat =
+                absolute + 1 := by
+            simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+              Nat.mod_eq_of_lt absoluteBefore, Nat.mod_eq_of_lt address1Before]
+          have address2Nat :
+              ((BitVec.ofNat 32 absolute : Word) + BitVec.ofNat 32 2).toNat =
+                absolute + 2 := by
+            simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+              Nat.mod_eq_of_lt absoluteBefore, Nat.mod_eq_of_lt address2Before]
+          have address3Nat :
+              ((BitVec.ofNat 32 absolute : Word) + BitVec.ofNat 32 3).toNat =
+                absolute + 3 := by
+            simp [BitVec.toNat_add, BitVec.toNat_ofNat,
+              Nat.mod_eq_of_lt absoluteBefore, Nat.mod_eq_of_lt address3Before]
+          have address1Base : pe.imageBase <= absolute + 1 := by omega
+          have address2Base : pe.imageBase <= absolute + 2 := by omega
+          have address3Base : pe.imageBase <= absolute + 3 := by omega
+          have byte1Read :
+              rvaByte pe (absolute + 1 - pe.imageBase) = some byte1 := by
+            rw [show absolute + 1 - pe.imageBase =
+              absolute - pe.imageBase + 1 by omega]
+            exact byte1Result
+          have byte2Read :
+              rvaByte pe (absolute + 2 - pe.imageBase) = some byte2 := by
+            rw [show absolute + 2 - pe.imageBase =
+              absolute - pe.imageBase + 2 by omega]
+            exact byte2Result
+          have byte3Read :
+              rvaByte pe (absolute + 3 - pe.imageBase) = some byte3 := by
+            rw [show absolute + 3 - pe.imageBase =
+              absolute - pe.imageBase + 3 by omega]
+            exact byte3Result
+          have memory0 : preferredBaseImageMemory pe (BitVec.ofNat 32 absolute) =
+              BitVec.ofNat 8 byte0 := by
+            simp [preferredBaseImageMemory, addressNat, bounds.1, byte0Read]
+          have memory1 : preferredBaseImageMemory pe
+                (BitVec.ofNat 32 absolute + BitVec.ofNat 32 1) =
+              BitVec.ofNat 8 byte1 := by
+            simp [preferredBaseImageMemory, address1Nat, address1Base, byte1Read]
+          have memory2 : preferredBaseImageMemory pe
+                (BitVec.ofNat 32 absolute + BitVec.ofNat 32 2) =
+              BitVec.ofNat 8 byte2 := by
+            simp [preferredBaseImageMemory, address2Nat, address2Base, byte2Read]
+          have memory3 : preferredBaseImageMemory pe
+                (BitVec.ofNat 32 absolute + BitVec.ofNat 32 3) =
+              BitVec.ofNat 8 byte3 := by
+            simp [preferredBaseImageMemory, address3Nat, address3Base, byte3Read]
+          have byte0Bound := pe32ByteTreeValid_rvaByte_lt pe bytesValid byte0Read
+          have byte1Bound := pe32ByteTreeValid_rvaByte_lt pe bytesValid byte1Result
+          have byte2Bound := pe32ByteTreeValid_rvaByte_lt pe bytesValid byte2Result
+          have byte3Bound := pe32ByteTreeValid_rvaByte_lt pe bytesValid byte3Result
+          simp [byte0Read, byte1Result, byte2Result, byte3Result,
+            littleEndianValue] at readChecked
+          simp only [Memory.read32, memory0, memory1, memory2, memory3,
+            BitVec.zeroExtend_eq_setWidth]
+          rw [← readChecked]
+          rw [fourBytesAssembleLittleEndian byte0 byte1 byte2 byte3
+            byte0Bound byte1Bound byte2Bound byte3Bound]
+          congr 1
+          omega
 
 def PE32ConsoleLaunchWorldV1.Valid (context : StaticProofContext)
     (world : RelationalWorld) : Prop :=
@@ -2040,7 +2678,8 @@ structure PE32ConsoleLaunchStateRel (context : StaticProofContext)
 def PE32ConsoleLaunchV1.Valid (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (launch : PE32ConsoleLaunchV1) : Prop :=
-  PE32ConsoleLaunchV1.preEntryTlsAbsent context = true ∧
+  PE32ConsoleEntrySurfacesValid context = true ∧
+    PE32ConsoleLaunchV1.preEntryTlsAbsent context = true ∧
     ∃ node, graph.getNode? launch.rootNodeId = some node ∧
       node.targetId = launch.rootTargetId ∧ node.root = true ∧
       graph.rootNodeIds.contains launch.rootNodeId = true ∧
@@ -2049,27 +2688,168 @@ def PE32ConsoleLaunchV1.Valid (context : StaticProofContext)
         targetId := launch.rootTargetId
         kind := .entrypoint
       } = true ∧
-      exactIdentityRegister invariants.terminalInvariant.registerRelations .eax = true
+      exactIdentityRegister invariants.terminalInvariant.registerRelations .eax = true ∧
+      launch.rootInvariant.predicates.contains uninhabitedStatePredicate = false
 
 def PE32ConsoleLaunchV1.StatesRelated (context : StaticProofContext)
     (launch : PE32ConsoleLaunchV1) (world : RelationalWorld)
     (original candidate : MachineState) : Prop :=
   PE32ConsoleLaunchStateRel context launch world original candidate
 
+/-- A bounded PE32 console launch with the statically declared TLS callbacks
+executed in image order before the entrypoint.  The callback sequence is
+represented by ordinary checked runtime-call continuations, so callback bodies,
+their internal calls, and their external observations use the same execution
+and composition semantics as the rest of the program. -/
+structure PE32ConsoleLaunchV2 where
+  rootNodeId : Nat
+  rootTargetId : Nat
+  entryNodeId : Nat
+  entryTargetId : Nat
+  tlsCallbackNodeIds : List Nat
+  tlsCallbackTargetIds : List Nat
+  rootInvariant : StateInvariant
+  frameOffsets : List ReturnSlotOffsetInventory
+deriving Repr, DecidableEq
+
+def PE32ConsoleLaunchV2.initialTargetId (launch : PE32ConsoleLaunchV2) : Nat :=
+  launch.tlsCallbackTargetIds.head?.getD launch.entryTargetId
+
+def PE32ConsoleLaunchV2.initialNodeId (launch : PE32ConsoleLaunchV2) : Nat :=
+  launch.tlsCallbackNodeIds.head?.getD launch.entryNodeId
+
+def PE32ConsoleLaunchV2.continuationTargetIds
+    (launch : PE32ConsoleLaunchV2) : List Nat :=
+  match launch.tlsCallbackTargetIds with
+  | [] => []
+  | _ :: callbacks => callbacks ++ [launch.entryTargetId]
+
+def PE32ConsoleLaunchV2.callbackNodesValid (context : StaticProofContext)
+    (graph : RelationalProductGraph) : List Nat -> List Nat -> Bool
+  | [], [] => true
+  | nodeId :: nodeIds, targetId :: targetIds =>
+      match graph.getNode? nodeId with
+      | none => false
+      | some node =>
+          node.targetId == targetId && node.root &&
+            graph.rootNodeIds.contains nodeId &&
+            context.roots.contains {
+              targetId
+              kind := .tlsInitializer
+            } &&
+            PE32ConsoleLaunchV2.callbackNodesValid context graph nodeIds targetIds
+  | _, _ => false
+
+def PE32ConsoleLaunchV2.initialFrameOffsetValid
+    (launch : PE32ConsoleLaunchV2) : Bool :=
+  match launch.tlsCallbackTargetIds, launch.frameOffsets with
+  | [], [] => true
+  | _ :: _, first :: _ => first.locations.contains ReturnSlotOffsetPair.zero
+  | _, _ => false
+
+def PE32ConsoleLaunchV2.Valid (context : StaticProofContext)
+    (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
+    (launch : PE32ConsoleLaunchV2) : Prop :=
+  PE32ConsoleEntrySurfacesValid context = true ∧
+    launch.tlsCallbackTargetIds = context.tlsCallbackTargetIds ∧
+    PE32ConsoleLaunchV2.callbackNodesValid context graph launch.tlsCallbackNodeIds
+      launch.tlsCallbackTargetIds = true ∧
+    launch.rootNodeId = launch.initialNodeId ∧
+    launch.rootTargetId = launch.initialTargetId ∧
+    launch.frameOffsets.length = launch.continuationTargetIds.length ∧
+    launch.initialFrameOffsetValid = true ∧
+    (∃ entryNode,
+      graph.getNode? launch.entryNodeId = some entryNode ∧
+        entryNode.targetId = launch.entryTargetId ∧ entryNode.root = true ∧
+        graph.rootNodeIds.contains launch.entryNodeId = true ∧
+        context.roots.contains {
+          targetId := launch.entryTargetId
+          kind := .entrypoint
+        } = true) ∧
+    (∃ rootNode,
+      graph.getNode? launch.rootNodeId = some rootNode ∧
+        rootNode.targetId = launch.rootTargetId ∧ rootNode.root = true ∧
+        graph.rootNodeIds.contains launch.rootNodeId = true ∧
+        invariants.nodeInvariants[launch.rootNodeId]? = some launch.rootInvariant) ∧
+    exactIdentityRegister invariants.terminalInvariant.registerRelations .eax = true ∧
+    launch.rootInvariant.predicates.contains uninhabitedStatePredicate = false
+
+def PE32TlsProcessAttachArgumentsHold (context : StaticProofContext)
+    (original candidate : MachineState) : List Nat ->
+      List RelationalRuntimeCallFrame -> Prop
+  | [], [] => True
+  | _ :: targetIds, frame :: frames =>
+      Memory.read32 original.memory
+          (frame.originalStackAddress + BitVec.ofNat 32 4) =
+            BitVec.ofNat 32 context.originalPe.imageBase ∧
+        Memory.read32 candidate.memory
+          (frame.candidateStackAddress + BitVec.ofNat 32 4) =
+            BitVec.ofNat 32 context.candidatePe.imageBase ∧
+        Memory.read32 original.memory
+          (frame.originalStackAddress + BitVec.ofNat 32 8) = BitVec.ofNat 32 1 ∧
+        Memory.read32 candidate.memory
+          (frame.candidateStackAddress + BitVec.ofNat 32 8) = BitVec.ofNat 32 1 ∧
+        Memory.read32 original.memory
+          (frame.originalStackAddress + BitVec.ofNat 32 12) = BitVec.ofNat 32 0 ∧
+        Memory.read32 candidate.memory
+          (frame.candidateStackAddress + BitVec.ofNat 32 12) = BitVec.ofNat 32 0 ∧
+        PE32TlsProcessAttachArgumentsHold context original candidate targetIds frames
+  | _, _ => False
+
+def PE32ConsoleLaunchStateRelV2 (context : StaticProofContext)
+    (graph : RelationalProductGraph)
+    (reachability : RelationalProductReachabilityEvidence)
+    (launch : PE32ConsoleLaunchV2) (world : RelationalWorld)
+    (original candidate : MachineState) : Prop :=
+  ∃ frames : List RelationalRuntimeCallFrame,
+    PE32ConsoleLaunchWorldV1.Valid context world ∧
+      PreferredBaseImageMemory context.originalPe context.originalImports
+        original.memory ∧
+      PreferredBaseImageMemory context.candidatePe context.candidateImports
+        candidate.memory ∧
+      RelationalRuntimeCallStackHolds context original candidate frames
+        launch.continuationTargetIds launch.frameOffsets ∧
+      RelationalRuntimeCallFactsHold context world launch.frameOffsets
+        original.registers candidate.registers ∧
+      RelationalRuntimeCallTargetsReachable graph reachability
+        launch.continuationTargetIds ∧
+      PE32TlsProcessAttachArgumentsHold context original candidate
+        launch.tlsCallbackTargetIds frames ∧
+      StateRel context world launch.rootInvariant original candidate
+
+def PE32ConsoleLaunchV2.StatesRelated (context : StaticProofContext)
+    (graph : RelationalProductGraph)
+    (reachability : RelationalProductReachabilityEvidence)
+    (launch : PE32ConsoleLaunchV2) (world : RelationalWorld)
+    (original candidate : MachineState) : Prop :=
+  PE32ConsoleLaunchStateRelV2 context graph reachability launch world original candidate
+
+/-- At least one concrete state pair must inhabit the launch relation.  This is
+separate from structural launch validity so contradictory invariants cannot
+make a whole-program theorem vacuous. -/
+def PE32ConsoleLaunchV2.Realizable (context : StaticProofContext)
+    (graph : RelationalProductGraph)
+    (reachability : RelationalProductReachabilityEvidence)
+    (launch : PE32ConsoleLaunchV2) : Prop :=
+  exists world originalState candidateState,
+    launch.StatesRelated context graph reachability world originalState candidateState
+
 def PE32ProgramsObservationallyEquivalent (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
-    (launch : PE32ConsoleLaunchV1)
+    (launch : PE32ConsoleLaunchV2)
     (original candidate : DecodedWorldProgram) : Prop :=
-  exists executionRelation : WorldExecution -> WorldExecution -> Prop,
-    (forall world originalState candidateState,
-      launch.StatesRelated context world originalState candidateState ->
-      executionRelation
-        (.running launch.rootTargetId originalState [] 0 world)
-        (.running launch.rootTargetId candidateState [] 0 world)) ∧
-    RelationalWeakBisimulation original.transitionSystem candidate.transitionSystem
-      executionRelation (worldRelationalObservationsRelated context)
+  launch.Realizable context graph reachability ∧
+    exists executionRelation : WorldExecution -> WorldExecution -> Prop,
+      (forall world originalState candidateState,
+        launch.StatesRelated context graph reachability world originalState candidateState ->
+        executionRelation
+          (.running launch.rootTargetId originalState launch.continuationTargetIds 0 world)
+          (.running launch.rootTargetId candidateState launch.continuationTargetIds 0 world)) ∧
+      RelationalWeakBisimulation original.pe32TransitionSystem
+        candidate.pe32TransitionSystem
+        executionRelation (worldRelationalObservationsRelated context)
 
 structure WholeProgramCertificate (context : StaticProofContext)
     (graph : RelationalProductGraph) (regions : List RegionRelation)
@@ -2078,10 +2858,22 @@ structure WholeProgramCertificate (context : StaticProofContext)
     (control : ProductControlProfile)
     (callbackTargets : ProtocolCallbackTargetProfile)
     (externalCallSites : List ExternalCallSiteContract)
-    (launch : PE32ConsoleLaunchV1)
+    (launch : PE32ConsoleLaunchV2)
     (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
     (originalProtocolEnvironment candidateProtocolEnvironment :
       WorldExternalProtocolEnvironment) where
+  imageBundle : ProofBundle
+  executableImagesCovered : imageBundle.CoversStaticContext context regions
+  originalCodeAliasesSemanticallyValid : context.codeMap.AliasesSemanticallyValid false
+    context.originalPe context.originalImports
+  candidateCodeAliasesSemanticallyValid : context.codeMap.AliasesSemanticallyValid true
+    context.candidatePe context.candidateImports
+  originalCodeAliasesInstructionSemanticallyValid :
+    context.codeMap.AliasesInstructionSemanticallyValid false
+      context.originalPe context.originalImports
+  candidateCodeAliasesInstructionSemanticallyValid :
+    context.codeMap.AliasesInstructionSemanticallyValid true
+      context.candidatePe context.candidateImports
   staticContextValid : context.StructurallyValid
   productGraphValid : graph.IndexedValid context
   regionsUseCanonicalContext : RegionsUseStaticContext context regions
@@ -2090,7 +2882,7 @@ structure WholeProgramCertificate (context : StaticProofContext)
   callbackTargetsValid : callbackTargets.Valid graph reachability = true
   reachabilityClosed : reachability.SoundlyClosed context graph
   decodedControlComplete :
-    ReachableProductNodesDecodedControlComplete context graph reachability
+    ReachableProductNodesDecodedControlComplete context graph regions reachability
   reachableEdgesRefined : ReachableProductEdgesLocallyRefined context graph reachability
   reachableExecutionEdgesRefined :
     ReachableProductExecutionEdgesRefined context graph regions invariants reachability
@@ -2100,7 +2892,9 @@ structure WholeProgramCertificate (context : StaticProofContext)
     invariants reachability control callbackTargets externalCallSites
     originalProtocolEnvironment candidateProtocolEnvironment
   launchValid : launch.Valid context graph invariants
-  launchControlAllowed : control.Allows launch.rootNodeId [] [] = true
+  launchRealizable : launch.Realizable context graph reachability
+  launchControlAllowed : control.Allows launch.rootNodeId
+    launch.continuationTargetIds launch.frameOffsets = true
   runningProductNodesRefined : ReachableRunningProductNodesRefined context graph
     invariants reachability control callbackTargets
     {
@@ -2138,6 +2932,24 @@ structure WholeProgramCertificate (context : StaticProofContext)
         environment := candidateEnvironment
         protocolEnvironment := candidateProtocolEnvironment
       }
+  originalInstructionSemanticsAdequate :
+    ({
+      candidate := false
+      context
+      regions
+      externalCallSites
+      environment := originalEnvironment
+      protocolEnvironment := originalProtocolEnvironment
+    } : DecodedWorldProgram).InstructionSemanticsAdequate
+  candidateInstructionSemanticsAdequate :
+    ({
+      candidate := true
+      context
+      regions
+      externalCallSites
+      environment := candidateEnvironment
+      protocolEnvironment := candidateProtocolEnvironment
+    } : DecodedWorldProgram).InstructionSemanticsAdequate
 
 theorem pe32ProgramsEquivalent (context : StaticProofContext)
     (graph : RelationalProductGraph) (regions : List RegionRelation)
@@ -2146,7 +2958,7 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
     (control : ProductControlProfile)
     (callbackTargets : ProtocolCallbackTargetProfile)
     (externalCallSites : List ExternalCallSiteContract)
-    (launch : PE32ConsoleLaunchV1)
+    (launch : PE32ConsoleLaunchV2)
     (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
     (originalProtocolEnvironment candidateProtocolEnvironment :
       WorldExternalProtocolEnvironment)
@@ -2186,54 +2998,80 @@ theorem pe32ProgramsEquivalent (context : StaticProofContext)
     environment := candidateEnvironment
     protocolEnvironment := candidateProtocolEnvironment
   }
-  refine ⟨WorldExecutionsRelated context graph invariants reachability control
-    callbackTargets externalCallSites, ?_, ?_⟩
+  refine ⟨certificate.launchRealizable,
+    WorldExecutionsRelated context graph invariants reachability control
+      callbackTargets externalCallSites, ?_, ?_⟩
   . intro world originalState candidateState related
-    rcases certificate.launchValid with
-      ⟨_preEntryTlsAbsent, node, nodeFound, targetFound, rootFound, rootListed, invariantFound,
-        _entrypointRoot, _terminalResultExact⟩
+    rcases related with
+      ⟨frames, _worldValid, _originalImageMapped, _candidateImageMapped,
+        stackHolds, frameImportsHold, frameTargetsReachable,
+        _processAttachArgumentsHold, statesRelated⟩
+    rcases certificate.launchValid.2.2.2.2.2.2.2.2.1 with
+      ⟨node, nodeFound, targetFound, rootFound, rootListed, invariantFound⟩
     refine ⟨rfl, rfl, rfl, rfl, launch.rootNodeId, node,
-      launch.rootInvariant, [], [], nodeFound, targetFound, ?_, invariantFound,
-      certificate.launchControlAllowed, ?_, ?_, ?_, related.stateRel⟩
+      launch.rootInvariant, frames, launch.frameOffsets, nodeFound, targetFound, ?_,
+      invariantFound, certificate.launchControlAllowed, stackHolds,
+      frameImportsHold, frameTargetsReachable, statesRelated⟩
     . have allRoots := certificate.reachabilityClosed.2.1.2.1
       unfold RelationalProductReachabilityEvidence.rootsIncluded at allRoots
       exact List.all_eq_true.mp allRoots launch.rootNodeId
         (List.contains_iff_mem.mp rootListed)
-    . simp [RelationalRuntimeCallStackHolds]
-    . simp [RelationalRuntimeCallImportsHold]
-    . simp [RelationalRuntimeCallTargetsReachable]
   . exact productStepRefinement_of_reachable_nodes context graph invariants reachability
       control callbackTargets original candidate certificate.environmentsRefined
       certificate.protocolEnvironmentsRefined certificate.runningProductNodesRefined
       certificate.callbackRunningProductNodesRefined
+      |> fun decodedBisimulation => by
+        rw [original.pe32TransitionSystem_eq_transitionSystem
+          certificate.originalInstructionSemanticsAdequate,
+          candidate.pe32TransitionSystem_eq_transitionSystem
+          certificate.candidateInstructionSemanticsAdequate]
+        exact decodedBisimulation
 
 def PE32ProgramsTraceRelated (context : StaticProofContext)
     (original candidate : DecodedWorldProgram)
     (executionRelation : WorldExecution -> WorldExecution -> Prop) :
     Nat -> WorldExecution -> WorldExecution -> Prop :=
-  RelatedTrace original.transitionSystem candidate.transitionSystem executionRelation
-    (worldRelationalObservationsRelated context)
+  RelatedTrace original.pe32TransitionSystem candidate.pe32TransitionSystem
+    executionRelation (worldRelationalObservationsRelated context)
 
 theorem pe32ProgramsEquivalent_trace (context : StaticProofContext)
     (graph : RelationalProductGraph) (invariants : ProductInvariantTable)
     (reachability : RelationalProductReachabilityEvidence)
     (control : ProductControlProfile)
-    (launch : PE32ConsoleLaunchV1)
+    (launch : PE32ConsoleLaunchV2)
     (original candidate : DecodedWorldProgram)
     (equivalent : PE32ProgramsObservationallyEquivalent context graph invariants
       reachability control launch original candidate) :
     forall fuel world originalState candidateState,
-      launch.StatesRelated context world originalState candidateState ->
+      launch.StatesRelated context graph reachability world originalState candidateState ->
       exists executionRelation,
         PE32ProgramsTraceRelated context original candidate executionRelation fuel
-          (.running launch.rootTargetId originalState [] 0 world)
-          (.running launch.rootTargetId candidateState [] 0 world) := by
-  rcases equivalent with ⟨executionRelation, initial, bisimulation⟩
+          (.running launch.rootTargetId originalState launch.continuationTargetIds 0 world)
+          (.running launch.rootTargetId candidateState launch.continuationTargetIds 0 world) := by
+  rcases equivalent with ⟨_realizable, executionRelation, initial, bisimulation⟩
   intro fuel world originalState candidateState related
   refine ⟨executionRelation, ?_⟩
-  exact relationalWeakBisimulation_trace original.transitionSystem
-    candidate.transitionSystem executionRelation
+  exact relationalWeakBisimulation_trace original.pe32TransitionSystem
+    candidate.pe32TransitionSystem executionRelation
     (worldRelationalObservationsRelated context) bisimulation fuel _ _
     (initial world originalState candidateState related)
+
+theorem WholeProgramCertificate.launchStatesExist (context : StaticProofContext)
+    (graph : RelationalProductGraph) (regions : List RegionRelation)
+    (invariants : ProductInvariantTable)
+    (reachability : RelationalProductReachabilityEvidence)
+    (control : ProductControlProfile)
+    (callbackTargets : ProtocolCallbackTargetProfile)
+    (externalCallSites : List ExternalCallSiteContract)
+    (launch : PE32ConsoleLaunchV2)
+    (originalEnvironment candidateEnvironment : WorldExternalEnvironment)
+    (originalProtocolEnvironment candidateProtocolEnvironment :
+      WorldExternalProtocolEnvironment)
+    (certificate : WholeProgramCertificate context graph regions invariants reachability control
+      callbackTargets externalCallSites launch originalEnvironment candidateEnvironment
+      originalProtocolEnvironment candidateProtocolEnvironment) :
+    exists world originalState candidateState,
+      launch.StatesRelated context graph reachability world originalState candidateState :=
+  certificate.launchRealizable
 
 end StageA.Relational

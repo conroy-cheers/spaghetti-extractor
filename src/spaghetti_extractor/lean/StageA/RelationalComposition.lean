@@ -309,18 +309,42 @@ not alternative machine states. -/
 structure ReturnSlotOffsetInventory where
   locations : List ReturnSlotOffsetPair
   preservedImports : List ImportRegisterRelation := []
+  preservedRelations : List RegisterRelationPair := []
 deriving Repr, DecidableEq
 
 def ReturnSlotOffsetInventory.maxLocations : Nat := 8
 
 def ReturnSlotOffsetInventory.maxPreservedImports : Nat := 8
 
+def ReturnSlotOffsetInventory.maxPreservedRelations : Nat := 8
+
 def ReturnSlotOffsetInventory.checked (inventory : ReturnSlotOffsetInventory) : Bool :=
   !inventory.locations.isEmpty &&
     decide inventory.locations.Nodup &&
     inventory.locations.length <= ReturnSlotOffsetInventory.maxLocations &&
     decide inventory.preservedImports.Nodup &&
-    inventory.preservedImports.length <= ReturnSlotOffsetInventory.maxPreservedImports
+    inventory.preservedImports.length <= ReturnSlotOffsetInventory.maxPreservedImports &&
+    decide inventory.preservedRelations.Nodup &&
+    inventory.preservedRelations.length <= ReturnSlotOffsetInventory.maxPreservedRelations
+
+def ReturnSlotOffsetInventory.preservedRelationsUnambiguous
+    (inventory : ReturnSlotOffsetInventory) : Bool :=
+  inventory.preservedRelations.all fun relation =>
+    (inventory.preservedRelations.filter fun candidate =>
+      candidate.original == relation.original).length == 1 &&
+    (inventory.preservedRelations.filter fun candidate =>
+      candidate.candidate == relation.candidate).length == 1
+
+def RegisterValueRelation.staticTargetValid
+    (context : StaticProofContext) : RegisterValueRelation -> Bool
+  | .fixedCodePointer targetId => (context.codeMap.get? targetId).isSome
+  | .exact | .fixedWord _ | .codePointer | .dataPointer | .relatedWord => true
+
+def ReturnSlotOffsetInventory.preservedRelationsChecked
+    (context : StaticProofContext) (inventory : ReturnSlotOffsetInventory) : Bool :=
+  inventory.checked && inventory.preservedRelationsUnambiguous &&
+    inventory.preservedRelations.all fun relation =>
+      relation.relation.staticTargetValid context
 
 def ReturnSlotOffsetInventory.holds (inventory : ReturnSlotOffsetInventory)
     (frame : RelationalRuntimeCallFrame) (original candidate : Registers Word) : Prop :=
@@ -332,6 +356,39 @@ def ReturnSlotOffsetInventory.preservedImportsHold
     (original candidate : Registers Word) : Bool :=
   importRegisterRelationsHold world inventory.preservedImports original candidate
 
+def ReturnSlotOffsetInventory.preservedRelationsHold
+    (context : StaticProofContext) (inventory : ReturnSlotOffsetInventory)
+    (world : RelationalWorld) (original candidate : Registers Word) : Bool :=
+  registerRelationsHold context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList (context.relationalValueTargets world)
+    inventory.preservedRelations original candidate
+
+theorem registerRelationsHold_append_of_holds
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (left right : List RegisterRelationPair) (original candidate : Registers Word)
+    (leftHolds : registerRelationsHold originalImageBase candidateImageBase targets
+      values left original candidate = true)
+    (rightHolds : registerRelationsHold originalImageBase candidateImageBase targets
+      values right original candidate = true) :
+    registerRelationsHold originalImageBase candidateImageBase targets values
+      (left ++ right) original candidate = true := by
+  simp only [registerRelationsHold, List.all_append, Bool.and_eq_true]
+  exact ⟨leftHolds, rightHolds⟩
+
+theorem registerRelationsHold_of_perm
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (source target : List RegisterRelationPair) (original candidate : Registers Word)
+    (permutation : source.Perm target)
+    (sourceHolds : registerRelationsHold originalImageBase candidateImageBase targets
+      values source original candidate = true) :
+    registerRelationsHold originalImageBase candidateImageBase targets values
+      target original candidate = true := by
+  simp only [registerRelationsHold, List.all_eq_true] at sourceHolds ⊢
+  intro relation relationMember
+  exact sourceHolds relation (permutation.mem_iff.mpr relationMember)
+
 def ReturnSlotOffsetInventory.preservesImportsAcross
     (inventory : ReturnSlotOffsetInventory)
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
@@ -339,6 +396,40 @@ def ReturnSlotOffsetInventory.preservesImportsAcross
     inventory.preservedImports.all fun relation =>
       originalBehavior.registers.get relation.original == .inputReg relation.original &&
         candidateBehavior.registers.get relation.candidate == .inputReg relation.candidate
+
+def ReturnSlotOffsetInventory.preservesRelationsAcross
+    (context : StaticProofContext) (inventory : ReturnSlotOffsetInventory)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior) : Bool :=
+  inventory.preservedRelationsChecked context &&
+    inventory.preservedRelations.all fun relation =>
+      originalBehavior.registers.get relation.original == .inputReg relation.original &&
+        candidateBehavior.registers.get relation.candidate == .inputReg relation.candidate
+
+theorem ReturnSlotOffsetInventory.preservedRelationsHold_after_of_checked
+    (context : StaticProofContext) (inventory : ReturnSlotOffsetInventory)
+    (world : RelationalWorld)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (originalState candidateState : MachineState)
+    (checked : inventory.preservesRelationsAcross context originalBehavior
+      candidateBehavior = true)
+    (holds : inventory.preservedRelationsHold context world originalState.registers
+      candidateState.registers = true) :
+    inventory.preservedRelationsHold context world
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers = true := by
+  simp only [ReturnSlotOffsetInventory.preservesRelationsAcross,
+    Bool.and_eq_true] at checked
+  have preserved := checked.2
+  unfold ReturnSlotOffsetInventory.preservedRelationsHold at holds ⊢
+  simp only [registerRelationsHold, List.all_eq_true] at holds preserved ⊢
+  intro relation relationMember
+  have relationHolds := holds relation relationMember
+  have relationPreserved := preserved relation relationMember
+  simp only [Bool.and_eq_true, beq_iff_eq] at relationPreserved
+  rcases relationPreserved with ⟨originalRegister, candidateRegister⟩
+  simpa [NormalizedSymbolicBehavior.eval_registers,
+    evalNormalizedRegisters_get, originalRegister, candidateRegister, Expr.eval]
+    using relationHolds
 
 theorem ReturnSlotOffsetInventory.preservedImportsHold_after_of_checked
     (inventory : ReturnSlotOffsetInventory) (world : RelationalWorld)
@@ -409,6 +500,37 @@ theorem ReturnSlotOffsetInventory.preservedImportsHold_after_stateRel_of_checked
       (by simpa using sourceMembers relation relationMember)
   exact inventory.preservedImportsHold_after_of_checked world originalBehavior
     candidateBehavior originalState candidateState preserves sourceHolds
+
+def ReturnSlotOffsetInventory.seedsPreservedRelationsFromOutputClaims
+    (context : StaticProofContext) (inventory : ReturnSlotOffsetInventory)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List InvariantWP.RegisterOutputClaim) : Bool :=
+  inventory.preservedRelationsChecked context &&
+    claims.map InvariantWP.RegisterOutputClaim.output ==
+      inventory.preservedRelations &&
+    claims.all (InvariantWP.RegisterOutputClaim.nonMemoryChecked context region
+      originalBehavior candidateBehavior)
+
+theorem ReturnSlotOffsetInventory.preservedRelationsHold_after_stateRel_of_outputClaims
+    (context : StaticProofContext) (inventory : ReturnSlotOffsetInventory)
+    (world : RelationalWorld) (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claims : List InvariantWP.RegisterOutputClaim)
+    (originalState candidateState : MachineState)
+    (checked : inventory.seedsPreservedRelationsFromOutputClaims context region
+      originalBehavior candidateBehavior claims = true)
+    (related : StateRel context world region.inputInvariant originalState candidateState) :
+    inventory.preservedRelationsHold context world
+      (originalBehavior.eval originalState).registers
+      (candidateBehavior.eval candidateState).registers = true := by
+  simp only [ReturnSlotOffsetInventory.seedsPreservedRelationsFromOutputClaims,
+    Bool.and_eq_true, beq_iff_eq] at checked
+  rcases checked with ⟨⟨_inventoryChecked, inventoryExact⟩, claimsChecked⟩
+  unfold ReturnSlotOffsetInventory.preservedRelationsHold
+  rw [← inventoryExact]
+  exact InvariantWP.registerRelationsHold_of_nonMemoryOutputClaims context world region
+    originalBehavior candidateBehavior claims claimsChecked originalState candidateState related
 
 def ReturnSlotOffsetInventory.singleton (location : ReturnSlotOffsetPair) :
     ReturnSlotOffsetInventory := { locations := [location] }
@@ -2322,17 +2444,42 @@ structure ImmutableCodePointerTableRow where
   targetId : Nat
 deriving Repr, DecidableEq
 
+inductive ImmutableCodePointerTableLayout where
+  | zeroBasedBounded
+  | sentinelTerminatedReverseCount
+deriving Repr, DecidableEq
+
 structure BoundedImmutableCodePointerTableCallClaim where
   valueTargetId : Nat
   tableOffset : Nat
   originalBase : Nat
   candidateBase : Nat
+  layout : ImmutableCodePointerTableLayout := .zeroBasedBounded
   upperExclusive : Nat
   originalIndexRegister : Reg
   candidateIndexRegister : Reg
   continuationTargetId : Nat
   rows : List ImmutableCodePointerTableRow
 deriving Repr, DecidableEq
+
+def ImmutableCodePointerTableLayout.lowerInclusive :
+    ImmutableCodePointerTableLayout → Nat
+  | .zeroBasedBounded => 0
+  | .sentinelTerminatedReverseCount => 1
+
+def BoundedImmutableCodePointerTableCallClaim.lowerInclusive
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Nat :=
+  claim.layout.lowerInclusive
+
+def BoundedImmutableCodePointerTableCallClaim.entryCount
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Nat :=
+  claim.upperExclusive - claim.lowerInclusive
+
+def BoundedImmutableCodePointerTableCallClaim.tableSpanWords
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Nat :=
+  match claim.layout with
+  | .zeroBasedBounded => claim.upperExclusive
+  | .sentinelTerminatedReverseCount => claim.upperExclusive + 1
 
 def BoundedImmutableCodePointerTableCallClaim.originalAddress
     (claim : BoundedImmutableCodePointerTableCallClaim) (index : Nat) : Nat :=
@@ -2356,6 +2503,19 @@ def immutableCodePointerTableAddressExpression (base : Nat) (index : Expr) : Exp
 def immutableCodePointerTableTargetExpression (base : Nat) (index : Expr) : Expr :=
   .read32 (immutableCodePointerTableAddressExpression base index)
 
+theorem immutableCodePointerTableAddressExpression_eval_of_index
+    (base index : Nat) (expression : Expr) (state : MachineState)
+    (evaluated : expression.eval state = BitVec.ofNat 32 index) :
+    (immutableCodePointerTableAddressExpression base expression).eval state =
+      BitVec.ofNat 32 (base + index * 4) := by
+  simp only [immutableCodePointerTableAddressExpression, Expr.eval, evaluated]
+  have shiftFour (value : BitVec 32) :
+      value.shiftLeft 2 = value * BitVec.ofNat 32 4 := by
+    bv_decide
+  rw [shiftFour, ← BitVec.ofNat_mul, ← BitVec.ofNat_add]
+  congr 1
+  omega
+
 def BoundedImmutableCodePointerTableCallClaim.originalTargetExpression
     (claim : BoundedImmutableCodePointerTableCallClaim) : Expr :=
   immutableCodePointerTableTargetExpression claim.originalBase
@@ -2376,11 +2536,49 @@ def BoundedImmutableCodePointerTableCallClaim.indexBound
     (claim : BoundedImmutableCodePointerTableCallClaim) : RegisterBoundPair := {
   original := claim.originalIndexRegister
   candidate := claim.candidateIndexRegister
-  upperExclusive := claim.upperExclusive
+  originalExpression := match claim.layout with
+    | .zeroBasedBounded => none
+    | .sentinelTerminatedReverseCount =>
+        some (.sub (.inputReg claim.originalIndexRegister) (.constant 1))
+  candidateExpression := match claim.layout with
+    | .zeroBasedBounded => none
+    | .sentinelTerminatedReverseCount =>
+        some (.sub (.inputReg claim.candidateIndexRegister) (.constant 1))
+  upperExclusive := claim.entryCount
 }
 
+theorem shiftedIndexBound_range (value : Word) (upperExclusive : Nat)
+    (positive : 0 < upperExclusive)
+    (fits : upperExclusive < 2 ^ 32)
+    (bounded : decide (
+      value - BitVec.ofNat 32 1 <
+        BitVec.ofNat 32 (upperExclusive - 1)) = true) :
+    1 <= value.toNat ∧ value.toNat < upperExclusive := by
+  have valueFits : value.toNat < 2 ^ 32 := by simpa using value.isLt
+  have entryFits : upperExclusive - 1 < 2 ^ 32 := by omega
+  have boundedNat := of_decide_eq_true bounded
+  simp only [BitVec.lt_def, BitVec.toNat_sub, BitVec.toNat_ofNat,
+    Nat.mod_eq_of_lt entryFits] at boundedNat
+  simp at boundedNat
+  by_cases zero : value.toNat = 0
+  · rw [zero] at boundedNat
+    omega
+  · have reduced :
+        (2 ^ 32 - 1 + value.toNat) % 2 ^ 32 = value.toNat - 1 := by
+      omega
+    rw [reduced] at boundedNat
+    omega
+
+def pe32RelocationCountAt (relocations : List BaseRelocation) (rva : Nat) : Nat :=
+  (relocations.filter fun relocation =>
+    relocation.rva == rva && relocation.kind == 3).length
+
 def pe32RelocationWordAt (relocations : List BaseRelocation) (rva : Nat) : Bool :=
-  relocations.any fun relocation => relocation.rva == rva && relocation.kind == 3
+  pe32RelocationCountAt relocations rva == 1
+
+def BoundedImmutableCodePointerTableCallClaim.rowIndexValid
+    (claim : BoundedImmutableCodePointerTableCallClaim) (index : Nat) : Bool :=
+  decide (claim.lowerInclusive <= index && index < claim.upperExclusive)
 
 def ImmutableCodePointerTableRow.checked (context : StaticProofContext)
     (claim : BoundedImmutableCodePointerTableCallClaim)
@@ -2388,12 +2586,14 @@ def ImmutableCodePointerTableRow.checked (context : StaticProofContext)
   match context.codeMap.get? row.targetId with
   | none => false
   | some target =>
-      (row.index < claim.upperExclusive &&
+      (claim.rowIndexValid row.index &&
         target.id == row.targetId &&
         rvaInExecutableSection context.originalPe target.originalRva &&
         rvaInExecutableSection context.candidatePe target.candidateRva &&
         !(context.originalPe.imageBase + target.originalRva == 0) &&
         !(context.candidatePe.imageBase + target.candidateRva == 0) &&
+        decide (context.originalPe.imageBase + target.originalRva < 2 ^ 32) &&
+        decide (context.candidatePe.imageBase + target.candidateRva < 2 ^ 32) &&
         claim.originalAddress row.index >= context.originalPe.imageBase &&
         claim.candidateAddress row.index >= context.candidatePe.imageBase &&
         pe32RelocationWordAt context.originalRelocations
@@ -2409,44 +2609,211 @@ def ImmutableCodePointerTableRow.checked (context : StaticProofContext)
 
 def immutableCodePointerTableRowsCover
     (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
-  (List.range claim.upperExclusive).all fun index =>
-    claim.rows.any fun row => row.index == index
+  (List.range claim.entryCount).all fun offset =>
+    claim.rows.any fun row => row.index == claim.lowerInclusive + offset
 
 def immutableCodePointerTableRowsUnique
     (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
   claim.rows.all fun row =>
-    (claim.rows.filter (fun other => other.index == row.index)).length == 1 &&
-      (claim.rows.filter (fun other => other.targetId == row.targetId)).length == 1
+    (claim.rows.filter (fun other => other.index == row.index)).length == 1
+
+def BoundedImmutableCodePointerTableCallClaim.boundaryChecked
+    (context : StaticProofContext)
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  match claim.layout with
+  | .zeroBasedBounded => true
+  | .sentinelTerminatedReverseCount =>
+      claim.upperExclusive > 0 &&
+        readImmutableImageWord context.originalPe claim.originalBase 4 ==
+          some (2 ^ 32 - 1) &&
+        readImmutableImageWord context.candidatePe claim.candidateBase 4 ==
+          some (2 ^ 32 - 1) &&
+        readImmutableImageWord context.originalPe
+            (claim.originalAddress claim.upperExclusive) 4 == some 0 &&
+        readImmutableImageWord context.candidatePe
+            (claim.candidateAddress claim.upperExclusive) 4 == some 0 &&
+        pe32RelocationCountAt context.originalRelocations
+            (claim.originalBase - context.originalPe.imageBase) == 0 &&
+        pe32RelocationCountAt context.candidateRelocations
+            (claim.candidateBase - context.candidatePe.imageBase) == 0 &&
+        pe32RelocationCountAt context.originalRelocations
+            (claim.originalAddress claim.upperExclusive -
+              context.originalPe.imageBase) == 0 &&
+        pe32RelocationCountAt context.candidateRelocations
+            (claim.candidateAddress claim.upperExclusive -
+              context.candidatePe.imageBase) == 0
+
+def BoundedImmutableCodePointerTableCallClaim.staticShapeChecked
+    (context : StaticProofContext)
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  immutableCodePointerTableRowsCover claim &&
+    decide (claim.upperExclusive < 2 ^ 32) &&
+    decide (0 < claim.upperExclusive) &&
+    claim.boundaryChecked context &&
+    match context.dataMap.get? claim.valueTargetId with
+    | some table =>
+        claim.rows.length == claim.entryCount &&
+          immutableCodePointerTableRowsUnique claim &&
+          table.id == claim.valueTargetId &&
+          table.originalValue + claim.tableOffset == claim.originalBase &&
+          table.candidateValue + claim.tableOffset == claim.candidateBase &&
+          decide (claim.tableOffset + claim.tableSpanWords * 4 <= table.mappedSize) &&
+          decide (claim.originalBase + claim.tableSpanWords * 4 <= 2 ^ 32) &&
+          decide (claim.candidateBase + claim.tableSpanWords * 4 <= 2 ^ 32) &&
+          (List.range claim.entryCount).all (fun offset =>
+            table.relocationOffsets.contains
+              (claim.tableOffset + (claim.lowerInclusive + offset) * 4)) &&
+          (match claim.layout with
+          | .zeroBasedBounded => true
+          | .sentinelTerminatedReverseCount =>
+              !(table.relocationOffsets.contains claim.tableOffset) &&
+                !(table.relocationOffsets.contains
+                  (claim.tableOffset + claim.upperExclusive * 4)))
+    | none => false
+
+def uninhabitedStatePredicate : PairedStatePredicate := {
+  original := .equal (.constant 0) (.constant 1)
+  candidate := .equal (.constant 0) (.constant 1)
+}
+
+def registerZeroStatePredicate (original candidate : Reg) : PairedStatePredicate := {
+  original := .equal (.inputReg original) (.constant 0)
+  candidate := .equal (.inputReg candidate) (.constant 0)
+}
+
+def registerNonzeroGuard (register : Reg) : BoolExpr :=
+  .not (.equal (.bitAnd (.inputReg register) (.inputReg register)) (.constant 0))
+
+structure RegisterZeroGuardContradictionClaim where
+  originalRegister : Reg
+  candidateRegister : Reg
+deriving Repr, DecidableEq
+
+def RegisterZeroGuardContradictionClaim.checked
+    (edge : RelationalSegmentEdge) (sourceInvariant targetInvariant : StateInvariant)
+    (claim : RegisterZeroGuardContradictionClaim) : Bool :=
+  sourceInvariant.predicates.contains
+      (registerZeroStatePredicate claim.originalRegister claim.candidateRegister) &&
+    targetInvariant.predicates == [uninhabitedStatePredicate] &&
+    edge.originalGuard == registerNonzeroGuard claim.originalRegister &&
+    edge.candidateGuard == registerNonzeroGuard claim.candidateRegister
+
+theorem segmentTransitionClosed_of_register_zero_guard_contradiction
+    (context : StaticProofContext) (edge : RelationalSegmentEdge)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (claim : RegisterZeroGuardContradictionClaim)
+    (localCodeTargets : List CodeTargetPair) (localValues : List ValueTargetPair)
+    (localCodeTargetsResolved :
+      context.codeMap.resolveIds edge.localCodeTargetIds = some localCodeTargets)
+    (localValuesResolved :
+      context.dataMap.resolveIds edge.localValueTargetIds = some localValues)
+    (checked : claim.checked edge sourceInvariant targetInvariant = true) :
+    SegmentTransitionClosed context edge sourceInvariant targetInvariant
+      originalBehavior candidateBehavior := by
+  simp only [RegisterZeroGuardContradictionClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨sourcePredicateMember, _targetBottom⟩, originalGuardShape⟩,
+      candidateGuardShape⟩
+  unfold SegmentTransitionClosed
+  rw [localCodeTargetsResolved, localValuesResolved]
+  intro world originalState candidateState related
+  have predicates := related.predicatesHold
+  have zeroes := pairedStatePredicatesHold_member sourceInvariant.predicates
+    (registerZeroStatePredicate claim.originalRegister claim.candidateRegister)
+    originalState candidateState (List.contains_iff_mem.mp sourcePredicateMember)
+    predicates
+  simp only [registerZeroStatePredicate, PairedStatePredicate.holds,
+    BoolExpr.eval, Expr.eval, Bool.and_eq_true, beq_iff_eq] at zeroes
+  have originalZero := of_decide_eq_true zeroes.1
+  have candidateZero := of_decide_eq_true zeroes.2
+  rw [originalGuardShape, candidateGuardShape]
+  have originalFalse :
+      (registerNonzeroGuard claim.originalRegister).eval originalState = false := by
+    simp [registerNonzeroGuard, BoolExpr.eval, Expr.eval, originalZero]
+  have candidateFalse :
+      (registerNonzeroGuard claim.candidateRegister).eval candidateState = false := by
+    simp [registerNonzeroGuard, BoolExpr.eval, Expr.eval, candidateZero]
+  refine ⟨originalFalse.trans candidateFalse.symm, ?_⟩
+  intro guardTrue
+  rw [originalFalse] at guardTrue
+  contradiction
+
+def BoundedImmutableCodePointerTableCallClaim.inputDomainChecked
+    (sourceInvariant : StateInvariant)
+    (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
+  if claim.entryCount == 0 then
+    sourceInvariant.predicates.contains uninhabitedStatePredicate
+  else
+    exactRegisterPair sourceInvariant.registerRelations
+        claim.originalIndexRegister claim.candidateIndexRegister &&
+      sourceInvariant.bounds.contains claim.indexBound
 
 def BoundedImmutableCodePointerTableCallClaim.shapeChecked
     (context : StaticProofContext) (sourceInvariant : StateInvariant)
     (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
-  immutableCodePointerTableRowsCover claim &&
-    exactRegisterPair sourceInvariant.registerRelations
-      claim.originalIndexRegister claim.candidateIndexRegister &&
-    sourceInvariant.bounds.contains claim.indexBound &&
-    decide (claim.upperExclusive < 2 ^ 32) &&
-    match context.dataMap.get? claim.valueTargetId,
-        context.codeMap.get? claim.continuationTargetId with
-    | some table, some continuation =>
-        claim.upperExclusive > 0 &&
-          claim.rows.length == claim.upperExclusive &&
-          immutableCodePointerTableRowsUnique claim &&
-          table.id == claim.valueTargetId &&
-          continuation.id == claim.continuationTargetId &&
-          table.originalValue + claim.tableOffset == claim.originalBase &&
-          table.candidateValue + claim.tableOffset == claim.candidateBase &&
-          decide (claim.tableOffset + claim.upperExclusive * 4 <= table.mappedSize) &&
-          decide (claim.originalBase + claim.upperExclusive * 4 <= 2 ^ 32) &&
-          decide (claim.candidateBase + claim.upperExclusive * 4 <= 2 ^ 32) &&
-          (List.range claim.upperExclusive).all (fun index =>
-            table.relocationOffsets.contains (claim.tableOffset + index * 4))
-    | _, _ => false
+  claim.staticShapeChecked context &&
+    claim.inputDomainChecked sourceInvariant &&
+    match context.codeMap.get? claim.continuationTargetId with
+    | some continuation => continuation.id == claim.continuationTargetId
+    | none => false
 
 def BoundedImmutableCodePointerTableCallClaim.rowsChecked
     (context : StaticProofContext)
     (claim : BoundedImmutableCodePointerTableCallClaim) : Bool :=
   claim.rows.all (ImmutableCodePointerTableRow.checked context claim)
+
+theorem immutableCodePointerTableRowReadsNonzero_of_checked
+    (context : StaticProofContext)
+    (claim : BoundedImmutableCodePointerTableCallClaim)
+    (row : ImmutableCodePointerTableRow)
+    (originalMemory candidateMemory : Memory)
+    (originalImmutable : ImmutableImageWordMemory context.originalPe originalMemory)
+    (candidateImmutable : ImmutableImageWordMemory context.candidatePe candidateMemory)
+    (checked : row.checked context claim = true) :
+    ∃ target,
+      context.codeMap.get? row.targetId = some target ∧
+      Memory.read32 originalMemory (BitVec.ofNat 32 (claim.originalAddress row.index)) =
+        BitVec.ofNat 32 (context.originalPe.imageBase + target.originalRva) ∧
+      Memory.read32 candidateMemory (BitVec.ofNat 32 (claim.candidateAddress row.index)) =
+        BitVec.ofNat 32 (context.candidatePe.imageBase + target.candidateRva) ∧
+      context.originalPe.imageBase + target.originalRva ≠ 0 ∧
+      context.candidatePe.imageBase + target.candidateRva ≠ 0 ∧
+      context.originalPe.imageBase + target.originalRva < 2 ^ 32 ∧
+      context.candidatePe.imageBase + target.candidateRva < 2 ^ 32 := by
+  cases targetResult : context.codeMap.get? row.targetId with
+  | none => simp [ImmutableCodePointerTableRow.checked, targetResult] at checked
+  | some target =>
+      have checkedForNonzero := checked
+      simp only [ImmutableCodePointerTableRow.checked, targetResult,
+        Bool.and_eq_true, beq_iff_eq] at checked
+      rcases checked with
+        ⟨⟨staticRowChecked, originalImageWord⟩, candidateImageWord⟩
+      have originalNonzero :
+          context.originalPe.imageBase + target.originalRva ≠ 0 := by
+        intro zero
+        simp [ImmutableCodePointerTableRow.checked, targetResult, zero] at checkedForNonzero
+      have candidateNonzero :
+          context.candidatePe.imageBase + target.candidateRva ≠ 0 := by
+        intro zero
+        simp [ImmutableCodePointerTableRow.checked, targetResult, zero] at checkedForNonzero
+      have originalFits :
+          context.originalPe.imageBase + target.originalRva < 2 ^ 32 := by
+        exact of_decide_eq_true staticRowChecked.1.1.1.1.1.2
+      have candidateFits :
+          context.candidatePe.imageBase + target.candidateRva < 2 ^ 32 := by
+        exact of_decide_eq_true staticRowChecked.1.1.1.1.2
+      exact ⟨target, rfl,
+        ImmutableImageWordMemory.read32_of_checked context.originalPe originalMemory
+          (claim.originalAddress row.index)
+          (context.originalPe.imageBase + target.originalRva) originalImmutable
+          originalImageWord,
+        ImmutableImageWordMemory.read32_of_checked context.candidatePe candidateMemory
+          (claim.candidateAddress row.index)
+          (context.candidatePe.imageBase + target.candidateRva) candidateImmutable
+          candidateImageWord,
+        originalNonzero, candidateNonzero, originalFits, candidateFits⟩
 
 def BoundedImmutableCodePointerTableCallClaim.behaviorChecked
     (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
@@ -2505,50 +2872,119 @@ theorem boundedImmutableCodePointerTableCallTargetsClosed_of_checked
   simp only [BoundedImmutableCodePointerTableCallClaim.shapeChecked,
     Bool.and_eq_true] at shapeChecked
   rcases shapeChecked with
-    ⟨⟨⟨⟨rowsCover, exactIndices⟩, boundMember⟩, upperExclusiveChecked⟩,
-      tableShapeChecked⟩
+    ⟨⟨staticShapeChecked, inputDomainChecked⟩, continuationChecked⟩
+  simp only [BoundedImmutableCodePointerTableCallClaim.staticShapeChecked,
+    Bool.and_eq_true] at staticShapeChecked
+  rcases staticShapeChecked with
+    ⟨⟨⟨⟨rowsCover, upperExclusiveChecked⟩, upperExclusivePositive⟩,
+      boundaryChecked⟩, tableShapeChecked⟩
   intro world originalState candidateState related
-  rcases related with
-    ⟨worldValid, stackRangesValid, stackMemory, importsStatic, importsComplete,
-      importsMemory, originalImmutable, candidateImmutable, relatedCore,
-      importAndDynamicRegisters⟩
-  have indexEqual := registerRelationsHold_exact_pair
-    context.originalPe.imageBase context.candidatePe.imageBase
-    context.codeMap.entries.toList (context.relationalValueTargets world)
-    sourceInvariant.registerRelations originalState.registers candidateState.registers
-    claim.originalIndexRegister claim.candidateIndexRegister relatedCore.1 exactIndices
-  have allBounds := relatedCore.2.1
-  simp only [boundsRelated, List.all_eq_true] at allBounds
-  have selectedBound := allBounds claim.indexBound
-    (List.contains_iff_mem.mp boundMember)
-  simp only [BoundedImmutableCodePointerTableCallClaim.indexBound, boundValue] at selectedBound
-  simp only [Bool.and_eq_true] at selectedBound
-  have originalIndexBound :
-      (originalState.registers.get claim.originalIndexRegister).toNat <
-        claim.upperExclusive := by
-    have bounded := of_decide_eq_true selectedBound.1
-    change (originalState.registers.get claim.originalIndexRegister).toNat <
-      (BitVec.ofNat 32 claim.upperExclusive).toNat at bounded
+  cases emptyResult : claim.entryCount == 0 with
+  | true =>
+      have bottomMember :
+          sourceInvariant.predicates.contains uninhabitedStatePredicate = true := by
+        simpa [BoundedImmutableCodePointerTableCallClaim.inputDomainChecked,
+          emptyResult] using inputDomainChecked
+      have bottomHolds := pairedStatePredicatesHold_member
+        sourceInvariant.predicates uninhabitedStatePredicate originalState
+        candidateState (List.contains_iff_mem.mp bottomMember)
+        related.predicatesHold
+      simp [uninhabitedStatePredicate, PairedStatePredicate.holds,
+        BoolExpr.eval, Expr.eval] at bottomHolds
+  | false =>
+    have inputDomain :
+        exactRegisterPair sourceInvariant.registerRelations
+            claim.originalIndexRegister claim.candidateIndexRegister = true ∧
+          sourceInvariant.bounds.contains claim.indexBound = true := by
+      simpa [BoundedImmutableCodePointerTableCallClaim.inputDomainChecked,
+        emptyResult] using inputDomainChecked
+    rcases inputDomain with ⟨exactIndices, boundMember⟩
+    have entryCountNonzero : claim.entryCount ≠ 0 := by
+      exact fun zero => by simp [zero] at emptyResult
+    rcases related with
+      ⟨worldValid, stackRangesValid, stackMemory, importsStatic, importsComplete,
+        importsMemory, originalImmutable, candidateImmutable, relatedCore,
+        importAndDynamicRegisters⟩
+    have allBounds := relatedCore.2.1
+    simp only [boundsRelated, List.all_eq_true] at allBounds
+    have selectedBound := allBounds claim.indexBound
+      (List.contains_iff_mem.mp boundMember)
     have upperExclusiveSmall : claim.upperExclusive < 2 ^ 32 :=
       of_decide_eq_true upperExclusiveChecked
-    simpa [BitVec.toNat_ofNat, Nat.mod_eq_of_lt upperExclusiveSmall] using bounded
-  have rowExists : claim.rows.any (fun row =>
-      row.index == (originalState.registers.get claim.originalIndexRegister).toNat) = true := by
-    simp only [immutableCodePointerTableRowsCover, List.all_eq_true] at rowsCover
-    exact rowsCover _ (List.mem_range.mpr originalIndexBound)
-  simp only [List.any_eq_true] at rowExists
-  rcases rowExists with ⟨row, rowMember, rowIndexChecked⟩
-  have rowIndex : row.index =
-      (originalState.registers.get claim.originalIndexRegister).toNat :=
-    beq_iff_eq.mp rowIndexChecked
-  have rowChecked := rowsChecked
-  simp only [BoundedImmutableCodePointerTableCallClaim.rowsChecked,
-    List.all_eq_true] at rowChecked
-  have checkedRow := rowChecked row rowMember
-  cases targetResult : context.codeMap.get? row.targetId with
-  | none =>
-      simp [ImmutableCodePointerTableRow.checked, targetResult] at checkedRow
-  | some target =>
+    have upperExclusivePositiveNat : 0 < claim.upperExclusive :=
+      of_decide_eq_true upperExclusivePositive
+    have originalIndexRange :
+        claim.lowerInclusive <=
+            (originalState.registers.get claim.originalIndexRegister).toNat ∧
+          (originalState.registers.get claim.originalIndexRegister).toNat <
+            claim.upperExclusive := by
+      cases layout : claim.layout with
+      | zeroBasedBounded =>
+          simp [BoundedImmutableCodePointerTableCallClaim.indexBound,
+            BoundedImmutableCodePointerTableCallClaim.entryCount,
+            BoundedImmutableCodePointerTableCallClaim.lowerInclusive, layout,
+            ImmutableCodePointerTableLayout.lowerInclusive, boundValue,
+            Bool.and_eq_true] at selectedBound
+          have bounded := selectedBound.1
+          have boundedNat :
+              (originalState.registers.get claim.originalIndexRegister).toNat <
+                claim.upperExclusive := by
+            simpa [BitVec.lt_def, BitVec.toNat_ofNat,
+              Nat.mod_eq_of_lt upperExclusiveSmall] using bounded
+          constructor
+          · simp [BoundedImmutableCodePointerTableCallClaim.lowerInclusive, layout,
+              ImmutableCodePointerTableLayout.lowerInclusive]
+          · exact boundedNat
+      | sentinelTerminatedReverseCount =>
+          simp [BoundedImmutableCodePointerTableCallClaim.indexBound,
+            BoundedImmutableCodePointerTableCallClaim.entryCount,
+            BoundedImmutableCodePointerTableCallClaim.lowerInclusive, layout,
+            ImmutableCodePointerTableLayout.lowerInclusive, boundValue,
+            evalExprPure, Bool.and_eq_true] at selectedBound
+          simpa [BoundedImmutableCodePointerTableCallClaim.lowerInclusive, layout,
+            ImmutableCodePointerTableLayout.lowerInclusive] using
+            shiftedIndexBound_range
+              (originalState.registers.get claim.originalIndexRegister)
+              claim.upperExclusive upperExclusivePositiveNat upperExclusiveSmall
+              (by simpa only [decide_eq_true_eq] using selectedBound.1)
+    have entryCountPositive : 0 < claim.entryCount := by omega
+    have indexEqual := registerRelationsHold_exact_pair
+      context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      sourceInvariant.registerRelations originalState.registers candidateState.registers
+      claim.originalIndexRegister claim.candidateIndexRegister relatedCore.1 exactIndices
+    have originalIndexOffsetBound :
+        (originalState.registers.get claim.originalIndexRegister).toNat -
+            claim.lowerInclusive < claim.entryCount := by
+      simp only [BoundedImmutableCodePointerTableCallClaim.entryCount]
+      omega
+    have rowExists : claim.rows.any (fun row =>
+        row.index == (originalState.registers.get claim.originalIndexRegister).toNat) = true := by
+      simp only [immutableCodePointerTableRowsCover, List.all_eq_true] at rowsCover
+      have selected := rowsCover
+        ((originalState.registers.get claim.originalIndexRegister).toNat -
+          claim.lowerInclusive)
+        (List.mem_range.mpr originalIndexOffsetBound)
+      simp only [List.any_eq_true] at selected ⊢
+      rcases selected with ⟨row, rowMember, rowIndex⟩
+      refine ⟨row, rowMember, ?_⟩
+      have rowIndexNat := beq_iff_eq.mp rowIndex
+      apply beq_iff_eq.mpr
+      rw [rowIndexNat]
+      omega
+    simp only [List.any_eq_true] at rowExists
+    rcases rowExists with ⟨row, rowMember, rowIndexChecked⟩
+    have rowIndex : row.index =
+        (originalState.registers.get claim.originalIndexRegister).toNat :=
+      beq_iff_eq.mp rowIndexChecked
+    have rowChecked := rowsChecked
+    simp only [BoundedImmutableCodePointerTableCallClaim.rowsChecked,
+      List.all_eq_true] at rowChecked
+    have checkedRow := rowChecked row rowMember
+    cases targetResult : context.codeMap.get? row.targetId with
+    | none =>
+        simp [ImmutableCodePointerTableRow.checked, targetResult] at checkedRow
+    | some target =>
       simp only [ImmutableCodePointerTableRow.checked, targetResult,
         Bool.and_eq_true, beq_iff_eq] at checkedRow
       rcases checkedRow with
@@ -2627,6 +3063,1068 @@ theorem boundedImmutableCodePointerTableCallTargetsClosed_of_checked
           BoolExpr.eval, Expr.eval, candidateIndexWord]
       · simp [codeAddressMatches]
       · simp [codeAddressMatches]
+
+/-
+The reverse-sentinel scanner profile is the producer half of the bounded table
+call profile above.  It checks one ordinary no-write block: copy the current
+zero-based count, advance the cursor, load the next immutable table word, set
+ZF from that word, and jump to a separate test block.  The resulting predicate
+is deliberately compact; subsequent ordinary branch edges consume either its
+nonzero/bounded arm or its zero/finished arm.
+-/
+structure ReverseSentinelScannerClaim where
+  table : BoundedImmutableCodePointerTableCallClaim
+  originalScannerRegister : Reg
+  candidateScannerRegister : Reg
+  originalCountRegister : Reg
+  candidateCountRegister : Reg
+  originalLoadedRegister : Reg
+  candidateLoadedRegister : Reg
+  testTargetId : Nat
+  scannerTargetId : Nat
+  bridgeTargetId : Nat
+  zeroFlagBit : Nat := 6
+deriving Repr, DecidableEq
+
+def ReverseSentinelScannerClaim.sourceBound
+    (claim : ReverseSentinelScannerClaim) : RegisterBoundPair := {
+  original := claim.originalScannerRegister
+  candidate := claim.candidateScannerRegister
+  upperExclusive := claim.table.upperExclusive
+}
+
+def ReverseSentinelScannerClaim.originalNextIndex
+    (claim : ReverseSentinelScannerClaim) : Expr :=
+  .add (.inputReg claim.originalScannerRegister) (.constant 1)
+
+def ReverseSentinelScannerClaim.candidateNextIndex
+    (claim : ReverseSentinelScannerClaim) : Expr :=
+  .add (.inputReg claim.candidateScannerRegister) (.constant 1)
+
+def ReverseSentinelScannerClaim.originalLoadedExpression
+    (claim : ReverseSentinelScannerClaim) : Expr :=
+  immutableCodePointerTableTargetExpression claim.table.originalBase
+    claim.originalNextIndex
+
+def ReverseSentinelScannerClaim.candidateLoadedExpression
+    (claim : ReverseSentinelScannerClaim) : Expr :=
+  immutableCodePointerTableTargetExpression claim.table.candidateBase
+    claim.candidateNextIndex
+
+def reverseSentinelScannerPostExpression (scanner count : Reg)
+    (upperExclusive entryCount zeroFlagBit : Nat) : BoolExpr :=
+  .and
+    (.equal (.add (.inputReg count) (.constant 1)) (.inputReg scanner))
+    (.and
+      (.not (.xor (.inputFlag zeroFlagBit)
+        (.equal (.inputReg count) (.constant entryCount))))
+      (.or
+        (.and (.not (.inputFlag zeroFlagBit))
+          (.unsignedLess (.inputReg scanner) (.constant upperExclusive)))
+        (.and (.inputFlag zeroFlagBit)
+          (.equal (.inputReg count) (.constant entryCount)))))
+
+def ReverseSentinelScannerClaim.postPredicate
+    (claim : ReverseSentinelScannerClaim) : PairedStatePredicate := {
+  original := reverseSentinelScannerPostExpression
+    claim.originalScannerRegister claim.originalCountRegister
+    claim.table.upperExclusive claim.table.entryCount claim.zeroFlagBit
+  candidate := reverseSentinelScannerPostExpression
+    claim.candidateScannerRegister claim.candidateCountRegister
+    claim.table.upperExclusive claim.table.entryCount claim.zeroFlagBit
+}
+
+def ReverseSentinelScannerClaim.loopGuard
+    (claim : ReverseSentinelScannerClaim) : BoolExpr :=
+  .not (.inputFlag claim.zeroFlagBit)
+
+def ReverseSentinelScannerClaim.exitGuard
+    (claim : ReverseSentinelScannerClaim) : BoolExpr :=
+  .not claim.loopGuard
+
+def ReverseSentinelScannerClaim.finishedPredicate
+    (claim : ReverseSentinelScannerClaim) : PairedStatePredicate := {
+  original := .equal (.inputReg claim.originalCountRegister)
+    (.constant claim.table.entryCount)
+  candidate := .equal (.inputReg claim.candidateCountRegister)
+    (.constant claim.table.entryCount)
+}
+
+def normalizedFlagsPreserveInputs : Option FlagsExpr -> Bool
+  | none => true
+  | some flags =>
+      flags.carry == some (.inputFlag 0) &&
+        flags.parity == some (.inputFlag 2) &&
+        flags.auxiliary == some (.inputFlag 4) &&
+        flags.zero == some (.inputFlag 6) &&
+        flags.sign == some (.inputFlag 7) &&
+        flags.overflow == some (.inputFlag 11)
+
+def flagsZeroTestExpression (flags : Option FlagsExpr) (value : Expr) : Bool :=
+  match flags with
+  | some result => result.zero == some (.equal value (.constant 0))
+  | none => false
+
+theorem inputFlagSix_after_normalizedBehavior_eq_zeroTest
+    (state : MachineState) (behavior : NormalizedSymbolicBehavior) (value : Expr)
+    (checked : flagsZeroTestExpression behavior.flags value = true) :
+    (BoolExpr.inputFlag 6).eval
+        ((behavior.eval state).nextMachineState state) =
+      (BoolExpr.equal value (.constant 0)).eval state := by
+  cases flagsResult : behavior.flags with
+  | none => simp [flagsZeroTestExpression, flagsResult] at checked
+  | some flags =>
+      simp only [flagsZeroTestExpression, flagsResult, beq_iff_eq] at checked
+      cases evaluated : (BoolExpr.equal value (.constant 0)).eval state with
+      | false =>
+          have unequal : value.eval state ≠ (Expr.constant 0).eval state := by
+            simpa [BoolExpr.eval] using evaluated
+          simp [BoolExpr.eval, RelationalBehavior.nextMachineState,
+            NormalizedSymbolicBehavior.eval_eflags, flagsResult,
+            evalNormalizedFlags_some, FlagsExpr.eval_extract_zf, checked,
+            evalFlagBit, evaluated, unequal]
+      | true =>
+          have equal : value.eval state = (Expr.constant 0).eval state := by
+            simpa [BoolExpr.eval] using evaluated
+          simp [BoolExpr.eval, RelationalBehavior.nextMachineState,
+            NormalizedSymbolicBehavior.eval_eflags, flagsResult,
+            evalNormalizedFlags_some, FlagsExpr.eval_extract_zf, checked,
+            evalFlagBit, evaluated, equal]
+
+def ReverseSentinelScannerClaim.behaviorChecked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim) : Bool :=
+  originalBehavior.registers.get claim.originalCountRegister ==
+      .inputReg claim.originalScannerRegister &&
+    candidateBehavior.registers.get claim.candidateCountRegister ==
+      .inputReg claim.candidateScannerRegister &&
+    originalBehavior.registers.get claim.originalScannerRegister ==
+      claim.originalNextIndex &&
+    candidateBehavior.registers.get claim.candidateScannerRegister ==
+      claim.candidateNextIndex &&
+    originalBehavior.registers.get claim.originalLoadedRegister ==
+      claim.originalLoadedExpression &&
+    candidateBehavior.registers.get claim.candidateLoadedRegister ==
+      claim.candidateLoadedExpression &&
+    originalBehavior.writes.isEmpty &&
+    candidateBehavior.writes.isEmpty &&
+    flagsZeroTestExpression originalBehavior.flags claim.originalLoadedExpression &&
+    flagsZeroTestExpression candidateBehavior.flags claim.candidateLoadedExpression &&
+    originalBehavior.outcome == .jump claim.testTargetId &&
+    candidateBehavior.outcome == .jump claim.testTargetId
+
+def ReverseSentinelScannerClaim.testBehaviorChecked
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim) : Bool :=
+  originalBehavior.registers.get claim.originalScannerRegister ==
+      .inputReg claim.originalScannerRegister &&
+    candidateBehavior.registers.get claim.candidateScannerRegister ==
+      .inputReg claim.candidateScannerRegister &&
+    originalBehavior.registers.get claim.originalCountRegister ==
+      .inputReg claim.originalCountRegister &&
+    candidateBehavior.registers.get claim.candidateCountRegister ==
+      .inputReg claim.candidateCountRegister &&
+    originalBehavior.writes.isEmpty &&
+    candidateBehavior.writes.isEmpty &&
+    normalizedFlagsPreserveInputs originalBehavior.flags &&
+    normalizedFlagsPreserveInputs candidateBehavior.flags &&
+    originalBehavior.outcome == .branch claim.loopGuard claim.scannerTargetId
+      claim.bridgeTargetId &&
+    candidateBehavior.outcome == .branch claim.loopGuard claim.scannerTargetId
+      claim.bridgeTargetId
+
+def ReverseSentinelScannerClaim.loopChecked (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim) : Bool :=
+  sourceInvariant.predicates == [claim.postPredicate] &&
+    exactRegisterPair sourceInvariant.registerRelations
+      claim.originalScannerRegister claim.candidateScannerRegister &&
+    targetInvariant.bounds == [claim.sourceBound] &&
+    claim.zeroFlagBit == 6 &&
+    claim.testBehaviorChecked originalBehavior candidateBehavior
+
+def ReverseSentinelScannerClaim.exitChecked (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim) : Bool :=
+  sourceInvariant.predicates == [claim.postPredicate] &&
+    exactRegisterPair sourceInvariant.registerRelations
+      claim.originalCountRegister claim.candidateCountRegister &&
+    targetInvariant.predicates == [claim.finishedPredicate] &&
+    claim.zeroFlagBit == 6 &&
+    claim.testBehaviorChecked originalBehavior candidateBehavior
+
+def ReverseSentinelScannerClaim.guardChecked (sourceInvariant : StateInvariant)
+    (originalGuard candidateGuard : BoolExpr)
+    (claim : ReverseSentinelScannerClaim) : Bool :=
+  sourceInvariant.predicates == [claim.postPredicate] &&
+    exactRegisterPair sourceInvariant.registerRelations
+      claim.originalCountRegister claim.candidateCountRegister &&
+    ((originalGuard == claim.loopGuard && candidateGuard == claim.loopGuard) ||
+      (originalGuard == claim.exitGuard && candidateGuard == claim.exitGuard))
+
+def ReverseSentinelScannerClaim.checked (context : StaticProofContext)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim) : Bool :=
+  claim.table.layout == .sentinelTerminatedReverseCount &&
+    claim.table.staticShapeChecked context &&
+    claim.table.rowsChecked context &&
+    exactRegisterPair sourceInvariant.registerRelations
+      claim.originalScannerRegister claim.candidateScannerRegister &&
+    sourceInvariant.bounds.contains claim.sourceBound &&
+    targetInvariant.predicates == [claim.postPredicate] &&
+    claim.zeroFlagBit == 6 &&
+    claim.behaviorChecked originalBehavior candidateBehavior
+
+def ReverseSentinelScannerPostconditionClosed (context : StaticProofContext)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim) : Prop :=
+  ∀ world originalState candidateState,
+    StateRel context world sourceInvariant originalState candidateState →
+      pairedStatePredicatesHold targetInvariant.predicates
+        ((originalBehavior.eval originalState).nextMachineState originalState)
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState) = true
+
+theorem reverseSentinelScannerLoadedContract_of_checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (claim : ReverseSentinelScannerClaim)
+    (layoutChecked : claim.table.layout = .sentinelTerminatedReverseCount)
+    (staticShapeChecked : claim.table.staticShapeChecked context = true)
+    (rowsChecked : claim.table.rowsChecked context = true)
+    (exactScanners : exactRegisterPair sourceInvariant.registerRelations
+      claim.originalScannerRegister claim.candidateScannerRegister = true)
+    (boundMember : sourceInvariant.bounds.contains claim.sourceBound = true)
+    (world : RelationalWorld) (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList (context.relationalValueTargets world)
+        (claim.originalLoadedExpression.eval originalState)
+        (claim.candidateLoadedExpression.eval candidateState) = true ∧
+      (claim.originalLoadedExpression.eval originalState = BitVec.ofNat 32 0 ↔
+      (originalState.registers.get claim.originalScannerRegister).toNat =
+        claim.table.entryCount) ∧
+    (claim.candidateLoadedExpression.eval candidateState = BitVec.ofNat 32 0 ↔
+      (candidateState.registers.get claim.candidateScannerRegister).toNat =
+        claim.table.entryCount) := by
+  simp only [BoundedImmutableCodePointerTableCallClaim.staticShapeChecked,
+    Bool.and_eq_true] at staticShapeChecked
+  rcases staticShapeChecked with
+    ⟨⟨⟨⟨rowsCover, upperExclusiveChecked⟩, upperExclusivePositive⟩,
+      boundaryChecked⟩, tableShapeChecked⟩
+  have upperExclusiveSmall : claim.table.upperExclusive < 2 ^ 32 :=
+    of_decide_eq_true upperExclusiveChecked
+  have upperExclusivePositiveNat : 0 < claim.table.upperExclusive :=
+    of_decide_eq_true upperExclusivePositive
+  rcases related with
+    ⟨worldValid, stackRangesValid, stackMemory, importsStatic, importsComplete,
+      importsMemory, originalImmutable, candidateImmutable, relatedCore,
+      importAndDynamicRegisters⟩
+  have allBounds := relatedCore.2.1
+  simp only [boundsRelated, List.all_eq_true] at allBounds
+  have selectedBound := allBounds claim.sourceBound
+    (List.contains_iff_mem.mp boundMember)
+  simp only [ReverseSentinelScannerClaim.sourceBound, boundValue,
+    Bool.and_eq_true] at selectedBound
+  have originalBoundWord := of_decide_eq_true selectedBound.1
+  have candidateBoundWord := of_decide_eq_true selectedBound.2
+  have originalCursorBound :
+      (originalState.registers.get claim.originalScannerRegister).toNat <
+        claim.table.upperExclusive := by
+    simpa [BitVec.lt_def, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt upperExclusiveSmall] using originalBoundWord
+  have candidateCursorBound :
+      (candidateState.registers.get claim.candidateScannerRegister).toNat <
+        claim.table.upperExclusive := by
+    simpa [BitVec.lt_def, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt upperExclusiveSmall] using candidateBoundWord
+  have cursorEqual := registerRelationsHold_exact_pair
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList (context.relationalValueTargets world)
+    sourceInvariant.registerRelations originalState.registers candidateState.registers
+    claim.originalScannerRegister claim.candidateScannerRegister relatedCore.1 exactScanners
+  have cursorNatEqual :
+      (originalState.registers.get claim.originalScannerRegister).toNat =
+        (candidateState.registers.get claim.candidateScannerRegister).toNat := by
+    exact congrArg BitVec.toNat cursorEqual
+  have entryCountIdentity :
+      claim.table.entryCount = claim.table.upperExclusive - 1 := by
+    simp [BoundedImmutableCodePointerTableCallClaim.entryCount,
+      BoundedImmutableCodePointerTableCallClaim.lowerInclusive, layoutChecked,
+      ImmutableCodePointerTableLayout.lowerInclusive]
+  have entryCountFits : claim.table.entryCount < 2 ^ 32 := by omega
+  have entryIncrementWord :
+      BitVec.ofNat 32 claim.table.entryCount + BitVec.ofNat 32 1 =
+        BitVec.ofNat 32 (claim.table.entryCount + 1) := by
+    rw [← BitVec.ofNat_add]
+  have originalCursorWord :
+      originalState.registers.get claim.originalScannerRegister =
+        BitVec.ofNat 32
+          (originalState.registers.get claim.originalScannerRegister).toNat := by
+    simp
+  have candidateCursorWord :
+      candidateState.registers.get claim.candidateScannerRegister =
+        BitVec.ofNat 32
+          (candidateState.registers.get claim.candidateScannerRegister).toNat := by
+    simp
+  have originalNextIndexEvaluation :
+      claim.originalNextIndex.eval originalState =
+        BitVec.ofNat 32
+          ((originalState.registers.get claim.originalScannerRegister).toNat + 1) := by
+    simp only [ReverseSentinelScannerClaim.originalNextIndex, Expr.eval]
+    calc
+      originalState.registers.get claim.originalScannerRegister + BitVec.ofNat 32 1 =
+          BitVec.ofNat 32
+              (originalState.registers.get claim.originalScannerRegister).toNat +
+            BitVec.ofNat 32 1 :=
+        congrArg (fun value => value + BitVec.ofNat 32 1) originalCursorWord
+      _ = BitVec.ofNat 32
+          ((originalState.registers.get claim.originalScannerRegister).toNat + 1) := by
+        rw [← BitVec.ofNat_add]
+  have candidateNextIndexEvaluation :
+      claim.candidateNextIndex.eval candidateState =
+        BitVec.ofNat 32
+          ((candidateState.registers.get claim.candidateScannerRegister).toNat + 1) := by
+    simp only [ReverseSentinelScannerClaim.candidateNextIndex, Expr.eval]
+    calc
+      candidateState.registers.get claim.candidateScannerRegister + BitVec.ofNat 32 1 =
+          BitVec.ofNat 32
+              (candidateState.registers.get claim.candidateScannerRegister).toNat +
+            BitVec.ofNat 32 1 :=
+        congrArg (fun value => value + BitVec.ofNat 32 1) candidateCursorWord
+      _ = BitVec.ofNat 32
+          ((candidateState.registers.get claim.candidateScannerRegister).toNat + 1) := by
+        rw [← BitVec.ofNat_add]
+  by_cases interior :
+      (originalState.registers.get claim.originalScannerRegister).toNat <
+        claim.table.entryCount
+  · simp only [immutableCodePointerTableRowsCover, List.all_eq_true] at rowsCover
+    have selectedRow := rowsCover
+      (originalState.registers.get claim.originalScannerRegister).toNat
+      (List.mem_range.mpr interior)
+    simp only [List.any_eq_true] at selectedRow
+    rcases selectedRow with ⟨row, rowMember, rowIndexChecked⟩
+    have rowIndex : row.index =
+        (originalState.registers.get claim.originalScannerRegister).toNat + 1 := by
+      have rowIndexNat := beq_iff_eq.mp rowIndexChecked
+      simp [BoundedImmutableCodePointerTableCallClaim.lowerInclusive,
+        layoutChecked, ImmutableCodePointerTableLayout.lowerInclusive] at rowIndexNat
+      omega
+    simp only [BoundedImmutableCodePointerTableCallClaim.rowsChecked,
+      List.all_eq_true] at rowsChecked
+    have rowReads := immutableCodePointerTableRowReadsNonzero_of_checked
+      context claim.table row originalState.memory candidateState.memory
+      originalImmutable candidateImmutable (rowsChecked row rowMember)
+    rcases rowReads with
+      ⟨target, targetResult, originalRead, candidateRead, originalNonzero,
+        candidateNonzero, originalFits, candidateFits⟩
+    have originalAddressEvaluation :=
+      immutableCodePointerTableAddressExpression_eval_of_index
+        claim.table.originalBase
+        ((originalState.registers.get claim.originalScannerRegister).toNat + 1)
+        claim.originalNextIndex originalState originalNextIndexEvaluation
+    have candidateAddressEvaluation :=
+      immutableCodePointerTableAddressExpression_eval_of_index
+        claim.table.candidateBase
+        ((candidateState.registers.get claim.candidateScannerRegister).toNat + 1)
+        claim.candidateNextIndex candidateState candidateNextIndexEvaluation
+    have originalLoaded : claim.originalLoadedExpression.eval originalState =
+        BitVec.ofNat 32
+          (context.originalPe.imageBase + target.originalRva) := by
+      simp only [ReverseSentinelScannerClaim.originalLoadedExpression,
+        immutableCodePointerTableTargetExpression, Expr.eval,
+        machineStateRead32_eq_memoryRead32, originalAddressEvaluation]
+      rw [← rowIndex]
+      exact originalRead
+    have candidateRowIndex : row.index =
+        (candidateState.registers.get claim.candidateScannerRegister).toNat + 1 := by
+      omega
+    have candidateLoaded : claim.candidateLoadedExpression.eval candidateState =
+        BitVec.ofNat 32
+          (context.candidatePe.imageBase + target.candidateRva) := by
+      simp only [ReverseSentinelScannerClaim.candidateLoadedExpression,
+        immutableCodePointerTableTargetExpression, Expr.eval,
+        machineStateRead32_eq_memoryRead32, candidateAddressEvaluation]
+      rw [← candidateRowIndex]
+      exact candidateRead
+    have originalWordNonzero :
+        BitVec.ofNat 32 (context.originalPe.imageBase + target.originalRva) ≠
+          BitVec.ofNat 32 0 := by
+      intro zero
+      have naturalZero := congrArg BitVec.toNat zero
+      simp only [BitVec.toNat_ofNat] at naturalZero
+      rw [Nat.mod_eq_of_lt originalFits] at naturalZero
+      have zeroNat : context.originalPe.imageBase + target.originalRva = 0 := by
+        simpa only [Nat.zero_mod] using naturalZero
+      exact originalNonzero zeroNat
+    have candidateWordNonzero :
+        BitVec.ofNat 32 (context.candidatePe.imageBase + target.candidateRva) ≠
+          BitVec.ofNat 32 0 := by
+      intro zero
+      have naturalZero := congrArg BitVec.toNat zero
+      simp only [BitVec.toNat_ofNat] at naturalZero
+      rw [Nat.mod_eq_of_lt candidateFits] at naturalZero
+      have zeroNat : context.candidatePe.imageBase + target.candidateRva = 0 := by
+        simpa only [Nat.zero_mod] using naturalZero
+      exact candidateNonzero zeroNat
+    have originalZeroCheck :
+        (BitVec.ofNat 32 (context.originalPe.imageBase + target.originalRva) ==
+          BitVec.ofNat 32 0) = false :=
+      beq_eq_false_iff_ne.mpr originalWordNonzero
+    have candidateZeroCheck :
+        (BitVec.ofNat 32 (context.candidatePe.imageBase + target.candidateRva) ==
+          BitVec.ofNat 32 0) = false :=
+      beq_eq_false_iff_ne.mpr candidateWordNonzero
+    refine ⟨?_, ?_, ?_⟩
+    · rw [originalLoaded, candidateLoaded]
+      exact codeTargetAddresses_wordRelated context world row.targetId target
+        (BitVec.ofNat 32 (context.originalPe.imageBase + target.originalRva))
+        (BitVec.ofNat 32 (context.candidatePe.imageBase + target.candidateRva))
+        targetResult (by simp [codeAddressMatches]) (by simp [codeAddressMatches])
+        (by rw [originalZeroCheck, candidateZeroCheck])
+    · constructor
+      · intro zero
+        exact (originalWordNonzero (originalLoaded.symm.trans zero)).elim
+      · intro atTerminator
+        omega
+    · constructor
+      · intro zero
+        exact (candidateWordNonzero (candidateLoaded.symm.trans zero)).elim
+      · intro atTerminator
+        omega
+  · have originalAtTerminator :
+        (originalState.registers.get claim.originalScannerRegister).toNat =
+          claim.table.entryCount := by
+      omega
+    have candidateAtTerminator :
+        (candidateState.registers.get claim.candidateScannerRegister).toNat =
+          claim.table.entryCount := by
+      omega
+    simp only [BoundedImmutableCodePointerTableCallClaim.boundaryChecked,
+      layoutChecked, Bool.and_eq_true] at boundaryChecked
+    have originalTerminator := beq_iff_eq.mp boundaryChecked.1.1.1.1.1.2
+    have candidateTerminator := beq_iff_eq.mp boundaryChecked.1.1.1.1.2
+    have originalAddressEvaluation :=
+      immutableCodePointerTableAddressExpression_eval_of_index
+        claim.table.originalBase claim.table.upperExclusive
+        claim.originalNextIndex originalState (originalNextIndexEvaluation.trans (by
+          congr 1
+          omega))
+    have candidateAddressEvaluation :=
+      immutableCodePointerTableAddressExpression_eval_of_index
+        claim.table.candidateBase claim.table.upperExclusive
+        claim.candidateNextIndex candidateState (candidateNextIndexEvaluation.trans (by
+          congr 1
+          omega))
+    have originalRead := ImmutableImageWordMemory.read32_of_checked
+      context.originalPe originalState.memory
+      (claim.table.originalAddress claim.table.upperExclusive) 0
+      originalImmutable originalTerminator
+    have candidateRead := ImmutableImageWordMemory.read32_of_checked
+      context.candidatePe candidateState.memory
+      (claim.table.candidateAddress claim.table.upperExclusive) 0
+      candidateImmutable candidateTerminator
+    have originalLoaded : claim.originalLoadedExpression.eval originalState =
+        BitVec.ofNat 32 0 := by
+      simp only [ReverseSentinelScannerClaim.originalLoadedExpression,
+        immutableCodePointerTableTargetExpression, Expr.eval,
+        machineStateRead32_eq_memoryRead32, originalAddressEvaluation]
+      exact originalRead
+    have candidateLoaded : claim.candidateLoadedExpression.eval candidateState =
+        BitVec.ofNat 32 0 := by
+      simp only [ReverseSentinelScannerClaim.candidateLoadedExpression,
+        immutableCodePointerTableTargetExpression, Expr.eval,
+        machineStateRead32_eq_memoryRead32, candidateAddressEvaluation]
+      exact candidateRead
+    refine ⟨?_, ⟨fun _ => originalAtTerminator, fun _ => originalLoaded⟩,
+      ⟨fun _ => candidateAtTerminator, fun _ => candidateLoaded⟩⟩
+    rw [originalLoaded, candidateLoaded]
+    exact wordRelated_self context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      (BitVec.ofNat 32 0)
+
+theorem reverseSentinelScannerLoadedZeroExactlyAtTerminator_of_checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (claim : ReverseSentinelScannerClaim)
+    (layoutChecked : claim.table.layout = .sentinelTerminatedReverseCount)
+    (staticShapeChecked : claim.table.staticShapeChecked context = true)
+    (rowsChecked : claim.table.rowsChecked context = true)
+    (exactScanners : exactRegisterPair sourceInvariant.registerRelations
+      claim.originalScannerRegister claim.candidateScannerRegister = true)
+    (boundMember : sourceInvariant.bounds.contains claim.sourceBound = true)
+    (world : RelationalWorld) (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    (claim.originalLoadedExpression.eval originalState = BitVec.ofNat 32 0 ↔
+      (originalState.registers.get claim.originalScannerRegister).toNat =
+        claim.table.entryCount) ∧
+    (claim.candidateLoadedExpression.eval candidateState = BitVec.ofNat 32 0 ↔
+      (candidateState.registers.get claim.candidateScannerRegister).toNat =
+        claim.table.entryCount) :=
+  (reverseSentinelScannerLoadedContract_of_checked context sourceInvariant claim
+    layoutChecked staticShapeChecked rowsChecked exactScanners boundMember world
+    originalState candidateState related).2
+
+theorem reverseSentinelScannerLoadedOutputRelated_of_checked
+    (context : StaticProofContext) (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim)
+    (checked : claim.checked context sourceInvariant targetInvariant originalBehavior
+      candidateBehavior = true)
+    (world : RelationalWorld) (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    RegisterValueRelation.holds context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      (context.relationalValueTargets world) .relatedWord
+      ((originalBehavior.eval originalState).registers.get claim.originalLoadedRegister)
+      ((candidateBehavior.eval candidateState).registers.get claim.candidateLoadedRegister) =
+        true := by
+  simp only [ReverseSentinelScannerClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨⟨⟨⟨layoutChecked, staticShapeChecked⟩, rowsChecked⟩,
+      exactScanners⟩, boundMember⟩, _targetPredicates⟩, _zeroFlagBit⟩,
+      behaviorChecked⟩
+  simp only [ReverseSentinelScannerClaim.behaviorChecked, Bool.and_eq_true,
+    beq_iff_eq] at behaviorChecked
+  rcases behaviorChecked with
+    ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨_originalCountOutput,
+      _candidateCountOutput⟩, _originalScannerOutput⟩, _candidateScannerOutput⟩,
+      originalLoadedOutput⟩, candidateLoadedOutput⟩, _originalWritesEmpty⟩,
+      _candidateWritesEmpty⟩, _originalZeroFlag⟩, _candidateZeroFlag⟩,
+      _originalOutcome⟩, _candidateOutcome⟩
+  have loadedRelated :=
+    (reverseSentinelScannerLoadedContract_of_checked context sourceInvariant claim
+      layoutChecked staticShapeChecked rowsChecked exactScanners boundMember world
+      originalState candidateState related).1
+  simp only [RegisterValueRelation.holds, NormalizedSymbolicBehavior.eval,
+    evalNormalizedRegisters_get]
+  rw [originalLoadedOutput, candidateLoadedOutput]
+  exact loadedRelated
+
+theorem reverseSentinelScannerZeroFlagRelated_of_checked
+    (context : StaticProofContext) (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim)
+    (checked : claim.checked context sourceInvariant targetInvariant originalBehavior
+      candidateBehavior = true)
+    (world : RelationalWorld) (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    (evalNormalizedFlags originalState originalBehavior.flags).extractLsb' 6 1 =
+      (evalNormalizedFlags candidateState candidateBehavior.flags).extractLsb' 6 1 := by
+  simp only [ReverseSentinelScannerClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨⟨⟨⟨layoutChecked, staticShapeChecked⟩, rowsChecked⟩,
+      exactScanners⟩, boundMember⟩, _targetPredicates⟩, _zeroFlagBit⟩,
+      behaviorChecked⟩
+  simp only [ReverseSentinelScannerClaim.behaviorChecked, Bool.and_eq_true,
+    beq_iff_eq] at behaviorChecked
+  rcases behaviorChecked with
+    ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨_originalCountOutput,
+      _candidateCountOutput⟩, _originalScannerOutput⟩, _candidateScannerOutput⟩,
+      _originalLoadedOutput⟩, _candidateLoadedOutput⟩, _originalWritesEmpty⟩,
+      _candidateWritesEmpty⟩, originalZeroFlag⟩, candidateZeroFlag⟩,
+      _originalOutcome⟩, _candidateOutcome⟩
+  have loadedRelated :=
+    (reverseSentinelScannerLoadedContract_of_checked context sourceInvariant claim
+      layoutChecked staticShapeChecked rowsChecked exactScanners boundMember world
+      originalState candidateState related).1
+  have zeroesAgree := wordRelated_zero_equal loadedRelated
+  cases originalFlagsResult : originalBehavior.flags with
+  | none => simp [flagsZeroTestExpression, originalFlagsResult] at originalZeroFlag
+  | some originalFlags =>
+      cases candidateFlagsResult : candidateBehavior.flags with
+      | none => simp [flagsZeroTestExpression, candidateFlagsResult] at candidateZeroFlag
+      | some candidateFlags =>
+          simp only [flagsZeroTestExpression, originalFlagsResult, beq_iff_eq]
+            at originalZeroFlag
+          simp only [flagsZeroTestExpression, candidateFlagsResult, beq_iff_eq]
+            at candidateZeroFlag
+          simp only [originalFlagsResult, candidateFlagsResult, evalNormalizedFlags_some,
+            FlagsExpr.eval_extract_zf, originalZeroFlag, candidateZeroFlag, evalFlagBit]
+          have testsAgree :
+              (BoolExpr.equal claim.originalLoadedExpression (.constant 0)).eval
+                  originalState =
+                (BoolExpr.equal claim.candidateLoadedExpression (.constant 0)).eval
+                  candidateState := by
+            change
+              (claim.originalLoadedExpression.eval originalState == BitVec.ofNat 32 0) =
+                (claim.candidateLoadedExpression.eval candidateState == BitVec.ofNat 32 0)
+            exact zeroesAgree
+          rw [testsAgree]
+
+theorem reverseSentinelScannerPostconditionClosed_of_checked
+    (context : StaticProofContext) (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim)
+    (checked : claim.checked context sourceInvariant targetInvariant originalBehavior
+      candidateBehavior = true) :
+    ReverseSentinelScannerPostconditionClosed context sourceInvariant targetInvariant
+      originalBehavior candidateBehavior claim := by
+  simp only [ReverseSentinelScannerClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨⟨⟨⟨layoutChecked, staticShapeChecked⟩, rowsChecked⟩,
+      exactScanners⟩, boundMember⟩, targetPredicates⟩, zeroFlagBit⟩,
+      behaviorChecked⟩
+  simp only [ReverseSentinelScannerClaim.behaviorChecked, Bool.and_eq_true,
+    beq_iff_eq] at behaviorChecked
+  rcases behaviorChecked with
+    ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨originalCountOutput,
+      candidateCountOutput⟩, originalScannerOutput⟩, candidateScannerOutput⟩,
+      originalLoadedOutput⟩, candidateLoadedOutput⟩, originalWritesEmpty⟩,
+      candidateWritesEmpty⟩, originalZeroFlag⟩, candidateZeroFlag⟩,
+      originalOutcome⟩, candidateOutcome⟩
+  unfold ReverseSentinelScannerPostconditionClosed
+  intro world originalState candidateState related
+  have loadedZero :=
+    reverseSentinelScannerLoadedZeroExactlyAtTerminator_of_checked
+      context sourceInvariant claim layoutChecked staticShapeChecked rowsChecked
+      exactScanners boundMember world originalState candidateState related
+  have relatedForBounds := related
+  rcases relatedForBounds with
+    ⟨worldValid, stackRangesValid, stackMemory, importsStatic, importsComplete,
+      importsMemory, originalImmutable, candidateImmutable, relatedCore,
+      importAndDynamicRegisters⟩
+  simp only [BoundedImmutableCodePointerTableCallClaim.staticShapeChecked,
+    Bool.and_eq_true] at staticShapeChecked
+  have upperExclusiveChecked := staticShapeChecked.1.1.1.2
+  have upperExclusivePositive := staticShapeChecked.1.1.2
+  have upperExclusiveSmall : claim.table.upperExclusive < 2 ^ 32 :=
+    of_decide_eq_true upperExclusiveChecked
+  have upperExclusivePositiveNat : 0 < claim.table.upperExclusive :=
+    of_decide_eq_true upperExclusivePositive
+  have allBounds := relatedCore.2.1
+  simp only [boundsRelated, List.all_eq_true] at allBounds
+  have selectedBound := allBounds claim.sourceBound
+    (List.contains_iff_mem.mp boundMember)
+  simp only [ReverseSentinelScannerClaim.sourceBound, boundValue,
+    Bool.and_eq_true] at selectedBound
+  have originalBoundWord := of_decide_eq_true selectedBound.1
+  have candidateBoundWord := of_decide_eq_true selectedBound.2
+  have originalCursorBound :
+      (originalState.registers.get claim.originalScannerRegister).toNat <
+        claim.table.upperExclusive := by
+    simpa [BitVec.lt_def, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt upperExclusiveSmall] using originalBoundWord
+  have candidateCursorBound :
+      (candidateState.registers.get claim.candidateScannerRegister).toNat <
+        claim.table.upperExclusive := by
+    simpa [BitVec.lt_def, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt upperExclusiveSmall] using candidateBoundWord
+  have entryCountIdentity :
+      claim.table.entryCount = claim.table.upperExclusive - 1 := by
+    simp [BoundedImmutableCodePointerTableCallClaim.entryCount,
+      BoundedImmutableCodePointerTableCallClaim.lowerInclusive, layoutChecked,
+      ImmutableCodePointerTableLayout.lowerInclusive]
+  have entryCountFits : claim.table.entryCount < 2 ^ 32 := by omega
+  have entryIncrementWord :
+      BitVec.ofNat 32 claim.table.entryCount + BitVec.ofNat 32 1 =
+        BitVec.ofNat 32 (claim.table.entryCount + 1) := by
+    rw [← BitVec.ofNat_add]
+  let originalResult := originalBehavior.eval originalState
+  let candidateResult := candidateBehavior.eval candidateState
+  let originalNext := originalResult.nextMachineState originalState
+  let candidateNext := candidateResult.nextMachineState candidateState
+  have originalCountValue :
+      originalNext.registers.get claim.originalCountRegister =
+        originalState.registers.get claim.originalScannerRegister := by
+    simp [originalNext, originalResult, RelationalBehavior.nextMachineState,
+      NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get,
+      originalCountOutput, Expr.eval]
+  have candidateCountValue :
+      candidateNext.registers.get claim.candidateCountRegister =
+        candidateState.registers.get claim.candidateScannerRegister := by
+    simp [candidateNext, candidateResult, RelationalBehavior.nextMachineState,
+      NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get,
+      candidateCountOutput, Expr.eval]
+  have originalScannerValue :
+      originalNext.registers.get claim.originalScannerRegister =
+        claim.originalNextIndex.eval originalState := by
+    simp [originalNext, originalResult, RelationalBehavior.nextMachineState,
+      NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get,
+      originalScannerOutput]
+  have candidateScannerValue :
+      candidateNext.registers.get claim.candidateScannerRegister =
+        claim.candidateNextIndex.eval candidateState := by
+    simp [candidateNext, candidateResult, RelationalBehavior.nextMachineState,
+      NormalizedSymbolicBehavior.eval_registers, evalNormalizedRegisters_get,
+      candidateScannerOutput]
+  have originalFlagValue :=
+    inputFlagSix_after_normalizedBehavior_eq_zeroTest originalState originalBehavior
+      claim.originalLoadedExpression originalZeroFlag
+  have candidateFlagValue :=
+    inputFlagSix_after_normalizedBehavior_eq_zeroTest candidateState candidateBehavior
+      claim.candidateLoadedExpression candidateZeroFlag
+  have originalNextIndexEvaluation :
+      claim.originalNextIndex.eval originalState =
+        BitVec.ofNat 32
+          ((originalState.registers.get claim.originalScannerRegister).toNat + 1) := by
+    simp only [ReverseSentinelScannerClaim.originalNextIndex, Expr.eval]
+    calc
+      originalState.registers.get claim.originalScannerRegister + BitVec.ofNat 32 1 =
+          BitVec.ofNat 32
+              (originalState.registers.get claim.originalScannerRegister).toNat +
+            BitVec.ofNat 32 1 := by
+        congr 1
+        simp
+      _ = BitVec.ofNat 32
+          ((originalState.registers.get claim.originalScannerRegister).toNat + 1) := by
+        rw [← BitVec.ofNat_add]
+  have originalIncrementWord :
+      originalState.registers.get claim.originalScannerRegister + BitVec.ofNat 32 1 =
+        BitVec.ofNat 32
+          ((originalState.registers.get claim.originalScannerRegister).toNat + 1) := by
+    simpa [ReverseSentinelScannerClaim.originalNextIndex, Expr.eval] using
+      originalNextIndexEvaluation
+  have originalFlagBitValue :
+      (originalNext.eflags.extractLsb' 6 1 == BitVec.ofNat 1 1) =
+        decide (claim.originalLoadedExpression.eval originalState =
+          BitVec.ofNat 32 0) := by
+    simpa only [BoolExpr.eval] using originalFlagValue
+  have candidateNextIndexEvaluation :
+      claim.candidateNextIndex.eval candidateState =
+        BitVec.ofNat 32
+          ((candidateState.registers.get claim.candidateScannerRegister).toNat + 1) := by
+    simp only [ReverseSentinelScannerClaim.candidateNextIndex, Expr.eval]
+    calc
+      candidateState.registers.get claim.candidateScannerRegister + BitVec.ofNat 32 1 =
+          BitVec.ofNat 32
+              (candidateState.registers.get claim.candidateScannerRegister).toNat +
+            BitVec.ofNat 32 1 := by
+        congr 1
+        simp
+      _ = BitVec.ofNat 32
+          ((candidateState.registers.get claim.candidateScannerRegister).toNat + 1) := by
+        rw [← BitVec.ofNat_add]
+  have candidateIncrementWord :
+      candidateState.registers.get claim.candidateScannerRegister + BitVec.ofNat 32 1 =
+        BitVec.ofNat 32
+          ((candidateState.registers.get claim.candidateScannerRegister).toNat + 1) := by
+    simpa [ReverseSentinelScannerClaim.candidateNextIndex, Expr.eval] using
+      candidateNextIndexEvaluation
+  have candidateFlagBitValue :
+      (candidateNext.eflags.extractLsb' 6 1 == BitVec.ofNat 1 1) =
+        decide (claim.candidateLoadedExpression.eval candidateState =
+          BitVec.ofNat 32 0) := by
+    simpa only [BoolExpr.eval] using candidateFlagValue
+  rw [targetPredicates]
+  simp only [pairedStatePredicatesHold, List.all_cons, List.all_nil, Bool.and_true,
+    PairedStatePredicate.holds, Bool.and_eq_true]
+  constructor
+  · change claim.postPredicate.original.eval originalNext = true
+    rw [ReverseSentinelScannerClaim.postPredicate]
+    simp only [reverseSentinelScannerPostExpression, BoolExpr.eval, Expr.eval]
+    rw [zeroFlagBit]
+    simp only [originalCountValue, originalScannerValue, originalNextIndexEvaluation]
+    rw [originalFlagBitValue]
+    by_cases atTerminator :
+        (originalState.registers.get claim.originalScannerRegister).toNat =
+          claim.table.entryCount
+    · have loadedIsZero := loadedZero.1.mpr atTerminator
+      have countWordAtTerminator :
+          originalState.registers.get claim.originalScannerRegister =
+            BitVec.ofNat 32 claim.table.entryCount := by
+        calc
+          originalState.registers.get claim.originalScannerRegister =
+              BitVec.ofNat 32
+                (originalState.registers.get claim.originalScannerRegister).toNat := by
+            simp
+          _ = BitVec.ofNat 32 claim.table.entryCount := congrArg _ atTerminator
+      simp [loadedIsZero, atTerminator, originalIncrementWord,
+        countWordAtTerminator, Nat.mod_eq_of_lt entryCountFits,
+        entryIncrementWord]
+    · have loadedNotZero : claim.originalLoadedExpression.eval originalState ≠
+          BitVec.ofNat 32 0 := by
+        exact fun zero => atTerminator (loadedZero.1.mp zero)
+      have countWordNotTerminator :
+          originalState.registers.get claim.originalScannerRegister ≠
+            BitVec.ofNat 32 claim.table.entryCount := by
+        intro equal
+        apply atTerminator
+        have equalNat := congrArg BitVec.toNat equal
+        simpa [BitVec.toNat_ofNat, Nat.mod_eq_of_lt entryCountFits] using equalNat
+      have nextFits :
+          (originalState.registers.get claim.originalScannerRegister).toNat + 1 <
+            2 ^ 32 := by omega
+      have nextBeforeTerminator :
+          (originalState.registers.get claim.originalScannerRegister).toNat + 1 <
+            claim.table.upperExclusive := by omega
+      simp [loadedNotZero, BitVec.lt_def, BitVec.toNat_ofNat,
+        Nat.mod_eq_of_lt nextFits, Nat.mod_eq_of_lt upperExclusiveSmall,
+        nextBeforeTerminator, originalIncrementWord, countWordNotTerminator]
+  · change claim.postPredicate.candidate.eval candidateNext = true
+    rw [ReverseSentinelScannerClaim.postPredicate]
+    simp only [reverseSentinelScannerPostExpression, BoolExpr.eval, Expr.eval]
+    rw [zeroFlagBit]
+    simp only [candidateCountValue, candidateScannerValue, candidateNextIndexEvaluation]
+    rw [candidateFlagBitValue]
+    by_cases atTerminator :
+        (candidateState.registers.get claim.candidateScannerRegister).toNat =
+          claim.table.entryCount
+    · have loadedIsZero := loadedZero.2.mpr atTerminator
+      have countWordAtTerminator :
+          candidateState.registers.get claim.candidateScannerRegister =
+            BitVec.ofNat 32 claim.table.entryCount := by
+        calc
+          candidateState.registers.get claim.candidateScannerRegister =
+              BitVec.ofNat 32
+                (candidateState.registers.get claim.candidateScannerRegister).toNat := by
+            simp
+          _ = BitVec.ofNat 32 claim.table.entryCount := congrArg _ atTerminator
+      simp [loadedIsZero, atTerminator, candidateIncrementWord,
+        countWordAtTerminator, Nat.mod_eq_of_lt entryCountFits,
+        entryIncrementWord]
+    · have loadedNotZero : claim.candidateLoadedExpression.eval candidateState ≠
+          BitVec.ofNat 32 0 := by
+        exact fun zero => atTerminator (loadedZero.2.mp zero)
+      have countWordNotTerminator :
+          candidateState.registers.get claim.candidateScannerRegister ≠
+            BitVec.ofNat 32 claim.table.entryCount := by
+        intro equal
+        apply atTerminator
+        have equalNat := congrArg BitVec.toNat equal
+        simpa [BitVec.toNat_ofNat, Nat.mod_eq_of_lt entryCountFits] using equalNat
+      have nextFits :
+          (candidateState.registers.get claim.candidateScannerRegister).toNat + 1 <
+            2 ^ 32 := by omega
+      have nextBeforeTerminator :
+          (candidateState.registers.get claim.candidateScannerRegister).toNat + 1 <
+            claim.table.upperExclusive := by omega
+      simp [loadedNotZero, BitVec.lt_def, BitVec.toNat_ofNat,
+        Nat.mod_eq_of_lt nextFits, Nat.mod_eq_of_lt upperExclusiveSmall,
+        nextBeforeTerminator, candidateIncrementWord, countWordNotTerminator]
+
+theorem bool_eq_of_not_ne_eq_true (left right : Bool)
+    (checked : (!(left != right)) = true) : left = right := by
+  cases left <;> cases right <;> simp_all
+
+def ReverseSentinelScannerGuardAgreementClosed (context : StaticProofContext)
+    (sourceInvariant : StateInvariant) (originalGuard candidateGuard : BoolExpr)
+    (claim : ReverseSentinelScannerClaim) : Prop :=
+  ∀ world originalState candidateState,
+    StateRel context world sourceInvariant originalState candidateState →
+      originalGuard.eval originalState = candidateGuard.eval candidateState
+
+theorem reverseSentinelScannerGuardsAgree_of_checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalGuard candidateGuard : BoolExpr)
+    (claim : ReverseSentinelScannerClaim)
+    (checked : claim.guardChecked sourceInvariant originalGuard candidateGuard = true) :
+    ReverseSentinelScannerGuardAgreementClosed context sourceInvariant
+      originalGuard candidateGuard claim := by
+  simp only [ReverseSentinelScannerClaim.guardChecked, Bool.and_eq_true,
+    Bool.or_eq_true, beq_iff_eq] at checked
+  rcases checked with ⟨⟨sourcePredicates, exactCounts⟩, guardShape⟩
+  unfold ReverseSentinelScannerGuardAgreementClosed
+  intro world originalState candidateState related
+  have predicates := related.predicatesHold
+  rw [sourcePredicates] at predicates
+  simp only [pairedStatePredicatesHold, List.all_cons, List.all_nil,
+    Bool.and_true, PairedStatePredicate.holds, Bool.and_eq_true] at predicates
+  have originalPost := predicates.1
+  have candidatePost := predicates.2
+  simp only [ReverseSentinelScannerClaim.postPredicate,
+    reverseSentinelScannerPostExpression, BoolExpr.eval, Expr.eval,
+    Bool.and_eq_true, Bool.or_eq_true] at originalPost candidatePost
+  have countEqual := registerRelationsHold_exact_pair
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList (context.relationalValueTargets world)
+    sourceInvariant.registerRelations originalState.registers candidateState.registers
+    claim.originalCountRegister claim.candidateCountRegister
+    related.2.2.2.2.2.2.2.2.1.1 exactCounts
+  have countTestsEqual :
+      (BoolExpr.equal (.inputReg claim.originalCountRegister)
+          (.constant claim.table.entryCount)).eval originalState =
+        (BoolExpr.equal (.inputReg claim.candidateCountRegister)
+          (.constant claim.table.entryCount)).eval candidateState := by
+    simp [BoolExpr.eval, Expr.eval, countEqual]
+  have originalFlagMatchesCount :
+      (BoolExpr.inputFlag claim.zeroFlagBit).eval originalState =
+        (BoolExpr.equal (.inputReg claim.originalCountRegister)
+          (.constant claim.table.entryCount)).eval originalState := by
+    exact bool_eq_of_not_ne_eq_true _ _ originalPost.2.1
+  have candidateFlagMatchesCount :
+      (BoolExpr.inputFlag claim.zeroFlagBit).eval candidateState =
+        (BoolExpr.equal (.inputReg claim.candidateCountRegister)
+          (.constant claim.table.entryCount)).eval candidateState := by
+    exact bool_eq_of_not_ne_eq_true _ _ candidatePost.2.1
+  have flagsEqual :
+      (BoolExpr.inputFlag claim.zeroFlagBit).eval originalState =
+        (BoolExpr.inputFlag claim.zeroFlagBit).eval candidateState :=
+    originalFlagMatchesCount.trans
+      (countTestsEqual.trans candidateFlagMatchesCount.symm)
+  rcases guardShape with loopShape | exitShape
+  · rcases loopShape with ⟨originalShape, candidateShape⟩
+    rw [originalShape, candidateShape]
+    simpa only [ReverseSentinelScannerClaim.loopGuard, BoolExpr.eval] using
+      congrArg Bool.not flagsEqual
+  · rcases exitShape with ⟨originalShape, candidateShape⟩
+    rw [originalShape, candidateShape]
+    simpa only [ReverseSentinelScannerClaim.exitGuard,
+      ReverseSentinelScannerClaim.loopGuard, BoolExpr.eval] using
+      congrArg Bool.not (congrArg Bool.not flagsEqual)
+
+def ReverseSentinelScannerLoopBoundClosed (context : StaticProofContext)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim) : Prop :=
+  ∀ world originalState candidateState,
+    StateRel context world sourceInvariant originalState candidateState →
+      claim.loopGuard.eval originalState = true →
+      boundsRelated targetInvariant.bounds
+        (originalBehavior.eval originalState).registers
+        (candidateBehavior.eval candidateState).registers = true
+
+theorem reverseSentinelScannerLoopBoundClosed_of_checked
+    (context : StaticProofContext) (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim)
+    (checked : claim.loopChecked sourceInvariant targetInvariant originalBehavior
+      candidateBehavior = true) :
+    ReverseSentinelScannerLoopBoundClosed context sourceInvariant targetInvariant
+      originalBehavior candidateBehavior claim := by
+  simp only [ReverseSentinelScannerClaim.loopChecked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨sourcePredicates, exactScanners⟩, targetBounds⟩, zeroFlagBit⟩,
+      behaviorChecked⟩
+  simp only [ReverseSentinelScannerClaim.testBehaviorChecked, Bool.and_eq_true,
+    beq_iff_eq] at behaviorChecked
+  rcases behaviorChecked with
+    ⟨⟨⟨⟨⟨⟨⟨⟨⟨originalScannerIdentity, candidateScannerIdentity⟩,
+      _originalCountIdentity⟩, _candidateCountIdentity⟩, _originalWritesEmpty⟩,
+      _candidateWritesEmpty⟩, _originalFlagsNone⟩, _candidateFlagsNone⟩,
+      _originalOutcome⟩, _candidateOutcome⟩
+  unfold ReverseSentinelScannerLoopBoundClosed
+  intro world originalState candidateState related guardTrue
+  have predicates := related.predicatesHold
+  rw [sourcePredicates] at predicates
+  simp only [pairedStatePredicatesHold, List.all_cons, List.all_nil,
+    Bool.and_true, PairedStatePredicate.holds, Bool.and_eq_true] at predicates
+  have originalPost := predicates.1
+  simp only [ReverseSentinelScannerClaim.postPredicate,
+    reverseSentinelScannerPostExpression, BoolExpr.eval, Expr.eval,
+    Bool.and_eq_true, Bool.or_eq_true] at originalPost
+  have originalFlagFalse :
+      (BoolExpr.inputFlag claim.zeroFlagBit).eval originalState = false := by
+    simpa [ReverseSentinelScannerClaim.loopGuard, BoolExpr.eval] using guardTrue
+  have originalFlagFalseRaw :
+      (originalState.eflags.extractLsb' claim.zeroFlagBit 1 ==
+        BitVec.ofNat 1 1) = false := by
+    simpa only [BoolExpr.eval] using originalFlagFalse
+  have originalBound :
+      decide (originalState.registers.get claim.originalScannerRegister <
+        BitVec.ofNat 32 claim.table.upperExclusive) = true := by
+    rcases originalPost.2.2 with nonzero | zero
+    · exact nonzero.2
+    · rw [originalFlagFalseRaw] at zero
+      simp at zero
+  have scannerEqual := registerRelationsHold_exact_pair
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList (context.relationalValueTargets world)
+    sourceInvariant.registerRelations originalState.registers candidateState.registers
+    claim.originalScannerRegister claim.candidateScannerRegister
+    related.2.2.2.2.2.2.2.2.1.1 exactScanners
+  have originalResultScanner :
+      (originalBehavior.eval originalState).registers.get
+          claim.originalScannerRegister =
+        originalState.registers.get claim.originalScannerRegister := by
+    simp [NormalizedSymbolicBehavior.eval_registers,
+      evalNormalizedRegisters_get, originalScannerIdentity, Expr.eval]
+  have candidateResultScanner :
+      (candidateBehavior.eval candidateState).registers.get
+          claim.candidateScannerRegister =
+        candidateState.registers.get claim.candidateScannerRegister := by
+    simp [NormalizedSymbolicBehavior.eval_registers,
+      evalNormalizedRegisters_get, candidateScannerIdentity, Expr.eval]
+  rw [targetBounds]
+  simp only [boundsRelated, List.all_cons, List.all_nil, Bool.and_true,
+    ReverseSentinelScannerClaim.sourceBound, boundValue, originalResultScanner,
+    candidateResultScanner, Bool.and_eq_true]
+  exact ⟨originalBound, by simpa [← scannerEqual] using originalBound⟩
+
+def ReverseSentinelScannerFinishedPostconditionClosed (context : StaticProofContext)
+    (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim) : Prop :=
+  ∀ world originalState candidateState,
+    StateRel context world sourceInvariant originalState candidateState →
+      claim.exitGuard.eval originalState = true →
+      pairedStatePredicatesHold targetInvariant.predicates
+        ((originalBehavior.eval originalState).nextMachineState originalState)
+        ((candidateBehavior.eval candidateState).nextMachineState candidateState) = true
+
+theorem reverseSentinelScannerFinishedPostconditionClosed_of_checked
+    (context : StaticProofContext) (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim)
+    (checked : claim.exitChecked sourceInvariant targetInvariant originalBehavior
+      candidateBehavior = true) :
+    ReverseSentinelScannerFinishedPostconditionClosed context sourceInvariant targetInvariant
+      originalBehavior candidateBehavior claim := by
+  simp only [ReverseSentinelScannerClaim.exitChecked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨sourcePredicates, exactCounts⟩, targetPredicates⟩, zeroFlagBit⟩,
+      behaviorChecked⟩
+  simp only [ReverseSentinelScannerClaim.testBehaviorChecked, Bool.and_eq_true,
+    beq_iff_eq] at behaviorChecked
+  rcases behaviorChecked with
+    ⟨⟨⟨⟨⟨⟨⟨⟨⟨_originalScannerIdentity, _candidateScannerIdentity⟩,
+      originalCountIdentity⟩, candidateCountIdentity⟩, _originalWritesEmpty⟩,
+      _candidateWritesEmpty⟩, _originalFlagsNone⟩, _candidateFlagsNone⟩,
+      _originalOutcome⟩, _candidateOutcome⟩
+  unfold ReverseSentinelScannerFinishedPostconditionClosed
+  intro world originalState candidateState related guardTrue
+  have predicates := related.predicatesHold
+  rw [sourcePredicates] at predicates
+  simp only [pairedStatePredicatesHold, List.all_cons, List.all_nil,
+    Bool.and_true, PairedStatePredicate.holds, Bool.and_eq_true] at predicates
+  have originalPost := predicates.1
+  simp only [ReverseSentinelScannerClaim.postPredicate,
+    reverseSentinelScannerPostExpression, BoolExpr.eval, Expr.eval,
+    Bool.and_eq_true, Bool.or_eq_true] at originalPost
+  have originalFlagTrue :
+      (BoolExpr.inputFlag claim.zeroFlagBit).eval originalState = true := by
+    simpa [ReverseSentinelScannerClaim.exitGuard,
+      ReverseSentinelScannerClaim.loopGuard, BoolExpr.eval] using guardTrue
+  have originalFlagTrueRaw :
+      (originalState.eflags.extractLsb' claim.zeroFlagBit 1 ==
+        BitVec.ofNat 1 1) = true := by
+    simpa only [BoolExpr.eval] using originalFlagTrue
+  have originalFinished :
+      decide (originalState.registers.get claim.originalCountRegister =
+        BitVec.ofNat 32 claim.table.entryCount) = true := by
+    rcases originalPost.2.2 with nonzero | zero
+    · rw [originalFlagTrueRaw] at nonzero
+      simp at nonzero
+    · exact zero.2
+  have countEqual := registerRelationsHold_exact_pair
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList (context.relationalValueTargets world)
+    sourceInvariant.registerRelations originalState.registers candidateState.registers
+    claim.originalCountRegister claim.candidateCountRegister
+    related.2.2.2.2.2.2.2.2.1.1 exactCounts
+  have originalResultCount :
+      (originalBehavior.eval originalState).registers.get
+          claim.originalCountRegister =
+        originalState.registers.get claim.originalCountRegister := by
+    simp [NormalizedSymbolicBehavior.eval_registers,
+      evalNormalizedRegisters_get, originalCountIdentity, Expr.eval]
+  have candidateResultCount :
+      (candidateBehavior.eval candidateState).registers.get
+          claim.candidateCountRegister =
+        candidateState.registers.get claim.candidateCountRegister := by
+    simp [NormalizedSymbolicBehavior.eval_registers,
+      evalNormalizedRegisters_get, candidateCountIdentity, Expr.eval]
+  rw [targetPredicates]
+  simp only [pairedStatePredicatesHold, List.all_cons, List.all_nil,
+    Bool.and_true, PairedStatePredicate.holds,
+    ReverseSentinelScannerClaim.finishedPredicate, BoolExpr.eval, Expr.eval,
+    RelationalBehavior.nextMachineState, originalResultCount,
+    candidateResultCount, Bool.and_eq_true]
+  exact ⟨originalFinished, by simpa [← countEqual] using originalFinished⟩
 
 structure StaticWordSlotIndirectCallTargetClaim where
   targetId : Nat
@@ -2933,6 +4431,60 @@ theorem immutableIndirectJumpTargetsClosed_of_checked
       simp [NormalizedOutcomeExpr.eval, originalTarget]
     · rw [candidateOutcome]
       simp [NormalizedOutcomeExpr.eval, candidateTarget]
+
+structure FixedCodeAddressIndirectJumpTargetClaim where
+  targetId : Nat
+  originalTarget : Nat
+  candidateTarget : Nat
+deriving Repr, DecidableEq
+
+def FixedCodeAddressIndirectJumpTargetClaim.checked
+    (context : StaticProofContext)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : FixedCodeAddressIndirectJumpTargetClaim) : Bool :=
+  match context.codeMap.get? claim.targetId with
+  | none => false
+  | some target =>
+      claim.originalTarget == context.originalPe.imageBase + target.originalRva &&
+        claim.candidateTarget == context.candidatePe.imageBase + target.candidateRva &&
+        originalBehavior.outcome == .indirectJump
+          (.constant claim.originalTarget) &&
+        candidateBehavior.outcome == .indirectJump
+          (.constant claim.candidateTarget)
+
+def FixedCodeAddressIndirectJumpTargetsClosed
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : FixedCodeAddressIndirectJumpTargetClaim) : Prop :=
+  match context.codeMap.get? claim.targetId with
+  | none => False
+  | some target =>
+      ∀ world originalState candidateState,
+        StateRel context world sourceInvariant originalState candidateState →
+        originalBehavior.outcome.eval originalState = .indirectJump
+            (BitVec.ofNat 32 (context.originalPe.imageBase + target.originalRva)) ∧
+          candidateBehavior.outcome.eval candidateState = .indirectJump
+            (BitVec.ofNat 32 (context.candidatePe.imageBase + target.candidateRva))
+
+theorem fixedCodeAddressIndirectJumpTargetsClosed_of_checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : FixedCodeAddressIndirectJumpTargetClaim)
+    (checked : claim.checked context originalBehavior candidateBehavior = true) :
+    FixedCodeAddressIndirectJumpTargetsClosed context sourceInvariant originalBehavior
+      candidateBehavior claim := by
+  cases targetResult : context.codeMap.get? claim.targetId with
+  | none =>
+      simp [FixedCodeAddressIndirectJumpTargetClaim.checked, targetResult] at checked
+  | some target =>
+      simp only [FixedCodeAddressIndirectJumpTargetClaim.checked, targetResult,
+        Bool.and_eq_true, beq_iff_eq] at checked
+      simp only [FixedCodeAddressIndirectJumpTargetsClosed, targetResult]
+      rcases checked with
+        ⟨⟨⟨originalTarget, candidateTarget⟩, originalOutcome⟩, candidateOutcome⟩
+      intro world originalState candidateState related
+      rw [originalOutcome, candidateOutcome, originalTarget, candidateTarget]
+      simp [NormalizedOutcomeExpr.eval, Expr.eval]
 
 structure DynamicRangeIndirectCallClaim where
   rangeRelation : DynamicRegisterRangeRelation
@@ -6111,6 +7663,10 @@ def normalizedParityIsInput : Option FlagsExpr -> Bool
   | none => true
   | some flags => flags.parity == some (.inputFlag 2)
 
+def normalizedAuxiliaryIsInput : Option FlagsExpr -> Bool
+  | none => true
+  | some flags => flags.auxiliary == some (.inputFlag 4)
+
 def normalizedZeroIsInput : Option FlagsExpr -> Bool
   | none => true
   | some flags => flags.zero == some (.inputFlag 6)
@@ -6168,6 +7724,19 @@ theorem evalNormalizedFlags_extract_pf_input_of_checked
   | some flags =>
       simp only [normalizedParityIsInput, beq_iff_eq] at checked
       simp only [evalNormalizedFlags_some, FlagsExpr.eval_extract_pf, checked,
+        evalFlagBit, BoolExpr.eval]
+      exact oneBitConditionalReconstructs _
+
+theorem evalNormalizedFlags_extract_af_input_of_checked
+    (state : MachineState) (flags : Option FlagsExpr)
+    (checked : normalizedAuxiliaryIsInput flags = true) :
+    (evalNormalizedFlags state flags).extractLsb' 4 1 =
+      state.eflags.extractLsb' 4 1 := by
+  cases flags with
+  | none => rfl
+  | some flags =>
+      simp only [normalizedAuxiliaryIsInput, beq_iff_eq] at checked
+      simp only [evalNormalizedFlags_some, FlagsExpr.eval_extract_af, checked,
         evalFlagBit, BoolExpr.eval]
       exact oneBitConditionalReconstructs _
 
@@ -6488,7 +8057,7 @@ def RelatedWordZeroGuardClaim.checked (sourceInvariant : StateInvariant)
     (originalGuard candidateGuard : BoolExpr)
     (claim : RelatedWordZeroGuardClaim) : Bool :=
   sourceInvariant.registerRelations.contains claim.relation &&
-    (claim.valueRelation == .exact || claim.valueRelation == .relatedWord) &&
+    (claim.valueRelation.impliesExact || claim.valueRelation == .relatedWord) &&
     originalGuard == relatedWordZeroGuardWithNots claim.originalRegister claim.notCount &&
     candidateGuard == relatedWordZeroGuardWithNots claim.candidateRegister claim.notCount
 
@@ -6500,7 +8069,7 @@ theorem relatedWordZeroGuard_eval_equal_of_checked
     (originalState candidateState : MachineState)
     (related : StateRel context world sourceInvariant originalState candidateState) :
     originalGuard.eval originalState = candidateGuard.eval candidateState := by
-  simp only [RelatedWordZeroGuardClaim.checked, Bool.and_eq_true,
+  simp only [RelatedWordZeroGuardClaim.checked, Bool.and_eq_true, Bool.or_eq_true,
     beq_iff_eq] at checked
   rcases checked with
     ⟨⟨⟨relationMember, supportedRelation⟩, originalGuardExact⟩,
@@ -6520,32 +8089,28 @@ theorem relatedWordZeroGuard_eval_equal_of_checked
   have zeroIff :
       originalState.registers.get claim.originalRegister = BitVec.ofNat 32 0 ↔
         candidateState.registers.get claim.candidateRegister = BitVec.ofNat 32 0 := by
-    cases relationKind : claim.valueRelation with
-    | exact =>
-        rw [relationKind] at relationHolds
-        simp only [RegisterValueRelation.holds] at relationHolds
-        have registersEqual := beq_iff_eq.mp relationHolds
-        rw [registersEqual]
-    | relatedWord =>
-        rw [relationKind] at relationHolds
-        simp only [RegisterValueRelation.holds] at relationHolds
-        have zeroEqual := wordRelated_zero_equal relationHolds
-        constructor
-        · intro originalZero
-          have originalCheck :
-              (originalState.registers.get claim.originalRegister == BitVec.ofNat 32 0) =
-                true := beq_iff_eq.mpr originalZero
-          rw [zeroEqual] at originalCheck
-          exact beq_iff_eq.mp originalCheck
-        · intro candidateZero
-          have candidateCheck :
-              (candidateState.registers.get claim.candidateRegister == BitVec.ofNat 32 0) =
-                true := beq_iff_eq.mpr candidateZero
-          rw [← zeroEqual] at candidateCheck
-          exact beq_iff_eq.mp candidateCheck
-    | codePointer => simp [relationKind] at supportedRelation
-    | fixedCodePointer _ => simp [relationKind] at supportedRelation
-    | dataPointer => simp [relationKind] at supportedRelation
+    rcases supportedRelation with exactLike | relatedRelation
+    · have registersEqual := RegisterValueRelation.holds_eq_of_impliesExact
+        context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList (context.relationalValueTargets world)
+        claim.valueRelation _ _ exactLike relationHolds
+      rw [registersEqual]
+    · rw [relatedRelation] at relationHolds
+      simp only [RegisterValueRelation.holds] at relationHolds
+      have zeroEqual := wordRelated_zero_equal relationHolds
+      constructor
+      · intro originalZero
+        have originalCheck :
+            (originalState.registers.get claim.originalRegister == BitVec.ofNat 32 0) =
+              true := beq_iff_eq.mpr originalZero
+        rw [zeroEqual] at originalCheck
+        exact beq_iff_eq.mp originalCheck
+      · intro candidateZero
+        have candidateCheck :
+            (candidateState.registers.get claim.candidateRegister == BitVec.ofNat 32 0) =
+              true := beq_iff_eq.mpr candidateZero
+        rw [← zeroEqual] at candidateCheck
+        exact beq_iff_eq.mp candidateCheck
   rw [originalGuardExact, candidateGuardExact]
   apply applyBoolNots_eval_equal claim.notCount
   simpa [relatedWordZeroGuard, BoolExpr.eval, Expr.eval] using zeroIff
@@ -6642,6 +8207,16 @@ def immutableIndirectJumpEdgesMatch (graph : RelationalProductGraph) (nodeId : N
   | none => false
   | some node =>
       let expected := some [RelationalDecodedControlEdge.mk .jump claim.targetId
+        unconditionalProductGuard]
+      graph.resolveOutgoingControlEdges false node.outgoingEdgeIds == expected &&
+        graph.resolveOutgoingControlEdges true node.outgoingEdgeIds == expected
+
+def fixedCodeAddressIndirectJumpEdgesMatch (graph : RelationalProductGraph)
+    (nodeId targetId : Nat) : Bool :=
+  match graph.getNode? nodeId with
+  | none => false
+  | some node =>
+      let expected := some [RelationalDecodedControlEdge.mk .jump targetId
         unconditionalProductGuard]
       graph.resolveOutgoingControlEdges false node.outgoingEdgeIds == expected &&
         graph.resolveOutgoingControlEdges true node.outgoingEdgeIds == expected
@@ -6797,6 +8372,25 @@ def NodeImmutableIndirectJumpEdgesComplete (graph : RelationalProductGraph)
     ImmutableIndirectJumpTargetsClosed context region.inputInvariant originalNormalized
       candidateNormalized claim
 
+def NodeFixedCodeAddressIndirectJumpEdgesComplete
+    (graph : RelationalProductGraph) (nodeId : Nat) (context : StaticProofContext)
+    (region : RegionRelation) (originalBehavior candidateBehavior : SymbolicBehavior)
+    (originalNormalized candidateNormalized : NormalizedSymbolicBehavior)
+    (claim : FixedCodeAddressIndirectJumpTargetClaim) : Prop :=
+  regionBehaviorWithMachineCallContracts context.originalPe context.originalImports
+      context.machineImportCallContracts region.original =
+      some originalBehavior ∧
+    regionBehaviorWithMachineCallContracts context.candidatePe context.candidateImports
+      context.machineImportCallContracts region.candidate =
+      some candidateBehavior ∧
+    normalizeSymbolicBehavior false region.targets originalBehavior =
+      some originalNormalized ∧
+    normalizeSymbolicBehavior true region.targets candidateBehavior =
+      some candidateNormalized ∧
+    fixedCodeAddressIndirectJumpEdgesMatch graph nodeId claim.targetId = true ∧
+    FixedCodeAddressIndirectJumpTargetsClosed context region.inputInvariant
+      originalNormalized candidateNormalized claim
+
 def NodeImportRegisterIndirectCallEdgesComplete (graph : RelationalProductGraph)
     (nodeId : Nat) (context : StaticProofContext) (region : RegionRelation)
     (originalBehavior candidateBehavior : SymbolicBehavior)
@@ -6878,7 +8472,10 @@ def NodeControlEdgesComplete (graph : RelationalProductGraph) (nodeId : Nat)
         candidateBehavior originalNormalized candidateNormalized claim firstEdgeId) ∨
     (∃ originalNormalized candidateNormalized claim,
       NodeImmutableIndirectJumpEdgesComplete graph nodeId context region originalBehavior
-        candidateBehavior originalNormalized candidateNormalized claim)
+        candidateBehavior originalNormalized candidateNormalized claim) ∨
+    (∃ originalNormalized candidateNormalized claim,
+      NodeFixedCodeAddressIndirectJumpEdgesComplete graph nodeId context region
+        originalBehavior candidateBehavior originalNormalized candidateNormalized claim)
 
 def strictlyIncreasingNatsAux : Option Nat -> List Nat -> Bool
   | _, [] => true

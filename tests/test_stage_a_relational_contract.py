@@ -1,10 +1,12 @@
+import copy
+
 from tests.stage_a_relational_support import *
 from spaghetti_extractor.relational.executor import _precompiled_kernel_olean
 from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
 
 
 class StageARelationalContractTests(StageARelationalTestBase):
-    def test_fixed_code_pointer_region_relations_are_normalized(self):
+    def test_parameterized_region_relations_are_normalized(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = _parse_stage_a_pe(
@@ -35,6 +37,10 @@ class StageARelationalContractTests(StageARelationalTestBase):
                     "original": "esi", "candidate": "esi",
                     "relation": "fixed_code_pointer", "target_id": 0,
                 },
+                {
+                    "original": "edi", "candidate": "edi",
+                    "relation": "fixed_word", "value": 0x12345678,
+                },
             ]
             contract["regions"][0]["input_relations"] = relations
             contract["regions"][0]["output_relations"] = relations
@@ -44,6 +50,44 @@ class StageARelationalContractTests(StageARelationalTestBase):
             self.assertEqual(issues, [])
             self.assertEqual(normalized["regions"][0]["input_relations"], relations)
             self.assertEqual(normalized["regions"][0]["output_relations"], relations)
+
+    def test_fixed_word_region_relations_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = _parse_stage_a_pe(
+                self._write_pe(root / "original.exe", b"\xc3")
+            )
+            candidate = _parse_stage_a_pe(
+                self._write_pe(root / "candidate.exe", b"\xc3")
+            )
+            contract_path = self._write_contract(
+                root / "relation.json", region_size=1,
+            )
+            base = json.loads(contract_path.read_text(encoding="utf-8"))
+            valid = {
+                "original": "edx", "candidate": "edx",
+                "relation": "fixed_word", "value": 0x80,
+            }
+            malformed = {
+                "missing": {key: value for key, value in valid.items()
+                            if key != "value"},
+                "negative": {**valid, "value": -1},
+                "overflow": {**valid, "value": 2**32},
+                "boolean": {**valid, "value": True},
+                "target_id": {**valid, "target_id": 0},
+                "value_on_exact": {**valid, "relation": "exact"},
+            }
+            for name, relation in malformed.items():
+                with self.subTest(name=name):
+                    contract = json.loads(json.dumps(base))
+                    contract["regions"][0]["input_relations"] = [relation]
+                    _normalized, issues = _normalize_contract(
+                        contract, original, candidate,
+                    )
+                    self.assertIn(
+                        "register_relation_invalid",
+                        {issue["category"] for issue in issues},
+                    )
 
     def test_fixed_code_pointer_region_relations_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -414,6 +458,13 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 "original": {"rva_start": 0x1010},
                 "candidate": {"rva_start": 0x1020},
             },
+            {
+                "id": "other-target",
+                "numeric_id": 2,
+                "root": False,
+                "original": {"rva_start": 0x1030},
+                "candidate": {"rva_start": 0x1040},
+            },
         ]
         contract = {
             "regions": regions,
@@ -425,6 +476,10 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 {
                     "id": 1, "region_index": 1,
                     "original_rva": 0x1010, "candidate_rva": 0x1020,
+                },
+                {
+                    "id": 2, "region_index": 2,
+                    "original_rva": 0x1030, "candidate_rva": 0x1040,
                 },
             ],
         }
@@ -448,6 +503,10 @@ class StageARelationalContractTests(StageARelationalTestBase):
                     "original_ir": {"outcome": returned_outcome},
                     "candidate_ir": {"outcome": returned_outcome},
                 },
+                {
+                    "original_ir": {"outcome": returned_outcome},
+                    "candidate_ir": {"outcome": returned_outcome},
+                },
             ],
             {"edges": []},
             [],
@@ -456,7 +515,9 @@ class StageARelationalContractTests(StageARelationalTestBase):
         )
 
         self.assertEqual(graph["evidence"]["declared_reachable_node_ids"], [0])
-        self.assertEqual(graph["evidence"]["potential_reachable_node_ids"], [0, 1])
+        self.assertEqual(
+            graph["evidence"]["potential_reachable_node_ids"], [0, 1, 2]
+        )
         self.assertEqual(graph["evidence"]["potential_control_cuts"], [{
             "node_id": 0,
             "operations": ["indirect_call"],
@@ -465,15 +526,16 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 "register_word_without_producer_certificate"
             ),
             "provenance": ["register_word_without_producer_certificate"],
-            "potential_target_count": 2,
+            "potential_target_count": 3,
+            "potential_target_node_ids": [0, 1, 2],
             "target_scope": "all_canonical_code_targets",
         }])
         self.assertTrue(
             graph["counts"]["reachability_truncated_by_control_frontier"]
         )
-        self.assertEqual(graph["counts"]["potential_reachable_nodes"], 2)
+        self.assertEqual(graph["counts"]["potential_reachable_nodes"], 3)
         self.assertEqual(
-            graph["counts"]["potential_unrepresented_control_edges"], 2
+            graph["counts"]["potential_unrepresented_control_edges"], 3
         )
         progress = _composition_progress(
             graph,
@@ -497,15 +559,62 @@ class StageARelationalContractTests(StageARelationalTestBase):
         )
         self.assertEqual(progress["status"], "incomplete")
         self.assertEqual(progress["counts"]["rooted_reachable_nodes"], 1)
-        self.assertEqual(progress["counts"]["potential_reachable_nodes"], 2)
+        self.assertEqual(progress["counts"]["potential_reachable_nodes"], 3)
         self.assertEqual(
             progress["counts"]["unresolved_indirect_control_nodes"], 1
         )
         self.assertTrue(progress["reachability"]["truncated_by_control_frontier"])
+        assurance = progress["reachability_assurance"]
+        self.assertEqual(assurance["status"], "incomplete")
+        self.assertEqual(
+            assurance["represented_rooted_reachability"]["node_ids"], [0]
+        )
+        self.assertEqual(
+            assurance["conservative_potential_reachability"]["node_ids"],
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            assurance["truncation"]["potential_only_node_ids"], [1, 2]
+        )
+        self.assertEqual(
+            assurance["frontiers"]["conservative_control_cuts"],
+            graph["evidence"]["potential_control_cuts"],
+        )
+        self.assertFalse(assurance["blocker_totals"]["comparable"])
+        self.assertFalse(assurance["blocker_totals"]["coverage_bearing"])
+        self.assertEqual(
+            assurance["blocker_totals"]["non_comparability_reasons"],
+            [
+                "represented_decoded_control_frontier",
+                "conservative_control_frontier",
+                "represented_reachability_truncated",
+            ],
+        )
         self.assertEqual(
             [item["category"] for item in progress["next_work"]],
             ["unresolved_indirect_control"],
         )
+        malformed_targets = copy.deepcopy(graph)
+        malformed_targets["evidence"]["potential_control_cuts"][0][
+            "potential_target_node_ids"
+        ] = [0, 1]
+        with self.assertRaisesRegex(
+            StageAInputError, "inconsistent conservative control cut"
+        ):
+            _composition_progress(
+                malformed_targets,
+                {
+                    "status": "supported", "issues": [],
+                    "counts": {"issues": 0, "by_category": {}},
+                },
+                {
+                    "format": "stage-a-relational-external-call-sites-v1",
+                    "status": "candidate_requires_lean_replay",
+                    "candidates": [], "gaps": [],
+                    "counts": {"candidates": 0, "gaps": 0},
+                },
+                {"status": "incomplete", "blockers": []},
+            )
         frame_progress = _composition_progress(
             graph,
             {
@@ -543,6 +652,218 @@ class StageARelationalContractTests(StageARelationalTestBase):
             [item["category"] for item in frame_progress["next_work"]],
             ["unresolved_indirect_control", "relational_call_frame_frontier"],
         )
+
+    def test_reachability_assurance_closes_scope_without_making_blockers_coverage(self):
+        contract = {
+            "regions": [{
+                "id": "root", "numeric_id": 0, "root": True,
+                "original": {"rva_start": 0x1000},
+                "candidate": {"rva_start": 0x1000},
+            }],
+            "code_targets": [{
+                "id": 0, "region_index": 0,
+                "original_rva": 0x1000, "candidate_rva": 0x1000,
+            }],
+        }
+        returned = {
+            "op": "returned", "target": {"op": "input_reg", "reg": "eax"},
+        }
+        graph = _relational_product_graph(
+            contract,
+            [{
+                "original_ir": {"outcome": returned},
+                "candidate_ir": {"outcome": returned},
+            }],
+            {"edges": []},
+            [],
+            original_image_base=0x400000,
+            candidate_image_base=0x400000,
+        )
+        acceptance = {
+            "status": "incomplete", "profile": None, "theorem": None,
+            "blockers": [{
+                "code": "remaining_proof_work", "count": 2,
+                "next_action": "close the remaining proof work",
+            }],
+        }
+        external = {
+            "format": "stage-a-relational-external-call-sites-v1",
+            "status": "candidate_requires_lean_replay",
+            "candidates": [], "gaps": [],
+            "counts": {"candidates": 0, "gaps": 0},
+        }
+        preflight = {
+            "status": "supported", "issues": [],
+            "counts": {"issues": 0, "by_category": {}},
+        }
+
+        progress = _composition_progress(graph, preflight, external, acceptance)
+        assurance = progress["reachability_assurance"]
+
+        self.assertEqual(assurance["status"], "control_closed")
+        self.assertFalse(assurance["truncation"]["present"])
+        self.assertEqual(assurance["frontiers"]["conservative_control_cuts"], [])
+        self.assertEqual(assurance["blocker_totals"]["reported_total"], 2)
+        self.assertTrue(assurance["blocker_totals"]["comparable"])
+        self.assertFalse(assurance["blocker_totals"]["coverage_bearing"])
+        self.assertEqual(
+            assurance["blocker_totals"]["non_comparability_reasons"], []
+        )
+        self.assertEqual(
+            json.dumps(progress, sort_keys=True, separators=(",", ":")),
+            json.dumps(
+                _composition_progress(graph, preflight, external, acceptance),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+
+        malformed_bits = copy.deepcopy(graph)
+        malformed_bits["evidence"]["declared_reachable_bits"] = [False]
+        with self.assertRaisesRegex(
+            StageAInputError, "declared reachability does not equal recomputed closure"
+        ):
+            _composition_progress(
+                malformed_bits, preflight, external, acceptance
+            )
+
+        relocated_identity = copy.deepcopy(graph)
+        relocated_identity["evidence"]["canonical_node_inventory"][0].update({
+            "original_rva_start": 0x9000,
+            "original_rva_end": 0x9001,
+        })
+        relocated_progress = _composition_progress(
+            relocated_identity, preflight, external, acceptance
+        )
+        self.assertNotEqual(
+            assurance["blocker_totals"]["reachability_inventory_sha256"],
+            relocated_progress["reachability_assurance"]["blocker_totals"]
+            ["reachability_inventory_sha256"],
+        )
+
+        aliases_a = copy.deepcopy(graph)
+        aliases_b = copy.deepcopy(graph)
+        aliases_a["evidence"]["canonical_node_inventory"][0][
+            "original_entry_aliases"
+        ] = [0x1004, 0x1008]
+        aliases_b["evidence"]["canonical_node_inventory"][0][
+            "original_entry_aliases"
+        ] = [0x1008, 0x1004]
+        aliases_a_progress = _composition_progress(
+            aliases_a, preflight, external, acceptance
+        )
+        aliases_b_progress = _composition_progress(
+            aliases_b, preflight, external, acceptance
+        )
+        self.assertEqual(
+            aliases_a_progress["reachability_assurance"]["blocker_totals"]
+            ["reachability_inventory_sha256"],
+            aliases_b_progress["reachability_assurance"]["blocker_totals"]
+            ["reachability_inventory_sha256"],
+        )
+
+        rootless_contract = json.loads(json.dumps(contract))
+        rootless_contract["regions"][0]["root"] = False
+        rootless_graph = _relational_product_graph(
+            rootless_contract,
+            [{
+                "original_ir": {"outcome": returned},
+                "candidate_ir": {"outcome": returned},
+            }],
+            {"edges": []},
+            [],
+            original_image_base=0x400000,
+            candidate_image_base=0x400000,
+        )
+        rootless_progress = _composition_progress(
+            rootless_graph,
+            preflight,
+            external,
+            {
+                "status": "ready", "profile": "test", "theorem": "test",
+                "blockers": [],
+            },
+        )
+        self.assertEqual(rootless_progress["status"], "incomplete")
+        rootless_assurance = rootless_progress["reachability_assurance"]
+        self.assertEqual(rootless_assurance["status"], "incomplete")
+        self.assertFalse(
+            rootless_assurance["represented_rooted_reachability"]["control_closed"]
+        )
+        self.assertFalse(rootless_assurance["blocker_totals"]["comparable"])
+        self.assertEqual(
+            rootless_assurance["blocker_totals"]["non_comparability_reasons"],
+            ["no_root_nodes"],
+        )
+
+    def test_reachability_assurance_rejects_omitted_feasible_successor(self):
+        true_guard = {"op": "bool_constant", "value": True}
+        contract = {
+            "regions": [
+                {
+                    "id": "root", "numeric_id": 0, "root": True,
+                    "original": {"rva_start": 0x1000},
+                    "candidate": {"rva_start": 0x1000},
+                },
+                {
+                    "id": "successor", "numeric_id": 1, "root": False,
+                    "original": {"rva_start": 0x1010},
+                    "candidate": {"rva_start": 0x1010},
+                },
+            ],
+            "code_targets": [
+                {
+                    "id": index, "region_index": index,
+                    "original_rva": 0x1000 + index * 0x10,
+                    "candidate_rva": 0x1000 + index * 0x10,
+                }
+                for index in range(2)
+            ],
+        }
+        behaviors = [
+            {
+                "original_ir": {"outcome": {"op": "jump", "target": 1}},
+                "candidate_ir": {"outcome": {"op": "jump", "target": 1}},
+            },
+            {
+                "original_ir": {"outcome": {
+                    "op": "returned",
+                    "target": {"op": "input_reg", "reg": "eax"},
+                }},
+                "candidate_ir": {"outcome": {
+                    "op": "returned",
+                    "target": {"op": "input_reg", "reg": "eax"},
+                }},
+            },
+        ]
+        graph = _relational_product_graph(
+            contract,
+            behaviors,
+            {"edges": [{
+                "source_region_index": 0,
+                "target_region_index": 1,
+                "kind": "jump",
+                "original_guard": true_guard,
+                "candidate_guard": true_guard,
+            }]},
+            [],
+            original_image_base=0x400000,
+            candidate_image_base=0x400000,
+        )
+        malformed = copy.deepcopy(graph)
+        malformed["evidence"]["declared_reachable_node_ids"] = [0]
+        malformed["evidence"]["declared_reachable_bits"] = [True, False]
+        malformed["counts"]["declared_reachable_nodes"] = 1
+
+        with self.assertRaisesRegex(
+            StageAInputError, "declared reachability does not equal recomputed closure"
+        ):
+            _composition_progress(
+                malformed,
+                {"status": "supported", "issues": []},
+                {"candidates": [], "gaps": []},
+                {"status": "incomplete", "blockers": []},
+            )
 
     def test_dynamic_indirect_call_adds_exact_guarded_code_map_fanout(self):
         contract = {
@@ -955,6 +1276,20 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 )
                 self.assertNotEqual(first, second)
 
+                dependency_source.write_text(
+                    "import StageA.Transitive\ndef dependency := transitive\n"
+                )
+                transitive_source = stage_a / "Transitive.lean"
+                transitive_source.write_text("def transitive := 1\n")
+                third = _persistent_olean_path(
+                    root, "Consumer", source, [dependency_olean]
+                )
+                transitive_source.write_text("def transitive := 2\n")
+                fourth = _persistent_olean_path(
+                    root, "Consumer", source, [dependency_olean]
+                )
+                self.assertNotEqual(third, fourth)
+
     def test_precompiled_kernel_cache_requires_exact_source_match(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1024,6 +1359,11 @@ class StageARelationalContractTests(StageARelationalTestBase):
         self.assertGreaterEqual(evaluator.count("preferLocalBuild = false"), 3)
         self.assertEqual(evaluator.count("lean -j 2"), 3)
         self.assertEqual(evaluator.count("ulimit -s unlimited"), 2)
+        high_memory_scheduler = evaluator.split(
+            'node.resource_class == "high-memory"', 1
+        )[1].split("''}", 1)[0]
+        self.assertIn("compile_jobs=1", high_memory_scheduler)
+        self.assertNotIn("compile_jobs=2", high_memory_scheduler)
         self.assertNotIn("dependencyClosures", evaluator)
         self.assertIn("node.dependencies", evaluator)
         self.assertIn("inherited-olean-index", evaluator)

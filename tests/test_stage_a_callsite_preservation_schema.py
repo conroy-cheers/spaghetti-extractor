@@ -186,7 +186,7 @@ class StageACallsitePreservationSchemaTests(unittest.TestCase):
         unknown_summary["summaries"][0]["trusted"] = True
         unsupported_version = copy.deepcopy(self.payload)
         unsupported_version["format"] = (
-            "stage-a-relational-callsite-preservation-v2"
+            "stage-a-relational-callsite-preservation-v3"
         )
 
         for malformed in (

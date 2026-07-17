@@ -147,7 +147,10 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
     finalized_ir["families"] = [
         {"family": "exact_pe_decode", "status": "satisfied" if lean.get("status") == "checked" else "incomplete"},
         {"family": "x86_semantics", "status": "satisfied" if lean.get("status") == "checked" else "incomplete"},
-        {"family": "executable_coverage", "status": "satisfied"},
+        {
+            "family": "executable_coverage",
+            "status": "satisfied" if whole_program_checked else "incomplete",
+        },
         {"family": "roots_and_targets", "status": "satisfied"},
         {
             "family": "static_proof_context",
@@ -281,6 +284,11 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
         "product_graph_sha256": (
             sha256_file(out / "relational-product-graph.json")
             if (out / "relational-product-graph.json").is_file()
+            else None
+        ),
+        "isa_requirements_sha256": (
+            sha256_file(out / "isa-requirements.json")
+            if (out / "isa-requirements.json").is_file()
             else None
         ),
         "whole_program_acceptance_sha256": (

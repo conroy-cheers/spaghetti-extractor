@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from ...stage_binary import StageABinary
+from ...util import sha256_bytes
 from ..callsite_preservation import (
     CALLSITE_PRESERVATION_ARTIFACT_FORMAT,
     parse_callsite_preservation_artifact,
@@ -35,7 +36,7 @@ from .stack import (
 
 
 _REGISTER_RELATION_KINDS = {
-    "exact", "code_pointer", "data_pointer", "fixed_code_pointer",
+    "exact", "fixed_word", "code_pointer", "data_pointer", "fixed_code_pointer",
     "related_word",
 }
 RegisterRelation = str | dict[str, Any]
@@ -151,6 +152,14 @@ def _register_relation_kind(relation: RegisterRelation) -> str:
 
 def _register_relation_payload(relation: RegisterRelation) -> dict[str, Any]:
     kind = _register_relation_kind(relation)
+    if kind == "fixed_word" and isinstance(relation, dict):
+        value = relation.get("value")
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value < 2**32
+        ):
+            return {"relation": kind, "value": int(value)}
     if kind == "fixed_code_pointer" and isinstance(relation, dict):
         target_id = relation.get("target_id")
         if (
@@ -159,14 +168,14 @@ def _register_relation_payload(relation: RegisterRelation) -> dict[str, Any]:
             and target_id >= 0
         ):
             return {"relation": kind, "target_id": int(target_id)}
-    if kind in _REGISTER_RELATION_KINDS - {"fixed_code_pointer"}:
+    if kind in _REGISTER_RELATION_KINDS - {"fixed_word", "fixed_code_pointer"}:
         return {"relation": kind}
     return {"relation": "related_word"}
 
 
 def _register_relation_key(relation: RegisterRelation) -> tuple[str, int | None]:
     payload = _register_relation_payload(relation)
-    return payload["relation"], payload.get("target_id")
+    return payload["relation"], payload.get("target_id", payload.get("value"))
 
 
 def _register_relation_join(relations: list[RegisterRelation]) -> RegisterRelation:
@@ -174,10 +183,17 @@ def _register_relation_join(relations: list[RegisterRelation]) -> RegisterRelati
         return "related_word"
     keys = {_register_relation_key(relation) for relation in relations}
     if len(keys) != 1:
+        if all(
+            _register_relation_kind(relation) in {"fixed_word", "exact"}
+            for relation in relations
+        ):
+            return "exact"
         # In particular, fixed targets with different canonical IDs must never
         # retain either target identity after a join.
         return "related_word"
-    if _register_relation_kind(relations[0]) == "fixed_code_pointer":
+    if _register_relation_kind(relations[0]) in {
+        "fixed_word", "fixed_code_pointer",
+    }:
         return _register_relation_payload(relations[0])
     return _register_relation_kind(relations[0])
 
@@ -189,7 +205,13 @@ def _register_relation_implies(
     target_key = _register_relation_key(target)
     if source_key == target_key or target_key[0] == "related_word":
         return True
+    if source_key[0] == "fixed_word" and target_key[0] == "exact":
+        return True
     return source_key[0] == "fixed_code_pointer" and target_key[0] == "code_pointer"
+
+
+def _register_relation_implies_exact(relation: RegisterRelation) -> bool:
+    return _register_relation_kind(relation) in {"exact", "fixed_word"}
 
 def _paired_constant_relation(
     original_expression: dict[str, Any],
@@ -206,7 +228,7 @@ def _paired_constant_relation(
     original_value = int(original_expression["value"]) & 0xFFFFFFFF
     candidate_value = int(candidate_expression["value"]) & 0xFFFFFFFF
     if original_value == candidate_value:
-        return "exact"
+        return {"relation": "fixed_word", "value": original_value}
     if any(
         int(target["original_value"]) == original_value
         and int(target["candidate_value"]) == candidate_value
@@ -266,6 +288,169 @@ def _immutable_image_word_read(
     if value is None:
         return None
     return address, writes, assembled, value
+
+
+def _fixed_register_values(
+    input_relations: dict[str, RegisterRelation],
+    candidate_registers: dict[str, str] | None,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Return unambiguous fixed scalar inputs for each binary side."""
+    original_values: dict[str, int] = {}
+    candidate_rows: dict[str, list[int]] = {}
+    for original_register, relation in input_relations.items():
+        payload = _register_relation_payload(relation)
+        if payload["relation"] != "fixed_word":
+            continue
+        value = int(payload["value"]) & 0xFFFFFFFF
+        original_values[str(original_register)] = value
+        candidate_register = str(
+            (candidate_registers or {}).get(
+                str(original_register), str(original_register),
+            )
+        )
+        candidate_rows.setdefault(candidate_register, []).append(value)
+    candidate_values = {
+        register: values[0]
+        for register, values in candidate_rows.items()
+        if len(values) == 1
+    }
+    return original_values, candidate_values
+
+
+def _fixed_immutable_expr_value(
+    expression: Any,
+    binary: StageABinary,
+    fixed_registers: dict[str, int],
+) -> int | None:
+    """Propose a value for the fragment replayed by Lean.
+
+    This result never serves as proof evidence.  The generated claim includes
+    only the proposed scalar; Lean reevaluates the decoded expression from the
+    exact PE bytes and checked source invariant.
+    """
+    if not isinstance(expression, dict):
+        return None
+    operation = str(expression.get("op", ""))
+    mask = 0xFFFFFFFF
+
+    if operation == "input_reg":
+        value = fixed_registers.get(str(expression.get("reg", "")))
+        return None if value is None else value & mask
+    if operation == "constant":
+        value = expression.get("value")
+        if not isinstance(value, int) or isinstance(value, bool):
+            return None
+        return value & mask
+
+    if operation in {
+        "add", "sub", "bit_and", "bit_xor", "bit_or", "multiply",
+        "multiply_high_unsigned", "multiply_high_signed",
+        "shift_left_by", "shift_right_by", "shift_arithmetic_right_by",
+        "unsigned_less_value",
+    }:
+        left = _fixed_immutable_expr_value(
+            expression.get("left"), binary, fixed_registers,
+        )
+        right = _fixed_immutable_expr_value(
+            expression.get("right"), binary, fixed_registers,
+        )
+        if left is None or right is None:
+            return None
+        if operation == "add":
+            return (left + right) & mask
+        if operation == "sub":
+            return (left - right) & mask
+        if operation == "bit_and":
+            return left & right
+        if operation == "bit_xor":
+            return left ^ right
+        if operation == "bit_or":
+            return left | right
+        if operation == "multiply":
+            return (left * right) & mask
+        if operation == "multiply_high_unsigned":
+            return ((left * right) >> 32) & mask
+        if operation == "multiply_high_signed":
+            signed_left = left if left < 0x80000000 else left - 0x100000000
+            signed_right = right if right < 0x80000000 else right - 0x100000000
+            return ((signed_left * signed_right) >> 32) & mask
+        if operation == "shift_left_by":
+            return (left << (right % 32)) & mask
+        if operation == "shift_right_by":
+            return left >> (right % 32)
+        if operation == "shift_arithmetic_right_by":
+            signed = left if left < 0x80000000 else left - 0x100000000
+            return (signed >> (right % 32)) & mask
+        return 1 if left < right else 0
+
+    if operation in {"bit_not", "lowest_set_bit", "highest_set_bit"}:
+        value = _fixed_immutable_expr_value(
+            expression.get("value"), binary, fixed_registers,
+        )
+        if value is None:
+            return None
+        if operation == "bit_not":
+            return (~value) & mask
+        if operation == "lowest_set_bit":
+            return 32 if value == 0 else (value & -value).bit_length() - 1
+        return 0 if value == 0 else value.bit_length() - 1
+
+    if operation in {"shift_left", "shift_right"}:
+        value = _fixed_immutable_expr_value(
+            expression.get("value"), binary, fixed_registers,
+        )
+        amount = expression.get("amount")
+        if (
+            value is None
+            or not isinstance(amount, int)
+            or isinstance(amount, bool)
+            or amount < 0
+        ):
+            return None
+        if operation == "shift_left":
+            return (value << amount) & mask if amount < 32 else 0
+        return value >> amount if amount < 32 else 0
+
+    if operation in {"extract_byte", "bit_value"}:
+        value = _fixed_immutable_expr_value(
+            expression.get("value"), binary, fixed_registers,
+        )
+        index = expression.get("index")
+        if (
+            value is None
+            or not isinstance(index, int)
+            or isinstance(index, bool)
+            or index < 0
+        ):
+            return None
+        if operation == "extract_byte":
+            return (value >> (index * 8)) & 0xFF if index < 4 else 0
+        return (value >> index) & 1 if index < 32 else 0
+
+    if operation in {"read8", "read32"}:
+        address = _fixed_immutable_expr_value(
+            expression.get("address"), binary, fixed_registers,
+        )
+        if address is None:
+            return None
+        word = _immutable_image_u32(binary, address)
+        if word is None:
+            return None
+        return word & 0xFF if operation == "read8" else word
+
+    if operation == "if_equal":
+        left = _fixed_immutable_expr_value(
+            expression.get("left"), binary, fixed_registers,
+        )
+        right = _fixed_immutable_expr_value(
+            expression.get("right"), binary, fixed_registers,
+        )
+        if left is None or right is None:
+            return None
+        branch = expression.get("then" if left == right else "else")
+        return _fixed_immutable_expr_value(branch, binary, fixed_registers)
+
+    return None
 
 def _infer_register_output_relation(
     original_expression: dict[str, Any],
@@ -341,11 +526,32 @@ def _infer_register_output_relation(
                 input_relations.get(register, "related_word"),
                 "identity_transfer",
             )
+    if original_bin is not None and candidate_bin is not None:
+        original_fixed, candidate_fixed = _fixed_register_values(
+            input_relations, candidate_input_registers,
+        )
+        original_value = _fixed_immutable_expr_value(
+            original_expression, original_bin, original_fixed,
+        )
+        candidate_value = _fixed_immutable_expr_value(
+            candidate_expression, candidate_bin, candidate_fixed,
+        )
+        if original_value is not None and candidate_value is not None:
+            fixed_relation = _paired_constant_relation(
+                {"op": "constant", "value": original_value},
+                {"op": "constant", "value": candidate_value},
+                contract,
+                original_image_base,
+                candidate_image_base,
+            )
+            if fixed_relation is not None:
+                return fixed_relation, "fixed_immutable_expression"
     if original_expression == candidate_expression:
         dependencies = _semantic_expr_registers(original_expression)
         if _semantic_expr_is_pure(original_expression) and all(
-            _register_relation_kind(input_relations.get(register, "related_word"))
-                == "exact"
+            _register_relation_implies_exact(
+                input_relations.get(register, "related_word")
+            )
             for register in dependencies
         ):
             return "exact", "lean_exact_memory_free_expression"
@@ -353,7 +559,7 @@ def _infer_register_output_relation(
             original_expression,
             {
                 register for register, relation in input_relations.items()
-                if _register_relation_kind(relation) == "exact"
+                if _register_relation_implies_exact(relation)
             },
         ):
             return "exact", "lean_exact_memory_expression"
@@ -678,6 +884,10 @@ def _translate_callsite_behavior(
         target_fields = ("taken", "fallthrough")
     elif operation == "call":
         target_fields = ("target", "continuation")
+    elif operation == "external_call":
+        target_fields = ("continuation",)
+    elif operation == "indirect_call":
+        target_fields = ("continuation",)
     else:
         target_fields = ()
     issues: list[str] = []
@@ -748,6 +958,47 @@ def _propose_internal_callsite_preservation_summaries(
             ),
         )
 
+    register_relations_by_callsite: dict[int, list[dict[str, Any]]] = {}
+    relation_rows = register_relations.get("regions", [])
+    for callsite, row in enumerate(relation_rows):
+        if not isinstance(row, dict):
+            continue
+        for claim_index, claim in enumerate(row.get("output_claims", [])):
+            if not isinstance(claim, dict) or not isinstance(claim.get("output"), dict):
+                continue
+            output = claim["output"]
+            relation_kind = output.get("relation")
+            if relation_kind not in {
+                "fixed_word", "code_pointer", "fixed_code_pointer", "data_pointer",
+            }:
+                continue
+            pair = (str(output.get("original")), str(output.get("candidate")))
+            if pair[0] not in _X86_GENERAL_REGISTERS or pair[1] not in (
+                _X86_GENERAL_REGISTERS
+            ):
+                continue
+            relation = json.loads(json.dumps(output))
+            relation["origin"] = {
+                "kind": "region_output_claim",
+                "region_index": callsite,
+                "claim_index": claim_index,
+                "claim_hash": sha256_bytes(json.dumps(
+                    claim, sort_keys=True, separators=(",", ":"), allow_nan=False,
+                ).encode()),
+            }
+            register_relations_by_callsite.setdefault(callsite, []).append(relation)
+    for callsite, relations in register_relations_by_callsite.items():
+        register_relations_by_callsite[callsite] = sorted(
+            {
+                json.dumps(relation, sort_keys=True, separators=(",", ":")):
+                    relation
+                for relation in relations
+            }.values(),
+            key=lambda relation: json.dumps(
+                relation, sort_keys=True, separators=(",", ":")
+            ),
+        )
+
     raw_summaries = (
         register_relations.get("return_slot_analysis", {})
         .get("call_summary_analysis", {})
@@ -796,6 +1047,60 @@ def _propose_internal_callsite_preservation_summaries(
             translation_issues[region_index] = issues
 
     base_control: list[dict[str, Any]] = []
+    returning_external_contracts: dict[tuple[int, int], dict[str, Any]] = {}
+    direct_external_contracts: dict[int, dict[str, Any]] = {}
+    ambiguous_direct_external_sources: set[int] = set()
+    known_indirect_calls: dict[int, tuple[int, int]] = {}
+    contracts_by_id = {
+        int(item["id"]): item
+        for item in contract.get("machine_import_call_contracts", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), int)
+        and not isinstance(item.get("id"), bool)
+    }
+    for edge in register_relations.get("edges", []):
+        if not isinstance(edge, dict):
+            continue
+        direct_contract_id = edge.get("machine_contract_id")
+        direct_source = edge.get("source_region_index")
+        if (
+            edge.get("kind") == "external_call"
+            and isinstance(direct_contract_id, int)
+            and not isinstance(direct_contract_id, bool)
+            and isinstance(direct_source, int)
+            and not isinstance(direct_source, bool)
+            and int(direct_contract_id) in contracts_by_id
+        ):
+            source_id = int(direct_source)
+            contract_row = contracts_by_id[int(direct_contract_id)]
+            existing = direct_external_contracts.get(source_id)
+            if existing is not None and existing != contract_row:
+                ambiguous_direct_external_sources.add(source_id)
+                direct_external_contracts.pop(source_id, None)
+            elif source_id not in ambiguous_direct_external_sources:
+                direct_external_contracts[source_id] = contract_row
+        indirect_claim = edge.get("indirect_target_claim")
+        if (
+            edge.get("kind") == "call"
+            and isinstance(indirect_claim, dict)
+            and isinstance(edge.get("source_region_index"), int)
+            and isinstance(edge.get("target_region_index"), int)
+            and isinstance(indirect_claim.get("continuation_region_index"), int)
+        ):
+            known_indirect_calls[int(edge["source_region_index"])] = (
+                int(edge["target_region_index"]),
+                int(indirect_claim["continuation_region_index"]),
+            )
+        contract_id = edge.get("returning_external_thunk_contract_id")
+        if not isinstance(contract_id, int) or isinstance(contract_id, bool):
+            continue
+        machine_contract = contracts_by_id.get(int(contract_id))
+        if machine_contract is None:
+            continue
+        returning_external_contracts[(
+            int(edge["source_region_index"]),
+            int(edge["target_region_index"]),
+        )] = machine_contract
     for region_index, behavior_pair in enumerate(translated_behaviors):
         original_outcome = behavior_pair["original_ir"].get("outcome") or {}
         candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
@@ -824,7 +1129,56 @@ def _propose_internal_callsite_preservation_summaries(
             for field in ("target", "continuation")
         ):
             successors = [int(original_outcome["continuation"])]
-            exit_row = {"kind": "nested_call"}
+            machine_contract = returning_external_contracts.get((
+                region_index, int(original_outcome["target"]),
+            ))
+            if machine_contract is None:
+                exit_row = {"kind": "nested_call"}
+            else:
+                preserved = sorted({
+                    str(register)
+                    for register in machine_contract.get("preserved_registers", [])
+                    if str(register) in _X86_GENERAL_REGISTERS
+                })
+                exit_row = {
+                    "kind": "external_call",
+                    "machine_contract_id": int(machine_contract["id"]),
+                    "original_preserved_registers": preserved,
+                    "candidate_preserved_registers": preserved,
+                }
+        elif original_op == "external_call" and all(
+            isinstance(original_outcome.get(field), int)
+            and isinstance(candidate_outcome.get(field), int)
+            for field in ("continuation",)
+        ):
+            machine_contract = direct_external_contracts.get(region_index)
+            if (
+                machine_contract is None
+                or machine_contract.get("disposition") != "returns"
+                or original_outcome.get("continuation")
+                    != candidate_outcome.get("continuation")
+                or _semantic_external_target_identity(
+                    original_outcome.get("import")
+                ) != _semantic_external_target_identity(
+                    candidate_outcome.get("import")
+                )
+            ):
+                exit_row = {"kind": "unsupported"}
+            else:
+                preserved = sorted({
+                    str(register)
+                    for register in machine_contract.get(
+                        "preserved_registers", []
+                    )
+                    if str(register) in _X86_GENERAL_REGISTERS
+                })
+                successors = [int(original_outcome["continuation"])]
+                exit_row = {
+                    "kind": "external_call",
+                    "machine_contract_id": int(machine_contract["id"]),
+                    "original_preserved_registers": preserved,
+                    "candidate_preserved_registers": preserved,
+                }
         elif original_op in {"indirect_call", "indirect_jump"}:
             exit_row = {"kind": "unresolved_indirect"}
         else:
@@ -835,7 +1189,7 @@ def _propose_internal_callsite_preservation_summaries(
             "exit": exit_row,
         })
 
-    analysis_cache: dict[tuple[int, str], dict[str, Any]] = {}
+    analysis_cache: dict[tuple[int, str, str], dict[str, Any]] = {}
 
     def relation_key(relations: list[dict[str, Any]]) -> str:
         return json.dumps(relations, sort_keys=True, separators=(",", ":"))
@@ -898,9 +1252,14 @@ def _propose_internal_callsite_preservation_summaries(
     def build_analysis(
         callsite: int,
         requested_relations: list[dict[str, Any]],
+        requested_register_relations: list[dict[str, Any]],
         active: tuple[int, ...] = (),
     ) -> dict[str, Any]:
-        key = (callsite, relation_key(requested_relations))
+        key = (
+            callsite,
+            relation_key(requested_relations),
+            relation_key(requested_register_relations),
+        )
         if callsite in active:
             return _callsite_generation_incomplete(
                 callsite,
@@ -939,14 +1298,24 @@ def _propose_internal_callsite_preservation_summaries(
         callee, continuation, returns = shape
         original_call = translated_behaviors[callsite]["original_ir"].get("outcome") or {}
         candidate_call = translated_behaviors[callsite]["candidate_ir"].get("outcome") or {}
-        expected_call = {
-            "op": "call", "target": callee, "continuation": continuation,
-        }
-        if any(
-            outcome.get(field) != expected_call[field]
+        known_indirect = known_indirect_calls.get(callsite)
+        direct_shape = all(
+            outcome.get(field) == expected
             for outcome in (original_call, candidate_call)
-            for field in expected_call
-        ):
+            for field, expected in (
+                ("op", "call"), ("target", callee),
+                ("continuation", continuation),
+            )
+        )
+        indirect_shape = (
+            known_indirect == (callee, continuation)
+            and all(
+                outcome.get("op") == "indirect_call"
+                and outcome.get("continuation") == continuation
+                for outcome in (original_call, candidate_call)
+            )
+        )
+        if not direct_shape and not indirect_shape:
             result = _callsite_generation_incomplete(
                 callsite, "call_summary_behavior_mismatch", node_id=callsite
             )
@@ -962,7 +1331,8 @@ def _propose_internal_callsite_preservation_summaries(
         child_analyses: dict[int, dict[str, Any]] = {}
         for dependency in dependencies:
             child = build_analysis(
-                dependency, requested_relations, active + (callsite,)
+                dependency, requested_relations, requested_register_relations,
+                active + (callsite,)
             )
             child_analyses[dependency] = child
             if child.get("status") != "satisfied":
@@ -989,6 +1359,7 @@ def _propose_internal_callsite_preservation_summaries(
                 "continuation_id": continuation,
             } for return_node in returns],
             requested_relations=requested_relations,
+            requested_register_relations=requested_register_relations,
             behaviors=translated_behaviors,
             control=control,
             nested_summaries=[
@@ -999,10 +1370,23 @@ def _propose_internal_callsite_preservation_summaries(
         analysis_cache[key] = result
         return result
 
+    internal_callsite_node_ids = set(summary_by_callsite)
+    for region_index, behavior_pair in enumerate(translated_behaviors):
+        original_outcome = behavior_pair["original_ir"].get("outcome") or {}
+        candidate_outcome = behavior_pair["candidate_ir"].get("outcome") or {}
+        if (
+            original_outcome.get("op") in {"call", "indirect_call"}
+            and candidate_outcome.get("op") == original_outcome.get("op")
+        ):
+            internal_callsite_node_ids.add(region_index)
+
     rows: list[dict[str, Any]] = []
     proposal_edges: list[dict[str, Any]] = []
-    for callsite in sorted(summary_by_callsite):
+    for callsite in sorted(internal_callsite_node_ids):
         relations = relations_by_callsite.get(callsite, [])
+        preserved_register_relations = register_relations_by_callsite.get(
+            callsite, [],
+        )
         shape = summary_shape(callsite)
         metadata = {
             "callsite_region_index": callsite,
@@ -1010,16 +1394,19 @@ def _propose_internal_callsite_preservation_summaries(
             "continuation_region_index": shape[1] if shape is not None else None,
             "return_region_indices": shape[2] if shape is not None else [],
             "requested_relations": relations,
+            "requested_register_relations": preserved_register_relations,
         }
-        if not relations:
+        if not relations and not preserved_register_relations:
             rows.append({
                 **metadata,
                 "status": "not_applicable",
-                "reason_codes": ["no_import_register_relations_at_callsite"],
+                "reason_codes": ["no_preservable_relations_at_callsite"],
                 "analysis": None,
             })
             continue
-        analysis = build_analysis(callsite, relations)
+        analysis = build_analysis(
+            callsite, relations, preserved_register_relations,
+        )
         rows.append({
             **metadata,
             "status": analysis["status"],
@@ -1038,6 +1425,9 @@ def _propose_internal_callsite_preservation_summaries(
             "certificate_id": certificate["id"],
             "certificate_hash": certificate["certificate_hash"],
             "preserved_import_relations": certificate["requested_relations"],
+            "preserved_register_relations": certificate[
+                "requested_register_relations"
+            ],
             "return_region_indices": shape[2],
         })
 
@@ -1681,12 +2071,36 @@ def _synthesize_register_relations(
     candidate_image_base: int,
     indirect_call_candidates: list[dict[str, Any]] | None = None,
     import_call_candidates: list[dict[str, Any]] | None = None,
+    callsite_summary_predecessors: list[dict[str, Any]] | None = None,
     original_bin: StageABinary | None = None,
     candidate_bin: StageABinary | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     refined = json.loads(json.dumps(contract))
     regions = refined["regions"]
     region_by_id = {int(region["numeric_id"]): index for index, region in enumerate(regions)}
+    launch_root_region_indices = {
+        index for index, region in enumerate(regions) if bool(region.get("root"))
+    }
+    for target_id_value in (refined.get("launch") or {}).get(
+        "tls_callback_target_ids", []
+    ):
+        target_id = int(target_id_value)
+        matching_targets = [
+            target for target in refined.get("code_targets", [])
+            if int(target["id"]) == target_id
+        ]
+        if len(matching_targets) != 1:
+            continue
+        mapped_region_index = matching_targets[0].get("region_index")
+        region_index = (
+            int(mapped_region_index)
+            if isinstance(mapped_region_index, int)
+            and not isinstance(mapped_region_index, bool)
+            and 0 <= mapped_region_index < len(regions)
+            else region_by_id.get(target_id)
+        )
+        if region_index is not None:
+            launch_root_region_indices.add(region_index)
     predecessors: list[
         list[
             tuple[
@@ -1742,11 +2156,14 @@ def _synthesize_register_relations(
     ) -> frozenset[str]:
         if contract is None:
             return frozenset()
-        return frozenset(
+        preserved = {
             str(register)
             for register in contract.get("preserved_registers", [])
             if str(register) in _X86_GENERAL_REGISTERS
-        )
+        }
+        if isinstance(contract.get("stack_result_delta"), int):
+            preserved.add("esp")
+        return frozenset(preserved)
 
     for source_index, behavior_pair in enumerate(behaviors):
         original_outcome = behavior_pair["original_ir"].get("outcome") or {}
@@ -1814,6 +2231,7 @@ def _synthesize_register_relations(
                 if indirect_candidate["profile"] in {
                     "immutable_relocated_function_pointer_jump_v1",
                     "fixed_static_function_pointer_jump_v1",
+                    "fixed_code_address_indirect_jump_v1",
                 }
                 else "call"
             )
@@ -1918,18 +2336,20 @@ def _synthesize_register_relations(
         )
         if len(contracts) != 1 or continuation_index is None:
             continue
+        contract = contracts[0]
+        edge["returning_external_thunk_contract_id"] = int(contract["id"])
         predecessors[continuation_index].append((
-            thunk_index,
+            caller_index,
             True,
             "external_jump_return",
             frozenset(
-                {str(item) for item in contracts[0]["preserved_registers"]}
+                {str(item) for item in contract["preserved_registers"]}
                 | {"esp"}
             ),
             {
                 str(relation["register"]):
                     _machine_result_invariant_relation(relation)
-                for relation in contracts[0].get(
+                for relation in contract.get(
                     "result_register_relations", []
                 )
             },
@@ -1983,6 +2403,24 @@ def _synthesize_register_relations(
         ],
         edges,
     )
+    callsite_summary_rows = [
+        row for row in (callsite_summary_predecessors or [])
+        if isinstance(row, dict)
+        and row.get("kind") == "internal_callsite_preservation_summary"
+    ]
+    covered_return_predecessors = {
+        (int(return_index), int(row["target_region_index"]))
+        for row in callsite_summary_rows
+        for return_index in row.get("return_region_indices", [])
+        if isinstance(return_index, int) and not isinstance(return_index, bool)
+        if isinstance(row.get("preserved_register_relations"), list)
+        if any(
+            isinstance(relation, dict)
+            and str(relation.get("original")) in _X86_GENERAL_REGISTERS
+            and relation.get("candidate") == relation.get("original")
+            for relation in row.get("preserved_register_relations", [])
+        )
+    }
     return_predecessors: set[tuple[int, int]] = set()
     for summary in return_summary_analysis["summaries"]:
         if not summary["closed"]:
@@ -1991,6 +2429,8 @@ def _synthesize_register_relations(
         for return_index_value in summary["return_region_indices"]:
             return_index = int(return_index_value)
             key = (return_index, continuation)
+            if key in covered_return_predecessors:
+                continue
             if key in return_predecessors:
                 continue
             return_predecessors.add(key)
@@ -2001,6 +2441,40 @@ def _synthesize_register_relations(
                 frozenset(),
                 {},
             ))
+    for summary in callsite_summary_rows:
+        try:
+            source_index = int(summary["source_region_index"])
+            target_index = int(summary["target_region_index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (
+            0 <= source_index < len(regions)
+            and 0 <= target_index < len(regions)
+        ):
+            continue
+        preserved_relations: dict[str, RegisterRelation] = {}
+        for relation in summary.get("preserved_register_relations", []):
+            if not isinstance(relation, dict):
+                continue
+            original_register = str(relation.get("original"))
+            candidate_register = str(relation.get("candidate"))
+            if (
+                original_register not in _X86_GENERAL_REGISTERS
+                or candidate_register != original_register
+            ):
+                continue
+            preserved_relations[original_register] = _register_relation_payload(
+                relation
+            )
+        if not preserved_relations:
+            continue
+        predecessors[target_index].append((
+            source_index,
+            False,
+            "internal_callsite_preservation_summary",
+            frozenset(preserved_relations),
+            preserved_relations,
+        ))
 
     register_order = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
     stack_window_input_pairs = [
@@ -2076,10 +2550,20 @@ def _synthesize_register_relations(
             kinds: dict[str, RegisterRelation] = {}
             for register in register_order:
                 candidates: list[RegisterRelation] = []
-                if region.get("root"):
+                if region_index in launch_root_region_indices:
                     candidates.append("exact")
-                for source_index, barrier, _, preserved, results in incoming:
+                for source_index, barrier, kind, preserved, results in incoming:
                     candidates.append(
+                        next_outputs[source_index][register]
+                        if kind == "internal_callsite_preservation_summary"
+                        and register in preserved
+                        and register in results
+                        and _register_relation_key(
+                            next_outputs[source_index][register]
+                        ) == _register_relation_key(results[register])
+                        else "related_word"
+                        if kind == "internal_callsite_preservation_summary"
+                        else
                         next_outputs[source_index][register]
                         if not barrier
                         else results[register]
@@ -2172,12 +2656,13 @@ def _synthesize_register_relations(
             ]
             reason = output_reasons[region_index][register]
             if (
-                relation["relation"] == "exact"
+                _register_relation_implies_exact(relation)
                 and relation["original"] == relation["candidate"]
                 and original_expression == candidate_expression
                 and reason not in {
                     "lean_exact_memory_expression", "immutable_image_word",
                     "assembled_immutable_image_word", "static_word_slot",
+                    "fixed_immutable_expression",
                 }
             ):
                 claims.append({
@@ -2248,6 +2733,25 @@ def _synthesize_register_relations(
                         "original_writes": original_writes,
                         "candidate_writes": candidate_writes,
                     })
+            elif reason == "fixed_immutable_expression":
+                if original_bin is not None and candidate_bin is not None:
+                    original_fixed, candidate_fixed = _fixed_register_values(
+                        input_kinds[region_index],
+                        input_pair_candidates[region_index],
+                    )
+                    original_value = _fixed_immutable_expr_value(
+                        original_expression, original_bin, original_fixed,
+                    )
+                    candidate_value = _fixed_immutable_expr_value(
+                        candidate_expression, candidate_bin, candidate_fixed,
+                    )
+                    if original_value is not None and candidate_value is not None:
+                        output_claims.append({
+                            "kind": "fixed_immutable_expression",
+                            "output": relation,
+                            "original_value": original_value,
+                            "candidate_value": candidate_value,
+                        })
             elif relation["relation"] == "exact" and any(
                 claim["register"] == register for claim in claims
             ):
@@ -2282,6 +2786,10 @@ def _synthesize_register_relations(
             "fully_exact_output_transfer": (
                 len(claims) == len(region["output_relations"])
                 and bool(region["output_relations"])
+                and all(
+                    relation["relation"] == "exact"
+                    for relation in region["output_relations"]
+                )
             ),
             "fully_supported_output_transfer": (
                 len(output_claims) == len(region["output_relations"])
@@ -2310,8 +2818,10 @@ def _synthesize_register_relations(
         target = edge["target_region_index"]
         indirect_control = bool(edge.get("indirect_target_profile"))
         immutable_indirect_jump = (
-            edge.get("indirect_target_profile") ==
-            "immutable_relocated_function_pointer_jump_v1"
+            edge.get("indirect_target_profile") in {
+                "immutable_relocated_function_pointer_jump_v1",
+                "fixed_code_address_indirect_jump_v1",
+            }
         )
         checked_single_target_indirect = (
             immutable_indirect_jump
@@ -2407,6 +2917,14 @@ def _synthesize_register_relations(
         ),
         "fixed_code_pointer_output_relations": sum(
             _register_relation_kind(kind) == "fixed_code_pointer"
+            for kinds in output_kinds for kind in kinds.values()
+        ),
+        "fixed_word_input_relations": sum(
+            _register_relation_kind(kind) == "fixed_word"
+            for kinds in input_kinds for kind in kinds.values()
+        ),
+        "fixed_word_output_relations": sum(
+            _register_relation_kind(kind) == "fixed_word"
             for kinds in output_kinds for kind in kinds.values()
         ),
         "indirect_fixed_code_pointer_calls": len(

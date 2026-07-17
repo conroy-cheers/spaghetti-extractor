@@ -26,9 +26,13 @@
             ps: with ps; [
               capstone
               pefile
+              unicorn
               z3-solver
             ]
           );
+          bochs-conformance = pkgs.callPackage ./nix/bochs-conformance.nix {
+            instrumentationSrc = ./tools/bochs-conformance;
+          };
           spaghettiExtractorCoreSource = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
@@ -54,6 +58,7 @@
             dependencies = with pkgs.python3Packages; [
               capstone
               pefile
+              unicorn
               z3-solver
             ];
 
@@ -75,6 +80,212 @@
             ];
             meta.mainProgram = "spaghetti-extractor";
           };
+          singlestep-80386-conformance =
+            pkgs.callPackage ./nix/singlestep-80386-conformance.nix {
+              inherit spaghetti-extractor;
+            };
+          stageABochs80386ShardIndices = pkgs.lib.range 0 15;
+          stageABochs80386Opcodes = [
+            "6601"
+            "6605"
+            "6629"
+            "6631"
+            "6639"
+            "6685"
+            "6689"
+            "668B"
+            "66B8"
+          ];
+          stageABochs80386Shards = pkgs.lib.concatMap
+            (opcode:
+              map
+                (shardIndex:
+                  let
+                    imported =
+                      singlestep-80386-conformance.importDerivations.${opcode}.${toString shardIndex};
+                    shardName = "${pkgs.lib.toLower opcode}-${toString shardIndex}-of-16";
+                  in
+                  pkgs.runCommand "stage-a-bochs-80386-${shardName}"
+                    {
+                      nativeBuildInputs = [
+                        bochs-conformance
+                        pkgs.jq
+                        pkgs.lean4
+                        spaghetti-extractor
+                      ];
+                      preferLocalBuild = false;
+                      allowSubstitutes = true;
+                    }
+                    ''
+                      shard_out="$out/${opcode}/shard-${toString shardIndex}-of-16"
+                      mkdir -p "$shard_out"
+                      export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-isa-kernel-cache}"
+                      spaghetti-extractor stage-a-check-isa-conformance \
+                        --corpus ${imported}/corpus.json \
+                        --backend bochs \
+                        --bochs-runner ${bochs-conformance}/bin/spaghetti-bochs-conformance-runner \
+                        --out "$shard_out/report.json" \
+                        > "$shard_out/check.stdout"
+                      jq -e \
+                        '.status == "pass"
+                         and .qualification == "qualified"
+                         and .counts.cases > 0
+                         and .counts.matched == .counts.cases
+                         and .counts.mismatched == 0
+                         and .counts.unsupported == 0
+                         and .counts.errors == 0
+                         and .proof_authority == false
+                        and .closes_stage_a_proof == false' \
+                        "$shard_out/check.stdout" > /dev/null
+                      spaghetti-extractor stage-a-check-isa-conformance \
+                        --corpus ${imported}/corpus.json \
+                        --backend unicorn \
+                        --out "$shard_out/unicorn-report.json" \
+                        > "$shard_out/unicorn-check.stdout"
+                      jq -e \
+                        '.status == "pass"
+                         and .qualification == "qualified"
+                         and .counts.cases > 0
+                         and .counts.matched == .counts.cases
+                         and .counts.mismatched == 0
+                         and .counts.unsupported == 0
+                         and .counts.errors == 0
+                         and .proof_authority == false
+                         and .closes_stage_a_proof == false' \
+                        "$shard_out/unicorn-check.stdout" > /dev/null
+                      spaghetti-extractor stage-a-check-isa-conformance \
+                        --corpus ${imported}/corpus.json \
+                        --backend lean \
+                        --out "$shard_out/lean-report.json" \
+                        --forms-out "$shard_out/lean-forms.json" \
+                        > "$shard_out/lean-check.stdout"
+                      jq -e \
+                        '.status == "pass"
+                         and .qualification == "qualified"
+                         and .counts.cases > 0
+                         and .counts.matched == .counts.cases
+                         and .counts.mismatched == 0
+                         and .counts.unsupported == 0
+                         and .counts.errors == 0
+                         and .proof_authority == false
+                         and .closes_stage_a_proof == false' \
+                        "$shard_out/lean-check.stdout" > /dev/null
+                      corpus_sha256="$(sha256sum ${imported}/corpus.json | cut -d ' ' -f 1)"
+                      report_sha256="$(sha256sum "$shard_out/report.json" | cut -d ' ' -f 1)"
+                      unicorn_report_sha256="$(sha256sum "$shard_out/unicorn-report.json" | cut -d ' ' -f 1)"
+                      lean_report_sha256="$(sha256sum "$shard_out/lean-report.json" | cut -d ' ' -f 1)"
+                      lean_forms_sha256="$(sha256sum "$shard_out/lean-forms.json" | cut -d ' ' -f 1)"
+                      import_manifest_sha256="$(sha256sum ${imported}/manifest.json | cut -d ' ' -f 1)"
+                      runner_sha256="$(sha256sum ${bochs-conformance}/bin/spaghetti-bochs-conformance-runner | cut -d ' ' -f 1)"
+                      guest_sha256="$(sha256sum ${bochs-conformance}/libexec/spaghetti-extractor/bochs-conformance/guest.img | cut -d ' ' -f 1)"
+                      bochs_sha256="$(sha256sum ${bochs-conformance}/libexec/spaghetti-extractor/bochs-conformance/bochs-raw | cut -d ' ' -f 1)"
+                      jq -n \
+                        --arg opcode ${pkgs.lib.escapeShellArg opcode} \
+                        --argjson shard_index ${toString shardIndex} \
+                        --argjson shard_count 16 \
+                        --arg bochs_store_path ${pkgs.lib.escapeShellArg (toString bochs-conformance)} \
+                        --arg corpus_store_path ${pkgs.lib.escapeShellArg (toString imported)} \
+                        --arg corpus_sha256 "$corpus_sha256" \
+                        --arg report_sha256 "$report_sha256" \
+                        --arg unicorn_report_sha256 "$unicorn_report_sha256" \
+                        --arg lean_report_sha256 "$lean_report_sha256" \
+                        --arg lean_forms_sha256 "$lean_forms_sha256" \
+                        --arg import_manifest_sha256 "$import_manifest_sha256" \
+                        --arg runner_sha256 "$runner_sha256" \
+                        --arg guest_sha256 "$guest_sha256" \
+                        --arg bochs_sha256 "$bochs_sha256" \
+                        --slurpfile package_metadata ${bochs-conformance}/share/spaghetti-extractor/bochs-conformance/package-metadata.json \
+                        '{
+                          format: "stage-a-bochs-conformance-execution-v1",
+                          source: {
+                            opcode: $opcode,
+                            shard_index: $shard_index,
+                            shard_count: $shard_count,
+                            corpus_store_path: $corpus_store_path,
+                            corpus_sha256: $corpus_sha256,
+                            import_manifest_sha256: $import_manifest_sha256
+                          },
+                          backend: {
+                            store_path: $bochs_store_path,
+                            runner_sha256: $runner_sha256,
+                            guest_sha256: $guest_sha256,
+                            bochs_binary_sha256: $bochs_sha256,
+                            package: $package_metadata[0]
+                          },
+                          report: {
+                            path: "report.json",
+                            sha256: $report_sha256
+                          },
+                          unicorn_report: {
+                            path: "unicorn-report.json",
+                            sha256: $unicorn_report_sha256
+                          },
+                          lean_report: {
+                            path: "lean-report.json",
+                            sha256: $lean_report_sha256
+                          },
+                          lean_forms: {
+                            path: "lean-forms.json",
+                            sha256: $lean_forms_sha256
+                          },
+                          trust: {
+                            role: "isa_conformance_evidence_only",
+                            proof_authority: false,
+                            closes_stage_a_proof: false
+                          }
+                        }' > "$shard_out/execution-manifest.json"
+                      ln -s ${imported}/manifest.json "$shard_out/import-manifest.json"
+                      ln -s ${imported}/corpus.json "$shard_out/corpus.json"
+                    '')
+                stageABochs80386ShardIndices)
+            stageABochs80386Opcodes;
+          stageABochs80386EvidenceIndex = pkgs.lib.concatMap
+            (opcode:
+              map
+                (shardIndex: {
+                  inherit opcode;
+                  shard_index = shardIndex;
+                  shard_count = 16;
+                  path = "${opcode}/shard-${toString shardIndex}-of-16/execution-manifest.json";
+                })
+                stageABochs80386ShardIndices)
+            stageABochs80386Opcodes;
+          stage-a-isa-conformance-bochs-80386 = pkgs.runCommand
+            "stage-a-isa-conformance-bochs-80386"
+            { }
+            ''
+              mkdir -p "$out"
+              ${pkgs.lib.concatMapStringsSep "\n"
+                (opcode:
+                  pkgs.lib.concatMapStringsSep "\n"
+                    (shardIndex:
+                      let
+                        shard = builtins.elemAt stageABochs80386Shards (
+                          (pkgs.lib.lists.findFirstIndex
+                            (value: value == opcode) 0 stageABochs80386Opcodes)
+                          * builtins.length stageABochs80386ShardIndices
+                          + shardIndex
+                        );
+                        relative = "${opcode}/shard-${toString shardIndex}-of-16";
+                      in ''
+                        mkdir -p "$out/${opcode}"
+                        ln -s "${shard}/${relative}" "$out/${relative}"
+                      '')
+                    stageABochs80386ShardIndices)
+                stageABochs80386Opcodes}
+              cat > "$out/index.json" <<'JSON'
+              ${builtins.toJSON {
+                format = "stage-a-isa-conformance-evidence-set-v1";
+                suite = "SingleStepTests-80386-Bochs-Unicorn-Lean";
+                shards = stageABochs80386EvidenceIndex;
+                trust = {
+                  role = "isa_conformance_evidence_only";
+                  proof_authority = false;
+                  closes_stage_a_proof = false;
+                };
+              }}
+              JSON
+            '';
           stageAJqCommonCflags = "-g0 -fno-asynchronous-unwind-tables -fno-ident -fno-inline -fno-inline-functions -fno-inline-small-functions -fno-ipa-cp -fno-ipa-sra -fno-ipa-icf";
           stageAJqOriginalCflags = "-O2 -fno-align-functions -fno-align-labels -fno-align-loops -fno-align-jumps ${stageAJqCommonCflags}";
           stageAJqCandidateCflags = "-O2 -falign-functions=32 -falign-labels=16 -falign-loops=16 -falign-jumps=16 ${stageAJqCommonCflags}";
@@ -400,9 +611,25 @@
                 .composition_progress.counts.rooted_refined_segments > 0 and
                 .composition_progress.counts.rooted_refined_segments <
                   .composition_progress.counts.rooted_reachable_feasible_edges and
-                .composition_progress.counts.unsupported_instructions == 0
+                .composition_progress.counts.unsupported_instructions == 0 and
+                .composition_progress.reachability_assurance.status == "incomplete" and
+                (.composition_progress.reachability_assurance.blocker_totals.coverage_bearing | not) and
+                (.composition_progress.reachability_assurance.blocker_totals.comparable | not) and
+                .composition_progress.reachability_assurance.conservative_potential_reachability.node_count ==
+                  .composition_progress.counts.potential_reachable_nodes and
+                .composition_progress.reachability_assurance.represented_rooted_reachability.node_count ==
+                  .composition_progress.counts.rooted_reachable_nodes and
+                .composition_progress.reachability_assurance.conservative_potential_reachability.node_count >
+                  .composition_progress.reachability_assurance.represented_rooted_reachability.node_count
               ' "$prepared/relational-v3/prepared-proof.json" >/dev/null
               jq -e '
+                (.launch.original_is_dll | not) and
+                (.launch.candidate_is_dll | not) and
+                .launch.original_exports == [] and
+                .launch.candidate_exports == [] and
+                (.launch.original_tls_callback_rvas | length) == 2 and
+                (.launch.candidate_tls_callback_rvas | length) == 2 and
+                (.launch.tls_callback_target_ids | length) == 2 and
                 (.machine_import_call_contracts | any(
                   .import.dll == "kernel32.dll" and
                   .import.symbol == "TlsGetValue" and
@@ -438,19 +665,42 @@
           };
           relationalKernelModules = [
             "Formal"
+            "ISAQualification"
+            "ISAConformance"
+            "ISAConformanceRunner"
             "RelationalDecode"
+            "RelationalLoader"
             "RelationalMachine"
+            "RelationalPEExecution"
+            "RelationalISAQualification"
             "Relational"
             "RelationalInvariant"
             "RelationalExecution"
             "RelationalImage"
             "RelationalSegment"
             "RelationalComposition"
+            "RelationalLinkedFrames"
             "RelationalEnvironment"
             "RelationalCallbacks"
             "RelationalCertificates"
+            "RelationalPEWorldExecution"
             "RelationalStaticTree"
           ];
+          isaKernelModules = [
+            "Formal"
+            "ISAQualification"
+            "ISAConformance"
+            "ISAConformanceRunner"
+          ];
+          stage-a-isa-kernel-cache =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              standaloneSourceRoot =
+                relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules = isaKernelModules;
+              targetNodes = isaKernelModules;
+              targetBundle = true;
+            };
           stage-a-relational-kernel-cache =
             import ./nix/stage-a-lean-graph.nix {
               inherit pkgs;
@@ -588,6 +838,45 @@
               "reachable-acceptance"
               "tests.test_stage_a_reachable_acceptance"
               [ ./tests/test_stage_a_reachable_acceptance.py ];
+          stage-a-relational-tests-pe-entry-surface =
+            mkStageARelationalTest
+              "pe-entry-surface"
+              "tests.test_stage_a_pe_entry_surface"
+              [
+                ./tests/test_stage_a_pe_entry_surface.py
+                ./tests/pe_fixtures.py
+              ];
+          stage-a-relational-tests-formal-pe-entry-surface =
+            mkStageARelationalTest
+              "lean-formal-pe-entry-surface"
+              "tests.test_stage_a_formal_pe_entry_surface"
+              [ ./tests/test_stage_a_formal_pe_entry_surface.py ];
+          stage-a-relational-tests-proof-blocked =
+            mkStageARelationalTest
+              "lean-proof-blocked"
+              "tests.test_stage_a_proof_blocked"
+              [ ./tests/test_stage_a_proof_blocked.py ];
+          stage-a-relational-tests-loader-image-diagnostics =
+            mkStageARelationalTest
+              "loader-image-diagnostics"
+              "tests.test_stage_a_loader_image_diagnostics"
+              [
+                ./tests/test_stage_a_loader_image_diagnostics.py
+                ./tests/pe_fixtures.py
+              ];
+          stage-a-relational-tests-loader-image-valid =
+            mkStageARelationalTest
+              "lean-loader-image-valid"
+              "tests.test_stage_a_loader_image_valid"
+              [ ./tests/test_stage_a_loader_image_valid.py ];
+          stage-a-relational-tests-raw-eip-execution =
+            mkStageARelationalTest
+              "lean-raw-eip-execution"
+              "tests.test_stage_a_raw_eip_execution"
+              [
+                ./tests/test_stage_a_raw_eip_execution.py
+                ./tests/pe_fixtures.py
+              ];
           stage-a-relational-tests-indirect-control = mkStageARelationalTest
             "indirect-control"
             "tests.test_stage_a_indirect_control tests.test_stage_a_initial_static_code_pointers"
@@ -599,6 +888,54 @@
             "control-provenance"
             "tests.test_stage_a_control_provenance"
             [ ./tests/test_stage_a_control_provenance.py ];
+          stage-a-relational-tests-isa-conformance = mkStageARelationalTest
+            "isa-conformance"
+            "tests.test_stage_a_isa_conformance"
+            [ ./tests/test_stage_a_isa_conformance.py ];
+          stage-a-relational-tests-isa-conformance-kernel =
+            mkStageARelationalTest
+              "lean-isa-conformance-kernel"
+              "tests.test_stage_a_isa_conformance_kernel"
+              [ ./tests/test_stage_a_isa_conformance_kernel.py ];
+          stage-a-relational-tests-isa-conformance-lean =
+            mkStageARelationalTest
+              "lean-isa-conformance-runner"
+              "tests.test_stage_a_isa_conformance_lean"
+              [
+                ./tests/test_stage_a_isa_conformance.py
+                ./tests/test_stage_a_isa_conformance_lean.py
+              ];
+          stage-a-relational-tests-isa-conformance-unicorn =
+            mkStageARelationalTest
+              "isa-conformance-unicorn"
+              "tests.test_stage_a_isa_conformance_unicorn"
+              [ ./tests/test_stage_a_isa_conformance_unicorn.py ];
+          stage-a-relational-tests-isa-conformance-bochs =
+            mkStageARelationalTest
+              "isa-conformance-bochs"
+              "tests.test_stage_a_isa_conformance_bochs"
+              [ ./tests/test_stage_a_isa_conformance_bochs.py ];
+          stage-a-relational-tests-isa-conformance-differential =
+            mkStageARelationalTest
+              "lean-isa-conformance-differential"
+              "tests.test_stage_a_isa_conformance_differential"
+              [
+                ./tests/test_stage_a_isa_conformance_differential.py
+                ./tests/test_stage_a_isa_conformance_unicorn.py
+              ];
+          stage-a-relational-tests-isa-conformance-80386 =
+            mkStageARelationalTest
+              "isa-conformance-80386-import"
+              "tests.test_stage_a_isa_conformance_80386"
+              [ ./tests/test_stage_a_isa_conformance_80386.py ];
+          stage-a-relational-tests-isa-conformance-80386-differential =
+            mkStageARelationalTest
+              "lean-isa-conformance-80386-differential"
+              "tests.test_stage_a_isa_conformance_80386_differential"
+              [
+                ./tests/test_stage_a_isa_conformance_80386.py
+                ./tests/test_stage_a_isa_conformance_80386_differential.py
+              ];
           stage-a-relational-tests-bounded-table-call-generation =
             mkStageARelationalTest
               "bounded-table-call-generation"
@@ -609,6 +946,11 @@
               "lean-bounded-table-call-kernel"
               "tests.test_stage_a_bounded_table_call_kernel"
               [ ./tests/test_stage_a_bounded_table_call_kernel.py ];
+          stage-a-relational-tests-reverse-sentinel-scanner-integration =
+            mkStageARelationalTest
+              "lean-reverse-sentinel-scanner-integration"
+              "tests.test_stage_a_reverse_sentinel_scanner_integration"
+              [ ./tests/test_stage_a_reverse_sentinel_scanner_integration.py ];
           stage-a-relational-tests-callsite-preservation = mkStageARelationalTest
             "callsite-preservation"
             "tests.test_stage_a_callsite_preservation"
@@ -643,6 +985,11 @@
               "acceptance-runtime-frame-import"
               "tests.test_stage_a_runtime_frame_import_acceptance"
               [ ./tests/test_stage_a_runtime_frame_import_acceptance.py ];
+          stage-a-relational-tests-acceptance-runtime-frame-register =
+            mkStageARelationalTest
+              "acceptance-runtime-frame-register"
+              "tests.test_stage_a_runtime_frame_register_acceptance"
+              [ ./tests/test_stage_a_runtime_frame_register_acceptance.py ];
           stageARelationalContractSuite = mkStageARelationalTestSuite
             "contract" "tests.test_stage_a_relational_contract"
             "StageARelationalContractTests" ./tests/test_stage_a_relational_contract.py;
@@ -668,17 +1015,41 @@
             stageARelationalLeanSuite.cases.import_register_indirect_call_witness_is_checked_by_lean;
           stage-a-relational-tests-lean-dynamic-range-result =
             stageARelationalLeanSuite.cases.dynamic_range_result_relation_is_checked_by_lean;
+          stage-a-relational-tests-lean-linked-frames =
+            stageARelationalLeanSuite.cases.linked_runtime_frames_support_an_arbitrary_dormant_tail;
           stage-a-relational-tests-contract-machine-import =
             stageARelationalContractSuite.cases.machine_import_call_contract_validation_fails_closed;
           stage-a-relational-tests-acceptance = stageARelationalAcceptanceSuite.aggregate;
           stage-a-relational-tests-acceptance-whole-program-kernel =
             stageARelationalAcceptanceSuite.cases.whole_program_equivalence_kernel_checks_without_sorry;
+          stage-a-relational-tests-acceptance-instruction-adequacy =
+            stageARelationalAcceptanceSuite.cases.instruction_semantics_adequacy_rejects_ambiguous_pe_fetch;
+          stage-a-relational-tests-acceptance-instruction-adequacy-tamper =
+            stageARelationalAcceptanceSuite.cases.instruction_adequacy_aggregate_rejects_tampered_region_span;
+          stage-a-relational-tests-acceptance-instruction-adequacy-multi-chunk =
+            stageARelationalAcceptanceSuite.cases.instruction_adequacy_aggregate_composes_multiple_chunks;
+          stage-a-relational-tests-acceptance-entry-surface =
+            stageARelationalAcceptanceSuite.cases.console_launch_rejects_dll_and_export_entry_surfaces;
           stage-a-relational-tests-acceptance-direct-loop =
             stageARelationalAcceptanceSuite.cases.direct_loop_emits_and_checks_closed_whole_program_theorem;
+          stage-a-relational-tests-acceptance-canonical-region =
+            stageARelationalAcceptanceSuite.cases.whole_program_theorem_rejects_noncanonical_reachable_region;
+          stage-a-relational-tests-acceptance-executable-coverage =
+            stageARelationalAcceptanceSuite.cases.whole_program_theorem_rejects_tampered_executable_partition;
+          stage-a-relational-tests-acceptance-semantic-code-aliases =
+            stageARelationalAcceptanceSuite.cases.whole_program_theorem_requires_semantic_code_alias_bridges;
           stage-a-relational-tests-acceptance-tls-launch =
             stageARelationalAcceptanceSuite.cases.tls_directory_is_parsed_and_rejected_by_console_launch_v1;
+          stage-a-relational-tests-acceptance-tls-parsing =
+            stageARelationalAcceptanceSuite.cases.formal_tls_directory_and_callback_parsing;
+          stage-a-relational-tests-acceptance-tls-roots =
+            stageARelationalAcceptanceSuite.cases.tls_callbacks_become_lean_checked_launch_roots;
+          stage-a-relational-tests-acceptance-control-frontier =
+            stageARelationalAcceptanceSuite.cases.control_frontier_does_not_hide_independent_reachable_branch;
           stage-a-relational-tests-acceptance-nested-external =
             stageARelationalAcceptanceSuite.cases.nested_external_call_preserves_internal_runtime_frame_end_to_end;
+          stage-a-relational-tests-acceptance-protocol-callback =
+            stageARelationalAcceptanceSuite.cases.protocol_call_and_callback_return_close_whole_program_theorem;
           stage-a-relational-tests-acceptance-import-register-return =
             stageARelationalAcceptanceSuite.cases.import_register_survives_checked_internal_call_and_return;
           stage-a-relational-tests-acceptance-direct-stack-read =
@@ -709,6 +1080,8 @@
             stageARelationalAcceptanceSuite.cases.exact_register_transfer_and_cfg_edge_are_checked_by_lean;
           stage-a-relational-tests-acceptance-immutable-image-word =
             stageARelationalAcceptanceSuite.cases.immutable_image_word_load_closes_register_transfer;
+          stage-a-relational-tests-acceptance-fixed-immutable-expression =
+            stageARelationalAcceptanceSuite.cases.fixed_immutable_expression_chain_closes_whole_program_theorem;
           stage-a-relational-tests-acceptance-static-word-slot =
             stageARelationalAcceptanceSuite.cases.static_word_slot_load_closes_register_transfer;
           stage-a-relational-tests-acceptance-paired-static-word-guard =
@@ -734,8 +1107,22 @@
               stage-a-relational-tests-external-stateful-memory
               stage-a-relational-tests-external-stateful-memory-kernel
               stage-a-relational-tests-reachable-acceptance
+              stage-a-relational-tests-pe-entry-surface
+              stage-a-relational-tests-formal-pe-entry-surface
+              stage-a-relational-tests-proof-blocked
+              stage-a-relational-tests-loader-image-diagnostics
+              stage-a-relational-tests-loader-image-valid
+              stage-a-relational-tests-raw-eip-execution
               stage-a-relational-tests-indirect-control
               stage-a-relational-tests-control-provenance
+              stage-a-relational-tests-isa-conformance
+              stage-a-relational-tests-isa-conformance-kernel
+              stage-a-relational-tests-isa-conformance-lean
+              stage-a-relational-tests-isa-conformance-unicorn
+              stage-a-relational-tests-isa-conformance-bochs
+              stage-a-relational-tests-isa-conformance-differential
+              stage-a-relational-tests-isa-conformance-80386
+              stage-a-relational-tests-isa-conformance-80386-differential
               stage-a-relational-tests-bounded-table-call-generation
               stage-a-relational-tests-bounded-table-call-kernel
               stage-a-relational-tests-callsite-preservation
@@ -745,6 +1132,7 @@
               stage-a-relational-tests-register-analysis
               stage-a-relational-tests-lean-runtime-frame-import-environment
               stage-a-relational-tests-acceptance-runtime-frame-import
+              stage-a-relational-tests-acceptance-runtime-frame-register
               stage-a-relational-tests-contract
               stage-a-relational-tests-state
               stage-a-relational-tests-pipeline
@@ -788,7 +1176,11 @@
         {
           default = spaghetti-extractor;
           inherit
+            bochs-conformance
+            singlestep-80386-conformance
             spaghetti-extractor
+            stage-a-isa-conformance-bochs-80386
+            stage-a-isa-kernel-cache
             stage-a-fixtures
             stage-a-fixtures-check
             stage-a-fixtures-root
@@ -809,10 +1201,25 @@
             stage-a-relational-tests-external-stateful-memory
             stage-a-relational-tests-external-stateful-memory-kernel
             stage-a-relational-tests-reachable-acceptance
+            stage-a-relational-tests-pe-entry-surface
+            stage-a-relational-tests-formal-pe-entry-surface
+            stage-a-relational-tests-proof-blocked
+            stage-a-relational-tests-loader-image-diagnostics
+            stage-a-relational-tests-loader-image-valid
+            stage-a-relational-tests-raw-eip-execution
             stage-a-relational-tests-indirect-control
             stage-a-relational-tests-control-provenance
+            stage-a-relational-tests-isa-conformance
+            stage-a-relational-tests-isa-conformance-kernel
+            stage-a-relational-tests-isa-conformance-lean
+            stage-a-relational-tests-isa-conformance-unicorn
+            stage-a-relational-tests-isa-conformance-bochs
+            stage-a-relational-tests-isa-conformance-differential
+            stage-a-relational-tests-isa-conformance-80386
+            stage-a-relational-tests-isa-conformance-80386-differential
             stage-a-relational-tests-bounded-table-call-generation
             stage-a-relational-tests-bounded-table-call-kernel
+            stage-a-relational-tests-reverse-sentinel-scanner-integration
             stage-a-relational-tests-callsite-preservation
             stage-a-relational-tests-callsite-summary-generation
             stage-a-relational-tests-call-return-summary
@@ -820,6 +1227,7 @@
             stage-a-relational-tests-register-analysis
             stage-a-relational-tests-lean-runtime-frame-import-environment
             stage-a-relational-tests-acceptance-runtime-frame-import
+            stage-a-relational-tests-acceptance-runtime-frame-register
             stage-a-relational-tests-contract
             stage-a-relational-tests-state
             stage-a-relational-tests-pipeline
@@ -827,12 +1235,24 @@
             stage-a-relational-tests-lean
             stage-a-relational-tests-lean-return-slot-inventory
             stage-a-relational-tests-lean-dynamic-range-result
+            stage-a-relational-tests-lean-linked-frames
             stage-a-relational-tests-contract-machine-import
             stage-a-relational-tests-acceptance
             stage-a-relational-tests-acceptance-whole-program-kernel
+            stage-a-relational-tests-acceptance-instruction-adequacy
+            stage-a-relational-tests-acceptance-instruction-adequacy-tamper
+            stage-a-relational-tests-acceptance-instruction-adequacy-multi-chunk
+            stage-a-relational-tests-acceptance-entry-surface
             stage-a-relational-tests-acceptance-direct-loop
+            stage-a-relational-tests-acceptance-canonical-region
+            stage-a-relational-tests-acceptance-executable-coverage
+            stage-a-relational-tests-acceptance-semantic-code-aliases
             stage-a-relational-tests-acceptance-tls-launch
+            stage-a-relational-tests-acceptance-tls-parsing
+            stage-a-relational-tests-acceptance-tls-roots
+            stage-a-relational-tests-acceptance-control-frontier
             stage-a-relational-tests-acceptance-nested-external
+            stage-a-relational-tests-acceptance-protocol-callback
             stage-a-relational-tests-acceptance-import-register-return
             stage-a-relational-tests-acceptance-direct-stack-read
             stage-a-relational-tests-acceptance-below-frame-stack-read
@@ -847,8 +1267,9 @@
             stage-a-relational-tests-acceptance-exact-pure-guard
             stage-a-relational-tests-acceptance-exact-to-related
             stage-a-relational-tests-acceptance-exact-register-transfer
-            stage-a-relational-tests-acceptance-immutable-image-word
-            stage-a-relational-tests-acceptance-static-word-slot
+              stage-a-relational-tests-acceptance-immutable-image-word
+              stage-a-relational-tests-acceptance-fixed-immutable-expression
+              stage-a-relational-tests-acceptance-static-word-slot
             stage-a-relational-tests-acceptance-paired-static-word-guard
             stage-a-relational-tests-acceptance-immutable-pe-pointer-chain
             stage-a-relational-tests-acceptance-immutable-pe-header
@@ -902,6 +1323,7 @@
         {
           inherit (packages)
             spaghetti-extractor
+            stage-a-isa-conformance-bochs-80386
             stage-a-fixtures-check
             stage-a-jq-fixtures-check
             stage-a-relational-tests
@@ -920,6 +1342,7 @@
               capstone
               pefile
               pytest
+              unicorn
               z3-solver
             ]
           );
@@ -928,12 +1351,14 @@
           default = pkgs.mkShell {
             packages = [
               pythonEnv
+              packages.bochs-conformance
               packages.spaghetti-extractor
               pkgs.jq
               pkgs.lean4
               pkgs.nix
               pkgs.pkgsCross.mingw32.stdenv.cc
               pkgs.llvm
+              pkgs.xed
             ];
             shellHook = ''
               export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"

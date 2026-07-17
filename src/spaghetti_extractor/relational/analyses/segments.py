@@ -27,7 +27,11 @@ from .external import (
     _semantic_external_target_identity,
     _semantic_input_register_offset,
 )
-from .control import _immutable_image_u32
+from .control import (
+    _immutable_image_u32,
+    _is_nonzero_test,
+    _uninhabited_state_predicate,
+)
 from ..model import (
     _semantic_constant_word,
     _stack_window_transfer_claims,
@@ -662,7 +666,7 @@ def _semantic_expr_has_exact_inputs(
     exact_identity_registers = {
         str(relation["original"])
         for relation in source.get("input_relations", [])
-        if relation.get("relation") == "exact"
+        if relation.get("relation") in {"exact", "fixed_word"}
         and relation.get("original") == relation.get("candidate")
     }
     return (
@@ -794,7 +798,7 @@ def _paired_stack_word_value_claim(
         if relation.get("original") == original_register
         and relation.get("candidate") == candidate_register
         and (
-            relation.get("relation") == "exact"
+            relation.get("relation") in {"exact", "fixed_word"}
             or (
                 relation.get("relation") == "related_word"
                 and original_offset == 0
@@ -1022,7 +1026,7 @@ def _static_word_value_claim_compatible(
             profile == "register_argument_v1"
             and ((value_claim.get("claim") or {}).get("relation") or {}).get(
                 "relation"
-            ) == "exact"
+            ) in {"exact", "fixed_word"}
         )
     if relation == "code_pointer":
         return profile == "mapped_code_target_v1"
@@ -1336,6 +1340,307 @@ def _direct_call_prepared_writes_claim(
         "indirect": bool(call_claim.get("indirect")),
     }
 
+
+def _reverse_sentinel_scanner_claims_by_edge(
+    contract: dict[str, Any],
+    bounded_table_call_candidates: list[dict[str, Any]],
+) -> dict[tuple[int, int], dict[str, Any]]:
+    """Derive exact scanner-body claims from canonicalized table inputs.
+
+    These claims remain proposals.  The generated Lean theorem checks the
+    immutable PE table, source bound, decoded scanner behavior, and exact
+    target predicate before the claim can close a segment obligation.
+    """
+    regions = contract.get("regions", [])
+    canonical_target_by_region: dict[int, int] = {}
+    ambiguous_target_regions: set[int] = set()
+    for target in contract.get("code_targets", []):
+        region_index = _integer(target.get("region_index"))
+        target_id = _integer(target.get("id"))
+        if (
+            region_index is None
+            or target_id is None
+            or not 0 <= region_index < len(regions)
+            or _integer(target.get("original_rva"))
+                != _integer(regions[region_index].get("original", {}).get("rva_start"))
+            or _integer(target.get("candidate_rva"))
+                != _integer(regions[region_index].get("candidate", {}).get("rva_start"))
+        ):
+            continue
+        if region_index in canonical_target_by_region:
+            canonical_target_by_region.pop(region_index, None)
+            ambiguous_target_regions.add(region_index)
+        elif region_index not in ambiguous_target_regions:
+            canonical_target_by_region[region_index] = target_id
+
+    claims: dict[tuple[int, int], dict[str, Any]] = {}
+    ambiguous_edges: set[tuple[int, int]] = set()
+    register_fields = (
+        "original_scanner_register",
+        "candidate_scanner_register",
+        "original_count_register",
+        "candidate_count_register",
+        "original_loaded_register",
+        "candidate_loaded_register",
+    )
+    table_fields = (
+        "value_target_id",
+        "table_offset",
+        "original_base",
+        "candidate_base",
+        "layout",
+        "upper_exclusive",
+        "original_index_register",
+        "candidate_index_register",
+        "continuation_target_id",
+    )
+    for table in bounded_table_call_candidates:
+        evidence = table.get("index_evidence")
+        cluster = evidence.get("scanner_cluster") if isinstance(evidence, dict) else None
+        if not (
+            table.get("input_contract")
+                == "bounded_immutable_code_pointer_table_call_v1"
+            and table.get("layout") == "sentinelTerminatedReverseCount"
+            and isinstance(cluster, dict)
+            and cluster.get("profile")
+                == "bounded_reverse_sentinel_scanner_cluster_v1"
+        ):
+            continue
+        scanner_index = _integer(cluster.get("scanner_region_index"))
+        test_index = _integer(cluster.get("test_region_index"))
+        bridge_index = _integer(cluster.get("bridge_region_index"))
+        zero_flag_bit = _integer(cluster.get("zero_flag_bit"))
+        if (
+            scanner_index is None
+            or test_index is None
+            or bridge_index is None
+            or not 0 <= scanner_index < len(regions)
+            or not 0 <= test_index < len(regions)
+            or not 0 <= bridge_index < len(regions)
+            or any(
+                index in ambiguous_target_regions
+                or index not in canonical_target_by_region
+                for index in (scanner_index, test_index, bridge_index)
+            )
+            or zero_flag_bit != 6
+            or any(not isinstance(cluster.get(field), str) for field in register_fields)
+            or any(field not in table for field in table_fields)
+            or not isinstance(table.get("rows"), list)
+        ):
+            continue
+        rows: list[dict[str, int]] = []
+        malformed_row = False
+        for row in table["rows"]:
+            original_index = _integer(row.get("original_index")) if isinstance(row, dict) else None
+            target_id = _integer(row.get("target_id")) if isinstance(row, dict) else None
+            if original_index is None or target_id is None:
+                malformed_row = True
+                break
+            rows.append({"original_index": original_index, "target_id": target_id})
+        if malformed_row:
+            continue
+        claim = {
+            "table": {
+                **{field: table[field] for field in table_fields},
+                "rows": rows,
+            },
+            **{field: cluster[field] for field in register_fields},
+            "test_target_id": canonical_target_by_region[test_index],
+            "scanner_target_id": canonical_target_by_region[scanner_index],
+            "bridge_target_id": canonical_target_by_region[bridge_index],
+            "zero_flag_bit": zero_flag_bit,
+        }
+        for edge, role in (
+            ((scanner_index, test_index), "body"),
+            ((test_index, scanner_index), "loop"),
+            ((test_index, bridge_index), "exit"),
+        ):
+            proposal = {"role": role, "claim": claim}
+            if edge in claims:
+                claims.pop(edge, None)
+                ambiguous_edges.add(edge)
+            elif edge not in ambiguous_edges:
+                claims[edge] = proposal
+    return claims
+
+
+def _reverse_sentinel_scanner_guard_claim(
+    role: Any,
+    claim: Any,
+    original_guard: Any,
+    candidate_guard: Any,
+) -> dict[str, Any] | None:
+    if (
+        role not in {"loop", "exit"}
+        or not isinstance(claim, dict)
+        or _integer(claim.get("zero_flag_bit")) != 6
+    ):
+        return None
+    loop_guard = {
+        "op": "not",
+        "value": {"op": "input_flag", "index": 6},
+    }
+    expected_guard = (
+        loop_guard
+        if role == "loop"
+        else {"op": "not", "value": loop_guard}
+    )
+    if original_guard != expected_guard or candidate_guard != expected_guard:
+        return None
+    return {
+        "profile": "reverse_sentinel_scanner_guard_v1",
+        "role": role,
+    }
+
+
+def _reverse_sentinel_scanner_register_transfer_claim(
+    role: Any,
+    claim: Any,
+    source_registers: dict[str, Any],
+    target: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Describe the one register fact supplied by the checked scanner proof.
+
+    Ordinary output claims still carry every other target relation.  Requiring
+    the two inventories to match exactly prevents this semantic certificate
+    from hiding an unrelated missing register fact.
+    """
+    if role != "body" or not isinstance(claim, dict):
+        return None
+    original = claim.get("original_loaded_register")
+    candidate = claim.get("candidate_loaded_register")
+    if not isinstance(original, str) or not isinstance(candidate, str):
+        return None
+    special = {
+        "original": original,
+        "candidate": candidate,
+        "relation": "related_word",
+    }
+
+    def relation_key(relation: Any) -> tuple[str, str, str] | None:
+        if not isinstance(relation, dict):
+            return None
+        values = (
+            relation.get("original"),
+            relation.get("candidate"),
+            relation.get("relation"),
+        )
+        if not all(isinstance(value, str) for value in values):
+            return None
+        return values
+
+    ordinary_relations = [
+        output
+        for output_claim in source_registers.get("output_claims", [])
+        if isinstance(output_claim, dict)
+        and isinstance((output := output_claim.get("output")), dict)
+    ]
+    ordinary_keys = [relation_key(relation) for relation in ordinary_relations]
+    target_keys = [
+        relation_key(relation) for relation in target.get("input_relations", [])
+    ]
+    special_key = relation_key(special)
+    if (
+        special_key is None
+        or any(key is None for key in ordinary_keys + target_keys)
+        or len(set(ordinary_keys)) != len(ordinary_keys)
+        or len(set(target_keys)) != len(target_keys)
+    ):
+        return None
+    if set(ordinary_keys) == set(target_keys) and len(ordinary_keys) == len(target_keys):
+        return {
+            "profile": "reverse_sentinel_scanner_register_transfer_v1",
+            "output": None,
+        }
+    if (
+        special_key in ordinary_keys
+        or set(ordinary_keys + [special_key]) != set(target_keys)
+        or len(ordinary_keys) + 1 != len(target_keys)
+    ):
+        return None
+    return {
+        "profile": "reverse_sentinel_scanner_register_transfer_v1",
+        "output": special,
+    }
+
+
+def _reverse_sentinel_scanner_flag_transfer_claim(
+    role: Any,
+    claim: Any,
+    source: dict[str, Any],
+    target_flags: list[int],
+    behavior: dict[str, Any],
+) -> dict[str, Any] | None:
+    if (
+        role != "body"
+        or not isinstance(claim, dict)
+        or _integer(claim.get("zero_flag_bit")) != 6
+        or target_flags.count(6) != 1
+        or len(set(target_flags)) != len(target_flags)
+    ):
+        return None
+    preserved_bits = [bit for bit in target_flags if bit != 6]
+    if preserved_bits and _preserved_input_flags_claim(
+        source, preserved_bits, behavior
+    ) is None:
+        return None
+    return {
+        "profile": "reverse_sentinel_scanner_flags_v1",
+        "produced_zero_bit": 6,
+        "preserved_bits": preserved_bits,
+    }
+
+
+def _zero_register(expression: Any) -> str | None:
+    if not isinstance(expression, dict) or expression.get("op") != "equal":
+        return None
+    left = expression.get("left")
+    right = expression.get("right")
+    zero = {"op": "constant", "value": 0}
+    if left == zero:
+        left, right = right, left
+    if right != zero or not isinstance(left, dict) or left.get("op") != "input_reg":
+        return None
+    register = left.get("reg")
+    return register if isinstance(register, str) else None
+
+
+def _register_zero_guard_contradiction_claim(
+    source: dict[str, Any],
+    target: dict[str, Any],
+    original_guard: dict[str, Any],
+    candidate_guard: dict[str, Any],
+) -> dict[str, Any] | None:
+    if target.get("state_predicates") != [_uninhabited_state_predicate()]:
+        return None
+    matches: list[tuple[str, str]] = []
+    for predicate in source.get("state_predicates", []):
+        if not isinstance(predicate, dict):
+            continue
+        original_register = _zero_register(predicate.get("original"))
+        candidate_register = _zero_register(predicate.get("candidate"))
+        if (
+            original_register is not None
+            and candidate_register is not None
+            and _is_nonzero_test(
+                original_guard,
+                {"op": "input_reg", "reg": original_register},
+            )
+            and _is_nonzero_test(
+                candidate_guard,
+                {"op": "input_reg", "reg": candidate_register},
+            )
+        ):
+            matches.append((original_register, candidate_register))
+    if len(matches) != 1:
+        return None
+    original_register, candidate_register = matches[0]
+    return {
+        "profile": "register_zero_guard_contradiction_v1",
+        "original_register": original_register,
+        "candidate_register": candidate_register,
+    }
+
 def _segment_refinement_candidates(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
@@ -1345,8 +1650,12 @@ def _segment_refinement_candidates(
     diagnostics: list[dict[str, Any]] | None = None,
     original_bin: StageABinary | None = None,
     candidate_bin: StageABinary | None = None,
+    bounded_table_call_candidates: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     by_edge: dict[int, dict[str, Any]] = {}
+    reverse_scanner_claims = _reverse_sentinel_scanner_claims_by_edge(
+        contract, bounded_table_call_candidates or []
+    )
     memory_regions = memory_contracts.get("regions", [])
     register_regions = register_relations.get("regions", [])
     for edge_index, edge in enumerate(register_relations.get("edges", [])):
@@ -1362,6 +1671,17 @@ def _segment_refinement_candidates(
             continue
         source = contract["regions"][source_index]
         target = contract["regions"][target_index]
+        reverse_scanner_edge = reverse_scanner_claims.get(
+            (source_index, target_index)
+        )
+        reverse_scanner_claim = (
+            reverse_scanner_edge.get("claim")
+            if isinstance(reverse_scanner_edge, dict) else None
+        )
+        reverse_scanner_role = (
+            reverse_scanner_edge.get("role")
+            if isinstance(reverse_scanner_edge, dict) else None
+        )
         source_target = next((
             code_target for code_target in contract.get("code_targets", [])
             if int(code_target.get("region_index", -1)) == source_index
@@ -1423,6 +1743,13 @@ def _segment_refinement_candidates(
             edge.get("original_guard") or {},
             edge.get("candidate_guard") or {},
         )
+        if guard_relation_claim is None:
+            guard_relation_claim = _reverse_sentinel_scanner_guard_claim(
+                reverse_scanner_role,
+                reverse_scanner_claim,
+                edge.get("original_guard") or {},
+                edge.get("candidate_guard") or {},
+            )
         if guard_relation_claim is None and dynamic_transfer_claims is not None:
             next_claim_index = next((
                 index for index, claim in enumerate(dynamic_transfer_claims)
@@ -1434,6 +1761,12 @@ def _segment_refinement_candidates(
                     "claim_index": next_claim_index,
                 }
         branch_edge = edge.get("kind") in {"branch_taken", "branch_fallthrough"}
+        guard_contradiction_claim = _register_zero_guard_contradiction_claim(
+            source,
+            target,
+            edge.get("original_guard") or {},
+            edge.get("candidate_guard") or {},
+        ) if branch_edge else None
         stack_transfer_claims = _stack_window_transfer_claims(
             source, target, behaviors[source_index]
         )
@@ -1447,19 +1780,51 @@ def _segment_refinement_candidates(
             )
             if not dynamic_register_output_claims else None
         )
-        register_inventory_supported = (
+        reverse_scanner_register_transfer_claim = (
+            _reverse_sentinel_scanner_register_transfer_claim(
+                reverse_scanner_role,
+                reverse_scanner_claim,
+                register_regions[source_index],
+                target,
+            )
+        )
+        ordinary_register_inventory_supported = (
             target_shaped_register_output_claims is not None
             if not dynamic_register_output_claims
             else source.get("output_relations", [])
                 == target.get("input_relations", [])
         )
+        register_inventory_supported = (
+            reverse_scanner_register_transfer_claim is not None
+            if reverse_scanner_role == "body"
+            else ordinary_register_inventory_supported
+        )
         register_transfer_supported = register_inventory_supported
-        flag_transfer_claim = _preserved_input_flags_claim(
-            source, target_flags, behaviors[source_index]
+        reverse_scanner_flag_transfer_claim = (
+            _reverse_sentinel_scanner_flag_transfer_claim(
+                reverse_scanner_role,
+                reverse_scanner_claim,
+                source,
+                target_flags,
+                behaviors[source_index],
+            )
+        )
+        flag_transfer_claim = (
+            reverse_scanner_flag_transfer_claim
+            or _preserved_input_flags_claim(
+                source, target_flags, behaviors[source_index]
+            )
         )
         flag_transfer_supported = (
             target_flags == []
             or flag_transfer_claim is not None
+        )
+        state_predicate_transfer_supported = (
+            not target.get("state_predicates")
+            or (
+                isinstance(reverse_scanner_claim, dict)
+                and reverse_scanner_role in {"body", "exit"}
+            )
         )
         common_transfer_supported = (
             edge.get("relation_preservation_proposed")
@@ -1476,7 +1841,11 @@ def _segment_refinement_candidates(
             and dynamic_transfer_claims is not None
             and stack_transfer_claims is not None
             and flag_transfer_supported
-            and not target.get("bounds")
+            and state_predicate_transfer_supported
+            and (
+                not target.get("bounds")
+                or reverse_scanner_role == "loop"
+            )
             and (
                 not target.get("address_separations")
                 or bool(target.get("stack_address_separation_claims"))
@@ -1497,8 +1866,10 @@ def _segment_refinement_candidates(
                     and int(target["numeric_id"]) in direct_targets
                 )
                 or (
-                    edge.get("indirect_target_profile") ==
-                        "immutable_relocated_function_pointer_jump_v1"
+                    edge.get("indirect_target_profile") in {
+                        "immutable_relocated_function_pointer_jump_v1",
+                        "fixed_code_address_indirect_jump_v1",
+                    }
                     and successors.get("outcome") == "indirect_jump"
                     and candidate_successors.get("outcome") == "indirect_jump"
                     and isinstance(edge.get("indirect_target_claim"), dict)
@@ -1507,6 +1878,10 @@ def _segment_refinement_candidates(
                 )
             )
             and (not branch_edge or guard_relation_claim is not None)
+        )
+        reverse_scanner_supported = (
+            no_write_supported and isinstance(reverse_scanner_claim, dict)
+            and reverse_scanner_role in {"body", "loop", "exit"}
         )
         direct_call_claim = edge.get("direct_call_push_claim")
         indirect_call_claim = edge.get("indirect_call_push_claim")
@@ -1708,7 +2083,19 @@ def _segment_refinement_candidates(
             or prepared_writes_supported
             or stack_write_supported or stack_writes_supported
         )
-        certificate_eligible = segment_supported and source_target is not None
+        guard_contradiction_supported = (
+            isinstance(guard_contradiction_claim, dict)
+            and memory.get("writes", {}).get("original_count") == 0
+            and memory.get("writes", {}).get("candidate_count") == 0
+            and successors.get("outcome") == "branch"
+            and candidate_successors.get("outcome") == "branch"
+            and isinstance(direct_targets, list)
+            and direct_targets == candidate_direct_targets
+            and int(target["numeric_id"]) in direct_targets
+        )
+        certificate_eligible = (
+            segment_supported or guard_contradiction_supported
+        ) and source_target is not None
         if diagnostics is not None:
             failed_checks: list[str] = []
 
@@ -1770,8 +2157,12 @@ def _segment_refinement_candidates(
                 all(bit in FLAG_BITS for bit in target_flags),
             )
             require(
+                "target_state_predicate_transfer_unsupported",
+                state_predicate_transfer_supported,
+            )
+            require(
                 "target_bound_invariant_required",
-                not target.get("bounds"),
+                not target.get("bounds") or reverse_scanner_role == "loop",
             )
             require(
                 "target_address_separation_invariant_required",
@@ -1938,7 +2329,10 @@ def _segment_refinement_candidates(
                 "source_region_index": source_index,
                 "target_region_index": target_index,
                 "edge_kind": str(edge.get("kind")),
-                "attempted_profile": attempted_profile,
+                "attempted_profile": (
+                    "composable_register_zero_guard_contradiction_v1"
+                    if guard_contradiction_supported else attempted_profile
+                ),
                 "eligible": certificate_eligible,
                 "failed_checks": failed_checks if not certificate_eligible else [],
             })
@@ -1958,7 +2352,9 @@ def _segment_refinement_candidates(
                 int(target["id"]) for target in source.get("values", [])
             ],
             "certificate_profile": (
-                "composable_direct_call_prepared_writes_v1"
+                "composable_register_zero_guard_contradiction_v1"
+                if guard_contradiction_supported
+                else "composable_direct_call_prepared_writes_v1"
                 if call_prepared_writes_supported
                 else "composable_direct_call_stack_writes_v1"
                 if call_stack_writes_supported
@@ -1974,7 +2370,30 @@ def _segment_refinement_candidates(
                 else "composable_immutable_indirect_jump_v1"
                 if edge.get("indirect_target_profile") ==
                     "immutable_relocated_function_pointer_jump_v1"
+                else "composable_fixed_code_address_indirect_jump_v1"
+                if edge.get("indirect_target_profile") ==
+                    "fixed_code_address_indirect_jump_v1"
+                else "composable_reverse_sentinel_scanner_v1"
+                if reverse_scanner_supported and reverse_scanner_role == "body"
+                else "composable_reverse_sentinel_scanner_loop_v1"
+                if reverse_scanner_supported and reverse_scanner_role == "loop"
+                else "composable_reverse_sentinel_scanner_exit_v1"
+                if reverse_scanner_supported and reverse_scanner_role == "exit"
                 else "composable_local_no_write_v1"
+            ),
+            "reverse_sentinel_scanner_claim": (
+                reverse_scanner_claim if reverse_scanner_supported else None
+            ),
+            "register_zero_guard_contradiction_claim": (
+                guard_contradiction_claim
+                if guard_contradiction_supported else None
+            ),
+            "reverse_sentinel_scanner_role": (
+                reverse_scanner_role if reverse_scanner_supported else None
+            ),
+            "reverse_sentinel_scanner_register_transfer_claim": (
+                reverse_scanner_register_transfer_claim
+                if reverse_scanner_supported else None
             ),
             "indirect_target_claim": edge.get("indirect_target_claim"),
             "known_indirect_call": known_indirect_call,
@@ -2523,7 +2942,7 @@ def _exact_pure_guard_claim(
     exact_registers = {
         str(relation["original"])
         for relation in source.get("input_relations", [])
-        if relation.get("relation") == "exact"
+        if relation.get("relation") in {"exact", "fixed_word"}
         and relation.get("original") == relation.get("candidate")
     }
     allowed_flags = {
@@ -3004,6 +3423,7 @@ def _preserved_input_flags_claim(
     fields = {
         0: "carry",
         2: "parity",
+        4: "auxiliary",
         6: "zero",
         7: "sign",
         11: "overflow",
@@ -3065,7 +3485,7 @@ def _related_word_zero_guard_claim(
         relation for relation in source.get("input_relations", [])
         if str(relation["original"]) == original[0]
         and str(relation["candidate"]) == candidate[0]
-        and relation["relation"] in {"exact", "related_word"}
+        and relation["relation"] in {"exact", "fixed_word", "related_word"}
     ), None)
     if relation is None:
         return None
@@ -3073,7 +3493,14 @@ def _related_word_zero_guard_claim(
         "profile": "related_word_zero_guard_v1",
         "original_register": original[0],
         "candidate_register": candidate[0],
-        "value_relation": relation["relation"],
+        "value_relation": (
+            {
+                "relation": "fixed_word",
+                "value": int(relation["value"]),
+            }
+            if relation["relation"] == "fixed_word"
+            else relation["relation"]
+        ),
         "not_count": original[1],
     }
 
@@ -3698,6 +4125,10 @@ def _lower_stack_register_relations(
         if not removable_outputs:
             row["fully_exact_output_transfer"] = bool(row.get("outputs")) and (
                 len(row.get("exact_output_claims", [])) == len(row.get("outputs", []))
+                and all(
+                    output.get("relation") == "exact"
+                    for output in row.get("outputs", [])
+                )
             )
             row["fully_supported_output_transfer"] = (
                 len(row.get("output_claims", [])) == len(row.get("outputs", []))
@@ -3725,6 +4156,10 @@ def _lower_stack_register_relations(
         ]
         row["fully_exact_output_transfer"] = bool(row["outputs"]) and (
             len(row["exact_output_claims"]) == len(row["outputs"])
+            and all(
+                output.get("relation") == "exact"
+                for output in row["outputs"]
+            )
         )
         row["fully_supported_output_transfer"] = (
             len(row["output_claims"]) == len(row["outputs"])

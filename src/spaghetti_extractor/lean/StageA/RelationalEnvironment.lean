@@ -776,6 +776,42 @@ structure ExternalImportRegisterPreservationClaim where
   target : ImportRegisterRelation
 deriving Repr, DecidableEq
 
+def RegisterValueRelation.externalWorldIndependent :
+    RegisterValueRelation -> Bool
+  | .exact | .fixedWord _ | .codePointer | .fixedCodePointer _ => true
+  | .dataPointer | .relatedWord => false
+
+theorem RegisterValueRelation.holds_change_values_of_externalWorldIndependent
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (sourceValues targetValues : List ValueTargetPair)
+    (relation : RegisterValueRelation) (original candidate : Word)
+    (independent : relation.externalWorldIndependent = true)
+    (holds : relation.holds originalImageBase candidateImageBase targets sourceValues
+      original candidate = true) :
+    relation.holds originalImageBase candidateImageBase targets targetValues
+      original candidate = true := by
+  cases relation <;>
+    simp_all [RegisterValueRelation.externalWorldIndependent,
+      RegisterValueRelation.holds]
+
+structure ExternalRegisterRelationPreservationClaim where
+  source : RegisterRelationPair
+  target : RegisterRelationPair
+deriving Repr, DecidableEq
+
+def ExternalRegisterRelationPreservationClaim.checked
+    (context : StaticProofContext) (contract : MachineImportCallContract)
+    (claim : ExternalRegisterRelationPreservationClaim) : Bool :=
+  contract.shapeValid &&
+    contract.disposition == .returns &&
+    claim.source == claim.target &&
+    claim.source.relation.externalWorldIndependent &&
+    claim.source.relation.staticTargetValid context &&
+    contract.preservedRegisters.contains claim.source.original &&
+    contract.preservedRegisters.contains claim.source.candidate &&
+    claim.source.original != .esp &&
+    claim.source.candidate != .esp
+
 def ExternalImportRegisterPreservationClaim.checked
     (contract : MachineImportCallContract)
     (claim : ExternalImportRegisterPreservationClaim) : Bool :=
@@ -842,6 +878,56 @@ theorem externalImportRegisterPreservationHolds_of_checked
     rcases bindingChecks with ⟨⟨imported, originalAddress⟩, candidateAddress⟩
     exact ⟨⟨imported, originalRegister.trans originalAddress⟩,
       candidateRegister.trans candidateAddress⟩
+
+theorem externalRegisterRelationPreservationHolds_of_checked
+    (context : StaticProofContext) (contract : MachineImportCallContract)
+    (claim : ExternalRegisterRelationPreservationClaim)
+    (originalEvent candidateEvent : WorldExternalEvent)
+    (originalResult candidateResult : WorldExternalResult)
+    (checked : claim.checked context contract = true)
+    (sourceHolds : claim.source.relation.holds
+      context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList
+      (context.relationalValueTargets originalEvent.world)
+      (originalEvent.state.registers.get claim.source.original)
+      (candidateEvent.state.registers.get claim.source.candidate) = true)
+    (pairConforms : ExactExternalCallPairConforms context contract
+      originalEvent candidateEvent originalResult candidateResult) :
+    claim.target.relation.holds
+      context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList
+      (context.relationalValueTargets originalResult.world)
+      (originalResult.state.registers.get claim.target.original)
+      (candidateResult.state.registers.get claim.target.candidate) = true := by
+  simp only [ExternalRegisterRelationPreservationClaim.checked,
+    Bool.and_eq_true, beq_iff_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨⟨⟨⟨⟨_contractValid, _returns⟩, sourceTarget⟩, independent⟩,
+      _targetValid⟩, originalPreserved⟩, candidatePreserved⟩,
+      _originalNotEsp⟩, _candidateNotEsp⟩
+  have originalRegister := pairConforms.originalConforms.2.1
+  simp only [machineCallAbiResultHolds, Bool.and_eq_true,
+    machineCallPreservedRegistersHold, List.all_eq_true, beq_iff_eq]
+      at originalRegister
+  have originalRegister := originalRegister.2 claim.source.original
+    (List.contains_iff_mem.mp originalPreserved)
+  have candidateRegister := pairConforms.candidateConforms.2.1
+  simp only [machineCallAbiResultHolds, Bool.and_eq_true,
+    machineCallPreservedRegistersHold, List.all_eq_true, beq_iff_eq]
+      at candidateRegister
+  have candidateRegister := candidateRegister.2 claim.source.candidate
+    (List.contains_iff_mem.mp candidatePreserved)
+  rw [← sourceTarget]
+  rw [originalRegister, candidateRegister]
+  exact RegisterValueRelation.holds_change_values_of_externalWorldIndependent
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList
+    (context.relationalValueTargets originalEvent.world)
+    (context.relationalValueTargets originalResult.world)
+    claim.source.relation
+    (originalEvent.state.registers.get claim.source.original)
+    (candidateEvent.state.registers.get claim.source.candidate)
+    independent sourceHolds
 
 def machineCallResultWordKind
     (kind : MachineCallResultWordRelationKind) : DynamicWordRelationKind :=
@@ -1305,13 +1391,43 @@ def RelationalProductEdgeLocallyRefined (context : StaticProofContext)
       RelationalExternalProductEdgeRefinement context graph edgeId site segment
         sourceInvariant)
 
+def CanonicalNodeControlEdgesComplete (context : StaticProofContext)
+    (graph : RelationalProductGraph) (regions : List RegionRelation)
+    (nodeId : Nat) : Prop :=
+  match graph.getNode? nodeId with
+  | none => False
+  | some node =>
+      ∃ region originalBehavior candidateBehavior,
+        regionById regions region.id = some region ∧
+          node.targetId = region.id ∧
+          NodeControlEdgesComplete graph nodeId context region originalBehavior
+            candidateBehavior
+
+theorem canonicalNodeControlEdgesComplete_of_found
+    (context : StaticProofContext) (graph : RelationalProductGraph)
+    (regions : List RegionRelation) (nodeId : Nat)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (regionFound : regionById regions region.id = some region)
+    (nodeTargetFound : (graph.getNode? nodeId).map (fun node => node.targetId) =
+      some region.id)
+    (complete : NodeControlEdgesComplete graph nodeId context region
+      originalBehavior candidateBehavior) :
+    CanonicalNodeControlEdgesComplete context graph regions nodeId := by
+  unfold CanonicalNodeControlEdgesComplete
+  cases nodeResult : graph.getNode? nodeId with
+  | none => simp [nodeResult] at nodeTargetFound
+  | some node =>
+      simp only [nodeResult, Option.map_some, Option.some.injEq] at nodeTargetFound
+      simp only [nodeResult]
+      exact ⟨region, originalBehavior, candidateBehavior, regionFound,
+        nodeTargetFound, complete⟩
+
 def ReachableProductNodesDecodedControlComplete (context : StaticProofContext)
-    (graph : RelationalProductGraph)
+    (graph : RelationalProductGraph) (regions : List RegionRelation)
     (reachability : RelationalProductReachabilityEvidence) : Prop :=
   ∀ nodeId, nodeId < graph.nodes.size → reachability.contains nodeId = true →
-    ∃ region originalBehavior candidateBehavior,
-      NodeControlEdgesComplete graph nodeId context region originalBehavior
-        candidateBehavior
+    CanonicalNodeControlEdgesComplete context graph regions nodeId
 
 def ReachableProductEdgesLocallyRefined (context : StaticProofContext)
     (graph : RelationalProductGraph)
@@ -1328,6 +1444,14 @@ structure RelationalProductLocalEvidence where
   decodedNodeIds : List Nat
   refinedEdgeIds : List Nat
 deriving Repr, DecidableEq
+
+def AllListedCanonicalDecodedControlNodesComplete
+    (graph : RelationalProductGraph) (context : StaticProofContext)
+    (regions : List RegionRelation) : List Nat -> Prop
+  | [] => True
+  | nodeId :: nodeIds =>
+      CanonicalNodeControlEdgesComplete context graph regions nodeId ∧
+        AllListedCanonicalDecodedControlNodesComplete graph context regions nodeIds
 
 def RelationalProductReachabilityEvidence.reachableNodeIds
     (graph : RelationalProductGraph)
@@ -1396,6 +1520,21 @@ theorem allListedDecodedControlNodesComplete_append
       rcases leftComplete with ⟨headComplete, tailComplete⟩
       exact ⟨headComplete, ih tailComplete⟩
 
+theorem allListedCanonicalDecodedControlNodesComplete_append
+    (graph : RelationalProductGraph) (context : StaticProofContext)
+    (regions : List RegionRelation) (left right : List Nat)
+    (leftComplete : AllListedCanonicalDecodedControlNodesComplete graph context
+      regions left)
+    (rightComplete : AllListedCanonicalDecodedControlNodesComplete graph context
+      regions right) :
+    AllListedCanonicalDecodedControlNodesComplete graph context regions
+      (left ++ right) := by
+  induction left with
+  | nil => simpa using rightComplete
+  | cons _ tail ih =>
+      rcases leftComplete with ⟨headComplete, tailComplete⟩
+      exact ⟨headComplete, ih tailComplete⟩
+
 theorem allListedProductEdgesLocallyRefined_append
     (context : StaticProofContext) (graph : RelationalProductGraph)
     (left right : List Nat)
@@ -1438,7 +1577,7 @@ theorem allListedReachableFeasibleProductEdges_append
       exact ⟨headValid, ih tailValid⟩
 
 structure PartialReachableProductLocalCertificate (context : StaticProofContext)
-    (graph : RelationalProductGraph)
+    (graph : RelationalProductGraph) (regions : List RegionRelation)
     (reachability : RelationalProductReachabilityEvidence)
     (evidence : RelationalProductLocalEvidence) : Prop where
   decodedNodeIdsIncreasing : strictlyIncreasingNats evidence.decodedNodeIds = true
@@ -1448,7 +1587,8 @@ structure PartialReachableProductLocalCertificate (context : StaticProofContext)
   refinedEdgeIdsValid :
     AllListedReachableFeasibleProductEdges graph reachability evidence.refinedEdgeIds
   decodedControlComplete :
-    AllListedDecodedControlNodesComplete graph context evidence.decodedNodeIds
+    AllListedCanonicalDecodedControlNodesComplete graph context regions
+      evidence.decodedNodeIds
   edgesLocallyRefined :
     AllListedProductEdgesLocallyRefined context graph evidence.refinedEdgeIds
 
@@ -1460,6 +1600,23 @@ theorem allListedDecodedControlNodesComplete_of_mem
       ∃ region originalBehavior candidateBehavior,
         NodeControlEdgesComplete graph nodeId context region originalBehavior
           candidateBehavior := by
+  induction nodeIds with
+  | nil => simp
+  | cons head tail ih =>
+      intro nodeId member
+      rcases listed with ⟨headComplete, tailComplete⟩
+      simp only [List.mem_cons] at member
+      cases member with
+      | inl same => simpa [same] using headComplete
+      | inr inTail => exact ih tailComplete nodeId inTail
+
+theorem allListedCanonicalDecodedControlNodesComplete_of_mem
+    (graph : RelationalProductGraph) (context : StaticProofContext)
+    (regions : List RegionRelation) (nodeIds : List Nat)
+    (listed : AllListedCanonicalDecodedControlNodesComplete graph context regions
+      nodeIds) :
+    ∀ nodeId, nodeId ∈ nodeIds ->
+      CanonicalNodeControlEdgesComplete context graph regions nodeId := by
   induction nodeIds with
   | nil => simp
   | cons head tail ih =>
@@ -1488,16 +1645,17 @@ theorem allListedProductEdgesLocallyRefined_of_mem
 
 theorem reachableProductNodesDecodedControlComplete_of_complete_evidence
     (context : StaticProofContext) (graph : RelationalProductGraph)
+    (regions : List RegionRelation)
     (reachability : RelationalProductReachabilityEvidence)
     (evidence : RelationalProductLocalEvidence)
     (complete : evidence.complete graph reachability = true)
-    (listed : AllListedDecodedControlNodesComplete graph context
+    (listed : AllListedCanonicalDecodedControlNodesComplete graph context regions
       evidence.decodedNodeIds) :
-    ReachableProductNodesDecodedControlComplete context graph reachability := by
+    ReachableProductNodesDecodedControlComplete context graph regions reachability := by
   simp only [RelationalProductLocalEvidence.complete, Bool.and_eq_true,
     beq_iff_eq] at complete
   intro nodeId before reachable
-  apply allListedDecodedControlNodesComplete_of_mem graph context
+  apply allListedCanonicalDecodedControlNodesComplete_of_mem graph context regions
     evidence.decodedNodeIds listed nodeId
   rw [complete.1]
   simp [RelationalProductReachabilityEvidence.reachableNodeIds, before, reachable]
@@ -1527,12 +1685,12 @@ theorem reachableProductEdgesLocallyRefined_of_complete_evidence
         before, edgeResult, sourceReachable, feasible]
 
 structure ReachableProductLocalCertificate (context : StaticProofContext)
-    (graph : RelationalProductGraph)
+    (graph : RelationalProductGraph) (regions : List RegionRelation)
     (reachability : RelationalProductReachabilityEvidence) where
   staticContextValid : StaticProofContext.StructurallyValid context
   reachabilitySound : reachability.SoundlyClosed context graph
   reachableControlComplete :
-    ReachableProductNodesDecodedControlComplete context graph reachability
+    ReachableProductNodesDecodedControlComplete context graph regions reachability
   reachableEdgesRefined :
     ReachableProductEdgesLocallyRefined context graph reachability
 

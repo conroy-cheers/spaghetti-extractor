@@ -91,6 +91,22 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "cache_boundary": True,
             },
             {
+                "id": "isa-requirements",
+                "path": "isa-requirements.json",
+                "producer": "instruction-semantics",
+                "consumers": ["isa-conformance", "contract-diagnostics"],
+                "cache_boundary": True,
+                "proof_authority": False,
+            },
+            {
+                "id": "isa-semantic-qualification",
+                "path": "isa-semantic-qualification.json",
+                "producer": "isa-conformance",
+                "consumers": ["contract-diagnostics", "semantic-model-development"],
+                "cache_boundary": True,
+                "proof_authority": False,
+            },
+            {
                 "id": "segment-diagnostics",
                 "path": "relational-segment-diagnostics.json",
                 "producer": "control-composition",
@@ -118,6 +134,22 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "declarations": ["StateRel", "StaticProofContext"],
             },
             {
+                "module": "StageA.RelationalPEExecution",
+                "declarations": [
+                    "PE32InstructionExecution",
+                    "stepPE32Instruction",
+                    "RegionInstructionAdequate",
+                ],
+            },
+            {
+                "module": "StageA.RelationalLoader",
+                "declarations": [
+                    "PE32LoaderPolicy",
+                    "preferredBaseOnlyLoaderPolicy",
+                    "pe32LoaderImageValid",
+                ],
+            },
+            {
                 "module": "StageA.RelationalSegment",
                 "declarations": ["RelationalSegmentRefinement"],
             },
@@ -129,12 +161,31 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 ],
             },
             {
+                "module": "StageA.RelationalLinkedFrames",
+                "declarations": [
+                    "RelationalRuntimeCallFrameLink",
+                    "RelationalLinkedRuntimeCallStackHolds",
+                    "LinkedProductControlProfile",
+                ],
+            },
+            {
                 "module": "StageA.RelationalCertificates",
                 "declarations": [
+                    "ProofBundle.CoversStaticContext",
+                    "ModeledFault",
+                    "ExecutionBlock",
                     "ProtocolCallbackTargetProfile",
                     "CallbackRunningProductNodeStepRefined",
                     "WholeProgramCertificate",
                     "pe32ProgramsEquivalent",
+                ],
+            },
+            {
+                "module": "StageA.RelationalPEWorldExecution",
+                "declarations": [
+                    "RawEipWorldExecution",
+                    "RawEipPairBridgeClosed",
+                    "PE32RawProgramsObservationallyEquivalent",
                 ],
             },
         ],
@@ -146,6 +197,7 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "owned_paths": [
                     "src/spaghetti_extractor/relational/extraction.py",
                     "src/spaghetti_extractor/lean/StageA/RelationalDecode.lean",
+                    "src/spaghetti_extractor/lean/StageA/RelationalPEExecution.lean",
                 ],
                 "integration_fixtures": ["tests/test_stage_a_relational_pipeline.py"],
             },
@@ -186,6 +238,7 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                     "src/spaghetti_extractor/relational/lean/composition.py",
                     "src/spaghetti_extractor/lean/StageA/RelationalSegment.lean",
                     "src/spaghetti_extractor/lean/StageA/RelationalComposition.lean",
+                    "src/spaghetti_extractor/lean/StageA/RelationalLinkedFrames.lean",
                 ],
                 "integration_fixtures": ["tests/test_stage_a_relational_acceptance.py"],
             },

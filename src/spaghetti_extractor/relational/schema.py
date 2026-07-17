@@ -48,6 +48,7 @@ MACHINE_CALL_MAX_ARGUMENT_WORDS = 1024
 FLAG_BITS = {
     0: "CF",
     2: "PF",
+    4: "AF",
     6: "ZF",
     7: "SF",
     10: "DF",
@@ -58,17 +59,23 @@ RELATIONAL_ENVIRONMENT_ID = "adversarial-pe32-external-v1"
 RELATIONAL_OBSERVATIONS = ["external_call", "external_jump", "return", "fault"]
 RELATIONAL_KERNEL_MODULES = (
     "Formal",
+    "ISAQualification",
     "RelationalDecode",
+    "RelationalLoader",
     "RelationalMachine",
+    "RelationalPEExecution",
+    "RelationalISAQualification",
     "Relational",
     "RelationalInvariant",
     "RelationalExecution",
     "RelationalImage",
     "RelationalSegment",
     "RelationalComposition",
+    "RelationalLinkedFrames",
     "RelationalEnvironment",
     "RelationalCallbacks",
     "RelationalCertificates",
+    "RelationalPEWorldExecution",
     "RelationalStaticTree",
 )
 RELATIONAL_ACCEPTANCE_THEOREM = (
@@ -87,6 +94,7 @@ RELATIONAL_PREPARED_REPORT_FILES = (
     "relational-stack-windows.json",
     "relational-segment-diagnostics.json",
     "relational-product-graph.json",
+    "isa-requirements.json",
     "relational-invariants.json",
     "relational-machine-import-calls.json",
     "relational-external-call-sites.json",
@@ -109,6 +117,52 @@ class AcceptanceAuthority(str, Enum):
 
 class SchemaError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class RegionStatePredicate:
+    original: dict[str, Any]
+    candidate: dict[str, Any]
+    source: str | None = None
+
+    @classmethod
+    def parse(cls, payload: Mapping[str, Any]) -> RegionStatePredicate:
+        allowed_fields = {"original", "candidate", "source"}
+        if set(payload) - allowed_fields:
+            raise SchemaError("region state predicate has unexpected fields")
+        if not {"original", "candidate"}.issubset(payload):
+            raise SchemaError(
+                "region state predicate must contain original and candidate expressions"
+            )
+        original = payload["original"]
+        candidate = payload["candidate"]
+        source = payload.get("source")
+        if not isinstance(original, Mapping) or not isinstance(candidate, Mapping):
+            raise SchemaError(
+                "region state predicate expressions must be JSON objects"
+            )
+        if not isinstance(original.get("op"), str) or not isinstance(
+            candidate.get("op"), str
+        ):
+            raise SchemaError(
+                "region state predicate expressions must name semantic operations"
+            )
+        if source is not None and not isinstance(source, str):
+            raise SchemaError("region state predicate source must be a string")
+        return cls(
+            original=dict(original),
+            candidate=dict(candidate),
+            source=source,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "original": self.original,
+            "candidate": self.candidate,
+        }
+        if self.source is not None:
+            payload["source"] = self.source
+        return payload
 
 
 @dataclass(frozen=True)
@@ -341,6 +395,7 @@ class PreparedProofDigests:
     stack_windows: str
     segment_diagnostics: str
     product_graph: str
+    isa_requirements: str
     invariants: str
     whole_program_acceptance: str
     composition_progress: str
@@ -359,6 +414,7 @@ class PreparedProofDigests:
             "stack_windows": "stack_windows_sha256",
             "segment_diagnostics": "segment_diagnostics_sha256",
             "product_graph": "product_graph_sha256",
+            "isa_requirements": "isa_requirements_sha256",
             "invariants": "invariants_sha256",
             "whole_program_acceptance": "whole_program_acceptance_sha256",
             "composition_progress": "composition_progress_sha256",

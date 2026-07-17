@@ -2,6 +2,112 @@ from tests.stage_a_relational_support import *
 
 
 class StageARelationalLeanTests(StageARelationalTestBase):
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required for linked-frame proofs")
+    def test_linked_runtime_frames_support_an_arbitrary_dormant_tail(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lean_dir = Path(temporary)
+            stage_a = lean_dir / "StageA"
+            stage_a.mkdir()
+            source_root = (
+                Path(__file__).parents[1]
+                / "src" / "spaghetti_extractor" / "lean" / "StageA"
+            )
+            for module in RELATIONAL_KERNEL_MODULES:
+                shutil.copyfile(
+                    source_root / f"{module}.lean",
+                    stage_a / f"{module}.lean",
+                )
+            (stage_a / "LinkedRuntimeFrames.lean").write_text(
+                """import StageA.RelationalLinkedFrames
+
+namespace StageA.LinkedRuntimeFrames
+
+open StageA.Formal StageA.Relational
+
+def invalidShortLink : RelationalRuntimeCallFrameLink := {
+  callSourceTargetId := 0
+  originalGap := 3
+  candidateGap := 4
+}
+
+example : invalidShortLink.checked = false := by decide
+
+def recursiveProfile : LinkedProductControlProfile := {
+  states := [{
+    nodeId := 4
+    continuation := some 7
+    active := some ReturnSlotOffsetInventory.zero
+  }]
+}
+
+example : recursiveProfile.Allows 4 [7] (some ReturnSlotOffsetInventory.zero) =
+    true := by decide
+
+example : recursiveProfile.Allows 4 [7, 8, 7, 8, 7]
+    (some ReturnSlotOffsetInventory.zero) = true := by decide
+
+example : recursiveProfile.Allows 4 [8, 7]
+    (some ReturnSlotOffsetInventory.zero) = false := by decide
+
+example (context : StaticProofContext) (original candidate : MachineState)
+    (frame outer : RelationalRuntimeCallFrame)
+    (frames : List RelationalRuntimeCallFrame)
+    (continuation outerContinuation : Nat) (continuations : List Nat)
+    (active outerActive : ReturnSlotOffsetInventory)
+    (link : RelationalRuntimeCallFrameLink)
+    (links : List RelationalRuntimeCallFrameLink)
+    (outerHolds : RelationalLinkedRuntimeCallStackHolds context original candidate
+      (outer :: frames) (outerContinuation :: continuations)
+      (some outerActive) links)
+    (activeChecked : active.checked = true)
+    (activeHolds : active.holds frame original.registers candidate.registers)
+    (continuationMatches : frame.continuationTargetId = continuation)
+    (frameValid : frame.toRelationalCallFrame.valid context = true)
+    (frameResolves : frame.toRelationalCallFrame.resolves context = true)
+    (frameMemory : frame.memoryHolds original.memory candidate.memory)
+    (linkHolds : link.holds frame outer) :
+    RelationalLinkedRuntimeCallStackHolds context original candidate
+      (frame :: outer :: frames)
+      (continuation :: outerContinuation :: continuations)
+      (some active) (link :: links) := by
+  exact RelationalLinkedRuntimeCallStackHolds.pushNested context original candidate
+    frame outer frames continuation outerContinuation continuations active
+    outerActive link links outerHolds activeChecked activeHolds
+    continuationMatches frameValid frameResolves frameMemory linkHolds
+
+example (context : StaticProofContext) (original candidate : MachineState)
+    (frames : List RelationalRuntimeCallFrame) (continuations : List Nat)
+    (originalWrites candidateWrites : List (Word × Word))
+    (holds : RelationalRuntimeCallFramesHold context original candidate
+      frames continuations)
+    (avoids : ∀ frame, frame ∈ frames →
+      frame.writesAvoid originalWrites candidateWrites) :
+    RelationalRuntimeCallFramesHold context
+      { original with memory := applyConcreteWrites original.memory originalWrites }
+      { candidate with memory := applyConcreteWrites candidate.memory candidateWrites }
+      frames continuations := by
+  exact RelationalRuntimeCallFramesHold.afterWrites context original candidate
+    frames continuations originalWrites candidateWrites holds avoids
+
+example (context : StaticProofContext) (original candidate : MachineState)
+    (frame : RelationalRuntimeCallFrame) (continuation : Nat)
+    (active : ReturnSlotOffsetInventory)
+    (link : RelationalRuntimeCallFrameLink) :
+    ¬ RelationalLinkedRuntimeCallStackHolds context original candidate
+      [frame] [continuation] (some active) [link] := by
+  simp [RelationalLinkedRuntimeCallStackHolds,
+    RelationalRuntimeCallFrameLinksHold]
+
+end StageA.LinkedRuntimeFrames
+""",
+                encoding="utf-8",
+            )
+            result = _run_lean_relational(
+                lean_dir, bundle="LinkedRuntimeFrames"
+            )
+            self.assertEqual(result["status"], "checked", result)
+            self.assertNotIn("sorryAx", result["stdout"])
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for result-range proofs")
     def test_dynamic_range_result_relation_is_checked_by_lean(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -685,7 +791,8 @@ example (program : DecodedWorldProgram) (source : Nat) (state : MachineState)
     (eventIndex : Nat) (world : RelationalWorld) (imported : ExternalTarget)
     (arguments : List Word) :
     (transitionFromWorldOutcome program source state [] eventIndex world
-      [] (.externalJump imported arguments)).next = .fault := by
+      [] (.externalJump imported arguments)).next =
+        .blocked .missingRuntimeContinuation := by
   rfl
 
 end StageA.ImportThunkBoundary

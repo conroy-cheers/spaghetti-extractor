@@ -4,9 +4,11 @@ from unittest.mock import patch
 
 from spaghetti_extractor.relational.analyses.registers import (
     _attach_assembled_immutable_read_address_separations,
+    _fixed_immutable_expr_value,
     _infer_register_output_relation,
     _immutable_image_word_read,
     _paired_constant_relation,
+    _register_relation_implies,
     _register_relation_join,
     _synthesize_register_relations,
 )
@@ -156,7 +158,8 @@ class StageARegisterAnalysisTests(unittest.TestCase):
                 expression, expression, {}, {}, 0x400000, 0x400000, True,
                 original_bin=object(), candidate_bin=object(),
             ),
-            ("exact", "assembled_immutable_image_word"),
+            ({"relation": "fixed_word", "value": 7},
+             "assembled_immutable_image_word"),
         )
 
     @patch(
@@ -296,6 +299,252 @@ class StageARegisterAnalysisTests(unittest.TestCase):
             {"op": "constant", "value": 0x401210},
             contract, 0x400000, 0x400000,
         ), {"relation": "fixed_code_pointer", "target_id": 0})
+
+    def test_equal_constants_retain_checked_fixed_word(self) -> None:
+        self.assertEqual(
+            _paired_constant_relation(
+                {"op": "constant", "value": 0x12345678},
+                {"op": "constant", "value": 0x12345678},
+                {}, 0x400000, 0x500000,
+            ),
+            {"relation": "fixed_word", "value": 0x12345678},
+        )
+
+    def test_fixed_word_lattice_is_directional(self) -> None:
+        word_7 = {"relation": "fixed_word", "value": 7}
+        word_8 = {"relation": "fixed_word", "value": 8}
+
+        self.assertEqual(_register_relation_join([word_7, dict(word_7)]), word_7)
+        self.assertEqual(_register_relation_join([word_7, word_8]), "exact")
+        self.assertEqual(_register_relation_join([word_7, "exact"]), "exact")
+        self.assertTrue(_register_relation_implies(word_7, "exact"))
+        self.assertFalse(_register_relation_implies("exact", word_7))
+        self.assertFalse(_register_relation_implies(word_8, word_7))
+
+    def test_fixed_word_input_supports_equal_pure_expression(self) -> None:
+        expression = {
+            "op": "add",
+            "left": _input("edx"),
+            "right": {"op": "constant", "value": 4},
+        }
+        self.assertEqual(
+            _infer_register_output_relation(
+                expression, expression,
+                {"edx": {"relation": "fixed_word", "value": 0x80}},
+                {}, 0x400000, 0x400000, True,
+            ),
+            ("exact", "lean_exact_memory_free_expression"),
+        )
+
+    @patch(
+        "spaghetti_extractor.relational.analyses.registers._immutable_image_u32",
+        return_value=0x12345678,
+    )
+    def test_fixed_word_input_drives_checked_immutable_expression(
+        self, _immutable_image_u32,
+    ) -> None:
+        original_expression = {
+            "op": "read32",
+            "address": {
+                "op": "add",
+                "left": {"op": "constant", "value": 0x400000},
+                "right": _input("edx"),
+            },
+        }
+        candidate_expression = {
+            "op": "read32",
+            "address": {
+                "op": "add",
+                "left": {"op": "constant", "value": 0x500000},
+                "right": _input("ecx"),
+            },
+        }
+        fixed = {"edx": {"relation": "fixed_word", "value": 0x80}}
+        original_bin = SimpleNamespace(image_base=0x400000)
+        candidate_bin = SimpleNamespace(image_base=0x500000)
+
+        self.assertEqual(
+            _infer_register_output_relation(
+                original_expression,
+                candidate_expression,
+                fixed,
+                {},
+                0x400000,
+                0x500000,
+                True,
+                original_bin=original_bin,
+                candidate_bin=candidate_bin,
+                candidate_input_registers={"edx": "ecx"},
+            ),
+            (
+                {"relation": "fixed_word", "value": 0x12345678},
+                "fixed_immutable_expression",
+            ),
+        )
+        self.assertEqual(
+            _fixed_immutable_expr_value(
+                original_expression, original_bin, {"edx": 0x80},
+            ),
+            0x12345678,
+        )
+        self.assertEqual(
+            _immutable_image_u32.call_args_list[0].args[1], 0x400080,
+        )
+
+    @patch(
+        "spaghetti_extractor.relational.analyses.registers._immutable_image_u32",
+        return_value=None,
+    )
+    def test_fixed_immutable_expression_fails_closed(
+        self, _immutable_image_u32,
+    ) -> None:
+        original_expression = {
+            "op": "read32",
+            "address": {
+                "op": "add",
+                "left": {"op": "constant", "value": 0x400000},
+                "right": _input("edx"),
+            },
+        }
+        candidate_expression = {
+            "op": "read32",
+            "address": {
+                "op": "add",
+                "left": {"op": "constant", "value": 0x500000},
+                "right": _input("ecx"),
+            },
+        }
+        binaries = (
+            SimpleNamespace(image_base=0x400000),
+            SimpleNamespace(image_base=0x500000),
+        )
+        relation, reason = _infer_register_output_relation(
+            original_expression,
+            candidate_expression,
+            {"edx": {"relation": "fixed_word", "value": 0x80}},
+            {},
+            0x400000,
+            0x500000,
+            True,
+            original_bin=binaries[0],
+            candidate_bin=binaries[1],
+            candidate_input_registers={"edx": "ecx"},
+        )
+        self.assertEqual((relation, reason), (
+            "related_word", "unsupported_or_mixed_relation",
+        ))
+
+        relation, reason = _infer_register_output_relation(
+            original_expression,
+            candidate_expression,
+            {"edx": "exact"},
+            {},
+            0x400000,
+            0x500000,
+            True,
+            original_bin=binaries[0],
+            candidate_bin=binaries[1],
+            candidate_input_registers={"edx": "ecx"},
+        )
+        self.assertEqual((relation, reason), (
+            "related_word", "unsupported_or_mixed_relation",
+        ))
+
+    def test_fixed_immutable_expression_serializer_emits_state_rel_claim(self) -> None:
+        source = _lean_register_output_claim({
+            "kind": "fixed_immutable_expression",
+            "output": {
+                "original": "ebx",
+                "candidate": "esi",
+                "relation": "fixed_word",
+                "value": 0x12345678,
+            },
+            "original_value": 0x12345678,
+            "candidate_value": 0x12345678,
+        })
+        self.assertIn("RegisterOutputClaim.fixedImmutableExpression", source)
+        self.assertIn("originalValue := 305419896", source)
+        self.assertIn("candidateValue := 305419896", source)
+
+    @patch(
+        "spaghetti_extractor.relational.analyses.registers._immutable_image_u32",
+        return_value=0x12345678,
+    )
+    def test_fixed_immutable_expression_propagates_across_blocks(
+        self, _immutable_image_u32,
+    ) -> None:
+        regions = [_region(0, root=True), _region(1)]
+        first_original = _behavior({"op": "jump", "target": 1})
+        first_candidate = _behavior(
+            {"op": "jump", "target": 1}, candidate=True,
+        )
+        first_original["registers"]["edx"] = {
+            "op": "constant", "value": 0x80,
+        }
+        first_candidate["registers"]["edx"] = {
+            "op": "constant", "value": 0x80,
+        }
+        read = {
+            "op": "read32",
+            "address": {
+                "op": "add",
+                "left": {"op": "constant", "value": 0x400000},
+                "right": _input("edx"),
+            },
+        }
+        returned = {"op": "returned", "target": _input("eax")}
+        second_original = _behavior(returned)
+        second_candidate = _behavior(returned, candidate=True)
+        second_original["registers"]["ebx"] = read
+        second_candidate["registers"]["ebx"] = read
+        binary = SimpleNamespace(image_base=0x400000)
+
+        _contract, analysis = _synthesize_register_relations(
+            {
+                "code_targets": [
+                    {
+                        "id": index,
+                        "region_index": index,
+                        "original_rva": 0x1000 + index * 0x10,
+                        "candidate_rva": 0x1000 + index * 0x10,
+                    }
+                    for index in range(2)
+                ],
+                "value_targets": [],
+                "static_word_relation_slots": [],
+                "regions": regions,
+            },
+            [
+                {"original_ir": first_original, "candidate_ir": first_candidate},
+                {"original_ir": second_original, "candidate_ir": second_candidate},
+            ],
+            original_image_base=0x400000,
+            candidate_image_base=0x400000,
+            original_bin=binary,
+            candidate_bin=binary,
+        )
+
+        second_inputs = {
+            row["original"]: row for row in analysis["regions"][1]["inputs"]
+        }
+        self.assertEqual(second_inputs["edx"], {
+            "original": "edx",
+            "candidate": "edx",
+            "relation": "fixed_word",
+            "value": 0x80,
+        })
+        second_claims = analysis["regions"][1]["output_claims"]
+        self.assertIn({
+            "kind": "fixed_immutable_expression",
+            "output": {
+                "original": "ebx",
+                "candidate": "ebx",
+                "relation": "fixed_word",
+                "value": 0x12345678,
+            },
+            "original_value": 0x12345678,
+            "candidate_value": 0x12345678,
+        }, second_claims)
 
     def test_fixed_static_slot_output_requires_same_target_id(self) -> None:
         slot = {"relation": "fixed_code_pointer", "target_id": 7}
@@ -523,6 +772,159 @@ class StageARegisterAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(continuation["relation"], "related_word")
         self.assertNotIn("target_id", continuation)
+
+    def test_contracted_import_thunk_preserves_caller_specific_fixed_target(
+        self,
+    ) -> None:
+        def synthesize(*, include_contract: bool):
+            regions = [_region(index, root=index == 0) for index in range(5)]
+            regions[0]["code_targets"] = [
+                {
+                    "id": 1, "region_index": 1,
+                    "original_rva": 0x1010, "candidate_rva": 0x1010,
+                },
+                {
+                    "id": 4, "region_index": 4,
+                    "original_rva": 0x1040, "candidate_rva": 0x1040,
+                },
+            ]
+            regions[1]["code_targets"] = [
+                {
+                    "id": 2, "region_index": 2,
+                    "original_rva": 0x1020, "candidate_rva": 0x1020,
+                },
+                {
+                    "id": 3, "region_index": 3,
+                    "original_rva": 0x1030, "candidate_rva": 0x1030,
+                },
+            ]
+
+            def call_behavior(
+                target: int, continuation: int, return_address: int,
+                *, candidate: bool = False, fixed_slot: int | None = None,
+            ) -> dict[str, object]:
+                behavior = _behavior(
+                    {"op": "call", "target": target,
+                     "continuation": continuation},
+                    candidate=candidate,
+                    fixed_slot=fixed_slot,
+                )
+                stack_after_push = {
+                    "op": "subtract",
+                    "left": _input("esp"),
+                    "right": {"op": "constant", "value": 4},
+                }
+                behavior["registers"]["esp"] = stack_after_push
+                behavior["writes"] = [{
+                    "address": stack_after_push,
+                    "value": {"op": "constant", "value": return_address},
+                    "bytes": 4,
+                }]
+                return behavior
+
+            imported = {
+                "dll": "msvcrt.dll",
+                "name": {"op": "symbol", "bytes": list(b"__p__iob")},
+            }
+            returned = {"op": "returned", "target": _input("eax")}
+            behaviors = [
+                {
+                    "original_ir": call_behavior(
+                        1, 4, 0x401040, fixed_slot=0x402000,
+                    ),
+                    "candidate_ir": call_behavior(
+                        1, 4, 0x401040, candidate=True,
+                        fixed_slot=0x403000,
+                    ),
+                },
+                {
+                    "original_ir": call_behavior(2, 3, 0x401030),
+                    "candidate_ir": call_behavior(
+                        2, 3, 0x401030, candidate=True,
+                    ),
+                },
+                {
+                    "original_ir": _behavior({
+                        "op": "external_jump", "import": imported,
+                    }),
+                    "candidate_ir": _behavior({
+                        "op": "external_jump", "import": imported,
+                    }, candidate=True),
+                },
+                {
+                    "original_ir": _behavior(returned),
+                    "candidate_ir": _behavior(returned, candidate=True),
+                },
+                {
+                    "original_ir": _behavior(returned),
+                    "candidate_ir": _behavior(returned, candidate=True),
+                },
+            ]
+            machine_contracts = [] if not include_contract else [{
+                "id": 0,
+                "import": {"dll": "msvcrt.dll", "symbol": "__p__iob"},
+                "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+                "clobbered_registers": ["eax", "ecx", "edx"],
+                "stack_result_delta": 4,
+                "result_register_relations": [{
+                    "register": "eax", "relation": "related_word",
+                }],
+            }]
+            contract = {
+                "code_targets": [{
+                    "id": 0,
+                    "original_rva": 0x1100,
+                    "candidate_rva": 0x1200,
+                }],
+                "value_targets": [],
+                "static_word_relation_slots": [{
+                    "id": 0,
+                    "original_address": 0x402000,
+                    "candidate_address": 0x403000,
+                    "relation": "fixed_code_pointer",
+                    "target_id": 0,
+                }],
+                "machine_import_call_contracts": machine_contracts,
+                "regions": regions,
+            }
+            return _synthesize_register_relations(
+                contract,
+                behaviors,
+                original_image_base=0x400000,
+                candidate_image_base=0x400000,
+            )[1]
+
+        contracted = synthesize(include_contract=True)
+        continuation = next(
+            relation
+            for relation in contracted["regions"][4]["inputs"]
+            if relation["original"] == "esi"
+        )
+        self.assertEqual(continuation, {
+            "original": "esi",
+            "candidate": "edi",
+            "relation": "fixed_code_pointer",
+            "target_id": 0,
+        })
+        summaries = contracted["return_slot_analysis"][
+            "call_summary_analysis"
+        ]["summaries"]
+        self.assertEqual([
+            summary["callsite_region_index"] for summary in summaries
+        ], [0])
+        self.assertTrue(summaries[0]["closed"])
+
+        uncontracted = synthesize(include_contract=False)
+        continuation = next(
+            relation
+            for relation in uncontracted["regions"][4]["inputs"]
+            if relation["original"] == "esi"
+        )
+        self.assertEqual(continuation["relation"], "related_word")
+        self.assertFalse(
+            uncontracted["return_slot_analysis"]["call_summary_analysis"]
+            ["summaries"][0]["closed"]
+        )
 
     def test_indirect_call_inventory_requires_exact_fixed_register_relation(
         self,

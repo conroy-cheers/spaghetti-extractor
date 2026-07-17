@@ -8,23 +8,52 @@ class StageAEnvironmentFrontierTests(unittest.TestCase):
         product_graph = {
             "counts": {
                 "roots": 1,
+                "declared_reachable_nodes": 1,
                 "potential_reachable_nodes": 1,
+                "potential_reachable_feasible_edges": 2,
+                "potential_unrepresented_control_edges": 0,
                 "reachable_locally_refined_edges": 1,
                 "reachable_product_local_complete": False,
                 "reachability_truncated_by_control_frontier": False,
             },
             "evidence": {
+                "canonical_node_inventory": [{
+                    "node_id": 0,
+                    "target_id": 0,
+                    "region_id": "root",
+                    "region_numeric_id": 0,
+                    "original_rva_start": 0x1000,
+                    "original_rva_end": 0x1001,
+                    "candidate_rva_start": 0x1000,
+                    "candidate_rva_end": 0x1001,
+                    "original_entry_aliases": [],
+                    "candidate_entry_aliases": [],
+                }],
                 "declared_reachable_node_ids": [0],
+                "declared_reachable_bits": [True],
                 "reachable_feasible_edge_ids": [0, 1],
                 "potential_control_cuts": [],
+                "potential_reachable_feasible_edge_ids": [0, 1],
+                "runtime_call_continuations": [],
                 "reachable_local_refinement_frontier_edge_ids": [1],
+                "decoded_control_complete_node_ids": [0],
                 "reachable_decoded_control_frontier_node_ids": [],
                 "potential_reachable_node_ids": [0],
             },
             "edges": [
-                {"id": 0, "kind": "externalCall"},
-                {"id": 1, "kind": "externalCall"},
+                {
+                    "id": 0, "source_node_id": 0, "target_node_id": 0,
+                    "kind": "externalCall", "infeasible": False,
+                },
+                {
+                    "id": 1, "source_node_id": 0, "target_node_id": 0,
+                    "kind": "externalCall", "infeasible": False,
+                },
             ],
+            "nodes": [{
+                "id": 0, "target_id": 0, "root": True,
+                "outgoing_edge_ids": [0, 1],
+            }],
             "root_node_ids": [0],
         }
         external_call_sites = {

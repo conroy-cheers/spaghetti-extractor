@@ -1,0 +1,491 @@
+#!/usr/bin/env python3
+"""Execute one canonical ISA corpus through the private Bochs batch harness."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from typing import Any
+
+
+MACHINE_FORMAT = "stage-a-isa-conformance-bochs-machine-v1"
+RESULT_FORMAT = "stage-a-isa-conformance-bochs-result-v1"
+BACKEND_ID = "bochs-x86-32-batch-v1"
+BACKEND_VERSION = "3.0"
+
+REQUIRE_MEMORY = 0x01
+REQUIRE_FAULT = 0x02
+REQUIRE_X87 = 0x04
+REQUIRE_SEGMENT = 0x08
+REQUIRE_BRANCH = 0x10
+REQUIRE_PROFILE = 0x20
+REQUIRE_INSTRUCTION = 0x40
+
+GPRS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+PROFILE_FIELDS = {
+    "architecture",
+    "cpu",
+    "execution_mode",
+    "environment",
+    "features",
+}
+STATE_FIELDS = {"gprs", "eip", "eflags", "fs", "x87"}
+FS_FIELDS = {"selector", "base"}
+X87_FIELDS = {
+    "control_word",
+    "status_word",
+    "tag_word",
+    "last_opcode",
+    "instruction_pointer",
+    "data_pointer",
+    "registers",
+}
+DEFINED_FIELDS = {"gprs", "eip", "eflags", "fs", "x87", "memory"}
+EXPECTED_FIELDS = {"final_state", "memory", "control", "fault"}
+CASE_FIELDS = {
+    "id",
+    "instruction_bytes",
+    "profile",
+    "image_base",
+    "initial_state",
+    "memory",
+    "defined_outputs",
+    "expected",
+}
+
+SUPPORTED_PROFILE = {
+    "architecture": "x86",
+    "cpu": "haswell",
+    "execution_mode": "protected-32",
+    "environment": "pe32",
+    "features": [],
+}
+RESET_X87 = {
+    "control_word": 0x037F,
+    "status_word": 0,
+    "tag_word": 0xFFFF,
+    "last_opcode": 0,
+    "instruction_pointer": 0,
+    "data_pointer": 0,
+    "registers": [[0] * 10 for _ in range(8)],
+}
+
+
+class RunnerError(Exception):
+    pass
+
+
+def exact_object(value: Any, fields: set[str], context: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise RunnerError(f"{context} does not match the phase-1 schema")
+    return value
+
+
+def u32(value: Any, context: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value < 2**32
+    ):
+        raise RunnerError(f"{context} must be an unsigned 32-bit integer")
+    return value
+
+
+def u16(value: Any, context: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value < 2**16
+    ):
+        raise RunnerError(f"{context} must be an unsigned 16-bit integer")
+    return value
+
+
+def bytes_value(value: Any, context: str) -> bytes:
+    if (
+        not isinstance(value, list)
+        or not 1 <= len(value) <= 15
+        or any(
+            isinstance(item, bool)
+            or not isinstance(item, int)
+            or not 0 <= item <= 255
+            for item in value
+        )
+    ):
+        raise RunnerError(f"{context} must contain 1..15 bytes")
+    return bytes(value)
+
+
+def any_mask(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, list):
+        return any(any_mask(item) for item in value)
+    if isinstance(value, dict):
+        return any(any_mask(item) for item in value.values())
+    return True
+
+
+def validate_x87(value: Any, context: str) -> dict[str, Any]:
+    x87 = exact_object(value, X87_FIELDS, context)
+    for field in ("control_word", "status_word", "tag_word", "last_opcode"):
+        u16(x87[field], f"{context}.{field}")
+    for field in ("instruction_pointer", "data_pointer"):
+        u32(x87[field], f"{context}.{field}")
+    registers = x87["registers"]
+    if not isinstance(registers, list) or len(registers) != 8:
+        raise RunnerError(f"{context}.registers must contain exactly 8 registers")
+    for index, register in enumerate(registers):
+        if (
+            not isinstance(register, list)
+            or len(register) != 10
+            or any(
+                isinstance(byte, bool)
+                or not isinstance(byte, int)
+                or not 0 <= byte <= 255
+                for byte in register
+            )
+        ):
+            raise RunnerError(
+                f"{context}.registers[{index}] must contain exactly 10 bytes"
+            )
+    return x87
+
+
+def validate_fs(value: Any, context: str) -> dict[str, Any]:
+    fs = exact_object(value, FS_FIELDS, context)
+    u16(fs["selector"], f"{context}.selector")
+    u32(fs["base"], f"{context}.base")
+    return fs
+
+
+def validate_state(value: Any, context: str) -> dict[str, Any]:
+    state = exact_object(value, STATE_FIELDS, context)
+    gprs = exact_object(state["gprs"], set(GPRS), f"{context}.gprs")
+    for name in GPRS:
+        u32(gprs[name], f"{context}.gprs.{name}")
+    u32(state["eip"], f"{context}.eip")
+    u32(state["eflags"], f"{context}.eflags")
+    validate_fs(state["fs"], f"{context}.fs")
+    validate_x87(state["x87"], f"{context}.x87")
+    return state
+
+
+def validate_case(case: dict[str, Any], context: str) -> None:
+    if not isinstance(case["id"], str) or not case["id"]:
+        raise RunnerError(f"{context}.id must be a non-empty string")
+    bytes_value(case["instruction_bytes"], f"{context}.instruction_bytes")
+    u32(case["image_base"], f"{context}.image_base")
+
+    profile = exact_object(case["profile"], PROFILE_FIELDS, f"{context}.profile")
+    for field in ("architecture", "cpu", "execution_mode", "environment"):
+        if not isinstance(profile[field], str) or not profile[field]:
+            raise RunnerError(f"{context}.profile.{field} must be a non-empty string")
+    features = profile["features"]
+    if (
+        not isinstance(features, list)
+        or any(not isinstance(feature, str) or not feature for feature in features)
+        or features != sorted(set(features))
+    ):
+        raise RunnerError(
+            f"{context}.profile.features must be unique ordered strings"
+        )
+
+    validate_state(case["initial_state"], f"{context}.initial_state")
+    if not isinstance(case["memory"], list):
+        raise RunnerError(f"{context}.memory must be a list")
+
+    defined = exact_object(
+        case["defined_outputs"], DEFINED_FIELDS, f"{context}.defined_outputs"
+    )
+    exact_object(defined["gprs"], set(GPRS), f"{context}.defined_outputs.gprs")
+    validate_fs(defined["fs"], f"{context}.defined_outputs.fs")
+    validate_x87(defined["x87"], f"{context}.defined_outputs.x87")
+    if not isinstance(defined["memory"], list):
+        raise RunnerError(f"{context}.defined_outputs.memory must be a list")
+
+    expected = exact_object(case["expected"], EXPECTED_FIELDS, f"{context}.expected")
+    if expected["final_state"] is not None:
+        validate_state(expected["final_state"], f"{context}.expected.final_state")
+    if expected["final_state"] is None:
+        if expected["memory"] is not None:
+            raise RunnerError(
+                f"{context}.expected.memory must be null when final_state is null"
+            )
+    elif not isinstance(expected["memory"], list):
+        raise RunnerError(
+            f"{context}.expected.memory must be a list when final_state is present"
+        )
+
+
+def case_requirements(case: dict[str, Any]) -> int:
+    profile = case["profile"]
+    defined = case["defined_outputs"]
+    expected = case["expected"]
+    initial_fs = case["initial_state"]["fs"]
+    initial_x87 = case["initial_state"]["x87"]
+    requirements = 0
+    if profile != SUPPORTED_PROFILE:
+        requirements |= REQUIRE_PROFILE
+    if case["memory"] or defined["memory"] or expected["memory"]:
+        requirements |= REQUIRE_MEMORY
+    if expected["fault"] != "none" or expected["final_state"] is None:
+        requirements |= REQUIRE_FAULT
+    if any_mask(defined["x87"]) or initial_x87 != RESET_X87:
+        requirements |= REQUIRE_X87
+    if (
+        any_mask(defined["fs"])
+        or initial_fs["selector"] != 0
+        or initial_fs["base"] != 0
+    ):
+        requirements |= REQUIRE_SEGMENT
+    if expected["control"] != "fallthrough":
+        requirements |= REQUIRE_BRANCH
+    return requirements
+
+
+def private_case_line(sequence: int, case: dict[str, Any]) -> str:
+    state = case["initial_state"]
+    gprs = state["gprs"]
+    values = [
+        "CASE",
+        "1",
+        f"{sequence:08x}",
+        bytes_value(case["instruction_bytes"], "instruction_bytes").hex(),
+        f"{u32(state['eip'], 'initial_state.eip'):08x}",
+        f"{u32(state['eflags'], 'initial_state.eflags'):08x}",
+    ]
+    values.extend(
+        f"{u32(gprs[name], f'initial_state.gprs.{name}'):08x}" for name in GPRS
+    )
+    values.append(f"{case_requirements(case):08x}")
+    return "\t".join(values)
+
+
+def parse_private_output(text: str, case_count: int) -> list[dict[str, Any]]:
+    lines = text.splitlines()
+    if len(lines) != case_count + 1:
+        raise RunnerError("private protocol emitted the wrong record count")
+    records: list[dict[str, Any]] = []
+    for sequence, line in enumerate(lines[:-1]):
+        fields = line.split("\t")
+        if len(fields) < 4 or fields[:2] != ["OBS", f"{sequence:08x}"]:
+            raise RunnerError("private observation is malformed or out of order")
+        status = fields[2]
+        if status == "complete":
+            if len(fields) != 13:
+                raise RunnerError("private complete observation is malformed")
+            words = [int(field, 16) for field in fields[3:]]
+            records.append({"status": status, "words": words, "detail": ""})
+        elif status in {"unsupported", "error"}:
+            if len(fields) != 4 or not fields[3]:
+                raise RunnerError("private incomplete observation is malformed")
+            records.append({"status": status, "words": None, "detail": fields[3]})
+        else:
+            raise RunnerError("private observation status is unsupported")
+    if lines[-1] != f"DONE\t{case_count:08x}":
+        raise RunnerError("private terminal record is malformed")
+    return records
+
+
+def machine_record(
+    sequence: int, case: dict[str, Any], private: dict[str, Any]
+) -> dict[str, Any]:
+    status = private["status"]
+    if status != "complete":
+        return {
+            "format": MACHINE_FORMAT,
+            "sequence": sequence,
+            "case_id": case["id"],
+            "status": status,
+            "final_state": None,
+            "memory": None,
+            "actual": None,
+            "detail": private["detail"],
+        }
+    words = private["words"]
+    initial = case["initial_state"]
+    final_state = {
+        "gprs": dict(zip(GPRS, words[:8], strict=True)),
+        "eip": words[8],
+        "eflags": words[9],
+        "fs": initial["fs"],
+        "x87": initial["x87"],
+    }
+    return {
+        "format": MACHINE_FORMAT,
+        "sequence": sequence,
+        "case_id": case["id"],
+        "status": "complete",
+        "final_state": final_state,
+        "memory": [],
+        "actual": {"control": "fallthrough", "fault": "none"},
+        "detail": "",
+    }
+
+
+def bochsrc(guest: Path, log: Path) -> str:
+    bios_root = Path(
+        os.environ.get(
+            "BOCHS_CONFORMANCE_BIOS_DIR",
+            os.environ.get("BXSHARE", "/tmp/bochs-3.0-src/bios"),
+        )
+    )
+    rom = Path(os.environ.get("BOCHS_CONFORMANCE_ROM", bios_root / "BIOS-bochs-latest"))
+    vga = Path(os.environ.get("BOCHS_CONFORMANCE_VGAROM", bios_root / "VGABIOS-lgpl-latest.bin"))
+    for path, label in ((guest, "guest image"), (rom, "BIOS"), (vga, "VGA BIOS")):
+        if not path.is_file():
+            raise RunnerError(f"{label} is missing: {path}")
+    return "\n".join(
+        [
+            "megs: 16",
+            f"romimage: file={rom}",
+            f"vgaromimage: file={vga}",
+            f"floppya: 1_44={guest}, status=inserted, write_protected=1",
+            "boot: floppy",
+            "display_library: nogui",
+            f"log: {log}",
+            "panic: action=fatal",
+            "error: action=report",
+            "info: action=report",
+            "debug: action=ignore",
+            "clock: sync=none, time0=0",
+            "cpu: model=corei7_haswell_4770, count=1, ips=10000000, reset_on_triple_fault=1",
+            "mouse: enabled=0",
+            "",
+        ]
+    )
+
+
+def run() -> None:
+    raw_input = sys.stdin.buffer.read()
+    try:
+        corpus = json.loads(raw_input)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RunnerError(f"stdin is not one canonical corpus JSON value: {exc}") from exc
+    canonical = json.dumps(corpus, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii") + b"\n"
+    if raw_input != canonical:
+        raise RunnerError("stdin corpus JSON is not canonical")
+    corpus = exact_object(corpus, {"format", "id", "cases"}, "corpus")
+    if (
+        corpus["format"] != "stage-a-isa-conformance-corpus-v1"
+        or not isinstance(corpus["cases"], list)
+    ):
+        raise RunnerError("corpus format is unsupported")
+    cases = [
+        exact_object(case, CASE_FIELDS, f"case[{index}]")
+        for index, case in enumerate(corpus["cases"])
+    ]
+    if not cases:
+        raise RunnerError("corpus must contain at least one case")
+    for index, case in enumerate(cases):
+        validate_case(case, f"case[{index}]")
+
+    script_root = Path(__file__).resolve().parent
+    bochs = Path(
+        os.environ.get(
+            "SPAGHETTI_BOCHS_RAW",
+            os.environ.get(
+                "BOCHS_CONFORMANCE_BOCHS", script_root / "build/source/bochs"
+            ),
+        )
+    )
+    guest = Path(
+        os.environ.get(
+            "SPAGHETTI_BOCHS_GUEST",
+            os.environ.get(
+                "BOCHS_CONFORMANCE_GUEST", script_root / "build/guest/guest.img"
+            ),
+        )
+    )
+    if not bochs.is_file():
+        raise RunnerError(f"instrumented Bochs is missing: {bochs}")
+
+    with tempfile.TemporaryDirectory(prefix="spaghetti-bochs-") as temporary:
+        work = Path(temporary)
+        private_input = work / "input.tsv"
+        private_output = work / "output.tsv"
+        config = work / "bochsrc"
+        log = work / "bochs.log"
+        private_input.write_text(
+            "".join(
+                private_case_line(i, case) + "\n" for i, case in enumerate(cases)
+            ),
+            encoding="ascii",
+        )
+        config.write_text(bochsrc(guest, log), encoding="ascii")
+        environment = dict(os.environ)
+        environment.update(
+            BOCHS_CONFORMANCE_PRIVATE_INPUT=str(private_input),
+            BOCHS_CONFORMANCE_PRIVATE_OUTPUT=str(private_output),
+            HOME=str(work),
+            LC_ALL="C",
+            LANG="C",
+            TZ="UTC",
+        )
+        completed = subprocess.run(
+            [str(bochs), "-q", "-f", str(config)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            timeout=float(os.environ.get("BOCHS_CONFORMANCE_TIMEOUT", "120")),
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", "replace").strip()
+            if not detail and log.exists():
+                detail = log.read_text(encoding="utf-8", errors="replace")[-4000:].strip()
+            raise RunnerError(f"Bochs exited with status {completed.returncode}: {detail or 'no diagnostic'}")
+        if not private_output.is_file():
+            raise RunnerError("Bochs produced no private protocol output")
+        private_records = parse_private_output(
+            private_output.read_text(encoding="ascii"), len(cases)
+        )
+
+    records = [
+        machine_record(i, case, private_records[i])
+        for i, case in enumerate(cases)
+    ]
+    counts = {
+        "cases": len(records),
+        "complete": sum(record["status"] == "complete" for record in records),
+        "unsupported": sum(record["status"] == "unsupported" for record in records),
+        "errors": sum(record["status"] == "error" for record in records),
+    }
+    records.append(
+        {
+            "format": RESULT_FORMAT,
+            "corpus_id": corpus["id"],
+            "input_sha256": hashlib.sha256(raw_input).hexdigest(),
+            "backend": {
+                "id": BACKEND_ID,
+                "kind": "emulator",
+                "version": BACKEND_VERSION,
+            },
+            "case_ids": [case["id"] for case in cases],
+            "counts": counts,
+        }
+    )
+    for record in records:
+        print(json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True))
+
+
+def main() -> int:
+    try:
+        run()
+    except (RunnerError, OSError, subprocess.SubprocessError, ValueError) as exc:
+        print(f"spaghetti-bochs-conformance-runner: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

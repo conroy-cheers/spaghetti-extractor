@@ -51,6 +51,21 @@ def duplicateTargetRows : BoundedImmutableCodePointerTableCallClaim := {
   ]
 }
 
+def duplicateIndexRows : BoundedImmutableCodePointerTableCallClaim := {
+  valueTargetId := 0
+  tableOffset := 0
+  originalBase := 4096
+  candidateBase := 8192
+  upperExclusive := 2
+  originalIndexRegister := .eax
+  candidateIndexRegister := .ecx
+  continuationTargetId := 1
+  rows := [
+    { index := 0, targetId := 7 },
+    { index := 0, targetId := 8 }
+  ]
+}
+
 def missingRowClaim : BoundedImmutableCodePointerTableCallClaim := {
   valueTargetId := 0
   tableOffset := 0
@@ -63,11 +78,60 @@ def missingRowClaim : BoundedImmutableCodePointerTableCallClaim := {
   rows := [{ index := 0, targetId := 7 }]
 }
 
-example : immutableCodePointerTableRowsUnique duplicateTargetRows = false := by
+def reverseSingleRowClaim : BoundedImmutableCodePointerTableCallClaim := {
+  valueTargetId := 0
+  tableOffset := 0
+  originalBase := 4096
+  candidateBase := 8192
+  layout := .sentinelTerminatedReverseCount
+  upperExclusive := 2
+  originalIndexRegister := .eax
+  candidateIndexRegister := .ecx
+  continuationTargetId := 1
+  rows := [{ index := 1, targetId := 7 }]
+}
+
+def reverseEmptyClaim : BoundedImmutableCodePointerTableCallClaim := {
+  valueTargetId := 0
+  tableOffset := 0
+  originalBase := 4096
+  candidateBase := 8192
+  layout := .sentinelTerminatedReverseCount
+  upperExclusive := 1
+  originalIndexRegister := .eax
+  candidateIndexRegister := .ecx
+  continuationTargetId := 1
+  rows := []
+}
+
+example : immutableCodePointerTableRowsUnique duplicateTargetRows = true := by
+  decide
+
+example : immutableCodePointerTableRowsUnique duplicateIndexRows = false := by
   decide
 
 example : immutableCodePointerTableRowsCover missingRowClaim = false := by
   decide
+
+example : immutableCodePointerTableRowsCover reverseSingleRowClaim = true := by
+  decide
+
+example : immutableCodePointerTableRowsCover reverseEmptyClaim = true := by
+  decide
+
+example : reverseSingleRowClaim.indexBound = {
+    original := .eax
+    candidate := .ecx
+    originalExpression := some (.sub (.inputReg .eax) (.constant 1))
+    candidateExpression := some (.sub (.inputReg .ecx) (.constant 1))
+    upperExclusive := 1
+  } := by
+  decide
+
+example (value : Word)
+    (bounded : decide (value - BitVec.ofNat 32 1 < BitVec.ofNat 32 3) = true) :
+    1 <= value.toNat ∧ value.toNat < 4 :=
+  shiftedIndexBound_range value 4 (by decide) (by decide) bounded
 
 example (context : StaticProofContext)
     (claim : BoundedImmutableCodePointerTableCallClaim)
@@ -81,6 +145,7 @@ example (context : StaticProofContext) (invariant : StateInvariant)
     (zero : claim.upperExclusive = 0) :
     claim.shapeChecked context invariant = false := by
   unfold BoundedImmutableCodePointerTableCallClaim.shapeChecked
+  unfold BoundedImmutableCodePointerTableCallClaim.staticShapeChecked
   rw [zero]
   cases context.dataMap.get? claim.valueTargetId <;>
     cases context.codeMap.get? claim.continuationTargetId <;> simp
@@ -94,6 +159,45 @@ example (context : StaticProofContext) (invariant : StateInvariant)
       originalBehavior candidateBehavior claim :=
   boundedImmutableCodePointerTableCallTargetsClosed_of_checked context invariant
     originalBehavior candidateBehavior claim structurallyValid checked
+
+example (context : StaticProofContext) (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim)
+    (checked : claim.checked context sourceInvariant targetInvariant originalBehavior
+      candidateBehavior = true) :
+    ReverseSentinelScannerPostconditionClosed context sourceInvariant targetInvariant
+      originalBehavior candidateBehavior claim :=
+  reverseSentinelScannerPostconditionClosed_of_checked context sourceInvariant
+    targetInvariant originalBehavior candidateBehavior claim checked
+
+example (context : StaticProofContext) (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim)
+    (checked : claim.loopChecked sourceInvariant targetInvariant originalBehavior
+      candidateBehavior = true) :
+    ReverseSentinelScannerLoopBoundClosed context sourceInvariant targetInvariant
+      originalBehavior candidateBehavior claim :=
+  reverseSentinelScannerLoopBoundClosed_of_checked context sourceInvariant
+    targetInvariant originalBehavior candidateBehavior claim checked
+
+example (context : StaticProofContext) (sourceInvariant targetInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : ReverseSentinelScannerClaim)
+    (checked : claim.exitChecked sourceInvariant targetInvariant originalBehavior
+      candidateBehavior = true) :
+    ReverseSentinelScannerFinishedPostconditionClosed context sourceInvariant
+      targetInvariant originalBehavior candidateBehavior claim :=
+  reverseSentinelScannerFinishedPostconditionClosed_of_checked context sourceInvariant
+    targetInvariant originalBehavior candidateBehavior claim checked
+
+example (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalGuard candidateGuard : BoolExpr)
+    (claim : ReverseSentinelScannerClaim)
+    (checked : claim.guardChecked sourceInvariant originalGuard candidateGuard = true) :
+    ReverseSentinelScannerGuardAgreementClosed context sourceInvariant
+      originalGuard candidateGuard claim :=
+  reverseSentinelScannerGuardsAgree_of_checked context sourceInvariant
+    originalGuard candidateGuard claim checked
 
 example (graph : RelationalProductGraph) (nodeId : Nat)
     (context : StaticProofContext) (region : RegionRelation)
@@ -125,6 +229,10 @@ example (graph : RelationalProductGraph) (nodeId : Nat)
     candidateNormalizedChecked claimChecked edgesChecked
 
 #print axioms boundedImmutableCodePointerTableCallTargetsClosed_of_checked
+#print axioms reverseSentinelScannerPostconditionClosed_of_checked
+#print axioms reverseSentinelScannerLoopBoundClosed_of_checked
+#print axioms reverseSentinelScannerFinishedPostconditionClosed_of_checked
+#print axioms reverseSentinelScannerGuardsAgree_of_checked
 #print axioms nodeBoundedImmutableCodePointerTableCallEdgesComplete_of_checked
 
 end StageA.BoundedTableCallKernel

@@ -23,7 +23,28 @@ def _lean_code_aliases(target: dict[str, Any], side: str) -> str:
 def _lean_register_pair(pair: dict[str, str]) -> str:
     return f"{{ original := .{pair['original']}, candidate := .{pair['candidate']} }}"
 
-def _lean_relation_constructor(relation: str | None) -> str:
+def _lean_relation_constructor(relation: str | dict[str, Any] | None) -> str:
+    if isinstance(relation, dict):
+        relation_name = relation.get("relation")
+        if relation_name == "fixed_word":
+            value = relation.get("value")
+            if (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and 0 <= value < 2**32
+            ):
+                return f"fixedWord {value}"
+        if relation_name == "fixed_code_pointer":
+            target_id = relation.get("target_id")
+            if (
+                isinstance(target_id, int)
+                and not isinstance(target_id, bool)
+                and target_id >= 0
+            ):
+                return f"fixedCodePointer {target_id}"
+        raise StageAInputError(
+            f"unsupported parameterized register relation {relation!r}"
+        )
     source_relation = relation
     relation = {
         "exact": "exact",
@@ -39,7 +60,18 @@ def _lean_relation_constructor(relation: str | None) -> str:
 
 def _lean_register_relation_pair(pair: dict[str, Any]) -> str:
     relation_name = pair.get("relation")
-    if relation_name == "fixed_code_pointer":
+    if relation_name == "fixed_word":
+        value = pair.get("value")
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 0 <= value < 2**32
+        ):
+            raise StageAInputError(
+                "fixed_word register relation requires a 32-bit unsigned value"
+            )
+        relation = f"fixedWord {value}"
+    elif relation_name == "fixed_code_pointer":
         target_id = pair.get("target_id")
         if (
             not isinstance(target_id, int)
@@ -51,9 +83,9 @@ def _lean_register_relation_pair(pair: dict[str, Any]) -> str:
             )
         relation = f"fixedCodePointer {target_id}"
     else:
-        if "target_id" in pair:
+        if "target_id" in pair or "value" in pair:
             raise StageAInputError(
-                f"register relation {relation_name!r} does not accept target_id"
+                f"register relation {relation_name!r} does not accept relation parameters"
             )
         relation = _lean_relation_constructor(relation_name)
     return (

@@ -417,7 +417,7 @@ def PairedStackWordValueClaim.staticRelationCompatible
   match relation, claim.witness with
   | .exact, .exactInputs => true
   | .exact, .registerArgument registerClaim =>
-      registerClaim.relation.relation == .exact
+      registerClaim.relation.relation.impliesExact
   | .relatedWord, _ => true
   | .codePointer, .mappedCodeTarget _ => true
   | .fixedCodePointer targetId, .mappedCodeTarget witnessTargetId =>
@@ -463,7 +463,7 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
       | registerArgument registerClaim =>
           simp only [PairedStackWordValueClaim.staticRelationCompatible,
             beq_iff_eq] at compatible
-          have evaluationsEqual := registerArgumentWordsEqual_of_checked_exact
+          have evaluationsEqual := registerArgumentWordsEqual_of_checked_exactLike
             context world sourceInvariant originalValue candidateValue registerClaim checked
             compatible originalState candidateState related
           simpa [StaticWordRelationKind.holds, evaluationsEqual]
@@ -1839,7 +1839,10 @@ def NoWriteSegmentStateTransferClosed (context : StaticProofContext)
           (originalResult.nextMachineState originalState).x87 =
               (candidateResult.nextMachineState candidateState).x87 ∧
           flagsRelated targetInvariant.flagBits originalResult.eflags
-              candidateResult.eflags = true
+              candidateResult.eflags = true ∧
+          pairedStatePredicatesHold targetInvariant.predicates
+              (originalResult.nextMachineState originalState)
+              (candidateResult.nextMachineState candidateState) = true
   | none => False
 
 def NoWriteSegmentImportTransferClosed (context : StaticProofContext)
@@ -2488,6 +2491,9 @@ theorem StateRel.afterNoWriteEvaluation
     (dynamicStacks : activeDynamicStackRangeRelationsHold context world
       targetInvariant.dynamicStackRangeRelations
       (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
+    (predicates : pairedStatePredicatesHold targetInvariant.predicates
+      (originalBehavior.nextMachineState originalState)
       (candidateBehavior.nextMachineState candidateState) = true) :
     StateRel context world targetInvariant
       (originalBehavior.nextMachineState originalState)
@@ -2540,7 +2546,8 @@ theorem StateRel.afterNoWriteEvaluation
       dynamicRegisterRangeRelationsHold_of_active context world
         targetInvariant.dynamicRegisterRangeRelations _ _ dynamicRegisters,
       dynamicStackRangeRelationsHold_of_active context world
-        targetInvariant.dynamicStackRangeRelations _ _ dynamicStacks⟩
+        targetInvariant.dynamicStackRangeRelations _ _ dynamicStacks,
+      predicates⟩
 
 theorem StateRel.afterPairedMemoryFamiliesUpdate
     (context : StaticProofContext) (world : RelationalWorld)
@@ -2577,6 +2584,9 @@ theorem StateRel.afterPairedMemoryFamiliesUpdate
       (candidateBehavior.nextMachineState candidateState) = true)
     (dynamicStacks : activeDynamicStackRangeRelationsHold context world
       targetInvariant.dynamicStackRangeRelations
+      (originalBehavior.nextMachineState originalState)
+      (candidateBehavior.nextMachineState candidateState) = true)
+    (predicates : pairedStatePredicatesHold targetInvariant.predicates
       (originalBehavior.nextMachineState originalState)
       (candidateBehavior.nextMachineState candidateState) = true) :
     StateRel context world targetInvariant
@@ -2632,7 +2642,8 @@ theorem StateRel.afterPairedMemoryFamiliesUpdate
       dynamicRegisterRangeRelationsHold_of_active context world
         targetInvariant.dynamicRegisterRangeRelations _ _ dynamicRegisters,
       dynamicStackRangeRelationsHold_of_active context world
-        targetInvariant.dynamicStackRangeRelations _ _ dynamicStacks⟩
+        targetInvariant.dynamicStackRangeRelations _ _ dynamicStacks,
+      predicates⟩
 
 theorem segmentTransitionClosed_of_no_write_with_transfers
     (context : StaticProofContext) (edge : RelationalSegmentEdge)
@@ -2685,7 +2696,7 @@ theorem segmentTransitionClosed_of_no_write_with_transfers
   | internal target =>
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -2696,7 +2707,7 @@ theorem segmentTransitionClosed_of_no_write_with_transfers
       exact StateRel.afterNoWriteEvaluation context world sourceInvariant
         targetInvariant originalState candidateState originalResult candidateResult
         relatedForTransfer originalWrites candidateWrites registers bounds separations
-        stackWindows x87 flags outputImports outputDynamic outputDynamicStack
+        stackWindows x87 flags outputImports outputDynamic outputDynamicStack predicates
   | external imported => trivial
   | returned => trivial
   | fault => trivial
@@ -2798,11 +2809,11 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
         exact valid.1.1.1.1
       have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _, _⟩
         exact slotsValid
       have staticWordSlotsValid : staticWordRelationSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _⟩
         exact slotsValid
       have outputMemoryFamilies :=
         RelationalMemoryFamiliesHold.afterPairedStackWordWrite context world
@@ -2822,7 +2833,7 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
         at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -2850,6 +2861,7 @@ theorem segmentTransitionClosed_of_direct_call_with_transfers
       · exact outputImports
       · exact outputDynamic
       · exact outputDynamicStack
+      · exact predicates
   | external imported => trivial
   | returned => trivial
   | fault => trivial
@@ -2949,11 +2961,11 @@ theorem segmentTransitionClosed_of_paired_stack_word_write_with_transfers
         exact valid.1.1.1.1
       have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _, _⟩
         exact slotsValid
       have staticWordSlotsValid : staticWordRelationSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _⟩
         exact slotsValid
       have valuesRelated := claim.valueRelated_of_checked context world
         sourceInvariant originalNormalized candidateNormalized claimCheckedForValue
@@ -2977,7 +2989,7 @@ theorem segmentTransitionClosed_of_paired_stack_word_write_with_transfers
         at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -3004,6 +3016,7 @@ theorem segmentTransitionClosed_of_paired_stack_word_write_with_transfers
       · exact outputImports
       · exact outputDynamic
       · exact outputDynamicStack
+      · exact predicates
   | external imported => trivial
   | returned => trivial
   | fault => trivial
@@ -3131,11 +3144,11 @@ theorem segmentTransitionClosed_of_paired_stack_word_writes_with_transfers
         exact valid.1.1.1.1
       have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _, _⟩
         exact slotsValid
       have staticWordSlotsValid : staticWordRelationSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _⟩
         exact slotsValid
       have outputMemoryFamilies :=
         RelationalMemoryFamiliesHold.afterPairedStackWordUpdates context world
@@ -3153,7 +3166,7 @@ theorem segmentTransitionClosed_of_paired_stack_word_writes_with_transfers
       rw [originalUpdateWrites, candidateUpdateWrites] at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -3165,6 +3178,7 @@ theorem segmentTransitionClosed_of_paired_stack_word_writes_with_transfers
         related originalWrites candidateWrites outputMemoryFamilies registers bounds
         separations stackWindows x87 flags outputImports outputDynamic
         (by simp [targetDynamicStackRelationsEmpty, activeDynamicStackRangeRelationsHold])
+        predicates
   | external imported => trivial
   | returned => trivial
   | fault => trivial
@@ -3245,11 +3259,11 @@ theorem segmentTransitionClosed_of_paired_prepared_word_writes_with_transfers
         exact valid.1.1.1.1
       have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _, _⟩
         exact slotsValid
       have staticWordSlotsValid : staticWordRelationSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _⟩
         exact slotsValid
       have outputMemoryFamilies :=
         RelationalMemoryFamiliesHold.afterPairedPreparedWordUpdates context world
@@ -3266,7 +3280,7 @@ theorem segmentTransitionClosed_of_paired_prepared_word_writes_with_transfers
       rw [originalUpdateWrites, candidateUpdateWrites] at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -3280,6 +3294,7 @@ theorem segmentTransitionClosed_of_paired_prepared_word_writes_with_transfers
         (claim.originalWrites originalState) (claim.candidateWrites candidateState)
         related originalWrites candidateWrites outputMemoryFamilies registers bounds
         separations stackWindows x87 flags outputImports outputDynamic outputDynamicStack
+        predicates
   | external imported => trivial
   | returned => trivial
   | fault => trivial
@@ -3418,11 +3433,11 @@ theorem segmentTransitionClosed_of_direct_call_stack_writes_with_transfers
         exact valid.1.1.1.1
       have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _, _⟩
         exact slotsValid
       have staticWordSlotsValid : staticWordRelationSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _⟩
         exact slotsValid
       have outputMemoryFamilies :=
         RelationalMemoryFamiliesHold.afterPairedStackWordUpdates context world
@@ -3440,7 +3455,7 @@ theorem segmentTransitionClosed_of_direct_call_stack_writes_with_transfers
       rw [originalUpdateWrites, candidateUpdateWrites] at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -3452,6 +3467,7 @@ theorem segmentTransitionClosed_of_direct_call_stack_writes_with_transfers
         related originalWrites candidateWrites outputMemoryFamilies registers bounds
         separations stackWindows x87 flags outputImports outputDynamic
         (by simp [targetDynamicStackRelationsEmpty, activeDynamicStackRangeRelationsHold])
+        predicates
   | external imported => trivial
   | returned => trivial
   | fault => trivial
@@ -3595,11 +3611,11 @@ theorem segmentTransitionClosed_of_direct_call_prepared_writes_with_transfers
         exact valid.1.1.1.1
       have staticSlotsValid : staticDynamicPointerSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _, _⟩
         exact slotsValid
       have staticWordSlotsValid : staticWordRelationSlotsValid context = true := by
         rcases contextValid with
-          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _⟩
+          ⟨_, _, _, _, _, _, _, _, _, slotsValid, _, _, _, _, _, _, _⟩
         exact slotsValid
       have outputMemoryFamilies :=
         RelationalMemoryFamiliesHold.afterPairedPreparedWordUpdates context world
@@ -3616,7 +3632,7 @@ theorem segmentTransitionClosed_of_direct_call_prepared_writes_with_transfers
       rw [originalUpdateWrites, candidateUpdateWrites] at outputMemoryFamilies
       rcases stateTransfer world originalState candidateState originalResult
           candidateResult related originalEval candidateEval guardTrue with
-        ⟨registers, bounds, separations, stackWindows, x87, flags⟩
+        ⟨registers, bounds, separations, stackWindows, x87, flags, predicates⟩
       have outputImports := importTransfer world originalState candidateState
         originalResult candidateResult relatedForImports originalEval candidateEval
       have outputDynamic := dynamicTransfer world originalState candidateState
@@ -3628,6 +3644,7 @@ theorem segmentTransitionClosed_of_direct_call_prepared_writes_with_transfers
         related originalWrites candidateWrites outputMemoryFamilies registers bounds
         separations stackWindows x87 flags outputImports outputDynamic
         (by simp [targetDynamicStackRelationsEmpty, activeDynamicStackRangeRelationsHold])
+        predicates
   | external imported => trivial
   | returned => trivial
   | fault => trivial

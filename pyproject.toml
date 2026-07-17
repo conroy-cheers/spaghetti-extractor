@@ -16,6 +16,9 @@ dependencies = [
 proof = [
   "z3-solver",
 ]
+conformance = [
+  "unicorn",
+]
 
 [project.scripts]
 spaghetti-extractor = "spaghetti_extractor.cli:main"

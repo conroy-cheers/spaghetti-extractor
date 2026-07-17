@@ -41,6 +41,26 @@ class StageAExternalStatefulMemoryTests(unittest.TestCase):
             "world_effect": "none",
         }
 
+    @staticmethod
+    def _iob_contract() -> dict:
+        return {
+            "id": 12,
+            "import": {"dll": "msvcrt.dll", "symbol": "__p__iob"},
+            "abi_template": "pe32-cdecl-v1",
+            "argument_words": 0,
+            "result_register_relations": [{
+                "register": "eax",
+                "relation": "dynamic_range_base",
+                "size": {"kind": "fixed", "bytes": 96},
+                "minimum_size": 96,
+                "required_words": [],
+                "nullable": False,
+            }],
+            "memory_effect": "none",
+            "memory_footprints": [],
+            "world_effect": "dynamicRanges",
+        }
+
     def test_relational_state_contract_normalizes_without_footprints(self):
         binary = self._binary()
         issues: list[dict] = []
@@ -116,6 +136,40 @@ class StageAExternalStatefulMemoryTests(unittest.TestCase):
 
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(fflush, [self._contract()])
+
+        iob = [
+            contract for contract in contracts
+            if contract["import"].get("symbol") == "__p__iob"
+        ]
+        self.assertEqual(iob, [self._iob_contract()])
+
+    def test_iob_contract_normalizes_as_paired_nonnull_stream_range(self):
+        binary = SimpleNamespace(imports=(StageAImport(
+            dll="msvcrt.dll",
+            symbol="__p__iob",
+            ordinal=None,
+            thunk_rva=0x2000,
+        ),))
+        issues: list[dict] = []
+
+        normalized = _machine_import_call_contracts(
+            [self._iob_contract()], binary, binary, issues
+        )
+
+        self.assertEqual(issues, [])
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["stack_argument_offsets"], [])
+        self.assertEqual(normalized[0]["preserved_registers"], [
+            "ebp", "ebx", "edi", "esi",
+        ])
+        self.assertEqual(normalized[0]["result_register_relations"], [{
+            "register": "eax",
+            "relation": "dynamic_range_base",
+            "size": {"kind": "fixed", "bytes": 96},
+            "minimum_size": 96,
+            "required_words": [],
+            "nullable": False,
+        }])
 
 
 if __name__ == "__main__":

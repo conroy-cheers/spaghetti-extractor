@@ -9,10 +9,10 @@ from ...util import sha256_bytes
 
 
 CALLSITE_PRESERVATION_ANALYSIS_FORMAT = (
-    "stage-a-callsite-preservation-analysis-v1"
+    "stage-a-callsite-preservation-analysis-v2"
 )
 CALLSITE_PRESERVATION_CERTIFICATE_FORMAT = (
-    "stage-a-callsite-preserved-register-summary-v1"
+    "stage-a-callsite-preserved-register-summary-v2"
 )
 NORMALIZED_BEHAVIOR_FORMAT = "stage-a-normalized-behavior-v1"
 
@@ -94,6 +94,8 @@ def _rows_by_node(
 
 def _normalize_relations(
     relations: Any,
+    *,
+    allow_empty: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     issues: list[dict[str, Any]] = []
     normalized: list[dict[str, Any]] = []
@@ -147,8 +149,99 @@ def _normalize_relations(
         original_owners[str(original)] = key
         candidate_owners[str(candidate)] = key
         normalized.append(normalized_relation)
-    if not normalized:
+    if not normalized and not allow_empty:
         issues.append(_issue("requested_relation_inventory_empty"))
+    return sorted(normalized, key=_canonical_json), issues
+
+
+def _normalize_register_relations(
+    relations: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    issues: list[dict[str, Any]] = []
+    normalized: list[dict[str, Any]] = []
+    if not isinstance(relations, Sequence) or isinstance(relations, (str, bytes)):
+        return [], [_issue("requested_register_relation_inventory_invalid")]
+    seen: set[str] = set()
+    original_owners: dict[str, str] = {}
+    candidate_owners: dict[str, str] = {}
+    for relation in relations:
+        if not isinstance(relation, Mapping):
+            issues.append(_issue("requested_register_relation_invalid"))
+            continue
+        original = relation.get("original")
+        candidate = relation.get("candidate")
+        relation_kind = relation.get("relation")
+        origin = relation.get("origin")
+        expected_fields = {"original", "candidate", "relation", "origin"}
+        if relation_kind == "fixed_word":
+            expected_fields.add("value")
+        elif relation_kind == "fixed_code_pointer":
+            expected_fields.add("target_id")
+        elif relation_kind not in {
+            "exact", "code_pointer", "data_pointer", "related_word",
+        }:
+            issues.append(_issue("requested_register_relation_invalid"))
+            continue
+        if (
+            original not in REGISTERS
+            or candidate not in REGISTERS
+            or set(relation) != expected_fields
+            or not isinstance(origin, Mapping)
+            or set(origin) != {
+                "kind", "region_index", "claim_index", "claim_hash",
+            }
+            or origin.get("kind") != "region_output_claim"
+            or not _is_integer(origin.get("region_index"))
+            or int(origin["region_index"]) < 0
+            or not _is_integer(origin.get("claim_index"))
+            or int(origin["claim_index"]) < 0
+            or not isinstance(origin.get("claim_hash"), str)
+            or len(str(origin["claim_hash"])) != 64
+            or any(character not in "0123456789abcdef" for character in str(
+                origin["claim_hash"]
+            ))
+            or (
+                relation_kind == "fixed_word"
+                and (
+                    not _is_integer(relation.get("value"))
+                    or not 0 <= int(relation["value"]) < 2**32
+                )
+            )
+            or (
+                relation_kind == "fixed_code_pointer"
+                and (
+                    not _is_integer(relation.get("target_id"))
+                    or int(relation["target_id"]) < 0
+                )
+            )
+        ):
+            issues.append(_issue("requested_register_relation_invalid"))
+            continue
+        try:
+            normalized_relation = json.loads(_canonical_json(relation))
+        except (TypeError, ValueError):
+            issues.append(_issue("requested_register_relation_invalid"))
+            continue
+        key = _canonical_json(normalized_relation)
+        if key in seen:
+            issues.append(_issue("requested_register_relation_duplicate"))
+            continue
+        seen.add(key)
+        if original in original_owners and original_owners[str(original)] != key:
+            issues.append(_issue(
+                "requested_register_relation_ambiguous",
+                field="original",
+                reference=str(original),
+            ))
+        if candidate in candidate_owners and candidate_owners[str(candidate)] != key:
+            issues.append(_issue(
+                "requested_register_relation_ambiguous",
+                field="candidate",
+                reference=str(candidate),
+            ))
+        original_owners[str(original)] = key
+        candidate_owners[str(candidate)] = key
+        normalized.append(normalized_relation)
     return sorted(normalized, key=_canonical_json), issues
 
 
@@ -252,6 +345,13 @@ def _behavior_successors(
         and _is_integer(outcome.get("continuation"))
     ):
         return [int(outcome["continuation"])], "nested_call"
+    if (
+        nested
+        and operation == "external_call"
+        and _is_integer(outcome.get("continuation"))
+        and isinstance(outcome.get("import"), Mapping)
+    ):
+        return [int(outcome["continuation"])], "external_call"
     if operation in {"indirect_call", "indirect_jump"}:
         return None, "unresolved_indirect_control"
     return None, "unsupported_behavior"
@@ -307,6 +407,7 @@ def propose_callsite_preserved_register_summary(
     requested_relations: Sequence[Mapping[str, Any]],
     behaviors: Sequence[Mapping[str, Any]],
     control: Sequence[Mapping[str, Any]],
+    requested_register_relations: Sequence[Mapping[str, Any]] = (),
     nested_summaries: Sequence[Mapping[str, Any]] = (),
     max_nodes: int = 4096,
     max_edges: int = 16384,
@@ -341,12 +442,30 @@ def propose_callsite_preserved_register_summary(
         invalid_code="control_inventory_invalid",
         duplicate_code="control_node_duplicate",
     )
-    relations, relation_issues = _normalize_relations(requested_relations)
+    relations, relation_issues = _normalize_relations(
+        requested_relations, allow_empty=True,
+    )
+    register_relations, register_relation_issues = (
+        _normalize_register_relations(requested_register_relations)
+    )
+    if not relations and not register_relations:
+        relation_issues.append(_issue("requested_relation_inventory_empty"))
+    import_originals = {str(relation["original"]) for relation in relations}
+    import_candidates = {str(relation["candidate"]) for relation in relations}
+    if any(
+        str(relation["original"]) in import_originals
+        or str(relation["candidate"]) in import_candidates
+        for relation in register_relations
+    ):
+        register_relation_issues.append(_issue(
+            "requested_relation_cross_family_ambiguous",
+        ))
     returns, return_issues = _normalize_return_inventory(return_inventory)
     nested_by_id, nested_issues = _normalize_nested_summaries(nested_summaries)
     issues.extend(behavior_issues)
     issues.extend(control_issues)
     issues.extend(relation_issues)
+    issues.extend(register_relation_issues)
     issues.extend(return_issues)
     issues.extend(nested_issues)
     if issues:
@@ -420,7 +539,7 @@ def propose_callsite_preserved_register_summary(
         ):
             issues.append(_issue("unsupported_behavior", node_id=node_id))
             continue
-        for relation in relations:
+        for relation in [*relations, *register_relations]:
             original_register = relation["original"]
             candidate_register = relation["candidate"]
             expected_original = {
@@ -455,7 +574,7 @@ def propose_callsite_preserved_register_summary(
                 ))
 
         exit_kind = exit_row.get("kind")
-        nested = exit_kind == "nested_call"
+        nested = exit_kind in {"nested_call", "external_call"}
         original_successors, original_terminal = _behavior_successors(
             original.get("outcome") or {}, nested=nested,
         )
@@ -486,6 +605,7 @@ def propose_callsite_preserved_register_summary(
             continue
         if (
             nested
+            and original_terminal == "nested_call"
             and (original.get("outcome") or {}).get("target")
                 != (candidate.get("outcome") or {}).get("target")
         ):
@@ -555,6 +675,21 @@ def propose_callsite_preserved_register_summary(
                     "nested_summary_relation_missing", node_id=node_id,
                     reference=summary_id,
                 ))
+            summary_register_relations = {
+                _canonical_json(relation)
+                for relation in summary.get("requested_register_relations", [])
+                if isinstance(relation, Mapping)
+            }
+            missing_register_relations = [
+                relation for relation in register_relations
+                if _canonical_json(relation) not in summary_register_relations
+            ]
+            if missing_register_relations:
+                issues.append(_issue(
+                    "nested_summary_register_relation_missing",
+                    node_id=node_id,
+                    reference=summary_id,
+                ))
             continuations = {
                 row.get("continuation_id")
                 for row in summary.get("return_inventory", [])
@@ -570,6 +705,53 @@ def propose_callsite_preserved_register_summary(
                 "summary_id": summary_id,
                 "certificate_hash": summary["certificate_hash"],
             })
+        elif exit_kind == "external_call":
+            if original_terminal not in {"nested_call", "external_call"}:
+                issues.append(_issue("control_behavior_mismatch", node_id=node_id))
+                continue
+            original_outcome = original.get("outcome") or {}
+            candidate_outcome = candidate.get("outcome") or {}
+            if original_terminal == "nested_call" and (
+                original_outcome.get("target")
+                != candidate_outcome.get("target")
+            ):
+                issues.append(_issue(
+                    "paired_external_target_mismatch", node_id=node_id,
+                ))
+                continue
+            if original_terminal == "external_call" and (
+                _canonical_json(original_outcome.get("import"))
+                != _canonical_json(candidate_outcome.get("import"))
+            ):
+                issues.append(_issue(
+                    "paired_external_target_mismatch", node_id=node_id,
+                ))
+                continue
+            original_preserved = exit_row.get("original_preserved_registers")
+            candidate_preserved = exit_row.get("candidate_preserved_registers")
+            if (
+                not isinstance(original_preserved, Sequence)
+                or isinstance(original_preserved, (str, bytes))
+                or not isinstance(candidate_preserved, Sequence)
+                or isinstance(candidate_preserved, (str, bytes))
+                or any(register not in REGISTERS for register in original_preserved)
+                or any(register not in REGISTERS for register in candidate_preserved)
+            ):
+                issues.append(_issue(
+                    "external_preserved_register_inventory_invalid",
+                    node_id=node_id,
+                ))
+                continue
+            missing_preservation = [
+                relation
+                for relation in [*relations, *register_relations]
+                if relation["original"] not in original_preserved
+                or relation["candidate"] not in candidate_preserved
+            ]
+            if missing_preservation:
+                issues.append(_issue(
+                    "external_call_register_clobbered", node_id=node_id,
+                ))
         else:
             issues.append(_issue(
                 "control_exit_kind_unsupported",
@@ -632,6 +814,7 @@ def propose_callsite_preserved_register_summary(
         "callsite_id": int(callsite_id),
         "callee_entry": entry,
         "requested_relations": relations,
+        "requested_register_relations": register_relations,
         "reachable_node_ids": reachable_nodes,
         "reachable_edges": edges,
         "return_inventory": [returns[node_id] for node_id in sorted(returns)],

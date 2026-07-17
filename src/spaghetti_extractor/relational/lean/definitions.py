@@ -10,6 +10,8 @@ from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..schema import (
     FLAG_BITS,
     RELATIONAL_KERNEL_MODULES,
+    RegionStatePredicate,
+    SchemaError,
 )
 
 
@@ -31,7 +33,7 @@ from .common import (
 from .expressions import (
     _lean_machine_import_call_contract,
     _lean_region_bound_setup,
-    _lean_region_definition,
+    _lean_region_definition as _lean_region_definition_base,
     _lean_region_flag_setup,
     _lean_region_index_masks,
     _lean_region_indexed_memory_fact_names,
@@ -45,9 +47,58 @@ from .expressions import (
     _lean_region_static_relocation_word_specs,
     _lean_static_dynamic_pointer_slot,
     _lean_static_word_relation_slot,
+    _lean_semantic_bool_expr,
     _lean_semantic_expr,
     _lean_value_target,
 )
+
+
+def _lean_region_state_predicates(region: dict[str, Any]) -> list[str] | None:
+    if "state_predicates" not in region:
+        return None
+    raw_predicates = region["state_predicates"]
+    if not isinstance(raw_predicates, list):
+        raise StageAInputError("region state_predicates must be a list")
+
+    rows: list[str] = []
+    for index, raw_predicate in enumerate(raw_predicates):
+        context = (
+            f"region {region.get('id', region.get('numeric_id', '?'))} "
+            f"state_predicates[{index}]"
+        )
+        try:
+            if not isinstance(raw_predicate, dict):
+                raise SchemaError("region state predicate row must be an object")
+            predicate = RegionStatePredicate.parse(raw_predicate)
+            original = _lean_semantic_bool_expr(predicate.original)
+            candidate = _lean_semantic_bool_expr(predicate.candidate)
+        except (
+            KeyError,
+            SchemaError,
+            TypeError,
+            ValueError,
+            StageAInputError,
+        ) as exc:
+            raise StageAInputError(f"{context} is malformed: {exc}") from exc
+        rows.append(
+            "{ original := " + original + ", candidate := " + candidate + " }"
+        )
+    return rows
+
+
+def _lean_region_definition(index: int, region: dict[str, Any]) -> str:
+    definition = _lean_region_definition_base(index, region)
+    predicates = _lean_region_state_predicates(region)
+    if predicates is None:
+        return definition
+    if not definition.endswith(" }"):
+        raise StageAInputError("region definition has an unsupported literal shape")
+    return (
+        definition[:-2]
+        + ", predicates := ["
+        + ", ".join(predicates)
+        + "] }"
+    )
 
 
 def _copy_relational_kernel_sources(destination: Path) -> None:
@@ -338,12 +389,44 @@ def _lean_static_proof_context_base_source(
             "tls_initializer": "tlsInitializer",
         }.get(root_kind, "exported")
         roots.append((int(target["id"]), kind))
+    tls_callback_target_ids = [
+        int(target_id)
+        for target_id in (contract.get("launch") or {}).get(
+            "tls_callback_target_ids", []
+        )
+    ]
+    tls_callback_target_id_set = set(tls_callback_target_ids)
+    roots = [
+        (
+            target_id,
+            "tlsInitializer" if target_id in tls_callback_target_id_set else kind,
+        )
+        for target_id, kind in roots
+    ]
+    roots.extend(
+        (target_id, "tlsInitializer")
+        for target_id in tls_callback_target_ids
+        if all(existing_id != target_id for existing_id, _ in roots)
+    )
+    region_index_by_target_id = {
+        int(target["id"]): int(target["region_index"])
+        for target in code_targets
+        if "region_index" in target
+    }
+    roots.sort(key=lambda root: region_index_by_target_id.get(root[0], root[0]))
     root_rows = ", ".join(
         f"{{ targetId := {target_id}, kind := .{kind} }}"
         for target_id, kind in roots
     )
     has_callbacks = any(kind == "callback" for _, kind in roots)
-    has_tls = any(kind == "tlsInitializer" for _, kind in roots)
+    has_tls = any((
+        tls_callback_target_ids,
+        (contract.get("launch") or {}).get("profile")
+            == "pe32-console-launch-v2-required",
+    ))
+    tls_callback_rows = ", ".join(
+        str(target_id) for target_id in tls_callback_target_ids
+    )
     static_dynamic_pointer_slots = ", ".join(
         _lean_static_dynamic_pointer_slot(slot)
         for slot in contract.get("static_dynamic_pointer_slots", [])
@@ -368,6 +451,7 @@ def _lean_static_proof_context_base_source(
         "  codeMap := globalCodeMap\n"
         "  dataMap := globalDataMap\n"
         f"  roots := [{root_rows}]\n"
+        f"  tlsCallbackTargetIds := [{tls_callback_rows}]\n"
         "  observations := { "
         f"callbacks := {_lean_bool(has_callbacks)}, tls := {_lean_bool(has_tls)} "
         "}\n"
@@ -431,6 +515,34 @@ def _write_relational_static_context_modules(
             "count": target_count,
             "predicate": "(globalCodeMap.entryAtValid)",
         },
+        "OriginalAliasSemantic": {
+            "count": target_count,
+            "predicate": (
+                "(globalCodeMap.aliasesSemanticallyValidAt false "
+                "originalPe originalImports)"
+            ),
+        },
+        "CandidateAliasSemantic": {
+            "count": target_count,
+            "predicate": (
+                "(globalCodeMap.aliasesSemanticallyValidAt true "
+                "candidatePe candidateImports)"
+            ),
+        },
+        "OriginalAliasInstructionSemantic": {
+            "count": target_count,
+            "predicate": (
+                "(globalCodeMap.aliasesInstructionSemanticallyValidAt false "
+                "originalPe originalImports)"
+            ),
+        },
+        "CandidateAliasInstructionSemantic": {
+            "count": target_count,
+            "predicate": (
+                "(globalCodeMap.aliasesInstructionSemanticallyValidAt true "
+                "candidatePe candidateImports)"
+            ),
+        },
         "OriginalAddress": {
             "count": original_address_count,
             "predicate": "(globalCodeMap.addressAtValid false originalPe)",
@@ -438,6 +550,20 @@ def _write_relational_static_context_modules(
         "CandidateAddress": {
             "count": candidate_address_count,
             "predicate": "(globalCodeMap.addressAtValid true candidatePe)",
+        },
+        "OriginalAddressRoundTrip": {
+            "count": target_count,
+            "predicate": (
+                "(globalCodeMap.targetAddressesRoundTripAt false "
+                "originalPe.imageBase)"
+            ),
+        },
+        "CandidateAddressRoundTrip": {
+            "count": target_count,
+            "predicate": (
+                "(globalCodeMap.targetAddressesRoundTripAt true "
+                "candidatePe.imageBase)"
+            ),
         },
     }
     ranges = {
@@ -517,7 +643,8 @@ def _write_relational_static_context_modules(
                     "after": after,
                 })
         source = (
-            "import StageA.RelationalStaticContextBase\n\n"
+            "import StageA.RelationalStaticContextBase\n"
+            "import StageA.RelationalPEExecution\n\n"
             "namespace StageA.GeneratedRelational\n\n"
             "open StageA.Formal StageA.Relational\n\n"
             "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
@@ -767,9 +894,45 @@ def _write_relational_static_context_modules(
             "    globalCodeMap.IndexedValid originalPe candidatePe :=\n"
             f"  ⟨{holds_names['Entry']}, staticOriginalAddressCountChecked,\n"
             "    staticCandidateAddressCountChecked, "
-            f"{holds_names['OriginalAddress']}, {holds_names['CandidateAddress']}⟩"
+            f"{holds_names['OriginalAddress']}, {holds_names['CandidateAddress']},\n"
+            f"    {holds_names['OriginalAddressRoundTrip']}, "
+            f"{holds_names['CandidateAddressRoundTrip']}⟩"
+        ),
+        (
+            "theorem staticOriginalCodeAliasesSemanticallyChecked :\n"
+            "    globalCodeMap.AliasesSemanticallyValid false originalPe originalImports :=\n"
+            f"  {holds_names['OriginalAliasSemantic']}"
+        ),
+        (
+            "theorem staticCandidateCodeAliasesSemanticallyChecked :\n"
+            "    globalCodeMap.AliasesSemanticallyValid true candidatePe candidateImports :=\n"
+            f"  {holds_names['CandidateAliasSemantic']}"
+        ),
+        (
+            "theorem staticOriginalCodeAliasesInstructionSemanticallyChecked :\n"
+            "    globalCodeMap.AliasesInstructionSemanticallyValid false "
+            "originalPe originalImports :=\n"
+            f"  {holds_names['OriginalAliasInstructionSemantic']}"
+        ),
+        (
+            "theorem staticCandidateCodeAliasesInstructionSemanticallyChecked :\n"
+            "    globalCodeMap.AliasesInstructionSemanticallyValid true "
+            "candidatePe candidateImports :=\n"
+            f"  {holds_names['CandidateAliasInstructionSemantic']}"
         ),
         "theorem staticRootsChecked : rootsValid staticProofContext = true := by decide",
+        (
+            "theorem staticOriginalLoaderImageChecked :\n"
+            "    preferredBaseLoaderImageValid originalPe = true := by decide"
+        ),
+        (
+            "theorem staticCandidateLoaderImageChecked :\n"
+            "    preferredBaseLoaderImageValid candidatePe = true := by decide"
+        ),
+        (
+            "theorem staticTlsLaunchInventoryChecked :\n"
+            "    tlsLaunchInventoryValid staticProofContext = true := by decide"
+        ),
         (
             "theorem staticDynamicPointerSlotsChecked :\n"
             "    staticDynamicPointerSlotsValid staticProofContext = true := by decide"
@@ -801,7 +964,9 @@ def _write_relational_static_context_modules(
             "    staticWordRelationSlotsChecked\n"
             "    staticOriginalMachineCallContractsChecked\n"
             "    staticCandidateMachineCallContractsChecked staticRootsChecked\n"
-            "    staticObservationsChecked"
+            "    staticTlsLaunchInventoryChecked\n"
+            "    staticObservationsChecked staticOriginalLoaderImageChecked\n"
+            "    staticCandidateLoaderImageChecked"
         ),
     ])
     final_source = (
@@ -1179,6 +1344,7 @@ def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary,
         flag_eval_simplifiers = (
             "StageA.Formal.FlagsExpr.eval_extract_cf, "
             "StageA.Formal.FlagsExpr.eval_extract_pf, "
+            "StageA.Formal.FlagsExpr.eval_extract_af, "
             "StageA.Formal.FlagsExpr.eval_extract_zf, "
             "StageA.Formal.FlagsExpr.eval_extract_sf, "
             "StageA.Formal.FlagsExpr.eval_extract_df, "

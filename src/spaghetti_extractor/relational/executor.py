@@ -151,10 +151,11 @@ def _persistent_olean_path(
         return None
     lean = shutil.which("lean") or "lean-unavailable"
     key = sha256_bytes(json.dumps({
-        "format": "stage-a-relational-olean-cache-v3",
+        "format": "stage-a-relational-olean-cache-v4",
         "bundle": bundle,
         "source_sha256": sha256_file(source),
         "formal_sha256": sha256_file(lean_dir / "StageA" / "Formal.lean"),
+        "dependency_source_closure": _lean_dependency_source_closure(source),
         "dependencies": [
             {
                 "module": dependency.stem,
@@ -168,6 +169,36 @@ def _persistent_olean_path(
         "lean": lean,
     }, sort_keys=True, separators=(",", ":")).encode())
     return cache_root / "lean-oleans" / f"{bundle}-{key}.olean"
+
+
+def _lean_dependency_source_closure(source: Path) -> list[dict[str, str]]:
+    stage_a = source.parent
+    visited: set[str] = set()
+    closure: list[dict[str, str]] = []
+
+    def visit(module_source: Path) -> None:
+        module = module_source.stem
+        if module in visited:
+            return
+        visited.add(module)
+        if not module_source.is_file():
+            return
+        imports = list(dict.fromkeys(re.findall(
+            r"^import StageA\.([A-Za-z0-9_]+)$",
+            module_source.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )))
+        for imported in imports:
+            imported_source = stage_a / f"{imported}.lean"
+            if imported not in visited and imported_source.is_file():
+                closure.append({
+                    "module": imported,
+                    "source_sha256": sha256_file(imported_source),
+                })
+                visit(imported_source)
+
+    visit(source)
+    return sorted(closure, key=lambda row: row["module"])
 
 
 def _precompiled_kernel_olean(source: Path, module: str) -> Path | None:

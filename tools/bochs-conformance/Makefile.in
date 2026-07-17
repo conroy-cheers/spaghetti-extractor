@@ -1,0 +1,34 @@
+@SUFFIX_LINE@
+
+srcdir = @srcdir@
+VPATH = @srcdir@
+SHELL = @SHELL@
+@SET_MAKE@
+
+CC = @CC@
+CFLAGS = @CFLAGS@
+CXX = @CXX@
+CXXFLAGS = @CXXFLAGS@
+CPPFLAGS = @CPPFLAGS@
+RANLIB = @RANLIB@
+
+BX_OBJS = instrument.o
+BX_INCLUDES = instrument.h protocol.h
+BX_INCDIRS = -I../.. -I$(srcdir)/../.. -I. -I$(srcdir)/.
+
+.@CPP_SUFFIX@.o:
+	$(CXX) -c $(BX_INCDIRS) $(CPPFLAGS) $(CXXFLAGS) @CXXFP@$< @OFP@$@
+
+libinstrument.a: $(BX_OBJS)
+	@RMCOMMAND@ libinstrument.a
+	@MAKELIB@ $(BX_OBJS)
+	$(RANLIB) libinstrument.a
+
+$(BX_OBJS): $(BX_INCLUDES)
+
+clean:
+	@RMCOMMAND@ *.o
+	@RMCOMMAND@ *.a
+
+dist-clean: clean
+	@RMCOMMAND@ Makefile

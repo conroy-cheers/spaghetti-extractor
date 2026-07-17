@@ -1,4 +1,5 @@
 import StageA.RelationalDecode
+import StageA.RelationalLoader
 import Lean.Elab.Tactic.Omega
 
 namespace StageA.Relational
@@ -178,6 +179,75 @@ def staticCodeAddressRva (candidate : Bool) (mapping : StaticCodeMap)
       let aliases := if candidate then target.candidateAliases else target.originalAliases
       pure (← aliases[index]?).rva
 
+def StaticCodeMap.sideAddresses (candidate : Bool) (mapping : StaticCodeMap) :
+    Array StaticCodeAddress :=
+  if candidate then mapping.candidateAddresses else mapping.originalAddresses
+
+/-- Return every checked address-index entry matching a concrete instruction
+pointer. Retaining all matches makes ambiguous maps fail closed. -/
+def StaticCodeMap.rawEipMatches (candidate : Bool) (imageBase : Nat)
+    (mapping : StaticCodeMap) (eip : Word) : List Nat :=
+  (mapping.sideAddresses candidate).toList.filterMap fun address =>
+    match staticCodeAddressRva candidate mapping address with
+    | none => none
+    | some rva =>
+        if eip == BitVec.ofNat 32 (imageBase + rva) then
+          some address.targetId
+        else
+          none
+
+/-- Resolve a concrete EIP only when exactly one checked canonical or alias
+address matches it. -/
+def StaticCodeMap.resolveRawEip (candidate : Bool) (imageBase : Nat)
+    (mapping : StaticCodeMap) (eip : Word) : Option Nat :=
+  match mapping.rawEipMatches candidate imageBase eip with
+  | [targetId] => some targetId
+  | _ => none
+
+def StaticCodeMap.canonicalRawEip? (candidate : Bool) (imageBase : Nat)
+    (mapping : StaticCodeMap) (targetId : Nat) : Option Word := do
+  let target <- mapping.get? targetId
+  let rva := if candidate then target.candidateRva else target.originalRva
+  pure (BitVec.ofNat 32 (imageBase + rva))
+
+/-- Every canonical and alias address owned by a target must resolve uniquely
+back to that target. This checks address-index completeness as well as the
+absence of ambiguous concrete entry addresses. -/
+def StaticCodeMap.targetAddressesRoundTripAt (candidate : Bool)
+    (imageBase : Nat) (mapping : StaticCodeMap) (targetId : Nat) : Bool :=
+  match mapping.get? targetId with
+  | none => false
+  | some target =>
+      let canonicalRva := if candidate then target.candidateRva else target.originalRva
+      let aliases := if candidate then target.candidateAliases else target.originalAliases
+      mapping.resolveRawEip candidate imageBase
+          (BitVec.ofNat 32 (imageBase + canonicalRva)) == some targetId &&
+        aliases.all fun alias =>
+          mapping.resolveRawEip candidate imageBase
+            (BitVec.ofNat 32 (imageBase + alias.rva)) == some targetId
+
+def StaticCodeMap.TargetAddressesRoundTrip (candidate : Bool)
+    (imageBase : Nat) (mapping : StaticCodeMap) : Prop :=
+  forall targetId, targetId < mapping.entries.size ->
+    mapping.targetAddressesRoundTripAt candidate imageBase targetId = true
+
+theorem StaticCodeMap.canonicalRawEip_roundTrip
+    (candidate : Bool) (imageBase : Nat) (mapping : StaticCodeMap)
+    (roundTrips : mapping.TargetAddressesRoundTrip candidate imageBase)
+    (targetId : Nat) (target : CodeTargetPair)
+    (targetFound : mapping.get? targetId = some target) :
+    exists eip,
+      mapping.canonicalRawEip? candidate imageBase targetId = some eip ∧
+        mapping.resolveRawEip candidate imageBase eip = some targetId := by
+  have targetBefore : targetId < mapping.entries.size :=
+    Array.getElem?_eq_some_iff.mp targetFound |>.1
+  have checked := roundTrips targetId targetBefore
+  simp only [StaticCodeMap.targetAddressesRoundTripAt, targetFound,
+    Bool.and_eq_true, beq_iff_eq] at checked
+  let rva := if candidate then target.candidateRva else target.originalRva
+  refine ⟨BitVec.ofNat 32 (imageBase + rva), ?_, checked.1⟩
+  simp [StaticCodeMap.canonicalRawEip?, targetFound, rva]
+
 def staticCodeAddressesValidAux (candidate : Bool) (mapping : StaticCodeMap) :
     Option Nat -> List StaticCodeAddress -> Bool
   | _, [] => true
@@ -223,6 +293,41 @@ def StaticCodeMap.valid (originalPe candidatePe : PE32) (mapping : StaticCodeMap
     mapping.addressesInExecutableImage false originalPe &&
     mapping.addressesInExecutableImage true candidatePe
 
+/-- Execute the exact bytes between an alternate entry address and its
+canonical cutpoint.  A valid bridge may consist of state-preserving alignment
+instructions followed by fallthrough or a direct jump over the remaining
+padding. -/
+def codeAliasBridgeBehavior (pe : PE32) (imports : List PEImport)
+    (aliasRva canonicalRva : Nat) : Option SymbolicBehavior := do
+  if canonicalRva <= aliasRva then none else
+  let span : Span := { start := aliasRva, size := canonicalRva - aliasRva }
+  let bytes <- spanBytes pe span
+  let (behavior, _) <- executeCode pe imports (bytes.length + 1) 0 aliasRva bytes
+    initialSymbolic
+  if behavior.outcome.isSome then
+    pure behavior
+  else
+    pure { behavior with outcome := some (.jump canonicalRva) }
+
+def codeAliasSemanticallyValid (pe : PE32) (imports : List PEImport)
+    (canonicalRva : Nat) (alias : CodeAlias) : Bool :=
+  codeAliasBridgeBehavior pe imports alias.rva canonicalRva ==
+    some { initialSymbolic with outcome := some (.jump canonicalRva) }
+
+def StaticCodeMap.aliasesSemanticallyValidAt (candidate : Bool) (pe : PE32)
+    (imports : List PEImport) (mapping : StaticCodeMap) (targetId : Nat) : Bool :=
+  match mapping.get? targetId with
+  | none => false
+  | some target =>
+      let canonicalRva := if candidate then target.candidateRva else target.originalRva
+      let aliases := if candidate then target.candidateAliases else target.originalAliases
+      aliases.all (codeAliasSemanticallyValid pe imports canonicalRva)
+
+def StaticCodeMap.AliasesSemanticallyValid (candidate : Bool) (pe : PE32)
+    (imports : List PEImport) (mapping : StaticCodeMap) : Prop :=
+  ∀ targetId, targetId < mapping.entries.size ->
+    mapping.aliasesSemanticallyValidAt candidate pe imports targetId = true
+
 def StaticCodeMap.entryAtValid (mapping : StaticCodeMap) (index : Nat) : Bool :=
   match mapping.get? index with
   | some target => target.id == index
@@ -256,7 +361,9 @@ def StaticCodeMap.IndexedValid (originalPe candidatePe : PE32)
     (∀ index, index < mapping.originalAddresses.size ->
       mapping.addressAtValid false originalPe index = true) ∧
     (∀ index, index < mapping.candidateAddresses.size ->
-      mapping.addressAtValid true candidatePe index = true)
+      mapping.addressAtValid true candidatePe index = true) ∧
+    mapping.TargetAddressesRoundTrip false originalPe.imageBase ∧
+    mapping.TargetAddressesRoundTrip true candidatePe.imageBase
 
 structure StaticDataMap where
   entries : Array ValueTargetPair
@@ -545,6 +652,7 @@ structure StaticProofContext where
   codeMap : StaticCodeMap
   dataMap : StaticDataMap
   roots : List CutpointPair
+  tlsCallbackTargetIds : List Nat := []
   observations : ObservationModel
   staticDynamicPointerSlots : List StaticDynamicPointerSlotPair := []
   staticWordRelationSlots : List StaticWordRelationSlotPair := []
@@ -968,6 +1076,45 @@ def rootsValid (context : StaticProofContext) : Bool :=
     context.roots.all (rootTargetValid context) &&
     context.roots.any (·.kind == .entrypoint)
 
+def tlsDirectoryPresent (pe : PE32) : Bool :=
+  pe.tlsDirectoryRva != 0 || pe.tlsDirectorySize != 0
+
+def tlsInitializerRootTargetIds (roots : List CutpointPair) : List Nat :=
+  roots.filterMap fun root =>
+    if root.kind == .tlsInitializer then some root.targetId else none
+
+def tlsCallbackTargetsMatch (context : StaticProofContext) :
+    List Nat -> List Nat -> List Nat -> Bool
+  | [], [], [] => true
+  | originalRva :: originalRvas, candidateRva :: candidateRvas,
+      targetId :: targetIds =>
+      match context.codeMap.get? targetId with
+      | none => false
+      | some target =>
+          target.originalRva == originalRva &&
+          target.candidateRva == candidateRva &&
+          tlsCallbackTargetsMatch context originalRvas candidateRvas targetIds
+  | _, _, _ => false
+
+def tlsCallbackRootsMatch (context : StaticProofContext) : Bool :=
+  let rootTargetIds := tlsInitializerRootTargetIds context.roots
+  rootTargetIds.all context.tlsCallbackTargetIds.contains &&
+    context.tlsCallbackTargetIds.all rootTargetIds.contains
+
+def tlsLaunchInventoryValid (context : StaticProofContext) : Bool :=
+  match parseTlsCallbackRvas context.originalPe,
+      parseTlsCallbackRvas context.candidatePe with
+  | some originalRvas, some candidateRvas =>
+      tlsCallbackArrayImmutable context.originalPe &&
+        tlsCallbackArrayImmutable context.candidatePe &&
+        tlsCallbackTargetsMatch context originalRvas candidateRvas
+          context.tlsCallbackTargetIds &&
+        tlsCallbackRootsMatch context &&
+        tlsDirectoryPresent context.originalPe ==
+          tlsDirectoryPresent context.candidatePe &&
+        context.observations.tls == tlsDirectoryPresent context.originalPe
+  | _, _ => false
+
 def observationProfileValid (observations : ObservationModel) : Bool :=
   observations.imports && observations.returns && observations.faults &&
     !observations.threads && !observations.directSyscalls && !observations.seh &&
@@ -988,7 +1135,10 @@ def StaticProofContext.structureValid (context : StaticProofContext) : Bool :=
       context.machineImportCallContracts &&
     machineImportCallContractsValid context.candidateImportCertificate.imports
       context.machineImportCallContracts &&
-    rootsValid context && observationProfileValid context.observations
+    rootsValid context && tlsLaunchInventoryValid context &&
+    observationProfileValid context.observations &&
+    preferredBaseLoaderImageValid context.originalPe &&
+    preferredBaseLoaderImageValid context.candidatePe
 
 def StaticProofContext.StructurallyValid (context : StaticProofContext) : Prop :=
   parsePE32Tree context.originalPe.bytes = some context.originalPe ∧
@@ -1005,7 +1155,10 @@ def StaticProofContext.StructurallyValid (context : StaticProofContext) : Prop :
       context.machineImportCallContracts = true ∧
     machineImportCallContractsValid context.candidateImportCertificate.imports
       context.machineImportCallContracts = true ∧
-    rootsValid context = true ∧ observationProfileValid context.observations = true
+    rootsValid context = true ∧ tlsLaunchInventoryValid context = true ∧
+    observationProfileValid context.observations = true ∧
+    preferredBaseLoaderImageValid context.originalPe = true ∧
+    preferredBaseLoaderImageValid context.candidatePe = true
 
 theorem StaticProofContext.structurallyValid_of_components
     (context : StaticProofContext)
@@ -1033,12 +1186,18 @@ theorem StaticProofContext.structurallyValid_of_components
       machineImportCallContractsValid context.candidateImportCertificate.imports
         context.machineImportCallContracts = true)
     (rootsChecked : rootsValid context = true)
-    (observationsChecked : observationProfileValid context.observations = true) :
+    (tlsLaunchInventoryChecked : tlsLaunchInventoryValid context = true)
+    (observationsChecked : observationProfileValid context.observations = true)
+    (originalLoaderImageChecked :
+      preferredBaseLoaderImageValid context.originalPe = true)
+    (candidateLoaderImageChecked :
+      preferredBaseLoaderImageValid context.candidatePe = true) :
     context.StructurallyValid :=
   ⟨originalParsed, candidateParsed, originalImportsChecked, candidateImportsChecked,
     originalRelocationsParsed, candidateRelocationsParsed, codeMapChecked, dataMapChecked,
     staticDynamicPointerSlotsChecked, staticWordRelationSlotsChecked,
     originalMachineCallContractsChecked,
-    candidateMachineCallContractsChecked, rootsChecked, observationsChecked⟩
+    candidateMachineCallContractsChecked, rootsChecked, tlsLaunchInventoryChecked,
+    observationsChecked, originalLoaderImageChecked, candidateLoaderImageChecked⟩
 
 end StageA.Relational

@@ -48,11 +48,14 @@ from .build import (
     stage_a_build_relational,
 )
 from .analyses.control import (
+    _attach_reverse_sentinel_table_source_invariants,
+    _attach_reverse_sentinel_table_value_targets,
     _attach_dynamic_indirect_call_analysis,
     _attach_import_register_analysis,
     _attach_product_graph_analysis,
     _attach_stack_window_analysis,
     _bounded_immutable_code_pointer_table_call_inputs,
+    _checked_product_reachability_inventories,
     _composition_progress,
     _constant_read32_address,
     _dynamic_range_indirect_call_candidates,
@@ -374,6 +377,11 @@ from .model import (
     _semantic_hash,
 )
 from .interfaces import stage_a_interface_manifest
+from .isa_requirements import (
+    ISARequirementInventory,
+    build_isa_requirement_inventory,
+    extract_lean_instruction_forms,
+)
 from .schema import (
     FLAG_BITS,
     MACHINE_CALL_ABI_REGISTERS,
@@ -407,6 +415,7 @@ def _stabilize_fixed_code_pointer_register_calls(
     candidate_image_base: int,
     indirect_call_candidates: list[dict[str, Any]],
     import_call_candidates: list[dict[str, Any]],
+    callsite_summary_predecessors: list[dict[str, Any]] | None = None,
     original_bin: StageABinary,
     candidate_bin: StageABinary,
 ) -> tuple[
@@ -434,6 +443,7 @@ def _stabilize_fixed_code_pointer_register_calls(
             candidate_image_base=candidate_image_base,
             indirect_call_candidates=combined,
             import_call_candidates=import_call_candidates,
+            callsite_summary_predecessors=callsite_summary_predecessors,
             original_bin=original_bin,
             candidate_bin=candidate_bin,
         )
@@ -459,6 +469,7 @@ def _stabilize_fixed_code_pointer_register_calls(
             candidate_image_base=candidate_image_base,
             indirect_call_candidates=indirect_call_candidates,
             import_call_candidates=import_call_candidates,
+            callsite_summary_predecessors=callsite_summary_predecessors,
             original_bin=original_bin,
             candidate_bin=candidate_bin,
         )
@@ -642,6 +653,12 @@ def stage_a_prove_relational(
     )
     table_call_proposals = _immutable_code_pointer_table_call_candidates(
         original_bin, candidate_bin, normalized, behaviors
+    )
+    normalized = _attach_reverse_sentinel_table_value_targets(
+        original_bin, candidate_bin, normalized, table_call_proposals
+    )
+    normalized = _attach_reverse_sentinel_table_source_invariants(
+        normalized, table_call_proposals
     )
     dynamic_call_candidates = _dynamic_range_indirect_call_candidates(
         normalized, behaviors
@@ -921,6 +938,88 @@ def stage_a_prove_relational(
     register_relations = _attach_static_word_register_output_claims(
         normalized, behaviors, register_relations
     )
+    # Caller-produced relations such as fixed code pointers are scoped to the
+    # runtime frame, not the shared callee invariant.  Jointly stabilize those
+    # callsite summaries with register dataflow and indirect-call discovery.
+    callsite_relation_fixed_point = {
+        "status": "incomplete",
+        "converged": False,
+        "rounds": 0,
+        "round_budget": 8,
+    }
+    previous_summary_key: str | None = None
+    for callsite_round in range(callsite_relation_fixed_point["round_budget"]):
+        callsite_preservation_analysis = (
+            _propose_internal_callsite_preservation_summaries(
+                normalized,
+                behaviors,
+                import_register_analysis,
+                register_relations,
+            )
+        )
+        summary_predecessors = callsite_preservation_analysis.get(
+            "proposal_edges", []
+        )
+        summary_key = json.dumps(
+            summary_predecessors, sort_keys=True, separators=(",", ":")
+        )
+        callsite_relation_fixed_point["rounds"] = callsite_round + 1
+        if summary_key == previous_summary_key:
+            callsite_relation_fixed_point.update({
+                "status": "proposal_requires_generated_lean_replay",
+                "converged": True,
+            })
+            break
+        previous_summary_key = summary_key
+        (
+            normalized,
+            register_relations,
+            combined_indirect_call_candidates,
+            fixed_register_call_fixed_point,
+        ) = _stabilize_fixed_code_pointer_register_calls(
+            normalized,
+            behaviors,
+            original_image_base=original_bin.image_base,
+            candidate_image_base=candidate_bin.image_base,
+            indirect_call_candidates=indirect_call_candidates,
+            import_call_candidates=import_register_analysis[
+                "indirect_import_calls"
+            ],
+            callsite_summary_predecessors=summary_predecessors,
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+        )
+        normalized, register_relations = _lower_stack_register_relations(
+            normalized, register_relations
+        )
+        register_relations = _attach_stack_register_output_claims(
+            normalized, behaviors, register_relations
+        )
+        register_relations = _attach_static_word_register_output_claims(
+            normalized, behaviors, register_relations
+        )
+    callsite_preservation_analysis = (
+        _propose_internal_callsite_preservation_summaries(
+            normalized,
+            behaviors,
+            import_register_analysis,
+            register_relations,
+        )
+    )
+    callsite_preservation_artifact = parse_callsite_preservation_artifact(
+        callsite_preservation_analysis,
+        region_count=len(normalized.get("regions", [])),
+    )
+    write_json(
+        out / "relational-callsite-preservation.json",
+        serialize_callsite_preservation_artifact(callsite_preservation_artifact),
+    )
+    register_relations["callsite_register_relation_fixed_point"] = (
+        callsite_relation_fixed_point
+    )
+    fixed_register_call_candidates = combined_indirect_call_candidates[
+        len(indirect_call_candidates):
+    ]
     write_json(
         out / "relational-indirect-call-targets.json",
         _indirect_call_target_artifact(
@@ -1009,11 +1108,27 @@ def stage_a_prove_relational(
     proof_ir = _attach_memory_transition_analysis(
         proof_ir, normalized, behaviors, memory_contracts, register_relations
     )
+    bounded_table_call_inputs = (
+        _bounded_immutable_code_pointer_table_call_inputs(
+            normalized,
+            behaviors,
+            table_call_proposals,
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+            original_image_base=original_bin.image_base,
+            candidate_image_base=candidate_bin.image_base,
+        )
+    )
+    write_json(
+        out / "relational-bounded-table-call-inputs.json",
+        bounded_table_call_inputs,
+    )
     segment_diagnostics: list[dict[str, Any]] = []
     segment_candidates = _segment_refinement_candidates(
         normalized, behaviors, memory_contracts, register_relations,
         import_register_seeds, diagnostics=segment_diagnostics,
         original_bin=original_bin, candidate_bin=candidate_bin,
+        bounded_table_call_candidates=bounded_table_call_inputs["candidates"],
     )
     write_json(
         out / "relational-segment-diagnostics.json",
@@ -1023,19 +1138,6 @@ def stage_a_prove_relational(
         proof_ir, normalized, behaviors, memory_contracts, register_relations,
         import_register_seeds, segment_candidates=segment_candidates,
         segment_diagnostics=segment_diagnostics,
-    )
-    bounded_table_call_inputs = (
-        _bounded_immutable_code_pointer_table_call_inputs(
-            normalized,
-            behaviors,
-            table_call_proposals,
-            original_image_base=original_bin.image_base,
-            candidate_image_base=candidate_bin.image_base,
-        )
-    )
-    write_json(
-        out / "relational-bounded-table-call-inputs.json",
-        bounded_table_call_inputs,
     )
     product_graph = _relational_product_graph(
         normalized, behaviors, register_relations, segment_candidates,
@@ -1054,7 +1156,33 @@ def stage_a_prove_relational(
         segment_candidates=segment_candidates,
     )
     product_graph = dict(composition.product_graph.raw)
+    _checked_product_reachability_inventories(product_graph)
     write_json(out / "relational-product-graph.json", product_graph)
+    lean_instruction_forms, lean_instruction_form_evidence = (
+        extract_lean_instruction_forms(
+            original=original_artifact,
+            candidate=candidate_artifact,
+            relation_contract=normalized,
+        )
+    )
+    isa_requirements = build_isa_requirement_inventory(
+        original=original_bin,
+        candidate=candidate_bin,
+        relation_contract=normalized,
+        product_graph=product_graph,
+        lean_forms=lean_instruction_forms,
+        lean_form_source_sha256=str(
+            lean_instruction_form_evidence["classifier_sha256"]
+        ),
+        lean_form_extractor_sha256=str(
+            lean_instruction_form_evidence["extractor_sha256"]
+        ),
+    )
+    isa_requirements_path = out / "isa-requirements.json"
+    write_json(isa_requirements_path, isa_requirements.to_payload())
+    isa_requirements = ISARequirementInventory.parse(
+        _read_json(isa_requirements_path)
+    )
     proof_ir = _attach_product_graph_analysis(proof_ir, product_graph)
     proof_ir = _attach_dynamic_indirect_call_analysis(
         proof_ir, normalized, behaviors, dynamic_call_candidates, product_graph
@@ -1082,6 +1210,7 @@ def stage_a_prove_relational(
             import_register_seeds=import_register_seeds,
             import_register_analysis=import_register_analysis,
             segment_candidates=segment_candidates,
+            isa_requirements=isa_requirements.to_payload(),
             replay=False,
         )
         acceptance = _read_json(out / "whole-program-acceptance.json")
@@ -1134,6 +1263,9 @@ def stage_a_prove_relational(
                 ),
                 "product_graph_sha256": sha256_file(
                     out / "relational-product-graph.json"
+                ),
+                "isa_requirements_sha256": sha256_file(
+                    out / "isa-requirements.json"
                 ),
                 "invariants_sha256": sha256_file(out / "relational-invariants.json"),
                 "whole_program_acceptance_sha256": sha256_file(
@@ -1240,6 +1372,7 @@ def stage_a_prove_relational(
             import_register_seeds=import_register_seeds,
             import_register_analysis=import_register_analysis,
             segment_candidates=segment_candidates,
+            isa_requirements=isa_requirements.to_payload(),
             replay=True, certificates=certificates,
         )
         replay = _run_sharded_relational(out / "lean", shard_modules)
@@ -1370,6 +1503,11 @@ def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> 
             (report / "relational-product-graph.json").is_file()
             and sha256_file(report / "relational-product-graph.json")
                 == verdict.get("product_graph_sha256")
+        ),
+        "isa_requirements_hash_matches": (
+            (report / "isa-requirements.json").is_file()
+            and sha256_file(report / "isa-requirements.json")
+                == verdict.get("isa_requirements_sha256")
         ),
         "acceptance_hash_matches": (
             (report / "whole-program-acceptance.json").is_file()
@@ -1850,13 +1988,18 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
             "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
         }
 
-    def generated_modules(pattern: str) -> list[str]:
+    def generated_modules(pattern: str | tuple[str, ...]) -> list[str]:
         def sort_key(module: str) -> tuple[int, str]:
             match = re.search(r"Chunk(\d+)$", module)
             return (int(match.group(1)) if match else -1, module)
 
+        patterns = (pattern,) if isinstance(pattern, str) else pattern
         return sorted(
-            (path.stem for path in (lean_dir / "StageA").glob(pattern)),
+            {
+                path.stem
+                for item in patterns
+                for path in (lean_dir / "StageA").glob(item)
+            },
             key=sort_key,
         )
 
@@ -1919,8 +2062,18 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
     phase_results: dict[str, list[dict[str, Any]]] = {}
     for phase, pattern in (
         ("exact_decode_chunks", "RelationalProof*DecodeChunk*.lean"),
+        (
+            "instruction_adequacy_chunks",
+            "RelationalProof*InstructionAdequacyChunk*.lean",
+        ),
         ("direct_composition_chunks", "RelationalProofDirectChunk*.lean"),
-        ("segment_refinement_chunks", "RelationalSegmentRefinementChunk*.lean"),
+        (
+            "segment_refinement_chunks",
+            (
+                "RelationalSegmentRefinementChunk*.lean",
+                "RelationalSegmentRefinementEdge*.lean",
+            ),
+        ),
         (
             "external_call_refinement_edges",
             "RelationalExternalCallRefinementEdge*.lean",
@@ -1961,6 +2114,23 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
                 "prerequisites": prerequisites,
                 "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
             }
+
+    instruction_adequacy_certificate = _run_lean_relational_cached(
+        lean_dir,
+        bundle="RelationalInstructionAdequacyCertificate",
+    )
+    phase_results["instruction_adequacy_certificate"] = [
+        instruction_adequacy_certificate
+    ]
+    if instruction_adequacy_certificate.get("status") != "checked":
+        return {
+            **instruction_adequacy_certificate,
+            "phase": "instruction_adequacy_certificate",
+            "phase_results": phase_results,
+            "shard_results": results,
+            "prerequisites": prerequisites,
+            "pipeline_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
 
     segment_certificate = _run_lean_relational_cached(
         lean_dir,

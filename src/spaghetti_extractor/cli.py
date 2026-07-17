@@ -6,8 +6,23 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .isa_conformance import (
+    ReportQualification,
+    parse_isa_conformance_corpus,
+    serialize_isa_conformance_report,
+)
+from .isa_conformance_lean import (
+    lean_semantic_form_classifier_sha256,
+    run_lean_isa_conformance,
+    run_lean_isa_conformance_with_forms,
+)
+from .isa_conformance_unicorn import run_unicorn_corpus
+from .isa_conformance_bochs import run_bochs_corpus
+from .isa_conformance_80386 import import_singlestep_80386_json
 from .relational.mapping import stage_a_generate_map
 from .relational.interfaces import stage_a_export_interface_manifest
+from .relational.isa_requirements import write_isa_requirement_inventory
+from .relational.isa_qualification import write_isa_semantic_qualification
 from .relational.reference_contract import (
     REFERENCE_CONTRACT_MODEL_ID,
     stage_a_diff_obligations,
@@ -23,7 +38,7 @@ from .stage_b_contract import (
     stage_b_check_unit,
 )
 from .stage_binary import StageAInputError
-from .util import sha256_file
+from .util import sha256_file, write_json
 from .stage_a_relational import (
     stage_a_build_relational,
     stage_a_check_relational_proof,
@@ -95,6 +110,88 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
     interfaces.set_defaults(
         func=lambda args: stage_a_export_interface_manifest(out=args.out)
     )
+
+    isa_conformance = subcommands.add_parser(
+        "stage-a-check-isa-conformance",
+        help="run an evidence-only concrete check of the authoritative ISA semantics",
+    )
+    isa_conformance.add_argument("--corpus", type=Path, required=True)
+    isa_conformance.add_argument(
+        "--backend", choices=("lean", "unicorn", "bochs"), default="lean"
+    )
+    isa_conformance.add_argument(
+        "--bochs-runner",
+        type=Path,
+        help="pinned batched Bochs runner; required when --backend=bochs",
+    )
+    isa_conformance.add_argument("--out", type=Path, required=True)
+    isa_conformance.add_argument(
+        "--forms-out",
+        type=Path,
+        help="write Lean-owned semantic form identities; valid only for --backend=lean",
+    )
+    isa_conformance.set_defaults(func=_cmd_stage_a_check_isa_conformance)
+
+    isa_requirements = subcommands.add_parser(
+        "stage-a-inventory-isa-requirements",
+        help=(
+            "inventory exact-PE instruction forms across canonical, represented "
+            "rooted, and conservative reachability scopes"
+        ),
+    )
+    isa_requirements.add_argument("--original", type=Path, required=True)
+    isa_requirements.add_argument("--candidate", type=Path, required=True)
+    isa_requirements.add_argument("--relation-contract", type=Path, required=True)
+    isa_requirements.add_argument("--product-graph", type=Path, required=True)
+    isa_requirements.add_argument("--out", type=Path, required=True)
+    isa_requirements.set_defaults(
+        func=lambda args: write_isa_requirement_inventory(
+            original=args.original,
+            candidate=args.candidate,
+            relation_contract=args.relation_contract,
+            product_graph=args.product_graph,
+            out=args.out,
+        )
+    )
+
+    isa_qualification = subcommands.add_parser(
+        "stage-a-qualify-isa-semantics",
+        help=(
+            "join exact-PE Lean semantic-form requirements to paired, "
+            "veto-only Bochs and Lean conformance evidence"
+        ),
+    )
+    isa_qualification.add_argument("--requirements", type=Path, required=True)
+    isa_qualification.add_argument(
+        "--evidence",
+        type=Path,
+        action="append",
+        required=True,
+        help="evidence aggregate, shard directory, or execution manifest",
+    )
+    isa_qualification.add_argument("--out", type=Path, required=True)
+    isa_qualification.set_defaults(
+        func=lambda args: write_isa_semantic_qualification(
+            requirements=args.requirements,
+            evidence=args.evidence,
+            out=args.out,
+        )
+    )
+
+    import_80386 = subcommands.add_parser(
+        "stage-a-import-80386-conformance",
+        help="import a fail-closed PE32 subset of hardware-generated 80386 vectors",
+    )
+    import_80386.add_argument("--tests-json", type=Path, required=True)
+    import_80386.add_argument("--metadata-csv", type=Path, required=True)
+    import_80386.add_argument("--revocations", type=Path, required=True)
+    import_80386.add_argument("--source-revision", required=True)
+    import_80386.add_argument("--shard-index", type=int, default=0)
+    import_80386.add_argument("--shard-count", type=int, default=1)
+    import_80386.add_argument("--max-cases", type=int)
+    import_80386.add_argument("--out", type=Path, required=True)
+    import_80386.add_argument("--manifest-out", type=Path, required=True)
+    import_80386.set_defaults(func=_cmd_stage_a_import_80386_conformance)
 
     prove = subcommands.add_parser(
         "stage-a-prove",
@@ -418,6 +515,114 @@ def _cmd_stage_a_prove(args: Any) -> dict[str, Any]:
         relation_contract=args.relation_contract,
         out=args.out,
     )
+
+
+def _cmd_stage_a_check_isa_conformance(args: Any) -> dict[str, Any]:
+    payload = json.loads(args.corpus.read_text(encoding="utf-8"))
+    corpus = parse_isa_conformance_corpus(payload)
+    if args.backend == "lean":
+        if args.forms_out is None:
+            report = run_lean_isa_conformance(corpus)
+        else:
+            report, semantic_forms = run_lean_isa_conformance_with_forms(corpus)
+            if set(semantic_forms) != {case.id for case in corpus.cases}:
+                raise StageAInputError(
+                    "Lean did not classify every conformance case into a semantic form"
+                )
+            write_json(
+                args.forms_out,
+                {
+                    "format": "stage-a-lean-isa-semantic-forms-v1",
+                    "corpus_id": corpus.id,
+                    "classifier_sha256": (
+                        lean_semantic_form_classifier_sha256()
+                    ),
+                    "cases": [
+                        {
+                            "case_id": case.id,
+                            "semantic_form": semantic_forms[case.id],
+                        }
+                        for case in corpus.cases
+                    ],
+                    "trust": {
+                        "role": "isa_conformance_evidence_only",
+                        "proof_authority": False,
+                        "closes_stage_a_proof": False,
+                    },
+                },
+            )
+    elif args.backend == "unicorn":
+        if args.forms_out is not None:
+            raise StageAInputError("--forms-out is valid only with --backend=lean")
+        report = run_unicorn_corpus(corpus)
+    elif args.backend == "bochs":
+        if args.forms_out is not None:
+            raise StageAInputError("--forms-out is valid only with --backend=lean")
+        if args.bochs_runner is None:
+            raise StageAInputError(
+                "--bochs-runner is required when --backend=bochs"
+            )
+        report = run_bochs_corpus(corpus, runner=args.bochs_runner)
+    else:
+        raise StageAInputError(f"unsupported ISA conformance backend {args.backend!r}")
+    serialized = serialize_isa_conformance_report(report, corpus=corpus)
+    write_json(args.out, serialized)
+    if report.qualification is ReportQualification.QUALIFIED:
+        status = "pass"
+    elif report.qualification is ReportQualification.VETOED:
+        status = "fail"
+    else:
+        status = "incomplete"
+    result = {
+        "format": "stage-a-isa-conformance-check-v1",
+        "status": status,
+        "qualification": report.qualification.value,
+        "backend": report.backend.id,
+        "counts": {
+            "cases": report.counts.cases,
+            "matched": report.counts.matched,
+            "mismatched": report.counts.mismatched,
+            "unsupported": report.counts.unsupported,
+            "errors": report.counts.errors,
+        },
+        "out": str(args.out),
+        "proof_authority": False,
+        "closes_stage_a_proof": False,
+    }
+    if args.forms_out is not None:
+        result["forms_out"] = str(args.forms_out)
+        result["forms_sha256"] = sha256_file(args.forms_out)
+    return result
+
+
+def _cmd_stage_a_import_80386_conformance(args: Any) -> dict[str, Any]:
+    imported = import_singlestep_80386_json(
+        tests_json=args.tests_json,
+        metadata_csv=args.metadata_csv,
+        revocations=args.revocations,
+        source_revision=args.source_revision,
+        shard_index=args.shard_index,
+        shard_count=args.shard_count,
+        max_cases=args.max_cases,
+    )
+    corpus = imported.corpus.to_payload()
+    write_json(args.out, corpus)
+    manifest = dict(imported.manifest)
+    manifest["outputs"] = {
+        "corpus": str(args.out),
+        "manifest": str(args.manifest_out),
+    }
+    write_json(args.manifest_out, manifest)
+    return {
+        "format": "stage-a-sst80386-import-result-v1",
+        "status": "complete",
+        "corpus_id": imported.corpus.id,
+        "counts": imported.manifest["counts"],
+        "out": str(args.out),
+        "manifest_out": str(args.manifest_out),
+        "proof_authority": False,
+        "closes_stage_a_proof": False,
+    }
 
 
 def _cmd_stage_a_check_proof(args: Any) -> dict[str, Any]:

@@ -377,9 +377,310 @@ theorem _root_.StageA.Formal.Expr.eval_eq_of_exactMemoryInputs
   case x87ExamineStatus => simp [Expr.exactMemoryInputs] at safe
   all_goals trivial
 
+def _root_.StageA.Relational.RegisterRelationPair.sideRegister
+    (relation : RegisterRelationPair) (candidate : Bool) : Reg :=
+  if candidate then relation.candidate else relation.original
+
+/-- Recover a scalar whose concrete value is already part of the checked input
+invariant.  A matching non-fixed relation stops the search, which makes
+duplicate or conflicting register rows fail closed. -/
+def fixedInputRegisterValue? (candidate : Bool) :
+    List RegisterRelationPair -> Reg -> Option Word
+  | [], _ => none
+  | relation :: tail, register =>
+      if relation.sideRegister candidate == register then
+        match relation.relation with
+        | .fixedWord value => some (BitVec.ofNat 32 value)
+        | _ => none
+      else
+        fixedInputRegisterValue? candidate tail register
+
+theorem fixedInputRegisterValue?_eq (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relations : List RegisterRelationPair)
+    (original candidateRegisters : Registers Word) (candidateSide : Bool)
+    (register : Reg) (value : Word)
+    (related : registerRelationsHold originalImageBase candidateImageBase targets values
+      relations original candidateRegisters = true)
+    (checked : fixedInputRegisterValue? candidateSide relations register = some value) :
+    (if candidateSide then candidateRegisters else original).get register = value := by
+  induction relations with
+  | nil => simp [fixedInputRegisterValue?] at checked
+  | cons relation tail ih =>
+      simp only [registerRelationsHold, List.all_cons, Bool.and_eq_true] at related
+      rcases related with ⟨headRelated, tailRelated⟩
+      rcases relation with ⟨originalRegister, candidateRegister, relationKind⟩
+      by_cases matched :
+          (if candidateSide then candidateRegister else originalRegister) == register
+      · cases relationKind with
+        | exact =>
+            simp [fixedInputRegisterValue?, RegisterRelationPair.sideRegister,
+              matched] at checked
+        | codePointer =>
+            simp [fixedInputRegisterValue?, RegisterRelationPair.sideRegister,
+              matched] at checked
+        | fixedCodePointer targetId =>
+            simp [fixedInputRegisterValue?, RegisterRelationPair.sideRegister,
+              matched] at checked
+        | dataPointer =>
+            simp [fixedInputRegisterValue?, RegisterRelationPair.sideRegister,
+              matched] at checked
+        | relatedWord =>
+            simp [fixedInputRegisterValue?, RegisterRelationPair.sideRegister,
+              matched] at checked
+        | fixedWord fixedValue =>
+            have valueExact : BitVec.ofNat 32 fixedValue = value := by
+              simpa [fixedInputRegisterValue?, RegisterRelationPair.sideRegister,
+                matched] using checked
+            simp only [RegisterValueRelation.holds, Bool.and_eq_true,
+              beq_iff_eq] at headRelated
+            cases candidateSide with
+            | false =>
+                have registerExact : originalRegister = register := by
+                  simpa [RegisterRelationPair.sideRegister] using beq_iff_eq.mp matched
+                have headExact : original.get register = BitVec.ofNat 32 fixedValue := by
+                  simpa [registerExact] using headRelated.1
+                exact headExact.trans valueExact
+            | true =>
+                have registerExact : candidateRegister = register := by
+                  simpa [RegisterRelationPair.sideRegister] using beq_iff_eq.mp matched
+                have headExact :
+                    candidateRegisters.get register = BitVec.ofNat 32 fixedValue := by
+                  simpa [registerExact] using headRelated.2
+                exact headExact.trans valueExact
+      · simp only [fixedInputRegisterValue?, RegisterRelationPair.sideRegister,
+          matched, if_false] at checked
+        exact ih tailRelated checked
+
+/-- Evaluate the deliberately small, reviewed expression fragment whose only
+state inputs are fixed scalar registers and immutable file-backed PE bytes.
+The result is proposal-independent: Lean recomputes it from the exact PE and
+the checked source invariant. -/
+def _root_.StageA.Formal.Expr.fixedImmutableValue? (pe : PE32)
+    (candidate : Bool) (relations : List RegisterRelationPair) : Expr -> Option Word
+  | .inputReg register => fixedInputRegisterValue? candidate relations register
+  | .constant value => some (BitVec.ofNat 32 value)
+  | .add left right => do
+      pure ((← left.fixedImmutableValue? pe candidate relations) +
+        (← right.fixedImmutableValue? pe candidate relations))
+  | .sub left right => do
+      pure ((← left.fixedImmutableValue? pe candidate relations) -
+        (← right.fixedImmutableValue? pe candidate relations))
+  | .bitAnd left right => do
+      pure ((← left.fixedImmutableValue? pe candidate relations) &&&
+        (← right.fixedImmutableValue? pe candidate relations))
+  | .bitXor left right => do
+      pure ((← left.fixedImmutableValue? pe candidate relations) ^^^
+        (← right.fixedImmutableValue? pe candidate relations))
+  | .bitNot expression => do
+      pure (~~~(← expression.fixedImmutableValue? pe candidate relations))
+  | .read8 address => do
+      let addressValue ← address.fixedImmutableValue? pe candidate relations
+      let word ← readImmutableImageWord pe addressValue.toNat 4
+      pure (BitVec.zeroExtend 32 ((BitVec.ofNat 32 word).extractLsb' 0 8))
+  | .read32 address => do
+      let addressValue ← address.fixedImmutableValue? pe candidate relations
+      let word ← readImmutableImageWord pe addressValue.toNat 4
+      pure (BitVec.ofNat 32 word)
+  | .extractByte expression index => do
+      let value ← expression.fixedImmutableValue? pe candidate relations
+      pure (BitVec.zeroExtend 32 (value.extractLsb' (index * 8) 8))
+  | .shiftLeft expression amount => do
+      pure ((← expression.fixedImmutableValue? pe candidate relations).shiftLeft amount)
+  | .shiftRight expression amount => do
+      pure ((← expression.fixedImmutableValue? pe candidate relations).ushiftRight amount)
+  | .shiftLeftBy expression amount => do
+      let value ← expression.fixedImmutableValue? pe candidate relations
+      let amountValue ← amount.fixedImmutableValue? pe candidate relations
+      pure (value.shiftLeft (amountValue.toNat % 32))
+  | .shiftRightBy expression amount => do
+      let value ← expression.fixedImmutableValue? pe candidate relations
+      let amountValue ← amount.fixedImmutableValue? pe candidate relations
+      pure (value.ushiftRight (amountValue.toNat % 32))
+  | .shiftArithmeticRightBy expression amount => do
+      let value ← expression.fixedImmutableValue? pe candidate relations
+      let amountValue ← amount.fixedImmutableValue? pe candidate relations
+      pure (value.sshiftRight (amountValue.toNat % 32))
+  | .bitOr left right => do
+      pure ((← left.fixedImmutableValue? pe candidate relations) |||
+        (← right.fixedImmutableValue? pe candidate relations))
+  | .ifEqual left right thenValue elseValue => do
+      let leftValue ← left.fixedImmutableValue? pe candidate relations
+      let rightValue ← right.fixedImmutableValue? pe candidate relations
+      if leftValue = rightValue then
+        thenValue.fixedImmutableValue? pe candidate relations
+      else
+        elseValue.fixedImmutableValue? pe candidate relations
+  | .unsignedLessValue left right => do
+      let leftValue ← left.fixedImmutableValue? pe candidate relations
+      let rightValue ← right.fixedImmutableValue? pe candidate relations
+      pure (if leftValue < rightValue then BitVec.ofNat 32 1 else BitVec.ofNat 32 0)
+  | .bitValue expression index => do
+      let value ← expression.fixedImmutableValue? pe candidate relations
+      pure (if Nat.testBit value.toNat index then BitVec.ofNat 32 1 else BitVec.ofNat 32 0)
+  | .multiply left right => do
+      pure ((← left.fixedImmutableValue? pe candidate relations) *
+        (← right.fixedImmutableValue? pe candidate relations))
+  | .multiplyHighUnsigned left right => do
+      let leftValue ← left.fixedImmutableValue? pe candidate relations
+      let rightValue ← right.fixedImmutableValue? pe candidate relations
+      let product := BitVec.zeroExtend 64 leftValue * BitVec.zeroExtend 64 rightValue
+      pure (product.extractLsb' 32 32)
+  | .multiplyHighSigned left right => do
+      let leftValue ← left.fixedImmutableValue? pe candidate relations
+      let rightValue ← right.fixedImmutableValue? pe candidate relations
+      let product := BitVec.signExtend 64 leftValue * BitVec.signExtend 64 rightValue
+      pure (product.extractLsb' 32 32)
+  | .lowestSetBit expression => do
+      pure (lowestSetBitValue
+        (← expression.fixedImmutableValue? pe candidate relations) 0 32)
+  | .highestSetBit expression => do
+      pure (highestSetBitValue
+        (← expression.fixedImmutableValue? pe candidate relations) 31 32)
+  | _ => none
+
+theorem _root_.StageA.Formal.Expr.eval_eq_of_fixedImmutableValue?
+    (pe : PE32) (candidateSide : Bool)
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relations : List RegisterRelationPair)
+    (originalState candidateState : MachineState) (expression : Expr) (value : Word)
+    (registers : registerRelationsHold originalImageBase candidateImageBase targets values
+      relations originalState.registers candidateState.registers = true)
+    (immutable : ImmutableImageWordMemory pe
+      (if candidateSide then candidateState.memory else originalState.memory))
+    (checked : expression.fixedImmutableValue? pe candidateSide relations = some value) :
+    expression.eval (if candidateSide then candidateState else originalState) = value := by
+  have selectedMemory :
+      (if candidateSide then candidateState else originalState).memory =
+        (if candidateSide then candidateState.memory else originalState.memory) := by
+    cases candidateSide <;> rfl
+  induction expression using Expr.rec (motive_2 := fun _ => True) generalizing value
+  all_goals try trivial
+  case inputReg register =>
+      cases candidateSide <;>
+        simpa [Expr.eval, Expr.fixedImmutableValue?] using
+          (fixedInputRegisterValue?_eq originalImageBase candidateImageBase targets values
+            relations originalState.registers candidateState.registers _ register value
+            registers checked)
+  case constant constantValue => simpa [Expr.fixedImmutableValue?, Expr.eval] using checked
+  case add left right leftSound rightSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨leftValue, leftChecked, rightValue, rightChecked, rfl⟩
+      simp [Expr.eval, leftSound leftValue leftChecked, rightSound rightValue rightChecked]
+  case sub left right leftSound rightSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨leftValue, leftChecked, rightValue, rightChecked, rfl⟩
+      simp [Expr.eval, leftSound leftValue leftChecked, rightSound rightValue rightChecked]
+  case bitAnd left right leftSound rightSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨leftValue, leftChecked, rightValue, rightChecked, rfl⟩
+      simp [Expr.eval, leftSound leftValue leftChecked, rightSound rightValue rightChecked]
+  case bitXor left right leftSound rightSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨leftValue, leftChecked, rightValue, rightChecked, rfl⟩
+      simp [Expr.eval, leftSound leftValue leftChecked, rightSound rightValue rightChecked]
+  case bitNot expression sound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨result, resultChecked, rfl⟩
+      simp [Expr.eval, sound result resultChecked]
+  case read8 address addressSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨addressValue, addressChecked, word, wordChecked, rfl⟩
+      have read := ImmutableImageWordMemory.read32_of_checked pe
+        (if candidateSide then candidateState.memory else originalState.memory)
+        addressValue.toNat word immutable wordChecked
+      have low := congrArg (fun result : Word =>
+        BitVec.zeroExtend 32 (result.extractLsb' 0 8)) read
+      simp only [Expr.eval]
+      rw [addressSound addressValue addressChecked, selectedMemory]
+      simpa using low
+  case read32 address addressSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨addressValue, addressChecked, word, wordChecked, rfl⟩
+      have read := ImmutableImageWordMemory.read32_of_checked pe
+        (if candidateSide then candidateState.memory else originalState.memory)
+        addressValue.toNat word immutable wordChecked
+      simp only [Expr.eval, machineStateRead32_eq_memoryRead32]
+      rw [addressSound addressValue addressChecked, selectedMemory]
+      simpa using read
+  case extractByte expression index sound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨result, resultChecked, rfl⟩
+      simp [Expr.eval, sound result resultChecked]
+  case shiftLeft expression amount sound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨result, resultChecked, rfl⟩
+      simp [Expr.eval, sound result resultChecked]
+  case shiftRight expression amount sound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨result, resultChecked, rfl⟩
+      simp [Expr.eval, sound result resultChecked]
+  case shiftLeftBy expression amount expressionSound amountSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with
+        ⟨expressionValue, expressionChecked, amountValue, amountChecked, rfl⟩
+      simp [Expr.eval, expressionSound expressionValue expressionChecked,
+        amountSound amountValue amountChecked]
+  case shiftRightBy expression amount expressionSound amountSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with
+        ⟨expressionValue, expressionChecked, amountValue, amountChecked, rfl⟩
+      simp [Expr.eval, expressionSound expressionValue expressionChecked,
+        amountSound amountValue amountChecked]
+  case shiftArithmeticRightBy expression amount expressionSound amountSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with
+        ⟨expressionValue, expressionChecked, amountValue, amountChecked, rfl⟩
+      simp [Expr.eval, expressionSound expressionValue expressionChecked,
+        amountSound amountValue amountChecked]
+  case bitOr left right leftSound rightSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨leftValue, leftChecked, rightValue, rightChecked, rfl⟩
+      simp [Expr.eval, leftSound leftValue leftChecked, rightSound rightValue rightChecked]
+  case ifEqual left right thenValue elseValue leftSound rightSound thenSound elseSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨leftValue, leftChecked, rightValue, rightChecked, checked⟩
+      by_cases equal : leftValue = rightValue
+      · simp only [equal, if_true] at checked
+        simp [Expr.eval, leftSound leftValue leftChecked,
+          rightSound rightValue rightChecked, equal, thenSound value checked]
+      · simp only [equal, if_false] at checked
+        simp [Expr.eval, leftSound leftValue leftChecked,
+          rightSound rightValue rightChecked, equal, elseSound value checked]
+  case unsignedLessValue left right leftSound rightSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨leftValue, leftChecked, rightValue, rightChecked, rfl⟩
+      simp [Expr.eval, leftSound leftValue leftChecked, rightSound rightValue rightChecked]
+  case bitValue expression index sound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨result, resultChecked, rfl⟩
+      simp [Expr.eval, sound result resultChecked]
+  case multiply left right leftSound rightSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨leftValue, leftChecked, rightValue, rightChecked, rfl⟩
+      simp [Expr.eval, leftSound leftValue leftChecked, rightSound rightValue rightChecked]
+  case multiplyHighUnsigned left right leftSound rightSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨leftValue, leftChecked, rightValue, rightChecked, rfl⟩
+      simp [Expr.eval, leftSound leftValue leftChecked, rightSound rightValue rightChecked]
+  case multiplyHighSigned left right leftSound rightSound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨leftValue, leftChecked, rightValue, rightChecked, rfl⟩
+      simp [Expr.eval, leftSound leftValue leftChecked, rightSound rightValue rightChecked]
+  case lowestSetBit expression sound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨result, resultChecked, rfl⟩
+      simp [Expr.eval, sound result resultChecked]
+  case highestSetBit expression sound =>
+      simp [Expr.fixedImmutableValue?, Option.bind_eq_some_iff] at checked
+      rcases checked with ⟨result, resultChecked, rfl⟩
+      simp [Expr.eval, sound result resultChecked]
+  all_goals simp [Expr.fixedImmutableValue?] at checked
+
 def registerValueRelationAcceptsExact : RegisterValueRelation → Bool
   | .exact | .relatedWord => true
-  | .codePointer | .fixedCodePointer _ | .dataPointer => false
+  | .fixedWord _ | .codePointer | .fixedCodePointer _ | .dataPointer => false
 
 structure ExactRegisterOutputClaim where
   output : RegisterRelationPair
@@ -705,7 +1006,7 @@ theorem ConstantRegisterOutputClaim.holds_of_checked
 
 def registerValueRelationAcceptsEqual : RegisterValueRelation → Bool
   | .exact | .relatedWord => true
-  | .codePointer | .fixedCodePointer _ | .dataPointer => false
+  | .fixedWord _ | .codePointer | .fixedCodePointer _ | .dataPointer => false
 
 theorem RegisterValueRelation.holds_of_eq
     (originalImageBase candidateImageBase : Nat)
@@ -839,6 +1140,77 @@ theorem ImmutableImageWordRegisterOutputClaim.holds_output_of_stateRel
   simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
   rw [originalBehaviorExpression, candidateBehaviorExpression,
     originalEval, candidateEval]
+  exact RegisterValueRelation.holds_append_values
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList context.dataMap.entries.toList
+    world.runtimeValueTargets claim.output.relation _ _ staticRelated
+
+structure FixedImmutableExprRegisterOutputClaim where
+  output : RegisterRelationPair
+  originalValue : Nat
+  candidateValue : Nat
+deriving Repr, DecidableEq
+
+def FixedImmutableExprRegisterOutputClaim.checked
+    (context : StaticProofContext) (sourceInvariant : StateInvariant)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : FixedImmutableExprRegisterOutputClaim) : Bool :=
+  (originalBehavior.registers.get claim.output.original).fixedImmutableValue?
+      context.originalPe false sourceInvariant.registerRelations ==
+        some (BitVec.ofNat 32 claim.originalValue) &&
+    (candidateBehavior.registers.get claim.output.candidate).fixedImmutableValue?
+      context.candidatePe true sourceInvariant.registerRelations ==
+        some (BitVec.ofNat 32 claim.candidateValue) &&
+    claim.output.relation.holds context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      context.dataMap.entries.toList (BitVec.ofNat 32 claim.originalValue)
+      (BitVec.ofNat 32 claim.candidateValue)
+
+theorem FixedImmutableExprRegisterOutputClaim.holds_output_of_stateRel
+    (context : StaticProofContext) (world : RelationalWorld)
+    (region : RegionRelation)
+    (originalBehavior candidateBehavior : NormalizedSymbolicBehavior)
+    (claim : FixedImmutableExprRegisterOutputClaim)
+    (checked : claim.checked context region.inputInvariant
+      originalBehavior candidateBehavior = true)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world region.inputInvariant originalState candidateState) :
+    claim.output.relation.holds context.originalPe.imageBase
+      context.candidatePe.imageBase context.codeMap.entries.toList
+      (context.relationalValueTargets world)
+      ((originalBehavior.eval originalState).registers.get claim.output.original)
+      ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true := by
+  simp only [FixedImmutableExprRegisterOutputClaim.checked, Bool.and_eq_true,
+    beq_iff_eq] at checked
+  rcases checked with ⟨⟨originalChecked, candidateChecked⟩, staticRelated⟩
+  rcases related with
+    ⟨_worldStatic, _stackRangesValid, _stackMemory, _importsStatic,
+      _importsComplete, _importsMemory, originalImmutable, candidateImmutable,
+      relatedCore, _importRegisters⟩
+  have registers := relatedCore.1
+  simp only [RegionRelation.inputInvariant] at registers
+  have originalEval := Expr.eval_eq_of_fixedImmutableValue?
+    context.originalPe false context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList (context.relationalValueTargets world)
+    region.inputRelations originalState candidateState
+    (originalBehavior.registers.get claim.output.original)
+    (BitVec.ofNat 32 claim.originalValue) registers originalImmutable originalChecked
+  have candidateEval := Expr.eval_eq_of_fixedImmutableValue?
+    context.candidatePe true context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList (context.relationalValueTargets world)
+    region.inputRelations originalState candidateState
+    (candidateBehavior.registers.get claim.output.candidate)
+    (BitVec.ofNat 32 claim.candidateValue) registers candidateImmutable candidateChecked
+  have originalEval' :
+      (originalBehavior.registers.get claim.output.original).eval originalState =
+        BitVec.ofNat 32 claim.originalValue := by
+    simpa using originalEval
+  have candidateEval' :
+      (candidateBehavior.registers.get claim.output.candidate).eval candidateState =
+        BitVec.ofNat 32 claim.candidateValue := by
+    simpa using candidateEval
+  simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
+  rw [originalEval', candidateEval']
   exact RegisterValueRelation.holds_append_values
     context.originalPe.imageBase context.candidatePe.imageBase
     context.codeMap.entries.toList context.dataMap.entries.toList
@@ -1166,6 +1538,7 @@ inductive RegisterOutputClaim where
   | identity (claim : IdentityRegisterOutputClaim)
   | constant (claim : ConstantRegisterOutputClaim)
   | immutableImageWord (claim : ImmutableImageWordRegisterOutputClaim)
+  | fixedImmutableExpression (claim : FixedImmutableExprRegisterOutputClaim)
   | staticWordSlot (claim : StaticWordSlotRegisterOutputClaim)
   | stackRead32Sub (claim : StackRead32SubRegisterOutputClaim)
   | stackRead32Relative (claim : StackRead32RelativeRegisterOutputClaim)
@@ -1178,6 +1551,7 @@ def RegisterOutputClaim.output : RegisterOutputClaim → RegisterRelationPair
   | .identity claim => claim.output
   | .constant claim => claim.output
   | .immutableImageWord claim => claim.output
+  | .fixedImmutableExpression claim => claim.output
   | .staticWordSlot claim => claim.output
   | .stackRead32Sub claim => claim.output
   | .stackRead32Relative claim => claim.output
@@ -1195,6 +1569,7 @@ def RegisterOutputClaim.checked
   | .constant claim => claim.checked originalImageBase candidateImageBase targets values region
       originalBehavior candidateBehavior
   | .immutableImageWord _ => false
+  | .fixedImmutableExpression _ => false
   | .staticWordSlot _ => false
   | .stackRead32Sub _ => false
   | .stackRead32Relative _ => false
@@ -1219,6 +1594,7 @@ def RegisterOutputClaim.Holds
       claim.Holds originalImageBase candidateImageBase targets values region
         originalBehavior candidateBehavior
   | .immutableImageWord _ => False
+  | .fixedImmutableExpression _ => False
   | .staticWordSlot _ => False
   | .stackRead32Sub _ => False
   | .stackRead32Relative _ => False
@@ -1248,6 +1624,7 @@ theorem RegisterOutputClaim.holds_of_checked
       exact claim.holds_of_checked originalImageBase candidateImageBase targets values region
         originalBehavior candidateBehavior checked
   | immutableImageWord _ => simp [RegisterOutputClaim.checked] at checked
+  | fixedImmutableExpression _ => simp [RegisterOutputClaim.checked] at checked
   | staticWordSlot _ => simp [RegisterOutputClaim.checked] at checked
   | stackRead32Sub _ => simp [RegisterOutputClaim.checked] at checked
   | stackRead32Relative _ => simp [RegisterOutputClaim.checked] at checked
@@ -1270,6 +1647,7 @@ theorem RegisterOutputClaim.holds_output
       ((candidateBehavior.eval candidateState).registers.get claim.output.candidate) = true := by
   cases claim <;> try exact holds originalState candidateState related
   case immutableImageWord => contradiction
+  case fixedImmutableExpression => contradiction
   case staticWordSlot => contradiction
   case stackRead32Sub => contradiction
   case stackRead32Relative => contradiction
@@ -1377,6 +1755,8 @@ def RegisterOutputClaim.nonMemoryChecked
       context.candidatePe.imageBase context.codeMap.entries.toList
       context.dataMap.entries.toList region originalBehavior candidateBehavior
   | .immutableImageWord claim =>
+      claim.checked context region.inputInvariant originalBehavior candidateBehavior
+  | .fixedImmutableExpression claim =>
       claim.checked context region.inputInvariant originalBehavior candidateBehavior
   | .staticWordSlot claim => claim.checked context originalBehavior candidateBehavior
   | .stackRead32Sub claim => claim.checked region originalBehavior candidateBehavior
@@ -1520,6 +1900,10 @@ theorem registerRelationsHold_of_nonMemoryOutputClaims
             candidateBehavior checked.1 originalState candidateState related,
             ih checked.2⟩
       | immutableImageWord claim =>
+          exact ⟨claim.holds_output_of_stateRel context world region originalBehavior
+            candidateBehavior checked.1 originalState candidateState related,
+            ih checked.2⟩
+      | fixedImmutableExpression claim =>
           exact ⟨claim.holds_output_of_stateRel context world region originalBehavior
             candidateBehavior checked.1 originalState candidateState related,
             ih checked.2⟩
@@ -1842,7 +2226,7 @@ def _root_.StageA.Formal.BoolExpr.pureInvariant : BoolExpr → Bool
   | .and left right | .or left right | .xor left right =>
       left.pureInvariant && right.pureInvariant
   | .msb value | .bit value _ => value.pureInvariant
-  | .inputFlag index => [0, 2, 6, 7, 10, 11].contains index
+  | .inputFlag index => [0, 2, 4, 6, 7, 10, 11].contains index
   | .divisionValid high low divisor =>
       high.pureInvariant && low.pureInvariant && divisor.pureInvariant
 
@@ -1916,6 +2300,7 @@ def outputFlag (flags : Option FlagsExpr) (index : Nat) : BoolExpr :=
       match index with
       | 0 => value.carry.getD (.inputFlag 0)
       | 2 => value.parity.getD (.inputFlag 2)
+      | 4 => value.auxiliary.getD (.inputFlag 4)
       | 6 => value.zero.getD (.inputFlag 6)
       | 7 => value.sign.getD (.inputFlag 7)
       | 11 => value.overflow.getD (.inputFlag 11)
@@ -1939,7 +2324,7 @@ theorem _root_.StageA.Formal.BoolExpr.eval_toWord
     split <;> simp_all
 
 theorem outputFlag_eval (behavior : NormalizedSymbolicBehavior) (state : MachineState)
-    (index : Nat) (safe : [0, 2, 6, 7, 10, 11].contains index = true) :
+    (index : Nat) (safe : [0, 2, 4, 6, 7, 10, 11].contains index = true) :
     (outputFlag behavior.flags index).eval state =
       BoolExpr.eval ((behavior.eval state).nextMachineState state) (.inputFlag index) := by
   simp only [BoolExpr.eval, RelationalBehavior.nextMachineState,
@@ -1949,10 +2334,11 @@ theorem outputFlag_eval (behavior : NormalizedSymbolicBehavior) (state : Machine
   | none => simp [outputFlag, evalNormalizedFlags, BoolExpr.eval]
   | some flags =>
       simp at safe
-      rcases safe with safe | safe | safe | safe | safe | safe <;> subst index <;>
+      rcases safe with safe | safe | safe | safe | safe | safe | safe <;> subst index <;>
         simp [outputFlag, BoolExpr.eval, evalNormalizedFlags,
           StageA.Formal.FlagsExpr.eval_extract_cf,
           StageA.Formal.FlagsExpr.eval_extract_pf,
+          StageA.Formal.FlagsExpr.eval_extract_af,
           StageA.Formal.FlagsExpr.eval_extract_zf,
           StageA.Formal.FlagsExpr.eval_extract_sf,
           StageA.Formal.FlagsExpr.eval_extract_df,
@@ -1991,7 +2377,7 @@ def _root_.StageA.Formal.Expr.pullbackMemoryExpression
     (behavior : NormalizedSymbolicBehavior) : Expr → Option Expr
   | .inputReg register => some (behavior.registers.get register)
   | .inputFlagValue bit =>
-      if [0, 2, 6, 7, 10, 11].contains bit then
+      if [0, 2, 4, 6, 7, 10, 11].contains bit then
         some ((outputFlag behavior.flags bit).toWord)
       else none
   | .inputFsBase => some .inputFsBase
@@ -2332,7 +2718,8 @@ def _root_.StageA.Formal.BoolExpr.memoryReadObservations : BoolExpr → List Exp
 
 def _root_.StageA.Formal.FlagsExpr.memoryReadObservations
     (flags : FlagsExpr) : List Expr :=
-  [flags.zero, flags.carry, flags.sign, flags.overflow, flags.parity].flatMap
+  [flags.zero, flags.carry, flags.auxiliary, flags.sign, flags.overflow,
+    flags.parity].flatMap
     fun value => match value with
       | none => []
       | some expression => expression.memoryReadObservations
@@ -2442,7 +2829,8 @@ def _root_.StageA.Formal.BoolExpr.x87LoadObservations :
 
 def _root_.StageA.Formal.FlagsExpr.x87LoadObservations
     (flags : FlagsExpr) : List X87LoadObservation :=
-  [flags.zero, flags.carry, flags.sign, flags.overflow, flags.parity].flatMap
+  [flags.zero, flags.carry, flags.auxiliary, flags.sign, flags.overflow,
+    flags.parity].flatMap
     fun value => match value with
       | none => []
       | some expression => expression.x87LoadObservations

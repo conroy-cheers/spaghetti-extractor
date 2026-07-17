@@ -63,6 +63,7 @@ def _lean_bounded_immutable_code_pointer_table_call_claim(
         + ", tableOffset := " + str(int(candidate["table_offset"]))
         + ", originalBase := " + str(int(candidate["original_base"]))
         + ", candidateBase := " + str(int(candidate["candidate_base"]))
+        + ", layout := ." + str(candidate["layout"])
         + ", upperExclusive := " + str(int(candidate["upper_exclusive"]))
         + ", originalIndexRegister := ."
         + str(candidate["original_index_register"])
@@ -177,15 +178,19 @@ def _write_reachable_product_local_certificate(
             imports.add(decoded_module)
             region_index = int(candidate["region_index"])
             witnesses.append(
-                f"⟨region{region_index}, originalBehavior{region_index}, "
-                f"candidateBehavior{region_index}, "
-                f"productNode{node_id}DecodedControlEdgesComplete⟩"
+                "canonicalNodeControlEdgesComplete_of_found "
+                "staticProofContext relationalProductGraph allRegions "
+                f"{node_id} region{region_index} "
+                f"originalBehavior{region_index} candidateBehavior{region_index} "
+                "(by decide) (by decide) "
+                f"productNode{node_id}DecodedControlEdgesComplete"
             )
         validity_proof = listed_proof([
             "⟨by decide, by decide⟩" for _ in selected_ids
         ])
         chunk_source = (
             "import StageA.RelationalReachableProductLocalEvidence\n"
+            "import StageA.RelationalProofRegionInventoryData\n"
             + "".join(f"import StageA.{item}\n" for item in sorted(imports))
             + "\nnamespace StageA.GeneratedRelational\n\n"
             "open StageA.Formal StageA.Relational\n\n"
@@ -198,8 +203,8 @@ def _write_reachable_product_local_certificate(
             f"      relationalProductReachabilityEvidence {ids_name} := by\n"
             f"  exact {validity_proof}\n\n"
             f"theorem {theorem_name} :\n"
-            "    AllListedDecodedControlNodesComplete relationalProductGraph\n"
-            f"      staticProofContext {ids_name} := by\n"
+            "    AllListedCanonicalDecodedControlNodesComplete relationalProductGraph\n"
+            f"      staticProofContext allRegions {ids_name} := by\n"
             f"  exact {listed_proof(witnesses)}\n\n"
             "end StageA.GeneratedRelational\n"
         )
@@ -312,13 +317,14 @@ def _write_reachable_product_local_certificate(
         )
         + ")\n\n"
         "theorem allReachableListedDecodedControlNodesCompleteChecked :\n"
-        "    AllListedDecodedControlNodesComplete relationalProductGraph\n"
-        "      staticProofContext relationalProductLocalEvidence.decodedNodeIds := by\n"
+        "    AllListedCanonicalDecodedControlNodesComplete relationalProductGraph\n"
+        "      staticProofContext allRegions "
+        "relationalProductLocalEvidence.decodedNodeIds := by\n"
         f"  simpa [{node_simp_arguments}] using\n    ("
         + append_proof(
             node_chunks,
-            "allListedDecodedControlNodesComplete_append",
-            "relationalProductGraph staticProofContext",
+            "allListedCanonicalDecodedControlNodesComplete_append",
+            "relationalProductGraph staticProofContext allRegions",
         )
         + ")\n\nend StageA.GeneratedRelational\n"
     )
@@ -373,14 +379,16 @@ def _write_reachable_product_local_certificate(
             "      relationalProductReachabilityEvidence = true := by decide\n\n"
             "def reachableProductLocalCertificate :\n"
             "    ReachableProductLocalCertificate staticProofContext\n"
-            "      relationalProductGraph relationalProductReachabilityEvidence := {\n"
+            "      relationalProductGraph allRegions "
+            "relationalProductReachabilityEvidence := {\n"
             "  staticContextValid := staticProofContextChecked\n"
             "  reachabilitySound := "
             "generatedDeclaredGraphReachabilityCertificateChecked\n"
             "  reachableControlComplete :=\n"
             "    reachableProductNodesDecodedControlComplete_of_complete_evidence\n"
             "      staticProofContext relationalProductGraph\n"
-            "      relationalProductReachabilityEvidence relationalProductLocalEvidence\n"
+            "      allRegions relationalProductReachabilityEvidence "
+            "relationalProductLocalEvidence\n"
             "      relationalProductLocalEvidenceCompleteChecked\n"
             "      allReachableListedDecodedControlNodesCompleteChecked\n"
             "  reachableEdgesRefined :=\n"
@@ -405,7 +413,7 @@ def _write_reachable_product_local_certificate(
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
         "def GeneratedPartialReachableProductLocalCertificate : Prop :=\n"
         "  PartialReachableProductLocalCertificate staticProofContext\n"
-        "    relationalProductGraph relationalProductReachabilityEvidence\n"
+        "    relationalProductGraph allRegions relationalProductReachabilityEvidence\n"
         "    relationalProductLocalEvidence\n\n"
         "theorem generatedPartialReachableProductLocalCertificateChecked :\n"
         "    GeneratedPartialReachableProductLocalCertificate := {\n"
@@ -1196,10 +1204,64 @@ def _write_relational_product_graph_modules(
                     f"{node_id} staticProofContext region{region_index} "
                     f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
                     f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
+                    "(Or.inl "
                     f"⟨{original_normalized}, {candidate_normalized}, {claim_name}, "
                     f"⟨originalBehavior{region_index}CheckedDecoded, "
                     f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
-                    f"by decide, {closed_name}⟩⟩)))))",
+                    f"by decide, {closed_name}⟩⟩))))))",
+                ])
+            elif candidate.get("profile") == "fixed_code_address_indirect_jump_v1":
+                original_normalized = f"productNode{node_id}OriginalNormalized"
+                candidate_normalized = f"productNode{node_id}CandidateNormalized"
+                claim_name = f"productNode{node_id}FixedCodeAddressIndirectJumpClaim"
+                closed_name = f"productNode{node_id}FixedCodeAddressIndirectJumpClosed"
+                definitions.extend([
+                    f"def {original_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index}).get (by decide)",
+                    f"def {candidate_normalized} : NormalizedSymbolicBehavior :=\n"
+                    f"  (normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index}).get (by decide)",
+                    f"theorem {original_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior false region{region_index}.targets "
+                    f"originalBehavior{region_index} = some {original_normalized} := "
+                    "by decide",
+                    f"theorem {candidate_normalized}Checked :\n"
+                    f"    normalizeSymbolicBehavior true region{region_index}.targets "
+                    f"candidateBehavior{region_index} = some {candidate_normalized} := "
+                    "by decide",
+                    f"theorem {original_normalized}WritesEmpty : "
+                    f"{original_normalized}.writes = [] := by decide",
+                    f"theorem {candidate_normalized}WritesEmpty : "
+                    f"{candidate_normalized}.writes = [] := by decide",
+                    f"theorem {original_normalized}X87 : "
+                    f"{original_normalized}.x87 = "
+                    f"originalBehavior{region_index}.x87 := by decide",
+                    f"theorem {candidate_normalized}X87 : "
+                    f"{candidate_normalized}.x87 = "
+                    f"candidateBehavior{region_index}.x87 := by decide",
+                    f"def {claim_name} : FixedCodeAddressIndirectJumpTargetClaim := {{\n"
+                    f"  targetId := {int(candidate['target_id'])}\n"
+                    f"  originalTarget := {int(candidate['original_target'])}\n"
+                    f"  candidateTarget := {int(candidate['candidate_target'])}\n"
+                    "}",
+                    f"theorem {closed_name} :\n"
+                    f"    FixedCodeAddressIndirectJumpTargetsClosed staticProofContext "
+                    f"region{region_index}.inputInvariant {original_normalized} "
+                    f"{candidate_normalized} {claim_name} :=\n"
+                    "  fixedCodeAddressIndirectJumpTargetsClosed_of_checked "
+                    f"staticProofContext region{region_index}.inputInvariant "
+                    f"{original_normalized} {candidate_normalized} {claim_name} "
+                    "(by decide)",
+                    f"theorem {theorem_name} :\n"
+                    "    NodeControlEdgesComplete relationalProductGraph "
+                    f"{node_id} staticProofContext region{region_index} "
+                    f"originalBehavior{region_index} candidateBehavior{region_index} := by\n"
+                    f"  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr "
+                    f"(Or.inr ⟨{original_normalized}, {candidate_normalized}, "
+                    f"{claim_name}, ⟨originalBehavior{region_index}CheckedDecoded, "
+                    f"candidateBehavior{region_index}CheckedDecoded, by decide, by decide, "
+                    f"by decide, {closed_name}⟩⟩))))))",
                 ])
             elif (
                 candidate.get("profile")

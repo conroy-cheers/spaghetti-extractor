@@ -101,6 +101,23 @@ def _relational_loader_facts(binary: StageABinary) -> dict[str, Any]:
         "bitness": binary.bitness,
         "image_base": binary.image_base,
         "entrypoint_rva": binary.entrypoint_rva,
+        "coff_characteristics": binary.coff_characteristics,
+        "is_dll": binary.is_dll,
+        "exports": (
+            [
+                {
+                    "ordinal": exported.ordinal,
+                    "name": exported.name,
+                    "rva": exported.rva,
+                    "kind": exported.kind,
+                    "forwarder": exported.forwarder,
+                }
+                for exported in binary.exports
+            ]
+            if binary.exports is not None else None
+        ),
+        "export_parse_error": binary.export_parse_error,
+        "loader_diagnostics": binary.loader_diagnostics.as_payload(),
         "size_of_image": binary.size_of_image,
         "size_of_headers": binary.size_of_headers,
         "sections": [

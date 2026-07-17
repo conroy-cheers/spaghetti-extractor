@@ -509,6 +509,7 @@ def stage_a_build_relational(
             out / "relational-static-word-relations.json"
         ),
         "product_graph_sha256": sha256_file(out / "relational-product-graph.json"),
+        "isa_requirements_sha256": sha256_file(out / "isa-requirements.json"),
         "whole_program_acceptance_sha256": sha256_file(
             out / "whole-program-acceptance.json"
         ),
@@ -864,6 +865,10 @@ def _check_nix_relational_report(
                     sha256_file(report / "relational-product-graph.json")
                     == verdict.get("product_graph_sha256")
                 ),
+                "isa_requirements_hash_matches": (
+                    sha256_file(report / "isa-requirements.json")
+                    == verdict.get("isa_requirements_sha256")
+                ),
                 "acceptance_hash_matches": (
                     sha256_file(report / "whole-program-acceptance.json")
                     == verdict.get("whole_program_acceptance_sha256")
@@ -1079,9 +1084,10 @@ def _write_relational_module_graph(
             return "high-memory", max(4096, source_bytes // 1024 * 3)
         if any(module.startswith("RelationalStaticCodeMapChunk") for module in modules):
             # The generated source is small, but reducing indexed lookups through a
-            # jq-sized imported map dominates the Lean process's resident set.
+            # jq-sized imported map dominates the Lean process's resident set. Full
+            # jq measurements peak near 9 GiB per module, independent of source size.
             return "high-memory", max(
-                4096 * min(2, len(modules)), source_bytes // 1024 * 3
+                10240, source_bytes // 1024 * 3
             )
         if any(
             module.startswith(prefix)
@@ -1101,7 +1107,13 @@ def _write_relational_module_graph(
             # Each checker reduces indexed lookups through the full imported jq
             # graph. Six GiB is conservative for the bounded 16-entry chunks.
             return "high-memory", max(6144, source_bytes // 1024 * 3)
-        if "DecodeChunk" in names or "StructuralPadding" in names or "StructuralCoverage" in names:
+        if (
+            "DecodeChunk" in names
+            or "InstructionAdequacyChunk" in names
+            or "RelationalInstructionAdequacyCertificate" in modules
+            or "StructuralPadding" in names
+            or "StructuralCoverage" in names
+        ):
             return "high-memory", max(4096, source_bytes // 1024 * 3)
         if "RelationalProofOriginal" in names or "RelationalProofCandidate" in names:
             return "high-memory", max(16384, source_bytes // 1024 * 3)
@@ -1185,6 +1197,9 @@ def _write_relational_module_graph(
                 logical_modules, "RelationalProofShard"
             )),
             "decode_modules": sum("DecodeChunk" in module for module in logical_modules),
+            "instruction_adequacy_modules": sum(
+                "InstructionAdequacy" in module for module in logical_modules
+            ),
             "direct_modules": sum("DirectChunk" in module for module in logical_modules),
             "structural_modules": sum(module.startswith("RelationalProofStructural") for module in logical_modules),
         },
@@ -1340,6 +1355,7 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
             prepared / "relational-segment-diagnostics.json"
         ),
         "product_graph_sha256": prepared / "relational-product-graph.json",
+        "isa_requirements_sha256": prepared / "isa-requirements.json",
         "invariants_sha256": prepared / "relational-invariants.json",
         "whole_program_acceptance_sha256": (
             prepared / "whole-program-acceptance.json"

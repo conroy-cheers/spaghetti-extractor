@@ -163,6 +163,118 @@ def _pe32_image(code: bytes) -> bytes:
     return headers + code.ljust(text_raw_size, b"\0")
 
 
+def _pe32_tls_image(
+    callback_rvas: tuple[int, ...],
+    *,
+    include_tls: bool = True,
+    terminate_callbacks: bool = True,
+    callback_pop_bytes: int = 12,
+    callback_array_writable: bool = False,
+) -> bytes:
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    headers_size = 0x200
+    image_base = 0x400000
+    text_rva = 0x1000
+    rdata_rva = 0x2000
+    text_raw = headers_size
+    text_raw_size = 0x200
+    rdata_raw = text_raw + text_raw_size
+    rdata_raw_size = 0x1000
+    size_of_image = 0x3000
+    tls_directory_offset = 0
+    callback_array_offset = (
+        0x40 if terminate_callbacks
+        else rdata_raw_size - 4 * len(callback_rvas)
+    )
+    callback_array_size = 4 * (len(callback_rvas) + int(terminate_callbacks))
+    if not callback_rvas and not terminate_callbacks:
+        raise ValueError("an unterminated callback array must contain a callback")
+    if (
+        callback_array_offset < 24
+        or callback_array_offset + callback_array_size > rdata_raw_size
+    ):
+        raise ValueError("TLS callback array does not fit in .rdata")
+
+    if not 0 <= callback_pop_bytes <= 0xFFFF:
+        raise ValueError("callback pop size must fit the x86 ret imm16 encoding")
+    code = bytearray(text_raw_size)
+    code[0] = 0xC3
+    for callback_rva in callback_rvas:
+        callback_offset = callback_rva - text_rva
+        if 0 <= callback_offset and callback_offset + 3 <= text_raw_size:
+            code[callback_offset : callback_offset + 3] = (
+                b"\xc2" + struct.pack("<H", callback_pop_bytes)
+            )
+    text_virtual_size = max([
+        1,
+        *(
+            callback_rva - text_rva + 3
+            for callback_rva in callback_rvas
+            if 0 <= callback_rva - text_rva <= text_raw_size - 3
+        ),
+    ])
+    rdata = bytearray(rdata_raw_size)
+    struct.pack_into(
+        "<IIIIII",
+        rdata,
+        tls_directory_offset,
+        image_base + rdata_rva + 0x80,
+        image_base + rdata_rva + 0x84,
+        image_base + rdata_rva + 0x84,
+        image_base + rdata_rva + callback_array_offset,
+        0,
+        0,
+    )
+    for index, callback_rva in enumerate(callback_rvas):
+        struct.pack_into(
+            "<I",
+            rdata,
+            callback_array_offset + index * 4,
+            image_base + callback_rva,
+        )
+    if terminate_callbacks:
+        struct.pack_into(
+            "<I",
+            rdata,
+            callback_array_offset + len(callback_rvas) * 4,
+            0,
+        )
+
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+    coff = struct.pack("<HHIIIHH", 0x014C, 2, 0, 0, 0, 224, 0x010F)
+    optional_prefix = struct.pack(
+        "<HBB" + "I" * 9 + "H" * 6 + "I" * 4 + "H" * 2 + "I" * 6,
+        0x10B, 0, 0, text_raw_size, rdata_raw_size, 0, text_rva, text_rva,
+        rdata_rva, image_base, section_alignment, file_alignment, 4, 0, 0, 0,
+        4, 0, 0, size_of_image, headers_size, 0, 3, 0, 0x100000, 0x1000,
+        0x100000, 0x1000, 0, 16,
+    )
+    directories = bytearray(16 * 8)
+    if include_tls:
+        struct.pack_into(
+            "<II", directories, 9 * 8, rdata_rva + tls_directory_offset, 24,
+        )
+    sections = b"".join((
+        struct.pack(
+            "<8sIIIIIIHHI", b".text\0\0\0", text_virtual_size, text_rva,
+            text_raw_size, text_raw, 0, 0, 0, 0, 0x60000020,
+        ),
+        struct.pack(
+            "<8sIIIIIIHHI", b".rdata\0\0", rdata_raw_size, rdata_rva,
+            rdata_raw_size, rdata_raw, 0, 0, 0, 0,
+            0xC0000040 if callback_array_writable else 0x40000040,
+        ),
+    ))
+    headers = (
+        bytes(dos) + b"PE\0\0" + coff + optional_prefix + bytes(directories)
+        + sections
+    ).ljust(headers_size, b"\0")
+    return headers + bytes(code) + bytes(rdata)
+
+
 def _pe32_image_with_immutable_word_branch(value: int) -> bytes:
     file_alignment = 0x200
     section_alignment = 0x1000

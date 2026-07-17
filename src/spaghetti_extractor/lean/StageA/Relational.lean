@@ -175,6 +175,21 @@ def normalizeDataAddress (targets : List ValueTargetPair) (candidateAddress : Wo
     normalizeDataAddress (target :: tail) address = normalizeDataAddress tail address := by
   simp [normalizeDataAddress, valueTargetContainsCandidate, zero]
 
+theorem normalizeDataAddress_eq_self_of_identity_targets
+    (targets : List ValueTargetPair) (address : Word)
+    (identity : forall target, target ∈ targets ->
+      target.originalValue = target.candidateValue) :
+    normalizeDataAddress targets address = address := by
+  unfold normalizeDataAddress
+  cases found : targets.find? (valueTargetContainsCandidate · address) with
+  | none => rfl
+  | some target =>
+      have member : target ∈ targets := List.mem_of_find?_eq_some found
+      change BitVec.ofNat 32 target.originalValue +
+        (address - BitVec.ofNat 32 target.candidateValue) = address
+      rw [identity target member]
+      rw [BitVec.add_comm, BitVec.sub_add_cancel]
+
 theorem normalizeDataAddress_singleton_of_contains (target : ValueTargetPair)
     (address : Word) (contains : valueTargetContainsCandidate target address = true) :
     normalizeDataAddress [target] address =
@@ -342,6 +357,99 @@ def Memory.read32 (memory : Memory) (address : Word) : Word :=
   let b2 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 2))).shiftLeft 16
   let b3 := (BitVec.zeroExtend 32 (memory (address + BitVec.ofNat 32 3))).shiftLeft 24
   b0 ||| b1 ||| b2 ||| b3
+
+theorem fourBytesAssembleLittleEndian (byte0 byte1 byte2 byte3 : Nat)
+    (byte0Bound : byte0 < 256) (byte1Bound : byte1 < 256)
+    (byte2Bound : byte2 < 256) (byte3Bound : byte3 < 256) :
+    BitVec.setWidth 32 (BitVec.ofNat 8 byte0) |||
+          (BitVec.setWidth 32 (BitVec.ofNat 8 byte1)).shiftLeft 8 |||
+        (BitVec.setWidth 32 (BitVec.ofNat 8 byte2)).shiftLeft 16 |||
+      (BitVec.setWidth 32 (BitVec.ofNat 8 byte3)).shiftLeft 24 =
+        BitVec.ofNat 32
+          (byte0 + byte1 * 256 + byte2 * 65536 + byte3 * 16777216) := by
+  apply BitVec.eq_of_toNat_eq
+  simp only [BitVec.toNat_or, BitVec.shiftLeft, BitVec.toNat_setWidth,
+    BitVec.toNat_ofNat, Nat.shiftLeft_eq]
+  have pow8 : 2 ^ 8 = 256 := by decide
+  have pow16 : 2 ^ 16 = 65536 := by decide
+  have pow24 : 2 ^ 24 = 16777216 := by decide
+  have pow32 : 2 ^ 32 = 4294967296 := by decide
+  rw [pow8, pow16, pow24, pow32]
+  have byte0Large : byte0 < 4294967296 := Nat.lt_trans byte0Bound (by decide)
+  have byte1Large : byte1 < 4294967296 := Nat.lt_trans byte1Bound (by decide)
+  have byte2Large : byte2 < 4294967296 := Nat.lt_trans byte2Bound (by decide)
+  have byte3Large : byte3 < 4294967296 := Nat.lt_trans byte3Bound (by decide)
+  have byte1Shift : byte1 * 256 < 4294967296 := by
+    have scaled := Nat.mul_lt_mul_of_pos_right byte1Bound (by decide : 0 < 256)
+    exact Nat.lt_trans scaled (by decide)
+  have byte2Shift : byte2 * 65536 < 4294967296 := by
+    have scaled := Nat.mul_lt_mul_of_pos_right byte2Bound (by decide : 0 < 65536)
+    have product : 256 * 65536 = 16777216 := by decide
+    rw [product] at scaled
+    exact Nat.lt_trans scaled (by decide)
+  have byte3Shift : byte3 * 16777216 < 4294967296 := by
+    have scaled := Nat.mul_lt_mul_of_pos_right byte3Bound
+      (by decide : 0 < 16777216)
+    have product : 256 * 16777216 = 4294967296 := by decide
+    rw [product] at scaled
+    exact scaled
+  have low16Bound : byte0 + byte1 * 256 < 65536 := by
+    have byte1Next : byte1 + 1 <= 256 := by omega
+    calc
+      byte0 + byte1 * 256 < 256 + byte1 * 256 :=
+        Nat.add_lt_add_right byte0Bound _
+      _ = (byte1 + 1) * 256 := by simp [Nat.add_mul, Nat.add_comm]
+      _ <= 256 * 256 := Nat.mul_le_mul_right 256 byte1Next
+      _ = 65536 := by decide
+  have low24Bound : byte0 + byte1 * 256 + byte2 * 65536 < 16777216 := by
+    have byte2Next : byte2 + 1 <= 256 := by omega
+    calc
+      byte0 + byte1 * 256 + byte2 * 65536 < 65536 + byte2 * 65536 :=
+        Nat.add_lt_add_right low16Bound _
+      _ = (byte2 + 1) * 65536 := by simp [Nat.add_mul, Nat.add_comm]
+      _ <= 256 * 65536 := Nat.mul_le_mul_right 65536 byte2Next
+      _ = 16777216 := by decide
+  have totalBound :
+      byte0 + byte1 * 256 + byte2 * 65536 + byte3 * 16777216 < 4294967296 := by
+    have byte3Next : byte3 + 1 <= 256 := by omega
+    calc
+      byte0 + byte1 * 256 + byte2 * 65536 + byte3 * 16777216 <
+          16777216 + byte3 * 16777216 := Nat.add_lt_add_right low24Bound _
+      _ = (byte3 + 1) * 16777216 := by simp [Nat.add_mul, Nat.add_comm]
+      _ <= 256 * 16777216 := Nat.mul_le_mul_right 16777216 byte3Next
+      _ = 4294967296 := by decide
+  rw [Nat.mod_eq_of_lt byte0Bound, Nat.mod_eq_of_lt byte0Large,
+    Nat.mod_eq_of_lt byte1Bound, Nat.mod_eq_of_lt byte1Large,
+    Nat.mod_eq_of_lt byte1Shift, Nat.mod_eq_of_lt byte2Bound,
+    Nat.mod_eq_of_lt byte2Large, Nat.mod_eq_of_lt byte2Shift,
+    Nat.mod_eq_of_lt byte3Bound, Nat.mod_eq_of_lt byte3Large,
+    Nat.mod_eq_of_lt byte3Shift, Nat.mod_eq_of_lt totalBound]
+  have low16 : byte0 ||| byte1 * 256 = byte0 + byte1 * 256 := by
+    calc
+      byte0 ||| byte1 * 256 = byte1 * 256 ||| byte0 := Nat.or_comm _ _
+      _ = byte1 * 256 + byte0 := by
+        simpa [pow8, Nat.mul_comm] using
+          (Nat.two_pow_add_eq_or_of_lt (i := 8) byte0Bound byte1).symm
+      _ = byte0 + byte1 * 256 := Nat.add_comm _ _
+  rw [low16]
+  have low24 : (byte0 + byte1 * 256) ||| byte2 * 65536 =
+      byte0 + byte1 * 256 + byte2 * 65536 := by
+    calc
+      (byte0 + byte1 * 256) ||| byte2 * 65536 =
+          byte2 * 65536 ||| (byte0 + byte1 * 256) := Nat.or_comm _ _
+      _ = byte2 * 65536 + (byte0 + byte1 * 256) := by
+        simpa [pow16, Nat.mul_comm] using
+          (Nat.two_pow_add_eq_or_of_lt (i := 16) low16Bound byte2).symm
+      _ = byte0 + byte1 * 256 + byte2 * 65536 := by omega
+  rw [low24]
+  calc
+    (byte0 + byte1 * 256 + byte2 * 65536) ||| byte3 * 16777216 =
+        byte3 * 16777216 ||| (byte0 + byte1 * 256 + byte2 * 65536) :=
+      Nat.or_comm _ _
+    _ = byte3 * 16777216 + (byte0 + byte1 * 256 + byte2 * 65536) := by
+      simpa [pow24, Nat.mul_comm] using
+        (Nat.two_pow_add_eq_or_of_lt (i := 24) low24Bound byte3).symm
+    _ = byte0 + byte1 * 256 + byte2 * 65536 + byte3 * 16777216 := by omega
 
 @[simp] theorem Memory.read32_extractLsb8 (memory : Memory) (address : Word) :
     (Memory.read32 memory address).extractLsb' 0 8 = memory address := by
@@ -2573,6 +2681,21 @@ def staticWordRelationSlotByteCoveredCandidate (context : StaticProofContext)
     (address : Word) : Bool :=
   staticWordRelationSlotByteCoveredOn true context address
 
+/-- A byte is excluded as side-specific immutable image state only when an
+existing `ImmutableImageWordMemory` obligation fixes a complete word that
+contains it.  Looking for all four possible containing starts avoids weakening
+the relation at section/header boundaries or for sub-word mapped fragments. -/
+def immutableImageByteCoveredByWord (pe : PE32) (address : Word) : Bool :=
+  (List.range 4).any fun offset =>
+    offset <= address.toNat &&
+      (readImmutableImageWord pe (address.toNat - offset) 4).isSome
+
+def pairedImmutableImageByteCovered (context : StaticProofContext)
+    (values : List ValueTargetPair) (candidateAddress : Word) : Bool :=
+  immutableImageByteCoveredByWord context.candidatePe candidateAddress &&
+    immutableImageByteCoveredByWord context.originalPe
+      (normalizeDataAddress values candidateAddress)
+
 def ordinaryOriginalMemoryAddressExcluded (context : StaticProofContext)
     (world : RelationalWorld) (address : Word) : Bool :=
   importIatByteCoveredOriginal context world address ||
@@ -2589,6 +2712,7 @@ def ordinaryMemoryAddressExcluded (context : StaticProofContext)
     dynamicByteCoveredCandidate world candidateAddress ||
     staticDynamicPointerSlotByteCoveredCandidate context candidateAddress ||
     staticWordRelationSlotByteCoveredCandidate context candidateAddress ||
+    pairedImmutableImageByteCovered context values candidateAddress ||
     ordinaryOriginalMemoryAddressExcluded context world
       (normalizeDataAddress values candidateAddress)
 
@@ -2796,6 +2920,24 @@ def ordinaryMemoryRelated (context : StaticProofContext)
       ∀ address,
       ordinaryMemoryAddressExcluded context world values address = false →
         candidate address = original (normalizeDataAddress values address)
+
+theorem ordinaryMemoryRelated_self_of_identity_targets
+    (context : StaticProofContext) (world : RelationalWorld)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (memory : Memory)
+    (identity : forall target, target ∈ values ->
+      target.originalValue = target.candidateValue) :
+    ordinaryMemoryRelated context world targets values memory memory := by
+  unfold ordinaryMemoryRelated
+  split
+  · constructor
+    · intro address _relocationByte _ordinary
+      rw [normalizeDataAddress_eq_self_of_identity_targets values address identity]
+    · intro address _relocationWord _ordinary
+      rw [normalizeDataAddress_eq_self_of_identity_targets values address identity]
+      exact wordRelated_self _ _ _ _ _
+  · intro address _ordinary
+    rw [normalizeDataAddress_eq_self_of_identity_targets values address identity]
 
 structure RelationalMemoryFamiliesHold (context : StaticProofContext)
     (world : RelationalWorld) (original candidate : Memory) : Prop where
@@ -4468,6 +4610,7 @@ deriving Repr, DecidableEq
 
 inductive RegisterValueRelation where
   | exact
+  | fixedWord (value : Nat)
   | codePointer
   | fixedCodePointer (targetId : Nat)
   | dataPointer
@@ -4529,6 +4672,8 @@ def RegisterValueRelation.holds
     (relation : RegisterValueRelation) (original candidate : Word) : Bool :=
   match relation with
   | .exact => original == candidate
+  | .fixedWord value =>
+      original == BitVec.ofNat 32 value && candidate == BitVec.ofNat 32 value
   | .codePointer =>
       (original == BitVec.ofNat 32 0 && candidate == BitVec.ofNat 32 0) ||
         codePointerRelated originalImageBase candidateImageBase targets original candidate
@@ -4552,6 +4697,17 @@ theorem RegisterValueRelation.fixedCodePointer_holds_codePointer
   simp only [RegisterValueRelation.holds, Bool.or_eq_true] at fixed ⊢
   exact Or.inr (fixedCodePointerRelated_codePointerRelated originalImageBase
     candidateImageBase targets targetId original candidate fixed)
+
+theorem RegisterValueRelation.fixedWord_holds_exact
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (value : Nat) (original candidate : Word)
+    (fixed : RegisterValueRelation.holds originalImageBase candidateImageBase targets values
+      (.fixedWord value) original candidate = true) :
+    RegisterValueRelation.holds originalImageBase candidateImageBase targets values
+      .exact original candidate = true := by
+  simp only [RegisterValueRelation.holds, Bool.and_eq_true, beq_iff_eq] at fixed ⊢
+  exact fixed.1.trans fixed.2.symm
 
 theorem DynamicRegisterRangeRelation.relatedWord_of_zero_offsets
     (context : StaticProofContext) (world : RelationalWorld)
@@ -4624,6 +4780,7 @@ theorem RegisterValueRelation.holds_append_values
       original candidate = true := by
   cases relation with
   | exact => simpa [RegisterValueRelation.holds] using related
+  | fixedWord value => simpa [RegisterValueRelation.holds] using related
   | codePointer => simpa [RegisterValueRelation.holds] using related
   | fixedCodePointer targetId => simpa [RegisterValueRelation.holds] using related
   | dataPointer =>
@@ -4651,16 +4808,31 @@ def registerRelationsHold (originalImageBase candidateImageBase : Nat)
   relations.all fun relation => relation.relation.holds originalImageBase candidateImageBase
     targets values (original.get relation.original) (candidate.get relation.candidate)
 
+def RegisterValueRelation.impliesExact : RegisterValueRelation → Bool
+  | .exact | .fixedWord _ => true
+  | .codePointer | .fixedCodePointer _ | .dataPointer | .relatedWord => false
+
+theorem RegisterValueRelation.holds_eq_of_impliesExact
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (relation : RegisterValueRelation) (original candidate : Word)
+    (exactLike : relation.impliesExact = true)
+    (related : relation.holds originalImageBase candidateImageBase targets values
+      original candidate = true) :
+    original = candidate := by
+  cases relation <;>
+    simp_all [RegisterValueRelation.impliesExact, RegisterValueRelation.holds]
+
 def exactIdentityRegister (relations : List RegisterRelationPair) (register : Reg) : Bool :=
   relations.any fun relation =>
     relation.original == register && relation.candidate == register &&
-      relation.relation == .exact
+      relation.relation.impliesExact
 
 def exactRegisterPair (relations : List RegisterRelationPair)
     (originalRegister candidateRegister : Reg) : Bool :=
   relations.any fun relation =>
     relation.original == originalRegister && relation.candidate == candidateRegister &&
-      relation.relation == .exact
+      relation.relation.impliesExact
 
 theorem registerRelationsHold_exact_identity
     (originalImageBase candidateImageBase : Nat)
@@ -4678,8 +4850,9 @@ theorem registerRelationsHold_exact_identity
   rcases relation with ⟨originalRegister, candidateRegister, relationKind⟩
   simp only [Bool.and_eq_true, beq_iff_eq] at checks
   rcases checks with ⟨⟨originalEqual, candidateEqual⟩, relationExact⟩
-  rw [originalEqual, candidateEqual, relationExact] at holds
-  simpa [RegisterValueRelation.holds] using holds
+  rw [originalEqual, candidateEqual] at holds
+  cases relationKind <;>
+    simp_all [RegisterValueRelation.impliesExact, RegisterValueRelation.holds]
 
 theorem registerRelationsHold_exact_pair
     (originalImageBase candidateImageBase : Nat)
@@ -4697,8 +4870,9 @@ theorem registerRelationsHold_exact_pair
   rcases relation with ⟨relationOriginal, relationCandidate, relationKind⟩
   simp only [Bool.and_eq_true, beq_iff_eq] at checks
   rcases checks with ⟨⟨originalEqual, candidateEqual⟩, relationExact⟩
-  rw [originalEqual, candidateEqual, relationExact] at holds
-  simpa [RegisterValueRelation.holds] using holds
+  rw [originalEqual, candidateEqual] at holds
+  cases relationKind <;>
+    simp_all [RegisterValueRelation.impliesExact, RegisterValueRelation.holds]
 
 theorem registerRelationsHold_self_exact
     (originalImageBase candidateImageBase : Nat)
@@ -4746,6 +4920,30 @@ structure StackWindowPair where
   bytesBelow : Nat
   bytesAbove : Nat
 deriving Repr, DecidableEq
+
+structure PairedStatePredicate where
+  original : BoolExpr
+  candidate : BoolExpr
+deriving Repr, DecidableEq
+
+def PairedStatePredicate.holds (predicate : PairedStatePredicate)
+    (original candidate : MachineState) : Bool :=
+  predicate.original.eval original && predicate.candidate.eval candidate
+
+def pairedStatePredicatesHold (predicates : List PairedStatePredicate)
+    (original candidate : MachineState) : Bool :=
+  predicates.all fun predicate => predicate.holds original candidate
+
+@[simp] theorem pairedStatePredicatesHold_nil (original candidate : MachineState) :
+    pairedStatePredicatesHold [] original candidate = true := rfl
+
+theorem pairedStatePredicatesHold_member
+    (predicates : List PairedStatePredicate) (predicate : PairedStatePredicate)
+    (original candidate : MachineState) (member : predicate ∈ predicates)
+    (holds : pairedStatePredicatesHold predicates original candidate = true) :
+    predicate.holds original candidate = true := by
+  simp only [pairedStatePredicatesHold, List.all_eq_true] at holds
+  exact holds predicate member
 
 def StackWindowPair.holds (world : RelationalWorld) (window : StackWindowPair)
     (original candidate : PureState) : Bool :=
@@ -5486,10 +5684,11 @@ structure StateInvariant where
   importRegisterRelations : List ImportRegisterRelation := []
   dynamicRegisterRangeRelations : List DynamicRegisterRangeRelation := []
   dynamicStackRangeRelations : List DynamicStackRangeRelation := []
-  flagBits : List Nat := [0, 2, 6, 7, 10, 11]
+  flagBits : List Nat := [0, 2, 4, 6, 7, 10, 11]
   bounds : List RegisterBoundPair := []
   addressSeparations : List AddressSeparationPair := []
   stackWindows : List StackWindowPair := []
+  predicates : List PairedStatePredicate := []
 deriving Repr, DecidableEq
 
 def dynamicWordRequirementsHold (context : StaticProofContext)
@@ -6732,7 +6931,8 @@ def StateRel (context : StaticProofContext) (world : RelationalWorld)
       dynamicRegisterRangeRelationsHold world invariant.dynamicRegisterRangeRelations
         original.registers candidate.registers = true ∧
       dynamicStackRangeRelationsHold world invariant.dynamicStackRangeRelations
-        original candidate = true)
+        original candidate = true ∧
+      pairedStatePredicatesHold invariant.predicates original candidate = true)
 
 theorem StateRel.dynamicRegisterRangesHold
     (context : StaticProofContext) (world : RelationalWorld)
@@ -6748,7 +6948,14 @@ theorem StateRel.dynamicStackRangesHold
     (related : StateRel context world invariant original candidate) :
     dynamicStackRangeRelationsHold world invariant.dynamicStackRangeRelations
       original candidate = true :=
-  related.2.2.2.2.2.2.2.2.2.2.2
+  related.2.2.2.2.2.2.2.2.2.2.2.1
+
+theorem StateRel.predicatesHold
+    (context : StaticProofContext) (world : RelationalWorld)
+    (invariant : StateInvariant) (original candidate : MachineState)
+    (related : StateRel context world invariant original candidate) :
+    pairedStatePredicatesHold invariant.predicates original candidate = true :=
+  related.2.2.2.2.2.2.2.2.2.2.2.2
 
 theorem StateRel.activeDynamicRegisterRangesHold
     (context : StaticProofContext) (world : RelationalWorld)
@@ -6786,7 +6993,7 @@ def RegisterArgumentClaim.checked (sourceInvariant : StateInvariant)
     (originalExpression candidateExpression : Expr)
     (claim : RegisterArgumentClaim) : Bool :=
   sourceInvariant.registerRelations.contains claim.relation &&
-    (claim.relation.relation == .exact ||
+    (claim.relation.relation.impliesExact ||
       (claim.relation.relation == .relatedWord && claim.offset == 0)) &&
     originalExpression == registerArgumentExpression claim.relation.original claim.offset &&
     candidateExpression == registerArgumentExpression claim.relation.candidate claim.offset
@@ -6823,25 +7030,27 @@ theorem registerArgumentWordsRelated_of_checked
     (originalState.registers.get claim.relation.original)
     (candidateState.registers.get claim.relation.candidate) = true at relationHolds
   rw [originalExpressionExact, candidateExpressionExact]
-  rcases supported with relationExact | ⟨relationRelated, offsetZero⟩
-  · rw [relationExact] at relationHolds
-    simp only [RegisterValueRelation.holds, beq_iff_eq] at relationHolds
+  rcases supported with relationExactLike | ⟨relationRelated, offsetZero⟩
+  · have registersEqual := RegisterValueRelation.holds_eq_of_impliesExact
+      context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      claim.relation.relation _ _ relationExactLike relationHolds
     simp only [registerArgumentExpression, evalInputRegisterOffset]
-    rw [relationHolds]
+    rw [registersEqual]
     exact wordRelated_self _ _ _ _ _
   · rw [relationRelated] at relationHolds
     simp only [RegisterValueRelation.holds] at relationHolds
     simpa [registerArgumentExpression, evalInputRegisterOffset, offsetZero] using
       relationHolds
 
-theorem registerArgumentWordsEqual_of_checked_exact
+theorem registerArgumentWordsEqual_of_checked_exactLike
     (context : StaticProofContext) (world : RelationalWorld)
     (sourceInvariant : StateInvariant)
     (originalExpression candidateExpression : Expr)
     (claim : RegisterArgumentClaim)
     (checked : claim.checked sourceInvariant originalExpression
       candidateExpression = true)
-    (exact : claim.relation.relation = .exact)
+    (exactLike : claim.relation.relation.impliesExact = true)
     (originalState candidateState : MachineState)
     (related : StateRel context world sourceInvariant originalState candidateState) :
     originalExpression.eval originalState = candidateExpression.eval candidateState := by
@@ -6863,10 +7072,28 @@ theorem registerArgumentWordsEqual_of_checked_exact
     (context.relationalValueTargets world)
     (originalState.registers.get claim.relation.original)
     (candidateState.registers.get claim.relation.candidate) = true at relationHolds
-  rw [exact] at relationHolds
-  simp only [RegisterValueRelation.holds, beq_iff_eq] at relationHolds
+  have registersEqual := RegisterValueRelation.holds_eq_of_impliesExact
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList (context.relationalValueTargets world)
+    claim.relation.relation _ _ exactLike relationHolds
   rw [originalExpressionExact, candidateExpressionExact]
-  simp [registerArgumentExpression, evalInputRegisterOffset, relationHolds]
+  simp [registerArgumentExpression, evalInputRegisterOffset, registersEqual]
+
+theorem registerArgumentWordsEqual_of_checked_exact
+    (context : StaticProofContext) (world : RelationalWorld)
+    (sourceInvariant : StateInvariant)
+    (originalExpression candidateExpression : Expr)
+    (claim : RegisterArgumentClaim)
+    (checked : claim.checked sourceInvariant originalExpression
+      candidateExpression = true)
+    (exact : claim.relation.relation = .exact)
+    (originalState candidateState : MachineState)
+    (related : StateRel context world sourceInvariant originalState candidateState) :
+    originalExpression.eval originalState = candidateExpression.eval candidateState := by
+  apply registerArgumentWordsEqual_of_checked_exactLike context world sourceInvariant
+    originalExpression candidateExpression claim checked
+  · simpa [exact, RegisterValueRelation.impliesExact]
+  · exact related
 
 theorem StateRel.ordinaryMemoryRelation
     (context : StaticProofContext) (world : RelationalWorld)
@@ -7053,10 +7280,11 @@ structure RegionRelation where
   bounds : List RegisterBoundPair := []
   addressSeparations : List AddressSeparationPair := []
   stackWindows : List StackWindowPair := []
+  predicates : List PairedStatePredicate := []
   targets : List CodeTargetPair
   values : List ValueTargetPair := []
-  flagInputs : List Nat := [0, 2, 6, 7, 10, 11]
-  flagOutputs : List Nat := [0, 2, 6, 7, 10, 11]
+  flagInputs : List Nat := [0, 2, 4, 6, 7, 10, 11]
+  flagOutputs : List Nat := [0, 2, 4, 6, 7, 10, 11]
 deriving Repr, DecidableEq
 
 def RegionRelation.inputInvariant (region : RegionRelation) : StateInvariant := {
@@ -7068,6 +7296,7 @@ def RegionRelation.inputInvariant (region : RegionRelation) : StateInvariant := 
   bounds := region.bounds
   addressSeparations := region.addressSeparations
   stackWindows := region.stackWindows
+  predicates := region.predicates
 }
 
 def RegionRelation.outputInvariant (region : RegionRelation) : StateInvariant := {

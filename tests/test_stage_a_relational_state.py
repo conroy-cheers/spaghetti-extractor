@@ -3244,6 +3244,34 @@ class StageARelationalStateTests(StageARelationalTestBase):
         self.assertEqual({edge["source_id"] for edge in proved_edges}, {"compare"})
         self.assertTrue(all(edge["lean_status"] == "pending" for edge in proved_edges))
 
+        duplicate_regions = [dict(region) for region in regions]
+        duplicate_regions[2]["bounds"] = [
+            *regions[2]["bounds"],
+            dict(regions[2]["bounds"][0]),
+        ]
+        duplicate = _synthesize_relational_invariants(
+            {"regions": duplicate_regions},
+            [
+                {"original_ir": compare, "candidate_ir": compare},
+                {"original_ir": choose, "candidate_ir": choose},
+                {"original_ir": table, "candidate_ir": table},
+            ],
+        )
+        self.assertEqual(duplicate["counts"]["seeds"], 4)
+        self.assertEqual(len(duplicate["obligations"]), 2)
+        expected_aliases = {
+            "invariant:table:0",
+            "invariant:table:1",
+        }
+        self.assertTrue(all(
+            set(edge["obligation_ids"]) == expected_aliases
+            for edge in duplicate["edge_obligations"]
+        ))
+        self.assertEqual(
+            duplicate["obligations"][0]["candidate_tautology_edges"],
+            duplicate["obligations"][1]["candidate_tautology_edges"],
+        )
+
         missing_compare = behavior({"op": "jump", "target": 1})
         incomplete = _synthesize_relational_invariants(
             {"regions": regions},

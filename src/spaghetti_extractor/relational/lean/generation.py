@@ -4,7 +4,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from ...stage_binary import StageABinary, StageAInputError
 from ...util import sha256_bytes, write_json
@@ -21,6 +21,7 @@ from ..schema import (
     RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
 )
+from ..isa_requirements import isa_requirement_replay_projection
 
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parents[2] / "lean" / "StageA"
@@ -46,7 +47,6 @@ from .common import (
 from .expressions import (
     _lean_machine_import_call_contract,
     _lean_region_bound_setup,
-    _lean_region_definition,
     _lean_region_flag_setup,
     _lean_region_index_masks,
     _lean_region_indexed_memory_fact_names,
@@ -67,6 +67,7 @@ from .definitions import (
     _lean_identical_state_only_writes_component,
     _lean_normalized_branch_parts,
     _lean_normalized_static_outcome,
+    _lean_region_definition,
     _lean_x87_state_only_pair,
     _normalized_behavior_fast_path,
     _normalized_behavior_structure_matches,
@@ -159,6 +160,253 @@ from .acceptance import (
 )
 
 
+def _lean_region_instruction_adequacy_append_proof(
+    *,
+    pe: str,
+    imports: str,
+    candidate: bool,
+    chunks: list[str],
+    facts: list[str],
+) -> str:
+    if len(chunks) != len(facts) or not chunks:
+        raise ValueError("instruction-adequacy chunks and facts must be non-empty")
+    if len(chunks) == 1:
+        return facts[0]
+    candidate_literal = _lean_bool(candidate)
+    return (
+        f"allRegionInstructionAdequate_append {pe} {imports} "
+        f"{candidate_literal} {chunks[0]} ({_lean_right_append(chunks[1:])}) "
+        f"{facts[0]} ("
+        + _lean_region_instruction_adequacy_append_proof(
+            pe=pe,
+            imports=imports,
+            candidate=candidate,
+            chunks=chunks[1:],
+            facts=facts[1:],
+        )
+        + ")"
+    )
+
+
+def _lean_isa_requirement_replay_append_proof(
+    *,
+    pe: str,
+    candidate: bool,
+    region_chunks: list[str],
+    requirement_chunks: list[str],
+    facts: list[str],
+) -> str:
+    if (
+        len(region_chunks) != len(requirement_chunks)
+        or len(region_chunks) != len(facts)
+        or not region_chunks
+    ):
+        raise ValueError("ISA replay chunks and facts must be non-empty and aligned")
+    if len(region_chunks) == 1:
+        return facts[0]
+    candidate_literal = _lean_bool(candidate)
+    return (
+        f"allISARequirementRegionsReplay_append {pe} {candidate_literal} "
+        f"{region_chunks[0]} ({_lean_right_append(region_chunks[1:])}) "
+        f"{requirement_chunks[0]} "
+        f"({_lean_right_append(requirement_chunks[1:])}) {facts[0]} ("
+        + _lean_isa_requirement_replay_append_proof(
+            pe=pe,
+            candidate=candidate,
+            region_chunks=region_chunks[1:],
+            requirement_chunks=requirement_chunks[1:],
+            facts=facts[1:],
+        )
+        + ")"
+    )
+
+
+def _write_relational_isa_requirement_replay_modules(
+    lean_dir: Path,
+    contract: Mapping[str, Any],
+    isa_requirements: Mapping[str, Any],
+    decode_chunk_regions: list[list[int]],
+) -> list[str]:
+    projection = isa_requirement_replay_projection(isa_requirements, contract)
+    stage_a = lean_dir / "StageA"
+    semantic_forms = {
+        occurrence.form_id: occurrence.semantic_form
+        for side in ("original", "candidate")
+        for region in projection[side]
+        for occurrence in region.occurrences
+    }
+    ordered_form_ids = sorted(semantic_forms)
+    form_name_by_id = {
+        form_id: f"isaRequirementSemanticForm{index}"
+        for index, form_id in enumerate(ordered_form_ids)
+    }
+    form_definitions = "\n\n".join(
+        f"def {form_name_by_id[form_id]} : InstructionSemanticForm :=\n"
+        f"  {semantic_forms[form_id]}"
+        for form_id in ordered_form_ids
+    )
+    forms_source = (
+        "import StageA.RelationalISAQualification\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        + form_definitions
+        + "\n\nend StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        stage_a / "RelationalISARequirementForms.lean", forms_source
+    )
+
+    generated_modules = ["RelationalISARequirementForms"]
+    side_chunk_modules: dict[str, list[str]] = {
+        "original": [],
+        "candidate": [],
+    }
+    side_chunk_names: dict[str, list[str]] = {
+        "original": [],
+        "candidate": [],
+    }
+    side_chunk_theorems: dict[str, list[str]] = {
+        "original": [],
+        "candidate": [],
+    }
+    for side in ("original", "candidate"):
+        module_side = side.capitalize()
+        candidate_literal = _lean_bool(side == "candidate")
+        projected_by_index = {
+            region.region_index: region for region in projection[side]
+        }
+        for chunk_index, region_indices in enumerate(decode_chunk_regions):
+            module = f"RelationalISARequirementReplay{module_side}Chunk{chunk_index}"
+            chunk_name = f"{side}ISARequirementChunk{chunk_index}"
+            chunk_theorem = f"{side}ISARequirementChunk{chunk_index}Replays"
+            side_chunk_modules[side].append(module)
+            side_chunk_names[side].append(chunk_name)
+            side_chunk_theorems[side].append(chunk_theorem)
+            definitions: list[str] = []
+            theorem_names: list[str] = []
+            requirement_names: list[str] = []
+            for region_index in region_indices:
+                projected = projected_by_index[region_index]
+                requirement_name = f"{side}ISARequirementRegion{region_index}"
+                theorem_name = f"{requirement_name}Replays"
+                requirement_names.append(requirement_name)
+                theorem_names.append(theorem_name)
+                occurrence_literals = []
+                for occurrence in projected.occurrences:
+                    occurrence_literals.append(
+                        "(⟨"
+                        f"{occurrence.rva}, {occurrence.size}, "
+                        f"{_lean_bytes(occurrence.encoded)}, "
+                        f"{form_name_by_id[occurrence.form_id]}"
+                        "⟩ : InstructionFormOccurrence)"
+                    )
+                definitions.append(
+                    f"def {requirement_name} : ISARequirementRegion := {{\n"
+                    f"  nodeId := {projected.target_id}\n"
+                    "  occurrences := ["
+                    + ", ".join(occurrence_literals)
+                    + "]\n}"
+                )
+                definitions.append(
+                    f"theorem {theorem_name} :\n"
+                    f"    {requirement_name}.Replays {side}Pe "
+                    f"{candidate_literal} region{region_index} := by\n"
+                    "  unfold ISARequirementRegion.Replays\n"
+                    "  decide"
+                )
+            definitions.append(
+                f"def {chunk_name} : List ISARequirementRegion := ["
+                + ", ".join(requirement_names)
+                + "]"
+            )
+            chunk_goal = " ∧ ".join(
+                [
+                    f"{name}.Replays {side}Pe {candidate_literal} region{region_index}"
+                    for name, region_index in zip(
+                        requirement_names, region_indices, strict=True
+                    )
+                ]
+                + ["True"]
+            )
+            chunk_proof = (
+                "".join(f"And.intro {name} (" for name in theorem_names)
+                + "True.intro"
+                + ")" * len(theorem_names)
+            )
+            definitions.append(
+                f"theorem {chunk_theorem} :\n"
+                f"    AllISARequirementRegionsReplay {side}Pe "
+                f"{candidate_literal} regionChunk{chunk_index} {chunk_name} := by\n"
+                f"  change {chunk_goal}\n"
+                f"  exact {chunk_proof}"
+            )
+            source = (
+                "import StageA.RelationalISARequirementForms\n"
+                f"import StageA.RelationalProof{module_side}\n"
+                f"import StageA.RelationalRegionChunk{chunk_index}\n\n"
+                "namespace StageA.GeneratedRelational\n\n"
+                "open StageA.Formal StageA.Relational\n\n"
+                "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+                + "\n\n".join(definitions)
+                + "\n\nend StageA.GeneratedRelational\n"
+            )
+            _write_text_if_changed(stage_a / f"{module}.lean", source)
+            generated_modules.append(module)
+
+    aggregate_theorems: dict[str, str] = {}
+    for side in ("original", "candidate"):
+        aggregate_theorems[side] = _lean_isa_requirement_replay_append_proof(
+            pe=f"{side}Pe",
+            candidate=side == "candidate",
+            region_chunks=[
+                f"regionChunk{index}" for index in range(len(decode_chunk_regions))
+            ],
+            requirement_chunks=side_chunk_names[side],
+            facts=side_chunk_theorems[side],
+        )
+    original_requirements = _lean_right_append(side_chunk_names["original"])
+    candidate_requirements = _lean_right_append(side_chunk_names["candidate"])
+    aggregate_source = (
+        "import StageA.RelationalProofRegionInventoryData\n"
+        + "".join(
+            f"import StageA.{module}\n"
+            for side in ("original", "candidate")
+            for module in side_chunk_modules[side]
+        )
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        f"def originalISARequirements : List ISARequirementRegion := "
+        f"{original_requirements}\n\n"
+        f"def candidateISARequirements : List ISARequirementRegion := "
+        f"{candidate_requirements}\n\n"
+        "theorem allOriginalISARequirementsReplay :\n"
+        "    AllISARequirementRegionsReplay originalPe false allRegions "
+        "originalISARequirements := by\n"
+        "  unfold allRegions originalISARequirements\n"
+        f"  exact {aggregate_theorems['original']}\n\n"
+        "theorem allCandidateISARequirementsReplay :\n"
+        "    AllISARequirementRegionsReplay candidatePe true allRegions "
+        "candidateISARequirements := by\n"
+        "  unfold allRegions candidateISARequirements\n"
+        f"  exact {aggregate_theorems['candidate']}\n\n"
+        "def isaRequirementReplayCertificate :\n"
+        "    ISARequirementReplayCertificate originalPe candidatePe allRegions := {\n"
+        "  originalRequirements := originalISARequirements\n"
+        "  candidateRequirements := candidateISARequirements\n"
+        "  originalReplayed := allOriginalISARequirementsReplay\n"
+        "  candidateReplayed := allCandidateISARequirementsReplay\n"
+        "}\n\n"
+        "#print axioms isaRequirementReplayCertificate\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    aggregate_module = "RelationalISARequirementReplayCertificate"
+    _write_text_if_changed(stage_a / f"{aggregate_module}.lean", aggregate_source)
+    generated_modules.append(aggregate_module)
+    return generated_modules
+
+
 def _write_sharded_relational_proof(
     lean_dir: Path,
     original_bin: StageABinary,
@@ -175,6 +423,7 @@ def _write_sharded_relational_proof(
     import_register_seeds: list[dict[str, Any]],
     import_register_analysis: dict[str, Any],
     segment_candidates: list[dict[str, Any]],
+    isa_requirements: Mapping[str, Any],
     replay: bool,
     certificates: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], int]:
@@ -431,6 +680,119 @@ def _write_sharded_relational_proof(
     )
     _write_text_if_changed(
         lean_dir / "StageA" / "RelationalRegionChunks.lean", region_chunks_source
+    )
+
+    _write_relational_isa_requirement_replay_modules(
+        lean_dir,
+        contract,
+        isa_requirements,
+        decode_chunk_regions,
+    )
+
+    instruction_adequacy_modules: dict[str, list[str]] = {
+        "original": [],
+        "candidate": [],
+    }
+    instruction_adequacy_theorems: dict[str, list[str]] = {
+        "original": [],
+        "candidate": [],
+    }
+    for side in ("original", "candidate"):
+        module_side = side.capitalize()
+        candidate = side == "candidate"
+        candidate_literal = _lean_bool(candidate)
+        for chunk_index, region_indices in enumerate(decode_chunk_regions):
+            module = (
+                f"RelationalProof{module_side}InstructionAdequacyChunk{chunk_index}"
+            )
+            chunk_theorem = f"{side}InstructionAdequacyChunk{chunk_index}Checked"
+            instruction_adequacy_modules[side].append(module)
+            instruction_adequacy_theorems[side].append(chunk_theorem)
+            region_theorems = "\n\n".join(
+                f"theorem {side}Region{index}InstructionAdequate :\n"
+                f"    RegionInstructionAdequate {side}Pe {side}Imports "
+                f"region{index}.{side} :=\n"
+                f"  regionInstructionAdequate_of_checked {side}Pe {side}Imports "
+                f"region{index}.{side} (by decide)"
+                for index in region_indices
+            )
+            chunk_goal = " ∧ ".join(
+                [
+                    f"RegionInstructionAdequate {side}Pe {side}Imports "
+                    f"region{index}.{side}"
+                    for index in region_indices
+                ]
+                + ["True"]
+            )
+            chunk_proof = (
+                "".join(
+                    f"And.intro {side}Region{index}InstructionAdequate ("
+                    for index in region_indices
+                )
+                + "True.intro"
+                + ")" * len(region_indices)
+            )
+            source = (
+                "import StageA.RelationalPEExecution\n"
+                f"import StageA.RelationalProof{module_side}\n"
+                f"import StageA.RelationalRegionChunk{chunk_index}\n\n"
+                "namespace StageA.GeneratedRelational\n\n"
+                "open StageA.Formal StageA.Relational\n\n"
+                "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+                + region_theorems
+                + f"\n\ntheorem {chunk_theorem} :\n"
+                f"    AllRegionInstructionAdequate {side}Pe {side}Imports "
+                f"{candidate_literal} regionChunk{chunk_index} := by\n"
+                f"  change {chunk_goal}\n"
+                f"  exact {chunk_proof}\n\n"
+                "end StageA.GeneratedRelational\n"
+            )
+            _write_text_if_changed(
+                lean_dir / "StageA" / f"{module}.lean",
+                source,
+            )
+
+    original_instruction_adequacy_proof = (
+        _lean_region_instruction_adequacy_append_proof(
+            pe="originalPe",
+            imports="originalImports",
+            candidate=False,
+            chunks=region_chunk_names,
+            facts=instruction_adequacy_theorems["original"],
+        )
+    )
+    candidate_instruction_adequacy_proof = (
+        _lean_region_instruction_adequacy_append_proof(
+            pe="candidatePe",
+            imports="candidateImports",
+            candidate=True,
+            chunks=region_chunk_names,
+            facts=instruction_adequacy_theorems["candidate"],
+        )
+    )
+    instruction_adequacy_source = (
+        "import StageA.RelationalPEExecution\n"
+        + "".join(
+            f"import StageA.{module}\n"
+            for side in ("original", "candidate")
+            for module in instruction_adequacy_modules[side]
+        )
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "theorem allOriginalRegionsInstructionAdequate :\n"
+        "    AllRegionInstructionAdequate originalPe originalImports false "
+        f"({_lean_right_append(region_chunk_names)}) := by\n"
+        f"  exact {original_instruction_adequacy_proof}\n\n"
+        "theorem allCandidateRegionsInstructionAdequate :\n"
+        "    AllRegionInstructionAdequate candidatePe candidateImports true "
+        f"({_lean_right_append(region_chunk_names)}) := by\n"
+        f"  exact {candidate_instruction_adequacy_proof}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        lean_dir / "StageA" / "RelationalInstructionAdequacyCertificate.lean",
+        instruction_adequacy_source,
     )
 
     external_call_sites = _external_call_site_candidates(
@@ -1139,6 +1501,8 @@ def _write_sharded_relational_proof(
     )
     final = (
         "import StageA.RelationalCertificates\n"
+        "import StageA.RelationalInstructionAdequacyCertificate\n"
+        "import StageA.RelationalISARequirementReplayCertificate\n"
         "import StageA.RelationalProofClosureBase\n"
         "import StageA.RelationalSegmentRefinementCertificate\n"
         "import StageA.RelationalStackSeparationCertificate\n"
@@ -1606,6 +1970,7 @@ def _lean_compositional_normalized_theorem_source(
     bit_metadata = {
         0: ("carry", "cf"),
         2: ("parity", "pf"),
+        4: ("auxiliary", "af"),
         6: ("zero", "zf"),
         7: ("sign", "sf"),
         10: (None, "df"),
@@ -1775,6 +2140,7 @@ def _lean_region_theorem_source(
     flag_eval_simplifiers = (
         "StageA.Formal.FlagsExpr.eval_extract_cf, "
         "StageA.Formal.FlagsExpr.eval_extract_pf, "
+        "StageA.Formal.FlagsExpr.eval_extract_af, "
         "StageA.Formal.FlagsExpr.eval_extract_zf, "
         "StageA.Formal.FlagsExpr.eval_extract_sf, "
         "StageA.Formal.FlagsExpr.eval_extract_df, "

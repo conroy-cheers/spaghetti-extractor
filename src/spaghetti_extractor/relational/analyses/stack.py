@@ -1210,6 +1210,56 @@ def _attach_stack_window_invariants(
             call["recursive"] = int(call_window_path_exists(
                 int(call["callee_region_index"]), continuation,
             ))
+
+    tls_callback_target_ids = [
+        int(target_id)
+        for target_id in (refined.get("launch") or {}).get(
+            "tls_callback_target_ids", []
+        )
+    ]
+    entry_region_indices = [
+        index for index, region in enumerate(regions)
+        if bool(region.get("root"))
+    ]
+    if tls_callback_target_ids and len(entry_region_indices) == 1:
+        continuation_target_ids = [
+            *tls_callback_target_ids[1:],
+            int(regions[entry_region_indices[0]].get(
+                "numeric_id", entry_region_indices[0]
+            )),
+        ]
+        for callback_target_id, continuation_target_id in zip(
+            tls_callback_target_ids, continuation_target_ids, strict=True
+        ):
+            callback_index = region_index_by_target_id.get(callback_target_id)
+            continuation_index = region_index_by_target_id.get(
+                continuation_target_id
+            )
+            if callback_index is None or continuation_index is None:
+                continue
+            original_outcome = behaviors[callback_index]["original_ir"].get(
+                "outcome"
+            ) or {}
+            candidate_outcome = behaviors[callback_index]["candidate_ir"].get(
+                "outcome"
+            ) or {}
+            return_claim = relation_rows[callback_index].get("return_pop_claim")
+            if (
+                original_outcome.get("op") != "returned"
+                or candidate_outcome.get("op") != "returned"
+                or not isinstance(return_claim, dict)
+            ):
+                continue
+            checked_call_continuations[continuation_index].append({
+                "source_region_index": callback_index,
+                "callee_region_index": callback_index,
+                "entry_stack_delta": 0,
+                "return_stack_delta": 4 + int(return_claim["pop_bytes"]),
+                "return_summary_bytes_below": 0,
+                "return_summary_bytes_above": 0,
+                "recursive": 0,
+                "source": "pe32_tls_launch_continuation",
+            })
     def edge_stack_transfer(
         edge: dict[str, Any], original_register: str, candidate_register: str,
     ) -> tuple[tuple[str, str, int] | None, str | None]:
@@ -1374,6 +1424,7 @@ def _attach_stack_window_invariants(
                 "reason": "nonzero_stack_delta_cycle_requires_relational_frame",
             })
             continue
+        has_checked_return_predecessor = False
         if original_register == "esp" and candidate_register == "esp":
             for call in checked_call_continuations.get(target_index, []):
                 if bool(call.get("recursive")):
@@ -1401,6 +1452,7 @@ def _attach_stack_window_invariants(
                         "reason": "direct_call_window_requires_return_summary",
                     })
                     continue
+                has_checked_return_predecessor = True
                 callee_key = (
                     int(call["callee_region_index"]),
                     original_register,
@@ -1432,6 +1484,8 @@ def _attach_stack_window_invariants(
                         queued.add(callee_key)
         edges = incoming.get(target_index, [])
         if not edges:
+            if has_checked_return_predecessor:
+                continue
             add_frontier({
                 "region_index": target_index,
                 "original_register": original_register,
@@ -1876,11 +1930,22 @@ def _return_pop_claim(
 def _discover_static_call_return_summaries(
     relation_rows: list[dict[str, Any]],
     edges: list[dict[str, Any]],
+    machine_import_call_contracts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     region_count = len(relation_rows)
     ordinary_successors: list[set[int]] = [set() for _ in relation_rows]
     call_edges: dict[int, dict[str, Any]] = {}
     unsupported_exit = [False] * region_count
+    returning_machine_contract_ids = {
+        int(contract["id"])
+        for contract in machine_import_call_contracts or []
+        if (
+            isinstance(contract, dict)
+            and isinstance(contract.get("id"), int)
+            and not isinstance(contract.get("id"), bool)
+            and contract.get("disposition") == "returns"
+        )
+    }
 
     def call_push_claim(edge: dict[str, Any]) -> dict[str, Any] | None:
         claim = (
@@ -1889,10 +1954,27 @@ def _discover_static_call_return_summaries(
         )
         return claim if isinstance(claim, dict) else None
 
+    def returning_external_thunk(edge: dict[str, Any]) -> bool:
+        contract_id = edge.get("returning_external_thunk_contract_id")
+        return isinstance(contract_id, int) and not isinstance(contract_id, bool)
+
+    def returning_external_call(edge: dict[str, Any]) -> bool:
+        contract_id = edge.get("machine_contract_id")
+        return (
+            edge.get("kind") == "external_call"
+            and edge.get("environment_barrier") is True
+            and isinstance(contract_id, int)
+            and not isinstance(contract_id, bool)
+            and int(contract_id) in returning_machine_contract_ids
+        )
+
     for edge in edges:
         source = int(edge["source_region_index"])
         if call_push_claim(edge) is not None:
             call_edges[source] = edge
+            continue
+        if returning_external_call(edge):
+            ordinary_successors[source].add(int(edge["target_region_index"]))
             continue
         if (
             edge["environment_barrier"]
@@ -1913,7 +1995,8 @@ def _discover_static_call_return_summaries(
         claim = call_push_claim(edge)
         assert claim is not None
         continuation = int(claim["continuation_region_index"])
-        reverse_dependencies[callee].add(source)
+        if not returning_external_thunk(edge):
+            reverse_dependencies[callee].add(source)
         reverse_dependencies[continuation].add(source)
 
     return_sets: list[set[int]] = [
@@ -1935,7 +2018,9 @@ def _discover_static_call_return_summaries(
             claim = call_push_claim(edge)
             assert claim is not None
             continuation = int(claim["continuation_region_index"])
-            if return_sets[callee]:
+            if returning_external_thunk(edge):
+                proposed.update(return_sets[continuation])
+            elif return_sets[callee]:
                 proposed.update(return_sets[continuation])
         else:
             for target in ordinary_successors[source]:
@@ -1965,7 +2050,11 @@ def _discover_static_call_return_summaries(
                 claim = call_push_claim(edge)
                 assert claim is not None
                 continuation = int(claim["continuation_region_index"])
-                next_closed = closed[callee] and closed[continuation]
+                next_closed = (
+                    closed[continuation]
+                    if returning_external_thunk(edge)
+                    else closed[callee] and closed[continuation]
+                )
             else:
                 successors = ordinary_successors[source]
                 next_closed = bool(successors) and all(closed[target] for target in successors)
@@ -1975,6 +2064,8 @@ def _discover_static_call_return_summaries(
 
     summaries = []
     for source, edge in sorted(call_edges.items()):
+        if returning_external_thunk(edge):
+            continue
         callee = int(edge["target_region_index"])
         claim = call_push_claim(edge)
         assert claim is not None
@@ -1998,7 +2089,7 @@ def _discover_static_call_return_summaries(
             ),
         })
     return {
-        "profile": "static_pushdown_return_summary_v1",
+        "profile": "static_pushdown_return_summary_v2",
         "return_updates": return_updates,
         "closure_iterations": closure_iterations,
         "closed_regions": sum(closed),
@@ -2437,7 +2528,7 @@ def _attach_return_slot_contracts(
 
     total_iterations = iteration + 1
     call_summary_analysis = _discover_static_call_return_summaries(
-        relation_rows, edges
+        relation_rows, edges, machine_import_call_contracts
     )
     checked_call_edge_by_source = {
         int(edge["source_region_index"]): edge

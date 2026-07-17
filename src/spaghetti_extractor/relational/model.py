@@ -93,7 +93,13 @@ def _target_shaped_register_output_claims(
             and existing.get("kind") in {
                 "constant", "immutable_image_word", "static_word_slot",
             }
-            and target_relation.get("relation") == "related_word"
+            and (
+                target_relation.get("relation") == "related_word"
+                or (
+                    existing.get("output", {}).get("relation") == "fixed_word"
+                    and target_relation.get("relation") == "exact"
+                )
+            )
             and existing.get("output", {}).get("candidate")
                 == target_relation.get("candidate")
         ):

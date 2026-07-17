@@ -1138,6 +1138,14 @@ def _lean_register_output_claim(claim: dict[str, Any]) -> str:
             + ", candidateWrites := [" + candidate_writes + "]"
             + " }"
         )
+    if kind == "fixed_immutable_expression":
+        return (
+            "InvariantWP.RegisterOutputClaim.fixedImmutableExpression { output := "
+            + _lean_register_relation_pair(claim["output"])
+            + ", originalValue := " + str(int(claim["original_value"]))
+            + ", candidateValue := " + str(int(claim["candidate_value"]))
+            + " }"
+        )
     if kind == "static_word_slot":
         return (
             "InvariantWP.RegisterOutputClaim.staticWordSlot { output := "

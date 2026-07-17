@@ -11,6 +11,7 @@ from ..schema import FLAG_BITS, REGISTERS
 _SEMANTIC_FLAG_FIELDS = {
     0: "carry",
     2: "parity",
+    4: "auxiliary",
     6: "zero",
     7: "sign",
     11: "overflow",
@@ -368,10 +369,20 @@ def _synthesize_relational_invariants(
     seeds: list[dict[str, Any]] = []
     for region_index, region in enumerate(contract["regions"]):
         for seed in _local_invariant_seeds(region):
-            record = {**seed, "region_index": region_index, "path": [region_index]}
+            record = {
+                **seed,
+                "obligation_ids": [seed["obligation_id"]],
+                "region_index": region_index,
+                "path": [region_index],
+            }
             predicate_hash = _semantic_hash(seed["predicate"])
-            requirements.setdefault((seed["side"], region_index), {})[predicate_hash] = record
-            queue.append(record)
+            bucket = requirements.setdefault((seed["side"], region_index), {})
+            existing = bucket.get(predicate_hash)
+            if existing is None:
+                bucket[predicate_hash] = record
+                queue.append(record)
+            elif seed["obligation_id"] not in existing["obligation_ids"]:
+                existing["obligation_ids"].append(seed["obligation_id"])
             seeds.append(record)
 
     edge_obligations: list[dict[str, Any]] = []
@@ -431,6 +442,7 @@ def _synthesize_relational_invariants(
                 "target_id": target_region["id"],
                 "edge_kind": edge["kind"],
                 "requirement_id": requirement["id"],
+                "obligation_ids": requirement["obligation_ids"],
                 "precondition": precondition,
                 "precondition_sha256": _semantic_hash(precondition),
                 "nodes": _semantic_node_count(precondition),
@@ -443,6 +455,10 @@ def _synthesize_relational_invariants(
             derived_hash = _semantic_hash(precondition)
             bucket = requirements.setdefault((side, source_index), {})
             if derived_hash in bucket:
+                existing = bucket[derived_hash]
+                for obligation_id in requirement["obligation_ids"]:
+                    if obligation_id not in existing["obligation_ids"]:
+                        existing["obligation_ids"].append(obligation_id)
                 continue
             if source_index in requirement["path"]:
                 barriers.append({
@@ -459,6 +475,7 @@ def _synthesize_relational_invariants(
             derived = {
                 "id": f"derived:{side}:{source_region['numeric_id']}:{derived_hash[:16]}",
                 "obligation_id": requirement["obligation_id"],
+                "obligation_ids": list(requirement["obligation_ids"]),
                 "side": side,
                 "predicate": precondition,
                 "kind": requirement["kind"],
@@ -488,15 +505,17 @@ def _synthesize_relational_invariants(
     }
     for edge in edge_obligations:
         requirement = requirement_by_id[edge["requirement_id"]]
-        item = obligations[requirement["obligation_id"]]
-        if edge["analysis_status"] == "candidate_tautology":
-            item["candidate_tautology_edges"] += 1
-        else:
-            item["open_predecessor_edges"] += 1
+        for obligation_id in requirement["obligation_ids"]:
+            item = obligations[obligation_id]
+            if edge["analysis_status"] == "candidate_tautology":
+                item["candidate_tautology_edges"] += 1
+            else:
+                item["open_predecessor_edges"] += 1
     for barrier in barriers:
         requirement = requirement_by_id.get(barrier["requirement_id"])
         if requirement is not None:
-            obligations[requirement["obligation_id"]]["barriers"].append(barrier["kind"])
+            for obligation_id in requirement["obligation_ids"]:
+                obligations[obligation_id]["barriers"].append(barrier["kind"])
     for item in obligations.values():
         item["barriers"] = sorted(set(item["barriers"]))
         if item["barriers"]:
@@ -512,6 +531,7 @@ def _synthesize_relational_invariants(
                 {
                     "id": requirement["id"],
                     "obligation_id": requirement["obligation_id"],
+                    "obligation_ids": requirement["obligation_ids"],
                     "predicate": requirement["predicate"],
                     "predicate_sha256": _semantic_hash(requirement["predicate"]),
                     "nodes": _semantic_node_count(requirement["predicate"]),
