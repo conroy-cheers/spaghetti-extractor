@@ -8,6 +8,7 @@ from ...stage_binary import StageABinary
 from ..contract import _raw_base_relocations
 from ..model import _semantic_constant_word
 from .segments import (
+    _paired_exact_state_expr_witness,
     _paired_prepared_word_writes_claim,
     _paired_stack_word_value_claim,
 )
@@ -26,7 +27,7 @@ def _writable_static_word(binary: StageABinary, address: int) -> bool:
 
 def _static_word_value_relation(claim: dict[str, Any]) -> str | None:
     profile = claim.get("profile")
-    if profile == "exact_inputs_v1":
+    if profile in {"exact_inputs_v1", "exact_expression_v1"}:
         return "exact"
     if profile == "mapped_code_target_v1":
         return "code_pointer"
@@ -833,6 +834,7 @@ def _attach_static_word_relation_slots(
         (int(slot["original_address"]), int(slot["candidate_address"]))
         for slot in updated.get("static_dynamic_pointer_slots", [])
     }
+    existing = [dict(slot) for slot in updated.get("static_word_relation_slots", [])]
 
     for region_index, (region, behavior) in enumerate(
         zip(updated.get("regions", []), behaviors, strict=True)
@@ -863,7 +865,32 @@ def _attach_static_word_relation_slots(
                 candidate_write.get("value") or {},
                 original.image_base,
                 candidate.image_base,
+                existing,
             )
+            if value_claim is None:
+                # A slot whose next value is an exact expression over its own
+                # prior exact value is an inductive relation candidate.  Lean
+                # checks both the expression tree and the slot membership;
+                # launch establishment remains a separate acceptance duty.
+                provisional_slot = {
+                    "id": -1,
+                    "original_address": original_address,
+                    "candidate_address": candidate_address,
+                    "relation": "exact",
+                }
+                witness = _paired_exact_state_expr_witness(
+                    region,
+                    original_write.get("value") or {},
+                    candidate_write.get("value") or {},
+                    [provisional_slot],
+                )
+                if witness is not None:
+                    value_claim = {
+                        "profile": "exact_expression_v1",
+                        "original": original_write.get("value") or {},
+                        "candidate": candidate_write.get("value") or {},
+                        "witness": witness,
+                    }
             relation = (
                 _static_word_value_relation(value_claim)
                 if value_claim is not None else None
@@ -924,7 +951,6 @@ def _attach_static_word_relation_slots(
             ),
         })
 
-    existing = [dict(slot) for slot in updated.get("static_word_relation_slots", [])]
     occupied = {
         (int(slot["original_address"]), int(slot["candidate_address"]))
         for slot in existing

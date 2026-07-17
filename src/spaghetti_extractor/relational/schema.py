@@ -69,6 +69,7 @@ RELATIONAL_KERNEL_MODULES = (
     "RelationalInvariant",
     "RelationalExecution",
     "RelationalImage",
+    "RelationalExactExpr",
     "RelationalSegment",
     "RelationalComposition",
     "RelationalLinkedFrames",

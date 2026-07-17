@@ -1,4 +1,4 @@
-import StageA.RelationalInvariant
+import StageA.RelationalExactExpr
 
 namespace StageA.Relational
 
@@ -280,6 +280,7 @@ def DirectCallSegmentShapeClosed (context : StaticProofContext)
 
 inductive PairedStackWordValueWitness where
   | exactInputs
+  | exactExpression (witness : PairedExactExprWitness)
   | registerArgument (claim : RegisterArgumentClaim)
   | mappedCodeTarget (targetId : Nat)
   | mappedDataTarget (targetId : Nat)
@@ -309,6 +310,10 @@ def PairedStackWordValueClaim.checked (context : StaticProofContext)
   | .exactInputs =>
       claim.original == claim.candidate &&
         claim.original.exactInputs sourceInvariant.registerRelations
+  | .exactExpression witness =>
+      witness.expression .original == claim.original &&
+        witness.expression .candidate == claim.candidate &&
+        witness.checked context sourceInvariant
   | .registerArgument registerClaim =>
       registerClaim.checked sourceInvariant claim.original claim.candidate
   | .mappedCodeTarget targetId =>
@@ -358,6 +363,17 @@ theorem PairedStackWordValueClaim.related_of_checked
         sourceInvariant.registerRelations originalState candidateState originalValue
         registers undefinedValue fsBase safe
       rw [← valuesEqual]
+      rw [evaluationsEqual]
+      exact wordRelated_self context.originalPe.imageBase context.candidatePe.imageBase
+        context.codeMap.entries.toList (context.relationalValueTargets world) _
+  | exactExpression witness =>
+      simp only [PairedStackWordValueClaim.checked, Bool.and_eq_true,
+        beq_iff_eq] at checked
+      rcases checked with
+        ⟨⟨originalExpression, candidateExpression⟩, witnessChecked⟩
+      rw [← originalExpression, ← candidateExpression]
+      have evaluationsEqual := witness.eval_equal_of_checked context world
+        sourceInvariant originalState candidateState witnessChecked related
       rw [evaluationsEqual]
       exact wordRelated_self context.originalPe.imageBase context.candidatePe.imageBase
         context.codeMap.entries.toList (context.relationalValueTargets world) _
@@ -415,7 +431,7 @@ theorem PairedStackWordValueClaim.related_of_checked
 def PairedStackWordValueClaim.staticRelationCompatible
     (claim : PairedStackWordValueClaim) (relation : StaticWordRelationKind) : Bool :=
   match relation, claim.witness with
-  | .exact, .exactInputs => true
+  | .exact, .exactInputs | .exact, .exactExpression _ => true
   | .exact, .registerArgument registerClaim =>
       registerClaim.relation.relation.impliesExact
   | .relatedWord, _ => true
@@ -460,6 +476,15 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
             originalValue.eval originalState = originalValue.eval candidateState :=
               evaluationsEqual
             _ = candidateValue.eval candidateState := by rw [checked.1]
+      | exactExpression witness =>
+          simp only [PairedStackWordValueClaim.checked, Bool.and_eq_true,
+            beq_iff_eq] at checked
+          rcases checked with
+            ⟨⟨originalExpression, candidateExpression⟩, witnessChecked⟩
+          simp only [StaticWordRelationKind.holds, beq_iff_eq]
+          rw [← originalExpression, ← candidateExpression]
+          exact witness.eval_equal_of_checked context world sourceInvariant
+            originalState candidateState witnessChecked related
       | registerArgument registerClaim =>
           simp only [PairedStackWordValueClaim.staticRelationCompatible,
             beq_iff_eq] at compatible
@@ -476,6 +501,8 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
   | codePointer =>
       cases witness with
       | exactInputs =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+      | exactExpression witness =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | registerArgument registerClaim =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
@@ -503,6 +530,8 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
       cases witness with
       | exactInputs =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+      | exactExpression witness =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | registerArgument registerClaim =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | mappedCodeTarget targetId =>
@@ -528,6 +557,8 @@ theorem PairedStackWordValueClaim.staticRelationHolds_of_checked
   | dataPointer =>
       cases witness with
       | exactInputs =>
+          simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
+      | exactExpression witness =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
       | registerArgument registerClaim =>
           simp [PairedStackWordValueClaim.staticRelationCompatible] at compatible
@@ -580,6 +611,8 @@ theorem PairedStackWordValueClaim.dynamicRelationHolds_of_checked
       cases witness with
       | exactInputs =>
           simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
+      | exactExpression witness =>
+          simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
       | registerArgument registerClaim =>
           simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
       | mappedCodeTarget targetId =>
@@ -604,6 +637,8 @@ theorem PairedStackWordValueClaim.dynamicRelationHolds_of_checked
   | dataPointer =>
       cases witness with
       | exactInputs =>
+          simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
+      | exactExpression witness =>
           simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible
       | registerArgument registerClaim =>
           simp [PairedStackWordValueClaim.dynamicRelationCompatible] at compatible

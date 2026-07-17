@@ -761,6 +761,12 @@ def _lean_paired_stack_word_value_claim(claim: dict[str, Any]) -> str:
     profile = claim.get("profile")
     if profile == "exact_inputs_v1":
         witness = ".exactInputs"
+    elif profile == "exact_expression_v1":
+        witness = (
+            ".exactExpression ("
+            + _lean_paired_exact_expr_witness(claim["witness"])
+            + ")"
+        )
     elif profile == "register_argument_v1":
         witness = (
             ".registerArgument "

@@ -388,8 +388,10 @@ re-parses both PEs, imports, and relocation tables, checks roots against the PE
 entry profile, rejects unsupported observation-profile features, validates
 mapped data contents, and proves that every region-local target is the exact
 entry from the canonical map. The generated
-`candidateRelationalImageCertificate` includes these facts, but remains
-explicitly ineligible for whole-program acceptance.
+`candidateRelationalEvidenceBundle` includes these facts, but remains
+explicitly ineligible for whole-program acceptance. Legacy exact-state
+regional proofs may still be emitted as diagnostics, but are not imported by
+this authoritative `StateRel` evidence root.
 
 `StateRel context world invariant` is now the sole exported state-relation
 interface for composition. Exact regional inputs and the older composable-state
@@ -1279,11 +1281,10 @@ original addresses, and 4,743 candidate addresses. The first corrected remote
 build took 448.9 seconds; a warm Nix-cache rebuild took 4.3 seconds. The former
 77+ GiB monolithic map blocker is therefore closed rather than waived.
 
-These are implementation milestones, not waivers. The theorem formerly named
-`candidateRelationalCertificate` remains
-`candidateRelationalImageCertificate` and is not acceptance eligible. `pass`
-requires the generated `candidatePE32ProgramsEquivalent` theorem. The full jq
-pair remains incomplete until that theorem covers its complete rooted product
+These are implementation milestones, not waivers. The intermediate theorem is
+now named `candidateRelationalEvidenceBundle` and is not acceptance eligible.
+`pass` requires the generated `candidatePE32ProgramsEquivalent` theorem. The
+full jq pair remains incomplete until that theorem covers its complete rooted product
 graph; the small loop, branch, and call/return fixtures only validate their
 current composition profiles.
 

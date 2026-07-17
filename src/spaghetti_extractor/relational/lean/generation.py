@@ -1384,10 +1384,6 @@ def _write_sharded_relational_proof(
         closure_source,
     )
 
-    direct_regions_proof = _lean_direct_append_proof(
-        region_chunk_names,
-        [f"directRegionChunk{index}Checked" for index in range(len(region_chunk_names))],
-    )
     invariant_certificate_type = " ∧ ".join(
         [f"AllInvariantClaims {item['claims']}" for item in invariant_modules] + ["True"]
     )
@@ -1520,7 +1516,6 @@ def _write_sharded_relational_proof(
         "import StageA.RelationalDynamicRangeIndirectCallCertificate\n"
         "import StageA.RelationalExternalCallRefinementCertificate\n"
         "import StageA.RelationalExternalJumpRefinementCertificate\n"
-        + "".join(f"import StageA.{module}\n" for module in direct_modules)
         + "".join(
             f"import StageA.{item['module']}\n" for item in invariant_modules
         )
@@ -1533,14 +1528,6 @@ def _write_sharded_relational_proof(
         + "\n\nnamespace StageA.GeneratedRelational\n\nopen StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
         "set_option linter.unusedSimpArgs false\n\n"
-        "theorem allDirectRegionsChecked : allDirectRegionGoals originalPe candidatePe originalImports candidateImports machineImportCallContracts allRegions := by\n"
-        "  unfold allRegions\n"
-        f"  exact {direct_regions_proof}\n\n"
-        "theorem allRegionsChecked : allRegionGoals proofBundle proofBundle.regions := by\n"
-        "  apply allRegionGoals_of_direct proofBundle originalPe candidatePe originalParsed candidateParsed\n"
-        "  exact allDirectRegionsChecked\n\n"
-        "theorem regionalRelationalCertificate : RelationalImageCertificate proofBundle :=\n"
-        "  relationalImageCertificate_intro proofBundle structuralChecked importsChecked allRegionsChecked\n\n"
         f"def GeneratedInvariantCertificate : Prop := {invariant_certificate_type}\n\n"
         "theorem generatedInvariantCertificateChecked : GeneratedInvariantCertificate := by\n"
         f"  exact {invariant_certificate_proof}\n\n"
@@ -1565,7 +1552,7 @@ def _write_sharded_relational_proof(
         "theorem generatedExactRegisterRelationCertificateChecked :\n"
         "    GeneratedExactRegisterRelationCertificate := by\n"
         f"  exact {register_relation_certificate_proof}\n\n"
-        "theorem candidateRelationalImageCertificate :\n"
+        "theorem candidateRelationalEvidenceBundle :\n"
         "    StaticProofContext.StructurallyValid staticProofContext ∧\n"
         "      relationalProductGraph.IndexedValid staticProofContext ∧\n"
         "      relationalProductEvidence.valid relationalProductGraph = true ∧\n"
@@ -1582,7 +1569,7 @@ def _write_sharded_relational_proof(
         "        staticDataUsageRegions ∧\n"
         "      valueRegionsClosed originalPe candidatePe originalRelocations\n"
         "        candidateRelocations allRegions = true ∧\n"
-        "      RelationalImageCertificate proofBundle ∧ GeneratedInvariantCertificate ∧\n"
+        "      GeneratedInvariantCertificate ∧\n"
         "      GeneratedMappedRelocationImageCertificate ∧\n"
         "      GeneratedStackSeparationCertificate ∧\n"
         "      GeneratedOrdinaryMemoryReadPullbackCertificate ∧\n"
@@ -1601,14 +1588,14 @@ def _write_sharded_relational_proof(
         "    generatedPartialProductNodeCoverageCertificateChecked,\n"
         "    allRegionsUseStaticContextChecked,\n"
         "    staticDataUsageChecked, valueRegionsChecked,\n"
-        "    regionalRelationalCertificate, generatedInvariantCertificateChecked,\n"
+        "    generatedInvariantCertificateChecked,\n"
         "    generatedMappedRelocationImageCertificateChecked,\n"
         "    generatedStackSeparationCertificateChecked,\n"
         "    generatedOrdinaryMemoryReadPullbackCertificateChecked,\n"
         "    generatedX87LoadPullbackCertificateChecked,\n"
         "    generatedExactRegisterRelationCertificateChecked,\n"
         "    generatedSegmentRefinementCertificateChecked⟩\n\n"
-        "#print axioms candidateRelationalImageCertificate\n\nend StageA.GeneratedRelational\n"
+        "#print axioms candidateRelationalEvidenceBundle\n\nend StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(lean_dir / "StageA" / "RelationalBundle.lean", final)
     _write_relational_acceptance_modules(

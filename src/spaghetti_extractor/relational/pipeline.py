@@ -2066,7 +2066,6 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
             "instruction_adequacy_chunks",
             "RelationalProof*InstructionAdequacyChunk*.lean",
         ),
-        ("direct_composition_chunks", "RelationalProofDirectChunk*.lean"),
         (
             "segment_refinement_chunks",
             (
@@ -2479,7 +2478,7 @@ def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[st
         final["theorem"] = (
             RELATIONAL_ACCEPTANCE_THEOREM
             if acceptance_ready
-            else "StageA.GeneratedRelational.candidateRelationalImageCertificate"
+            else "StageA.GeneratedRelational.candidateRelationalEvidenceBundle"
         )
     if final.get("status") == "checked" and failure_hint_path is not None:
         failure_hint_path.unlink(missing_ok=True)

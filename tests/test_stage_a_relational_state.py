@@ -12,9 +12,72 @@ from spaghetti_extractor.relational.lean.definitions import (
     _lean_normalized_indirect_call_parts,
     _lean_normalized_static_outcome,
 )
+from spaghetti_extractor.relational.lean.expressions import (
+    _lean_paired_stack_word_value_claim,
+)
 
 
 class StageARelationalStateTests(StageARelationalTestBase):
+    def test_prepared_static_cursor_update_uses_exact_expression_witness(self):
+        slot = {
+            "id": 0,
+            "original_address": 0x402000,
+            "candidate_address": 0x403000,
+            "relation": "exact",
+        }
+        original_read = {
+            "op": "read32",
+            "address": {"op": "constant", "value": 0x402000},
+        }
+        candidate_read = {
+            "op": "read32",
+            "address": {"op": "constant", "value": 0x403000},
+        }
+        original_value = {
+            "op": "add", "left": original_read,
+            "right": {"op": "constant", "value": 4},
+        }
+        candidate_value = {
+            "op": "add", "left": candidate_read,
+            "right": {"op": "constant", "value": 4},
+        }
+        behavior = {
+            "original_ir": {"writes": [{
+                "address": {"op": "constant", "value": 0x402000},
+                "value": original_value,
+            }]},
+            "candidate_ir": {"writes": [{
+                "address": {"op": "constant", "value": 0x403000},
+                "value": candidate_value,
+            }]},
+        }
+
+        claim = _paired_prepared_word_writes_claim(
+            {"input_relations": []}, behavior, [slot]
+        )
+
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim["writes"][0]["kind"], "static_word")
+        self.assertEqual(
+            claim["writes"][0]["value"]["profile"],
+            "exact_expression_v1",
+        )
+        self.assertEqual(claim["writes"][0]["value"]["witness"], {
+            "kind": "binary",
+            "operation": "add",
+            "left": {
+                "kind": "read32",
+                "original_address": 0x402000,
+                "candidate_address": 0x403000,
+            },
+            "right": {"kind": "constant", "value": 4},
+        })
+        rendered = _lean_paired_stack_word_value_claim(
+            claim["writes"][0]["value"]
+        )
+        self.assertIn(".exactExpression (PairedExactExprWitness.binary", rendered)
+        self.assertIn("(PairedExactExprWitness.constant 4)) }", rendered)
+
     def test_dynamic_range_flow_does_not_cross_call_frames(self):
         relation = {
             "original": "eax", "candidate": "eax",
@@ -282,6 +345,22 @@ class StageARelationalStateTests(StageARelationalTestBase):
             "target": target_window,
             "adjustment": {"kind": "identity", "amount": 0},
         }])
+
+        add_zero = {
+            "op": "add", "left": frame_pointer,
+            "right": {"op": "constant", "value": 0},
+        }
+        add_zero_claims = _stack_window_transfer_claims(
+            {"stack_windows": [source_window]},
+            {"stack_windows": [target_window]},
+            {
+                "original_ir": {"registers": {"ebp": add_zero}},
+                "candidate_ir": {"registers": {"ebp": add_zero}},
+            },
+        )
+        self.assertEqual(add_zero_claims[0]["adjustment"], {
+            "kind": "add", "amount": 0,
+        })
 
         stack_write = {
             "address": {
@@ -698,9 +777,7 @@ class StageARelationalStateTests(StageARelationalTestBase):
             }]},
             transfer_behavior,
         )
-        self.assertEqual(transfer[0]["adjustment"], {
-            "kind": "subtract", "amount": 28,
-        })
+        self.assertIsNone(transfer)
 
     def test_stack_windows_propagate_across_machine_call_stack_cleanup(self):
         binary = SimpleNamespace(

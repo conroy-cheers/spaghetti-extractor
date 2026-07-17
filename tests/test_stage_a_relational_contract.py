@@ -1401,7 +1401,7 @@ class StageARelationalContractTests(StageARelationalTestBase):
         finalized = _finalize_nix_proof_ir(
             proof_ir,
             theorem_checked=True,
-            theorem="StageA.GeneratedRelational.candidateRelationalImageCertificate",
+            theorem="StageA.GeneratedRelational.candidateRelationalEvidenceBundle",
             result_path=Path("/nix/store/stage-a-test"),
         )
 
@@ -1419,7 +1419,7 @@ class StageARelationalContractTests(StageARelationalTestBase):
         intermediate_only = _finalize_nix_proof_ir(
             {**proof_ir, "obligations": [proof_ir["obligations"][0]]},
             theorem_checked=True,
-            theorem="StageA.GeneratedRelational.candidateRelationalImageCertificate",
+            theorem="StageA.GeneratedRelational.candidateRelationalEvidenceBundle",
             result_path=Path("/nix/store/stage-a-test"),
         )
         intermediate_family = next(
@@ -1723,6 +1723,33 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 related["static_word_relation_slots"][0]["relation"],
                 "related_word",
             )
+
+            cursor_contract = json.loads(json.dumps(contract))
+            cursor_value = {
+                "op": "add",
+                "left": {
+                    "op": "read32",
+                    "address": {"op": "constant", "value": 0x403000},
+                },
+                "right": {"op": "constant", "value": 4},
+            }
+            cursor_behavior = {
+                "original_ir": {"writes": [{
+                    "address": {"op": "constant", "value": 0x403000},
+                    "value": cursor_value,
+                }]},
+                "candidate_ir": {"writes": [{
+                    "address": {"op": "constant", "value": 0x403000},
+                    "value": cursor_value,
+                }]},
+            }
+            cursor, cursor_analysis = _attach_static_word_relation_slots(
+                cursor_contract, [cursor_behavior], original, candidate
+            )
+            self.assertEqual(cursor_analysis["counts"], {
+                "existing": 0, "inferred": 1, "rejected": 0,
+            })
+            self.assertEqual(cursor["static_word_relation_slots"], [valid])
 
     def test_machine_import_call_contract_validation_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -3074,7 +3101,7 @@ class StageARelationalContractTests(StageARelationalTestBase):
             self.assertIn(value["id"], payload["regions"][0]["value_target_ids"])
             self.assertIn(2, payload["regions"][0]["target_ids"])
 
-    def test_relocated_readonly_function_pointer_jump_emits_checked_certificate(self):
+    def test_relocated_readonly_function_pointer_jump_closes_local_proof_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = root / "original.exe"
@@ -3151,10 +3178,11 @@ class StageARelationalContractTests(StageARelationalTestBase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(acceptance["status"], "ready", acceptance)
-            self.assertEqual(
-                acceptance["theorem"],
-                "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent",
+            self.assertEqual(acceptance["status"], "incomplete", acceptance)
+            self.assertIsNone(acceptance["theorem"])
+            self.assertIn(
+                "launch_realizability_certificate_unsupported",
+                {blocker["code"] for blocker in acceptance["blockers"]},
             )
             progress = json.loads(
                 (report / "composition-progress.json").read_text(encoding="utf-8")
@@ -3181,7 +3209,7 @@ class StageARelationalContractTests(StageARelationalTestBase):
                 "productNode0ImmutableIndirectJumpClosed", generated_segment
             )
             checked = _run_lean_relational(
-                report / "lean", bundle="RelationalAcceptance"
+                report / "lean", bundle="RelationalBundle"
             )
             self.assertEqual(checked["status"], "checked", checked)
 

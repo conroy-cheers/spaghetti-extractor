@@ -150,6 +150,13 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 ],
             },
             {
+                "module": "StageA.RelationalExactExpr",
+                "declarations": [
+                    "PairedExactExprWitness",
+                    "PairedExactExprWitness.eval_equal_of_checked",
+                ],
+            },
+            {
                 "module": "StageA.RelationalSegment",
                 "declarations": ["RelationalSegmentRefinement"],
             },
@@ -236,6 +243,7 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "owned_paths": [
                     "src/spaghetti_extractor/relational/analyses/control.py",
                     "src/spaghetti_extractor/relational/lean/composition.py",
+                    "src/spaghetti_extractor/lean/StageA/RelationalExactExpr.lean",
                     "src/spaghetti_extractor/lean/StageA/RelationalSegment.lean",
                     "src/spaghetti_extractor/lean/StageA/RelationalComposition.lean",
                     "src/spaghetti_extractor/lean/StageA/RelationalLinkedFrames.lean",

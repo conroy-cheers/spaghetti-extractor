@@ -711,8 +711,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "externalCallSitesStructurallyValid", external_call_sites
             )
             self.assertIn("structuralChecked", closure)
-            self.assertIn("allDirectRegionsChecked", bundle)
-            self.assertIn("allRegionsChecked", bundle)
+            self.assertNotIn("RelationalProofDirectChunk", bundle)
+            self.assertNotIn("allDirectRegionsChecked", bundle)
+            self.assertIn("candidateRelationalEvidenceBundle", bundle)
+            self.assertNotIn("RelationalImageCertificate proofBundle", bundle)
             self.assertIn("staticProofContextChecked", static_context)
             self.assertIn("StaticProofContext.StructurallyValid staticProofContext", bundle)
             self.assertIn("allRegionsUseStaticContextChecked", static_usage)
@@ -740,7 +742,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertIn(
                 "import StageA.RelationalStaticContextBase", segment_refinement
             )
-            self.assertIn(
+            self.assertNotIn(
                 "import StageA.RelationalStaticContext\n", segment_refinement
             )
             segment_certificate = (

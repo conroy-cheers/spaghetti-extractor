@@ -766,7 +766,21 @@
             import ./nix/stage-a-lean-graph.nix {
               inherit pkgs;
               prepared = stage-a-minimal-hello-prepared-proof + "/report/relational-v3";
-              targetNodes = [ "local-proof-pack-005" ];
+              targetNodes = [ "relationalsegmentrefinementedge127" ];
+              targetBundle = true;
+            };
+          stage-a-minimal-hello-segment-proofs =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              prepared = stage-a-minimal-hello-prepared-proof + "/report/relational-v3";
+              targetNodes = [ "relationalsegmentrefinementcertificate" ];
+              targetBundle = true;
+            };
+          stage-a-minimal-hello-evidence-bundle =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              prepared = stage-a-minimal-hello-prepared-proof + "/report/relational-v3";
+              targetNodes = [ "relationalbundle" ];
               targetBundle = true;
             };
           stage-a-minimal-hello-check = pkgs.runCommand "stage-a-minimal-hello-check"
@@ -792,7 +806,7 @@
               jq -e '
                 .format == "stage-a-lean-target-bundle-v1" and
                 .lean_trust == 0 and
-                ([.nodes[].id] | index("local-proof-pack-005")) != null
+                ([.nodes[].id] | index("relationalsegmentrefinementedge127")) != null
               ' "${stage-a-minimal-hello-proof-smoke}/bundle.json" >/dev/null
               mkdir -p "$out"
               cp "$prepared/prepared-proof.json" "$prepared/semantic-gaps.json" "$out/"
@@ -981,6 +995,7 @@
             "RelationalISAQualification"
             "Relational"
             "RelationalInvariant"
+            "RelationalExactExpr"
             "RelationalExecution"
             "RelationalImage"
             "RelationalSegment"
@@ -1512,6 +1527,8 @@
             stage-a-minimal-hello-relation-contract
             stage-a-minimal-hello-prepared-proof
             stage-a-minimal-hello-proof-smoke
+            stage-a-minimal-hello-segment-proofs
+            stage-a-minimal-hello-evidence-bundle
             stage-a-minimal-hello-check
             stage-a-minimal-hello-fixtures-root
             stage-a-jq-fixtures

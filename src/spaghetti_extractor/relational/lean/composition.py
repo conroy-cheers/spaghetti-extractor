@@ -1342,7 +1342,9 @@ def _write_relational_product_graph_modules(
                     f"region{region_index} originalBehavior{region_index} "
                     f"candidateBehavior{region_index} {original_normalized} "
                     f"{candidate_normalized} {claim_name} := {node_closed_name}\n"
-                    "  aesop [NodeControlEdgesComplete]",
+                    "  exact Or.inr (Or.inr (Or.inl "
+                    f"⟨{original_normalized}, {candidate_normalized}, "
+                    f"{claim_name}, bounded⟩))",
                 ])
             elif candidate.get("profile") == "dynamic_range_code_pointer_call_v1":
                 original_normalized = f"productNode{node_id}OriginalNormalized"

@@ -127,7 +127,7 @@ def _write_relational_verdict(out: Path, started_at: str, original: StageABinary
                 "status": "proved",
                 "evidence": {
                     "kind": "lean_checked_iat_masked_memory_relation",
-                    "theorem": "StageA.GeneratedRelational.candidateRelationalImageCertificate",
+                    "theorem": "StageA.GeneratedRelational.candidateRelationalEvidenceBundle",
                     "lemma": "StageA.Relational.StateRel.ordinaryMemoryRelation",
                 },
             })

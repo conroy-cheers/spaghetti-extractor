@@ -674,12 +674,178 @@ def _semantic_expr_has_exact_inputs(
         and _semantic_expr_registers(expression) <= exact_identity_registers
     )
 
+
+def _paired_exact_state_expr_witness(
+    source: dict[str, Any],
+    original: Any,
+    candidate: Any,
+    static_word_relation_slots: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Build a checked exact-expression witness from relational state atoms.
+
+    Unlike the immutable-expression path used for static PE facts, this path
+    admits reads only from declared exact static-word slots.  The resulting
+    tree is replayed by Lean against the canonical ``StateRel``; the Python
+    analysis is only a proposal.
+    """
+    exact_registers = {
+        (str(relation["original"]), str(relation["candidate"]))
+        for relation in source.get("input_relations", [])
+        if relation.get("relation") in {"exact", "fixed_word"}
+    }
+    allowed_flags = {
+        int(index) for index in source.get("flag_inputs", list(FLAG_BITS))
+    }
+
+    def paired_constant_read(
+        original_expression: dict[str, Any],
+        candidate_expression: dict[str, Any],
+        kind: str,
+    ) -> dict[str, Any] | None:
+        original_address = original_expression.get("address") or {}
+        candidate_address = candidate_expression.get("address") or {}
+        if (
+            original_address.get("op") != "constant"
+            or candidate_address.get("op") != "constant"
+        ):
+            return None
+        original_absolute = _integer(original_address.get("value"))
+        candidate_absolute = _integer(candidate_address.get("value"))
+        matches = [
+            slot for slot in static_word_relation_slots
+            if slot.get("relation") == "exact"
+            and int(slot.get("original_address", -1)) == original_absolute
+            and int(slot.get("candidate_address", -1)) == candidate_absolute
+        ]
+        if len(matches) != 1:
+            return None
+        return {
+            "kind": kind,
+            "original_address": original_absolute,
+            "candidate_address": candidate_absolute,
+        }
+
+    def paired_expression(
+        original_expression: Any, candidate_expression: Any,
+    ) -> dict[str, Any] | None:
+        if not isinstance(original_expression, dict) or not isinstance(
+            candidate_expression, dict
+        ):
+            return None
+        operation = original_expression.get("op")
+        if operation != candidate_expression.get("op"):
+            return None
+        if operation == "input_reg":
+            original_register = str(original_expression.get("reg"))
+            candidate_register = str(candidate_expression.get("reg"))
+            if (original_register, candidate_register) not in exact_registers:
+                return None
+            return {
+                "kind": "input_reg",
+                "original": original_register,
+                "candidate": candidate_register,
+            }
+        if operation == "input_flag_value":
+            original_bit = _integer(original_expression.get("bit"))
+            candidate_bit = _integer(candidate_expression.get("bit"))
+            if original_bit != candidate_bit or original_bit not in allowed_flags:
+                return None
+            return {"kind": "input_flag_value", "bit": original_bit}
+        if operation in {
+            "input_fs_base", "input_x87_control", "input_x87_status",
+        }:
+            return {"kind": operation}
+        if operation == "constant":
+            original_value = _integer(original_expression.get("value"))
+            if original_value != _integer(candidate_expression.get("value")):
+                return None
+            return {"kind": "constant", "value": original_value}
+        if operation == "undefined":
+            original_slot = _integer(original_expression.get("slot"))
+            if original_slot != _integer(candidate_expression.get("slot")):
+                return None
+            return {"kind": "undefined", "slot": original_slot}
+        if operation in {"read8", "read32"}:
+            return paired_constant_read(
+                original_expression, candidate_expression, operation
+            )
+        if operation in {
+            "add", "sub", "bit_and", "bit_xor", "shift_left_by",
+            "shift_right_by", "shift_arithmetic_right_by", "bit_or",
+            "unsigned_less_value", "multiply", "multiply_high_unsigned",
+            "multiply_high_signed",
+        }:
+            left = paired_expression(
+                original_expression.get("left"), candidate_expression.get("left")
+            )
+            right = paired_expression(
+                original_expression.get("right"), candidate_expression.get("right")
+            )
+            if left is None or right is None:
+                return None
+            return {
+                "kind": "binary", "operation": operation,
+                "left": left, "right": right,
+            }
+        if operation in {"bit_not", "lowest_set_bit", "highest_set_bit"}:
+            value = paired_expression(
+                original_expression.get("value"), candidate_expression.get("value")
+            )
+            if value is None:
+                return None
+            return {"kind": "unary", "operation": operation, "value": value}
+        if operation in {
+            "extract_byte", "shift_left", "shift_right", "bit_value",
+        }:
+            metadata_key = (
+                "index" if operation in {"extract_byte", "bit_value"} else "amount"
+            )
+            index = _integer(original_expression.get(metadata_key))
+            if index != _integer(candidate_expression.get(metadata_key)):
+                return None
+            value = paired_expression(
+                original_expression.get("value"), candidate_expression.get("value")
+            )
+            if value is None:
+                return None
+            return {
+                "kind": "indexed", "operation": operation,
+                "index": index, "value": value,
+            }
+        if operation == "if_equal":
+            children = {
+                field: paired_expression(
+                    original_expression.get(field), candidate_expression.get(field)
+                )
+                for field in ("left", "right", "then", "else")
+            }
+            if any(value is None for value in children.values()):
+                return None
+            return {"kind": "if_equal", **children}
+        if operation in {
+            "divide_quotient", "divide_remainder", "division_valid_value",
+        }:
+            children = {
+                field: paired_expression(
+                    original_expression.get(field), candidate_expression.get(field)
+                )
+                for field in ("high", "low", "divisor")
+            }
+            if any(value is None for value in children.values()):
+                return None
+            return {"kind": "ternary", "operation": operation, **children}
+        return None
+
+    return paired_expression(original, candidate)
+
+
 def _paired_stack_word_value_claim(
     source: dict[str, Any],
     original_value: dict[str, Any],
     candidate_value: dict[str, Any],
     original_image_base: int | None = None,
     candidate_image_base: int | None = None,
+    static_word_relation_slots: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     dynamic_matches = [
         relation
@@ -711,6 +877,18 @@ def _paired_stack_word_value_claim(
             "profile": "exact_inputs_v1",
             "original": original_value,
             "candidate": candidate_value,
+        }
+
+    exact_witness = _paired_exact_state_expr_witness(
+        source, original_value, candidate_value,
+        static_word_relation_slots or [],
+    )
+    if exact_witness is not None:
+        return {
+            "profile": "exact_expression_v1",
+            "original": original_value,
+            "candidate": candidate_value,
+            "witness": exact_witness,
         }
 
     original_constant = (
@@ -1022,7 +1200,7 @@ def _static_word_value_claim_compatible(
             "dynamic_range_v1",
         }
     if relation == "exact":
-        return profile == "exact_inputs_v1" or (
+        return profile in {"exact_inputs_v1", "exact_expression_v1"} or (
             profile == "register_argument_v1"
             and ((value_claim.get("claim") or {}).get("relation") or {}).get(
                 "relation"
@@ -1096,6 +1274,7 @@ def _paired_prepared_word_writes_claim(
             candidate_write.get("value") or {},
             original_image_base,
             candidate_image_base,
+            static_word_relation_slots,
         )
         if value_claim is None:
             return None
