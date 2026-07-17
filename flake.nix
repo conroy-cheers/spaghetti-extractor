@@ -775,7 +775,7 @@
                   --linker-map-original "$fixture_dir/hello-original.map" \
                   --linker-map-candidate "$fixture_dir/hello-candidate.map" \
                   --original-flags "handwritten-winapi-console" \
-                  --candidate-flags "handwritten-winapi-console-unused-data-change" \
+                  --candidate-flags "handwritten-winapi-console-reachable-nop" \
                   --out "$out/hello-block-map.json" \
                   --layout-contract-out "$out/hello-layout-contract.json" \
                   > "$out/generate-map.stdout"
@@ -822,13 +822,11 @@
                 cp -R "$work/relational-v3" "$out/report/relational-v3"
                 cp "$work/prepare.stdout" "$out/report/"
               '';
-          stage-a-winapi-hello-evidence-bundle =
+          stage-a-winapi-hello-proof-audit =
             import ./nix/stage-a-lean-graph.nix {
               inherit pkgs;
               prepared =
                 stage-a-winapi-hello-prepared-proof + "/report/relational-v3";
-              targetNodes = [ "relationalacceptance" ];
-              targetBundle = true;
             };
           stage-a-winapi-hello-check =
             pkgs.runCommand "stage-a-winapi-hello-check"
@@ -861,14 +859,19 @@
                   .composition_progress.counts.acceptance_blockers == 0
                 ' "$prepared/prepared-proof.json" >/dev/null
                 jq -e '
-                  .format == "stage-a-lean-target-bundle-v1" and
+                  .format == "stage-a-relational-lean-audit-v1" and
+                  .status == "checked" and
+                  .theorem ==
+                    "StageA.GeneratedRelational.candidatePE32ProgramsEquivalent" and
                   .lean_trust == 0 and
-                  ([.nodes[].id] | index("relationalacceptance")) != null
-                ' "${stage-a-winapi-hello-evidence-bundle}/bundle.json" >/dev/null
+                  .unexpected_axioms == []
+                ' "${stage-a-winapi-hello-proof-audit}/audit.json" >/dev/null
                 mkdir -p "$out"
                 cp "$prepared/prepared-proof.json" "$out/"
-                cp "${stage-a-winapi-hello-evidence-bundle}/bundle.json" \
-                  "$out/evidence-bundle.json"
+                cp "${stage-a-winapi-hello-proof-audit}/audit.json" \
+                  "$out/lean-audit.json"
+                cp "${stage-a-winapi-hello-proof-audit}/node-provenance.json" \
+                  "$out/lean-node-provenance.json"
               '';
           stage-a-exit-behavior-smoke =
             pkgs.runCommand "stage-a-exit-behavior-smoke"
@@ -1931,7 +1934,7 @@
             stage-a-winapi-hello-static-map
             stage-a-winapi-hello-relation-contract
             stage-a-winapi-hello-prepared-proof
-            stage-a-winapi-hello-evidence-bundle
+            stage-a-winapi-hello-proof-audit
             stage-a-winapi-hello-check
             stage-a-winapi-hello-behavior-smoke
             stage-a-gnu-hello-fixtures

@@ -56,4 +56,7 @@ _stageAWriteCall:
 
 _stageAExit:
     mov DWORD PTR [esp], 0
+#ifdef STAGE_A_CANDIDATE
+    nop
+#endif
     call "_ExitProcess@4"
