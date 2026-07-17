@@ -8,9 +8,26 @@ from spaghetti_extractor.relational.lean.common import (
     _lean_register_relation_pair as _lean_common_register_relation_pair,
 )
 from spaghetti_extractor.relational.model import _semantic_hash
+from spaghetti_extractor.relational.pipeline import _extraction_failure_blocker
+from spaghetti_extractor.relational.verdict import _lean_diagnostic
 
 
 class StageARelationalPipelineTests(StageARelationalTestBase):
+    def test_extraction_normalization_failure_is_not_reported_as_decode_failure(self):
+        extraction = {
+            "status": "failed",
+            "stderr": "uncaught exception: original region 7429 did not normalize\n",
+        }
+
+        self.assertIn("could not normalize", _extraction_failure_blocker(extraction))
+        diagnostic = _lean_diagnostic(extraction)
+        self.assertEqual(
+            diagnostic["category"],
+            "formal_region_target_normalization_incomplete",
+        )
+        self.assertEqual(diagnostic["side"], "original")
+        self.assertEqual(diagnostic["region_id"], 7429)
+
     def test_fixed_code_pointer_register_relation_emits_target_and_hashes_it(self):
         relation = {
             "original": "esi",
@@ -156,6 +173,48 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             self.assertEqual(
                 [region["code_targets"] for region in renormalized["regions"]],
                 [region["code_targets"] for region in payload["regions"]],
+            )
+
+    def test_relation_contract_generator_cuts_after_faulting_signed_divide(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code = bytes.fromhex("89f099f77c244089c3")
+            original = self._write_pe(root / "original.exe", code)
+            candidate = self._write_pe(root / "candidate.exe", code)
+            mapping = root / "mapping.json"
+            mapping.write_text(json.dumps({"blocks": [{
+                "id": "signed-divide",
+                "kind": "code",
+                "original": {"rva": 0x1000, "size": len(code)},
+                "candidate": {"rva": 0x1000, "size": len(code)},
+                "source": {
+                    "kind": "linker_map_capstone_block_match_v1",
+                    "function": "signed_divide",
+                    "function_block_index": 0,
+                },
+            }]}), encoding="utf-8")
+            contract = root / "relation.json"
+
+            result = stage_a_generate_relation_contract(
+                original=original,
+                candidate=candidate,
+                mapping=mapping,
+                out=contract,
+            )
+
+            self.assertEqual(result["status"], "generated", result)
+            payload = json.loads(contract.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [region["original"]["size"] for region in payload["regions"]],
+                [7, 2],
+            )
+            self.assertEqual(
+                [region["candidate"]["size"] for region in payload["regions"]],
+                [7, 2],
+            )
+            self.assertEqual(
+                [region["function_cut_index"] for region in payload["regions"]],
+                [0, 1],
             )
 
     def test_relation_contract_generator_selects_shared_external_profile_imports(self):

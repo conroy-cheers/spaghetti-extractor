@@ -407,6 +407,20 @@ from .schema import (
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
 
 
+def _extraction_failure_blocker(extraction: dict[str, Any]) -> str:
+    output = str(extraction.get("stderr") or "") + "\n" + str(
+        extraction.get("stdout") or ""
+    )
+    if " did not normalize" in output:
+        return (
+            "Lean decoded the exact region bytes but could not normalize every "
+            "control-flow target into the canonical relation map"
+        )
+    if " did not decode" in output:
+        return "Lean could not decode every relational region from the exact PE bytes"
+    return "Lean could not extract normalized semantics for every relational region"
+
+
 def _stabilize_fixed_code_pointer_register_calls(
     contract: dict[str, Any],
     behaviors: list[dict[str, Any]],
@@ -634,7 +648,7 @@ def stage_a_prove_relational(
             "incomplete",
             extraction,
             certificates=[],
-            blocker="Lean could not decode every relational region from the exact PE bytes",
+            blocker=_extraction_failure_blocker(extraction),
         )
     extracted = ExtractedProgramPair.create(
         contract=normalized,

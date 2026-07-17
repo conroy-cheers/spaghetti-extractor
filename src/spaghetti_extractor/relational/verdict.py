@@ -384,6 +384,40 @@ def _lean_diagnostic(lean: dict[str, Any]) -> dict[str, Any] | None:
     stderr = str(lean.get("stderr") or "") + "\n" + str(lean.get("stdout") or "")
     if not stderr:
         return None
+    extraction_failure = re.search(
+        r"\b(original|candidate) region (\d+) did not (decode|normalize)\b",
+        stderr,
+    )
+    if extraction_failure is not None:
+        side, region_id, phase = extraction_failure.groups()
+        if phase == "normalize":
+            return {
+                "category": "formal_region_target_normalization_incomplete",
+                "severity": "hard",
+                "side": side,
+                "region_id": int(region_id),
+                "summary": (
+                    "Lean decoded the exact bytes but could not map a control-flow "
+                    "target into the canonical relation contract"
+                ),
+                "counterexample": None,
+                "next_action": (
+                    "inspect the region outcome and add a checked paired cutpoint or "
+                    "termination witness for the unresolved target"
+                ),
+            }
+        return {
+            "category": "formal_region_decode_incomplete",
+            "severity": "hard",
+            "side": side,
+            "region_id": int(region_id),
+            "summary": "Lean could not execute the complete exact-byte region",
+            "counterexample": None,
+            "next_action": (
+                "inspect the exact region bytes and either add reviewed instruction "
+                "semantics or introduce a checked semantic cutpoint"
+            ),
+        }
     assignment = _counterexample_assignment(stderr)
     error = next((line.strip() for line in stderr.splitlines() if "error:" in line), None)
     return {

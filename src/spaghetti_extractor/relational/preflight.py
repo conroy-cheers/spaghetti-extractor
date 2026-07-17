@@ -43,6 +43,8 @@ def instruction_supported(insn: Any) -> bool:
         or (
             encoded.startswith(b"\x66")
             and (
+                encoded.startswith(b"\x66\x0f\xbe")
+                or
                 word_opcode in {0x2B, 0x39, 0x3B, 0x85, 0x89, 0x8B}
                 or (word_opcode in {0x81, 0x83} and word_modrm_group in {0, 1, 4, 5, 6, 7})
                 or (word_opcode == 0xC7 and word_modrm_group == 0)
@@ -52,10 +54,13 @@ def instruction_supported(insn: Any) -> bool:
             )
         )
         or 0xB0 <= opcode <= 0xB7
-        or opcode in {0x0A, 0x0C, 0x22, 0x24, 0x38, 0x3A, 0x3C, 0x84, 0x88, 0x8A, 0xA8}
+        or opcode in {
+            0x08, 0x0A, 0x0C, 0x20, 0x22, 0x24, 0x30, 0x32, 0x34,
+            0x38, 0x3A, 0x3C, 0x84, 0x88, 0x8A, 0xA8,
+        }
         or (opcode in {0x80, 0xC6, 0xF6} and modrm_group in ({0, 1, 4, 5, 6, 7} if opcode == 0x80 else {0}))
         or (len(encoded) == 5 and 0xB8 <= opcode <= 0xBF)
-        or (len(encoded) == 5 and opcode in {0x05, 0x0D, 0x25, 0x2D, 0x35, 0xA1, 0xA3, 0xA9, 0x3D})
+        or (len(encoded) == 5 and opcode in {0x05, 0x0D, 0x25, 0x2D, 0x35, 0xA1, 0xA2, 0xA3, 0xA9, 0x3D})
         or (len(encoded) >= 3 and encoded[:2] == b"\x64\x8b")
         or (len(encoded) == 5 and opcode in {0xE8, 0xE9})
         or (len(encoded) == 6 and encoded[:2] in {b"\xff\x15", b"\xff\x25"})
@@ -64,6 +69,7 @@ def instruction_supported(insn: Any) -> bool:
         or (len(encoded) >= 3 and encoded[0] == 0x0F and 0x90 <= encoded[1] <= 0x9F)
         or (len(encoded) >= 3 and encoded[:2] in {b"\x0f\xb6", b"\x0f\xb7", b"\x0f\xbe", b"\x0f\xbf"})
         or (len(encoded) >= 3 and encoded[:2] in {b"\x0f\xaf", b"\x0f\xbd"})
+        or (len(encoded) >= 3 and encoded[:2] == b"\x0f\xa3" and (encoded[2] >> 6) == 3)
         or (len(encoded) >= 4 and encoded[:3] == b"\xf3\x0f\xbc")
         or (len(encoded) >= 3 and encoded[:2] in {b"\x0f\xa4", b"\x0f\xa5", b"\x0f\xac", b"\x0f\xad"})
         or (len(encoded) == 3 and encoded[:2] == b"\x83\xf8")
@@ -72,9 +78,9 @@ def instruction_supported(insn: Any) -> bool:
         or opcode in {0x01, 0x03, 0x09, 0x0B, 0x11, 0x13, 0x19, 0x1B, 0x21, 0x23, 0x29, 0x2B, 0x31, 0x33, 0x39, 0x3B, 0x85, 0x87, 0x89, 0x8B, 0x8D, 0x98, 0x99}
         or (opcode in {0x81, 0x83} and modrm_group in {0, 1, 2, 3, 4, 5, 6, 7})
         or (opcode == 0xC7 and modrm_group == 0)
-        or (opcode in {0xC1, 0xD1, 0xD3} and modrm_group in {4, 5, 7})
+        or (opcode in {0xC0, 0xC1, 0xD1, 0xD3} and modrm_group in {4, 5, 7})
         or opcode in {0x69, 0x6B}
-        or (opcode == 0xF7 and modrm_group in {0, 2, 3, 4, 5, 6})
+        or (opcode == 0xF7 and modrm_group in {0, 2, 3, 4, 5, 6, 7})
         or (len(encoded) >= 4 and encoded[:3] == b"\xf0\x0f\xb1")
         or (opcode == 0xFF and modrm_group in {2, 4, 6})
         or 0x50 <= opcode <= 0x5F

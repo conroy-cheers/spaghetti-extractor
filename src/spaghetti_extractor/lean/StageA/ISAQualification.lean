@@ -75,10 +75,14 @@ inductive InstructionSemanticForm where
       (destination source : Operand32SemanticForm)
   | shift (operation : ShiftOperation) (destination : Operand32SemanticForm)
       (count : ShiftCount)
+  | shift8 (operation : ShiftOperation) (destination : Operand8SemanticForm)
+      (count : ShiftCount)
   | unary (operation : UnaryOperation) (destination : Operand32SemanticForm)
   | branchCondition (condition : Condition) (size : Nat)
   | movZeroExtend (source : Operand32SemanticForm) (width : Nat)
   | movSignExtend (source : Operand32SemanticForm) (width : Nat)
+  | movSignExtend8 (source : Operand8SemanticForm)
+  | movSignExtend8ToWord (source : Operand8SemanticForm)
   | movFromOperandWidth (width : OperandWidth) (source : Operand32SemanticForm)
   | movToOperandWidth (width : OperandWidth)
       (destination : Operand32SemanticForm)
@@ -102,6 +106,7 @@ inductive InstructionSemanticForm where
   | doubleShift (left : Bool) (destination : Operand32SemanticForm)
       (count : ShiftCount)
   | bitScan (reverse : Bool) (source : Operand32SemanticForm)
+  | bitTestRegister
   | x87LoadStack
   | x87LoadConstant (value : Nat)
   | x87Exchange
@@ -125,6 +130,7 @@ inductive InstructionSemanticForm where
   | pushOperand (source : Operand32SemanticForm)
   | movFs32 (source : AddressingSemanticForm)
   | divideUnsigned (source : Operand32SemanticForm)
+  | divideSigned (source : Operand32SemanticForm)
   | atomicCompareExchange (destination : AddressingSemanticForm)
 deriving Repr, DecidableEq
 
@@ -158,10 +164,14 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
       .binary operation destination.semanticForm source.semanticForm
   | .shift operation destination count =>
       .shift operation destination.semanticForm count
+  | .shift8 operation destination count =>
+      .shift8 operation destination.semanticForm count
   | .unary operation destination => .unary operation destination.semanticForm
   | .branchCondition condition _ size => .branchCondition condition size
   | .movZeroExtend _ source width => .movZeroExtend source.semanticForm width
   | .movSignExtend _ source width => .movSignExtend source.semanticForm width
+  | .movSignExtend8 _ source => .movSignExtend8 source.semanticForm
+  | .movSignExtend8ToWord _ source => .movSignExtend8ToWord source.semanticForm
   | .movFromOperandWidth width _ source =>
       .movFromOperandWidth width source.semanticForm
   | .movToOperandWidth width destination _ =>
@@ -190,6 +200,7 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
   | .doubleShift left destination _ count =>
       .doubleShift left destination.semanticForm count
   | .bitScan reverse _ source => .bitScan reverse source.semanticForm
+  | .bitTestRegister _ _ => .bitTestRegister
   | .x87LoadStack _ => .x87LoadStack
   | .x87LoadConstant value => .x87LoadConstant value
   | .x87Exchange _ => .x87Exchange
@@ -213,6 +224,7 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
   | .pushOperand source => .pushOperand source.semanticForm
   | .movFs32 _ source => .movFs32 source.semanticForm
   | .divideUnsigned source => .divideUnsigned source.semanticForm
+  | .divideSigned source => .divideSigned source.semanticForm
   | .atomicCompareExchange destination _ =>
       .atomicCompareExchange destination.semanticForm
 

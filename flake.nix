@@ -1045,14 +1045,18 @@
               prepare_status=$?
               set -e
               if [ "$prepare_status" -eq 0 ]; then
-                echo "GNU hello unexpectedly passed semantic preflight" >&2
+                echo "GNU hello preparation frontier changed; update this check to the next authoritative phase" >&2
                 exit 1
               fi
               jq -e '
-                .status == "incomplete" and
-                (.issues | length) > 0 and
-                ([.issues[].category] | unique) == ["formal_instruction_unsupported"]
+                .status == "supported" and
+                (.issues | length) == 0
               ' "$work/relational-v3/semantic-gaps.json" >/dev/null
+              jq -e '
+                .verdict == "incomplete" and
+                .diagnostic.category == "formal_region_target_normalization_incomplete" and
+                (.blocker | contains("could not normalize"))
+              ' "$work/relational-v3/verdict.json" >/dev/null
               mkdir -p "$out/report"
               cp "${stage-a-gnu-hello-static-map}/hello-block-map.json" \
                 "${stage-a-gnu-hello-static-map}/hello-layout-contract.json" \

@@ -82,7 +82,9 @@ def _semantic_cutpoint_spans(
     def boundaries(binary: StageABinary, span: dict[str, int], decoded: list[Any]) -> list[int]:
         result = [0]
         for instruction_index, instruction in enumerate(decoded, start=1):
-            semantic = instruction.mnemonic in {"rep movsd", "movsd", "div", "lock cmpxchg"}
+            semantic = instruction.mnemonic in {
+                "rep movsd", "movsd", "div", "idiv", "lock cmpxchg",
+            }
             bounded = periodic and instruction_index % 4 == 0
             if semantic or bounded:
                 offset = int(instruction.address - binary.image_base - span["rva_start"] + instruction.size)

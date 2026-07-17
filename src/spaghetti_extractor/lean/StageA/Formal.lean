@@ -1701,6 +1701,24 @@ def logicalFlagsWidth (undefinedSlot bits : Nat) (result : Expr) : FlagsExpr :=
     parity := some (parityExpression result)
   }
 
+def undefinedArithmeticFlags (undefinedSlot : Nat) : FlagsExpr := {
+  zero := some (.bit (.undefined undefinedSlot) 0)
+  carry := some (.bit (.undefined undefinedSlot) 1)
+  auxiliary := some (.bit (.undefined undefinedSlot) 2)
+  sign := some (.bit (.undefined undefinedSlot) 3)
+  overflow := some (.bit (.undefined undefinedSlot) 4)
+  parity := some (.bit (.undefined undefinedSlot) 5)
+}
+
+def multiplicationFlags (undefinedSlot : Nat) (overflow : BoolExpr) : FlagsExpr := {
+  zero := some (.bit (.undefined undefinedSlot) 0)
+  carry := some overflow
+  auxiliary := some (.bit (.undefined undefinedSlot) 1)
+  sign := some (.bit (.undefined undefinedSlot) 2)
+  overflow := some overflow
+  parity := some (.bit (.undefined undefinedSlot) 3)
+}
+
 def adcFlags (left right result : Expr) (carryIn : BoolExpr) : FlagsExpr := {
   zero := some (.equal result (.constant 0))
   carry := some (.or (.unsignedLess result left) (.and carryIn (.equal result left)))
@@ -2028,10 +2046,13 @@ inductive Instruction where
   | leaAddress (destination : Reg) (source : Addressing)
   | binary (operation : BinaryOperation) (destination source : Operand32)
   | shift (operation : ShiftOperation) (destination : Operand32) (count : ShiftCount)
+  | shift8 (operation : ShiftOperation) (destination : Operand8) (count : ShiftCount)
   | unary (operation : UnaryOperation) (destination : Operand32)
   | branchCondition (condition : Condition) (displacement size : Nat)
   | movZeroExtend (destination : Reg) (source : Operand32) (width : Nat)
   | movSignExtend (destination : Reg) (source : Operand32) (width : Nat)
+  | movSignExtend8 (destination : Reg) (source : Operand8)
+  | movSignExtend8ToWord (destination : Reg) (source : Operand8)
   | movFromOperandWidth (width : OperandWidth) (destination : Reg) (source : Operand32)
   | movToOperandWidth (width : OperandWidth) (destination : Operand32) (source : Reg)
   | movImmediateWidth (width : OperandWidth) (destination : Operand32) (value : Nat)
@@ -2050,6 +2071,7 @@ inductive Instruction where
   | multiplyLow (destination : Reg) (source : Operand32) (immediate : Option Nat)
   | doubleShift (left : Bool) (destination : Operand32) (source : Reg) (count : ShiftCount)
   | bitScan (reverse : Bool) (destination : Reg) (source : Operand32)
+  | bitTestRegister (base index : Reg)
   | x87LoadStack (index : Nat)
   | x87LoadConstant (value : Nat)
   | x87Exchange (index : Nat)
@@ -2071,6 +2093,7 @@ inductive Instruction where
   | pushOperand (source : Operand32)
   | movFs32 (destination : Reg) (source : Addressing)
   | divideUnsigned (source : Operand32)
+  | divideSigned (source : Operand32)
   | atomicCompareExchange (destination : Addressing) (source : Reg)
 deriving Repr, DecidableEq
 
@@ -2340,6 +2363,20 @@ def decodeWordInstruction : Bytes -> Option DecodedInstruction
         }
       else
         match opcode with
+        | 0x0f =>
+            match tail with
+            | 0xbe :: bytes => do
+                let parsed <- parseModRM bytes
+                let byteParsed <- parseModRM8 bytes
+                if parsed.size != byteParsed.size || parsed.trailing != byteParsed.trailing then
+                  none
+                else
+                pure {
+                  instruction := .movSignExtend8ToWord parsed.reg byteParsed.operand
+                  size := 2 + parsed.size
+                  trailing := parsed.trailing
+                }
+            | _ => none
         | 0x8b => decodedModRM (fun parsed => some (.movFromOperandWidth .word parsed.reg parsed.operand)) tail
         | 0x89 => decodedModRM (fun parsed => some (.movToOperandWidth .word parsed.operand parsed.reg)) tail
         | 0xc7 => decodedModRMImmediate16 (fun parsed value =>
@@ -2414,6 +2451,15 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
         pure { instruction := .branchCondition condition displacement 2, size := 2, trailing := tail.drop 1 }
       else
         match opcode with
+        | 0xa2 => do
+            let address <- readU32 tail 0
+            pure {
+              instruction := .movToOperand8
+                (.memory { base := none, index := none, scaleShift := 0, displacement := address })
+                { parent := .eax, high := false }
+              size := 5
+              trailing := tail.drop 4
+            }
         | 0xa1 => do
             let address <- readU32 tail 0
             pure {
@@ -2465,10 +2511,14 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
         | 0x39 => decodedModRM (fun parsed => some (.binary .compare parsed.operand (.register parsed.reg))) tail
         | 0x85 => decodedModRM (fun parsed => some (.binary .test parsed.operand (.register parsed.reg))) tail
         | 0x84 => decodedModRM8 (fun parsed => some (.binary8 .test parsed.operand (.register parsed.reg))) tail
+        | 0x08 => decodedModRM8 (fun parsed => some (.binary8 .or parsed.operand (.register parsed.reg))) tail
         | 0x3a => decodedModRM8 (fun parsed => some (.binary8 .compare (.register parsed.reg) parsed.operand)) tail
         | 0x38 => decodedModRM8 (fun parsed => some (.binary8 .compare parsed.operand (.register parsed.reg))) tail
         | 0x0a => decodedModRM8 (fun parsed => some (.binary8 .or (.register parsed.reg) parsed.operand)) tail
+        | 0x20 => decodedModRM8 (fun parsed => some (.binary8 .and parsed.operand (.register parsed.reg))) tail
         | 0x22 => decodedModRM8 (fun parsed => some (.binary8 .and (.register parsed.reg) parsed.operand)) tail
+        | 0x30 => decodedModRM8 (fun parsed => some (.binary8 .xor parsed.operand (.register parsed.reg))) tail
+        | 0x32 => decodedModRM8 (fun parsed => some (.binary8 .xor (.register parsed.reg) parsed.operand)) tail
         | 0x80 => decodedModRM8Immediate8 (fun parsed value =>
             match parsed.reg with
             | { parent := .eax, high := false } => some (.binary8 .add parsed.operand (.immediate value))
@@ -2531,6 +2581,15 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
             | .ebp => some (.shift .right parsed.operand .cl)
             | .edi => some (.shift .arithmeticRight parsed.operand .cl)
             | _ => none) tail
+        | 0xc0 => decodedModRM8Immediate8 (fun parsed value =>
+            match parsed.reg with
+            | { parent := .eax, high := true } =>
+                some (.shift8 .left parsed.operand (.immediate (value % 32)))
+            | { parent := .ecx, high := true } =>
+                some (.shift8 .right parsed.operand (.immediate (value % 32)))
+            | { parent := .ebx, high := true } =>
+                some (.shift8 .arithmeticRight parsed.operand (.immediate (value % 32)))
+            | _ => none) tail
         | 0xf6 => decodedModRM8Immediate8 (fun parsed value =>
             if parsed.reg == { parent := .eax, high := false } then
               some (.binary8 .test parsed.operand (.immediate value))
@@ -2550,6 +2609,7 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
             | .esp => pure { instruction := .multiplyFull false parsed.operand, size := 1 + parsed.size, trailing := parsed.trailing }
             | .ebp => pure { instruction := .multiplyFull true parsed.operand, size := 1 + parsed.size, trailing := parsed.trailing }
             | .esi => pure { instruction := .divideUnsigned parsed.operand, size := 1 + parsed.size, trailing := parsed.trailing }
+            | .edi => pure { instruction := .divideSigned parsed.operand, size := 1 + parsed.size, trailing := parsed.trailing }
             | _ => none
         | 0xff => decodedModRM (fun parsed =>
             match parsed.reg with
@@ -2592,6 +2652,15 @@ def decodeGenericInstruction : Bytes -> Option DecodedInstruction
             match tail with
             | value :: trailing => some {
                 instruction := .binary8 .or (.register { parent := .eax, high := false }) (.immediate value)
+                size := 2
+                trailing
+              }
+            | _ => none
+        | 0x34 =>
+            match tail with
+            | value :: trailing => some {
+                instruction := .binary8 .xor
+                  (.register { parent := .eax, high := false }) (.immediate value)
                 size := 2
                 trailing
               }
@@ -2729,8 +2798,23 @@ def decodeInstruction : Bytes -> Option DecodedInstruction
       }
   | 0x0f :: 0xbe :: tail => do
       let parsed <- parseModRM tail
+      let byteParsed <- parseModRM8 tail
+      if parsed.size != byteParsed.size || parsed.trailing != byteParsed.trailing then
+        none
+      else
       pure {
-        instruction := .movSignExtend parsed.reg parsed.operand 8
+        instruction := .movSignExtend8 parsed.reg byteParsed.operand
+        size := 2 + parsed.size
+        trailing := parsed.trailing
+      }
+  | 0x0f :: 0xa3 :: tail => do
+      let parsed <- parseModRM tail
+      let base <-
+        match parsed.operand with
+        | .register base => some base
+        | .memory _ | .immediate _ => none
+      pure {
+        instruction := .bitTestRegister base parsed.reg
         size := 2 + parsed.size
         trailing := parsed.trailing
       }
@@ -3194,9 +3278,11 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
               | .right | .arithmeticRight => shiftAmount - 1
             let carry := BoolExpr.bit value carryIndex
             let overflow :=
-              if shiftAmount != 1 then none else
+              if shiftAmount != 1 then
+                some (.bit (.undefined undefinedSlot) 4)
+              else
               match operation with
-              | .left => some (.xor (.msb value) carry)
+              | .left => some (.xor (.msb result) carry)
               | .right => some (.msb value)
               | .arithmeticRight => some (.equal (.constant 0) (.constant 1))
             some {
@@ -3204,6 +3290,56 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
               carry := some carry
               auxiliary := some (.bit (.undefined undefinedSlot) 0)
               sign := some (.msb result)
+              overflow
+              parity := some (parityExpression result)
+            }
+      some (.next { next with flags, comparison := none })
+  | .shift8 operation destination count => do
+      let value := .bitAnd (readOperand8 state destination) (.constant 0xff)
+      let amount :=
+        match count with
+        | .immediate amount => Expr.constant amount
+        | .cl => .bitAnd (state.registers.get .ecx) (.constant 0x1f)
+      let rawResult :=
+        match operation, count with
+        | .left, .immediate shift => .shiftLeft value shift
+        | .right, .immediate shift => .shiftRight value shift
+        | .arithmeticRight, .immediate shift =>
+            .shiftArithmeticRightBy (value.signExtendNormalized 8) (.constant shift)
+        | .left, .cl => .shiftLeftBy value amount
+        | .right, .cl => .shiftRightBy value amount
+        | .arithmeticRight, .cl =>
+            .shiftArithmeticRightBy (value.signExtendNormalized 8) amount
+      let result := .bitAnd rawResult (.constant 0xff)
+      let next <- writeOperand8 state destination result
+      let flags :=
+        match count with
+        | .cl => none
+        | .immediate rawAmount =>
+            let shiftAmount := rawAmount % 32
+            if shiftAmount == 0 then state.flags else
+            let carry :=
+              if shiftAmount <= 8 then
+                let carryIndex :=
+                  match operation with
+                  | .left => 8 - shiftAmount
+                  | .right | .arithmeticRight => shiftAmount - 1
+                some (BoolExpr.bit value carryIndex)
+              else
+                some (.bit (.undefined undefinedSlot) 1)
+            let overflow :=
+              if shiftAmount != 1 then
+                some (.bit (.undefined undefinedSlot) 4)
+              else
+              match operation with
+              | .left => carry.map fun carry => .xor (.bit result 7) carry
+              | .right => some (.bit value 7)
+              | .arithmeticRight => some (.equal (.constant 0) (.constant 1))
+            some {
+              zero := some (.equal result (.constant 0))
+              carry
+              auxiliary := some (.bit (.undefined undefinedSlot) 0)
+              sign := some (.bit result 7)
               overflow
               parity := some (parityExpression result)
             }
@@ -3249,6 +3385,13 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
         | .immediate value, 16 => .constant (value % 65536)
         | _, _ => .constant 0
       some (.next { state with registers := state.registers.set destination (value.signExtendNormalized width) })
+  | .movSignExtend8 destination source =>
+      let value := (readOperand8 state source).signExtendNormalized 8
+      some (.next { state with registers := state.registers.set destination value })
+  | .movSignExtend8ToWord destination source => do
+      let value := (readOperand8 state source).signExtendNormalized 8
+      let next <- writeOperandWidth .word state (.register destination) value
+      some (.next next)
   | .movFromOperandWidth width destination source =>
       let value := readOperandWidth width state source
       writeOperandWidth width state (.register destination) value |>.map InstructionResult.next
@@ -3350,10 +3493,14 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
       let right := readOperand32 state source
       let low := Expr.multiply left right
       let high := if signed then Expr.multiplyHighSigned left right else Expr.multiplyHighUnsigned left right
+      let signFill := Expr.ifEqual (.bitValue low 31) (.constant 1)
+        (.constant (2 ^ 32 - 1)) (.constant 0)
+      let expectedHigh := if signed then signFill else .constant 0
+      let overflow := BoolExpr.not (.equal high expectedHigh)
       some (.next {
         state with
         registers := (state.registers.set .eax low).set .edx high
-        flags := none
+        flags := some (multiplicationFlags undefinedSlot overflow)
         comparison := none
       })
   | .multiplyLow destination source immediate =>
@@ -3361,10 +3508,14 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
       let right := immediate.map (fun value => Expr.constant value) |>.getD (readOperand32 state source)
       let left := if immediate.isSome then readOperand32 state source else left
       let result := Expr.multiply left right
+      let high := Expr.multiplyHighSigned left right
+      let signFill := Expr.ifEqual (.bitValue result 31) (.constant 1)
+        (.constant (2 ^ 32 - 1)) (.constant 0)
+      let overflow := BoolExpr.not (.equal high signFill)
       some (.next {
         state with
         registers := state.registers.set destination result
-        flags := none
+        flags := some (multiplicationFlags undefinedSlot overflow)
         comparison := none
       })
   | .doubleShift left destination source count => do
@@ -3413,6 +3564,19 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
         flags := some flags
         comparison := none
       })
+  | .bitTestRegister base index =>
+      let baseValue := state.registers.get base
+      let bitIndex := .bitAnd (state.registers.get index) (.constant 0x1f)
+      let selected := .bitAnd (.shiftRightBy baseValue bitIndex) (.constant 1)
+      let flags : FlagsExpr := {
+        carry := some (.equal selected (.constant 1))
+        parity := some (.bit (.undefined undefinedSlot) 0)
+        auxiliary := some (.bit (.undefined undefinedSlot) 1)
+        zero := some (.bit (.undefined undefinedSlot) 2)
+        sign := some (.bit (.undefined undefinedSlot) 3)
+        overflow := some (.bit (.undefined undefinedSlot) 4)
+      }
+      some (.next { state with flags := some flags, comparison := none })
   | .x87LoadStack index => do
       let value <- state.x87.get index
       some (.next { state with x87 := state.x87.push value })
@@ -3548,7 +3712,43 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
       some (.stop {
         state with
         registers := (state.registers.set .eax quotient).set .edx remainder
-        flags := none
+        flags := some (undefinedArithmeticFlags (undefinedSlot + 2))
+        comparison := none
+        outcome := some (.checkedContinue valid nextRva)
+      })
+  | .divideSigned source =>
+      let high := state.registers.edx
+      let low := state.registers.eax
+      let divisor := readOperand32 state source
+      let dividendNegative := BoolExpr.bit high 31
+      let divisorNegative := BoolExpr.bit divisor 31
+      let absoluteLow := Expr.ifEqual dividendNegative.toWord (.constant 1)
+        (Expr.addNormalized (.bitNot low) (.constant 1)) low
+      let lowCarry := Expr.ifEqual low (.constant 0) (.constant 1) (.constant 0)
+      let absoluteHigh := Expr.ifEqual dividendNegative.toWord (.constant 1)
+        (Expr.addNormalized (.bitNot high) lowCarry) high
+      let absoluteDivisor := Expr.ifEqual divisorNegative.toWord (.constant 1)
+        (Expr.subNormalized (.constant 0) divisor) divisor
+      let quotientMagnitude := Expr.divideQuotient absoluteHigh absoluteLow absoluteDivisor
+      let remainderMagnitude := Expr.divideRemainder absoluteHigh absoluteLow absoluteDivisor
+      let quotientNegative := BoolExpr.xor dividendNegative divisorNegative
+      let quotientBound := Expr.ifEqual quotientNegative.toWord (.constant 1)
+        (.constant 0x80000001) (.constant 0x80000000)
+      let valid := BoolExpr.and
+        (.divisionValid absoluteHigh absoluteLow absoluteDivisor)
+        (.unsignedLess quotientMagnitude quotientBound)
+      let signedQuotient := Expr.ifEqual quotientNegative.toWord (.constant 1)
+        (Expr.subNormalized (.constant 0) quotientMagnitude) quotientMagnitude
+      let signedRemainder := Expr.ifEqual dividendNegative.toWord (.constant 1)
+        (Expr.subNormalized (.constant 0) remainderMagnitude) remainderMagnitude
+      let quotient := Expr.ifEqual valid.toWord (.constant 1)
+        signedQuotient (.undefined undefinedSlot)
+      let remainder := Expr.ifEqual valid.toWord (.constant 1)
+        signedRemainder (.undefined (undefinedSlot + 1))
+      some (.stop {
+        state with
+        registers := (state.registers.set .eax quotient).set .edx remainder
+        flags := some (undefinedArithmeticFlags (undefinedSlot + 2))
         comparison := none
         outcome := some (.checkedContinue valid nextRva)
       })
