@@ -29,6 +29,7 @@ def NormalizedOutcomeExpr.eval (state : MachineState) : NormalizedOutcomeExpr ->
   | .jump target => .jump target
   | .branch condition taken fallthrough => .branch (condition.eval state) taken fallthrough
   | .call target continuation => .call target continuation
+  | .callUnmappedReturn target => .callUnmappedReturn target
   | .externalCall imported arguments continuation =>
       .externalCall imported (arguments.map (Expr.eval state)) continuation
   | .externalJump imported arguments => .externalJump imported (arguments.map (Expr.eval state))
@@ -330,7 +331,7 @@ theorem dataTargetIdAddresses_mappedValueRelated
         Array.mem_def.mp targetArrayMember
       simp only [StaticProofContext.relationalValueTargets, mappedValueRelated,
         List.any_eq_true]
-      refine ⟨target, List.mem_append_left _ targetMember, ?_⟩
+      refine ⟨target, List.mem_append_left _ (List.mem_append_left _ targetMember), ?_⟩
       by_cases zero : target.mappedSize = 0 <;>
         simp [zero, matchEvidence.1, matchEvidence.2]
 
@@ -360,7 +361,7 @@ theorem dataTargetIdAddresses_wordRelated
           original candidate = true := by
         simp only [StaticProofContext.relationalValueTargets, mappedValueRelated,
           List.any_eq_true]
-        refine ⟨target, List.mem_append_left _ targetMember, ?_⟩
+        refine ⟨target, List.mem_append_left _ (List.mem_append_left _ targetMember), ?_⟩
         by_cases zero : target.mappedSize = 0 <;>
           simp [zero, matchEvidence.1, matchEvidence.2]
       simp [wordRelated, zeroesAgree, mapped]
@@ -4449,6 +4450,8 @@ def outcomesRelated (originalImageBase candidateImageBase : Nat)
         originalFallthrough == candidateFallthrough
   | .call originalTarget originalContinuation, .call candidateTarget candidateContinuation =>
       originalTarget == candidateTarget && originalContinuation == candidateContinuation
+  | .callUnmappedReturn originalTarget, .callUnmappedReturn candidateTarget =>
+      originalTarget == candidateTarget
   | .externalCall originalImport originalArguments originalContinuation,
       .externalCall candidateImport candidateArguments candidateContinuation =>
       originalImport == candidateImport && originalContinuation == candidateContinuation &&

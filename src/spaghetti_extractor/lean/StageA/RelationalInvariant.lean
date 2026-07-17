@@ -27,6 +27,7 @@ def PureOutcome.nextLogicalTarget : PureOutcome -> Option Nat
   | .jump target => some target
   | .branch condition taken fallthrough => some (if condition then taken else fallthrough)
   | .call target _ => some target
+  | .callUnmappedReturn target => some target
   | .externalCall _ _ continuation => some continuation
   | .bulkCopy _ _ _ _ continuation => some continuation
   | .checkedContinue true continuation => some continuation
@@ -61,7 +62,7 @@ structure InvariantEdgeSpec where
 deriving Repr, DecidableEq
 
 def NormalizedOutcomeExpr.staticTargets : NormalizedOutcomeExpr → List Nat
-  | .jump target | .call target _ => [target]
+  | .jump target | .call target _ | .callUnmappedReturn target => [target]
   | .branch _ taken fallthrough =>
       if taken == fallthrough then [taken] else [taken, fallthrough]
   | .externalCall _ _ continuation | .bulkCopy _ _ _ _ continuation |
@@ -1140,10 +1141,16 @@ theorem ImmutableImageWordRegisterOutputClaim.holds_output_of_stateRel
   simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
   rw [originalBehaviorExpression, candidateBehaviorExpression,
     originalEval, candidateEval]
+  rw [StaticProofContext.relationalValueTargets]
+  apply RegisterValueRelation.holds_append_values
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList
+    (context.dataMap.entries.toList ++ context.validTerminalReturnValueTargets)
+    world.runtimeValueTargets claim.output.relation _ _
   exact RegisterValueRelation.holds_append_values
     context.originalPe.imageBase context.candidatePe.imageBase
     context.codeMap.entries.toList context.dataMap.entries.toList
-    world.runtimeValueTargets claim.output.relation _ _ staticRelated
+    context.validTerminalReturnValueTargets claim.output.relation _ _ staticRelated
 
 structure FixedImmutableExprRegisterOutputClaim where
   output : RegisterRelationPair
@@ -1211,10 +1218,16 @@ theorem FixedImmutableExprRegisterOutputClaim.holds_output_of_stateRel
     simpa using candidateEval
   simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
   rw [originalEval', candidateEval']
+  rw [StaticProofContext.relationalValueTargets]
+  apply RegisterValueRelation.holds_append_values
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList
+    (context.dataMap.entries.toList ++ context.validTerminalReturnValueTargets)
+    world.runtimeValueTargets claim.output.relation _ _
   exact RegisterValueRelation.holds_append_values
     context.originalPe.imageBase context.candidatePe.imageBase
     context.codeMap.entries.toList context.dataMap.entries.toList
-    world.runtimeValueTargets claim.output.relation _ _ staticRelated
+    context.validTerminalReturnValueTargets claim.output.relation _ _ staticRelated
 
 def staticWordRelationSupportsRegisterValueRelation
     (source : StaticWordRelationKind) (target : RegisterValueRelation) : Bool :=
@@ -1858,10 +1871,16 @@ theorem ConstantRegisterOutputClaim.holds_output_of_stateRel
   have candidateExpression := beq_iff_eq.mp candidateChecked
   simp only [NormalizedSymbolicBehavior.eval, evalNormalizedRegisters_get]
   rw [originalExpression, candidateExpression]
+  rw [StaticProofContext.relationalValueTargets]
+  apply RegisterValueRelation.holds_append_values
+    context.originalPe.imageBase context.candidatePe.imageBase
+    context.codeMap.entries.toList
+    (context.dataMap.entries.toList ++ context.validTerminalReturnValueTargets)
+    world.runtimeValueTargets outputRelation _ _
   apply RegisterValueRelation.holds_append_values
     context.originalPe.imageBase context.candidatePe.imageBase
     context.codeMap.entries.toList context.dataMap.entries.toList
-    world.runtimeValueTargets outputRelation _ _
+    context.validTerminalReturnValueTargets outputRelation _ _
   simpa [Expr.eval] using valuesRelated
 
 theorem registerRelationsHold_of_nonMemoryOutputClaims
@@ -1950,6 +1969,7 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.registerRelationDirectTargets
   | .jump target => [target]
   | .branch _ taken fallthrough => [taken, fallthrough]
   | .call target continuation => [target, continuation]
+  | .callUnmappedReturn target => [target]
   | .externalCall _ _ continuation => [continuation]
   | .bulkCopy _ _ _ _ continuation => [continuation]
   | .indirectCall _ continuation => [continuation]
@@ -1965,6 +1985,7 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.externalContinuation :
 def _root_.StageA.Relational.NormalizedOutcomeExpr.callTargetContinuation :
     NormalizedOutcomeExpr → Option (Nat × Nat)
   | .call target continuation => some (target, continuation)
+  | .callUnmappedReturn _ => none
   | _ => none
 
 def _root_.StageA.Relational.NormalizedOutcomeExpr.isReturned :
@@ -2732,7 +2753,7 @@ def _root_.StageA.Formal.SymbolicX87State.memoryReadObservations
 def _root_.StageA.Relational.NormalizedOutcomeExpr.memoryReadObservations :
     NormalizedOutcomeExpr → List Expr
   | .returned target | .indirectJump target => target.memoryReadObservations
-  | .jump _ | .call _ _ => []
+  | .jump _ | .call _ _ | .callUnmappedReturn _ => []
   | .branch condition _ _ => condition.memoryReadObservations
   | .externalCall _ arguments _ | .externalJump _ arguments =>
       arguments.flatMap Expr.memoryReadObservations
@@ -2749,7 +2770,7 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.directTargets :
     NormalizedOutcomeExpr → List Nat
   | .jump target => [target]
   | .branch _ taken fallthrough => [taken, fallthrough]
-  | .call target _ => [target]
+  | .call target _ | .callUnmappedReturn target => [target]
   | .externalCall _ _ continuation | .bulkCopy _ _ _ _ continuation |
       .checkedContinue _ continuation | .atomicCompareExchange _ _ _ continuation =>
       [continuation]
@@ -2843,7 +2864,7 @@ def _root_.StageA.Formal.SymbolicX87State.x87LoadObservations
 def _root_.StageA.Relational.NormalizedOutcomeExpr.x87LoadObservations :
     NormalizedOutcomeExpr → List X87LoadObservation
   | .returned target | .indirectJump target => target.x87LoadObservations
-  | .jump _ | .call _ _ => []
+  | .jump _ | .call _ _ | .callUnmappedReturn _ => []
   | .branch condition _ _ => condition.x87LoadObservations
   | .externalCall _ arguments _ | .externalJump _ arguments =>
       arguments.flatMap Expr.x87LoadObservations
@@ -3107,7 +3128,7 @@ def _root_.StageA.Relational.NormalizedOutcomeExpr.edgeGuard
     (outcome : NormalizedOutcomeExpr)
     (target : Nat) : Option BoolExpr :=
   match outcome with
-  | .jump destination | .call destination _ =>
+  | .jump destination | .call destination _ | .callUnmappedReturn destination =>
       if destination == target then some trueExpr else none
   | .branch condition taken fallthrough =>
       if taken == target && fallthrough == target then some trueExpr
@@ -3168,6 +3189,10 @@ theorem edgeGuard_eval_of_selected (outcome : NormalizedOutcomeExpr)
       rcases found with ⟨_, rfl⟩
       simp [trueExpr, BoolExpr.eval]
   | call destination continuation =>
+      simp [NormalizedOutcomeExpr.edgeGuard] at found
+      rcases found with ⟨_, rfl⟩
+      simp [trueExpr, BoolExpr.eval]
+  | callUnmappedReturn destination =>
       simp [NormalizedOutcomeExpr.edgeGuard] at found
       rcases found with ⟨_, rfl⟩
       simp [trueExpr, BoolExpr.eval]

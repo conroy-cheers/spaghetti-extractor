@@ -1775,6 +1775,16 @@ def _whole_program_acceptance_plan(
                         (int(original_outcome["continuation"]), *calls),
                         "call",
                     ))
+            elif operation == "call_unmapped_return":
+                block(
+                    "unmapped_return_call_frame_unsupported",
+                    f"direct call node {node_id} has return addresses outside the "
+                    "canonical code map",
+                    "emit a checked must-not-return call-frame token tied to the "
+                    "terminal return-address inventory",
+                )
+                state_incomplete = True
+                continue
             elif operation == "external_call":
                 if any(frame_imports):
                     block(

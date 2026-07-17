@@ -250,6 +250,8 @@ def transitionFromOutcome (program : RelationalProgramSemantics)
         observation := none }
   | .call target continuation =>
       { next := .running target state (continuation :: calls) eventIndex, observation := none }
+  | .callUnmappedReturn _ =>
+      { next := .fault, observation := some .fault }
   | .externalCall imported arguments continuation =>
       let event := { imported, arguments, state : RelationalExternalEvent }
       let result := program.environment.result eventIndex event

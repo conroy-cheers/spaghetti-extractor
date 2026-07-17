@@ -26,6 +26,7 @@ inductive ExecutionBlock where
   | missingExternalSite (sourceTargetId continuationTargetId : Nat)
   | missingExternalContract (siteId : Nat)
   | missingRuntimeContinuation
+  | unmappedReturnCall (targetId : Nat)
   | unmappedIndirectControl (target : Word)
 deriving Repr, DecidableEq
 
@@ -352,6 +353,8 @@ def transitionFromWorldOutcome (program : DecodedWorldProgram)
       { next := resumeWorldExecution callbacks target state (continuation :: calls)
           eventIndex world,
         observation := none }
+  | .callUnmappedReturn target =>
+      blockedWorldTransition (.unmappedReturnCall target)
   | .externalCall imported arguments continuation =>
       match resolveExternalCallSite program.context program.externalCallSites
           sourceTargetId continuation imported with

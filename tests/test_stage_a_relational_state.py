@@ -15,6 +15,9 @@ from spaghetti_extractor.relational.lean.definitions import (
 from spaghetti_extractor.relational.lean.expressions import (
     _lean_paired_stack_word_value_claim,
 )
+from spaghetti_extractor.relational.lean.segments import (
+    _write_relational_invariant_modules,
+)
 
 
 class StageARelationalStateTests(StageARelationalTestBase):
@@ -3354,6 +3357,94 @@ class StageARelationalStateTests(StageARelationalTestBase):
         self.assertEqual(
             duplicate["obligations"][0]["candidate_tautology_edges"],
             duplicate["obligations"][1]["candidate_tautology_edges"],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            lean_dir = Path(temporary)
+            modules = _write_relational_invariant_modules(
+                lean_dir,
+                {"regions": duplicate_regions},
+                duplicate,
+                ["RelationalDefinitions0"],
+                [[0, 1, 2]],
+            )
+            self.assertEqual(
+                {module["obligation_id"] for module in modules},
+                expected_aliases,
+            )
+            for obligation_id in expected_aliases:
+                sources = [
+                    (lean_dir / "StageA" / f"{module['module']}.lean").read_text()
+                    for module in modules
+                    if module["obligation_id"] == obligation_id
+                ]
+                self.assertTrue(any(
+                    "NormalizedInvariantPredicateEdgeClosed" in source
+                    for source in sources
+                ))
+
+        conjoined_regions = [dict(region) for region in regions]
+        conjoined_regions[2]["bounds"] = []
+        conjoined_regions[2]["address_separations"] = [
+            {
+                "original_register": "ecx", "candidate_register": "ecx",
+                "original_offset": 0, "candidate_offset": 0,
+                "original_address": 0x1234, "candidate_address": 0x1234,
+            },
+            {
+                "original_register": "ecx", "candidate_register": "ecx",
+                "original_offset": 4, "candidate_offset": 4,
+                "original_address": 0x5678, "candidate_address": 0x5678,
+            },
+        ]
+        conjoined = _synthesize_relational_invariants(
+            {"regions": conjoined_regions},
+            [
+                {"original_ir": compare, "candidate_ir": compare},
+                {"original_ir": choose, "candidate_ir": choose},
+                {"original_ir": table, "candidate_ir": table},
+            ],
+        )
+        self.assertEqual(conjoined["counts"]["seeds"], 4)
+        self.assertEqual(len(conjoined["obligations"]), 1)
+        target_predicates = [
+            predicate
+            for region in conjoined["region_invariants"]
+            if region["region_index"] == 2
+            for predicate in region["predicates"]
+        ]
+        self.assertEqual(len(target_predicates), 2)
+        self.assertTrue(all(
+            predicate["predicate"]["op"] == "and"
+            and predicate["obligation_ids"] == ["address-separation:table"]
+            for predicate in target_predicates
+        ))
+
+        identity_regions = [
+            {
+                "id": "identity", "numeric_id": 0, "root": True,
+                "bounds": [], "address_separations": [],
+            },
+            {
+                "id": "bounded", "numeric_id": 1, "root": False,
+                "bounds": [{
+                    "original": "ecx", "candidate": "ecx", "unsigned_lt": 91,
+                }],
+                "address_separations": [],
+            },
+        ]
+        identity = behavior({"op": "jump", "target": 1})
+        bounded = behavior({"op": "jump", "target": 99})
+        structurally_reused = _synthesize_relational_invariants(
+            {"regions": identity_regions},
+            [
+                {"original_ir": identity, "candidate_ir": identity},
+                {"original_ir": bounded, "candidate_ir": bounded},
+            ],
+        )
+        self.assertEqual(structurally_reused["counts"]["solver_queries"], 2)
+        self.assertEqual(
+            structurally_reused["counts"]["structurally_reused_non_tautologies"],
+            2,
         )
 
         missing_compare = behavior({"op": "jump", "target": 1})

@@ -80,8 +80,10 @@ def _write_relational_invariant_modules(
         for shard_index, indices in enumerate(shard_groups)
         for region_index in indices
     }
-    requirement_to_obligation = {
-        predicate["id"]: predicate["obligation_id"]
+    requirement_to_obligations = {
+        predicate["id"]: predicate.get(
+            "obligation_ids", [predicate["obligation_id"]]
+        )
         for region in synthesis["region_invariants"]
         for predicate in region["predicates"]
     }
@@ -93,9 +95,12 @@ def _write_relational_invariant_modules(
     predicates_by_location: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for region in synthesis["region_invariants"]:
         for predicate in region["predicates"]:
-            predicates_by_location.setdefault(
-                (predicate["obligation_id"], region["side"], region["region_index"]), []
-            ).append(predicate["predicate"])
+            for obligation_id in predicate.get(
+                "obligation_ids", [predicate["obligation_id"]]
+            ):
+                predicates_by_location.setdefault(
+                    (obligation_id, region["side"], region["region_index"]), []
+                ).append(predicate["predicate"])
 
     modules: list[dict[str, str]] = []
     closed = [
@@ -106,7 +111,9 @@ def _write_relational_invariant_modules(
         obligation_id = obligation["id"]
         edges = [
             edge for edge in synthesis["edge_obligations"]
-            if requirement_to_obligation.get(edge["requirement_id"]) == obligation_id
+            if obligation_id in requirement_to_obligations.get(
+                edge["requirement_id"], []
+            )
         ]
         if not edges:
             continue
@@ -123,7 +130,9 @@ def _write_relational_invariant_modules(
         }
         for region in synthesis["region_invariants"]:
             for predicate in region["predicates"]:
-                if predicate["obligation_id"] == obligation_id:
+                if obligation_id in predicate.get(
+                    "obligation_ids", [predicate["obligation_id"]]
+                ):
                     target_specs_by_side[region["side"]].append((
                         int(contract["regions"][region["region_index"]]["numeric_id"]),
                         predicate["predicate"],

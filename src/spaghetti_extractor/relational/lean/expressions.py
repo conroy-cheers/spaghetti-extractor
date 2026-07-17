@@ -1772,6 +1772,11 @@ def _lean_acceptance_outcome(outcome: dict[str, Any]) -> str:
             "StageA.Relational.NormalizedOutcomeExpr.call "
             f"{int(outcome['target'])} {int(outcome['continuation'])}"
         )
+    if operation == "call_unmapped_return":
+        return (
+            "StageA.Relational.NormalizedOutcomeExpr.callUnmappedReturn "
+            f"{int(outcome['target'])}"
+        )
     if operation == "external_call":
         arguments = ", ".join(
             _lean_semantic_expr(argument)

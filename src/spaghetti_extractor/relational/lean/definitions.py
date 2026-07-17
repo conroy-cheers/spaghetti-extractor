@@ -435,6 +435,16 @@ def _lean_static_proof_context_base_source(
         _lean_static_word_relation_slot(slot)
         for slot in contract.get("static_word_relation_slots", [])
     )
+    terminal_return_addresses = ", ".join(
+        "{ id := " + str(int(pair["id"]))
+        + ", originalRva := " + str(int(pair["original_rva"]))
+        + ", candidateRva := " + str(int(pair["candidate_rva"]))
+        + ", originalPaddingSize := "
+        + str(int(pair["original_padding_size"]))
+        + ", candidatePaddingSize := "
+        + str(int(pair["candidate_padding_size"])) + " }"
+        for pair in contract.get("terminal_return_addresses", [])
+    )
     return (
         "import StageA.RelationalProofBase\n"
         "import StageA.RelationalGlobalMappingContext\n\n"
@@ -458,6 +468,7 @@ def _lean_static_proof_context_base_source(
         f"  staticDynamicPointerSlots := [{static_dynamic_pointer_slots}]\n"
         f"  staticWordRelationSlots := [{static_word_relation_slots}]\n"
         "  machineImportCallContracts\n"
+        f"  terminalReturnAddresses := [{terminal_return_addresses}]\n"
         "}\n\n"
         "end StageA.GeneratedRelational\n"
     )
@@ -1046,6 +1057,8 @@ def _normalized_behavior_structure_matches(
             continuation = target_id(side, int(call.group(2)))
             if target is not None and continuation is not None:
                 return ("call", target, continuation)
+            if target is not None and continuation is None:
+                return ("call_unmapped_return", target)
             return None
 
         continuation_form = re.fullmatch(
@@ -1272,6 +1285,11 @@ def _lean_normalized_static_outcome(
             return (
                 "StageA.Relational.NormalizedOutcomeExpr.call "
                 f"{target} {continuation}"
+            )
+        if target is not None and continuation is None:
+            return (
+                "StageA.Relational.NormalizedOutcomeExpr.callUnmappedReturn "
+                f"{target}"
             )
 
     indirect_call = re.fullmatch(

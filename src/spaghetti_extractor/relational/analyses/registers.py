@@ -884,6 +884,8 @@ def _translate_callsite_behavior(
         target_fields = ("taken", "fallthrough")
     elif operation == "call":
         target_fields = ("target", "continuation")
+    elif operation == "call_unmapped_return":
+        target_fields = ("target",)
     elif operation == "external_call":
         target_fields = ("continuation",)
     elif operation == "indirect_call":

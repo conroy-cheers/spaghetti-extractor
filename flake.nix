@@ -1044,8 +1044,9 @@
                   2> "$work/relational-v3.stderr"
               prepare_status=$?
               set -e
-              if [ "$prepare_status" -eq 0 ]; then
-                echo "GNU hello preparation frontier changed; update this check to the next authoritative phase" >&2
+              if [ "$prepare_status" -ne 0 ]; then
+                cat "$work/relational-v3.stderr" >&2
+                echo "GNU hello relational preparation failed" >&2
                 exit 1
               fi
               jq -e '
@@ -1053,10 +1054,16 @@
                 (.issues | length) == 0
               ' "$work/relational-v3/semantic-gaps.json" >/dev/null
               jq -e '
-                .verdict == "incomplete" and
-                .diagnostic.category == "formal_region_target_normalization_incomplete" and
-                (.blocker | contains("could not normalize"))
-              ' "$work/relational-v3/verdict.json" >/dev/null
+                .status == "incomplete" and
+                .theorem == null and
+                ([.blockers[].code] | index("unmapped_return_call_frame_unsupported")) != null
+              ' "$work/relational-v3/whole-program-acceptance.json" >/dev/null
+              jq -e '
+                .status == "prepared" and
+                .acceptance.status == "incomplete" and
+                ([.acceptance.blockers[].code] |
+                  index("unmapped_return_call_frame_unsupported")) != null
+              ' "$work/relational-v3/prepared-proof.json" >/dev/null
               mkdir -p "$out/report"
               cp "${stage-a-gnu-hello-static-map}/hello-block-map.json" \
                 "${stage-a-gnu-hello-static-map}/hello-layout-contract.json" \

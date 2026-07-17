@@ -1,11 +1,93 @@
 import copy
 
 from tests.stage_a_relational_support import *
+from spaghetti_extractor.relational.contract import _terminal_return_address_pairs
 from spaghetti_extractor.relational.executor import _precompiled_kernel_olean
 from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
 
 
 class StageARelationalContractTests(StageARelationalTestBase):
+    def test_terminal_return_address_pairs_require_paired_direct_calls_and_padding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            call = b"\xe8\xfb\xff\xff\xff"
+            original = _parse_stage_a_pe(
+                self._write_pe(root / "original.exe", call + b"\x90\x90\xc3")
+            )
+            candidate = _parse_stage_a_pe(
+                self._write_pe(root / "candidate.exe", call + b"\x90" * 6 + b"\xc3")
+            )
+            regions = [{
+                "original": {"rva": 0x1000, "size": len(call)},
+                "candidate": {"rva": 0x1000, "size": len(call)},
+            }]
+            targets = [{
+                "id": 0,
+                "original_rva": 0x1000,
+                "candidate_rva": 0x1000,
+            }]
+            padding = [
+                {"side": "original", "rva": 0x1005, "size": 2},
+                {"side": "candidate", "rva": 0x1005, "size": 6},
+            ]
+
+            pairs = _terminal_return_address_pairs(
+                regions, targets, padding, original, candidate,
+            )
+
+            self.assertEqual(pairs, [{
+                "id": 0,
+                "caller_region_index": 0,
+                "callee_target_id": 0,
+                "original_rva": 0x1005,
+                "candidate_rva": 0x1005,
+                "original_padding_size": 2,
+                "candidate_padding_size": 6,
+            }])
+
+            self.assertEqual(
+                _terminal_return_address_pairs(
+                    regions, targets, padding[:-1], original, candidate,
+                ),
+                [],
+            )
+
+    def test_terminal_return_address_contract_schema_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = _parse_stage_a_pe(
+                self._write_pe(root / "original.exe", b"\xc3")
+            )
+            candidate = _parse_stage_a_pe(
+                self._write_pe(root / "candidate.exe", b"\xc3")
+            )
+            contract = json.loads(self._write_contract(
+                root / "relation.json", region_size=1,
+            ).read_text(encoding="utf-8"))
+            pair = {
+                "id": 0,
+                "original_rva": 0x1001,
+                "candidate_rva": 0x1001,
+                "original_padding_size": 3,
+                "candidate_padding_size": 7,
+            }
+            contract["terminal_return_addresses"] = [pair]
+
+            normalized, issues = _normalize_contract(contract, original, candidate)
+
+            self.assertEqual(issues, [])
+            self.assertEqual(normalized["terminal_return_addresses"], [pair])
+
+            malformed = copy.deepcopy(contract)
+            malformed["terminal_return_addresses"][0]["original_padding_size"] = 0
+            _normalized, malformed_issues = _normalize_contract(
+                malformed, original, candidate,
+            )
+            self.assertIn(
+                "malformed_terminal_return_address",
+                {issue["category"] for issue in malformed_issues},
+            )
+
     def test_parameterized_region_relations_are_normalized(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

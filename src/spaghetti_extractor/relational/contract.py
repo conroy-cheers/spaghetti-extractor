@@ -399,6 +399,92 @@ def _assign_region_targets(
             for original_reg, candidate_reg, upper in sorted(bounds)
         ]
 
+
+def _terminal_return_address_pairs(
+    regions: list[dict[str, Any]],
+    code_targets: list[dict[str, Any]],
+    padding: list[dict[str, Any]],
+    original: StageABinary,
+    candidate: StageABinary,
+) -> list[dict[str, int]]:
+    """Propose paired final-padding return words for later Lean checking."""
+    target_lookup = {
+        side: {
+            int(rva): int(target["id"])
+            for target in code_targets
+            for rva in (
+                int(target[f"{side}_rva"]),
+                *(int(value) for value in target.get(f"{side}_aliases", [])),
+            )
+        }
+        for side in ("original", "candidate")
+    }
+    padding_by_side = {
+        side: {
+            int(span["rva"]): int(span["size"])
+            for span in padding
+            if span.get("side") in {side, "both"}
+            and _integer(span.get("rva")) is not None
+            and _integer(span.get("size")) is not None
+        }
+        for side in ("original", "candidate")
+    }
+    proposed: list[dict[str, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for region_index, region in enumerate(regions):
+        calls: dict[str, tuple[int, int]] = {}
+        for side, binary in (("original", original), ("candidate", candidate)):
+            span = region[side]
+            data = binary.pe.get_data(int(span["rva"]), int(span["size"]))
+            decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+            decoder.detail = True
+            instructions = list(decoder.disasm(
+                data, binary.image_base + int(span["rva"])
+            ))
+            if not instructions or instructions[-1].mnemonic != "call":
+                calls = {}
+                break
+            instruction = instructions[-1]
+            immediates = [
+                operand for operand in instruction.operands
+                if operand.type == capstone.x86.X86_OP_IMM
+            ]
+            if len(immediates) != 1:
+                calls = {}
+                break
+            target_rva = int(immediates[0].imm) - binary.image_base
+            target_id = target_lookup[side].get(target_rva)
+            return_rva = int(instruction.address + instruction.size) - binary.image_base
+            if (
+                target_id is None
+                or return_rva in target_lookup[side]
+                or return_rva not in padding_by_side[side]
+                or padding_by_side[side][return_rva] <= 0
+            ):
+                calls = {}
+                break
+            calls[side] = (target_id, return_rva)
+        if set(calls) != {"original", "candidate"}:
+            continue
+        original_target, original_return = calls["original"]
+        candidate_target, candidate_return = calls["candidate"]
+        if original_target != candidate_target:
+            continue
+        key = (original_return, candidate_return)
+        if key in seen:
+            continue
+        seen.add(key)
+        proposed.append({
+            "id": len(proposed),
+            "caller_region_index": region_index,
+            "callee_target_id": original_target,
+            "original_rva": original_return,
+            "candidate_rva": candidate_return,
+            "original_padding_size": padding_by_side["original"][original_return],
+            "candidate_padding_size": padding_by_side["candidate"][candidate_return],
+        })
+    return proposed
+
 def stage_a_generate_relation_contract(
     *,
     original: Path,
@@ -498,6 +584,9 @@ def stage_a_generate_relation_contract(
             "size": span["size"],
         })
     _assign_region_targets(regions, code_targets, value_targets, padding, original_bin, candidate_bin)
+    terminal_return_addresses = _terminal_return_address_pairs(
+        regions, code_targets, padding, original_bin, candidate_bin
+    )
     contract = {
         "format": RELATION_CONTRACT_FORMAT,
         "environment": {"id": RELATIONAL_ENVIRONMENT_ID},
@@ -505,6 +594,7 @@ def stage_a_generate_relation_contract(
         "memory_relation": {"mode": "identity"},
         "code_targets": code_targets,
         "value_targets": value_targets,
+        "terminal_return_addresses": terminal_return_addresses,
         "regions": regions,
         "padding": padding,
         "provenance": {
@@ -689,7 +779,8 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
     issues: list[dict[str, Any]] = []
     allowed_fields = {
         "format", "model", "environment", "observations", "memory_relation",
-        "code_targets", "value_targets", "static_dynamic_pointer_slots",
+        "code_targets", "value_targets", "terminal_return_addresses",
+        "static_dynamic_pointer_slots",
         "static_word_relation_slots",
         "machine_import_call_contracts", "protocol_callback_control", "launch", "regions",
         "padding", "provenance",
@@ -737,6 +828,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         memory_relation = {"mode": "identity"}
     targets = contract.get("code_targets")
     value_targets = contract.get("value_targets", [])
+    terminal_return_addresses = contract.get("terminal_return_addresses", [])
     static_dynamic_pointer_slots = contract.get("static_dynamic_pointer_slots", [])
     static_word_relation_slots = contract.get("static_word_relation_slots", [])
     machine_import_call_contracts = contract.get("machine_import_call_contracts", [])
@@ -754,6 +846,9 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
     if not isinstance(value_targets, list):
         issues.append({"category": "value_targets_not_list"})
         value_targets = []
+    if not isinstance(terminal_return_addresses, list):
+        issues.append({"category": "terminal_return_addresses_not_list"})
+        terminal_return_addresses = []
     if not isinstance(static_dynamic_pointer_slots, list):
         issues.append({
             "category": "static_dynamic_pointer_slots_not_list",
@@ -851,6 +946,31 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         )
         normalized_value_targets.append(normalized_target)
     value_target_by_id = {target["id"]: target for target in normalized_value_targets}
+    normalized_terminal_return_addresses: list[dict[str, int]] = []
+    terminal_return_ids: set[int] = set()
+    for index, item in enumerate(terminal_return_addresses):
+        fields = {
+            field: _integer(item.get(field)) if isinstance(item, dict) else None
+            for field in (
+                "id", "original_rva", "candidate_rva",
+                "original_padding_size", "candidate_padding_size",
+            )
+        }
+        if (
+            any(value is None for value in fields.values())
+            or fields["id"] in terminal_return_ids
+            or int(fields["original_padding_size"] or 0) <= 0
+            or int(fields["candidate_padding_size"] or 0) <= 0
+        ):
+            issues.append({
+                "category": "malformed_terminal_return_address",
+                "index": index,
+            })
+            continue
+        terminal_return_ids.add(int(fields["id"]))
+        normalized_terminal_return_addresses.append({
+            field: int(value) for field, value in fields.items() if value is not None
+        })
     normalized_static_dynamic_pointer_slots = _static_dynamic_pointer_slots(
         static_dynamic_pointer_slots, original, candidate, issues,
     )
@@ -1210,6 +1330,7 @@ def _normalize_contract(contract: dict[str, Any], original: StageABinary, candid
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "code_targets": normalized_targets,
         "value_targets": normalized_value_targets,
+        "terminal_return_addresses": normalized_terminal_return_addresses,
         "static_dynamic_pointer_slots": normalized_static_dynamic_pointer_slots,
         "static_word_relation_slots": normalized_static_word_relation_slots,
         "machine_import_call_contracts": normalized_machine_import_call_contracts,

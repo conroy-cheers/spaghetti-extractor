@@ -7058,7 +7058,8 @@ def NormalizedOutcomeExpr.controlEdges? : NormalizedOutcomeExpr ->
       else
         some [RelationalDecodedControlEdge.mk .branchTaken taken condition,
           RelationalDecodedControlEdge.mk .branchFallthrough fallthrough (.not condition)]
-  | .call target _ => some [RelationalDecodedControlEdge.mk .call target
+  | .call target _ | .callUnmappedReturn target =>
+      some [RelationalDecodedControlEdge.mk .call target
       unconditionalProductGuard]
   | .externalCall _ _ continuation =>
       some [RelationalDecodedControlEdge.mk .externalCall continuation

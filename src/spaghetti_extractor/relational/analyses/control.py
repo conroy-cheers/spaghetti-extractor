@@ -614,6 +614,7 @@ def _relational_product_graph(
             "jump",
             "branch",
             "call",
+            "call_unmapped_return",
             "external_call",
             "bulk_copy",
             "atomic_compare_exchange",

@@ -93,6 +93,17 @@ structure ValueTargetPair where
   relocationOffsets : List Nat := []
 deriving Repr, DecidableEq
 
+/-- A paired architectural return address that begins final executable padding
+rather than a mapped control cutpoint.  The inventory relates the pushed words;
+a separate must-not-return frame proof is required to justify the call. -/
+structure TerminalReturnAddressPair where
+  id : Nat
+  originalRva : Nat
+  candidateRva : Nat
+  originalPaddingSize : Nat
+  candidatePaddingSize : Nat
+deriving Repr, DecidableEq
+
 def codeTargetNatAddressMatches (candidate : Bool) (pe : PE32)
     (target : CodeTargetPair) (value : Nat) : Bool :=
   let primary := if candidate then target.candidateRva else target.originalRva
@@ -526,6 +537,7 @@ inductive PureOutcome where
   | jump (target : Nat)
   | branch (condition : Bool) (taken fallthrough : Nat)
   | call (target continuation : Nat)
+  | callUnmappedReturn (target : Nat)
   | externalCall (imported : ExternalTarget) (arguments : List Word) (continuation : Nat)
   | externalJump (imported : ExternalTarget) (arguments : List Word)
   | bulkCopy (destination source count : Word) (direction : Bool) (continuation : Nat)
@@ -572,6 +584,10 @@ inductive NormalizedOutcomeExpr where
   | jump (target : Nat)
   | branch (condition : BoolExpr) (taken fallthrough : Nat)
   | call (target continuation : Nat)
+  /-- A direct call whose architectural return address is executable but is not
+  a mapped behavioral cutpoint.  This form is usable only with a checked
+  terminating-call frame; an attempted machine return remains fail-closed. -/
+  | callUnmappedReturn (target : Nat)
   | externalCall (imported : ExternalTarget) (arguments : List Expr) (continuation : Nat)
   | externalJump (imported : ExternalTarget) (arguments : List Expr)
   | bulkCopy (destination source count : Expr) (direction : BoolExpr) (continuation : Nat)
@@ -775,6 +791,8 @@ def normalizedOutcome : NormalizedOutcomeExpr → Json
         ("fallthrough", toJson fallthrough)]
   | .call target continuation =>
       tagged "call" [("target", toJson target), ("continuation", toJson continuation)]
+  | .callUnmappedReturn target =>
+      tagged "call_unmapped_return" [("target", toJson target)]
   | .externalCall imported arguments continuation =>
       tagged "external_call" [
         ("import", externalTarget imported), ("arguments", array (arguments.map expr)),
@@ -832,9 +850,11 @@ def normalizeOutcomeExpr (candidate : Bool) (targets : List CodeTargetPair) :
   | .branch condition trueTargetRva falseTargetRva =>
       return .branch condition (← normalizeCodeTarget candidate targets trueTargetRva)
         (← normalizeCodeTarget candidate targets falseTargetRva)
-  | .call targetRva returnRva _ =>
-      return .call (← normalizeCodeTarget candidate targets targetRva)
-        (← normalizeCodeTarget candidate targets returnRva)
+  | .call targetRva returnRva _ => do
+      let target ← normalizeCodeTarget candidate targets targetRva
+      match normalizeCodeTarget candidate targets returnRva with
+      | some continuation => return .call target continuation
+      | none => return .callUnmappedReturn target
   | .externalCall imported arguments returnRva =>
       return .externalCall (normalizeImport imported) arguments
         (← normalizeCodeTarget candidate targets returnRva)

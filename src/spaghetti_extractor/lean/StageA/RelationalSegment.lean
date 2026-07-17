@@ -16,6 +16,7 @@ def PureOutcome.segmentExit : PureOutcome -> Option RelationalSegmentExit
   | .branch condition taken fallthrough =>
       some (.internal (if condition then taken else fallthrough))
   | .call target _ => some (.internal target)
+  | .callUnmappedReturn target => some (.internal target)
   | .externalCall imported _ _ | .externalJump imported _ =>
       some (.external imported)
   | .bulkCopy _ _ _ _ continuation | .checkedContinue true continuation |

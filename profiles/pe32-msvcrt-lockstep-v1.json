@@ -219,6 +219,16 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "dynamicRanges"
+    },
+    {
+      "id": 13,
+      "import": {"dll": "msvcrt.dll", "symbol": "abort"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 0,
+      "disposition": "terminates",
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "none"
     }
   ]
 }

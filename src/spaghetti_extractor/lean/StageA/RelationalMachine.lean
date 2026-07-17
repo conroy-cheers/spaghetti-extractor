@@ -657,6 +657,7 @@ structure StaticProofContext where
   staticDynamicPointerSlots : List StaticDynamicPointerSlotPair := []
   staticWordRelationSlots : List StaticWordRelationSlotPair := []
   machineImportCallContracts : List MachineImportCallContract := []
+  terminalReturnAddresses : List TerminalReturnAddressPair := []
 deriving Repr, DecidableEq
 
 def machineImportCallContractIdsUnique
@@ -958,9 +959,41 @@ def RelationalWorld.runtimeValueTargets
     (world : RelationalWorld) : List ValueTargetPair :=
   world.dynamicValueTargets ++ world.stackValueTargets
 
+def TerminalReturnAddressPair.valid (context : StaticProofContext)
+    (pair : TerminalReturnAddressPair) : Bool :=
+  pair.originalPaddingSize > 0 && pair.candidatePaddingSize > 0 &&
+    paddingSpanValid context.originalPe
+      { start := pair.originalRva, size := pair.originalPaddingSize } &&
+    paddingSpanValid context.candidatePe
+      { start := pair.candidateRva, size := pair.candidatePaddingSize } &&
+    normalizeCodeTarget false context.codeMap.entries.toList pair.originalRva == none &&
+    normalizeCodeTarget true context.codeMap.entries.toList pair.candidateRva == none
+
+def terminalReturnAddressPairMatches (context : StaticProofContext)
+    (original candidate : Word) : Bool :=
+  context.terminalReturnAddresses.any fun pair =>
+    pair.valid context &&
+      original.toNat == context.originalPe.imageBase + pair.originalRva &&
+      candidate.toNat == context.candidatePe.imageBase + pair.candidateRva
+
+def TerminalReturnAddressPair.valueTarget (context : StaticProofContext)
+    (pair : TerminalReturnAddressPair) : ValueTargetPair := {
+  id := pair.id
+  originalValue := context.originalPe.imageBase + pair.originalRva
+  candidateValue := context.candidatePe.imageBase + pair.candidateRva
+  originalRelocationRva := 0
+  candidateRelocationRva := 0
+}
+
+def StaticProofContext.validTerminalReturnValueTargets
+    (context : StaticProofContext) : List ValueTargetPair :=
+  (context.terminalReturnAddresses.filter (TerminalReturnAddressPair.valid context)).map
+    (TerminalReturnAddressPair.valueTarget context)
+
 def StaticProofContext.relationalValueTargets
     (context : StaticProofContext) (world : RelationalWorld) : List ValueTargetPair :=
-  context.dataMap.entries.toList ++ world.runtimeValueTargets
+  context.dataMap.entries.toList ++ context.validTerminalReturnValueTargets ++
+    world.runtimeValueTargets
 
 def StaticProofContext.originalImports (context : StaticProofContext) : List PEImport :=
   context.originalImportCertificate.imports

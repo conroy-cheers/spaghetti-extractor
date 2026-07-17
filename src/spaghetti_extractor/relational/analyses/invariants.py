@@ -47,6 +47,25 @@ def _semantic_or(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
         return right if right["value"] else left
     return {"op": "or", "left": left, "right": right}
 
+def _semantic_and(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    if left.get("op") == "bool_constant":
+        return right if left["value"] else left
+    if right.get("op") == "bool_constant":
+        return left if right["value"] else right
+    return {"op": "and", "left": left, "right": right}
+
+def _semantic_conjunction(values: list[dict[str, Any]]) -> dict[str, Any]:
+    if not values:
+        return {"op": "bool_constant", "value": True}
+    level = list(values)
+    while len(level) > 1:
+        level = [
+            _semantic_and(level[index], level[index + 1])
+            if index + 1 < len(level) else level[index]
+            for index in range(0, len(level), 2)
+        ]
+    return level[0]
+
 def _semantic_add(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     return {"op": "add", "left": left, "right": right}
 
@@ -56,6 +75,9 @@ def _semantic_node_count(value: Any) -> int:
     if isinstance(value, list):
         return sum(_semantic_node_count(item) for item in value)
     return 0
+
+def _invariant_path_contains(path: int, region_index: int) -> bool:
+    return bool(path & (1 << region_index))
 
 def _substitute_semantic_expr(
     expression: dict[str, Any],
@@ -275,8 +297,12 @@ def _semantic_edges(behavior: dict[str, Any]) -> list[dict[str, Any]]:
     outcome = behavior["outcome"]
     operation = outcome.get("op")
     truth = {"op": "bool_constant", "value": True}
-    if operation in {"jump", "call"}:
-        return [{"target": int(outcome["target"]), "guard": truth, "kind": operation}]
+    if operation in {"jump", "call", "call_unmapped_return"}:
+        return [{
+            "target": int(outcome["target"]),
+            "guard": truth,
+            "kind": "call" if operation == "call_unmapped_return" else operation,
+        }]
     if operation == "branch":
         if int(outcome["taken"]) == int(outcome["fallthrough"]):
             return [{
@@ -367,23 +393,72 @@ def _synthesize_relational_invariants(
     requirements: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
     queue: list[dict[str, Any]] = []
     seeds: list[dict[str, Any]] = []
+    seed_families: dict[tuple[str, int, str], list[dict[str, Any]]] = {}
+    solver_queries = 0
+    structurally_reused_non_tautologies = 0
     for region_index, region in enumerate(contract["regions"]):
         for seed in _local_invariant_seeds(region):
             record = {
                 **seed,
                 "obligation_ids": [seed["obligation_id"]],
                 "region_index": region_index,
-                "path": [region_index],
+                "path": 1 << region_index,
             }
-            predicate_hash = _semantic_hash(seed["predicate"])
-            bucket = requirements.setdefault((seed["side"], region_index), {})
-            existing = bucket.get(predicate_hash)
-            if existing is None:
-                bucket[predicate_hash] = record
-                queue.append(record)
-            elif seed["obligation_id"] not in existing["obligation_ids"]:
-                existing["obligation_ids"].append(seed["obligation_id"])
             seeds.append(record)
+            seed_families.setdefault(
+                (seed["side"], region_index, seed["obligation_id"]), []
+            ).append(record)
+
+    for family, local_seeds in sorted(seed_families.items()):
+        side, region_index, _obligation_id = family
+        location = (side, region_index)
+        predicates_by_hash = {
+            _semantic_hash(seed["predicate"]): seed["predicate"]
+            for seed in local_seeds
+        }
+        predicates = [
+            predicates_by_hash[key] for key in sorted(predicates_by_hash)
+        ]
+        obligation_ids = sorted({
+            obligation_id
+            for seed in local_seeds
+            for obligation_id in seed["obligation_ids"]
+        })
+        first = min(local_seeds, key=lambda seed: seed["id"])
+        predicate = _semantic_conjunction(predicates)
+        predicate_hash = _semantic_hash(predicate)
+        seed_tautology, seed_solver_status = _semantic_tautology(predicate)
+        solver_queries += 1
+        record = {
+            **first,
+            "id": (
+                first["id"]
+                if len(predicates) == 1
+                else f"conjoined:{side}:"
+                    f"{contract['regions'][region_index]['numeric_id']}:"
+                    f"{predicate_hash[:16]}"
+            ),
+            "obligation_ids": obligation_ids,
+            "predicate": predicate,
+            "predicate_sha256": predicate_hash,
+            "known_non_tautology": (
+                not seed_tautology and seed_solver_status == "counterexample_exists"
+            ),
+            "kind": (
+                first["kind"]
+                if len({seed["kind"] for seed in local_seeds}) == 1
+                else "cfg_conjoined_invariant"
+            ),
+        }
+        bucket = requirements.setdefault(location, {})
+        existing = bucket.get(predicate_hash)
+        if existing is None:
+            bucket[predicate_hash] = record
+            queue.append(record)
+        else:
+            for obligation_id in record["obligation_ids"]:
+                if obligation_id not in existing["obligation_ids"]:
+                    existing["obligation_ids"].append(obligation_id)
 
     edge_obligations: list[dict[str, Any]] = []
     barriers: list[dict[str, Any]] = []
@@ -428,7 +503,17 @@ def _synthesize_relational_invariants(
                 source_behavior.get("flags"),
             )
             precondition = _semantic_or(_semantic_not(edge["guard"]), postcondition)
-            tautology, solver_status = _semantic_tautology(precondition)
+            precondition_hash = _semantic_hash(precondition)
+            if (
+                requirement.get("known_non_tautology", False)
+                and precondition_hash == requirement["predicate_sha256"]
+            ):
+                tautology = False
+                solver_status = "inherited_identical_non_tautology"
+                structurally_reused_non_tautologies += 1
+            else:
+                tautology, solver_status = _semantic_tautology(precondition)
+                solver_queries += 1
             edge_id = (
                 f"edge:{side}:{source_region['numeric_id']}:{target_region['numeric_id']}:"
                 f"{_semantic_hash(requirement['predicate'])[:16]}"
@@ -444,7 +529,7 @@ def _synthesize_relational_invariants(
                 "requirement_id": requirement["id"],
                 "obligation_ids": requirement["obligation_ids"],
                 "precondition": precondition,
-                "precondition_sha256": _semantic_hash(precondition),
+                "precondition_sha256": precondition_hash,
                 "nodes": _semantic_node_count(precondition),
                 "analysis_status": "candidate_tautology" if tautology else "requires_predecessor_invariant",
                 "solver_status": solver_status,
@@ -452,7 +537,7 @@ def _synthesize_relational_invariants(
             })
             if tautology:
                 continue
-            derived_hash = _semantic_hash(precondition)
+            derived_hash = precondition_hash
             bucket = requirements.setdefault((side, source_index), {})
             if derived_hash in bucket:
                 existing = bucket[derived_hash]
@@ -460,7 +545,7 @@ def _synthesize_relational_invariants(
                     if obligation_id not in existing["obligation_ids"]:
                         existing["obligation_ids"].append(obligation_id)
                 continue
-            if source_index in requirement["path"]:
+            if _invariant_path_contains(requirement["path"], source_index):
                 barriers.append({
                     "kind": "loop_invariant_fixpoint_required",
                     "side": side,
@@ -478,9 +563,16 @@ def _synthesize_relational_invariants(
                 "obligation_ids": list(requirement["obligation_ids"]),
                 "side": side,
                 "predicate": precondition,
+                "predicate_sha256": derived_hash,
+                "known_non_tautology": (
+                    not tautology and solver_status in {
+                        "counterexample_exists",
+                        "inherited_identical_non_tautology",
+                    }
+                ),
                 "kind": requirement["kind"],
                 "region_index": source_index,
-                "path": requirement["path"] + [source_index],
+                "path": requirement["path"] | (1 << source_index),
                 "derived_from": requirement["id"],
             }
             bucket[derived_hash] = derived
@@ -554,6 +646,8 @@ def _synthesize_relational_invariants(
                 edge["analysis_status"] == "candidate_tautology" for edge in edge_obligations
             ),
             "barriers": len(barriers),
+            "solver_queries": solver_queries,
+            "structurally_reused_non_tautologies": structurally_reused_non_tautologies,
         },
         "obligations": sorted(obligations.values(), key=lambda item: item["id"]),
         "region_invariants": region_invariants,
