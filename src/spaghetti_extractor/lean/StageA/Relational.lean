@@ -117,6 +117,20 @@ theorem NormalizedSymbolicBehavior.eval_flag_eq_of_some
   simpa only [NormalizedSymbolicBehavior.eval_eflags, field, evalNormalizedFlags_some]
     using related
 
+theorem NormalizedSymbolicBehavior.eval_flag_eq_of_some_field
+    (behavior : NormalizedSymbolicBehavior) (flags : FlagsExpr)
+    (value : Option BoolExpr) (original candidate : MachineState) (bit : Nat)
+    (behaviorFlags : behavior.flags = some flags)
+    (fieldEvaluation : forall state,
+      (flags.eval state).extractLsb' bit 1 = evalFlagBit state bit value)
+    (related : evalFlagBit original bit value = evalFlagBit candidate bit value) :
+    (behavior.eval original).eflags.extractLsb' bit 1 =
+      (behavior.eval candidate).eflags.extractLsb' bit 1 := by
+  simp only [NormalizedSymbolicBehavior.eval_eflags, behaviorFlags,
+    evalNormalizedFlags_some]
+  rw [fieldEvaluation original, fieldEvaluation candidate]
+  exact related
+
 def codeAddressMatches (imageBase primaryRva : Nat) (aliases : List CodeAlias) (value : Word) : Bool :=
   value == BitVec.ofNat 32 (imageBase + primaryRva) ||
     aliases.any fun alias => value == BitVec.ofNat 32 (imageBase + alias.rva)
@@ -4489,6 +4503,37 @@ theorem outcomesRelated_normalized_branch_of_agreement
     condition within agreement
   simp [NormalizedOutcomeExpr.eval, outcomesRelated, conditionEqual]
 
+theorem outcomesRelated_normalized_indirectCall_of_agreement
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (allowedFlags : List Nat) (target : Expr) (continuation : Nat)
+    (original candidate : MachineState)
+    (within : target.flagsWithin allowedFlags = true)
+    (agreement : MachineStateAgreement allowedFlags original candidate) :
+    outcomesRelated originalImageBase candidateImageBase targets values
+      ((NormalizedOutcomeExpr.indirectCall target continuation).eval original)
+      ((NormalizedOutcomeExpr.indirectCall target continuation).eval candidate) = true := by
+  have targetEqual := Expr.eval_eq_of_flagsWithin allowedFlags original candidate
+    target within agreement
+  simp [NormalizedOutcomeExpr.eval, outcomesRelated, targetEqual, wordRelated]
+
+theorem normalizedBehaviorOutcomeRelated_indirectCall_of_agreement
+    (originalImageBase candidateImageBase : Nat)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (allowedFlags : List Nat) (behavior : NormalizedSymbolicBehavior)
+    (target : Expr) (continuation : Nat)
+    (original candidate : MachineState)
+    (outcome : behavior.outcome = .indirectCall target continuation)
+    (within : target.flagsWithin allowedFlags = true)
+    (agreement : MachineStateAgreement allowedFlags original candidate) :
+    outcomesRelated originalImageBase candidateImageBase targets values
+      (behavior.eval original).outcome (behavior.eval candidate).outcome = true := by
+  rw [NormalizedSymbolicBehavior.eval_outcome,
+    NormalizedSymbolicBehavior.eval_outcome, outcome]
+  exact outcomesRelated_normalized_indirectCall_of_agreement
+    originalImageBase candidateImageBase targets values allowedFlags target continuation
+    original candidate within agreement
+
 def evalOutcomePure (candidate : Bool) (targets : List CodeTargetPair)
     (state : PureState) : OutcomeExpr -> Option PureOutcome
   | .returned target => return .returned (← evalExprPure state target)
@@ -7474,6 +7519,89 @@ def behaviorFlagsEquivalent (originalImageBase candidateImageBase : Nat)
     flagsRelated region.flagOutputs
       (evalNormalizedFlags originalState originalBehavior.flags)
       (evalNormalizedFlags candidateState candidateBehavior.flags) = true
+
+theorem behaviorRegistersEquivalent_of_eval_eq
+    (originalImageBase candidateImageBase : Nat)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (region : RegionRelation)
+    (identity : region.outputs.all
+      (fun pair => pair.original == pair.candidate) = true)
+    (evaluated : forall originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets
+        region.flagInputs region.bounds region.addressSeparations region.values
+        region.inputs originalState candidateState ->
+      evalNormalizedRegisters originalState originalBehavior.registers =
+        evalNormalizedRegisters candidateState candidateBehavior.registers) :
+    behaviorRegistersEquivalent originalImageBase candidateImageBase
+      originalBehavior candidateBehavior region := by
+  intro originalState candidateState related
+  rw [evaluated originalState candidateState related]
+  exact registersRelatedValues_self_of_identity originalImageBase candidateImageBase
+    region.targets region.values region.outputs _ identity
+
+theorem behaviorFlagsEquivalent_of_output_bits
+    (originalImageBase candidateImageBase : Nat)
+    (originalBehavior candidateBehavior : SymbolicBehavior)
+    (region : RegionRelation)
+    (evaluated : forall originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets
+        region.flagInputs region.bounds region.addressSeparations region.values
+        region.inputs originalState candidateState ->
+      forall bit, bit ∈ region.flagOutputs ->
+        (evalNormalizedFlags originalState originalBehavior.flags).extractLsb' bit 1 =
+          (evalNormalizedFlags candidateState candidateBehavior.flags).extractLsb' bit 1) :
+    behaviorFlagsEquivalent originalImageBase candidateImageBase
+      originalBehavior candidateBehavior region := by
+  intro originalState candidateState related
+  unfold flagsRelated
+  simp only [List.all_eq_true, beq_iff_eq]
+  intro bit member
+  exact evaluated originalState candidateState related bit member
+
+theorem normalizedBehaviorRegistersRelated_of_eval_eq
+    (originalImageBase candidateImageBase : Nat)
+    (behavior : NormalizedSymbolicBehavior) (region : RegionRelation)
+    (identity : region.outputs.all
+      (fun pair => pair.original == pair.candidate) = true)
+    (evaluated : forall originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets
+        region.flagInputs region.bounds region.addressSeparations region.values
+        region.inputs originalState candidateState ->
+      (behavior.eval originalState).registers =
+        (behavior.eval candidateState).registers) :
+    forall originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets
+        region.flagInputs region.bounds region.addressSeparations region.values
+        region.inputs originalState candidateState ->
+      registersRelatedValues originalImageBase candidateImageBase region.targets
+        region.values region.outputs (behavior.eval originalState).registers
+        (behavior.eval candidateState).registers = true := by
+  intro originalState candidateState related
+  rw [evaluated originalState candidateState related]
+  exact registersRelatedValues_self_of_identity originalImageBase candidateImageBase
+    region.targets region.values region.outputs _ identity
+
+theorem normalizedBehaviorFlagsRelated_of_output_bits
+    (originalImageBase candidateImageBase : Nat)
+    (behavior : NormalizedSymbolicBehavior) (region : RegionRelation)
+    (evaluated : forall originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets
+        region.flagInputs region.bounds region.addressSeparations region.values
+        region.inputs originalState candidateState ->
+      forall bit, bit ∈ region.flagOutputs ->
+        (behavior.eval originalState).eflags.extractLsb' bit 1 =
+          (behavior.eval candidateState).eflags.extractLsb' bit 1) :
+    forall originalState candidateState,
+      statesRelated originalImageBase candidateImageBase region.targets
+        region.flagInputs region.bounds region.addressSeparations region.values
+        region.inputs originalState candidateState ->
+      flagsRelated region.flagOutputs (behavior.eval originalState).eflags
+        (behavior.eval candidateState).eflags = true := by
+  intro originalState candidateState related
+  unfold flagsRelated
+  simp only [List.all_eq_true, beq_iff_eq]
+  intro bit member
+  exact evaluated originalState candidateState related bit member
 
 theorem evalNormalizedFlags_extract_df (state : MachineState)
     (flags : Option FlagsExpr) :

@@ -74,6 +74,47 @@ example : (match addCarryCase.run with
     | .observed observation => observation.authorizesProof
     | _ => true) = false := by decide
 
+def leaveCase : ISAConformanceInput := {
+  bytes := [0xc9]
+  pc := 0x2000
+  registers := {
+    eax := 1
+    ebx := 2
+    ecx := 3
+    edx := 4
+    esi := 5
+    edi := 6
+    ebp := 0x70002000
+    esp := 0x70001000
+  }
+  eflags := 0x202
+  memory := [
+    { address := 0x70002000, value := 0x78 },
+    { address := 0x70002001, value := 0x56 },
+    { address := 0x70002002, value := 0x34 },
+    { address := 0x70002003, value := 0x12 }
+  ]
+}
+
+def leaveExpected : ISAConformanceExpectation := {
+  registers := {
+    eax := none
+    ebx := none
+    ecx := none
+    edx := none
+    esi := none
+    edi := none
+    ebp := some { value := 0x12345678, mask := 0xffffffff }
+    esp := some { value := 0x70002004, mask := 0xffffffff }
+  }
+  eflags := some { value := 0x202, mask := 0xffffffff }
+  writes := some []
+  control := some (.next 0x2001)
+  fault := some .none
+}
+
+example : leaveCase.matches leaveExpected = true := by decide
+
 end StageA.ISAConformanceKernelTests
 """,
                 encoding="utf-8",

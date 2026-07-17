@@ -59,6 +59,7 @@ inductive InstructionSemanticForm where
   | jumpRel32
   | pushReg
   | popReg
+  | leave
   | lea (hasOffset : Bool)
   | load32 (hasOffset : Bool)
   | store32 (hasOffset : Bool)
@@ -141,6 +142,7 @@ def Instruction.semanticForm : Instruction -> InstructionSemanticForm
   | .jumpRel32 _ => .jumpRel32
   | .pushReg _ => .pushReg
   | .popReg _ => .popReg
+  | .leave => .leave
   | .lea _ _ offset => .lea (offset != 0)
   | .load32 _ _ offset => .load32 (offset != 0)
   | .store32 _ offset _ => .store32 (offset != 0)

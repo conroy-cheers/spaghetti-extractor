@@ -48,8 +48,13 @@ def x87OneForm : Option InstructionSemanticForm := do
   let decoded <- decodeInstructionExact [0xd9, 0xe8]
   pure decoded.instruction.semanticForm
 
+def leaveForm : Option InstructionSemanticForm := do
+  let decoded <- decodeInstructionExact [0xc9]
+  pure decoded.instruction.semanticForm
+
 example : addForm = some (.binary .add .register .register) := by decide
 example : addImmediateForm = some (.binary .add .register .immediate) := by decide
+example : leaveForm = some .leave := by decide
 example : (match x87OneForm with
     | some (.x87LoadConstant _) => true
     | _ => false) = true := by decide

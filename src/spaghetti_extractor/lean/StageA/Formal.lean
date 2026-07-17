@@ -949,6 +949,20 @@ structure Registers (alpha : Type) where
   esp : alpha
 deriving Repr, DecidableEq
 
+theorem Registers.eq_of_fields (original candidate : Registers alpha)
+    (eax : original.eax = candidate.eax)
+    (ebx : original.ebx = candidate.ebx)
+    (ecx : original.ecx = candidate.ecx)
+    (edx : original.edx = candidate.edx)
+    (esi : original.esi = candidate.esi)
+    (edi : original.edi = candidate.edi)
+    (ebp : original.ebp = candidate.ebp)
+    (esp : original.esp = candidate.esp) :
+    original = candidate := by
+  cases original
+  cases candidate
+  simp_all
+
 def Registers.get (registers : Registers alpha) : Reg -> alpha
   | .eax => registers.eax
   | .ebx => registers.ebx
@@ -1980,6 +1994,7 @@ inductive Instruction where
   | jumpRel32 (displacement : Nat)
   | pushReg (source : Reg)
   | popReg (destination : Reg)
+  | leave
   | lea (destination base : Reg) (offset : Nat)
   | load32 (destination base : Reg) (offset : Nat)
   | store32 (base : Reg) (offset : Nat) (source : Reg)
@@ -2621,6 +2636,7 @@ def decodeInstruction : Bytes -> Option DecodedInstruction
   | 0x8d :: 0xb4 :: 0x26 :: 0x00 :: 0x00 :: 0x00 :: 0x00 :: tail =>
       some { instruction := .nop, size := 7, trailing := tail }
   | 0xc3 :: tail => some { instruction := .ret, size := 1, trailing := tail }
+  | 0xc9 :: tail => some { instruction := .leave, size := 1, trailing := tail }
   | 0xc2 :: b0 :: b1 :: tail => do
       let bytes <- readU16 [b0, b1] 0
       pure { instruction := .retPop bytes, size := 3, trailing := tail }
@@ -3054,6 +3070,13 @@ def executeInstruction (pe : PE32) (imports : List PEImport)
       let value := symbolicRead32 state state.registers.esp
       let stack := state.registers.esp.offset 4
       some (.next { state with registers := (state.registers.set destination value).set .esp stack })
+  | .leave =>
+      let stack := state.registers.ebp
+      let value := symbolicRead32 state stack
+      some (.next {
+        state with
+        registers := (state.registers.set .ebp value).set .esp (stack.offset 4)
+      })
   | .lea destination base offset =>
       some (.next { state with registers := state.registers.set destination ((state.registers.get base).offset offset) })
   | .load32 destination base offset =>

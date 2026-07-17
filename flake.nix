@@ -329,6 +329,84 @@
               });
           stage-a-jq-original = mkStageAJq "original" stageAJqOriginalCflags;
           stage-a-jq-candidate = mkStageAJq "candidate" stageAJqCandidateCflags;
+          stageAGnuHelloCommonCflags = "-g0 -fno-asynchronous-unwind-tables -fno-ident -fno-inline -fno-inline-functions -fno-inline-small-functions -fno-ipa-cp -fno-ipa-sra -fno-ipa-icf";
+          stageAGnuHelloOriginalCflags = "-O2 -fno-align-functions -fno-align-labels -fno-align-loops -fno-align-jumps ${stageAGnuHelloCommonCflags}";
+          stageAGnuHelloCandidateCflags = "-O2 -falign-functions=32 -falign-labels=16 -falign-loops=16 -falign-jumps=16 ${stageAGnuHelloCommonCflags}";
+          stageAGnuHelloLayoutLdflags = pkgs.lib.concatStringsSep " " [
+            "-Wl,--section-start=.data=0x420000"
+            "-Wl,--section-start=.rdata=0x421000"
+            "-Wl,--section-start=.bss=0x430000"
+            "-Wl,--section-start=.edata=0x431000"
+            "-Wl,--section-start=.idata=0x432000"
+            "-Wl,--section-start=.tls=0x433000"
+            "-Wl,--section-start=.reloc=0x434000"
+          ];
+          mkStageAGnuHello =
+            label: cflags:
+            mingw32.hello.overrideAttrs (old: {
+              pname = "stage-a-gnu-hello-${label}";
+              doCheck = false;
+              doInstallCheck = false;
+              dontStrip = true;
+              outputs = [ "out" ];
+              env = (old.env or { }) // {
+                CFLAGS = cflags;
+                LDFLAGS = "${stageAGnuHelloLayoutLdflags} -Wl,-Map,hello-${label}.map";
+              };
+              postFixup = "";
+              postInstall =
+                (old.postInstall or "")
+                + ''
+                  map_path="$(find . -name 'hello-${label}.map' -print -quit)"
+                  if [ -z "$map_path" ]; then
+                    echo "missing hello-${label}.map" >&2
+                    exit 1
+                  fi
+                  fixture_dir="$out/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/${label}"
+                  mkdir -p "$fixture_dir"
+                  cp "$map_path" "$fixture_dir/hello.map"
+                  cp "$out/bin/hello.exe" "$fixture_dir/hello.exe"
+                '';
+              meta = (old.meta or { }) // {
+                platforms = (old.meta.platforms or [ ]) ++ [ "i686-windows" ];
+              };
+            });
+          stage-a-gnu-hello-original = mkStageAGnuHello "original" stageAGnuHelloOriginalCflags;
+          stage-a-gnu-hello-candidate = mkStageAGnuHello "candidate" stageAGnuHelloCandidateCflags;
+          stageAMinimalHelloCommonCflags = "-g0 -fno-asynchronous-unwind-tables -fno-ident";
+          stageAMinimalHelloOriginalCflags = "-O2 -fno-align-functions -fno-align-labels -fno-align-loops -fno-align-jumps ${stageAMinimalHelloCommonCflags}";
+          stageAMinimalHelloCandidateCflags = "-O2 -falign-functions=32 -falign-labels=16 -falign-loops=16 -falign-jumps=16 ${stageAMinimalHelloCommonCflags}";
+          stageAMinimalHelloLayoutLdflags = stageAGnuHelloLayoutLdflags;
+          mkStageAMinimalHello =
+            label: cflags:
+            mingw32.stdenv.mkDerivation {
+              pname = "stage-a-minimal-hello-${label}";
+              version = "1";
+              src = ./tools/stage-a-fixtures;
+              dontConfigure = true;
+              dontStrip = true;
+
+              buildPhase = ''
+                runHook preBuild
+                $CC ${cflags} ${stageAMinimalHelloLayoutLdflags} \
+                  -Wl,-Map,hello-${label}.map \
+                  -o hello.exe stage_a_hello.c
+                runHook postBuild
+              '';
+
+              installPhase = ''
+                runHook preInstall
+                fixture_dir="$out/share/spaghetti-extractor/stage-a-minimal-hello-fixtures/${label}"
+                mkdir -p "$fixture_dir"
+                cp hello.exe "$fixture_dir/hello.exe"
+                cp "hello-${label}.map" "$fixture_dir/hello.map"
+                runHook postInstall
+              '';
+            };
+          stage-a-minimal-hello-original =
+            mkStageAMinimalHello "original" stageAMinimalHelloOriginalCflags;
+          stage-a-minimal-hello-candidate =
+            mkStageAMinimalHello "candidate" stageAMinimalHelloCandidateCflags;
           stage-a-fixtures = mingw32.stdenv.mkDerivation {
             pname = "stage-a-fixtures";
             version = "0.2.0";
@@ -491,6 +569,234 @@
                   candidate: { file: "jq-candidate.exe", linker_map: "jq-candidate.map", flags: $candidate_flags },
                   compiler: { target: $compiler, version: $compiler_version }
                 }' > "$fixture_dir/build-metadata.json"
+            '';
+          stage-a-gnu-hello-fixtures = pkgs.runCommand "stage-a-gnu-hello-fixtures"
+            {
+              nativeBuildInputs = [ pkgs.jq ];
+            }
+            ''
+              fixture_dir="$out/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
+              mkdir -p "$fixture_dir"
+              cp "${stage-a-gnu-hello-original}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/original/hello.exe" "$fixture_dir/hello-original.exe"
+              cp "${stage-a-gnu-hello-candidate}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/candidate/hello.exe" "$fixture_dir/hello-candidate.exe"
+              cp "${stage-a-gnu-hello-original}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/original/hello.map" "$fixture_dir/hello-original.map"
+              cp "${stage-a-gnu-hello-candidate}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/candidate/hello.map" "$fixture_dir/hello-candidate.map"
+              jq -n \
+                --arg original_flags "${stageAGnuHelloOriginalCflags}" \
+                --arg candidate_flags "${stageAGnuHelloCandidateCflags}" \
+                --arg linker_flags "${stageAGnuHelloLayoutLdflags}" \
+                --arg compiler "$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc -dumpmachine)" \
+                --arg compiler_version "$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc -dumpfullversion -dumpversion)" \
+                '{
+                  format: "stage-a-gnu-hello-fixture-build-metadata-v1",
+                  source: "GNU hello from pinned nixpkgs",
+                  target: "i686-w64-mingw32",
+                  original: { file: "hello-original.exe", linker_map: "hello-original.map", flags: $original_flags },
+                  candidate: { file: "hello-candidate.exe", linker_map: "hello-candidate.map", flags: $candidate_flags },
+                  linker_flags: $linker_flags,
+                  compiler: { target: $compiler, version: $compiler_version }
+                }' > "$fixture_dir/build-metadata.json"
+            '';
+          stage-a-gnu-hello-static-map = pkgs.runCommand "stage-a-gnu-hello-static-map"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-core ];
+            }
+            ''
+              fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
+              mkdir -p "$out"
+              spaghetti-extractor stage-a-generate-map \
+                --original "$fixture_dir/hello-original.exe" \
+                --candidate "$fixture_dir/hello-candidate.exe" \
+                --linker-map-original "$fixture_dir/hello-original.map" \
+                --linker-map-candidate "$fixture_dir/hello-candidate.map" \
+                --original-flags "${stageAGnuHelloOriginalCflags}" \
+                --candidate-flags "${stageAGnuHelloCandidateCflags}" \
+                --out "$out/hello-block-map.json" \
+                --layout-contract-out "$out/hello-layout-contract.json" \
+                > "$out/generate-map.stdout"
+            '';
+          stage-a-gnu-hello-relation-contract = pkgs.runCommand "stage-a-gnu-hello-relation-contract"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-core ];
+            }
+            ''
+              fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
+              mkdir -p "$out"
+              spaghetti-extractor stage-a-generate-relation-contract \
+                --original "$fixture_dir/hello-original.exe" \
+                --candidate "$fixture_dir/hello-candidate.exe" \
+                --mapping "${stage-a-gnu-hello-static-map}/hello-block-map.json" \
+                --external-profile "${./profiles/pe32-kernel32-lockstep-v1.json}" \
+                --external-profile "${./profiles/pe32-msvcrt-lockstep-v1.json}" \
+                --out "$out/hello-relation-contract.json" \
+                > "$out/generate-relation.stdout"
+            '';
+          stage-a-gnu-hello-preflight = pkgs.runCommand "stage-a-gnu-hello-preflight"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor-core
+                pkgs.lean4
+                pkgs.jq
+              ];
+            }
+            ''
+              fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
+              work="$TMPDIR/stage-a-gnu-hello"
+              mkdir -p "$work"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
+              set +e
+              SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
+                spaghetti-extractor stage-a-prepare-relational \
+                  --original "$fixture_dir/hello-original.exe" \
+                  --candidate "$fixture_dir/hello-candidate.exe" \
+                  --relation-contract "${stage-a-gnu-hello-relation-contract}/hello-relation-contract.json" \
+                  --out "$work/relational-v3" \
+                  > "$work/relational-v3.stdout" \
+                  2> "$work/relational-v3.stderr"
+              prepare_status=$?
+              set -e
+              if [ "$prepare_status" -eq 0 ]; then
+                echo "GNU hello unexpectedly passed semantic preflight" >&2
+                exit 1
+              fi
+              jq -e '
+                .status == "incomplete" and
+                (.issues | length) > 0 and
+                ([.issues[].category] | unique) == ["formal_instruction_unsupported"]
+              ' "$work/relational-v3/semantic-gaps.json" >/dev/null
+              mkdir -p "$out/report"
+              cp "${stage-a-gnu-hello-static-map}/hello-block-map.json" \
+                "${stage-a-gnu-hello-static-map}/hello-layout-contract.json" \
+                "${stage-a-gnu-hello-relation-contract}/hello-relation-contract.json" \
+                "$out/report/"
+              cp -R "$work/relational-v3" "$out/report/relational-v3"
+              cp "$work/relational-v3.stdout" "$work/relational-v3.stderr" "$out/report/"
+            '';
+          stage-a-minimal-hello-fixtures = pkgs.runCommand "stage-a-minimal-hello-fixtures"
+            {
+              nativeBuildInputs = [ pkgs.jq ];
+            }
+            ''
+              fixture_dir="$out/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment"
+              mkdir -p "$fixture_dir"
+              cp "${stage-a-minimal-hello-original}/share/spaghetti-extractor/stage-a-minimal-hello-fixtures/original/hello.exe" "$fixture_dir/hello-original.exe"
+              cp "${stage-a-minimal-hello-candidate}/share/spaghetti-extractor/stage-a-minimal-hello-fixtures/candidate/hello.exe" "$fixture_dir/hello-candidate.exe"
+              cp "${stage-a-minimal-hello-original}/share/spaghetti-extractor/stage-a-minimal-hello-fixtures/original/hello.map" "$fixture_dir/hello-original.map"
+              cp "${stage-a-minimal-hello-candidate}/share/spaghetti-extractor/stage-a-minimal-hello-fixtures/candidate/hello.map" "$fixture_dir/hello-candidate.map"
+              jq -n \
+                --arg original_flags "${stageAMinimalHelloOriginalCflags}" \
+                --arg candidate_flags "${stageAMinimalHelloCandidateCflags}" \
+                --arg linker_flags "${stageAMinimalHelloLayoutLdflags}" \
+                --arg compiler "$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc -dumpmachine)" \
+                --arg compiler_version "$(${mingw32.stdenv.cc}/bin/i686-w64-mingw32-gcc -dumpfullversion -dumpversion)" \
+                '{
+                  format: "stage-a-minimal-hello-fixture-build-metadata-v1",
+                  source: "tools/stage-a-fixtures/stage_a_hello.c",
+                  target: "i686-w64-mingw32",
+                  original: { file: "hello-original.exe", linker_map: "hello-original.map", flags: $original_flags },
+                  candidate: { file: "hello-candidate.exe", linker_map: "hello-candidate.map", flags: $candidate_flags },
+                  linker_flags: $linker_flags,
+                  compiler: { target: $compiler, version: $compiler_version }
+                }' > "$fixture_dir/build-metadata.json"
+            '';
+          stage-a-minimal-hello-static-map = pkgs.runCommand "stage-a-minimal-hello-static-map"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-core ];
+            }
+            ''
+              fixture_dir="${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment"
+              mkdir -p "$out"
+              spaghetti-extractor stage-a-generate-map \
+                --original "$fixture_dir/hello-original.exe" \
+                --candidate "$fixture_dir/hello-candidate.exe" \
+                --linker-map-original "$fixture_dir/hello-original.map" \
+                --linker-map-candidate "$fixture_dir/hello-candidate.map" \
+                --original-flags "${stageAMinimalHelloOriginalCflags}" \
+                --candidate-flags "${stageAMinimalHelloCandidateCflags}" \
+                --out "$out/hello-block-map.json" \
+                --layout-contract-out "$out/hello-layout-contract.json" \
+                > "$out/generate-map.stdout"
+            '';
+          stage-a-minimal-hello-relation-contract = pkgs.runCommand "stage-a-minimal-hello-relation-contract"
+            {
+              nativeBuildInputs = [ spaghetti-extractor-core ];
+            }
+            ''
+              fixture_dir="${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment"
+              mkdir -p "$out"
+              spaghetti-extractor stage-a-generate-relation-contract \
+                --original "$fixture_dir/hello-original.exe" \
+                --candidate "$fixture_dir/hello-candidate.exe" \
+                --mapping "${stage-a-minimal-hello-static-map}/hello-block-map.json" \
+                --external-profile "${./profiles/pe32-kernel32-lockstep-v1.json}" \
+                --external-profile "${./profiles/pe32-msvcrt-lockstep-v1.json}" \
+                --out "$out/hello-relation-contract.json" \
+                > "$out/generate-relation.stdout"
+            '';
+          stage-a-minimal-hello-prepared-proof = pkgs.runCommand "stage-a-minimal-hello-prepared-proof"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor-core
+                pkgs.lean4
+              ];
+            }
+            ''
+              fixture_dir="${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment"
+              work="$TMPDIR/stage-a-minimal-hello"
+              mkdir -p "$work"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
+              SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
+                spaghetti-extractor stage-a-prepare-relational \
+                  --original "$fixture_dir/hello-original.exe" \
+                  --candidate "$fixture_dir/hello-candidate.exe" \
+                  --relation-contract "${stage-a-minimal-hello-relation-contract}/hello-relation-contract.json" \
+                  --out "$work/relational-v3" \
+                  > "$work/relational-v3.stdout"
+              mkdir -p "$out/report"
+              cp "${stage-a-minimal-hello-static-map}/hello-block-map.json" \
+                "${stage-a-minimal-hello-static-map}/hello-layout-contract.json" \
+                "${stage-a-minimal-hello-relation-contract}/hello-relation-contract.json" \
+                "$out/report/"
+              cp -R "$work/relational-v3" "$out/report/relational-v3"
+              cp "$work/relational-v3.stdout" "$out/report/"
+            '';
+          stage-a-minimal-hello-proof-smoke =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              prepared = stage-a-minimal-hello-prepared-proof + "/report/relational-v3";
+              targetNodes = [ "local-proof-pack-005" ];
+              targetBundle = true;
+            };
+          stage-a-minimal-hello-check = pkgs.runCommand "stage-a-minimal-hello-check"
+            {
+              nativeBuildInputs = [ pkgs.jq ];
+            }
+            ''
+              prepared="${stage-a-minimal-hello-prepared-proof}/report/relational-v3"
+              jq -e '
+                .status == "prepared" and
+                .acceptance.status == "incomplete" and
+                .acceptance.theorem == null and
+                .composition_progress.status == "incomplete" and
+                .composition_progress.counts.unsupported_instructions == 0 and
+                .composition_progress.counts.rooted_reachable_nodes > 0 and
+                .composition_progress.counts.rooted_reachable_feasible_edges > 0 and
+                .composition_progress.counts.rooted_refined_segments > 0 and
+                .composition_progress.counts.rooted_refined_segments <
+                  .composition_progress.counts.rooted_reachable_feasible_edges
+              ' "$prepared/prepared-proof.json" >/dev/null
+              jq -e '.status == "supported" and (.issues | length) == 0' \
+                "$prepared/semantic-gaps.json" >/dev/null
+              jq -e '
+                .format == "stage-a-lean-target-bundle-v1" and
+                .lean_trust == 0 and
+                ([.nodes[].id] | index("local-proof-pack-005")) != null
+              ' "${stage-a-minimal-hello-proof-smoke}/bundle.json" >/dev/null
+              mkdir -p "$out"
+              cp "$prepared/prepared-proof.json" "$prepared/semantic-gaps.json" "$out/"
+              cp "${stage-a-minimal-hello-proof-smoke}/bundle.json" "$out/proof-smoke-bundle.json"
             '';
           stage-a-jq-static-map = pkgs.runCommand "stage-a-jq-static-map"
             {
@@ -1146,6 +1452,18 @@
               printf '%s\n' "${stage-a-jq-fixtures}"
             '';
           };
+          stage-a-gnu-hello-fixtures-root = pkgs.writeShellApplication {
+            name = "stage-a-gnu-hello-fixtures-root";
+            text = ''
+              printf '%s\n' "${stage-a-gnu-hello-fixtures}"
+            '';
+          };
+          stage-a-minimal-hello-fixtures-root = pkgs.writeShellApplication {
+            name = "stage-a-minimal-hello-fixtures-root";
+            text = ''
+              printf '%s\n' "${stage-a-minimal-hello-fixtures}"
+            '';
+          };
           stage-b-jq-skeleton = pkgs.runCommand "stage-b-jq-skeleton"
             {
               nativeBuildInputs = [ spaghetti-extractor ];
@@ -1184,6 +1502,18 @@
             stage-a-fixtures
             stage-a-fixtures-check
             stage-a-fixtures-root
+            stage-a-gnu-hello-fixtures
+            stage-a-gnu-hello-static-map
+            stage-a-gnu-hello-relation-contract
+            stage-a-gnu-hello-preflight
+            stage-a-gnu-hello-fixtures-root
+            stage-a-minimal-hello-fixtures
+            stage-a-minimal-hello-static-map
+            stage-a-minimal-hello-relation-contract
+            stage-a-minimal-hello-prepared-proof
+            stage-a-minimal-hello-proof-smoke
+            stage-a-minimal-hello-check
+            stage-a-minimal-hello-fixtures-root
             stage-a-jq-fixtures
             stage-a-jq-static-map
             stage-a-jq-relation-contract
@@ -1308,6 +1638,14 @@
             type = "app";
             program = "${packages.stage-a-jq-fixtures-root}/bin/stage-a-jq-fixtures-root";
           };
+          stage-a-gnu-hello-fixtures-root = {
+            type = "app";
+            program = "${packages.stage-a-gnu-hello-fixtures-root}/bin/stage-a-gnu-hello-fixtures-root";
+          };
+          stage-a-minimal-hello-fixtures-root = {
+            type = "app";
+            program = "${packages.stage-a-minimal-hello-fixtures-root}/bin/stage-a-minimal-hello-fixtures-root";
+          };
           stage-b-jq-skeleton-root = {
             type = "app";
             program = "${packages.stage-b-jq-skeleton-root}/bin/stage-b-jq-skeleton-root";
@@ -1325,6 +1663,8 @@
             spaghetti-extractor
             stage-a-isa-conformance-bochs-80386
             stage-a-fixtures-check
+            stage-a-gnu-hello-preflight
+            stage-a-minimal-hello-check
             stage-a-jq-fixtures-check
             stage-a-relational-tests
             stage-b-jq-skeleton

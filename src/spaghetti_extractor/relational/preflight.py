@@ -37,7 +37,7 @@ def instruction_supported(insn: Any) -> bool:
             b"\x8b\x06", b"\x8b\x46\x00", b"\x8b\x03", b"\x8b\x43\x00",
             b"\x8b\x0b", b"\x8b\x4b\x00", b"\x89\x02", b"\x89\x47\x04",
             b"\x89\x03", b"\x89\x43\x00", b"\x29\xc0", b"\x31\xc0",
-            b"\x9b", b"\xa5", b"\xf3\xa5",
+            b"\x9b", b"\xa5", b"\xc9", b"\xf3\xa5",
         }
         or encoded in normalized_nops
         or (

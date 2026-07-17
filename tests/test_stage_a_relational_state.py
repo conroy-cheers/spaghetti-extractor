@@ -5,6 +5,13 @@ from spaghetti_extractor.relational.analyses.memory import (
 from spaghetti_extractor.relational.analyses.segments import (
     _paired_stack_relative_guard_claim,
 )
+from spaghetti_extractor.relational.lean.generation import (
+    _compact_compositional_normalized_path,
+)
+from spaghetti_extractor.relational.lean.definitions import (
+    _lean_normalized_indirect_call_parts,
+    _lean_normalized_static_outcome,
+)
 
 
 class StageARelationalStateTests(StageARelationalTestBase):
@@ -3440,7 +3447,11 @@ class StageARelationalStateTests(StageARelationalTestBase):
         region = {
             "inputs": pairs,
             "outputs": pairs,
-            "bounds": [],
+            "bounds": [{
+                "original": "eax",
+                "candidate": "eax",
+                "unsigned_lt": 4,
+            }],
             "values": [],
             "code_targets": [
                 {"id": 1, "original_rva": 0x1000, "candidate_rva": 0x2000},
@@ -3456,6 +3467,87 @@ class StageARelationalStateTests(StageARelationalTestBase):
 
         behaviors["candidate"] = core + ", outcome := some (StageA.Formal.OutcomeExpr.branch condition 8192 8225) }"
         self.assertFalse(_normalized_behavior_fast_path(region, behaviors))
+
+    def test_normalized_fast_path_accepts_identity_mapped_data_and_subset_flags(self):
+        pairs = [
+            {"original": register, "candidate": register}
+            for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+        ]
+        region = {
+            "inputs": pairs,
+            "outputs": pairs,
+            "bounds": [{
+                "original": "eax",
+                "candidate": "eax",
+                "unsigned_lt": 4,
+            }],
+            "flag_inputs": [],
+            "flag_outputs": [6],
+            "values": [{
+                "original_value": 0x410000,
+                "candidate_value": 0x410000,
+                "relocation_offsets": [],
+            }],
+            "code_targets": [{
+                "id": 1,
+                "original_rva": 4096,
+                "candidate_rva": 4096,
+            }],
+        }
+        behavior = (
+            "{ registers := shared, flags := some shared, "
+            "outcome := some (StageA.Formal.OutcomeExpr.jump 4096) }"
+        )
+        behaviors = {
+            "original": behavior,
+            "candidate": behavior,
+            "original_ir": {},
+            "candidate_ir": {},
+        }
+
+        self.assertFalse(_normalized_behavior_fast_path(region, behaviors))
+        self.assertTrue(_compact_compositional_normalized_path(region, behaviors))
+
+        region["values"][0]["candidate_value"] = 0x420000
+        self.assertFalse(_compact_compositional_normalized_path(region, behaviors))
+
+    def test_compact_path_normalizes_indirect_call_continuation(self):
+        pairs = [
+            {"original": register, "candidate": register}
+            for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
+        ]
+        region = {
+            "inputs": pairs,
+            "outputs": pairs,
+            "bounds": [],
+            "flag_inputs": [],
+            "flag_outputs": [],
+            "values": [],
+            "code_targets": [{
+                "id": 7,
+                "original_rva": 0x1010,
+                "candidate_rva": 0x2020,
+            }],
+        }
+        original = (
+            "{ registers := shared, flags := some shared, outcome := some "
+            "(StageA.Formal.OutcomeExpr.indirectCall "
+            "(StageA.Formal.Expr.inputReg (StageA.Formal.Reg.eax)) 4112 4198400) }"
+        )
+        candidate = original.replace("4112 4198400", "8224 4202496")
+        behaviors = {
+            "original": original,
+            "candidate": candidate,
+            "original_ir": {},
+            "candidate_ir": {},
+        }
+
+        normalized = _lean_normalized_static_outcome(region, behaviors)
+        self.assertEqual(
+            _lean_normalized_indirect_call_parts(normalized),
+            ("(StageA.Formal.Expr.inputReg (StageA.Formal.Reg.eax))", 7),
+        )
+        self.assertTrue(_compact_compositional_normalized_path(region, behaviors))
 
     def test_identical_state_only_writes_use_compositional_checked_proof(self):
         write = (

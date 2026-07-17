@@ -994,7 +994,11 @@ def _normalized_behavior_structure_matches(
             if pair.get("original") == pair.get("candidate")
         } != registers or len(pairs) != len(registers):
             return False
-    if region.get("bounds") or region.get("values"):
+    if any(
+        target.get("original_value") != target.get("candidate_value")
+        or target.get("relocation_offsets")
+        for target in region.get("values", [])
+    ):
         return False
 
     marker = ", outcome := "
@@ -1269,6 +1273,18 @@ def _lean_normalized_static_outcome(
                 "StageA.Relational.NormalizedOutcomeExpr.call "
                 f"{target} {continuation}"
             )
+
+    indirect_call = re.fullmatch(
+        r"some \(StageA\.Formal\.OutcomeExpr\.indirectCall (.*) (\d+) \d+\) \}",
+        outcome,
+    )
+    if indirect_call is not None:
+        continuation = target_id(int(indirect_call.group(2)))
+        if continuation is not None:
+            return (
+                "StageA.Relational.NormalizedOutcomeExpr.indirectCall "
+                f"({indirect_call.group(1)}) {continuation}"
+            )
     return None
 
 def _lean_normalized_branch_parts(outcome: str) -> tuple[str, int, int] | None:
@@ -1279,6 +1295,16 @@ def _lean_normalized_branch_parts(outcome: str) -> tuple[str, int, int] | None:
     if branch is None:
         return None
     return branch.group(1), int(branch.group(2)), int(branch.group(3))
+
+
+def _lean_normalized_indirect_call_parts(outcome: str) -> tuple[str, int] | None:
+    indirect_call = re.fullmatch(
+        r"StageA\.Relational\.NormalizedOutcomeExpr\.indirectCall \((.*)\) (\d+)",
+        outcome,
+    )
+    if indirect_call is None:
+        return None
+    return indirect_call.group(1), int(indirect_call.group(2))
 
 def _lean_bundle_source(original_bin: StageABinary, candidate_bin: StageABinary, original: bytes, candidate: bytes, contract: dict[str, Any], behaviors: list[dict[str, str]], *, replay: bool, certificates: list[dict[str, Any]] | None = None) -> str:
     certificate_by_region = {entry.get("region_id"): entry for entry in certificates or []}
