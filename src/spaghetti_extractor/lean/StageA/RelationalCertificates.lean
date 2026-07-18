@@ -2586,6 +2586,27 @@ theorem preferredBaseImageMemory_of_checked (pe : PE32)
   simp [notIat, byteRead] at row
   exact row
 
+/-- One independently checkable preferred-image byte. -/
+def preferredBaseImageMemoryAt (pe : PE32) (imports : List PEImport)
+    (memory : Memory) (rva : Nat) : Bool :=
+  importIatByteCovered imports rva ||
+    match rvaByte pe rva with
+    | none => true
+    | some expected =>
+        memory (BitVec.ofNat 32 (pe.imageBase + rva)) ==
+          BitVec.ofNat 8 expected
+
+theorem preferredBaseImageMemory_of_indexed_holds (pe : PE32)
+    (imports : List PEImport) (memory : Memory)
+    (certificate : IndexedBoolCertificate)
+    (checked : certificate.Holds
+      (preferredBaseImageMemoryAt pe imports memory) pe.sizeOfImage) :
+    PreferredBaseImageMemory pe imports memory := by
+  intro rva expected rvaBefore notIat byteRead
+  have row := checked rva rvaBefore
+  simp [preferredBaseImageMemoryAt, notIat, byteRead] at row
+  exact row
+
 /-- Finite replay of immutable-image words.  `readImmutableImageWord` itself
 checks that every admitted word is wholly contained in the image, so every
 possible start belongs to this bounded inventory. -/
@@ -2621,6 +2642,35 @@ theorem immutableImageWordMemory_of_checked (pe : PE32) (memory : Memory)
       omega
     simp [absoluteEq, rawRead] at row
     exact row
+
+/-- One independently checkable immutable-image word start.  The parsed import
+inventory is explicit so the adapter can tie the row predicate back to the
+authoritative `readImmutableImageWord` definition. -/
+def immutableImageWordMemoryAtWithImports (pe : PE32)
+    (imports : List PEImport) (memory : Memory) (rva : Nat) : Bool :=
+  match readImmutableImageWordWithImports pe imports (pe.imageBase + rva) 4 with
+  | none => true
+  | some expected =>
+      Memory.read32 memory (BitVec.ofNat 32 (pe.imageBase + rva)) ==
+        BitVec.ofNat 32 expected
+
+theorem immutableImageWordMemory_of_indexed_holds (pe : PE32)
+    (imports : List PEImport) (memory : Memory)
+    (certificate : IndexedBoolCertificate)
+    (importsResult : parseImports pe = some imports)
+    (checked : certificate.Holds
+      (immutableImageWordMemoryAtWithImports pe imports memory) pe.sizeOfImage) :
+    ImmutableImageWordMemory pe memory := by
+  intro absolute expected wordRead
+  have bounds := readImmutableImageWord_bounds pe absolute 4 expected wordRead
+  have rvaBefore : absolute - pe.imageBase < pe.sizeOfImage := by omega
+  have absoluteEq : pe.imageBase + (absolute - pe.imageBase) = absolute := by omega
+  have rawRead : readImmutableImageWordWithImports pe imports absolute 4 =
+      some expected := by
+    simpa [readImmutableImageWord, importsResult] using wordRead
+  have row := checked (absolute - pe.imageBase) rvaBefore
+  simp [immutableImageWordMemoryAtWithImports, absoluteEq, rawRead] at row
+  exact row
 
 def importAddressesMemoryHoldChecked (context : StaticProofContext)
     (world : RelationalWorld) (original candidate : Memory) : Bool :=
@@ -2666,6 +2716,34 @@ theorem stackRangesMemoryHold_of_checked (context : StaticProofContext)
   have offsetBefore : offset < range.size := by omega
   have row := checked range rangeMember offset (List.mem_range.mpr offsetBefore)
   simp [inside, aligned] at row
+  exact row
+
+/-- One independently checkable word start in a paired stack range. -/
+def stackRangeMemoryHoldAt (context : StaticProofContext)
+    (world : RelationalWorld) (original candidate : Memory)
+    (range : DynamicAddressRangePair) (offset : Nat) : Bool :=
+  if decide (offset + 4 <= range.size) && decide (offset % 4 = 0) then
+    wordRelated context.originalPe.imageBase context.candidatePe.imageBase
+      context.codeMap.entries.toList (context.relationalValueTargets world)
+      (Memory.read32 original (range.originalBase + BitVec.ofNat 32 offset))
+      (Memory.read32 candidate (range.candidateBase + BitVec.ofNat 32 offset))
+  else true
+
+theorem stackRangesMemoryHold_of_single_range_indexed_holds
+    (context : StaticProofContext)
+    (world : RelationalWorld) (original candidate : Memory)
+    (range : DynamicAddressRangePair)
+    (onlyRange : world.stackRanges = [range])
+    (certificate : IndexedBoolCertificate)
+    (checked : certificate.Holds
+      (stackRangeMemoryHoldAt context world original candidate range) range.size) :
+    StackRangesMemoryHold context world original candidate := by
+  intro selected selectedMember offset inside aligned
+  rw [onlyRange] at selectedMember
+  simp only [List.mem_singleton] at selectedMember
+  subst selected
+  have row := checked offset (by omega)
+  simp [stackRangeMemoryHoldAt, inside, aligned] at row
   exact row
 
 theorem preferredBaseImageMemory_maps_image (pe : PE32) (imports : List PEImport)

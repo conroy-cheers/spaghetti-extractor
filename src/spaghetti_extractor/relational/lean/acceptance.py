@@ -3589,6 +3589,19 @@ def _lean_appended_proof(
         ids = f"{chunk['ids']} ++ ({ids})"
     return proof
 
+
+def _launch_check_ranges(total: int, chunk_size: int) -> list[tuple[int, int]]:
+    """Return an exact, contiguous half-open partition of a launch span."""
+    if total < 0:
+        raise StageAInputError("launch-check span cannot be negative")
+    if chunk_size <= 0:
+        raise StageAInputError("launch-check chunk size must be positive")
+    return [
+        (start, min(chunk_size, total - start))
+        for start in range(0, total, chunk_size)
+    ]
+
+
 def _lean_acceptance_empty_stack(node_id: int) -> str:
     return (
         "  have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
@@ -6265,7 +6278,8 @@ def _write_relational_acceptance_modules(
     for path in [
         *stage_a.glob("RelationalAcceptance*.lean"),
         *stage_a.glob("RelationalAcceptance*.olean"),
-        *stage_a.glob("RelationalLaunchRealizabilityCertificate.*"),
+        *stage_a.glob("RelationalLaunch*.lean"),
+        *stage_a.glob("RelationalLaunch*.olean"),
     ]:
         path.unlink()
     plan = _whole_program_acceptance_plan(
@@ -6604,7 +6618,7 @@ def _write_relational_acceptance_modules(
         + str(int(binding["candidate_address"])) + " }"
         for binding in launch_witness["import_bindings"]
     )
-    launch_realizability_source = (
+    launch_context_source = (
         "import StageA.RelationalAcceptanceContext\n\n"
         "namespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
@@ -6647,34 +6661,243 @@ def _write_relational_acceptance_modules(
         "  registers := consoleLaunchRegisters\n"
         "  memory := consoleLaunchCandidateMemory\n"
         "}\n\n"
+        "def consoleLaunchOriginalImageMappedAt : Nat -> Bool :=\n"
+        "  preferredBaseImageMemoryAt staticProofContext.originalPe\n"
+        "    staticProofContext.originalImports consoleLaunchOriginalState.memory\n\n"
+        "def consoleLaunchCandidateImageMappedAt : Nat -> Bool :=\n"
+        "  preferredBaseImageMemoryAt staticProofContext.candidatePe\n"
+        "    staticProofContext.candidateImports consoleLaunchCandidateState.memory\n\n"
+        "def consoleLaunchOriginalImmutableImageAt : Nat -> Bool :=\n"
+        "  immutableImageWordMemoryAtWithImports staticProofContext.originalPe\n"
+        "    staticProofContext.originalImports consoleLaunchOriginalState.memory\n\n"
+        "def consoleLaunchCandidateImmutableImageAt : Nat -> Bool :=\n"
+        "  immutableImageWordMemoryAtWithImports staticProofContext.candidatePe\n"
+        "    staticProofContext.candidateImports consoleLaunchCandidateState.memory\n\n"
+        "def consoleLaunchStackMemoryAt : Nat -> Bool :=\n"
+        "  stackRangeMemoryHoldAt staticProofContext consoleLaunchWorld\n"
+        "    consoleLaunchOriginalState.memory consoleLaunchCandidateState.memory\n"
+        "    consoleLaunchStackRange\n\n"
         "theorem consoleLaunchWorldValid :\n"
         "    PE32ConsoleLaunchWorldV1.Valid staticProofContext consoleLaunchWorld := by\n"
         "  unfold PE32ConsoleLaunchWorldV1.Valid\n"
         "  refine ⟨by decide, by decide, rfl, rfl, rfl, rfl, by decide,\n"
         "    by decide⟩\n\n"
-        "theorem consoleLaunchOriginalImageMapped :\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        stage_a / "RelationalLaunchContext.lean", launch_context_source
+    )
+
+    launch_chunk_size = max(
+        1,
+        int(os.environ.get(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_LAUNCH_CHECK_CHUNK",
+            "1024",
+        )),
+    )
+    launch_leaf_modules: list[str] = []
+
+    def write_launch_leaves(
+        *,
+        module_prefix: str,
+        theorem_prefix: str,
+        total: int,
+        predicate: str,
+    ) -> list[tuple[str, int, int]]:
+        checked_ranges: list[tuple[str, int, int]] = []
+        for index, (start, count) in enumerate(
+            _launch_check_ranges(total, launch_chunk_size)
+        ):
+            module = f"{module_prefix}{index}"
+            theorem_name = f"{theorem_prefix}{index}"
+            source = (
+                "import StageA.RelationalLaunchContext\n\n"
+                "namespace StageA.GeneratedRelational\n\n"
+                "open StageA.Formal StageA.Relational\n\n"
+                "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+                f"theorem {theorem_name} :\n"
+                f"    IndexedBoolRangeHolds {predicate} "
+                f"{{ start := {start}, size := {count} }} := by\n"
+                "  apply indexedBoolRangeHolds_of_checked\n"
+                "  decide\n\n"
+                "end StageA.GeneratedRelational\n"
+            )
+            _write_text_if_changed(stage_a / f"{module}.lean", source)
+            launch_leaf_modules.append(module)
+            checked_ranges.append((theorem_name, start, count))
+        return checked_ranges
+
+    original_image_ranges = write_launch_leaves(
+        module_prefix="RelationalLaunchOriginalImageMappedLeaf",
+        theorem_prefix="consoleLaunchOriginalImageMappedRange",
+        total=original_bin.size_of_image,
+        predicate="consoleLaunchOriginalImageMappedAt",
+    )
+    candidate_image_ranges = write_launch_leaves(
+        module_prefix="RelationalLaunchCandidateImageMappedLeaf",
+        theorem_prefix="consoleLaunchCandidateImageMappedRange",
+        total=candidate_bin.size_of_image,
+        predicate="consoleLaunchCandidateImageMappedAt",
+    )
+    original_immutable_ranges = write_launch_leaves(
+        module_prefix="RelationalLaunchOriginalImmutableImageLeaf",
+        theorem_prefix="consoleLaunchOriginalImmutableImageRange",
+        total=original_bin.size_of_image,
+        predicate="consoleLaunchOriginalImmutableImageAt",
+    )
+    candidate_immutable_ranges = write_launch_leaves(
+        module_prefix="RelationalLaunchCandidateImmutableImageLeaf",
+        theorem_prefix="consoleLaunchCandidateImmutableImageRange",
+        total=candidate_bin.size_of_image,
+        predicate="consoleLaunchCandidateImmutableImageAt",
+    )
+    stack_ranges = write_launch_leaves(
+        module_prefix="RelationalLaunchStackMemoryLeaf",
+        theorem_prefix="consoleLaunchStackMemoryRange",
+        total=stack_size,
+        predicate="consoleLaunchStackMemoryAt",
+    )
+
+    def launch_certificate(name: str, ranges: list[tuple[str, int, int]]) -> str:
+        span_rows = ", ".join(
+            f"{{ start := {start}, size := {count} }}"
+            for _theorem, start, count in ranges
+        )
+        return (
+            f"def {name} : IndexedBoolCertificate := "
+            f"{{ ranges := [{span_rows}] }}\n\n"
+        )
+
+    original_image_range_proof = _lean_all_listed_proof([
+        theorem for theorem, _start, _count in original_image_ranges
+    ])
+    candidate_image_range_proof = _lean_all_listed_proof([
+        theorem for theorem, _start, _count in candidate_image_ranges
+    ])
+    original_immutable_range_proof = _lean_all_listed_proof([
+        theorem for theorem, _start, _count in original_immutable_ranges
+    ])
+    candidate_immutable_range_proof = _lean_all_listed_proof([
+        theorem for theorem, _start, _count in candidate_immutable_ranges
+    ])
+    stack_range_proof = _lean_all_listed_proof([
+        theorem for theorem, _start, _count in stack_ranges
+    ])
+
+    launch_checks_source = (
+        "".join(f"import StageA.{module}\n" for module in launch_leaf_modules)
+        + "\nnamespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        + launch_certificate(
+            "consoleLaunchOriginalImageCertificate", original_image_ranges
+        )
+        + launch_certificate(
+            "consoleLaunchCandidateImageCertificate", candidate_image_ranges
+        )
+        + launch_certificate(
+            "consoleLaunchOriginalImmutableCertificate", original_immutable_ranges
+        )
+        + launch_certificate(
+            "consoleLaunchCandidateImmutableCertificate", candidate_immutable_ranges
+        )
+        + launch_certificate("consoleLaunchStackCertificate", stack_ranges)
+        + "theorem consoleLaunchOriginalImageMapped :\n"
         "    PreferredBaseImageMemory staticProofContext.originalPe\n"
         "      staticProofContext.originalImports consoleLaunchOriginalState.memory := by\n"
-        "  apply preferredBaseImageMemory_of_checked\n"
-        "  decide\n\n"
+        "  apply preferredBaseImageMemory_of_indexed_holds\n"
+        "    staticProofContext.originalPe staticProofContext.originalImports\n"
+        "    consoleLaunchOriginalState.memory consoleLaunchOriginalImageCertificate\n"
+        "  have rangesHold : AllIndexedBoolRangesHold\n"
+        "      consoleLaunchOriginalImageMappedAt\n"
+        "      consoleLaunchOriginalImageCertificate.ranges := by\n"
+        f"    exact {original_image_range_proof}\n"
+        "  have checked := IndexedBoolCertificate.holds_of_ranges\n"
+        "    consoleLaunchOriginalImageMappedAt staticProofContext.originalPe.sizeOfImage\n"
+        "    consoleLaunchOriginalImageCertificate (by decide) rangesHold\n"
+        "  simpa [consoleLaunchOriginalImageMappedAt] using checked\n\n"
         "theorem consoleLaunchCandidateImageMapped :\n"
         "    PreferredBaseImageMemory staticProofContext.candidatePe\n"
         "      staticProofContext.candidateImports consoleLaunchCandidateState.memory := by\n"
-        "  apply preferredBaseImageMemory_of_checked\n"
-        "  decide\n\n"
+        "  apply preferredBaseImageMemory_of_indexed_holds\n"
+        "    staticProofContext.candidatePe staticProofContext.candidateImports\n"
+        "    consoleLaunchCandidateState.memory consoleLaunchCandidateImageCertificate\n"
+        "  have rangesHold : AllIndexedBoolRangesHold\n"
+        "      consoleLaunchCandidateImageMappedAt\n"
+        "      consoleLaunchCandidateImageCertificate.ranges := by\n"
+        f"    exact {candidate_image_range_proof}\n"
+        "  have checked := IndexedBoolCertificate.holds_of_ranges\n"
+        "    consoleLaunchCandidateImageMappedAt staticProofContext.candidatePe.sizeOfImage\n"
+        "    consoleLaunchCandidateImageCertificate (by decide) rangesHold\n"
+        "  simpa [consoleLaunchCandidateImageMappedAt] using checked\n\n"
+        "theorem consoleLaunchOriginalImmutableImage :\n"
+        "    ImmutableImageWordMemory staticProofContext.originalPe\n"
+        "      consoleLaunchOriginalState.memory := by\n"
+        "  apply immutableImageWordMemory_of_indexed_holds\n"
+        "    staticProofContext.originalPe staticProofContext.originalImports\n"
+        "    consoleLaunchOriginalState.memory consoleLaunchOriginalImmutableCertificate\n"
+        "  · decide\n"
+        "  · have rangesHold : AllIndexedBoolRangesHold\n"
+        "        consoleLaunchOriginalImmutableImageAt\n"
+        "        consoleLaunchOriginalImmutableCertificate.ranges := by\n"
+        f"      exact {original_immutable_range_proof}\n"
+        "    have checked := IndexedBoolCertificate.holds_of_ranges\n"
+        "      consoleLaunchOriginalImmutableImageAt\n"
+        "      staticProofContext.originalPe.sizeOfImage\n"
+        "      consoleLaunchOriginalImmutableCertificate (by decide) rangesHold\n"
+        "    simpa [consoleLaunchOriginalImmutableImageAt] using checked\n\n"
+        "theorem consoleLaunchCandidateImmutableImage :\n"
+        "    ImmutableImageWordMemory staticProofContext.candidatePe\n"
+        "      consoleLaunchCandidateState.memory := by\n"
+        "  apply immutableImageWordMemory_of_indexed_holds\n"
+        "    staticProofContext.candidatePe staticProofContext.candidateImports\n"
+        "    consoleLaunchCandidateState.memory consoleLaunchCandidateImmutableCertificate\n"
+        "  · decide\n"
+        "  · have rangesHold : AllIndexedBoolRangesHold\n"
+        "        consoleLaunchCandidateImmutableImageAt\n"
+        "        consoleLaunchCandidateImmutableCertificate.ranges := by\n"
+        f"      exact {candidate_immutable_range_proof}\n"
+        "    have checked := IndexedBoolCertificate.holds_of_ranges\n"
+        "      consoleLaunchCandidateImmutableImageAt\n"
+        "      staticProofContext.candidatePe.sizeOfImage\n"
+        "      consoleLaunchCandidateImmutableCertificate (by decide) rangesHold\n"
+        "    simpa [consoleLaunchCandidateImmutableImageAt] using checked\n\n"
+        "theorem consoleLaunchStackMemoryRelated :\n"
+        "    StackRangesMemoryHold staticProofContext consoleLaunchWorld\n"
+        "      consoleLaunchOriginalState.memory consoleLaunchCandidateState.memory := by\n"
+        "  apply stackRangesMemoryHold_of_single_range_indexed_holds staticProofContext\n"
+        "    consoleLaunchWorld consoleLaunchOriginalState.memory\n"
+        "    consoleLaunchCandidateState.memory consoleLaunchStackRange\n"
+        "  · rfl\n"
+        "  · have rangesHold : AllIndexedBoolRangesHold consoleLaunchStackMemoryAt\n"
+        "        consoleLaunchStackCertificate.ranges := by\n"
+        f"      exact {stack_range_proof}\n"
+        "    have checked := IndexedBoolCertificate.holds_of_ranges\n"
+        "      consoleLaunchStackMemoryAt consoleLaunchStackRange.size\n"
+        "      consoleLaunchStackCertificate (by decide) rangesHold\n"
+        "    simpa [consoleLaunchStackMemoryAt] using checked\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        stage_a / "RelationalLaunchCheckCertificate.lean", launch_checks_source
+    )
+
+    launch_realizability_source = (
+        "import StageA.RelationalLaunchCheckCertificate\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+        "set_option linter.unusedSimpArgs false\n\n"
         "theorem consoleLaunchStateRelated :\n"
         "    StateRel staticProofContext consoleLaunchWorld consoleLaunch.rootInvariant\n"
         "      consoleLaunchOriginalState consoleLaunchCandidateState := by\n"
         "  refine ⟨consoleLaunchWorldValid.1, by decide, ?_, by decide, by decide,\n"
         "    ?_, ?_, ?_, ?_, ?_⟩\n"
-        "  · apply stackRangesMemoryHold_of_checked\n"
-        "    decide\n"
+        "  · exact consoleLaunchStackMemoryRelated\n"
         "  · apply importAddressesMemoryHold_of_checked\n"
         "    decide\n"
-        "  · apply immutableImageWordMemory_of_checked\n"
-        "    decide\n"
-        "  · apply immutableImageWordMemory_of_checked\n"
-        "    decide\n"
+        "  · exact consoleLaunchOriginalImmutableImage\n"
+        "  · exact consoleLaunchCandidateImmutableImage\n"
         "  · refine ⟨by decide, by decide, by decide, by decide, ?_, ?_, rfl, rfl,\n"
         "      by decide, rfl⟩\n"
         "    · exact ordinaryMemoryRelated_projection_without_relocations\n"

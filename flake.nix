@@ -859,6 +859,32 @@
                   .composition_progress.counts.acceptance_blockers == 0
                 ' "$prepared/prepared-proof.json" >/dev/null
                 jq -e '
+                  .format == "stage-a-lean-module-graph-v1" and
+                  ([.nodes[] |
+                    select(
+                      (.modules | length) == 1 and
+                      (.modules[0] | startswith("RelationalLaunch")) and
+                      (.modules[0] | contains("Leaf"))
+                    )] | length) == 100 and
+                  all(.nodes[] |
+                    select(
+                      (.modules | length) == 1 and
+                      (.modules[0] | startswith("RelationalLaunch")) and
+                      (.modules[0] | contains("Leaf"))
+                    );
+                    .resource_class == "high-memory" and
+                    .estimated_memory_mb >= 4096
+                  ) and
+                  any(.nodes[];
+                    .modules == ["RelationalLaunchRealizabilityCertificate"] and
+                    .resource_class == "light"
+                  ) and
+                  any(.nodes[];
+                    .modules == ["RelationalLaunchCheckCertificate"] and
+                    (.dependencies | length) == 100
+                  )
+                ' "$prepared/module-graph.json" >/dev/null
+                jq -e '
                   .format == "stage-a-relational-lean-audit-v1" and
                   .status == "checked" and
                   .theorem ==

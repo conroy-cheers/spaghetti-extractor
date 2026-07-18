@@ -137,7 +137,7 @@ let
           }
           ''
             mkdir -p "$out/StageA" source/StageA deps/StageA
-            ulimit -s unlimited
+            ulimit -s unlimited 2>/dev/null || true
             cat > source-hashes <<'HASHES'
             ${sourceChecks node}
             HASHES
@@ -412,7 +412,7 @@ pkgs.runCommand "stage-a-relational-proof-audit"
   }
   ''
     mkdir -p "$out" deps source/StageA
-    ulimit -s unlimited
+    ulimit -s unlimited 2>/dev/null || true
     tar --zstd -xf ${rootDependencyPack}/dependencies.tar.zst -C deps
     export LEAN_PATH="$PWD/deps"
     cat > root-source-hashes <<'HASHES'

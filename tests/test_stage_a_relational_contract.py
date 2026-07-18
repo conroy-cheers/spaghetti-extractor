@@ -1445,7 +1445,9 @@ class StageARelationalContractTests(StageARelationalTestBase):
             evaluator,
         )
         self.assertIn("lean -j ${leanJobs}", evaluator)
-        self.assertEqual(evaluator.count("ulimit -s unlimited"), 2)
+        self.assertEqual(
+            evaluator.count("ulimit -s unlimited 2>/dev/null || true"), 2
+        )
         high_memory_scheduler = evaluator.split(
             'node.resource_class == "high-memory"', 1
         )[1].split("''}", 1)[0]

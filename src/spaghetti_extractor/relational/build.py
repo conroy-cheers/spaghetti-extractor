@@ -1051,11 +1051,15 @@ def _write_relational_module_graph(
     def resource_class(modules: list[str]) -> tuple[str, int]:
         names = " ".join(modules)
         source_bytes = sum(logical_modules[module]["source_bytes"] for module in modules)
-        if "RelationalLaunchRealizabilityCertificate" in modules:
-            # The source is tiny, but its exact finite-memory checks reduce
-            # image-wide loader and projection predicates. The WinAPI hello
-            # fixture peaks near 40 GiB while elaborating this singleton.
-            return "high-memory", max(49152, source_bytes // 1024 * 3)
+        if any(
+            module.startswith("RelationalLaunch") and "Leaf" in module
+            for module in modules
+        ):
+            # Launch realization is partitioned into independent finite-range
+            # leaves.  Each still reduces image or paired-stack memory, so keep
+            # intra-process parallelism at one while allowing Nix to schedule
+            # the bounded leaves independently across builders.
+            return "high-memory", max(4096, source_bytes // 1024 * 3)
         if any(
             module in (
                 "RelationalProofOriginalCoverageData",

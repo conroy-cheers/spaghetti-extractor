@@ -1,9 +1,20 @@
 from tests.stage_a_relational_support import *
 from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
+from spaghetti_extractor.relational.lean.acceptance import (
+    _launch_check_ranges,
+)
 from typing import Any
 
 
 class StageARelationalAcceptanceTests(StageARelationalTestBase):
+    def test_launch_check_ranges_are_exact_and_reject_invalid_width(self):
+        self.assertEqual(
+            _launch_check_ranges(2500, 1024),
+            [(0, 1024), (1024, 1024), (2048, 452)],
+        )
+        with self.assertRaisesRegex(StageAInputError, "must be positive"):
+            _launch_check_ranges(2500, 0)
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for PE TLS parsing")
     def test_formal_tls_directory_and_callback_parsing(self):
         absent = _pe32_tls_image((), include_tls=False)
@@ -1294,8 +1305,21 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 node for node in graph["nodes"]
                 if node["modules"] == ["RelationalLaunchRealizabilityCertificate"]
             )
-            self.assertEqual(launch_node["resource_class"], "high-memory")
-            self.assertGreaterEqual(launch_node["estimated_memory_mb"], 49152)
+            self.assertEqual(launch_node["resource_class"], "light")
+            launch_leaf_nodes = [
+                node for node in graph["nodes"]
+                if len(node["modules"]) == 1
+                and node["modules"][0].startswith("RelationalLaunch")
+                and "Leaf" in node["modules"][0]
+            ]
+            self.assertGreater(len(launch_leaf_nodes), 4)
+            self.assertTrue(all(
+                node["resource_class"] == "high-memory"
+                and node["estimated_memory_mb"] >= 4096
+                for node in launch_leaf_nodes
+            ))
+            self.assertIn("RelationalLaunchContext", graph["modules"])
+            self.assertIn("RelationalLaunchCheckCertificate", graph["modules"])
             self.assertIn(
                 "RelationalInstructionAdequacyCertificate", graph["modules"]
             )
@@ -1340,7 +1364,31 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "RelationalLaunchRealizabilityCertificate.lean"
             ).read_text(encoding="utf-8")
             self.assertIn("theorem consoleLaunchRealizable", launch_source)
-            self.assertIn("preferredBaseImageMemory", launch_source)
+            self.assertIn(
+                "import StageA.RelationalLaunchCheckCertificate", launch_source
+            )
+            self.assertNotIn("preferredBaseImageMemory_of_checked", launch_source)
+            launch_checks = (
+                prepared / "lean" / "StageA" /
+                "RelationalLaunchCheckCertificate.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "preferredBaseImageMemory_of_indexed_holds", launch_checks
+            )
+            self.assertIn(
+                "immutableImageWordMemory_of_indexed_holds", launch_checks
+            )
+            self.assertIn(
+                "stackRangesMemoryHold_of_single_range_indexed_holds",
+                launch_checks,
+            )
+            self.assertIn("IndexedBoolCertificate.holds_of_ranges", launch_checks)
+            original_leaf = (
+                prepared / "lean" / "StageA" /
+                "RelationalLaunchOriginalImageMappedLeaf0.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn("indexedBoolRangeHolds_of_checked", original_leaf)
+            self.assertIn("{ start := 0, size := 1024 }", original_leaf)
             self.assertNotIn("axiom", launch_source)
             self.assertNotIn("sorry", launch_source)
             self.assertNotIn("native_decide", launch_source)
@@ -1355,6 +1403,21 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertNotIn("._native.", lean["stdout"])
             self.assertNotIn("sorryAx", lean["stdout"])
+
+            original_leaf_path = (
+                prepared / "lean" / "StageA" /
+                "RelationalLaunchOriginalImageMappedLeaf0.lean"
+            )
+            original_leaf_path.write_text(
+                original_leaf_path.read_text(encoding="utf-8").replace(
+                    "{ start := 0, size := 1024 }",
+                    "{ start := 1, size := 1024 }",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(StageAInputError, "source hash"):
+                _validate_prepared_relational(prepared)
 
             proof_ir = json.loads(
                 (prepared / "relational-proof-ir.json").read_text(encoding="utf-8")
@@ -1406,7 +1469,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             launch = (
                 prepared / "lean" / "StageA" /
-                "RelationalLaunchRealizabilityCertificate.lean"
+                "RelationalLaunchContext.lean"
             ).read_text(encoding="utf-8")
             self.assertIn(
                 "def consoleLaunchOriginalMemory", launch
@@ -5420,8 +5483,19 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertFalse(full_build["checks"]["nix_graph_built"])
             self.assertGreater(graph["counts"]["derivations"], 1)
             self.assertTrue(any(node["id"].startswith("definitions-pack-") for node in graph["nodes"]))
-            proof_pack = next(node for node in graph["nodes"] if node["id"].startswith("local-proof-pack-"))
-            self.assertEqual(proof_pack["resource_class"], "medium")
+            proof_packs = [
+                node for node in graph["nodes"]
+                if node["id"].startswith("local-proof-pack-")
+            ]
+            proof_shards = [
+                module for module in graph["modules"]
+                if module.startswith("RelationalProofShard")
+                and module.removeprefix("RelationalProofShard").isdigit()
+            ]
+            self.assertEqual(bool(proof_packs), bool(proof_shards))
+            self.assertTrue(all(
+                node["resource_class"] == "medium" for node in proof_packs
+            ))
             semantic_ir = json.loads(
                 (prepared / "relational-semantic-ir.json").read_text(encoding="utf-8")
             )
