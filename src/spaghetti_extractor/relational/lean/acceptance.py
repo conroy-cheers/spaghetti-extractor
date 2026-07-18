@@ -55,6 +55,7 @@ from .expressions import (
     _lean_state_invariant,
 )
 from .definitions import (
+    _lean_region_input_invariant,
     _normalized_behavior_fast_path,
 )
 from .common import _lean_register_relation_pair
@@ -3447,6 +3448,48 @@ def _whole_program_acceptance_plan(
             "required_theorem": RELATIONAL_ACCEPTANCE_THEOREM,
             "theorem": None,
             "profile": profile,
+            "root_node_id": (
+                int(launch_root_node_id)
+                if launch_root_node_id is not None else None
+            ),
+            "terminal_region_index": (
+                returned_region_indices[0]
+                if returned_region_indices else (
+                    int(launch_root_node_id)
+                    if launch_root_node_id is not None else None
+                )
+            ),
+            "terminal_invariant": (
+                {
+                    "register_relations": [
+                        claim["output"]
+                        for step in node_steps if step["kind"] == "terminate"
+                        for claim in step["output_claims"]
+                    ],
+                    "import_register_relations": [],
+                    "dynamic_register_range_relations": [],
+                    "bounds": [],
+                    "flag_bits": (
+                        regions[returned_region_indices[0]].get("flag_outputs", [])
+                        if returned_region_indices else []
+                    ),
+                    "address_separations": [],
+                    "stack_windows": [],
+                }
+                if returned_region_indices else {
+                    "register_relations": [{
+                        "original": "eax",
+                        "candidate": "eax",
+                        "relation": "exact",
+                    }],
+                    "import_register_relations": [],
+                    "dynamic_register_range_relations": [],
+                    "bounds": [],
+                    "flag_bits": [],
+                    "address_separations": [],
+                    "stack_windows": [],
+                }
+            ),
             "control_states": control_states,
             "protocol_callback_node_ids": sorted(protocol_callback_contract_by_node),
             "protocol_callback_states": protocol_callback_states,
@@ -3463,9 +3506,14 @@ def _whole_program_acceptance_plan(
                 "tls_callback_node_ids": tls_callback_node_ids,
                 "tls_callback_target_ids": tls_callback_target_ids,
                 "continuation_target_ids": launch_continuation_target_ids,
+                "frame_offsets": [
+                    inventory_payload(inventory, ())
+                    for inventory in launch_frame_inventories
+                ],
                 "original_tls_callback_rvas": original_tls_callbacks,
                 "candidate_tls_callback_rvas": candidate_tls_callbacks,
             },
+            "node_steps": node_steps,
             "blockers": compact_blockers,
         }
     return {
@@ -6362,14 +6410,16 @@ def _write_relational_acceptance_modules(
             launch_reasons.append("the preferred image bases differ")
         if original_bin.size_of_image != candidate_bin.size_of_image:
             launch_reasons.append("the preferred image spans differ")
-        if launch_plan.get("tls_callback_target_ids"):
-            launch_reasons.append("the launch has TLS callback frames")
-        if contract.get("value_targets"):
-            launch_reasons.append("the static data map is nonempty")
+        value_targets = list(contract.get("value_targets", []))
+        if any(
+            int(target.get("mapped_size", 0)) != 0
+            and int(target.get("original_value", -1))
+                != int(target.get("candidate_value", -2))
+            for target in value_targets
+        ):
+            launch_reasons.append("the static data map is not identity-addressed")
         if contract.get("static_dynamic_pointer_slots"):
             launch_reasons.append("the launch has static dynamic-pointer slots")
-        if contract.get("static_word_relation_slots"):
-            launch_reasons.append("the launch has static word-relation slots")
         if not identity_inputs:
             launch_reasons.append("root register relations are not exact identities")
         for key in (
@@ -6385,6 +6435,78 @@ def _write_relational_acceptance_modules(
         stack_size = 4096
         stack_base = 0x70000000
         stack_pointer = stack_base + stack_size // 2
+        code_target_by_id = {
+            int(target["id"]): target for target in contract.get("code_targets", [])
+        }
+        launch_frames: list[dict[str, int]] = []
+        occupied_frame_bytes: set[tuple[str, int]] = set()
+        continuation_target_ids = [
+            int(target_id)
+            for target_id in launch_plan.get("continuation_target_ids", [])
+        ]
+        frame_offsets = list(launch_plan.get("frame_offsets", []))
+        if len(continuation_target_ids) != len(frame_offsets):
+            launch_reasons.append(
+                "the TLS continuation and return-slot inventories differ in length"
+            )
+        for frame_index, (continuation_target_id, inventory) in enumerate(
+            zip(continuation_target_ids, frame_offsets, strict=False)
+        ):
+            locations = list(inventory.get("locations", []))
+            esp_locations = [
+                location for location in locations
+                if location.get("original_register") == "esp"
+                and location.get("candidate_register") == "esp"
+            ]
+            target = code_target_by_id.get(continuation_target_id)
+            if target is None:
+                launch_reasons.append(
+                    f"TLS frame {frame_index} has no canonical continuation target"
+                )
+                continue
+            if not esp_locations:
+                launch_reasons.append(
+                    f"TLS frame {frame_index} has no paired ESP-relative slot"
+                )
+                continue
+            location = esp_locations[0]
+            original_offset = int(location.get("original", 2**32))
+            candidate_offset = int(location.get("candidate", 2**32))
+            original_stack_address = stack_pointer + original_offset
+            candidate_stack_address = stack_pointer + candidate_offset
+            if (
+                original_offset >= 2**31
+                or candidate_offset >= 2**31
+                or original_stack_address < stack_base
+                or candidate_stack_address < stack_base
+                or original_stack_address + 16 > stack_base + stack_size
+                or candidate_stack_address + 16 > stack_base + stack_size
+            ):
+                launch_reasons.append(
+                    f"TLS frame {frame_index} is outside the bounded launch stack"
+                )
+                continue
+            frame_byte_keys = {
+                *(('original', original_stack_address + byte) for byte in range(16)),
+                *(('candidate', candidate_stack_address + byte) for byte in range(16)),
+            }
+            if occupied_frame_bytes.intersection(frame_byte_keys):
+                launch_reasons.append(
+                    f"TLS frame {frame_index} overlaps another launch frame"
+                )
+                continue
+            occupied_frame_bytes.update(frame_byte_keys)
+            launch_frames.append({
+                "continuation_target_id": continuation_target_id,
+                "original_return_address": (
+                    original_bin.image_base + int(target["original_rva"])
+                ),
+                "candidate_return_address": (
+                    candidate_bin.image_base + int(target["candidate_rva"])
+                ),
+                "original_stack_address": original_stack_address,
+                "candidate_stack_address": candidate_stack_address,
+            })
         stack_windows = root_region.get("stack_windows", [])
         if any(
             int(window.get("range_id", -1)) != 0
@@ -6445,14 +6567,24 @@ def _write_relational_acceptance_modules(
             }
         else:
             plan["launch_realizability"] = {
-                "profile": "paired-preferred-base-import-stack-v1",
+                "profile": (
+                    "paired-preferred-base-import-stack-tls-static-v2"
+                    if (
+                        launch_frames
+                        or value_targets
+                        or contract.get("static_word_relation_slots")
+                    )
+                    else "paired-preferred-base-import-stack-v1"
+                ),
                 "stack_base": stack_base,
                 "stack_size": stack_size,
                 "stack_pointer": stack_pointer,
                 "import_bindings": import_bindings,
+                "frames": launch_frames,
             }
     write_json(lean_dir.parent / "whole-program-acceptance.json", plan)
-    if plan["status"] != "ready":
+    acceptance_ready = plan["status"] == "ready"
+    if "launch_realizability" not in plan:
         return plan
 
     nodes = product_graph["nodes"]
@@ -6466,10 +6598,21 @@ def _write_relational_acceptance_modules(
     tls_callback_target_ids = [
         int(target_id) for target_id in launch_plan["tls_callback_target_ids"]
     ]
+    launch_continuation_target_ids = [
+        *tls_callback_target_ids[1:], entry_target_id
+    ] if tls_callback_target_ids else []
+    node_id_by_target = {
+        int(node["target_id"]): node_id for node_id, node in enumerate(nodes)
+    }
+    launch_continuation_node_ids = [
+        node_id_by_target[target_id]
+        for target_id in launch_continuation_target_ids
+    ]
     launch_frame_offsets = [
         _lean_return_slot_offset_inventory(inventory)
         for inventory in launch_plan["frame_offsets"]
     ]
+    root_invariant = _lean_region_input_invariant(root_region)
     terminal_region_index = int(plan["terminal_region_index"])
     terminal_invariant = _lean_state_invariant(plan["terminal_invariant"])
     parameterized_environment = any(
@@ -6552,8 +6695,34 @@ def _write_relational_acceptance_modules(
             "  environment := inertWorldEnvironment\n"
             "  protocolEnvironment := inertWorldProtocolEnvironment\n}\n\n"
         )
+    launch_definition_source = (
+        "import StageA.RelationalCertificates\n"
+        "import StageA.RelationalProductGraphContext\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+        "def consoleLaunch : PE32ConsoleLaunchV2 := {\n"
+        f"  rootNodeId := {root_node_id}\n"
+        f"  rootTargetId := {int(nodes[root_node_id]['target_id'])}\n"
+        f"  entryNodeId := {entry_root_node_id}\n"
+        f"  entryTargetId := {entry_target_id}\n"
+        "  tlsCallbackNodeIds := ["
+        + ", ".join(str(node_id) for node_id in tls_callback_node_ids)
+        + "]\n"
+        "  tlsCallbackTargetIds := ["
+        + ", ".join(str(target_id) for target_id in tls_callback_target_ids)
+        + "]\n"
+        f"  rootInvariant := {root_invariant}\n"
+        "  frameOffsets := [" + ", ".join(launch_frame_offsets) + "]\n"
+        "}\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        stage_a / "RelationalLaunchDefinition.lean", launch_definition_source
+    )
     context_source = (
         "import StageA.RelationalCertificates\n"
+        "import StageA.RelationalLaunchDefinition\n"
         "import StageA.RelationalProofClosureBase\n"
         "import StageA.RelationalProofStaticUsageCertificate\n"
         "import StageA.RelationalSegmentRefinementCertificate\n"
@@ -6582,20 +6751,6 @@ def _write_relational_acceptance_modules(
         "def protocolCallbackTargets : ProtocolCallbackTargetProfile := {\n"
         f"  states := [{callback_target_rows}]\n"
         "}\n\n"
-        "def consoleLaunch : PE32ConsoleLaunchV2 := {\n"
-        f"  rootNodeId := {root_node_id}\n"
-        f"  rootTargetId := {int(nodes[root_node_id]['target_id'])}\n"
-        f"  entryNodeId := {entry_root_node_id}\n"
-        f"  entryTargetId := {entry_target_id}\n"
-        "  tlsCallbackNodeIds := ["
-        + ", ".join(str(node_id) for node_id in tls_callback_node_ids)
-        + "]\n"
-        "  tlsCallbackTargetIds := ["
-        + ", ".join(str(target_id) for target_id in tls_callback_target_ids)
-        + "]\n"
-        f"  rootInvariant := region{root_node_id}.inputInvariant\n"
-        "  frameOffsets := [" + ", ".join(launch_frame_offsets) + "]\n"
-        "}\n\n"
         + world_program_source
         + "end StageA.GeneratedRelational\n"
     )
@@ -6618,8 +6773,47 @@ def _write_relational_acceptance_modules(
         + str(int(binding["candidate_address"])) + " }"
         for binding in launch_witness["import_bindings"]
     )
+    launch_frame_rows = ", ".join(
+        "{ continuationTargetId := "
+        + str(int(frame["continuation_target_id"]))
+        + ", originalReturnAddress := BitVec.ofNat 32 "
+        + str(int(frame["original_return_address"]))
+        + ", candidateReturnAddress := BitVec.ofNat 32 "
+        + str(int(frame["candidate_return_address"]))
+        + ", originalStackAddress := BitVec.ofNat 32 "
+        + str(int(frame["original_stack_address"]))
+        + ", candidateStackAddress := BitVec.ofNat 32 "
+        + str(int(frame["candidate_stack_address"]))
+        + " }"
+        for frame in launch_witness["frames"]
+    )
+    original_launch_writes: list[tuple[int, int]] = []
+    candidate_launch_writes: list[tuple[int, int]] = []
+    for frame in launch_witness["frames"]:
+        original_stack_address = int(frame["original_stack_address"])
+        candidate_stack_address = int(frame["candidate_stack_address"])
+        original_launch_writes.extend([
+            (original_stack_address, int(frame["original_return_address"])),
+            (original_stack_address + 4, original_bin.image_base),
+            (original_stack_address + 8, 1),
+            (original_stack_address + 12, 0),
+        ])
+        candidate_launch_writes.extend([
+            (candidate_stack_address, int(frame["candidate_return_address"])),
+            (candidate_stack_address + 4, candidate_bin.image_base),
+            (candidate_stack_address + 8, 1),
+            (candidate_stack_address + 12, 0),
+        ])
+
+    def lean_concrete_writes(writes: list[tuple[int, int]]) -> str:
+        return ", ".join(
+            "(BitVec.ofNat 32 " + str(address)
+            + ", BitVec.ofNat 32 " + str(value) + ")"
+            for address, value in writes
+        )
+
     launch_context_source = (
-        "import StageA.RelationalAcceptanceContext\n\n"
+        "import StageA.RelationalLaunchDefinition\n\n"
         "namespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
@@ -6631,6 +6825,11 @@ def _write_relational_acceptance_modules(
         f"  size := {stack_size}\n"
         "}\n\n"
         f"def consoleLaunchImportAddresses : List ImportAddressPair := [{import_binding_rows}]\n\n"
+        f"def consoleLaunchFrames : List RelationalRuntimeCallFrame := [{launch_frame_rows}]\n\n"
+        "def consoleLaunchOriginalWrites : List (Word × Word) := ["
+        + lean_concrete_writes(original_launch_writes) + "]\n\n"
+        "def consoleLaunchCandidateWrites : List (Word × Word) := ["
+        + lean_concrete_writes(candidate_launch_writes) + "]\n\n"
         "def consoleLaunchWorld : RelationalWorld := {\n"
         "  stackRanges := [consoleLaunchStackRange]\n"
         "  importAddresses := consoleLaunchImportAddresses\n"
@@ -6646,9 +6845,13 @@ def _write_relational_acceptance_modules(
         f"  esp := BitVec.ofNat 32 {stack_pointer}\n"
         "}\n\n"
         "def consoleLaunchOriginalMemory : Memory :=\n"
-        "  loaderPopulatedPreferredBaseMemory false staticProofContext consoleLaunchWorld\n\n"
+        "  applyConcreteWrites\n"
+        "    (loaderPopulatedPreferredBaseMemory false staticProofContext consoleLaunchWorld)\n"
+        "    consoleLaunchOriginalWrites\n\n"
         "def consoleLaunchCandidateExcludedMemory : Memory :=\n"
-        "  loaderPopulatedPreferredBaseMemory true staticProofContext consoleLaunchWorld\n\n"
+        "  applyConcreteWrites\n"
+        "    (loaderPopulatedPreferredBaseMemory true staticProofContext consoleLaunchWorld)\n"
+        "    consoleLaunchCandidateWrites\n\n"
         "def consoleLaunchCandidateMemory : Memory :=\n"
         "  ordinaryMemoryCandidateProjection staticProofContext consoleLaunchWorld\n"
         "    (staticProofContext.relationalValueTargets consoleLaunchWorld)\n"
@@ -6677,6 +6880,9 @@ def _write_relational_acceptance_modules(
         "  stackRangeMemoryHoldAt staticProofContext consoleLaunchWorld\n"
         "    consoleLaunchOriginalState.memory consoleLaunchCandidateState.memory\n"
         "    consoleLaunchStackRange\n\n"
+        "def consoleLaunchStaticWordSlotAt : Nat -> Bool :=\n"
+        "  staticWordRelationSlotMemoryHoldAt staticProofContext consoleLaunchWorld\n"
+        "    consoleLaunchOriginalState.memory consoleLaunchCandidateState.memory\n\n"
         "theorem consoleLaunchWorldValid :\n"
         "    PE32ConsoleLaunchWorldV1.Valid staticProofContext consoleLaunchWorld := by\n"
         "  unfold PE32ConsoleLaunchWorldV1.Valid\n"
@@ -6697,65 +6903,81 @@ def _write_relational_acceptance_modules(
     )
     launch_leaf_modules: list[str] = []
 
-    def write_launch_leaves(
+    def write_launch_span_leaves(
         *,
         module_prefix: str,
         theorem_prefix: str,
-        total: int,
+        spans: list[tuple[int, int]],
         predicate: str,
-    ) -> list[tuple[str, int, int]]:
-        checked_ranges: list[tuple[str, int, int]] = []
-        for index, (start, count) in enumerate(
-            _launch_check_ranges(total, launch_chunk_size)
-        ):
-            module = f"{module_prefix}{index}"
-            theorem_name = f"{theorem_prefix}{index}"
-            source = (
-                "import StageA.RelationalLaunchContext\n\n"
-                "namespace StageA.GeneratedRelational\n\n"
-                "open StageA.Formal StageA.Relational\n\n"
-                "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
-                f"theorem {theorem_name} :\n"
-                f"    IndexedBoolRangeHolds {predicate} "
-                f"{{ start := {start}, size := {count} }} := by\n"
-                "  apply indexedBoolRangeHolds_of_checked\n"
-                "  decide\n\n"
-                "end StageA.GeneratedRelational\n"
-            )
-            _write_text_if_changed(stage_a / f"{module}.lean", source)
-            launch_leaf_modules.append(module)
-            checked_ranges.append((theorem_name, start, count))
-        return checked_ranges
+    ) -> list[tuple[int, int, list[tuple[str, int, int]]]]:
+        checked_spans: list[tuple[int, int, list[tuple[str, int, int]]]] = []
+        leaf_index = 0
+        for span_start, span_size in spans:
+            checked_ranges: list[tuple[str, int, int]] = []
+            for relative_start, count in _launch_check_ranges(
+                span_size, launch_chunk_size
+            ):
+                start = span_start + relative_start
+                module = f"{module_prefix}{leaf_index}"
+                theorem_name = f"{theorem_prefix}{leaf_index}"
+                source = (
+                    "import StageA.RelationalLaunchContext\n\n"
+                    "namespace StageA.GeneratedRelational\n\n"
+                    "open StageA.Formal StageA.Relational\n\n"
+                    "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
+                    f"theorem {theorem_name} :\n"
+                    f"    IndexedBoolRangeHolds {predicate} "
+                    f"{{ start := {start}, size := {count} }} := by\n"
+                    "  apply indexedBoolRangeHolds_of_checked\n"
+                    "  decide\n\n"
+                    "end StageA.GeneratedRelational\n"
+                )
+                _write_text_if_changed(stage_a / f"{module}.lean", source)
+                launch_leaf_modules.append(module)
+                checked_ranges.append((theorem_name, start, count))
+                leaf_index += 1
+            checked_spans.append((span_start, span_size, checked_ranges))
+        return checked_spans
 
-    original_image_ranges = write_launch_leaves(
+    def write_launch_leaves(
+        *, module_prefix: str, theorem_prefix: str, total: int, predicate: str
+    ) -> list[tuple[str, int, int]]:
+        return write_launch_span_leaves(
+            module_prefix=module_prefix,
+            theorem_prefix=theorem_prefix,
+            spans=[(0, total)],
+            predicate=predicate,
+        )[0][2]
+
+    def mapped_image_spans(binary: StageABinary) -> list[tuple[int, int]]:
+        return [(0, binary.size_of_headers)] + [
+            (section.rva_start, section.rva_end - section.rva_start)
+            for section in binary.sections
+        ]
+
+    original_image_spans = write_launch_span_leaves(
         module_prefix="RelationalLaunchOriginalImageMappedLeaf",
         theorem_prefix="consoleLaunchOriginalImageMappedRange",
-        total=original_bin.size_of_image,
+        spans=mapped_image_spans(original_bin),
         predicate="consoleLaunchOriginalImageMappedAt",
     )
-    candidate_image_ranges = write_launch_leaves(
+    candidate_image_spans = write_launch_span_leaves(
         module_prefix="RelationalLaunchCandidateImageMappedLeaf",
         theorem_prefix="consoleLaunchCandidateImageMappedRange",
-        total=candidate_bin.size_of_image,
+        spans=mapped_image_spans(candidate_bin),
         predicate="consoleLaunchCandidateImageMappedAt",
-    )
-    original_immutable_ranges = write_launch_leaves(
-        module_prefix="RelationalLaunchOriginalImmutableImageLeaf",
-        theorem_prefix="consoleLaunchOriginalImmutableImageRange",
-        total=original_bin.size_of_image,
-        predicate="consoleLaunchOriginalImmutableImageAt",
-    )
-    candidate_immutable_ranges = write_launch_leaves(
-        module_prefix="RelationalLaunchCandidateImmutableImageLeaf",
-        theorem_prefix="consoleLaunchCandidateImmutableImageRange",
-        total=candidate_bin.size_of_image,
-        predicate="consoleLaunchCandidateImmutableImageAt",
     )
     stack_ranges = write_launch_leaves(
         module_prefix="RelationalLaunchStackMemoryLeaf",
         theorem_prefix="consoleLaunchStackMemoryRange",
         total=stack_size,
         predicate="consoleLaunchStackMemoryAt",
+    )
+    static_word_slot_ranges = write_launch_leaves(
+        module_prefix="RelationalLaunchStaticWordSlotLeaf",
+        theorem_prefix="consoleLaunchStaticWordSlotRange",
+        total=len(contract.get("static_word_relation_slots", [])),
+        predicate="consoleLaunchStaticWordSlotAt",
     )
 
     def launch_certificate(name: str, ranges: list[tuple[str, int, int]]) -> str:
@@ -6768,20 +6990,50 @@ def _write_relational_acceptance_modules(
             f"{{ ranges := [{span_rows}] }}\n\n"
         )
 
-    original_image_range_proof = _lean_all_listed_proof([
-        theorem for theorem, _start, _count in original_image_ranges
-    ])
-    candidate_image_range_proof = _lean_all_listed_proof([
-        theorem for theorem, _start, _count in candidate_image_ranges
-    ])
-    original_immutable_range_proof = _lean_all_listed_proof([
-        theorem for theorem, _start, _count in original_immutable_ranges
-    ])
-    candidate_immutable_range_proof = _lean_all_listed_proof([
-        theorem for theorem, _start, _count in candidate_immutable_ranges
-    ])
+    def combined_span_proof(
+        predicate: str, chunks: list[tuple[str, int, int]]
+    ) -> str:
+        if not chunks:
+            raise StageAInputError("mapped launch span cannot be empty")
+        proof, start, size = chunks[0]
+        for next_proof, next_start, next_size in chunks[1:]:
+            proof = (
+                f"indexedBoolRangeHolds_append {predicate} "
+                f"{{ start := {start}, size := {size} }} "
+                f"{{ start := {next_start}, size := {next_size} }} "
+                f"(by decide) ({proof}) ({next_proof})"
+            )
+            size += next_size
+        return proof
+
+    def mapped_spans_proof(
+        predicate: str,
+        spans: list[tuple[int, int, list[tuple[str, int, int]]]],
+    ) -> str:
+        return _lean_all_listed_proof([
+            combined_span_proof(predicate, chunks)
+            for _start, _size, chunks in spans
+        ])
+
+    def lean_span_list(
+        spans: list[tuple[int, int, list[tuple[str, int, int]]]],
+    ) -> str:
+        return "[" + ", ".join(
+            f"{{ start := {start}, size := {size} }}"
+            for start, size, _chunks in spans
+        ) + "]"
+
+    original_image_range_proof = mapped_spans_proof(
+        "consoleLaunchOriginalImageMappedAt", original_image_spans
+    )
+    candidate_image_range_proof = mapped_spans_proof(
+        "consoleLaunchCandidateImageMappedAt", candidate_image_spans
+    )
     stack_range_proof = _lean_all_listed_proof([
         theorem for theorem, _start, _count in stack_ranges
+    ])
+    static_word_slot_range_proof = _lean_all_listed_proof([
+        theorem for theorem, _start, _count in static_word_slot_ranges
     ])
 
     launch_checks_source = (
@@ -6789,79 +7041,46 @@ def _write_relational_acceptance_modules(
         + "\nnamespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
-        + launch_certificate(
-            "consoleLaunchOriginalImageCertificate", original_image_ranges
-        )
-        + launch_certificate(
-            "consoleLaunchCandidateImageCertificate", candidate_image_ranges
-        )
-        + launch_certificate(
-            "consoleLaunchOriginalImmutableCertificate", original_immutable_ranges
-        )
-        + launch_certificate(
-            "consoleLaunchCandidateImmutableCertificate", candidate_immutable_ranges
-        )
         + launch_certificate("consoleLaunchStackCertificate", stack_ranges)
+        + launch_certificate(
+            "consoleLaunchStaticWordSlotCertificate", static_word_slot_ranges
+        )
         + "theorem consoleLaunchOriginalImageMapped :\n"
         "    PreferredBaseImageMemory staticProofContext.originalPe\n"
         "      staticProofContext.originalImports consoleLaunchOriginalState.memory := by\n"
-        "  apply preferredBaseImageMemory_of_indexed_holds\n"
-        "    staticProofContext.originalPe staticProofContext.originalImports\n"
-        "    consoleLaunchOriginalState.memory consoleLaunchOriginalImageCertificate\n"
+        "  apply preferredBaseImageMemory_of_mapped_ranges\n"
         "  have rangesHold : AllIndexedBoolRangesHold\n"
         "      consoleLaunchOriginalImageMappedAt\n"
-        "      consoleLaunchOriginalImageCertificate.ranges := by\n"
+        "      (mappedImageSpans staticProofContext.originalPe) := by\n"
+        "    change AllIndexedBoolRangesHold consoleLaunchOriginalImageMappedAt "
+        + lean_span_list(original_image_spans) + "\n"
         f"    exact {original_image_range_proof}\n"
-        "  have checked := IndexedBoolCertificate.holds_of_ranges\n"
-        "    consoleLaunchOriginalImageMappedAt staticProofContext.originalPe.sizeOfImage\n"
-        "    consoleLaunchOriginalImageCertificate (by decide) rangesHold\n"
-        "  simpa [consoleLaunchOriginalImageMappedAt] using checked\n\n"
+        "  simpa [consoleLaunchOriginalImageMappedAt] using rangesHold\n\n"
         "theorem consoleLaunchCandidateImageMapped :\n"
         "    PreferredBaseImageMemory staticProofContext.candidatePe\n"
         "      staticProofContext.candidateImports consoleLaunchCandidateState.memory := by\n"
-        "  apply preferredBaseImageMemory_of_indexed_holds\n"
-        "    staticProofContext.candidatePe staticProofContext.candidateImports\n"
-        "    consoleLaunchCandidateState.memory consoleLaunchCandidateImageCertificate\n"
+        "  apply preferredBaseImageMemory_of_mapped_ranges\n"
         "  have rangesHold : AllIndexedBoolRangesHold\n"
         "      consoleLaunchCandidateImageMappedAt\n"
-        "      consoleLaunchCandidateImageCertificate.ranges := by\n"
+        "      (mappedImageSpans staticProofContext.candidatePe) := by\n"
+        "    change AllIndexedBoolRangesHold consoleLaunchCandidateImageMappedAt "
+        + lean_span_list(candidate_image_spans) + "\n"
         f"    exact {candidate_image_range_proof}\n"
-        "  have checked := IndexedBoolCertificate.holds_of_ranges\n"
-        "    consoleLaunchCandidateImageMappedAt staticProofContext.candidatePe.sizeOfImage\n"
-        "    consoleLaunchCandidateImageCertificate (by decide) rangesHold\n"
-        "  simpa [consoleLaunchCandidateImageMappedAt] using checked\n\n"
+        "  simpa [consoleLaunchCandidateImageMappedAt] using rangesHold\n\n"
         "theorem consoleLaunchOriginalImmutableImage :\n"
         "    ImmutableImageWordMemory staticProofContext.originalPe\n"
         "      consoleLaunchOriginalState.memory := by\n"
-        "  apply immutableImageWordMemory_of_indexed_holds\n"
+        "  exact preferredBaseImageMemory_implies_immutable\n"
         "    staticProofContext.originalPe staticProofContext.originalImports\n"
-        "    consoleLaunchOriginalState.memory consoleLaunchOriginalImmutableCertificate\n"
-        "  · decide\n"
-        "  · have rangesHold : AllIndexedBoolRangesHold\n"
-        "        consoleLaunchOriginalImmutableImageAt\n"
-        "        consoleLaunchOriginalImmutableCertificate.ranges := by\n"
-        f"      exact {original_immutable_range_proof}\n"
-        "    have checked := IndexedBoolCertificate.holds_of_ranges\n"
-        "      consoleLaunchOriginalImmutableImageAt\n"
-        "      staticProofContext.originalPe.sizeOfImage\n"
-        "      consoleLaunchOriginalImmutableCertificate (by decide) rangesHold\n"
-        "    simpa [consoleLaunchOriginalImmutableImageAt] using checked\n\n"
+        "    consoleLaunchOriginalState.memory (by decide)\n"
+        "    consoleLaunchOriginalImageMapped (by decide)\n\n"
         "theorem consoleLaunchCandidateImmutableImage :\n"
         "    ImmutableImageWordMemory staticProofContext.candidatePe\n"
         "      consoleLaunchCandidateState.memory := by\n"
-        "  apply immutableImageWordMemory_of_indexed_holds\n"
+        "  exact preferredBaseImageMemory_implies_immutable\n"
         "    staticProofContext.candidatePe staticProofContext.candidateImports\n"
-        "    consoleLaunchCandidateState.memory consoleLaunchCandidateImmutableCertificate\n"
-        "  · decide\n"
-        "  · have rangesHold : AllIndexedBoolRangesHold\n"
-        "        consoleLaunchCandidateImmutableImageAt\n"
-        "        consoleLaunchCandidateImmutableCertificate.ranges := by\n"
-        f"      exact {candidate_immutable_range_proof}\n"
-        "    have checked := IndexedBoolCertificate.holds_of_ranges\n"
-        "      consoleLaunchCandidateImmutableImageAt\n"
-        "      staticProofContext.candidatePe.sizeOfImage\n"
-        "      consoleLaunchCandidateImmutableCertificate (by decide) rangesHold\n"
-        "    simpa [consoleLaunchCandidateImmutableImageAt] using checked\n\n"
+        "    consoleLaunchCandidateState.memory (by decide)\n"
+        "    consoleLaunchCandidateImageMapped (by decide)\n\n"
         "theorem consoleLaunchStackMemoryRelated :\n"
         "    StackRangesMemoryHold staticProofContext consoleLaunchWorld\n"
         "      consoleLaunchOriginalState.memory consoleLaunchCandidateState.memory := by\n"
@@ -6876,6 +7095,19 @@ def _write_relational_acceptance_modules(
         "      consoleLaunchStackMemoryAt consoleLaunchStackRange.size\n"
         "      consoleLaunchStackCertificate (by decide) rangesHold\n"
         "    simpa [consoleLaunchStackMemoryAt] using checked\n\n"
+        "theorem consoleLaunchStaticWordSlotsRelated :\n"
+        "    StaticWordRelationSlotsMemoryHold staticProofContext consoleLaunchWorld\n"
+        "      consoleLaunchOriginalState.memory consoleLaunchCandidateState.memory := by\n"
+        "  apply staticWordRelationSlotsMemoryHold_of_indexed_holds\n"
+        "    staticProofContext consoleLaunchWorld consoleLaunchOriginalState.memory\n"
+        "    consoleLaunchCandidateState.memory consoleLaunchStaticWordSlotCertificate\n"
+        "  have rangesHold : AllIndexedBoolRangesHold consoleLaunchStaticWordSlotAt\n"
+        "      consoleLaunchStaticWordSlotCertificate.ranges := by\n"
+        f"    exact {static_word_slot_range_proof}\n"
+        "  have checked := IndexedBoolCertificate.holds_of_ranges\n"
+        "    consoleLaunchStaticWordSlotAt staticProofContext.staticWordRelationSlots.length\n"
+        "    consoleLaunchStaticWordSlotCertificate (by decide) rangesHold\n"
+        "  simpa [consoleLaunchStaticWordSlotAt] using checked\n\n"
         "end StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(
@@ -6900,7 +7132,7 @@ def _write_relational_acceptance_modules(
         "  · exact consoleLaunchCandidateImmutableImage\n"
         "  · refine ⟨by decide, by decide, by decide, by decide, ?_, ?_, rfl, rfl,\n"
         "      by decide, rfl⟩\n"
-        "    · exact ordinaryMemoryRelated_projection_without_relocations\n"
+        "    · exact ordinaryMemoryRelated_projection_of_mapped_identity\n"
         "        staticProofContext consoleLaunchWorld\n"
         "        staticProofContext.codeMap.entries.toList\n"
         "        (staticProofContext.relationalValueTargets consoleLaunchWorld)\n"
@@ -6909,29 +7141,49 @@ def _write_relational_acceptance_modules(
         "    · refine { staticPointerSlots := ?_, staticWordSlots := ?_, active := ?_ }\n"
         "      · intro slot member\n"
         "        simp [staticProofContext] at member\n"
-        "      · intro slot member\n"
-        "        simp [staticProofContext] at member\n"
+        "      · exact consoleLaunchStaticWordSlotsRelated\n"
         "      · exact { registerRanges := by decide, stackRanges := by decide }\n"
         "  · decide\n\n"
         "theorem consoleLaunchRealizable :\n"
         "    consoleLaunch.Realizable staticProofContext relationalProductGraph\n"
         "      relationalProductReachabilityEvidence := by\n"
         "  refine ⟨consoleLaunchWorld, consoleLaunchOriginalState,\n"
-        "    consoleLaunchCandidateState, [],\n"
+        "    consoleLaunchCandidateState, consoleLaunchFrames,\n"
         "    consoleLaunchWorldValid, consoleLaunchOriginalImageMapped,\n"
         "    consoleLaunchCandidateImageMapped, ?_, ?_, ?_, ?_,\n"
         "    consoleLaunchStateRelated⟩\n"
-        "  all_goals simp [consoleLaunch, RelationalRuntimeCallStackHolds,\n"
-        "    PE32ConsoleLaunchV2.continuationTargetIds,\n"
+        "  · simp [consoleLaunch, consoleLaunchFrames,\n"
+        "    consoleLaunchOriginalState, consoleLaunchCandidateState,\n"
+        "    consoleLaunchOriginalMemory, consoleLaunchCandidateMemory,\n"
+        "    consoleLaunchCandidateExcludedMemory, consoleLaunchOriginalWrites,\n"
+        "    consoleLaunchCandidateWrites, RelationalRuntimeCallStackHolds,\n"
+        "    RelationalRuntimeCallFrame.memoryHolds,\n"
+        "    ReturnSlotOffsetInventory.holds, ReturnSlotOffsetPair.holds,\n"
+        "    PE32ConsoleLaunchV2.continuationTargetIds] <;> decide\n"
+        "  · simp [consoleLaunch, consoleLaunchOriginalState,\n"
+        "    consoleLaunchCandidateState,\n"
         "    RelationalRuntimeCallFactsHold, RelationalRuntimeCallImportsHold,\n"
-        "    RelationalRuntimeCallRelationsHold, RelationalRuntimeCallTargetsMapped,\n"
-        "    PE32TlsProcessAttachArgumentsHold]\n\n"
+        "    RelationalRuntimeCallRelationsHold] <;> decide\n"
+        "  · exact RelationalRuntimeCallTargetsMapped.of_checked\n"
+        "      relationalProductGraph relationalProductReachabilityEvidence\n"
+        "      ["
+        + ", ".join(str(node_id) for node_id in launch_continuation_node_ids)
+        + "] consoleLaunch.continuationTargetIds (by decide)\n"
+        "  · simp [consoleLaunch, consoleLaunchFrames,\n"
+        "    consoleLaunchOriginalState, consoleLaunchCandidateState,\n"
+        "    consoleLaunchOriginalMemory, consoleLaunchCandidateMemory,\n"
+        "    consoleLaunchCandidateExcludedMemory, consoleLaunchOriginalWrites,\n"
+        "    consoleLaunchCandidateWrites,\n"
+        "    PE32TlsProcessAttachArgumentsHold] <;> decide\n\n"
         "end StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(
         stage_a / "RelationalLaunchRealizabilityCertificate.lean",
         launch_realizability_source,
     )
+
+    if not acceptance_ready:
+        return plan
 
     decode_chunk_by_region = {
         region_index: chunk_index

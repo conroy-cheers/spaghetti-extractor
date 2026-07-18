@@ -865,7 +865,7 @@
                       (.modules | length) == 1 and
                       (.modules[0] | startswith("RelationalLaunch")) and
                       (.modules[0] | contains("Leaf"))
-                    )] | length) == 100 and
+                    )] | length) == 16 and
                   all(.nodes[] |
                     select(
                       (.modules | length) == 1 and
@@ -881,7 +881,7 @@
                   ) and
                   any(.nodes[];
                     .modules == ["RelationalLaunchCheckCertificate"] and
-                    (.dependencies | length) == 100
+                    (.dependencies | length) == 16
                   )
                 ' "$prepared/module-graph.json" >/dev/null
                 jq -e '
@@ -1188,6 +1188,8 @@
               mkdir -p "$work"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_LAUNCH_CHECK_CHUNK=1024
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_CODE_MAP_NIX_PACK_MODULES=4
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
                 spaghetti-extractor stage-a-prepare-relational \
                   --original "$fixture_dir/hello-original.exe" \
@@ -1208,6 +1210,13 @@
               inherit pkgs;
               prepared = stage-a-minimal-hello-prepared-proof + "/report/relational-v3";
               targetNodes = [ "relationalsegmentrefinementedge127" ];
+              targetBundle = true;
+            };
+          stage-a-minimal-hello-launch-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              prepared = stage-a-minimal-hello-prepared-proof + "/report/relational-v3";
+              targetNodes = [ "relationallaunchrealizabilitycertificate" ];
               targetBundle = true;
             };
           stage-a-minimal-hello-segment-proofs =
@@ -1249,9 +1258,16 @@
                 .lean_trust == 0 and
                 ([.nodes[].id] | index("relationalsegmentrefinementedge127")) != null
               ' "${stage-a-minimal-hello-proof-smoke}/bundle.json" >/dev/null
+              jq -e '
+                .format == "stage-a-lean-target-bundle-v1" and
+                .lean_trust == 0 and
+                ([.nodes[].id] |
+                  index("relationallaunchrealizabilitycertificate")) != null
+              ' "${stage-a-minimal-hello-launch-proof}/bundle.json" >/dev/null
               mkdir -p "$out"
               cp "$prepared/prepared-proof.json" "$prepared/semantic-gaps.json" "$out/"
               cp "${stage-a-minimal-hello-proof-smoke}/bundle.json" "$out/proof-smoke-bundle.json"
+              cp "${stage-a-minimal-hello-launch-proof}/bundle.json" "$out/launch-proof-bundle.json"
             '';
           stage-a-jq-static-map = pkgs.runCommand "stage-a-jq-static-map"
             {
@@ -1767,6 +1783,12 @@
           stageARelationalAcceptanceSuite = mkStageARelationalTestSuite
             "acceptance" "tests.test_stage_a_relational_acceptance"
             "StageARelationalAcceptanceTests" ./tests/test_stage_a_relational_acceptance.py;
+          stageARelationalStaticWordSlotCertificateSuite =
+            mkStageARelationalTestSuite
+              "lean-static-word-slot-certificate"
+              "tests.test_stage_a_relational_static_word_slot_certificate"
+              "StageARelationalStaticWordSlotCertificateTests"
+              ./tests/test_stage_a_relational_static_word_slot_certificate.py;
           stage-a-relational-tests-contract = stageARelationalContractSuite.aggregate;
           stage-a-relational-tests-state = stageARelationalStateSuite.aggregate;
           stage-a-relational-tests-pipeline = stageARelationalPipelineSuite.aggregate;
@@ -1782,6 +1804,8 @@
           stage-a-relational-tests-contract-machine-import =
             stageARelationalContractSuite.cases.machine_import_call_contract_validation_fails_closed;
           stage-a-relational-tests-acceptance = stageARelationalAcceptanceSuite.aggregate;
+          stage-a-relational-tests-static-word-slot-certificate =
+            stageARelationalStaticWordSlotCertificateSuite.aggregate;
           stage-a-relational-tests-acceptance-whole-program-kernel =
             stageARelationalAcceptanceSuite.cases.whole_program_equivalence_kernel_checks_without_sorry;
           stage-a-relational-tests-acceptance-instruction-adequacy =
@@ -1904,6 +1928,7 @@
               stage-a-relational-tests-pipeline
               stage-a-relational-tests-lean
               stage-a-relational-tests-acceptance
+              stage-a-relational-tests-static-word-slot-certificate
             ];
           };
           stage-a-jq-fixtures-root = pkgs.writeShellApplication {
@@ -1986,6 +2011,7 @@
             stage-a-minimal-hello-relation-contract
             stage-a-minimal-hello-prepared-proof
             stage-a-minimal-hello-proof-smoke
+            stage-a-minimal-hello-launch-proof
             stage-a-minimal-hello-segment-proofs
             stage-a-minimal-hello-evidence-bundle
             stage-a-minimal-hello-check
@@ -2034,6 +2060,7 @@
             stage-a-relational-tests-lean-runtime-frame-import-environment
             stage-a-relational-tests-acceptance-runtime-frame-import
             stage-a-relational-tests-acceptance-runtime-frame-register
+            stage-a-relational-tests-static-word-slot-certificate
             stage-a-relational-tests-contract
             stage-a-relational-tests-state
             stage-a-relational-tests-pipeline

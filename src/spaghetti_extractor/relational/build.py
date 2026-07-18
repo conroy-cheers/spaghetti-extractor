@@ -1028,6 +1028,10 @@ def _write_relational_module_graph(
         reachable.add(module)
 
     visit(root)
+    auxiliary_modules: list[str] = []
+    if "RelationalLaunchRealizabilityCertificate" in sources:
+        visit("RelationalLaunchRealizabilityCertificate")
+        auxiliary_modules.append("RelationalLaunchRealizabilityCertificate")
     logical_modules = {
         module: {
             "source": f"lean/StageA/{module}.lean",
@@ -1184,6 +1188,7 @@ def _write_relational_module_graph(
         "profile": STAGE_A_RELATIONAL_PROFILE_ID,
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "root_module": root,
+        "auxiliary_modules": auxiliary_modules,
         "final_node": module_node[root],
         "expected_final_theorem": (
             RELATIONAL_ACCEPTANCE_THEOREM if acceptance_ready else None
@@ -1297,8 +1302,20 @@ def _validate_relational_module_graph(
         visiting.remove(node_id)
         visited.add(node_id)
     visit_node(str(graph.get("final_node")))
+    auxiliary_modules = graph.get("auxiliary_modules", [])
+    if not isinstance(auxiliary_modules, list) or any(
+        not isinstance(module, str) or module not in assigned
+        for module in auxiliary_modules
+    ):
+        raise StageAInputError("Lean graph has an invalid auxiliary module inventory")
+    if len(auxiliary_modules) != len(set(auxiliary_modules)):
+        raise StageAInputError("Lean graph has duplicate auxiliary modules")
+    for module in auxiliary_modules:
+        visit_node(assigned[module])
     if visited != set(node_by_id):
-        raise StageAInputError("Lean graph contains nodes outside the final theorem closure")
+        raise StageAInputError(
+            "Lean graph contains nodes outside the final or auxiliary theorem closures"
+        )
     acceptance = graph.get("acceptance")
     if not isinstance(acceptance, dict):
         raise StageAInputError("prepared Lean graph omits its acceptance state")

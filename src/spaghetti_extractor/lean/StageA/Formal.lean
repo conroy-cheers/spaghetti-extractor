@@ -392,6 +392,29 @@ def rvaByte (pe : PE32) (rva : Nat) : Option Byte := do
     else
       pure 0
 
+theorem rvaByte_region (pe : PE32) (rva expected : Nat)
+    (checked : rvaByte pe rva = some expected) :
+    rva < pe.sizeOfHeaders ∨
+      ∃ sec, sec ∈ pe.sections ∧ sec.virtualAddress <= rva ∧
+        rva < sec.virtualAddress + sec.mappedSize := by
+  unfold rvaByte at checked
+  split at checked
+  · exact Or.inl (by assumption)
+  · right
+    cases found : pe.sections.find? (fun sec =>
+        sec.virtualAddress <= rva &&
+          rva < sec.virtualAddress + sec.mappedSize) with
+    | none => simp [found] at checked
+    | some sec =>
+        have member := List.mem_of_find?_eq_some found
+        have predicate := List.find?_some
+          (p := fun candidate : Section =>
+            candidate.virtualAddress <= rva &&
+              rva < candidate.virtualAddress + candidate.mappedSize)
+          (a := sec) found
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at predicate
+        exact ⟨sec, member, predicate⟩
+
 def readRvaU16 (pe : PE32) (rva : Nat) : Option Nat := do
   let b0 <- rvaByte pe rva
   let b1 <- rvaByte pe (rva + 1)
@@ -756,6 +779,21 @@ def readImmutableImageWordWithImports (pe : PE32) (imports : List PEImport)
       !sec.writable && sec.virtualAddress <= rva &&
         rva + size <= sec.virtualAddress + sec.mappedSize
   readRvaLittleEndian pe rva size
+
+theorem readImmutableImageWordWithImports_excludesIat
+    (pe : PE32) (imports : List PEImport) (absolute size expected : Nat)
+    (checked : readImmutableImageWordWithImports pe imports absolute size =
+      some expected) :
+    imageRangeExcludesIat imports (absolute - pe.imageBase) size = true := by
+  unfold readImmutableImageWordWithImports at checked
+  split at checked
+  · simp at checked
+  · dsimp only at checked
+    split at checked
+    · simp at checked
+    · split at checked
+      · simp at checked
+      · simp_all
 
 def readImmutableImageWord (pe : PE32) (absolute size : Nat) : Option Nat := do
   let imports <- parseImports pe

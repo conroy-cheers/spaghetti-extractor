@@ -49,6 +49,7 @@ from .expressions import (
     _lean_static_word_relation_slot,
     _lean_semantic_bool_expr,
     _lean_semantic_expr,
+    _lean_state_invariant,
     _lean_value_target,
 )
 
@@ -84,6 +85,28 @@ def _lean_region_state_predicates(region: dict[str, Any]) -> list[str] | None:
             "{ original := " + original + ", candidate := " + candidate + " }"
         )
     return rows
+
+
+def _lean_region_input_invariant(region: dict[str, Any]) -> str:
+    """Serialize exactly the invariant computed by RegionRelation.inputInvariant."""
+    invariant = _lean_state_invariant({
+        "register_relations": region.get("input_relations", []),
+        "import_register_relations": region.get("input_import_relations", []),
+        "dynamic_register_range_relations": region.get(
+            "input_dynamic_range_relations", []
+        ),
+        "dynamic_stack_range_relations": region.get(
+            "input_dynamic_stack_range_relations", []
+        ),
+        "bounds": region.get("bounds", []),
+        "flag_bits": region.get("flag_inputs", FLAG_BITS),
+        "address_separations": region.get("address_separations", []),
+        "stack_windows": region.get("stack_windows", []),
+    })
+    predicates = _lean_region_state_predicates(region) or []
+    if not invariant.endswith(" }"):
+        raise StageAInputError("state invariant has an unsupported literal shape")
+    return invariant[:-2] + ", predicates := [" + ", ".join(predicates) + "] }"
 
 
 def _lean_region_definition(index: int, region: dict[str, Any]) -> str:

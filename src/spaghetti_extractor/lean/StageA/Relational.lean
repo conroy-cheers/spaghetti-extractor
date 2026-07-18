@@ -2705,9 +2705,12 @@ def immutableImageByteCoveredByWord (pe : PE32) (address : Word) : Bool :=
     offset <= address.toNat &&
       (readImmutableImageWord pe (address.toNat - offset) 4).isSome
 
+/-- Ordinary equality does not govern a byte when either side is fixed by its
+own immutable PE-image obligation. This admits one-sided section tails while
+leaving any later read to the side-specific immutable-memory proof. -/
 def pairedImmutableImageByteCovered (context : StaticProofContext)
     (values : List ValueTargetPair) (candidateAddress : Word) : Bool :=
-  immutableImageByteCoveredByWord context.candidatePe candidateAddress &&
+  immutableImageByteCoveredByWord context.candidatePe candidateAddress ||
     immutableImageByteCoveredByWord context.originalPe
       (normalizeDataAddress values candidateAddress)
 
@@ -4330,6 +4333,83 @@ def ordinaryMemoryCandidateProjection (context : StaticProofContext)
       excludedValues address
     else
       original (normalizeDataAddress values address)
+
+def mappedValueTargetsIdentity (values : List ValueTargetPair) : Bool :=
+  values.all fun target =>
+    target.mappedSize == 0 || target.originalValue == target.candidateValue
+
+theorem normalizeDataAddress_eq_self_of_mapped_identity
+    (values : List ValueTargetPair) (address : Word)
+    (identity : mappedValueTargetsIdentity values = true) :
+    normalizeDataAddress values address = address := by
+  unfold normalizeDataAddress
+  cases found : values.find? (valueTargetContainsCandidate · address) with
+  | none => rfl
+  | some target =>
+      have member : target ∈ values := List.mem_of_find?_eq_some found
+      have contains : valueTargetContainsCandidate target address = true := by
+        exact List.find?_some
+          (p := fun target => valueTargetContainsCandidate target address) found
+      have nonzero : target.mappedSize ≠ 0 := by
+        simp only [valueTargetContainsCandidate, Bool.and_eq_true,
+          decide_eq_true_eq] at contains
+        omega
+      simp only [mappedValueTargetsIdentity, List.all_eq_true] at identity
+      have row := identity target member
+      simp only [Bool.or_eq_true, beq_iff_eq] at row
+      have valuesEqual : target.originalValue = target.candidateValue :=
+        row.resolve_left nonzero
+      change BitVec.ofNat 32 target.originalValue +
+        (address - BitVec.ofNat 32 target.candidateValue) = address
+      rw [valuesEqual, BitVec.add_comm, BitVec.sub_add_cancel]
+
+theorem ordinaryMemoryRelated_projection_of_mapped_identity
+    (context : StaticProofContext) (world : RelationalWorld)
+    (targets : List CodeTargetPair) (values : List ValueTargetPair)
+    (original excludedValues : Memory)
+    (identity : mappedValueTargetsIdentity values = true) :
+    ordinaryMemoryRelated context world targets values original
+      (ordinaryMemoryCandidateProjection context world values original excludedValues) := by
+  unfold ordinaryMemoryRelated
+  split
+  · constructor
+    · intro address _relocationByte notExcluded
+      simp [ordinaryMemoryCandidateProjection, notExcluded,
+        normalizeDataAddress_eq_self_of_mapped_identity values address identity]
+    · intro address _relocationWord wordNotExcluded
+      have byteIncluded (offset : Nat) (before : offset < 4) :
+          ordinaryMemoryAddressExcluded context world values
+            (address + BitVec.ofNat 32 offset) = false := by
+        simp only [ordinaryMemoryWordExcluded, Bool.or_eq_false_iff]
+          at wordNotExcluded
+        exact Bool.eq_false_iff.mpr
+          (List.any_eq_false.mp wordNotExcluded.1 offset
+            (List.mem_range.mpr before))
+      have projectedByte (offset : Nat) (before : offset < 4) :
+          ordinaryMemoryCandidateProjection context world values original excludedValues
+              (address + BitVec.ofNat 32 offset) =
+            original (address + BitVec.ofNat 32 offset) := by
+        simp [ordinaryMemoryCandidateProjection, byteIncluded offset before,
+          normalizeDataAddress_eq_self_of_mapped_identity values
+            (address + BitVec.ofNat 32 offset) identity]
+      have projectedRead :
+          Memory.read32
+              (ordinaryMemoryCandidateProjection context world values original
+                excludedValues) address =
+            Memory.read32 original address := by
+        unfold Memory.read32
+        have h0 := projectedByte 0 (by omega)
+        have h1 := projectedByte 1 (by omega)
+        have h2 := projectedByte 2 (by omega)
+        have h3 := projectedByte 3 (by omega)
+        simp only [BitVec.add_zero] at h0
+        rw [h0, h1, h2, h3]
+      rw [normalizeDataAddress_eq_self_of_mapped_identity values address identity,
+        projectedRead]
+      exact wordRelated_self _ _ _ _ _
+  · intro address notExcluded
+    simp [ordinaryMemoryCandidateProjection, notExcluded,
+      normalizeDataAddress_eq_self_of_mapped_identity values address identity]
 
 theorem ordinaryMemoryRelated_projection_without_relocations
     (context : StaticProofContext) (world : RelationalWorld)

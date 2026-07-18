@@ -1373,10 +1373,18 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "RelationalLaunchCheckCertificate.lean"
             ).read_text(encoding="utf-8")
             self.assertIn(
-                "preferredBaseImageMemory_of_indexed_holds", launch_checks
+                "preferredBaseImageMemory_of_mapped_ranges", launch_checks
             )
             self.assertIn(
-                "immutableImageWordMemory_of_indexed_holds", launch_checks
+                "preferredBaseImageMemory_implies_immutable", launch_checks
+            )
+            self.assertFalse(
+                (prepared / "lean" / "StageA" /
+                 "RelationalLaunchOriginalImmutableImageLeaf0.lean").exists()
+            )
+            self.assertIn("mappedImageSpans staticProofContext.originalPe", launch_checks)
+            self.assertNotIn(
+                "staticProofContext.originalPe.sizeOfImage", launch_checks
             )
             self.assertIn(
                 "stackRangesMemoryHold_of_single_range_indexed_holds",
@@ -1388,7 +1396,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "RelationalLaunchOriginalImageMappedLeaf0.lean"
             ).read_text(encoding="utf-8")
             self.assertIn("indexedBoolRangeHolds_of_checked", original_leaf)
-            self.assertIn("{ start := 0, size := 1024 }", original_leaf)
+            self.assertIn("{ start := 0, size := 512 }", original_leaf)
             self.assertNotIn("axiom", launch_source)
             self.assertNotIn("sorry", launch_source)
             self.assertNotIn("native_decide", launch_source)
@@ -1404,14 +1412,17 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertNotIn("._native.", lean["stdout"])
             self.assertNotIn("sorryAx", lean["stdout"])
 
+            for compiled in (prepared / "lean").rglob("*.olean"):
+                compiled.unlink()
+
             original_leaf_path = (
                 prepared / "lean" / "StageA" /
                 "RelationalLaunchOriginalImageMappedLeaf0.lean"
             )
             original_leaf_path.write_text(
                 original_leaf_path.read_text(encoding="utf-8").replace(
-                    "{ start := 0, size := 1024 }",
-                    "{ start := 1, size := 1024 }",
+                    "{ start := 0, size := 512 }",
+                    "{ start := 1, size := 512 }",
                     1,
                 ),
                 encoding="utf-8",
@@ -1471,6 +1482,20 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 prepared / "lean" / "StageA" /
                 "RelationalLaunchContext.lean"
             ).read_text(encoding="utf-8")
+            launch_definition = (
+                prepared / "lean" / "StageA" /
+                "RelationalLaunchDefinition.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "import StageA.RelationalProductGraphContext",
+                launch_definition,
+            )
+            self.assertIn("def consoleLaunch", launch_definition)
+            self.assertIn(
+                "import StageA.RelationalLaunchDefinition",
+                launch,
+            )
+            self.assertNotIn("RelationalAcceptanceContext", launch)
             self.assertIn(
                 "def consoleLaunchOriginalMemory", launch
             )
