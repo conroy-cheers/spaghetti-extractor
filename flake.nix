@@ -111,6 +111,8 @@
             ./src/spaghetti_extractor/relational/isa_requirements.py
             ./src/spaghetti_extractor/relational/mapping.py
             ./src/spaghetti_extractor/relational/model.py
+            ./src/spaghetti_extractor/relational/pair_normalization.py
+            ./src/spaghetti_extractor/relational/pair_normalization_artifact.py
             ./src/spaghetti_extractor/relational/phases.py
             ./src/spaghetti_extractor/relational/pipeline.py
             ./src/spaghetti_extractor/relational/preflight.py
@@ -153,6 +155,32 @@
               exec python -m spaghetti_extractor.relational.analysis_cli "$@"
             '';
           };
+          spaghettiExtractorMappingPythonFiles = [
+            ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/pe.py
+            ./src/spaghetti_extractor/stage_binary.py
+            ./src/spaghetti_extractor/util.py
+            ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/relational/artifacts.py
+            ./src/spaghetti_extractor/relational/contract.py
+            ./src/spaghetti_extractor/relational/mapping.py
+            ./src/spaghetti_extractor/relational/mapping_cli.py
+            ./src/spaghetti_extractor/relational/model.py
+            ./src/spaghetti_extractor/relational/schema.py
+          ];
+          spaghettiExtractorMappingSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions spaghettiExtractorMappingPythonFiles;
+          };
+          spaghetti-extractor-mapping = pkgs.writeShellApplication {
+            name = "spaghetti-extractor-mapping";
+            runtimeInputs = [ pythonEnv ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorMappingSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.mapping_cli "$@"
+            '';
+          };
           spaghettiExtractorSidePythonFiles = [
             ./src/spaghetti_extractor/__init__.py
             ./src/spaghetti_extractor/contract_tools.py
@@ -160,16 +188,15 @@
             ./src/spaghetti_extractor/stage_binary.py
             ./src/spaghetti_extractor/util.py
             ./src/spaghetti_extractor/relational/__init__.py
-            ./src/spaghetti_extractor/relational/analysis_cli.py
             ./src/spaghetti_extractor/relational/artifacts.py
             ./src/spaghetti_extractor/relational/binary_inventory.py
             ./src/spaghetti_extractor/relational/contract.py
             ./src/spaghetti_extractor/relational/extraction.py
             ./src/spaghetti_extractor/relational/isa_requirements.py
-            ./src/spaghetti_extractor/relational/mapping.py
             ./src/spaghetti_extractor/relational/model.py
             ./src/spaghetti_extractor/relational/preflight.py
             ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/side_cli.py
             ./src/spaghetti_extractor/relational/side_extraction.py
             ./src/spaghetti_extractor/relational/side_extraction_artifact.py
             ./src/spaghetti_extractor/relational/side_isa_artifact.py
@@ -197,7 +224,50 @@
             runtimeInputs = [ pythonEnv ];
             text = ''
               export PYTHONPATH="${spaghettiExtractorSideSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
-              exec python -m spaghetti_extractor.relational.analysis_cli "$@"
+              exec python -m spaghetti_extractor.relational.side_cli "$@"
+            '';
+          };
+          spaghettiExtractorNormalizationPythonFiles = [
+            ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/pe.py
+            ./src/spaghetti_extractor/stage_binary.py
+            ./src/spaghetti_extractor/util.py
+            ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/relational/artifacts.py
+            ./src/spaghetti_extractor/relational/contract.py
+            ./src/spaghetti_extractor/relational/extraction.py
+            ./src/spaghetti_extractor/relational/model.py
+            ./src/spaghetti_extractor/relational/pair_normalization.py
+            ./src/spaghetti_extractor/relational/pair_normalization_artifact.py
+            ./src/spaghetti_extractor/relational/pair_normalization_cli.py
+            ./src/spaghetti_extractor/relational/preflight.py
+            ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/side_extraction_artifact.py
+            ./src/spaghetti_extractor/relational/analyses/__init__.py
+            ./src/spaghetti_extractor/relational/analyses/external.py
+            ./src/spaghetti_extractor/relational/lean/__init__.py
+            ./src/spaghetti_extractor/relational/lean/analysis_source.py
+            ./src/spaghetti_extractor/relational/lean/common.py
+            ./src/spaghetti_extractor/relational/lean/compiler.py
+            ./src/spaghetti_extractor/relational/lean/expressions.py
+          ];
+          spaghettiExtractorNormalizationSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              (pkgs.lib.fileset.unions spaghettiExtractorNormalizationPythonFiles)
+              (pkgs.lib.fileset.unions (
+                map
+                  (module: ./src/spaghetti_extractor/lean/StageA + "/${module}.lean")
+                  relationalAnalysisKernelModules
+              ))
+            ];
+          };
+          spaghetti-extractor-normalize = pkgs.writeShellApplication {
+            name = "spaghetti-extractor-normalize";
+            runtimeInputs = [ pythonEnv ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorNormalizationSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.pair_normalization_cli "$@"
             '';
           };
           stage-a-analysis-source-boundary-check = pkgs.runCommand
@@ -221,12 +291,33 @@
               side="${spaghettiExtractorSideSource}/src/spaghetti_extractor"
               test -f "$side/relational/side_extraction.py"
               test -f "$side/relational/binary_inventory.py"
+              test -f "$side/relational/side_cli.py"
+              test ! -e "$side/relational/analysis_cli.py"
               test ! -e "$side/relational/analysis.py"
               test ! -e "$side/relational/analysis_artifact.py"
               test ! -e "$side/relational/pipeline.py"
               test ! -e "$side/relational/phases.py"
+              test ! -e "$side/relational/mapping.py"
               test ! -e "$side/relational/verdict.py"
               ${spaghetti-extractor-side}/bin/spaghetti-extractor-side --help >/dev/null
+              mapping="${spaghettiExtractorMappingSource}/src/spaghetti_extractor"
+              test -f "$mapping/relational/mapping.py"
+              test -f "$mapping/relational/mapping_cli.py"
+              test ! -e "$mapping/relational/analysis.py"
+              test ! -e "$mapping/relational/analysis_cli.py"
+              test ! -e "$mapping/relational/extraction.py"
+              test ! -e "$mapping/relational/pipeline.py"
+              ${spaghetti-extractor-mapping}/bin/spaghetti-extractor-mapping --help >/dev/null
+              normalization="${spaghettiExtractorNormalizationSource}/src/spaghetti_extractor"
+              test -f "$normalization/relational/pair_normalization.py"
+              test -f "$normalization/relational/pair_normalization_artifact.py"
+              test ! -e "$normalization/relational/analysis.py"
+              test ! -e "$normalization/relational/analysis_artifact.py"
+              test ! -e "$normalization/relational/analysis_cli.py"
+              test ! -e "$normalization/relational/pipeline.py"
+              test ! -e "$normalization/relational/phases.py"
+              test ! -e "$normalization/relational/verdict.py"
+              ${spaghetti-extractor-normalize}/bin/spaghetti-extractor-normalize --help >/dev/null
               touch "$out"
             '';
           singlestep-80386-conformance =
@@ -1296,12 +1387,12 @@
               stage-a-gnu-hello-candidate-inventory;
           stage-a-gnu-hello-static-map = pkgs.runCommand "stage-a-gnu-hello-static-map"
             {
-              nativeBuildInputs = [ spaghetti-extractor-side ];
+              nativeBuildInputs = [ spaghetti-extractor-mapping ];
             }
             ''
               fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
               mkdir -p "$out"
-              spaghetti-extractor-side generate-map \
+              spaghetti-extractor-mapping generate-map \
                 --original "$fixture_dir/hello-original.exe" \
                 --candidate "$fixture_dir/hello-candidate.exe" \
                 --linker-map-original "$fixture_dir/hello-original.map" \
@@ -1314,12 +1405,12 @@
             '';
           stage-a-gnu-hello-relation-contract = pkgs.runCommand "stage-a-gnu-hello-relation-contract"
             {
-              nativeBuildInputs = [ spaghetti-extractor-side ];
+              nativeBuildInputs = [ spaghetti-extractor-mapping ];
             }
             ''
               fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
               mkdir -p "$out"
-              spaghetti-extractor-side generate-relation-contract \
+              spaghetti-extractor-mapping generate-relation-contract \
                 --original "$fixture_dir/hello-original.exe" \
                 --candidate "$fixture_dir/hello-candidate.exe" \
                 --mapping "${stage-a-gnu-hello-static-map}/hello-block-map.json" \
@@ -1444,6 +1535,38 @@
               stage-a-gnu-hello-candidate
               stage-a-gnu-hello-candidate-extraction
               stage-a-gnu-hello-candidate-supplement-extraction;
+          stage-a-gnu-hello-normalized-behaviors =
+            pkgs.runCommand "stage-a-gnu-hello-normalized-behaviors"
+              {
+                nativeBuildInputs = [
+                  spaghetti-extractor-normalize
+                  pkgs.lean4
+                  pkgs.jq
+                ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+              }
+              ''
+                fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-analysis-kernel-cache}"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_MEMORY_MB=8192
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NORMALIZATION_JOBS=8
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NORMALIZATION_BATCH=128
+                mkdir -p "$out"
+                spaghetti-extractor-normalize \
+                  --original "$fixture_dir/hello-original.exe" \
+                  --candidate "$fixture_dir/hello-candidate.exe" \
+                  --relation-contract "${stage-a-gnu-hello-relation-contract}/hello-relation-contract.json" \
+                  --original-extraction "${stage-a-gnu-hello-original-merged-extraction}/extraction.json" \
+                  --candidate-extraction "${stage-a-gnu-hello-candidate-merged-extraction}/extraction.json" \
+                  --out "$out/normalized-behaviors.json" \
+                  > "$out/normalization.stdout"
+                jq -e '
+                  .format == "stage-a-relational-pair-normalization-v1" and
+                  .status == "untrusted_proposal_requires_lean_normalization_replay" and
+                  (.regions | length) > 0
+                ' "$out/normalized-behaviors.json" >/dev/null
+              '';
           stage-a-gnu-hello-analysis = pkgs.runCommand "stage-a-gnu-hello-analysis"
             {
               nativeBuildInputs = [
@@ -1469,6 +1592,7 @@
                   --relation-contract "${stage-a-gnu-hello-relation-contract}/hello-relation-contract.json" \
                   --original-extraction "${stage-a-gnu-hello-original-merged-extraction}/extraction.json" \
                   --candidate-extraction "${stage-a-gnu-hello-candidate-merged-extraction}/extraction.json" \
+                  --normalized-behaviors "${stage-a-gnu-hello-normalized-behaviors}/normalized-behaviors.json" \
                   --original-isa "${stage-a-gnu-hello-original-isa}/isa.json" \
                   --candidate-isa "${stage-a-gnu-hello-candidate-isa}/isa.json" \
                   --out "$work/analysis" \
@@ -2492,6 +2616,8 @@
             singlestep-80386-conformance
             spaghetti-extractor
             spaghetti-extractor-analysis
+            spaghetti-extractor-mapping
+            spaghetti-extractor-normalize
             spaghetti-extractor-side
             stage-a-analysis-source-boundary-check
             stage-a-isa-conformance-bochs-80386
@@ -2526,6 +2652,7 @@
             stage-a-gnu-hello-candidate-supplement-extraction
             stage-a-gnu-hello-original-merged-extraction
             stage-a-gnu-hello-candidate-merged-extraction
+            stage-a-gnu-hello-normalized-behaviors
             stage-a-gnu-hello-static-map
             stage-a-gnu-hello-relation-contract
             stage-a-gnu-hello-analysis

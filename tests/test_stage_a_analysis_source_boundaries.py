@@ -67,6 +67,44 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
             ),
         )
 
+    def test_pair_normalization_cli_does_not_import_pair_analysis(self):
+        self._assert_clean_import(
+            "spaghetti_extractor.relational.pair_normalization_cli",
+            (
+                "spaghetti_extractor.relational.analysis",
+                "spaghetti_extractor.relational.analysis_artifact",
+                "spaghetti_extractor.relational.build",
+                "spaghetti_extractor.relational.pipeline",
+                "spaghetti_extractor.relational.verdict",
+                "spaghetti_extractor.relational.lean.acceptance",
+                "spaghetti_extractor.relational.lean.generation",
+            ),
+        )
+
+    def test_side_cli_does_not_import_pair_or_mapping_phases(self):
+        self._assert_clean_import(
+            "spaghetti_extractor.relational.side_cli",
+            (
+                "spaghetti_extractor.relational.analysis",
+                "spaghetti_extractor.relational.analysis_artifact",
+                "spaghetti_extractor.relational.mapping",
+                "spaghetti_extractor.relational.pipeline",
+                "spaghetti_extractor.relational.verdict",
+            ),
+        )
+
+    def test_mapping_cli_does_not_import_extraction_or_pair_analysis(self):
+        self._assert_clean_import(
+            "spaghetti_extractor.relational.mapping_cli",
+            (
+                "spaghetti_extractor.relational.analysis",
+                "spaghetti_extractor.relational.analysis_artifact",
+                "spaghetti_extractor.relational.extraction",
+                "spaghetti_extractor.relational.pipeline",
+                "spaghetti_extractor.relational.verdict",
+            ),
+        )
+
     def test_compatibility_modules_reexport_moved_functions(self):
         from spaghetti_extractor.relational import executor
         from spaghetti_extractor.relational.lean import (

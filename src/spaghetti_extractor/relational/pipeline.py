@@ -244,6 +244,7 @@ from .lean.analysis_source import (
     _copy_relational_analysis_kernel_sources,
     _copy_relational_kernel_sources,
 )
+from .pair_normalization import load_pair_normalization
 from .side_extraction import load_side_extraction, load_side_isa
 from .schema import (
     FLAG_BITS,
@@ -536,6 +537,7 @@ def stage_a_prove_relational(
     out: Path,
     original_extraction: Path | None = None,
     candidate_extraction: Path | None = None,
+    normalized_behaviors: Path | None = None,
     original_isa: Path | None = None,
     candidate_isa: Path | None = None,
     _prepare_only: bool = False,
@@ -630,17 +632,42 @@ def stage_a_prove_relational(
             blocker="x86 semantic preflight found regions outside the reviewed Lean decoder",
         )
 
-    copy_kernel_sources = (
-        _copy_relational_analysis_kernel_sources
-        if _analyze_only
-        else _copy_relational_kernel_sources
-    )
-    copy_kernel_sources(out / "lean" / "StageA")
     if (original_extraction is None) != (candidate_extraction is None):
         raise StageAInputError(
             "both original and candidate side extractions are required"
         )
-    if original_extraction is not None and candidate_extraction is not None:
+    if normalized_behaviors is not None and (
+        original_extraction is None or candidate_extraction is None
+    ):
+        raise StageAInputError(
+            "pair normalization requires both bound side extractions"
+        )
+    if normalized_behaviors is not None:
+        assert original_extraction is not None
+        assert candidate_extraction is not None
+        if not _analyze_only:
+            _copy_relational_kernel_sources(out / "lean" / "StageA")
+        behaviors = load_pair_normalization(
+            path=Path(normalized_behaviors),
+            normalized_contract=normalized,
+            original_sha256=original_bin.sha256,
+            candidate_sha256=candidate_bin.sha256,
+            original_extraction=Path(original_extraction),
+            candidate_extraction=Path(candidate_extraction),
+        )
+        extraction = {
+            "status": "checked",
+            "source": "manifest_bound_pair_normalization_artifact",
+            "pair_normalization_artifact": sha256_file(
+                Path(normalized_behaviors)
+            ),
+            "raw_side_artifacts": {
+                "original": sha256_file(Path(original_extraction)),
+                "candidate": sha256_file(Path(candidate_extraction)),
+            },
+        }
+    elif original_extraction is not None and candidate_extraction is not None:
+        _copy_relational_analysis_kernel_sources(out / "lean" / "StageA")
         raw_behaviors = {
             (side, index): term
             for side, path, binary in (
@@ -667,6 +694,12 @@ def stage_a_prove_relational(
             },
         }
     else:
+        copy_kernel_sources = (
+            _copy_relational_analysis_kernel_sources
+            if _analyze_only
+            else _copy_relational_kernel_sources
+        )
+        copy_kernel_sources(out / "lean" / "StageA")
         behaviors, extraction = _extract_relational_behaviors(
             out / "lean",
             original_bin,
@@ -1478,6 +1511,7 @@ def stage_a_analyze_relational(
     out: Path,
     original_extraction: Path | None = None,
     candidate_extraction: Path | None = None,
+    normalized_behaviors: Path | None = None,
     original_isa: Path | None = None,
     candidate_isa: Path | None = None,
 ) -> dict[str, Any]:
@@ -1488,6 +1522,7 @@ def stage_a_analyze_relational(
         out=out,
         original_extraction=original_extraction,
         candidate_extraction=candidate_extraction,
+        normalized_behaviors=normalized_behaviors,
         original_isa=original_isa,
         candidate_isa=candidate_isa,
         _analyze_only=True,

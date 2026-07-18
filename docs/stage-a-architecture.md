@@ -119,3 +119,11 @@ aggregation rejects missing, duplicate, overlapping, or unexpected region
 outputs while preserving the contract's global region identifiers. Final Lean
 modules still reconstruct these proposals from the exact PE bytes; neither a
 side artifact nor a normalization pack is acceptance evidence by itself.
+
+Contracted behavior normalization is itself an immutable pair artifact and a
+separate Nix derivation. It binds the exact PE, normalized contract, side
+extraction, analysis-kernel, source-generator, and Lean-toolchain identities.
+Downstream register, stack, memory, graph, diagnostic, or proof-generation
+changes consume this artifact and must not rerun normalization. Missing or
+mismatched identities fail closed; there is no implicit normalization fallback
+in the cached GNU hello analysis path.

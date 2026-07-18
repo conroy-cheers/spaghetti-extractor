@@ -9,6 +9,9 @@ from spaghetti_extractor.relational.isa_requirements import (
     extract_lean_instruction_forms_side,
 )
 from spaghetti_extractor.relational.pipeline import stage_a_analyze_relational
+from spaghetti_extractor.relational.pair_normalization import (
+    stage_a_normalize_pair,
+)
 from spaghetti_extractor.relational.side_extraction import (
     stage_a_extract_side,
     stage_a_extract_side_isa,
@@ -177,6 +180,7 @@ class StageASideExtractionIntegrationTests(StageARelationalTestBase):
 
             split = root / "split"
             monolithic = root / "monolithic"
+            normalized_behaviors = root / "normalized-behaviors.json"
             with patch.dict(
                 os.environ,
                 {
@@ -184,12 +188,22 @@ class StageASideExtractionIntegrationTests(StageARelationalTestBase):
                     "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NORMALIZATION_JOBS": "2",
                 },
             ):
+                normalized_result = stage_a_normalize_pair(
+                    original=original,
+                    candidate=candidate,
+                    relation_contract=contract,
+                    original_extraction=extractions["original"],
+                    candidate_extraction=extractions["candidate"],
+                    out=normalized_behaviors,
+                )
+                self.assertEqual(normalized_result["status"], "normalized")
                 split_result = stage_a_analyze_relational(
                     original=original,
                     candidate=candidate,
                     relation_contract=contract,
                     original_extraction=extractions["original"],
                     candidate_extraction=extractions["candidate"],
+                    normalized_behaviors=normalized_behaviors,
                     original_isa=isa_artifacts["original"],
                     candidate_isa=isa_artifacts["candidate"],
                     out=split,

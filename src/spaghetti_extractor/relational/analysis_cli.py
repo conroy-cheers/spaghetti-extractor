@@ -59,6 +59,7 @@ def _analyze_relational(args: argparse.Namespace) -> dict[str, Any]:
         relation_contract=args.relation_contract,
         original_extraction=args.original_extraction,
         candidate_extraction=args.candidate_extraction,
+        normalized_behaviors=args.normalized_behaviors,
         original_isa=args.original_isa,
         candidate_isa=args.candidate_isa,
         out=args.out,
@@ -77,6 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--relation-contract", type=Path, required=True)
     analyze.add_argument("--original-extraction", type=Path)
     analyze.add_argument("--candidate-extraction", type=Path)
+    analyze.add_argument("--normalized-behaviors", type=Path)
     analyze.add_argument("--original-isa", type=Path)
     analyze.add_argument("--candidate-isa", type=Path)
     analyze.add_argument("--out", type=Path, required=True)

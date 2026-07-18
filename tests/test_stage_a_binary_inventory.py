@@ -11,6 +11,9 @@ from spaghetti_extractor.relational.extraction import (
     _raw_extraction_semantics_sha256,
 )
 from spaghetti_extractor.relational.lean.compiler import _lean_memory_arguments
+from spaghetti_extractor.relational.pair_normalization import (
+    pair_normalization_semantics_sha256,
+)
 from spaghetti_extractor.relational.schema import (
     RELATIONAL_ANALYSIS_KERNEL_MODULES,
 )
@@ -83,6 +86,39 @@ class StageABinaryInventoryTests(StageARelationalTestBase):
             ):
                 with self.assertRaisesRegex(StageAInputError, "must be"):
                     _lean_memory_arguments()
+
+    def test_pair_normalization_identity_covers_sources_kernel_and_toolchain(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for module in RELATIONAL_ANALYSIS_KERNEL_MODULES:
+                (root / f"{module}.lean").write_text(
+                    f"def {module.lower()}Version := 1\n",
+                    encoding="utf-8",
+                )
+            arguments = {
+                "lean_root": root,
+                "lean_toolchain": "Lean test-v1",
+                "normalizer_source_sha256": "a" * 64,
+                "source_generator_sha256": "b" * 64,
+            }
+            initial = pair_normalization_semantics_sha256(**arguments)
+            for field, value in (
+                ("lean_toolchain", "Lean test-v2"),
+                ("normalizer_source_sha256", "c" * 64),
+                ("source_generator_sha256", "d" * 64),
+            ):
+                self.assertNotEqual(
+                    pair_normalization_semantics_sha256(
+                        **{**arguments, field: value}
+                    ),
+                    initial,
+                )
+            (root / "Relational.lean").write_text(
+                "def relationalVersion := 2\n", encoding="utf-8"
+            )
+            self.assertNotEqual(
+                pair_normalization_semantics_sha256(**arguments), initial
+            )
 
     def test_tiny_pe_inventory_is_deterministic_and_exact(self):
         with tempfile.TemporaryDirectory() as temporary:
