@@ -499,6 +499,7 @@ class StageARegisterAnalysisTests(unittest.TestCase):
         second_candidate["registers"]["ebx"] = read
         binary = SimpleNamespace(image_base=0x400000)
 
+        solver_metrics: dict[str, int] = {}
         _contract, analysis = _synthesize_register_relations(
             {
                 "code_targets": [
@@ -522,6 +523,7 @@ class StageARegisterAnalysisTests(unittest.TestCase):
             candidate_image_base=0x400000,
             original_bin=binary,
             candidate_bin=binary,
+            _solver_metrics=solver_metrics,
         )
 
         second_inputs = {
@@ -545,6 +547,12 @@ class StageARegisterAnalysisTests(unittest.TestCase):
             "original_value": 0x12345678,
             "candidate_value": 0x12345678,
         }, second_claims)
+        self.assertEqual(solver_metrics["iterations"], 3)
+        self.assertEqual(solver_metrics["transfer_evaluations"], 3)
+        self.assertLess(
+            solver_metrics["transfer_evaluations"],
+            solver_metrics["iterations"] * analysis["counts"]["regions"],
+        )
 
     def test_fixed_static_slot_output_requires_same_target_id(self) -> None:
         slot = {"relation": "fixed_code_pointer", "target_id": 7}

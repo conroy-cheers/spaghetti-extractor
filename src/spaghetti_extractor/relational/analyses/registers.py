@@ -2076,6 +2076,7 @@ def _synthesize_register_relations(
     callsite_summary_predecessors: list[dict[str, Any]] | None = None,
     original_bin: StageABinary | None = None,
     candidate_bin: StageABinary | None = None,
+    _solver_metrics: dict[str, int] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     refined = json.loads(json.dumps(contract))
     regions = refined["regions"]
@@ -2517,10 +2518,19 @@ def _synthesize_register_relations(
     ]
     max_iterations = max(1, len(regions) * len(register_order) + 1)
     converged = False
+    dirty_regions = set(range(len(regions)))
+    transfer_evaluations = 0
+    successor_regions: list[set[int]] = [set() for _ in regions]
+    for target_index, incoming in enumerate(predecessors):
+        for source_index, _barrier, _kind, _preserved, _results in incoming:
+            successor_regions[source_index].add(target_index)
     for iteration in range(max_iterations):
-        next_outputs: list[dict[str, RegisterRelation]] = []
-        next_reasons: list[dict[str, str]] = []
-        for region_index, behavior_pair in enumerate(behaviors):
+        next_outputs = [dict(row) for row in output_kinds]
+        next_reasons = [dict(row) for row in output_reasons]
+        changed_output_regions: set[int] = set()
+        for region_index in sorted(dirty_regions):
+            behavior_pair = behaviors[region_index]
+            transfer_evaluations += 1
             kinds: dict[str, RegisterRelation] = {}
             reasons: dict[str, str] = {}
             original_registers = behavior_pair["original_ir"]["registers"]
@@ -2549,11 +2559,24 @@ def _synthesize_register_relations(
                     candidate_bin,
                     input_pair_candidates[region_index],
                 )
-            next_outputs.append(kinds)
-            next_reasons.append(reasons)
+            if kinds != output_kinds[region_index]:
+                changed_output_regions.add(region_index)
+            next_outputs[region_index] = kinds
+            next_reasons[region_index] = reasons
 
-        next_inputs: list[dict[str, RegisterRelation]] = []
-        for region_index, region in enumerate(regions):
+        next_inputs = [dict(row) for row in input_kinds]
+        affected_inputs = (
+            set(range(len(regions)))
+            if iteration == 0
+            else {
+                target_index
+                for source_index in changed_output_regions
+                for target_index in successor_regions[source_index]
+            }
+        )
+        changed_input_regions: set[int] = set()
+        for region_index in sorted(affected_inputs):
+            region = regions[region_index]
             incoming = predecessors[region_index]
             kinds: dict[str, RegisterRelation] = {}
             for register in register_order:
@@ -2592,16 +2615,25 @@ def _synthesize_register_relations(
                     # A stack window relates offsets inside paired concrete
                     # ranges; it does not imply literal register equality.
                     kinds[register] = "related_word"
-            next_inputs.append(kinds)
-        if next_inputs == input_kinds and next_outputs == output_kinds:
+            if kinds != input_kinds[region_index]:
+                changed_input_regions.add(region_index)
+            next_inputs[region_index] = kinds
+        if not changed_input_regions and not changed_output_regions:
             output_reasons = next_reasons
             converged = True
             break
         input_kinds = next_inputs
         output_kinds = next_outputs
         output_reasons = next_reasons
+        dirty_regions = changed_input_regions
     else:
         iteration = max_iterations - 1
+    if _solver_metrics is not None:
+        _solver_metrics.clear()
+        _solver_metrics.update({
+            "iterations": iteration + 1,
+            "transfer_evaluations": transfer_evaluations,
+        })
 
     relation_rows: list[dict[str, Any]] = []
     exact_claims = 0
