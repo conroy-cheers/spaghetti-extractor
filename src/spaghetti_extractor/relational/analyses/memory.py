@@ -146,6 +146,64 @@ def _attach_initial_static_code_pointer_slots(
 
     proposals: dict[tuple[int, int], dict[str, Any]] = {}
     rejected: list[dict[str, Any]] = []
+
+    def propose(
+        *,
+        original_address: int,
+        candidate_address: int,
+        original_value: int | None,
+        candidate_value: int | None,
+        location: dict[str, Any],
+    ) -> None:
+        original_matches = (
+            [] if original_value is None
+            else matching_targets("original", original_value)
+        )
+        candidate_matches = (
+            [] if candidate_value is None
+            else matching_targets("candidate", candidate_value)
+        )
+        if not original_matches and not candidate_matches:
+            return
+        same_target = (
+            len(original_matches) == 1
+            and len(candidate_matches) == 1
+            and original_matches[0][0] == candidate_matches[0][0]
+        )
+        target_id = (
+            int(original_matches[0][1]["id"])
+            if same_target else None
+        )
+        if (
+            not same_target
+            or target_id is None
+            or target_id_counts.get(target_id) != 1
+        ):
+            rejected.append({
+                **location,
+                "category": "initial_static_code_pointer_target_ambiguous",
+                "severity": "hard",
+                "original_target_ids": sorted({
+                    int(target["id"]) for _, target in original_matches
+                }),
+                "candidate_target_ids": sorted({
+                    int(target["id"]) for _, target in candidate_matches
+                }),
+                "next_action": (
+                    "provide one canonical code-target pair for both initial "
+                    "words or repair the static code-target map"
+                ),
+            })
+            return
+        key = (original_address, candidate_address)
+        proposal = proposals.setdefault(key, {
+            "original_address": original_address,
+            "candidate_address": candidate_address,
+            "target_id": target_id,
+            "uses": [],
+        })
+        proposal["uses"].append(location)
+
     regions = list(updated.get("regions", []))
     for region_index, behavior in enumerate(behaviors):
         original_reads = _direct_constant_read32_locations(
@@ -172,16 +230,6 @@ def _attach_initial_static_code_pointer_slots(
             candidate_value = _initial_file_u32(candidate, candidate_address)
             if original_value is None and candidate_value is None:
                 continue
-            original_matches = (
-                [] if original_value is None
-                else matching_targets("original", original_value)
-            )
-            candidate_matches = (
-                [] if candidate_value is None
-                else matching_targets("candidate", candidate_value)
-            )
-            if not original_matches and not candidate_matches:
-                continue
             location = {
                 "region_index": region_index,
                 "region_id": region_id,
@@ -191,44 +239,55 @@ def _attach_initial_static_code_pointer_slots(
                 "original_initial_value": original_value,
                 "candidate_initial_value": candidate_value,
             }
-            same_target = (
-                len(original_matches) == 1
-                and len(candidate_matches) == 1
-                and original_matches[0][0] == candidate_matches[0][0]
+            propose(
+                original_address=original_address,
+                candidate_address=candidate_address,
+                original_value=original_value,
+                candidate_value=candidate_value,
+                location=location,
             )
-            target_id = (
-                int(original_matches[0][1]["id"])
-                if same_target else None
-            )
-            if (
-                not same_target
-                or target_id is None
-                or target_id_counts.get(target_id) != 1
+
+    # Under an explicit identity static-memory contract, paired HIGHLOW slots
+    # at the same RVA are authoritative mapping candidates even when no decoded
+    # region happens to read them directly. This closes launch state for whole
+    # relocation-backed callback/vtable inventories while retaining all of the
+    # unique-target, writable-word, relocation, and Lean replay checks below.
+    if (updated.get("memory_relation") or {}).get("mode") == "identity":
+        original_highlow_rvas = {
+            int(relocation["rva"])
+            for relocation in _raw_base_relocations(original)
+            if int(relocation["type"]) == 3
+        }
+        candidate_highlow_rvas = {
+            int(relocation["rva"])
+            for relocation in _raw_base_relocations(candidate)
+            if int(relocation["type"]) == 3
+        }
+        for rva in sorted(original_highlow_rvas & candidate_highlow_rvas):
+            original_address = original.image_base + rva
+            candidate_address = candidate.image_base + rva
+            if not (
+                _writable_static_word(original, original_address)
+                and _writable_static_word(candidate, candidate_address)
             ):
-                rejected.append({
-                    **location,
-                    "category": "initial_static_code_pointer_target_ambiguous",
-                    "severity": "hard",
-                    "original_target_ids": sorted({
-                        int(target["id"]) for _, target in original_matches
-                    }),
-                    "candidate_target_ids": sorted({
-                        int(target["id"]) for _, target in candidate_matches
-                    }),
-                    "next_action": (
-                        "provide one canonical code-target pair for both initial "
-                        "words or repair the static code-target map"
-                    ),
-                })
                 continue
-            key = (original_address, candidate_address)
-            proposal = proposals.setdefault(key, {
-                "original_address": original_address,
-                "candidate_address": candidate_address,
-                "target_id": target_id,
-                "uses": [],
-            })
-            proposal["uses"].append(location)
+            original_value = _initial_file_u32(original, original_address)
+            candidate_value = _initial_file_u32(candidate, candidate_address)
+            propose(
+                original_address=original_address,
+                candidate_address=candidate_address,
+                original_value=original_value,
+                candidate_value=candidate_value,
+                location={
+                    "region_index": -1,
+                    "region_id": None,
+                    "semantic_path": ["relocation_inventory", rva],
+                    "original_address": original_address,
+                    "candidate_address": candidate_address,
+                    "original_initial_value": original_value,
+                    "candidate_initial_value": candidate_value,
+                },
+            )
 
     original_to_candidate: dict[int, set[int]] = {}
     candidate_to_original: dict[int, set[int]] = {}

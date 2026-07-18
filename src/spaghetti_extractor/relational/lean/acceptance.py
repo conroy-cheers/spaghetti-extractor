@@ -3650,6 +3650,72 @@ def _launch_check_ranges(total: int, chunk_size: int) -> list[tuple[int, int]]:
     ]
 
 
+def _launch_structural_image_ranges(
+    *,
+    image_base: int,
+    span_start: int,
+    span_size: int,
+    excluded_ranges: list[tuple[int, int]],
+    structurally_immutable: bool,
+) -> list[tuple[int, int, bool]]:
+    """Partition one mapped image span into checked structural/fallback ranges."""
+    if span_start < 0 or span_size < 0 or image_base < 0:
+        raise StageAInputError("launch image spans cannot be negative")
+    span_end = span_start + span_size
+    if not structurally_immutable:
+        return [(span_start, span_size, False)] if span_size else []
+
+    clipped: list[tuple[int, int]] = []
+    for lower, upper in sorted(excluded_ranges):
+        if lower < 0 or upper < lower:
+            raise StageAInputError("launch image exclusion range is invalid")
+        lower = max(span_start, lower)
+        upper = min(span_end, upper)
+        if lower >= upper:
+            continue
+        if clipped and lower <= clipped[-1][1]:
+            clipped[-1] = (clipped[-1][0], max(clipped[-1][1], upper))
+        else:
+            clipped.append((lower, upper))
+
+    ranges: list[tuple[int, int, bool]] = []
+
+    def append_range(start: int, stop: int, structural: bool) -> None:
+        if start >= stop:
+            return
+        if (
+            ranges
+            and ranges[-1][2] == structural
+            and ranges[-1][0] + ranges[-1][1] == start
+        ):
+            previous_start, previous_size, _ = ranges[-1]
+            ranges[-1] = (
+                previous_start,
+                previous_size + stop - start,
+                structural,
+            )
+        else:
+            ranges.append((start, stop - start, structural))
+
+    def append_immutable_interval(start: int, stop: int) -> None:
+        aligned_start = min(
+            start + (-(image_base + start) % 4),
+            stop,
+        )
+        aligned_stop = aligned_start + ((stop - aligned_start) // 4) * 4
+        append_range(start, aligned_start, False)
+        append_range(aligned_start, aligned_stop, True)
+        append_range(aligned_stop, stop, False)
+
+    cursor = span_start
+    for lower, upper in clipped:
+        append_immutable_interval(cursor, lower)
+        append_range(lower, upper, False)
+        cursor = upper
+    append_immutable_interval(cursor, span_end)
+    return ranges
+
+
 def _lean_acceptance_empty_stack(node_id: int) -> str:
     return (
         "  have stackHoldsNext : RelationalRuntimeCallStackHolds staticProofContext\n"
@@ -6400,9 +6466,9 @@ def _write_relational_acceptance_modules(
         root_node_id = int(launch_root_node_id)
         root_region = contract["regions"][root_node_id]
         input_relations = root_region.get("input_relations", [])
-        identity_inputs = all(
+        self_related_inputs = all(
             relation.get("original") == relation.get("candidate")
-            and relation.get("relation") == "exact"
+            and relation.get("relation") in {"exact", "related_word"}
             for relation in input_relations
         )
         launch_reasons: list[str] = []
@@ -6420,8 +6486,10 @@ def _write_relational_acceptance_modules(
             launch_reasons.append("the static data map is not identity-addressed")
         if contract.get("static_dynamic_pointer_slots"):
             launch_reasons.append("the launch has static dynamic-pointer slots")
-        if not identity_inputs:
-            launch_reasons.append("root register relations are not exact identities")
+        if not self_related_inputs:
+            launch_reasons.append(
+                "root register relations are not concrete self relations"
+            )
         for key in (
             "input_import_relations",
             "input_dynamic_range_relations",
@@ -6697,7 +6765,7 @@ def _write_relational_acceptance_modules(
         )
     launch_definition_source = (
         "import StageA.RelationalCertificates\n"
-        "import StageA.RelationalProductGraphContext\n\n"
+        "import StageA.RelationalStaticContextBase\n\n"
         "namespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
@@ -6805,11 +6873,31 @@ def _write_relational_acceptance_modules(
             (candidate_stack_address + 12, 0),
         ])
 
-    def lean_concrete_writes(writes: list[tuple[int, int]]) -> str:
+    def stack_offset_writes(
+        writes: list[tuple[int, int]], *, side: str
+    ) -> list[tuple[int, int]]:
+        result: list[tuple[int, int]] = []
+        for address, value in writes:
+            offset = address - stack_base
+            if offset < 0 or offset + 4 > stack_size:
+                raise StageAInputError(
+                    f"{side} launch write at {address:#x} is outside the "
+                    "checked launch stack range"
+                )
+            result.append((offset, value))
+        return result
+
+    original_stack_writes = stack_offset_writes(
+        original_launch_writes, side="original"
+    )
+    candidate_stack_writes = stack_offset_writes(
+        candidate_launch_writes, side="candidate"
+    )
+
+    def lean_stack_writes(writes: list[tuple[int, int]]) -> str:
         return ", ".join(
-            "(BitVec.ofNat 32 " + str(address)
-            + ", BitVec.ofNat 32 " + str(value) + ")"
-            for address, value in writes
+            "(" + str(offset) + ", BitVec.ofNat 32 " + str(value) + ")"
+            for offset, value in writes
         )
 
     launch_context_source = (
@@ -6826,10 +6914,16 @@ def _write_relational_acceptance_modules(
         "}\n\n"
         f"def consoleLaunchImportAddresses : List ImportAddressPair := [{import_binding_rows}]\n\n"
         f"def consoleLaunchFrames : List RelationalRuntimeCallFrame := [{launch_frame_rows}]\n\n"
-        "def consoleLaunchOriginalWrites : List (Word × Word) := ["
-        + lean_concrete_writes(original_launch_writes) + "]\n\n"
-        "def consoleLaunchCandidateWrites : List (Word × Word) := ["
-        + lean_concrete_writes(candidate_launch_writes) + "]\n\n"
+        "def consoleLaunchOriginalStackWrites : List (Nat × Word) := ["
+        + lean_stack_writes(original_stack_writes) + "]\n\n"
+        "def consoleLaunchCandidateStackWrites : List (Nat × Word) := ["
+        + lean_stack_writes(candidate_stack_writes) + "]\n\n"
+        "def consoleLaunchOriginalWrites : List (Word × Word) :=\n"
+        "  stackRangeConcreteWrites consoleLaunchStackRange.originalBase\n"
+        "    consoleLaunchOriginalStackWrites\n\n"
+        "def consoleLaunchCandidateWrites : List (Word × Word) :=\n"
+        "  stackRangeConcreteWrites consoleLaunchStackRange.candidateBase\n"
+        "    consoleLaunchCandidateStackWrites\n\n"
         "def consoleLaunchWorld : RelationalWorld := {\n"
         "  stackRanges := [consoleLaunchStackRange]\n"
         "  importAddresses := consoleLaunchImportAddresses\n"
@@ -6867,9 +6961,9 @@ def _write_relational_acceptance_modules(
         "def consoleLaunchOriginalImageMappedAt : Nat -> Bool :=\n"
         "  preferredBaseImageMemoryAt staticProofContext.originalPe\n"
         "    staticProofContext.originalImports consoleLaunchOriginalState.memory\n\n"
-        "def consoleLaunchCandidateImageMappedAt : Nat -> Bool :=\n"
-        "  preferredBaseImageMemoryAt staticProofContext.candidatePe\n"
-        "    staticProofContext.candidateImports consoleLaunchCandidateState.memory\n\n"
+        "def consoleLaunchCandidateImageCompatibilityAt : Nat -> Bool :=\n"
+        "  candidateProjectionImageCompatibleAt staticProofContext consoleLaunchWorld\n"
+        "\n"
         "def consoleLaunchOriginalImmutableImageAt : Nat -> Bool :=\n"
         "  immutableImageWordMemoryAtWithImports staticProofContext.originalPe\n"
         "    staticProofContext.originalImports consoleLaunchOriginalState.memory\n\n"
@@ -6888,6 +6982,9 @@ def _write_relational_acceptance_modules(
         "  unfold PE32ConsoleLaunchWorldV1.Valid\n"
         "  refine ⟨by decide, by decide, rfl, rfl, rfl, rfl, by decide,\n"
         "    by decide⟩\n\n"
+        "theorem consoleLaunchCandidateLoaderImageChecked :\n"
+        "    preferredBaseLoaderImageValid staticProofContext.candidatePe = true := by\n"
+        "  decide\n\n"
         "end StageA.GeneratedRelational\n"
     )
     _write_text_if_changed(
@@ -6901,6 +6998,13 @@ def _write_relational_acceptance_modules(
             "1024",
         )),
     )
+    launch_stack_chunk_size = max(
+        1,
+        int(os.environ.get(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_LAUNCH_STACK_CHECK_CHUNK",
+            "64",
+        )),
+    )
     launch_leaf_modules: list[str] = []
 
     def write_launch_span_leaves(
@@ -6909,29 +7013,34 @@ def _write_relational_acceptance_modules(
         theorem_prefix: str,
         spans: list[tuple[int, int]],
         predicate: str,
+        chunk_size: int = launch_chunk_size,
     ) -> list[tuple[int, int, list[tuple[str, int, int]]]]:
         checked_spans: list[tuple[int, int, list[tuple[str, int, int]]]] = []
         leaf_index = 0
         for span_start, span_size in spans:
             checked_ranges: list[tuple[str, int, int]] = []
             for relative_start, count in _launch_check_ranges(
-                span_size, launch_chunk_size
+                span_size, chunk_size
             ):
                 start = span_start + relative_start
                 module = f"{module_prefix}{leaf_index}"
                 theorem_name = f"{theorem_prefix}{leaf_index}"
-                source = (
-                    "import StageA.RelationalLaunchContext\n\n"
-                    "namespace StageA.GeneratedRelational\n\n"
-                    "open StageA.Formal StageA.Relational\n\n"
-                    "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
-                    f"theorem {theorem_name} :\n"
+                source_rows = [
+                    "import StageA.RelationalLaunchContext\n\n",
+                    "import StageA.RelationalStaticTree\n\n",
+                    "namespace StageA.GeneratedRelational\n\n",
+                    "open StageA.Formal StageA.Relational\n\n",
+                    "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n",
+                ]
+                source_rows.extend([
+                    f"theorem {theorem_name} :\n",
                     f"    IndexedBoolRangeHolds {predicate} "
-                    f"{{ start := {start}, size := {count} }} := by\n"
-                    "  apply indexedBoolRangeHolds_of_checked\n"
-                    "  decide\n\n"
-                    "end StageA.GeneratedRelational\n"
-                )
+                    f"{{ start := {start}, size := {count} }} := by\n",
+                    "  apply indexedBoolRangeHolds_of_checked\n",
+                    "  decide\n\n",
+                ])
+                source_rows.append("end StageA.GeneratedRelational\n")
+                source = "".join(source_rows)
                 _write_text_if_changed(stage_a / f"{module}.lean", source)
                 launch_leaf_modules.append(module)
                 checked_ranges.append((theorem_name, start, count))
@@ -6940,38 +7049,164 @@ def _write_relational_acceptance_modules(
         return checked_spans
 
     def write_launch_leaves(
-        *, module_prefix: str, theorem_prefix: str, total: int, predicate: str
+        *,
+        module_prefix: str,
+        theorem_prefix: str,
+        total: int,
+        predicate: str,
+        chunk_size: int = launch_chunk_size,
     ) -> list[tuple[str, int, int]]:
         return write_launch_span_leaves(
             module_prefix=module_prefix,
             theorem_prefix=theorem_prefix,
             spans=[(0, total)],
             predicate=predicate,
+            chunk_size=chunk_size,
         )[0][2]
 
-    def mapped_image_spans(binary: StageABinary) -> list[tuple[int, int]]:
-        return [(0, binary.size_of_headers)] + [
-            (section.rva_start, section.rva_end - section.rva_start)
-            for section in binary.sections
+    def partition_candidate_image_span(
+        span_start: int,
+        span_size: int,
+        *,
+        structurally_immutable: bool,
+    ) -> list[tuple[int, int, bool]]:
+        iat_ranges = [
+            (int(imported.thunk_rva), int(imported.thunk_rva) + 4)
+            for imported in candidate_bin.imports
+            if imported.thunk_rva is not None
         ]
+        return _launch_structural_image_ranges(
+            image_base=candidate_bin.image_base,
+            span_start=span_start,
+            span_size=span_size,
+            excluded_ranges=iat_ranges,
+            structurally_immutable=structurally_immutable,
+        )
 
-    original_image_spans = write_launch_span_leaves(
-        module_prefix="RelationalLaunchOriginalImageMappedLeaf",
-        theorem_prefix="consoleLaunchOriginalImageMappedRange",
-        spans=mapped_image_spans(original_bin),
-        predicate="consoleLaunchOriginalImageMappedAt",
-    )
-    candidate_image_spans = write_launch_span_leaves(
-        module_prefix="RelationalLaunchCandidateImageMappedLeaf",
-        theorem_prefix="consoleLaunchCandidateImageMappedRange",
-        spans=mapped_image_spans(candidate_bin),
-        predicate="consoleLaunchCandidateImageMappedAt",
-    )
+    def write_candidate_image_span_leaves(
+    ) -> list[tuple[int, int, list[tuple[str, int, int]]]]:
+        checked_spans: list[tuple[int, int, list[tuple[str, int, int]]]] = []
+        leaf_index = 0
+        mapped_spans = [(0, candidate_bin.size_of_headers, True)] + [
+            (
+                section.rva_start,
+                section.rva_end - section.rva_start,
+                not section.writable,
+            )
+            for section in candidate_bin.sections
+        ]
+        predicate = "consoleLaunchCandidateImageCompatibilityAt"
+        for span_start, span_size, structurally_immutable in mapped_spans:
+            checked_ranges: list[tuple[str, int, int]] = []
+            for range_start, range_size, structural in partition_candidate_image_span(
+                span_start,
+                span_size,
+                structurally_immutable=structurally_immutable,
+            ):
+                chunk_size = range_size if structural else launch_chunk_size
+                for relative_start, count in _launch_check_ranges(
+                    range_size, chunk_size
+                ):
+                    start = range_start + relative_start
+                    module = (
+                        f"RelationalLaunchCandidateImageMappedLeaf{leaf_index}"
+                    )
+                    theorem_name = (
+                        f"consoleLaunchCandidateImageMappedRange{leaf_index}"
+                    )
+                    source_rows = [
+                        "import StageA.RelationalLaunchContext\n",
+                        "import StageA.RelationalStaticTree\n\n",
+                        "namespace StageA.GeneratedRelational\n\n",
+                        "open StageA.Formal StageA.Relational\n\n",
+                        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n",
+                    ]
+                    if structural:
+                        source_rows.extend([
+                            f"theorem {theorem_name} :\n",
+                            f"    IndexedBoolRangeHolds {predicate} "
+                            f"{{ start := {start}, size := {count} }} := by\n",
+                            "  apply "
+                            "candidateProjectionImageCompatibleAt_of_immutable_span\n",
+                            "    staticProofContext consoleLaunchWorld\n",
+                            f"    {{ start := {start}, size := {count} }}\n",
+                            "    consoleLaunchCandidateLoaderImageChecked\n",
+                            "  decide\n\n",
+                        ])
+                    elif count > 1:
+                        level: list[tuple[str, int, int]] = []
+                        for offset in range(count):
+                            row_name = f"{theorem_name}Byte{offset}"
+                            row_start = start + offset
+                            source_rows.extend([
+                                f"theorem {row_name} :\n",
+                                f"    IndexedBoolRangeHolds {predicate} "
+                                f"{{ start := {row_start}, size := 1 }} := by\n",
+                                "  apply indexedBoolRangeHolds_of_checked\n",
+                                "  decide\n\n",
+                            ])
+                            level.append((row_name, row_start, 1))
+                        merge_level = 0
+                        while len(level) > 1:
+                            next_level: list[tuple[str, int, int]] = []
+                            for pair_index in range(0, len(level), 2):
+                                left = level[pair_index]
+                                if pair_index + 1 >= len(level):
+                                    next_level.append(left)
+                                    continue
+                                right = level[pair_index + 1]
+                                merge_name = (
+                                    f"{theorem_name}Merge{merge_level}_"
+                                    f"{pair_index // 2}"
+                                )
+                                source_rows.extend([
+                                    f"theorem {merge_name} :\n",
+                                    f"    IndexedBoolRangeHolds {predicate} "
+                                    f"{{ start := {left[1]}, "
+                                    f"size := {left[2] + right[2]} }} :=\n",
+                                    f"  indexedBoolRangeHolds_append {predicate}\n",
+                                    f"    {{ start := {left[1]}, size := {left[2]} }}\n",
+                                    f"    {{ start := {right[1]}, size := {right[2]} }}\n",
+                                    f"    (by decide) {left[0]} {right[0]}\n\n",
+                                ])
+                                next_level.append((
+                                    merge_name,
+                                    left[1],
+                                    left[2] + right[2],
+                                ))
+                            level = next_level
+                            merge_level += 1
+                        source_rows.extend([
+                            f"theorem {theorem_name} :\n",
+                            f"    IndexedBoolRangeHolds {predicate} "
+                            f"{{ start := {start}, size := {count} }} :=\n",
+                            f"  {level[0][0]}\n\n",
+                        ])
+                    else:
+                        source_rows.extend([
+                            f"theorem {theorem_name} :\n",
+                            f"    IndexedBoolRangeHolds {predicate} "
+                            f"{{ start := {start}, size := 1 }} := by\n",
+                            "  apply indexedBoolRangeHolds_of_checked\n",
+                            "  decide\n\n",
+                        ])
+                    source_rows.append("end StageA.GeneratedRelational\n")
+                    _write_text_if_changed(
+                        stage_a / f"{module}.lean", "".join(source_rows)
+                    )
+                    launch_leaf_modules.append(module)
+                    checked_ranges.append((theorem_name, start, count))
+                    leaf_index += 1
+            checked_spans.append((span_start, span_size, checked_ranges))
+        return checked_spans
+
+    candidate_image_spans = write_candidate_image_span_leaves()
     stack_ranges = write_launch_leaves(
         module_prefix="RelationalLaunchStackMemoryLeaf",
         theorem_prefix="consoleLaunchStackMemoryRange",
         total=stack_size,
         predicate="consoleLaunchStackMemoryAt",
+        chunk_size=launch_stack_chunk_size,
     )
     static_word_slot_ranges = write_launch_leaves(
         module_prefix="RelationalLaunchStaticWordSlotLeaf",
@@ -7023,11 +7258,8 @@ def _write_relational_acceptance_modules(
             for start, size, _chunks in spans
         ) + "]"
 
-    original_image_range_proof = mapped_spans_proof(
-        "consoleLaunchOriginalImageMappedAt", original_image_spans
-    )
     candidate_image_range_proof = mapped_spans_proof(
-        "consoleLaunchCandidateImageMappedAt", candidate_image_spans
+        "consoleLaunchCandidateImageCompatibilityAt", candidate_image_spans
     )
     stack_range_proof = _lean_all_listed_proof([
         theorem for theorem, _start, _count in stack_ranges
@@ -7048,25 +7280,56 @@ def _write_relational_acceptance_modules(
         + "theorem consoleLaunchOriginalImageMapped :\n"
         "    PreferredBaseImageMemory staticProofContext.originalPe\n"
         "      staticProofContext.originalImports consoleLaunchOriginalState.memory := by\n"
-        "  apply preferredBaseImageMemory_of_mapped_ranges\n"
-        "  have rangesHold : AllIndexedBoolRangesHold\n"
-        "      consoleLaunchOriginalImageMappedAt\n"
-        "      (mappedImageSpans staticProofContext.originalPe) := by\n"
-        "    change AllIndexedBoolRangesHold consoleLaunchOriginalImageMappedAt "
-        + lean_span_list(original_image_spans) + "\n"
-        f"    exact {original_image_range_proof}\n"
-        "  simpa [consoleLaunchOriginalImageMappedAt] using rangesHold\n\n"
+        "  have loaderMapped := loaderPopulatedPreferredBaseMemory_maps_image\n"
+        "    false staticProofContext consoleLaunchWorld (by decide)\n"
+        "    (by decide) (by decide)\n"
+        "  have stackMapped := preferredBaseImageMemory_after_stack_range_writes\n"
+        "    staticProofContext.originalPe staticProofContext.originalImports\n"
+        "    (loaderPopulatedPreferredBaseMemory false staticProofContext\n"
+        "      consoleLaunchWorld) consoleLaunchStackRange.originalBase\n"
+        "    consoleLaunchStackRange.size consoleLaunchOriginalStackWrites\n"
+        "    (by decide) (by decide) (by decide) (by decide) loaderMapped\n"
+        "  simpa [consoleLaunchOriginalState, consoleLaunchOriginalMemory,\n"
+        "    consoleLaunchOriginalWrites] using stackMapped\n\n"
+        "theorem consoleLaunchCandidateExcludedImageMapped :\n"
+        "    PreferredBaseImageMemory staticProofContext.candidatePe\n"
+        "      staticProofContext.candidateImports\n"
+        "      consoleLaunchCandidateExcludedMemory := by\n"
+        "  have loaderMapped := loaderPopulatedPreferredBaseMemory_maps_image\n"
+        "    true staticProofContext consoleLaunchWorld (by decide)\n"
+        "    (by decide) (by decide)\n"
+        "  have stackMapped := preferredBaseImageMemory_after_stack_range_writes\n"
+        "    staticProofContext.candidatePe staticProofContext.candidateImports\n"
+        "    (loaderPopulatedPreferredBaseMemory true staticProofContext\n"
+        "      consoleLaunchWorld) consoleLaunchStackRange.candidateBase\n"
+        "    consoleLaunchStackRange.size consoleLaunchCandidateStackWrites\n"
+        "    (by decide) (by decide) (by decide) (by decide) loaderMapped\n"
+        "  simpa [consoleLaunchCandidateExcludedMemory, consoleLaunchCandidateWrites]\n"
+        "    using stackMapped\n\n"
         "theorem consoleLaunchCandidateImageMapped :\n"
         "    PreferredBaseImageMemory staticProofContext.candidatePe\n"
         "      staticProofContext.candidateImports consoleLaunchCandidateState.memory := by\n"
-        "  apply preferredBaseImageMemory_of_mapped_ranges\n"
+        "  change PreferredBaseImageMemory staticProofContext.candidatePe\n"
+        "    staticProofContext.candidateImports\n"
+        "    (ordinaryMemoryCandidateProjection staticProofContext consoleLaunchWorld\n"
+        "      (staticProofContext.relationalValueTargets consoleLaunchWorld)\n"
+        "      consoleLaunchOriginalMemory consoleLaunchCandidateExcludedMemory)\n"
+        "  apply preferredBaseImageMemory_projection_of_compatible_ranges\n"
+        "  · decide\n"
+        "  · decide\n"
+        "  · decide\n"
+        "  · decide\n"
+        "  · decide\n"
+        "  · exact consoleLaunchOriginalImageMapped\n"
+        "  · exact consoleLaunchCandidateExcludedImageMapped\n"
         "  have rangesHold : AllIndexedBoolRangesHold\n"
-        "      consoleLaunchCandidateImageMappedAt\n"
+        "      consoleLaunchCandidateImageCompatibilityAt\n"
         "      (mappedImageSpans staticProofContext.candidatePe) := by\n"
-        "    change AllIndexedBoolRangesHold consoleLaunchCandidateImageMappedAt "
+        "    change AllIndexedBoolRangesHold "
+        "consoleLaunchCandidateImageCompatibilityAt "
         + lean_span_list(candidate_image_spans) + "\n"
         f"    exact {candidate_image_range_proof}\n"
-        "  simpa [consoleLaunchCandidateImageMappedAt] using rangesHold\n\n"
+        "  simpa [consoleLaunchCandidateImageCompatibilityAt] using rangesHold\n\n"
         "theorem consoleLaunchOriginalImmutableImage :\n"
         "    ImmutableImageWordMemory staticProofContext.originalPe\n"
         "      consoleLaunchOriginalState.memory := by\n"
@@ -7115,7 +7378,8 @@ def _write_relational_acceptance_modules(
     )
 
     launch_realizability_source = (
-        "import StageA.RelationalLaunchCheckCertificate\n\n"
+        "import StageA.RelationalLaunchCheckCertificate\n"
+        "import StageA.RelationalProductGraphContext\n\n"
         "namespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"

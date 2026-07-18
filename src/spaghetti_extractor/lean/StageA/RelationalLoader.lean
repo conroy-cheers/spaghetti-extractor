@@ -52,6 +52,31 @@ theorem pe32ByteTreeValid_readByte_lt (tree : ByteTree)
       · exact leftInduction (by simp_all [pe32ByteTreeValid]) read
       · exact rightInduction (by simp_all [pe32ByteTreeValid]) read
 
+theorem pe32ByteTreeValid_readByte_isSome (tree : ByteTree)
+    (valid : pe32ByteTreeValid tree = true) {offset : Nat}
+    (inside : offset < tree.length) :
+    (tree.readByte offset).isSome = true := by
+  induction tree generalizing offset with
+  | empty => simp [ByteTree.length] at inside
+  | leaf bytes =>
+      simpa [ByteTree.readByte, ByteTree.length, inside]
+  | node size leftSize left right leftInduction rightInduction =>
+      simp only [pe32ByteTreeValid, Bool.and_eq_true, beq_iff_eq] at valid
+      rcases valid with
+        ⟨⟨⟨leftValid, rightValid⟩, leftSizeEq⟩, sizeEq⟩
+      subst size
+      rw [leftSizeEq]
+      change offset < left.length + right.length at inside
+      change (if offset >= left.length + right.length then none
+        else if offset < left.length then left.readByte offset
+        else right.readByte (offset - left.length)).isSome = true
+      rw [if_neg (by omega)]
+      by_cases inLeft : offset < left.length
+      · rw [if_pos inLeft]
+        exact leftInduction leftValid inLeft
+      · rw [if_neg inLeft]
+        exact rightInduction rightValid (by omega)
+
 theorem pe32ByteTreeValid_rvaByte_lt (pe : PE32)
     (valid : pe32ByteTreeValid pe.bytes = true) {rva byte : Nat}
     (read : rvaByte pe rva = some byte) : byte < 256 := by
@@ -106,6 +131,14 @@ def pe32MappedSpanValid (pe : PE32) (rva size : Nat) : Bool :=
         sec.virtualAddress <= rva &&
           rva + size <= sec.virtualAddress + sec.mappedSize).length == 1)
 
+theorem pe32MappedSpanValid_image_bounded (pe : PE32) (rva size : Nat)
+    (valid : pe32MappedSpanValid pe rva size = true) :
+    rva + size <= pe.sizeOfImage := by
+  unfold pe32MappedSpanValid at valid
+  simp only [Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq,
+    beq_iff_eq] at valid
+  exact valid.1.2
+
 def pe32DirectorySlotValid (pe : PE32) (header : PE32CheckedHeader)
     (index expectedRva expectedSize : Nat) : Bool :=
   let optionalOffset := pe.peOffset + 24
@@ -141,6 +174,31 @@ def pe32SectionListValid (pe : PE32) : Nat -> Nat -> List Section -> Bool
             pe32SpanBounded sec.rawPointer sec.rawSize &&
             rawEnd <= pe.bytes.length &&
             pe32SectionListValid pe mappedEnd rawEnd sections)
+
+theorem pe32SectionListValid_raw_bounded (pe : PE32) :
+    ∀ mappedCursor rawCursor sections,
+      pe32SectionListValid pe mappedCursor rawCursor sections = true ->
+      ∀ sec, sec ∈ sections ->
+        sec.rawPointer + sec.rawSize <= pe.bytes.length := by
+  intro mappedCursor rawCursor sections
+  induction sections generalizing mappedCursor rawCursor with
+  | nil => simp
+  | cons head tail induction =>
+      intro valid sec member
+      simp only [pe32SectionListValid] at valid
+      simp only [List.mem_cons] at member
+      rcases member with rfl | member
+      · by_cases rawZero : sec.rawSize = 0 <;>
+          simp_all [rawZero, Bool.and_eq_true]
+      · by_cases rawZero : head.rawSize = 0
+        · simp only [rawZero, beq_self_eq_true, if_true, Bool.and_eq_true,
+            decide_eq_true_eq] at valid
+          exact induction (head.virtualAddress + head.mappedSize) rawCursor
+            valid.2.2 sec member
+        · simp only [beq_iff_eq, rawZero, if_false, Bool.and_eq_true,
+            decide_eq_true_eq] at valid
+          exact induction (head.virtualAddress + head.mappedSize)
+            (head.rawPointer + head.rawSize) valid.2.2 sec member
 
 def pe32HeaderAndImageSizesValid (pe : PE32)
     (header : PE32CheckedHeader) : Bool :=
@@ -188,5 +246,109 @@ def pe32LoaderImageValid (policy : PE32LoaderPolicy) (pe : PE32) : Bool :=
 
 def preferredBaseLoaderImageValid (pe : PE32) : Bool :=
   pe32LoaderImageValid preferredBaseOnlyLoaderPolicy pe
+
+/-- Stable projections from the nested loader checker.  Downstream proofs use
+this object instead of repeatedly depending on the checker's conjunction
+layout. -/
+structure PreferredBaseLoaderImageFacts (pe : PE32) where
+  bytesValid : pe32ByteTreeValid pe.bytes = true
+  imageSpanValid : pe32SpanBounded pe.imageBase pe.sizeOfImage = true
+  header : PE32CheckedHeader
+  headerRead : readPE32CheckedHeader pe = some header
+  headersBounded : pe.sizeOfHeaders <= pe.bytes.length
+  sectionListValid :
+    pe32SectionListValid pe pe.sizeOfHeaders pe.sizeOfHeaders pe.sections = true
+
+def preferredBaseLoaderImageValid_facts (pe : PE32)
+    (valid : preferredBaseLoaderImageValid pe = true) :
+    PreferredBaseLoaderImageFacts pe := by
+  unfold preferredBaseLoaderImageValid pe32LoaderImageValid at valid
+  simp only [preferredBaseOnlyLoaderPolicy, Bool.true_and, Bool.and_eq_true]
+    at valid
+  have bytesValid := valid.1.1.1.1.1.1.1.1.1.1
+  have imageSpanValid := valid.1.2
+  have headerValid := valid.2
+  cases headerResult : readPE32CheckedHeader pe with
+  | none => simp [headerResult] at headerValid
+  | some header =>
+      simp only [headerResult, Bool.and_eq_true] at headerValid
+      have sizesValid := headerValid.1.1.1.1
+      unfold pe32HeaderAndImageSizesValid at sizesValid
+      split at sizesValid
+      · contradiction
+      · simp only [Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq] at sizesValid
+        exact {
+          bytesValid
+          imageSpanValid
+          header
+          headerRead := headerResult
+          headersBounded := sizesValid.1.1.2
+          sectionListValid := sizesValid.2
+        }
+
+theorem preferredBaseLoaderImageValid_bytes (pe : PE32)
+    (valid : preferredBaseLoaderImageValid pe = true) :
+    pe32ByteTreeValid pe.bytes = true :=
+  (preferredBaseLoaderImageValid_facts pe valid).bytesValid
+
+theorem preferredBaseLoaderImageValid_image_span (pe : PE32)
+    (valid : preferredBaseLoaderImageValid pe = true) :
+    pe32SpanBounded pe.imageBase pe.sizeOfImage = true :=
+  (preferredBaseLoaderImageValid_facts pe valid).imageSpanValid
+
+theorem preferredBaseLoaderImageValid_headers_bounded (pe : PE32)
+    (valid : preferredBaseLoaderImageValid pe = true) :
+    pe.sizeOfHeaders <= pe.bytes.length :=
+  (preferredBaseLoaderImageValid_facts pe valid).headersBounded
+
+theorem preferredBaseLoaderImageValid_section_raw_bounded (pe : PE32)
+    (valid : preferredBaseLoaderImageValid pe = true) (sec : Section)
+    (member : sec ∈ pe.sections) :
+    sec.rawPointer + sec.rawSize <= pe.bytes.length :=
+  pe32SectionListValid_raw_bounded pe pe.sizeOfHeaders pe.sizeOfHeaders
+    pe.sections
+    (preferredBaseLoaderImageValid_facts pe valid).sectionListValid sec member
+
+theorem preferredBaseLoaderImageValid_rvaByte_isSome (pe : PE32)
+    (valid : preferredBaseLoaderImageValid pe = true) (rva : Nat)
+    (region : rva < pe.sizeOfHeaders ∨
+      ∃ sec, sec ∈ pe.sections ∧ sec.virtualAddress <= rva ∧
+        rva < sec.virtualAddress + sec.mappedSize) :
+    (rvaByte pe rva).isSome = true := by
+  unfold rvaByte
+  split
+  · exact pe32ByteTreeValid_readByte_isSome pe.bytes
+      (preferredBaseLoaderImageValid_bytes pe valid)
+      (by
+        have headersBounded :=
+          preferredBaseLoaderImageValid_headers_bounded pe valid
+        omega)
+  · rcases region with header | ⟨sec, member, lower, upper⟩
+    · contradiction
+    · have foundSome :
+          (pe.sections.find? (fun candidate =>
+            candidate.virtualAddress <= rva &&
+              rva < candidate.virtualAddress + candidate.mappedSize)).isSome =
+            true := by
+        simp only [List.find?_isSome]
+        exact ⟨sec, member, by
+          simp only [Bool.and_eq_true, decide_eq_true_eq]
+          exact ⟨lower, upper⟩⟩
+      cases sectionResult : pe.sections.find? (fun candidate =>
+          candidate.virtualAddress <= rva &&
+            rva < candidate.virtualAddress + candidate.mappedSize) with
+      | none => simp [sectionResult] at foundSome
+      | some selected =>
+          change (if rva - selected.virtualAddress < selected.rawSize then
+            pe.bytes.readByte (selected.rawPointer +
+              (rva - selected.virtualAddress)) else some 0).isSome = true
+          split
+          · apply pe32ByteTreeValid_readByte_isSome pe.bytes
+              (preferredBaseLoaderImageValid_bytes pe valid)
+            have selectedMember := List.mem_of_find?_eq_some sectionResult
+            have rawBounded := preferredBaseLoaderImageValid_section_raw_bounded
+              pe valid selected selectedMember
+            omega
+          · simp
 
 end StageA.Relational

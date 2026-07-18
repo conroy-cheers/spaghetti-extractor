@@ -2,6 +2,7 @@ from tests.stage_a_relational_support import *
 from spaghetti_extractor.relational.schema import PROTOCOL_CALLBACK_CONTROL_FORMAT
 from spaghetti_extractor.relational.lean.acceptance import (
     _launch_check_ranges,
+    _launch_structural_image_ranges,
 )
 from typing import Any
 
@@ -14,6 +15,40 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
         )
         with self.assertRaisesRegex(StageAInputError, "must be positive"):
             _launch_check_ranges(2500, 0)
+
+    def test_launch_structural_image_ranges_preserve_exact_coverage(self):
+        ranges = _launch_structural_image_ranges(
+            image_base=0x400001,
+            span_start=0,
+            span_size=24,
+            excluded_ranges=[(7, 11), (9, 13), (30, 34)],
+            structurally_immutable=True,
+        )
+        self.assertEqual(
+            ranges,
+            [
+                (0, 3, False),
+                (3, 4, True),
+                (7, 8, False),
+                (15, 8, True),
+                (23, 1, False),
+            ],
+        )
+        self.assertEqual(sum(size for _start, size, _ in ranges), 24)
+        self.assertEqual(
+            [start for start, _size, structural in ranges if structural],
+            [3, 15],
+        )
+        self.assertEqual(
+            _launch_structural_image_ranges(
+                image_base=0x400000,
+                span_start=4,
+                span_size=8,
+                excluded_ranges=[],
+                structurally_immutable=False,
+            ),
+            [(4, 8, False)],
+        )
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for PE TLS parsing")
     def test_formal_tls_directory_and_callback_parsing(self):
@@ -1373,16 +1408,32 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "RelationalLaunchCheckCertificate.lean"
             ).read_text(encoding="utf-8")
             self.assertIn(
-                "preferredBaseImageMemory_of_mapped_ranges", launch_checks
+                "preferredBaseImageMemory_projection_of_compatible_ranges",
+                launch_checks,
             )
             self.assertIn(
                 "preferredBaseImageMemory_implies_immutable", launch_checks
+            )
+            self.assertIn(
+                "loaderPopulatedPreferredBaseMemory_maps_image", launch_checks
+            )
+            self.assertIn(
+                "preferredBaseImageMemory_after_stack_range_writes",
+                launch_checks,
+            )
+            self.assertIn(
+                "theorem consoleLaunchCandidateExcludedImageMapped",
+                launch_checks,
             )
             self.assertFalse(
                 (prepared / "lean" / "StageA" /
                  "RelationalLaunchOriginalImmutableImageLeaf0.lean").exists()
             )
-            self.assertIn("mappedImageSpans staticProofContext.originalPe", launch_checks)
+            self.assertFalse(
+                (prepared / "lean" / "StageA" /
+                 "RelationalLaunchOriginalImageMappedLeaf0.lean").exists()
+            )
+            self.assertIn("mappedImageSpans staticProofContext.candidatePe", launch_checks)
             self.assertNotIn(
                 "staticProofContext.originalPe.sizeOfImage", launch_checks
             )
@@ -1391,12 +1442,21 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 launch_checks,
             )
             self.assertIn("IndexedBoolCertificate.holds_of_ranges", launch_checks)
-            original_leaf = (
+            candidate_leaf = (
                 prepared / "lean" / "StageA" /
-                "RelationalLaunchOriginalImageMappedLeaf0.lean"
+                "RelationalLaunchCandidateImageMappedLeaf0.lean"
             ).read_text(encoding="utf-8")
-            self.assertIn("indexedBoolRangeHolds_of_checked", original_leaf)
-            self.assertIn("{ start := 0, size := 512 }", original_leaf)
+            self.assertIn(
+                "candidateProjectionImageCompatibleAt_of_immutable_span",
+                candidate_leaf,
+            )
+            self.assertIn(
+                "consoleLaunchCandidateLoaderImageChecked", candidate_leaf
+            )
+            self.assertIn(
+                "consoleLaunchCandidateImageCompatibilityAt", candidate_leaf
+            )
+            self.assertIn("{ start := 0, size := 512 }", candidate_leaf)
             self.assertNotIn("axiom", launch_source)
             self.assertNotIn("sorry", launch_source)
             self.assertNotIn("native_decide", launch_source)
@@ -1415,12 +1475,12 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             for compiled in (prepared / "lean").rglob("*.olean"):
                 compiled.unlink()
 
-            original_leaf_path = (
+            candidate_leaf_path = (
                 prepared / "lean" / "StageA" /
-                "RelationalLaunchOriginalImageMappedLeaf0.lean"
+                "RelationalLaunchCandidateImageMappedLeaf0.lean"
             )
-            original_leaf_path.write_text(
-                original_leaf_path.read_text(encoding="utf-8").replace(
+            candidate_leaf_path.write_text(
+                candidate_leaf_path.read_text(encoding="utf-8").replace(
                     "{ start := 0, size := 512 }",
                     "{ start := 1, size := 512 }",
                     1,
@@ -1487,6 +1547,10 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "RelationalLaunchDefinition.lean"
             ).read_text(encoding="utf-8")
             self.assertIn(
+                "import StageA.RelationalStaticContextBase",
+                launch_definition,
+            )
+            self.assertNotIn(
                 "import StageA.RelationalProductGraphContext",
                 launch_definition,
             )
@@ -1504,6 +1568,85 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertIn(
                 "ordinaryMemoryCandidateProjection", launch
+            )
+
+    def test_launch_realizability_accepts_related_word_self_registers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = _pe32_image(b"\xeb\xfe")
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(image)
+            candidate.write_bytes(image)
+            contract_path = self._write_contract(
+                root / "relation.json", region_size=2
+            )
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            relations = [
+                {
+                    "original": register,
+                    "candidate": register,
+                    "relation": "related_word",
+                }
+                for register in (
+                    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+                )
+            ]
+            contract["regions"][0]["input_relations"] = relations
+            contract["regions"][0]["output_relations"] = relations
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+            prepared = root / "prepared"
+            result = stage_a_prepare_relational(
+                original=original,
+                candidate=candidate,
+                relation_contract=contract_path,
+                out=prepared,
+            )
+
+            self.assertIn("launch_realizability", result["acceptance"], result)
+            self.assertNotIn(
+                "launch_realizability_certificate_unsupported",
+                {
+                    blocker["code"]
+                    for blocker in result["acceptance"]["blockers"]
+                },
+            )
+            self.assertTrue(
+                (
+                    prepared / "lean" / "StageA" /
+                    "RelationalLaunchRealizabilityCertificate.lean"
+                ).exists()
+            )
+            graph_context = (
+                prepared / "lean" / "StageA" /
+                "RelationalProductGraphContext.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "import StageA.RelationalStaticContextBase\n", graph_context
+            )
+            self.assertNotIn(
+                "import StageA.RelationalStaticContext\n", graph_context
+            )
+            launch_definition = (
+                prepared / "lean" / "StageA" /
+                "RelationalLaunchDefinition.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "import StageA.RelationalStaticContextBase\n",
+                launch_definition,
+            )
+            self.assertNotIn(
+                "import StageA.RelationalProductGraphContext\n",
+                launch_definition,
+            )
+            launch_certificate = (
+                prepared / "lean" / "StageA" /
+                "RelationalLaunchRealizabilityCertificate.lean"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "import StageA.RelationalProductGraphContext\n",
+                launch_certificate,
             )
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for canonical-region proofs")

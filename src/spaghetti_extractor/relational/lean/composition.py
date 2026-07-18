@@ -476,7 +476,7 @@ def _write_relational_product_graph_modules(
     )
     context_source = (
         "import StageA.RelationalComposition\n"
-        "import StageA.RelationalStaticContext\n\n"
+        "import StageA.RelationalStaticContextBase\n\n"
         "namespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"

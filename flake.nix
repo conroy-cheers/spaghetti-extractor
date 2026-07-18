@@ -1114,6 +1114,45 @@
               cp -R "$work/relational-v3" "$out/report/relational-v3"
               cp "$work/relational-v3.stdout" "$work/relational-v3.stderr" "$out/report/"
             '';
+          stage-a-gnu-hello-launch-proof =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              prepared = stage-a-gnu-hello-preflight + "/report/relational-v3";
+              targetNodes = [ "relationallaunchrealizabilitycertificate" ];
+              targetBundle = true;
+            };
+          stage-a-gnu-hello-check = pkgs.runCommand "stage-a-gnu-hello-check"
+            {
+              nativeBuildInputs = [ pkgs.jq ];
+            }
+            ''
+              prepared="${stage-a-gnu-hello-preflight}/report/relational-v3"
+              jq -e '
+                .status == "prepared" and
+                .acceptance.status == "incomplete" and
+                .acceptance.theorem == null and
+                .acceptance.launch_realizability.profile ==
+                  "paired-preferred-base-import-stack-tls-static-v2" and
+                .composition_progress.status == "incomplete" and
+                .composition_progress.counts.unsupported_instructions == 0 and
+                .composition_progress.counts.rooted_reachable_nodes > 1000 and
+                .composition_progress.counts.rooted_reachable_feasible_edges > 1000 and
+                .composition_progress.counts.rooted_refined_segments > 0 and
+                .composition_progress.counts.rooted_refined_segments <
+                  .composition_progress.counts.rooted_reachable_feasible_edges and
+                .composition_progress.counts.acceptance_blockers > 0
+              ' "$prepared/prepared-proof.json" >/dev/null
+              jq -e '
+                .format == "stage-a-lean-target-bundle-v1" and
+                .lean_trust == 0 and
+                ([.nodes[].id] |
+                  index("relationallaunchrealizabilitycertificate")) != null
+              ' "${stage-a-gnu-hello-launch-proof}/bundle.json" >/dev/null
+              mkdir -p "$out"
+              cp "$prepared/prepared-proof.json" "$prepared/semantic-gaps.json" "$out/"
+              cp "${stage-a-gnu-hello-launch-proof}/bundle.json" \
+                "$out/launch-proof-bundle.json"
+            '';
           stage-a-minimal-hello-fixtures = pkgs.runCommand "stage-a-minimal-hello-fixtures"
             {
               nativeBuildInputs = [ pkgs.jq ];
@@ -1854,6 +1893,8 @@
             stageARelationalAcceptanceSuite.cases.top_level_return_checks_terminal_invariant_end_to_end;
           stage-a-relational-tests-acceptance-nonidentical-launch =
             stageARelationalAcceptanceSuite.cases.nonidentical_launch_uses_checked_memory_model;
+          stage-a-relational-tests-acceptance-related-word-launch =
+            stageARelationalAcceptanceSuite.cases.launch_realizability_accepts_related_word_self_registers;
           stage-a-relational-tests-acceptance-nonreturning-import-thunk =
             stageARelationalAcceptanceSuite.cases.nonreturning_import_thunk_terminates_whole_program_end_to_end;
           stage-a-relational-tests-acceptance-external-loop =
@@ -2005,6 +2046,8 @@
             stage-a-gnu-hello-static-map
             stage-a-gnu-hello-relation-contract
             stage-a-gnu-hello-preflight
+            stage-a-gnu-hello-launch-proof
+            stage-a-gnu-hello-check
             stage-a-gnu-hello-fixtures-root
             stage-a-minimal-hello-fixtures
             stage-a-minimal-hello-static-map
@@ -2077,6 +2120,7 @@
             stage-a-relational-tests-acceptance-instruction-adequacy-multi-chunk
             stage-a-relational-tests-acceptance-entry-surface
             stage-a-relational-tests-acceptance-direct-loop
+            stage-a-relational-tests-acceptance-related-word-launch
             stage-a-relational-tests-acceptance-canonical-region
             stage-a-relational-tests-acceptance-executable-coverage
             stage-a-relational-tests-acceptance-semantic-code-aliases
@@ -2173,6 +2217,7 @@
             stage-a-winapi-hello-check
             stage-a-winapi-hello-behavior-smoke
             stage-a-gnu-hello-preflight
+            stage-a-gnu-hello-check
             stage-a-minimal-hello-check
             stage-a-jq-fixtures-check
             stage-a-relational-tests

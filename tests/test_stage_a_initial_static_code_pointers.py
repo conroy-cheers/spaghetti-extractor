@@ -123,6 +123,46 @@ class StageAInitialStaticCodePointerTests(unittest.TestCase):
             self.assertEqual(diagnostics["counts"]["inferred"], 0)
             self.assertEqual(diagnostics["counts"]["rejected"], 0)
 
+    def test_identity_memory_infers_unread_relocated_code_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = self._write_binary(
+                root / "original.exe",
+                _pe32_image_with_immutable_indirect_call(
+                    0x2000, callee_rva=0x1030, writable=True, jump=True,
+                ),
+            )
+            candidate = self._write_binary(
+                root / "candidate.exe",
+                _pe32_image_with_immutable_indirect_call(
+                    0x2000, callee_rva=0x1030, writable=True, jump=True,
+                ),
+            )
+            contract = {
+                "code_targets": [{
+                    "id": 7,
+                    "original_rva": 0x1030,
+                    "candidate_rva": 0x1030,
+                }],
+                "memory_relation": {"mode": "identity"},
+                "regions": [],
+                "static_word_relation_slots": [],
+            }
+
+            updated, diagnostics = _attach_initial_static_code_pointer_slots(
+                contract, [], original, candidate,
+            )
+
+            self.assertEqual(updated["static_word_relation_slots"], [{
+                "id": 0,
+                "original_address": 0x402000,
+                "candidate_address": 0x402000,
+                "relation": "fixed_code_pointer",
+                "target_id": 7,
+            }])
+            self.assertEqual(diagnostics["counts"]["inferred"], 1)
+            self.assertEqual(diagnostics["counts"]["rejected"], 0)
+
     def test_missing_highlow_relocation_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             original, candidate, contract, behaviors = self._fixture(

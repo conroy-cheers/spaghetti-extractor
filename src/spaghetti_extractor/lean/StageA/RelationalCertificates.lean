@@ -2905,6 +2905,669 @@ theorem preferredBaseImageMemory_maps_image (pe : PE32) (imports : List PEImport
     simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt absoluteBefore]
   simp [preferredBaseImageMemory, addressNat, byteRead]
 
+theorem importIatByteCovered_of_member_offset (imports : List PEImport)
+    (imported : PEImport) (member : imported ∈ imports)
+    (offset : Nat) (offsetBefore : offset < 4) :
+    importIatByteCovered imports (imported.iatRva + offset) = true := by
+  simp only [importIatByteCovered, List.any_eq_true]
+  refine ⟨imported, member, ?_⟩
+  simp only [Bool.and_eq_true, decide_eq_true_eq]
+  omega
+
+/-- Updating one checked IAT word preserves the preferred-image predicate,
+which intentionally excludes loader-populated IAT bytes. -/
+theorem PreferredBaseImageMemory.afterIatWordWrite
+    (pe : PE32) (imports : List PEImport) (memory : Memory)
+    (imported : PEImport) (member : imported ∈ imports) (value : Word)
+    (imageBounded : pe.imageBase + pe.sizeOfImage <= 2 ^ 32)
+    (iatBounded : imported.iatRva + 4 <= pe.sizeOfImage)
+    (mapped : PreferredBaseImageMemory pe imports memory) :
+    PreferredBaseImageMemory pe imports
+      (memory.write32
+        (BitVec.ofNat 32 (pe.imageBase + imported.iatRva)) value) := by
+  intro rva expected rvaBefore notIat byteRead
+  have queryBefore : pe.imageBase + rva < 2 ^ 32 := by omega
+  have iatEndBefore : pe.imageBase + imported.iatRva + 4 <= 2 ^ 32 := by
+    omega
+  have queryNat :
+      (BitVec.ofNat 32 (pe.imageBase + rva) : Word).toNat =
+        pe.imageBase + rva := by
+    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt queryBefore]
+  have avoids (offset : Nat) (offsetBefore : offset < 4) :
+      (BitVec.ofNat 32 (pe.imageBase + rva) : Word) ≠
+        BitVec.ofNat 32 (pe.imageBase + imported.iatRva) +
+          BitVec.ofNat 32 offset := by
+    intro overlap
+    have overlapNat := congrArg BitVec.toNat overlap
+    have offsetSmall : offset < 2 ^ 32 := by omega
+    have iatAddressBefore : pe.imageBase + imported.iatRva < 2 ^ 32 := by
+      omega
+    have iatOffsetBefore :
+        pe.imageBase + imported.iatRva + offset < 2 ^ 32 := by
+      omega
+    simp [queryNat, BitVec.toNat_add, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt iatAddressBefore,
+      Nat.mod_eq_of_lt offsetSmall,
+      Nat.mod_eq_of_lt iatOffsetBefore] at overlapNat
+    have rvaEq : rva = imported.iatRva + offset := by omega
+    have covered := importIatByteCovered_of_member_offset imports imported member
+      offset offsetBefore
+    rw [rvaEq, covered] at notIat
+    contradiction
+  have h0 := avoids 0 (by omega)
+  have h1 := avoids 1 (by omega)
+  have h2 := avoids 2 (by omega)
+  have h3 := avoids 3 (by omega)
+  have h0' :
+      (BitVec.ofNat 32 (pe.imageBase + rva) : Word) ≠
+        BitVec.ofNat 32 (pe.imageBase + imported.iatRva) := by
+    simpa using h0
+  simp [Memory.write32, h0', h1, h2, h3]
+  exact mapped rva expected rvaBefore notIat byteRead
+
+theorem preferredBaseImageMemory_after_original_import_writes
+    (context : StaticProofContext) (bindings : List ImportAddressPair)
+    (memory : Memory)
+    (bindingsValid : bindings.all (ImportAddressPair.staticValid context) = true)
+    (imageBounded :
+      context.originalPe.imageBase + context.originalPe.sizeOfImage <= 2 ^ 32)
+    (mapped : PreferredBaseImageMemory context.originalPe
+      context.originalImports memory) :
+    PreferredBaseImageMemory context.originalPe context.originalImports
+      (applyConcreteWrites memory (bindings.map fun binding =>
+        (BitVec.ofNat 32
+          (context.originalPe.imageBase + binding.originalIatRva),
+          binding.originalAddress))) := by
+  induction bindings generalizing memory with
+  | nil => simpa [applyConcreteWrites] using mapped
+  | cons binding rest ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at bindingsValid
+      simp only [List.map_cons]
+      obtain ⟨imported, member, iatRva⟩ :=
+        binding.originalImportWitness context bindingsValid.1
+      have bounds := binding.originalIatWordBounds context bindingsValid.1
+      have afterHead := PreferredBaseImageMemory.afterIatWordWrite
+        context.originalPe context.originalImports memory imported member
+        binding.originalAddress imageBounded (by omega) mapped
+      apply ih
+      · exact bindingsValid.2
+      · simpa [iatRva] using afterHead
+
+theorem preferredBaseImageMemory_after_candidate_import_writes
+    (context : StaticProofContext) (bindings : List ImportAddressPair)
+    (memory : Memory)
+    (bindingsValid : bindings.all (ImportAddressPair.staticValid context) = true)
+    (imageBounded :
+      context.candidatePe.imageBase + context.candidatePe.sizeOfImage <= 2 ^ 32)
+    (mapped : PreferredBaseImageMemory context.candidatePe
+      context.candidateImports memory) :
+    PreferredBaseImageMemory context.candidatePe context.candidateImports
+      (applyConcreteWrites memory (bindings.map fun binding =>
+        (BitVec.ofNat 32
+          (context.candidatePe.imageBase + binding.candidateIatRva),
+          binding.candidateAddress))) := by
+  induction bindings generalizing memory with
+  | nil => simpa [applyConcreteWrites] using mapped
+  | cons binding rest ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at bindingsValid
+      simp only [List.map_cons]
+      obtain ⟨imported, member, iatRva⟩ :=
+        binding.candidateImportWitness context bindingsValid.1
+      have bounds := binding.candidateIatWordBounds context bindingsValid.1
+      have afterHead := PreferredBaseImageMemory.afterIatWordWrite
+        context.candidatePe context.candidateImports memory imported member
+        binding.candidateAddress imageBounded (by omega) mapped
+      apply ih
+      · exact bindingsValid.2
+      · simpa [iatRva] using afterHead
+
+theorem loaderPopulatedPreferredBaseMemory_maps_image
+    (candidate : Bool) (context : StaticProofContext) (world : RelationalWorld)
+    (importsStatic : world.importAddressesStaticValid context = true)
+    (originalImageBounded :
+      context.originalPe.imageBase + context.originalPe.sizeOfImage <= 2 ^ 32)
+    (candidateImageBounded :
+      context.candidatePe.imageBase + context.candidatePe.sizeOfImage <= 2 ^ 32) :
+    PreferredBaseImageMemory
+      (if candidate then context.candidatePe else context.originalPe)
+      (if candidate then context.candidateImports else context.originalImports)
+      (loaderPopulatedPreferredBaseMemory candidate context world) := by
+  simp only [RelationalWorld.importAddressesStaticValid, Bool.and_eq_true]
+    at importsStatic
+  have bindingsValid := importsStatic.2
+  cases candidate
+  · simp only [Bool.false_eq_true, if_false,
+      loaderPopulatedPreferredBaseMemory, preferredBaseImportWrites]
+    exact preferredBaseImageMemory_after_original_import_writes context
+      world.importAddresses (preferredBaseImageMemory context.originalPe)
+      bindingsValid originalImageBounded
+      (preferredBaseImageMemory_maps_image context.originalPe
+        context.originalImports originalImageBounded)
+  · simp only [if_true, loaderPopulatedPreferredBaseMemory,
+      preferredBaseImportWrites]
+    exact preferredBaseImageMemory_after_candidate_import_writes context
+      world.importAddresses (preferredBaseImageMemory context.candidatePe)
+      bindingsValid candidateImageBounded
+      (preferredBaseImageMemory_maps_image context.candidatePe
+        context.candidateImports candidateImageBounded)
+
+def stackRangeConcreteWrites (rangeBase : Word)
+    (writes : List (Nat × Word)) : List (Word × Word) :=
+  writes.map fun write =>
+    (rangeBase + BitVec.ofNat 32 write.1, write.2)
+
+def stackRangeWriteOffsetsValid (rangeSize : Nat)
+    (writes : List (Nat × Word)) : Bool :=
+  writes.all fun write => write.1 + 4 <= rangeSize
+
+theorem PreferredBaseImageMemory.afterStackWordWrite
+    (pe : PE32) (imports : List PEImport) (memory : Memory)
+    (rangeBase : Word) (rangeSize offset : Nat) (value : Word)
+    (imageBounded : pe.imageBase + pe.sizeOfImage <= 2 ^ 32)
+    (rangeNoWrap : rangeBase.toNat + rangeSize < 2 ^ 32)
+    (rangeDisjoint : rangeBase.toNat + rangeSize <= pe.imageBase ∨
+      pe.imageBase + pe.sizeOfImage <= rangeBase.toNat)
+    (inside : offset + 4 <= rangeSize)
+    (mapped : PreferredBaseImageMemory pe imports memory) :
+    PreferredBaseImageMemory pe imports
+      (memory.write32 (rangeBase + BitVec.ofNat 32 offset) value) := by
+  intro rva expected rvaBefore notIat byteRead
+  have queryBefore : pe.imageBase + rva < 2 ^ 32 := by omega
+  have queryNat :
+      (BitVec.ofNat 32 (pe.imageBase + rva) : Word).toNat =
+        pe.imageBase + rva := by
+    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt queryBefore]
+  have avoids (byte : Nat) (byteBefore : byte < 4) :
+      (BitVec.ofNat 32 (pe.imageBase + rva) : Word) ≠
+        rangeBase + BitVec.ofNat 32 offset + BitVec.ofNat 32 byte := by
+    intro overlap
+    have overlapNat := congrArg BitVec.toNat overlap
+    have offsetSmall : offset < 2 ^ 32 := by omega
+    have byteSmall : byte < 2 ^ 32 := by omega
+    have writeBaseBefore : rangeBase.toNat + offset < 2 ^ 32 := by omega
+    have writeByteBefore : rangeBase.toNat + offset + byte < 2 ^ 32 := by omega
+    simp [queryNat, BitVec.toNat_add, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt offsetSmall,
+      Nat.mod_eq_of_lt byteSmall,
+      Nat.mod_eq_of_lt writeBaseBefore,
+      Nat.mod_eq_of_lt writeByteBefore] at overlapNat
+    omega
+  have h0 := avoids 0 (by omega)
+  have h1 := avoids 1 (by omega)
+  have h2 := avoids 2 (by omega)
+  have h3 := avoids 3 (by omega)
+  have h0' :
+      (BitVec.ofNat 32 (pe.imageBase + rva) : Word) ≠
+        rangeBase + BitVec.ofNat 32 offset := by
+    simpa using h0
+  simp [Memory.write32, h0', h1, h2, h3]
+  exact mapped rva expected rvaBefore notIat byteRead
+
+theorem preferredBaseImageMemory_after_stack_range_writes
+    (pe : PE32) (imports : List PEImport) (memory : Memory)
+    (rangeBase : Word) (rangeSize : Nat) (writes : List (Nat × Word))
+    (imageBounded : pe.imageBase + pe.sizeOfImage <= 2 ^ 32)
+    (rangeNoWrap : rangeBase.toNat + rangeSize < 2 ^ 32)
+    (rangeDisjoint : rangeBase.toNat + rangeSize <= pe.imageBase ∨
+      pe.imageBase + pe.sizeOfImage <= rangeBase.toNat)
+    (offsetsValid : stackRangeWriteOffsetsValid rangeSize writes = true)
+    (mapped : PreferredBaseImageMemory pe imports memory) :
+    PreferredBaseImageMemory pe imports
+      (applyConcreteWrites memory (stackRangeConcreteWrites rangeBase writes)) := by
+  induction writes generalizing memory with
+  | nil => simpa [stackRangeConcreteWrites, applyConcreteWrites] using mapped
+  | cons write rest ih =>
+      simp only [stackRangeWriteOffsetsValid, List.all_cons,
+        Bool.and_eq_true, decide_eq_true_eq] at offsetsValid
+      simp only [stackRangeConcreteWrites, List.map_cons]
+      have afterHead := PreferredBaseImageMemory.afterStackWordWrite pe imports memory
+        rangeBase rangeSize write.1 write.2 imageBounded rangeNoWrap
+        rangeDisjoint offsetsValid.1 mapped
+      exact ih
+        (memory := memory.write32
+          (rangeBase + BitVec.ofNat 32 write.1) write.2)
+        offsetsValid.2 afterHead
+
+/-- Immutable-byte classification with an already checked import inventory.
+Unlike `immutableImageByteCoveredByWord`, this does not reparse the complete PE
+import table for every queried byte. -/
+def immutableImageByteCoveredByWordWithImports (pe : PE32)
+    (imports : List PEImport) (address : Word) : Bool :=
+  (List.range 4).any fun offset =>
+    offset <= address.toNat &&
+      (readImmutableImageWordWithImports pe imports
+        (address.toNat - offset) 4).isSome
+
+/-- Exclusion families that do not require an immutable-image lookup. -/
+def ordinaryMemoryAddressExcludedIdentityNonImmutable
+    (context : StaticProofContext) (world : RelationalWorld)
+    (candidateAddress : Word) : Bool :=
+  importIatByteCoveredCandidate context world candidateAddress ||
+    stackByteCoveredCandidate world candidateAddress ||
+    dynamicByteCoveredCandidate world candidateAddress ||
+    staticDynamicPointerSlotByteCoveredCandidate context candidateAddress ||
+    staticWordRelationSlotByteCoveredCandidate context candidateAddress ||
+    ordinaryOriginalMemoryAddressExcluded context world candidateAddress
+
+/-- A constant-size certificate for an aligned immutable image span.  It checks
+only PE metadata and the import inventory; byte existence is derived from the
+separately checked preferred-base loader image. -/
+def immutableImageWordSpanValid (pe : PE32) (imports : List PEImport)
+    (span : Span) : Bool :=
+  pe32MappedSpanValid pe span.start span.size &&
+    (pe.imageBase + span.start) % 4 == 0 &&
+    span.size % 4 == 0 &&
+    imageRangeExcludesIat imports span.start span.size &&
+    (span.stop <= pe.sizeOfHeaders ||
+      pe.sections.any fun sec =>
+        !sec.writable && sec.virtualAddress <= span.start &&
+          span.stop <= sec.virtualAddress + sec.mappedSize)
+
+structure ImmutableImageWordSpanFacts (pe : PE32) (imports : List PEImport)
+    (span : Span) : Prop where
+  mapped : pe32MappedSpanValid pe span.start span.size = true
+  startAligned : (pe.imageBase + span.start) % 4 = 0
+  sizeAligned : span.size % 4 = 0
+  excludesIat : imageRangeExcludesIat imports span.start span.size = true
+  region : span.stop <= pe.sizeOfHeaders ∨
+    ∃ sec, sec ∈ pe.sections ∧ sec.writable = false ∧
+      sec.virtualAddress <= span.start ∧
+      span.stop <= sec.virtualAddress + sec.mappedSize
+
+theorem immutableImageWordSpanValid_facts (pe : PE32)
+    (imports : List PEImport) (span : Span)
+    (checked : immutableImageWordSpanValid pe imports span = true) :
+    ImmutableImageWordSpanFacts pe imports span := by
+  simp only [immutableImageWordSpanValid, Bool.and_eq_true, beq_iff_eq,
+    Bool.or_eq_true, List.any_eq_true, decide_eq_true_eq] at checked
+  rcases checked with
+    ⟨⟨⟨⟨mapped, startAligned⟩, sizeAligned⟩, excludesIat⟩, region⟩
+  refine {
+    mapped := mapped
+    startAligned := startAligned
+    sizeAligned := sizeAligned
+    excludesIat := excludesIat
+    region := ?_
+  }
+  rcases region with header | ⟨sec, member, ⟨notWritable, lower⟩, upper⟩
+  · exact Or.inl header
+  · have writableFalse : sec.writable = false := by
+      cases writableResult : sec.writable <;> simp_all
+    exact Or.inr ⟨sec, member, writableFalse, lower, upper⟩
+
+theorem imageRangeExcludesIat_of_subrange
+    (imports : List PEImport) (outerRva outerSize rva size : Nat)
+    (excluded : imageRangeExcludesIat imports outerRva outerSize = true)
+    (lower : outerRva <= rva)
+    (upper : rva + size <= outerRva + outerSize) :
+    imageRangeExcludesIat imports rva size = true := by
+  rw [imageRangeExcludesIat, Bool.not_eq_true'] at excluded ⊢
+  apply Bool.eq_false_iff.mpr
+  intro overlaps
+  apply Bool.eq_false_iff.mp excluded
+  simp only [List.any_eq_true, Bool.and_eq_true, decide_eq_true_eq] at overlaps ⊢
+  rcases overlaps with ⟨imported, member, beforeEnd, afterStart⟩
+  exact ⟨imported, member, by omega, by omega⟩
+
+theorem readRvaLittleEndian_four_isSome (pe : PE32) (rva : Nat)
+    (readable : ∀ offset, offset < 4 ->
+      (rvaByte pe (rva + offset)).isSome = true) :
+    (readRvaLittleEndian pe rva 4).isSome = true := by
+  have read0 : (rvaByte pe rva).isSome = true := by
+    simpa using readable 0 (by omega)
+  have read1 := readable 1 (by omega)
+  have read2 := readable 2 (by omega)
+  have read3 := readable 3 (by omega)
+  cases result0 : rvaByte pe rva with
+  | none => simp [result0] at read0
+  | some byte0 =>
+      cases result1 : rvaByte pe (rva + 1) with
+      | none => simp [result1] at read1
+      | some byte1 =>
+          cases result2 : rvaByte pe (rva + 2) with
+          | none => simp [result2] at read2
+          | some byte2 =>
+              cases result3 : rvaByte pe (rva + 3) with
+              | none => simp [result3] at read3
+              | some byte3 =>
+                  have rangeFour : List.range 4 = [0, 1, 2, 3] := by decide
+                  simp [readRvaLittleEndian, rangeFour, result0, result1,
+                    result2, result3]
+
+theorem readImmutableImageWordWithImports_four_isSome_of_loader_region
+    (pe : PE32) (imports : List PEImport) (rva : Nat)
+    (loaderValid : preferredBaseLoaderImageValid pe = true)
+    (rvaEnd : rva + 4 <= pe.sizeOfImage)
+    (excluded : imageRangeExcludesIat imports rva 4 = true)
+    (region : rva + 4 <= pe.sizeOfHeaders ∨
+      ∃ sec, sec ∈ pe.sections ∧ sec.writable = false ∧
+        sec.virtualAddress <= rva ∧
+        rva + 4 <= sec.virtualAddress + sec.mappedSize) :
+    (readImmutableImageWordWithImports pe imports
+      (pe.imageBase + rva) 4).isSome = true := by
+  have imageSpan := preferredBaseLoaderImageValid_image_span pe loaderValid
+  simp only [pe32SpanBounded, pe32AddressSpaceSize, Bool.and_eq_true,
+    decide_eq_true_eq] at imageSpan
+  have imageEnd : pe.imageBase + pe.sizeOfImage <= 2 ^ 32 := by
+    have restored := Nat.sub_add_cancel imageSpan.1
+    omega
+  have absoluteEnd : pe.imageBase + rva + 4 <= 2 ^ 32 := by omega
+  have readable : (readRvaLittleEndian pe rva 4).isSome = true := by
+    apply readRvaLittleEndian_four_isSome pe rva
+    intro offset offsetBefore
+    apply preferredBaseLoaderImageValid_rvaByte_isSome pe loaderValid
+    rcases region with header | ⟨sec, member, writable, lower, upper⟩
+    · exact Or.inl (by omega)
+    · exact Or.inr ⟨sec, member, by omega, by omega⟩
+  unfold readImmutableImageWordWithImports
+  rw [if_neg (by
+    simp only [Bool.or_eq_true, decide_eq_true_eq]
+    omega)]
+  simp only [Nat.add_sub_cancel_left]
+  rw [if_neg (by omega)]
+  simp only [excluded, Bool.not_true, Bool.false_eq_true, if_false]
+  by_cases inHeader : rva + 4 <= pe.sizeOfHeaders
+  · rw [if_neg (by simp [inHeader])]
+    exact readable
+  · rw [if_pos (by simp [inHeader])]
+    rcases region with header | ⟨sec, member, writable, lower, upper⟩
+    · contradiction
+    · have foundSome :
+          (pe.sections.find? fun candidate =>
+            !candidate.writable && candidate.virtualAddress <= rva &&
+              rva + 4 <= candidate.virtualAddress + candidate.mappedSize).isSome =
+            true := by
+        simp only [List.find?_isSome]
+        refine ⟨sec, member, ?_⟩
+        simp [writable, lower, upper]
+      cases found : pe.sections.find? (fun candidate =>
+          !candidate.writable && candidate.virtualAddress <= rva &&
+            rva + 4 <= candidate.virtualAddress + candidate.mappedSize) with
+      | none => simp [found] at foundSome
+      | some selected => simpa [found] using readable
+
+theorem immutableImageWordSpanValid_aligned_words
+    (pe : PE32) (imports : List PEImport) (span : Span)
+    (loaderValid : preferredBaseLoaderImageValid pe = true)
+    (checked : immutableImageWordSpanValid pe imports span = true) :
+    IndexedBoolRangeHolds
+      (fun rva =>
+        let absolute := pe.imageBase + rva
+        let offset := absolute % 4
+        (readImmutableImageWordWithImports pe imports
+          (absolute - offset) 4).isSome)
+      span := by
+  have facts := immutableImageWordSpanValid_facts pe imports span checked
+  intro offset offsetBefore
+  have offsetModBefore : offset % 4 < 4 := Nat.mod_lt _ (by omega)
+  have offsetModLe : offset % 4 <= offset := Nat.mod_le _ _
+  have wordOffsetEnd : offset - offset % 4 + 4 <= span.size := by
+    have sizeAligned := facts.sizeAligned
+    omega
+  let wordRva := span.start + (offset - offset % 4)
+  have wordLower : span.start <= wordRva := by
+    simp [wordRva]
+  have wordUpper : wordRva + 4 <= span.stop := by
+    simp only [wordRva, Span.stop]
+    omega
+  have imageEnd := pe32MappedSpanValid_image_bounded pe span.start span.size
+    facts.mapped
+  have wordImageEnd : wordRva + 4 <= pe.sizeOfImage := by
+    simp only [Span.stop] at wordUpper
+    omega
+  have wordExcluded : imageRangeExcludesIat imports wordRva 4 = true :=
+    imageRangeExcludesIat_of_subrange imports span.start span.size wordRva 4
+      facts.excludesIat wordLower (by
+        simp only [Span.stop] at wordUpper
+        omega)
+  have wordRegion : wordRva + 4 <= pe.sizeOfHeaders ∨
+      ∃ sec, sec ∈ pe.sections ∧ sec.writable = false ∧
+        sec.virtualAddress <= wordRva ∧
+        wordRva + 4 <= sec.virtualAddress + sec.mappedSize := by
+    rcases facts.region with header | ⟨sec, member, writable, lower, upper⟩
+    · exact Or.inl (by
+        simp only [Span.stop] at header wordUpper
+        omega)
+    · exact Or.inr ⟨sec, member, writable, by omega, by
+        simp only [Span.stop] at upper wordUpper
+        omega⟩
+  have wordRead :=
+    readImmutableImageWordWithImports_four_isSome_of_loader_region pe imports
+      wordRva loaderValid wordImageEnd wordExcluded wordRegion
+  have absoluteMod :
+      (pe.imageBase + (span.start + offset)) % 4 = offset % 4 := by
+    have startAligned := facts.startAligned
+    omega
+  have alignedAbsolute :
+      pe.imageBase + (span.start + offset) -
+          (pe.imageBase + (span.start + offset)) % 4 =
+        pe.imageBase + wordRva := by
+    rw [absoluteMod]
+    calc
+      pe.imageBase + (span.start + offset) - offset % 4 =
+          (pe.imageBase + span.start) + offset - offset % 4 := by
+            simp only [Nat.add_assoc]
+      _ = (pe.imageBase + span.start) + (offset - offset % 4) :=
+        Nat.add_sub_assoc offsetModLe (pe.imageBase + span.start)
+      _ = pe.imageBase + wordRva := by simp [wordRva, Nat.add_assoc]
+  change (readImmutableImageWordWithImports pe imports
+    (pe.imageBase + (span.start + offset) -
+      (pe.imageBase + (span.start + offset)) % 4) 4).isSome = true
+  rw [alignedAbsolute]
+  exact wordRead
+
+/-- One aligned immutable word covers its four constituent image bytes. This
+reduces the common image check from up to eight overlapping word reads per byte
+to one word read per byte without weakening the authoritative exclusion rule. -/
+def candidateAlignedImmutableImageWordCoveredAt
+    (context : StaticProofContext) (rva : Nat) : Bool :=
+  let absolute := context.candidatePe.imageBase + rva
+  let offset := absolute % 4
+  (readImmutableImageWordWithImports context.candidatePe
+    context.candidateImports (absolute - offset) 4).isSome
+
+theorem candidateAlignedImmutableImageWordCoveredAt_of_immutable_span
+    (context : StaticProofContext) (span : Span)
+    (loaderValid :
+      preferredBaseLoaderImageValid context.candidatePe = true)
+    (checked : immutableImageWordSpanValid context.candidatePe
+      context.candidateImports span = true) :
+    IndexedBoolRangeHolds
+      (candidateAlignedImmutableImageWordCoveredAt context) span := by
+  simpa [candidateAlignedImmutableImageWordCoveredAt] using
+    immutableImageWordSpanValid_aligned_words context.candidatePe
+      context.candidateImports span loaderValid checked
+
+theorem candidateAlignedImmutableImageWordCoveredAt_sound
+    (context : StaticProofContext) (rva : Nat)
+    (rvaBefore : rva < context.candidatePe.sizeOfImage)
+    (imageBounded : context.candidatePe.imageBase +
+      context.candidatePe.sizeOfImage <= 2 ^ 32)
+    (covered : candidateAlignedImmutableImageWordCoveredAt context rva = true) :
+    immutableImageByteCoveredByWordWithImports context.candidatePe
+      context.candidateImports
+      (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) = true := by
+  let absolute := context.candidatePe.imageBase + rva
+  let offset := absolute % 4
+  have absoluteBefore : absolute < 2 ^ 32 := by omega
+  have addressNat :
+      (BitVec.ofNat 32 absolute : Word).toNat = absolute := by
+    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt absoluteBefore]
+  have offsetBefore : offset < 4 := by
+    exact Nat.mod_lt _ (by omega)
+  have offsetLe : offset <= absolute := Nat.mod_le _ _
+  simp only [immutableImageByteCoveredByWordWithImports, List.any_eq_true]
+  refine ⟨offset, List.mem_range.mpr offsetBefore, ?_⟩
+  simp only [Bool.and_eq_true, decide_eq_true_eq]
+  refine ⟨?_, ?_⟩
+  · change offset <= (BitVec.ofNat 32 absolute : Word).toNat
+    rw [addressNat]
+    exact offsetLe
+  · change (readImmutableImageWordWithImports context.candidatePe
+        context.candidateImports
+        ((BitVec.ofNat 32 absolute : Word).toNat - offset) 4).isSome = true
+    rw [addressNat]
+    simpa [candidateAlignedImmutableImageWordCoveredAt, absolute, offset]
+      using covered
+
+def candidateProjectionImageAddressExcludedAt
+    (context : StaticProofContext) (world : RelationalWorld) (rva : Nat) : Bool :=
+  candidateAlignedImmutableImageWordCoveredAt context rva ||
+    ordinaryMemoryAddressExcludedIdentityNonImmutable context world
+      (BitVec.ofNat 32 (context.candidatePe.imageBase + rva))
+
+theorem candidateProjectionImageAddressExcludedAt_sound
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (rva : Nat)
+    (rvaBefore : rva < context.candidatePe.sizeOfImage)
+    (candidateImageBounded : context.candidatePe.imageBase +
+      context.candidatePe.sizeOfImage <= 2 ^ 32)
+    (identity : mappedValueTargetsIdentity values = true)
+    (candidateImportsParsed :
+      parseImports context.candidatePe = some context.candidateImports)
+    (excluded : candidateProjectionImageAddressExcludedAt context world rva = true) :
+    ordinaryMemoryAddressExcluded context world values
+      (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) = true := by
+  simp only [candidateProjectionImageAddressExcludedAt, Bool.or_eq_true] at excluded
+  rcases excluded with immutable | nonImmutable
+  · have coveredWithImports :=
+      candidateAlignedImmutableImageWordCoveredAt_sound context rva rvaBefore
+        candidateImageBounded immutable
+    have covered : immutableImageByteCoveredByWord context.candidatePe
+        (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) = true := by
+      simpa [immutableImageByteCoveredByWord,
+        immutableImageByteCoveredByWordWithImports, readImmutableImageWord,
+        candidateImportsParsed] using coveredWithImports
+    have paired : pairedImmutableImageByteCovered context values
+        (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) = true := by
+      simp [pairedImmutableImageByteCovered, covered]
+    simp [ordinaryMemoryAddressExcluded, paired, Bool.or_assoc]
+  · have widened :
+        (ordinaryMemoryAddressExcludedIdentityNonImmutable context world
+          (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) ||
+          pairedImmutableImageByteCovered context values
+            (BitVec.ofNat 32 (context.candidatePe.imageBase + rva))) = true := by
+      simp [nonImmutable]
+    simpa [ordinaryMemoryAddressExcluded,
+      ordinaryMemoryAddressExcludedIdentityNonImmutable,
+      normalizeDataAddress_eq_self_of_mapped_identity values
+        (BitVec.ofNat 32 (context.candidatePe.imageBase + rva)) identity,
+      Bool.or_assoc, Bool.or_comm, Bool.or_left_comm] using widened
+
+/-- Static side condition for reusing the canonical ordinary-memory projection
+at launch. Candidate bytes selected from side-specific memory need no cross-image
+equality; bytes selected from original memory must be equal and outside both
+IAT inventories. -/
+def candidateProjectionImageCompatibleAt (context : StaticProofContext)
+    (world : RelationalWorld) (rva : Nat) : Bool :=
+  match rvaByte context.candidatePe rva with
+  | none => true
+  | some candidateByte =>
+      importIatByteCovered context.candidateImports rva ||
+        candidateProjectionImageAddressExcludedAt context world rva ||
+        (importIatByteCovered context.originalImports rva == false &&
+          rvaByte context.originalPe rva == some candidateByte)
+
+theorem candidateProjectionImageCompatibleAt_of_immutable_span
+    (context : StaticProofContext) (world : RelationalWorld) (span : Span)
+    (loaderValid :
+      preferredBaseLoaderImageValid context.candidatePe = true)
+    (checked : immutableImageWordSpanValid context.candidatePe
+      context.candidateImports span = true) :
+    IndexedBoolRangeHolds
+      (candidateProjectionImageCompatibleAt context world) span := by
+  have aligned :=
+    candidateAlignedImmutableImageWordCoveredAt_of_immutable_span context span
+      loaderValid checked
+  intro offset offsetBefore
+  have covered := aligned offset offsetBefore
+  unfold candidateProjectionImageCompatibleAt
+  split
+  · rfl
+  · simp [candidateProjectionImageAddressExcludedAt, covered]
+
+theorem preferredBaseImageMemory_projection_of_compatible_ranges
+    (context : StaticProofContext) (world : RelationalWorld)
+    (values : List ValueTargetPair) (original excludedValues : Memory)
+    (sameBase : context.originalPe.imageBase = context.candidatePe.imageBase)
+    (sameSize : context.originalPe.sizeOfImage = context.candidatePe.sizeOfImage)
+    (candidateImageBounded : context.candidatePe.imageBase +
+      context.candidatePe.sizeOfImage <= 2 ^ 32)
+    (identity : mappedValueTargetsIdentity values = true)
+    (candidateImportsParsed :
+      parseImports context.candidatePe = some context.candidateImports)
+    (originalMapped : PreferredBaseImageMemory context.originalPe
+      context.originalImports original)
+    (candidateExcludedMapped : PreferredBaseImageMemory context.candidatePe
+      context.candidateImports excludedValues)
+    (compatible : AllIndexedBoolRangesHold
+      (candidateProjectionImageCompatibleAt context world)
+      (mappedImageSpans context.candidatePe)) :
+    PreferredBaseImageMemory context.candidatePe context.candidateImports
+      (ordinaryMemoryCandidateProjection context world values
+        original excludedValues) := by
+  intro rva expected rvaBefore candidateNotIat candidateRead
+  have row : candidateProjectionImageCompatibleAt context world rva = true := by
+    rcases rvaByte_region context.candidatePe rva expected candidateRead with
+      header | sectionCase
+    · have rangeHolds := indexedBoolRangeHolds_of_all_mem
+        (candidateProjectionImageCompatibleAt context world)
+        (mappedImageSpans context.candidatePe)
+        { start := 0, size := context.candidatePe.sizeOfHeaders }
+        compatible (by simp [mappedImageSpans])
+      simpa using rangeHolds rva header
+    · rcases sectionCase with ⟨sec, member, lower, upper⟩
+      have rangeHolds := indexedBoolRangeHolds_of_all_mem
+        (candidateProjectionImageCompatibleAt context world)
+        (mappedImageSpans context.candidatePe)
+        { start := sec.virtualAddress, size := sec.mappedSize }
+        compatible (by
+          simp only [mappedImageSpans, List.mem_cons]
+          exact Or.inr (List.mem_map.mpr ⟨sec, member, rfl⟩))
+      have offsetBefore : rva - sec.virtualAddress < sec.mappedSize := by
+        omega
+      have address :
+          sec.virtualAddress + (rva - sec.virtualAddress) = rva := by
+        omega
+      simpa [address] using rangeHolds
+        (rva - sec.virtualAddress) offsetBefore
+  let candidateAddress : Word :=
+    BitVec.ofNat 32 (context.candidatePe.imageBase + rva)
+  by_cases excluded :
+      ordinaryMemoryAddressExcluded context world values candidateAddress = true
+  · have projected :
+        ordinaryMemoryCandidateProjection context world values original excludedValues
+            candidateAddress = excludedValues candidateAddress := by
+      simp [ordinaryMemoryCandidateProjection, excluded]
+    rw [projected]
+    exact candidateExcludedMapped rva expected rvaBefore candidateNotIat candidateRead
+  · have excludedFalse :
+        ordinaryMemoryAddressExcluded context world values candidateAddress = false :=
+      Bool.eq_false_iff.mpr excluded
+    have excludedFalseAtRva :
+        candidateProjectionImageAddressExcludedAt context world rva = false := by
+      apply Bool.eq_false_iff.mpr
+      intro sufficient
+      have actual := candidateProjectionImageAddressExcludedAt_sound
+        context world values rva rvaBefore candidateImageBounded identity
+        candidateImportsParsed sufficient
+      exact excluded actual
+    simp only [candidateProjectionImageCompatibleAt, candidateRead,
+      candidateNotIat, Bool.false_or, excludedFalseAtRva, Bool.and_eq_true,
+      beq_iff_eq] at row
+    rcases row with ⟨originalNotIat, originalRead⟩
+    have originalBefore : rva < context.originalPe.sizeOfImage := by
+      omega
+    have projected :
+        ordinaryMemoryCandidateProjection context world values original excludedValues
+            candidateAddress = original candidateAddress := by
+      simp [ordinaryMemoryCandidateProjection, excludedFalse,
+        normalizeDataAddress_eq_self_of_mapped_identity values candidateAddress
+          identity]
+    rw [projected]
+    simpa [candidateAddress, sameBase] using
+      originalMapped rva expected originalBefore originalNotIat originalRead
+
 theorem importIatByteCovered_false_of_range_excludes
     (imports : List PEImport) (rva size offset : Nat)
     (excluded : imageRangeExcludesIat imports rva size = true)
