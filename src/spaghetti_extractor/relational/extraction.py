@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -15,11 +16,24 @@ from ..stage_binary import StageABinary, StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 from .analyses.external import _semantic_external_target_identity
 from .contract import _import_identity, _raw_base_relocations
-from .lean.analysis_source import _lean_extraction_source
-from .lean.compiler import _relational_cache_dir, _run_lean_relational
+from .lean.analysis_source import (
+    _lean_behavior_normalization_source,
+    _lean_extraction_source,
+    _lean_side_extraction_source,
+    _raw_side_extraction_driver_sha256,
+)
+from .lean.compiler import (
+    _lean_memory_arguments,
+    _lean_toolchain_identity,
+    _relational_cache_dir,
+    _run_lean_relational,
+)
 from .model import PURE_SEMANTIC_EXPR_OPERATIONS
 from .preflight import side_diagnostics
-from .schema import STAGE_A_RELATIONAL_MODEL_ID
+from .schema import (
+    RELATIONAL_ANALYSIS_KERNEL_MODULES,
+    STAGE_A_RELATIONAL_MODEL_ID,
+)
 
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parent.parent / "lean" / "StageA"
@@ -309,6 +323,474 @@ def _extract_relational_behaviors(
         "batch_elapsed_seconds": batch_elapsed,
         "max_batch_elapsed_seconds": max(batch_elapsed.values(), default=0.0),
     }
+
+
+_RAW_BEHAVIOR_MARKER = re.compile(
+    r"STAGE_A_RAW_BEHAVIOR_BEGIN (original|candidate) (\d+)\n"
+    r"(.*?)\nSTAGE_A_RAW_BEHAVIOR_END",
+    re.DOTALL,
+)
+
+
+def _parse_raw_behavior_output(
+    result: dict[str, Any],
+    *,
+    side: str,
+    expected: set[int],
+) -> tuple[dict[int, str] | None, dict[str, Any]]:
+    values: dict[int, str] = {}
+    for observed_side, index_text, value in _RAW_BEHAVIOR_MARKER.findall(
+        result.get("stdout", "")
+    ):
+        index = int(index_text)
+        if observed_side != side or index not in expected or index in values:
+            return None, {
+                **result,
+                "status": "malformed_output",
+                "stderr": result.get("stderr", "")
+                + f"\nunexpected or duplicate raw behavior {observed_side} {index}",
+            }
+        normalized = re.sub(r"\s+", " ", value).strip()
+        if not normalized.startswith("some "):
+            return None, {
+                **result,
+                "status": "unsupported",
+                "stderr": result.get("stderr", "")
+                + f"\n{side} region {index} did not decode",
+            }
+        values[index] = normalized[len("some ") :]
+    if set(values) != expected:
+        return None, {
+            **result,
+            "status": "malformed_output",
+            "stderr": result.get("stderr", "")
+            + "\nraw behavior pack is incomplete",
+        }
+    return values, result
+
+
+def _extract_raw_side_behaviors(
+    lean_dir: Path,
+    binary: StageABinary,
+    binary_bytes: bytes,
+    request: dict[str, Any],
+    *,
+    use_cache: bool,
+) -> tuple[list[str] | None, dict[str, Any]]:
+    side = request.get("side")
+    if side not in {"original", "candidate"}:
+        raise StageAInputError(f"unsupported extraction side {side!r}")
+    if request.get("binary_sha256") != binary.sha256:
+        raise StageAInputError(f"{side} extraction request binary hash mismatch")
+    regions = request.get("regions")
+    if not isinstance(regions, list):
+        raise StageAInputError(f"{side} extraction request is malformed")
+
+    artifacts = lean_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    input_pe = artifacts / "input.pe"
+    input_pe.write_bytes(binary_bytes)
+    if sha256_file(input_pe) != binary.sha256:
+        raise StageAInputError(f"{side} extraction input hash mismatch")
+
+    formal_sha256 = sha256_file(_LEAN_SOURCE_ROOT / "Formal.lean")
+    extraction_semantics_sha256 = _raw_extraction_semantics_sha256()
+    cache_dir = _relational_cache_dir() if use_cache else None
+    values: dict[int, str] = {}
+    cache_keys: dict[int, str] = {}
+    for index, region in enumerate(regions):
+        if not isinstance(region, dict) or region.get("index") != index:
+            raise StageAInputError(
+                f"{side} extraction request region indices are not canonical"
+            )
+        key = _raw_behavior_cache_key(
+            binary,
+            region["span"],
+            formal_sha256=formal_sha256,
+            extraction_semantics_sha256=extraction_semantics_sha256,
+        )
+        cache_keys[index] = key
+        if cache_dir is not None:
+            cached = _read_raw_behavior_cache(cache_dir / f"raw-{key}.json")
+            if cached is not None:
+                values[index] = cached
+
+    missing = [index for index in range(len(regions)) if index not in values]
+    if not missing:
+        return [values[index] for index in range(len(regions))], {
+            "status": "checked",
+            "source": "untrusted_raw_cache_rechecked_by_final_bundle",
+            "cache_hits": len(values),
+            "cache_misses": 0,
+            "decoder_semantics_sha256": extraction_semantics_sha256,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        }
+
+    batch_size = max(
+        1,
+        int(
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_BATCH", "128"
+            )
+        ),
+    )
+    batches = [
+        (batch_index, indices)
+        for batch_index, indices in enumerate(
+            (
+                missing[offset : offset + batch_size]
+                for offset in range(0, len(missing), batch_size)
+            ),
+            start=1,
+        )
+    ]
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+    prelude_module = f"RelationalRawExtractPrelude{side.title()}"
+    (lean_dir / "StageA" / f"{prelude_module}.lean").write_text(
+        "import StageA.Relational\n", encoding="utf-8"
+    )
+    prelude = _run_lean_relational(lean_dir, bundle=prelude_module)
+    if prelude.get("status") != "checked":
+        return None, prelude
+
+    def run_batch(
+        batch_index: int, indices: list[int]
+    ) -> tuple[int, list[int], dict[str, Any]]:
+        bundle = f"RelationalRawExtract{side.title()}{batch_index}"
+        batch_regions = [regions[index] for index in indices]
+        source = _lean_side_extraction_source(
+            side=side,
+            regions=batch_regions,
+        )
+        (lean_dir / "StageA" / f"{bundle}.lean").write_text(
+            source, encoding="utf-8"
+        )
+        return batch_index, indices, _run_lean_extractor(lean_dir, bundle=bundle)
+
+    jobs = max(
+        1,
+        int(
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS", "8"
+            )
+        ),
+    )
+    batch_elapsed: dict[int, float] = {}
+    last_result: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=min(jobs, len(batches))) as executor:
+        futures = [
+            executor.submit(run_batch, batch_index, indices)
+            for batch_index, indices in batches
+        ]
+        for future in as_completed(futures):
+            batch_index, indices, result = future.result()
+            last_result = result
+            batch_elapsed[batch_index] = float(result.get("elapsed_seconds", 0.0))
+            if result.get("status") != "checked":
+                for pending in futures:
+                    pending.cancel()
+                return None, {
+                    **result,
+                    "batch": batch_index,
+                    "batch_count": len(batches),
+                    "batch_size": len(indices),
+                }
+            parsed, parsed_result = _parse_raw_behavior_output(
+                result,
+                side=side,
+                expected=set(indices),
+            )
+            if parsed is None:
+                for pending in futures:
+                    pending.cancel()
+                return None, {
+                    **parsed_result,
+                    "batch": batch_index,
+                    "batch_count": len(batches),
+                }
+            overlap = set(values) & set(parsed)
+            if overlap:
+                for pending in futures:
+                    pending.cancel()
+                return None, {
+                    **result,
+                    "status": "malformed_output",
+                    "stderr": result.get("stderr", "")
+                    + f"\nraw behavior batches overlap at {sorted(overlap)}",
+                }
+            values.update(parsed)
+            if cache_dir is not None:
+                for index in indices:
+                    write_json(
+                        cache_dir / f"raw-{cache_keys[index]}.json",
+                        {
+                            "format": "stage-a-relational-raw-behavior-cache-v1",
+                            "behavior_term": values[index],
+                        },
+                    )
+
+    return [values[index] for index in range(len(regions))], {
+        **last_result,
+        "source": "batched_exact_lean_raw_side_extraction",
+        "cache_hits": len(values) - len(missing),
+        "cache_misses": len(missing),
+        "batch_count": len(batches),
+        "batch_size": batch_size,
+        "jobs": min(jobs, len(batches)),
+        "batch_elapsed_seconds": batch_elapsed,
+        "max_batch_elapsed_seconds": max(batch_elapsed.values(), default=0.0),
+        "decoder_semantics_sha256": extraction_semantics_sha256,
+    }
+
+
+_NORMALIZED_BEHAVIOR_MARKER = re.compile(
+    r"STAGE_A_NORMALIZED_BEHAVIOR_BEGIN (original|candidate) (\d+)\n"
+    r"(.*?)\nSTAGE_A_NORMALIZED_BEHAVIOR_IR\n"
+    r"(.*?)\nSTAGE_A_NORMALIZED_BEHAVIOR_END",
+    re.DOTALL,
+)
+
+
+def _normalization_region_packs(
+    contract: dict[str, Any],
+    raw_behaviors: dict[tuple[str, int], str],
+    *,
+    max_regions: int,
+    max_source_bytes: int,
+) -> list[list[int]]:
+    if max_regions <= 0 or max_source_bytes <= 0:
+        raise StageAInputError("normalization pack limits must be positive")
+    packs: list[list[int]] = []
+    current: list[int] = []
+    current_bytes = 0
+    for index, region in enumerate(contract["regions"]):
+        try:
+            weight = (
+                len(raw_behaviors[("original", index)].encode("utf-8"))
+                + len(raw_behaviors[("candidate", index)].encode("utf-8"))
+                + len(
+                    json.dumps(
+                        region,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+            )
+        except KeyError as exc:
+            raise StageAInputError(
+                f"raw normalization behavior {index} is missing"
+            ) from exc
+        if current and (
+            len(current) >= max_regions
+            or current_bytes + weight > max_source_bytes
+        ):
+            packs.append(current)
+            current = []
+            current_bytes = 0
+        current.append(index)
+        current_bytes += weight
+    if current:
+        packs.append(current)
+    if not packs:
+        raise StageAInputError("normalization requires at least one region")
+    return packs
+
+
+def _parse_normalized_behavior_output(
+    result: dict[str, Any],
+    *,
+    expected: set[tuple[str, int]],
+) -> tuple[dict[tuple[str, int], dict[str, Any]] | None, dict[str, Any]]:
+    values: dict[tuple[str, int], dict[str, Any]] = {}
+    for side, index_text, behavior_text, semantic_text in (
+        _NORMALIZED_BEHAVIOR_MARKER.findall(result.get("stdout", ""))
+    ):
+        location = (side, int(index_text))
+        if location not in expected or location in values:
+            return None, {
+                **result,
+                "status": "malformed_output",
+                "stderr": result.get("stderr", "")
+                + f"\nunexpected or duplicate normalized behavior {location}",
+            }
+        behavior = re.sub(r"\s+", " ", behavior_text).strip()
+        if not behavior.startswith("some "):
+            return None, {
+                **result,
+                "status": "malformed_output",
+                "stderr": result.get("stderr", "")
+                + f"\nmalformed contracted behavior for {side} region {index_text}",
+            }
+        try:
+            semantic = json.loads(semantic_text)
+        except json.JSONDecodeError as exc:
+            return None, {
+                **result,
+                "status": "malformed_output",
+                "stderr": result.get("stderr", "")
+                + f"\ninvalid normalized semantic IR for {side} region {index_text}: {exc}",
+            }
+        if (
+            not isinstance(semantic, dict)
+            or semantic.get("format") != "stage-a-normalized-behavior-v1"
+        ):
+            return None, {
+                **result,
+                "status": "malformed_output",
+                "stderr": result.get("stderr", "")
+                + f"\nunsupported normalized semantic IR for {side} region {index_text}",
+            }
+        values[location] = {
+            "behavior": behavior[len("some ") :],
+            "semantic_ir": semantic,
+        }
+    if set(values) != expected:
+        return None, {
+            **result,
+            "status": "malformed_output",
+            "stderr": result.get("stderr", "")
+            + "\nnormalized behavior pack is incomplete",
+        }
+    return values, result
+
+
+def _normalize_raw_relational_behaviors(
+    lean_dir: Path,
+    contract: dict[str, Any],
+    raw_behaviors: dict[tuple[str, int], str],
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
+    prelude_module = "RelationalNormalizeRawPrelude"
+    (lean_dir / "StageA" / f"{prelude_module}.lean").write_text(
+        "import StageA.Relational\n", encoding="utf-8"
+    )
+    prelude = _run_lean_relational(lean_dir, bundle=prelude_module)
+    if prelude.get("status") != "checked":
+        return None, prelude
+
+    try:
+        max_regions = int(
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NORMALIZATION_BATCH",
+                "128",
+            )
+        )
+        max_source_bytes = int(
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NORMALIZATION_BYTES",
+                str(2 * 1024 * 1024),
+            )
+        )
+        requested_jobs = int(
+            os.environ.get(
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NORMALIZATION_JOBS",
+                "1",
+            )
+        )
+    except ValueError as exc:
+        raise StageAInputError(
+            "normalization batch, byte, and job limits must be integers"
+        ) from exc
+    if requested_jobs <= 0:
+        raise StageAInputError("normalization jobs must be positive")
+    packs = _normalization_region_packs(
+        contract,
+        raw_behaviors,
+        max_regions=max_regions,
+        max_source_bytes=max_source_bytes,
+    )
+
+    def run_pack(
+        pack_number: int, indices: list[int]
+    ) -> tuple[int, list[int], dict[str, Any]]:
+        bundle = f"RelationalNormalizeRawBehaviors{pack_number}"
+        source = _lean_behavior_normalization_source(
+            contract,
+            raw_behaviors,
+            region_indices=indices,
+        )
+        (lean_dir / "StageA" / f"{bundle}.lean").write_text(
+            source, encoding="utf-8"
+        )
+        return pack_number, indices, _run_lean_extractor(lean_dir, bundle=bundle)
+
+    values: dict[tuple[str, int], dict[str, Any]] = {}
+    elapsed: dict[int, float] = {}
+    last_result: dict[str, Any] = {}
+    jobs = min(requested_jobs, len(packs))
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = [
+            executor.submit(run_pack, number, indices)
+            for number, indices in enumerate(packs, start=1)
+        ]
+        for future in as_completed(futures):
+            pack_number, indices, result = future.result()
+            last_result = result
+            elapsed[pack_number] = float(result.get("elapsed_seconds", 0.0))
+            if result.get("status") != "checked":
+                for pending in futures:
+                    pending.cancel()
+                return None, {
+                    **result,
+                    "pack": pack_number,
+                    "pack_count": len(packs),
+                    "pack_regions": len(indices),
+                }
+            expected = {
+                (side, index)
+                for index in indices
+                for side in ("original", "candidate")
+            }
+            parsed, parsed_result = _parse_normalized_behavior_output(
+                result,
+                expected=expected,
+            )
+            if parsed is None:
+                for pending in futures:
+                    pending.cancel()
+                return None, {
+                    **parsed_result,
+                    "pack": pack_number,
+                    "pack_count": len(packs),
+                }
+            overlap = set(values) & set(parsed)
+            if overlap:
+                for pending in futures:
+                    pending.cancel()
+                return None, {
+                    **result,
+                    "status": "malformed_output",
+                    "stderr": result.get("stderr", "")
+                    + f"\nnormalization packs overlap at {sorted(overlap)}",
+                }
+            values.update(parsed)
+
+    expected = {
+        (side, index)
+        for index in range(len(contract["regions"]))
+        for side in ("original", "candidate")
+    }
+    if set(values) != expected:
+        return None, {
+            **last_result,
+            "status": "malformed_output",
+            "stderr": last_result.get("stderr", "")
+            + "\nnormalized behavior inventory is incomplete",
+        }
+    return _behavior_rows(values, len(contract["regions"])), {
+        **last_result,
+        "stdout": "",
+        "stderr": "",
+        "source": "exact_lean_raw_behavior_normalization_packs",
+        "pack_count": len(packs),
+        "jobs": jobs,
+        "pack_elapsed_seconds": elapsed,
+        "max_pack_elapsed_seconds": max(elapsed.values(), default=0.0),
+    }
+
 
 def _behavior_rows(
     values: dict[tuple[str, int], dict[str, Any]], count: int
@@ -998,12 +1480,74 @@ def _behavior_cache_key(
     }
     return sha256_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
 
+
+def _raw_behavior_cache_key(
+    binary: StageABinary,
+    span: dict[str, Any],
+    *,
+    formal_sha256: str,
+    extraction_semantics_sha256: str,
+) -> str:
+    payload = {
+        "format": "stage-a-relational-raw-behavior-cache-key-v1",
+        "binary_sha256": binary.sha256,
+        "span": {"rva_start": span["rva_start"], "size": span["size"]},
+        "formal_sha256": formal_sha256,
+        "decode_module_sha256": extraction_semantics_sha256,
+    }
+    return sha256_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    )
+
 def _relational_extraction_semantics_sha256(path: Path) -> str:
     if path.name != "RelationalDecode.lean":
         raise StageAInputError(
             "relational extraction semantics must come from RelationalDecode.lean"
         )
     return sha256_file(path)
+
+
+def _raw_extraction_semantics_sha256(
+    *,
+    lean_root: Path | None = None,
+    driver_sha256: str | None = None,
+    lean_toolchain: str | None = None,
+    output_protocol_sha256: str | None = None,
+) -> str:
+    root = _LEAN_SOURCE_ROOT if lean_root is None else Path(lean_root)
+    module_hashes = {
+        module: sha256_file(root / f"{module}.lean")
+        for module in RELATIONAL_ANALYSIS_KERNEL_MODULES
+    }
+    payload = {
+        "format": "stage-a-relational-raw-extraction-semantics-v1",
+        "model": STAGE_A_RELATIONAL_MODEL_ID,
+        "lean_toolchain": (
+            _lean_toolchain_identity()
+            if lean_toolchain is None
+            else lean_toolchain
+        ),
+        "driver_sha256": (
+            _raw_side_extraction_driver_sha256()
+            if driver_sha256 is None
+            else driver_sha256
+        ),
+        "output_protocol_sha256": (
+            sha256_bytes(
+                (
+                    _RAW_BEHAVIOR_MARKER.pattern
+                    + "\n"
+                    + inspect.getsource(_parse_raw_behavior_output)
+                ).encode("utf-8")
+            )
+            if output_protocol_sha256 is None
+            else output_protocol_sha256
+        ),
+        "modules": module_hashes,
+    }
+    return sha256_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    )
 
 def _read_behavior_cache(path: Path) -> dict[str, Any] | None:
     try:
@@ -1022,6 +1566,17 @@ def _read_behavior_cache(path: Path) -> dict[str, Any] | None:
     ):
         return None
     return {"behavior": behavior, "semantic_ir": semantic_ir}
+
+
+def _read_raw_behavior_cache(path: Path) -> str | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if payload.get("format") != "stage-a-relational-raw-behavior-cache-v1":
+        return None
+    behavior = payload.get("behavior_term")
+    return behavior if isinstance(behavior, str) and behavior else None
 
 def _cached_behavior_affected_by_machine_contracts(
     cached: dict[str, Any], contracts: list[dict[str, Any]]
@@ -1053,7 +1608,12 @@ def _run_lean_extractor(lean_dir: Path, *, bundle: str) -> dict[str, Any]:
     source = lean_dir / "StageA" / f"{bundle}.lean"
     if re.search(r"\b(?:sorry|axiom|unsafe)\b", source.read_text(encoding="utf-8")):
         return {"status": "unchecked_marker", "returncode": 1, "stdout": "", "stderr": str(source), "elapsed_seconds": 0.0}
-    command = [lean, "--run", str(source.relative_to(lean_dir))]
+    command = [
+        lean,
+        *_lean_memory_arguments(),
+        "--run",
+        str(source.relative_to(lean_dir)),
+    ]
     try:
         completed = subprocess.run(
             command,

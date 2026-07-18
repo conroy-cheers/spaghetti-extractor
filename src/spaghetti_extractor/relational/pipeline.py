@@ -207,6 +207,7 @@ from .extraction import (
     _behavior_rows,
     _cached_behavior_affected_by_machine_contracts,
     _extract_relational_behaviors,
+    _normalize_raw_relational_behaviors,
     _iat_read_classification,
     _read8_after_register_writes,
     _read_behavior_cache,
@@ -237,11 +238,13 @@ from .isa_requirements import (
     ISARequirementInventory,
     build_isa_requirement_inventory,
     extract_lean_instruction_forms,
+    _lean_form_source_hashes,
 )
 from .lean.analysis_source import (
     _copy_relational_analysis_kernel_sources,
     _copy_relational_kernel_sources,
 )
+from .side_extraction import load_side_extraction, load_side_isa
 from .schema import (
     FLAG_BITS,
     MACHINE_CALL_ABI_REGISTERS,
@@ -531,6 +534,10 @@ def stage_a_prove_relational(
     candidate: Path,
     relation_contract: Path,
     out: Path,
+    original_extraction: Path | None = None,
+    candidate_extraction: Path | None = None,
+    original_isa: Path | None = None,
+    candidate_isa: Path | None = None,
     _prepare_only: bool = False,
     _analyze_only: bool = False,
 ) -> dict[str, Any]:
@@ -629,15 +636,46 @@ def stage_a_prove_relational(
         else _copy_relational_kernel_sources
     )
     copy_kernel_sources(out / "lean" / "StageA")
-    behaviors, extraction = _extract_relational_behaviors(
-        out / "lean",
-        original_bin,
-        candidate_bin,
-        original_artifact.read_bytes(),
-        candidate_artifact.read_bytes(),
-        normalized,
-        use_cache=True,
-    )
+    if (original_extraction is None) != (candidate_extraction is None):
+        raise StageAInputError(
+            "both original and candidate side extractions are required"
+        )
+    if original_extraction is not None and candidate_extraction is not None:
+        raw_behaviors = {
+            (side, index): term
+            for side, path, binary in (
+                ("original", original_extraction, original_bin),
+                ("candidate", candidate_extraction, candidate_bin),
+            )
+            for index, term in enumerate(
+                load_side_extraction(
+                    path=Path(path),
+                    contract=normalized,
+                    side=side,
+                    binary_sha256=binary.sha256,
+                )
+            )
+        }
+        behaviors, extraction = _normalize_raw_relational_behaviors(
+            out / "lean", normalized, raw_behaviors
+        )
+        extraction = {
+            **extraction,
+            "raw_side_artifacts": {
+                "original": sha256_file(Path(original_extraction)),
+                "candidate": sha256_file(Path(candidate_extraction)),
+            },
+        }
+    else:
+        behaviors, extraction = _extract_relational_behaviors(
+            out / "lean",
+            original_bin,
+            candidate_bin,
+            original_artifact.read_bytes(),
+            candidate_artifact.read_bytes(),
+            normalized,
+            use_cache=True,
+        )
     if behaviors is None:
         return _write_relational_verdict(
             out,
@@ -1174,13 +1212,40 @@ def stage_a_prove_relational(
     product_graph = dict(composition.product_graph.raw)
     _checked_product_reachability_inventories(product_graph)
     write_json(out / "relational-product-graph.json", product_graph)
-    lean_instruction_forms, lean_instruction_form_evidence = (
-        extract_lean_instruction_forms(
-            original=original_artifact,
-            candidate=candidate_artifact,
-            relation_contract=normalized,
+    if (original_isa is None) != (candidate_isa is None):
+        raise StageAInputError("both original and candidate side ISA artifacts are required")
+    if original_isa is not None and candidate_isa is not None:
+        lean_instruction_forms = {}
+        for side, path, binary in (
+            ("original", original_isa, original_bin),
+            ("candidate", candidate_isa, candidate_bin),
+        ):
+            lean_instruction_forms.update(
+                load_side_isa(
+                    path=Path(path),
+                    contract=normalized,
+                    side=side,
+                    binary_sha256=binary.sha256,
+                )
+            )
+        lean_instruction_form_evidence = {
+            "status": "lean_extracted_untrusted",
+            "cache": "manifest_bound_side_artifacts",
+            **_lean_form_source_hashes(),
+            "row_count": len(lean_instruction_forms),
+            "side_artifacts": {
+                "original": sha256_file(Path(original_isa)),
+                "candidate": sha256_file(Path(candidate_isa)),
+            },
+        }
+    else:
+        lean_instruction_forms, lean_instruction_form_evidence = (
+            extract_lean_instruction_forms(
+                original=original_artifact,
+                candidate=candidate_artifact,
+                relation_contract=normalized,
+            )
         )
-    )
     isa_requirements = build_isa_requirement_inventory(
         original=original_bin,
         candidate=candidate_bin,
@@ -1411,12 +1476,20 @@ def stage_a_analyze_relational(
     candidate: Path,
     relation_contract: Path,
     out: Path,
+    original_extraction: Path | None = None,
+    candidate_extraction: Path | None = None,
+    original_isa: Path | None = None,
+    candidate_isa: Path | None = None,
 ) -> dict[str, Any]:
     return stage_a_prove_relational(
         original=original,
         candidate=candidate,
         relation_contract=relation_contract,
         out=out,
+        original_extraction=original_extraction,
+        candidate_extraction=candidate_extraction,
+        original_isa=original_isa,
+        candidate_isa=candidate_isa,
         _analyze_only=True,
     )
 

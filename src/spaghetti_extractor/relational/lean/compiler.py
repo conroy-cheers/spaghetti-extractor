@@ -8,6 +8,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from functools import lru_cache
 from pathlib import Path
 from threading import Event
 from typing import Any
@@ -15,6 +16,40 @@ from typing import Any
 from ...stage_binary import StageAInputError
 from ...util import sha256_bytes, sha256_file
 from ..schema import RELATIONAL_APPROVED_AXIOMS
+
+
+@lru_cache(maxsize=1)
+def _lean_toolchain_identity() -> str:
+    try:
+        completed = subprocess.run(
+            ["lean", "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise StageAInputError("unable to identify the Lean toolchain") from exc
+    identity = completed.stdout.strip()
+    if not identity:
+        raise StageAInputError("Lean toolchain identity is empty")
+    return identity
+
+
+def _lean_memory_arguments() -> list[str]:
+    configured = os.environ.get("SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_MEMORY_MB")
+    if configured is None:
+        return []
+    try:
+        memory_mb = int(configured)
+    except ValueError as exc:
+        raise StageAInputError(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_MEMORY_MB must be an integer"
+        ) from exc
+    if memory_mb <= 0:
+        raise StageAInputError(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_MEMORY_MB must be positive"
+        )
+    return ["-M", str(memory_mb)]
 
 
 def _relational_cache_dir() -> Path | None:
@@ -280,6 +315,7 @@ def _run_lean_relational(
             continue
         command = [
             lean,
+            *_lean_memory_arguments(),
             "-o",
             f"StageA/{module}.olean",
             f"StageA/{module}.lean",

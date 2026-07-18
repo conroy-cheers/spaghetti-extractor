@@ -103,3 +103,19 @@ loop caches belong under `${XDG_CACHE_HOME:-~/.cache}/spaghetti-extractor`, not 
 tree. `build/` contains disposable or explicitly exported work products and
 must never be an implicit proof input. Large generated Ghidra/skeleton data is
 reused by content hash and regenerated only when its own inputs change.
+
+Static behavior extraction is side-local and precedes relation synthesis. Each
+binary emits a strict executable inventory, raw behavior artifact, and ISA
+artifact without consuming the other binary or a relation contract. Raw
+behavior artifacts bind their untrusted terms to the complete analysis-kernel
+source inventory, extraction-driver source, and Lean toolchain identity. A
+passing inventory is required before base or pair-supplement extraction can be
+requested.
+
+Pair analysis consumes those immutable side artifacts. Pair-specific spans are
+added as explicit supplements, never hidden inside extraction, and contracted
+behavior normalization runs as an exact-cover set of bounded packs. Pack
+aggregation rejects missing, duplicate, overlapping, or unexpected region
+outputs while preserving the contract's global region identifiers. Final Lean
+modules still reconstruct these proposals from the exact PE bytes; neither a
+side artifact nor a normalization pack is acceptance evidence by itself.

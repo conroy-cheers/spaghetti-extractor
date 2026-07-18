@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any
 
 from ...stage_binary import StageABinary, StageAInputError
+from ...util import sha256_bytes
 from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..schema import (
     RELATIONAL_ANALYSIS_KERNEL_MODULES,
@@ -19,6 +21,14 @@ from .expressions import (
 
 
 _LEAN_SOURCE_ROOT = Path(__file__).resolve().parents[2] / "lean" / "StageA"
+
+
+def _raw_side_extraction_driver_sha256() -> str:
+    return sha256_bytes(
+        inspect.getsource(_lean_side_extraction_source).encode("utf-8")
+    )
+
+
 def _lean_region_state_predicates(region: dict[str, Any]) -> list[str] | None:
     if "state_predicates" not in region:
         return None
@@ -143,6 +153,119 @@ def _lean_extraction_source(
         "  let some candidatePe := parsePE32 candidateBytes | throw (IO.userError \"candidate PE parse failed\")\n"
         "  let some originalImports := parseImports originalPe | throw (IO.userError \"original imports parse failed\")\n"
         "  let some candidateImports := parseImports candidatePe | throw (IO.userError \"candidate imports parse failed\")\n"
+        + "\n".join(evaluations)
+        + "\n"
+    )
+
+
+def _lean_side_extraction_source(
+    *,
+    side: str,
+    regions: list[dict[str, Any]],
+) -> str:
+    if side not in {"original", "candidate"}:
+        raise StageAInputError(f"unsupported extraction side {side!r}")
+    evaluations: list[str] = []
+    for request in regions:
+        index = int(request["index"])
+        span = request["span"]
+        span_literal = (
+            f"{{ start := {int(span['rva_start'])}, size := {int(span['size'])} }}"
+        )
+        evaluations.extend((
+            f"  let some behavior{index} := "
+            f"regionBehaviorWithImports pe imports {span_literal} | "
+            f'throw (IO.userError "{side} region {index} did not decode")',
+            f'  IO.println ("STAGE_A_RAW_BEHAVIOR_BEGIN {side} {index}\\n" ++ '
+            f'reprStr (some behavior{index}) ++ "\\nSTAGE_A_RAW_BEHAVIOR_END")',
+        ))
+    return (
+        "import StageA.Relational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+        "set_option linter.unusedSimpArgs false\n\n"
+        "def main : IO Unit := do\n"
+        "  let data <- IO.FS.readBinFile \"artifacts/input.pe\"\n"
+        "  let bytes : Bytes := data.toList.map (fun byte => byte.toNat)\n"
+        "  let some pe := parsePE32 bytes | throw (IO.userError \"PE parse failed\")\n"
+        "  let some imports := parseImports pe | throw (IO.userError \"import parse failed\")\n"
+        + "\n".join(evaluations)
+        + "\n"
+    )
+
+
+def _lean_behavior_normalization_source(
+    contract: dict[str, Any],
+    raw_behaviors: dict[tuple[str, int], str],
+    *,
+    region_indices: list[int] | None = None,
+) -> str:
+    definitions: list[str] = []
+    evaluations: list[str] = []
+    region_count = len(contract["regions"])
+    selected = (
+        list(range(region_count))
+        if region_indices is None
+        else list(region_indices)
+    )
+    if (
+        not selected
+        or selected != sorted(set(selected))
+        or selected[0] < 0
+        or selected[-1] >= region_count
+    ):
+        raise StageAInputError(
+            "normalization region indices must be a nonempty ordered unique subset"
+        )
+    machine_call_contracts = ", ".join(
+        _lean_machine_import_call_contract(item)
+        for item in contract.get("machine_import_call_contracts", [])
+    )
+    definitions.append(
+        "def machineImportCallContracts : List MachineImportCallContract := "
+        f"[{machine_call_contracts}]"
+    )
+    for index in selected:
+        region = contract["regions"][index]
+        definitions.append(_lean_region_definition(index, region))
+        for side in ("original", "candidate"):
+            try:
+                behavior = raw_behaviors[(side, index)]
+            except KeyError as exc:
+                raise StageAInputError(
+                    f"raw {side} behavior {index} is missing"
+                ) from exc
+            if not isinstance(behavior, str) or not behavior:
+                raise StageAInputError(
+                    f"raw {side} behavior {index} is malformed"
+                )
+            candidate_literal = "true" if side == "candidate" else "false"
+            definitions.append(
+                f"def {side}Behavior{index} : SymbolicBehavior := {behavior}"
+            )
+            evaluations.extend((
+                f"  let some {side}ContractBehavior{index} := "
+                f"applyMachineImportCallContracts machineImportCallContracts "
+                f"{side}Behavior{index} | "
+                f'throw (IO.userError "{side} region {index} machine-call contract failed")',
+                f"  let some {side}Normalized{index} := normalizeSymbolicBehavior "
+                f"{candidate_literal} region{index}.targets "
+                f"{side}ContractBehavior{index} | "
+                f'throw (IO.userError "{side} region {index} did not normalize")',
+                f'  IO.println ("STAGE_A_NORMALIZED_BEHAVIOR_BEGIN {side} {index}\\n" ++ '
+                f'reprStr (some {side}ContractBehavior{index}) ++ '
+                '"\\nSTAGE_A_NORMALIZED_BEHAVIOR_IR\\n" ++ '
+                f'SemanticIR.normalizedBehaviorString {side}Normalized{index} ++ '
+                '"\\nSTAGE_A_NORMALIZED_BEHAVIOR_END")',
+            ))
+    return (
+        "import StageA.Relational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n"
+        "set_option linter.unusedSimpArgs false\n\n"
+        + "\n\n".join(definitions)
+        + "\n\n"
+        "def main : IO Unit := do\n"
         + "\n".join(evaluations)
         + "\n"
     )

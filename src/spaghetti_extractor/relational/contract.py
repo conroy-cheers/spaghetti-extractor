@@ -70,6 +70,58 @@ def _load_contract(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _decode_semantic_cutpoint_span(
+    binary: StageABinary,
+    span: dict[str, int],
+    block_id: str,
+) -> list[Any]:
+    data = binary.pe.get_data(span["rva_start"], span["size"])
+    disassembler = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    decoded = list(disassembler.disasm(data, binary.image_base + span["rva_start"]))
+    if not decoded or sum(int(instruction.size) for instruction in decoded) != len(data):
+        raise StageAInputError(
+            f"mapping block {block_id} does not decode exactly for semantic cutpoint projection"
+        )
+    return decoded
+
+
+def _semantic_cutpoint_spans_for_side(
+    binary: StageABinary,
+    span: dict[str, int],
+    block_id: str,
+    *,
+    periodic: bool = True,
+) -> list[dict[str, int]]:
+    decoded = _decode_semantic_cutpoint_span(binary, span, block_id)
+    boundaries = [0]
+    for instruction_index, instruction in enumerate(decoded, start=1):
+        semantic = instruction.mnemonic in {
+            "rep movsd",
+            "movsd",
+            "div",
+            "idiv",
+            "lock cmpxchg",
+        }
+        if semantic or (periodic and instruction_index % 4 == 0):
+            offset = int(
+                instruction.address
+                - binary.image_base
+                - span["rva_start"]
+                + instruction.size
+            )
+            if offset < span["size"] and offset != boundaries[-1]:
+                boundaries.append(offset)
+    boundaries.append(span["size"])
+    return [
+        {
+            "rva_start": span["rva_start"] + boundaries[index],
+            "rva_end": span["rva_start"] + boundaries[index + 1],
+            "size": boundaries[index + 1] - boundaries[index],
+        }
+        for index in range(len(boundaries) - 1)
+    ]
+
+
 def _semantic_cutpoint_spans(
     original: StageABinary,
     candidate: StageABinary,
@@ -77,48 +129,29 @@ def _semantic_cutpoint_spans(
     candidate_span: dict[str, int],
     block_id: str,
 ) -> list[tuple[dict[str, int], dict[str, int]]]:
-    def decode(binary: StageABinary, span: dict[str, int]) -> list[Any]:
-        data = binary.pe.get_data(span["rva_start"], span["size"])
-        disassembler = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
-        decoded = list(disassembler.disasm(data, binary.image_base + span["rva_start"]))
-        if not decoded or sum(int(instruction.size) for instruction in decoded) != len(data):
-            raise StageAInputError(f"mapping block {block_id} does not decode exactly for semantic cutpoint projection")
-        return decoded
-
-    original_decoded = decode(original, original_span)
-    candidate_decoded = decode(candidate, candidate_span)
-    periodic = len(original_decoded) == len(candidate_decoded)
-
-    def boundaries(binary: StageABinary, span: dict[str, int], decoded: list[Any]) -> list[int]:
-        result = [0]
-        for instruction_index, instruction in enumerate(decoded, start=1):
-            semantic = instruction.mnemonic in {
-                "rep movsd", "movsd", "div", "idiv", "lock cmpxchg",
-            }
-            bounded = periodic and instruction_index % 4 == 0
-            if semantic or bounded:
-                offset = int(instruction.address - binary.image_base - span["rva_start"] + instruction.size)
-                if offset < span["size"] and offset != result[-1]:
-                    result.append(offset)
-        result.append(span["size"])
-        return result
-
-    original_boundaries = boundaries(original, original_span, original_decoded)
-    candidate_boundaries = boundaries(candidate, candidate_span, candidate_decoded)
+    periodic = len(
+        _decode_semantic_cutpoint_span(original, original_span, block_id)
+    ) == len(
+        _decode_semantic_cutpoint_span(candidate, candidate_span, block_id)
+    )
+    original_spans = _semantic_cutpoint_spans_for_side(
+        original, original_span, block_id, periodic=periodic
+    )
+    candidate_spans = _semantic_cutpoint_spans_for_side(
+        candidate, candidate_span, block_id, periodic=periodic
+    )
+    original_boundaries = [original_spans[0]["rva_start"]] + [
+        span["rva_end"] for span in original_spans
+    ]
+    candidate_boundaries = [candidate_spans[0]["rva_start"]] + [
+        span["rva_end"] for span in candidate_spans
+    ]
     if len(original_boundaries) != len(candidate_boundaries):
         raise StageAInputError(
             f"mapping block {block_id} has mismatched semantic cutpoint counts: "
             f"original={len(original_boundaries) - 2}, candidate={len(candidate_boundaries) - 2}"
         )
-    result = []
-    for index in range(len(original_boundaries) - 1):
-        original_start = original_span["rva_start"] + original_boundaries[index]
-        candidate_start = candidate_span["rva_start"] + candidate_boundaries[index]
-        result.append((
-            {"rva_start": original_start, "rva_end": original_span["rva_start"] + original_boundaries[index + 1], "size": original_boundaries[index + 1] - original_boundaries[index]},
-            {"rva_start": candidate_start, "rva_end": candidate_span["rva_start"] + candidate_boundaries[index + 1], "size": candidate_boundaries[index + 1] - candidate_boundaries[index]},
-        ))
-    return result
+    return list(zip(original_spans, candidate_spans, strict=True))
 
 def _assign_region_targets(
     regions: list[dict[str, Any]],

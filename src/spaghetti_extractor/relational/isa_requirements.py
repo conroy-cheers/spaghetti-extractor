@@ -24,13 +24,14 @@ from ..stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 from .preflight import instruction_supported
 from .schema import RELATIONAL_ANALYSIS_KERNEL_MODULES, STAGE_A_RELATIONAL_MODEL_ID
+from .side_extraction_artifact import request_payload as side_extraction_request_payload
 
 
 ISA_REQUIREMENT_INVENTORY_FORMAT = "stage-a-isa-requirement-inventory-v1"
 ISA_REQUIREMENT_FORM_FORMAT = "stage-a-x86-instruction-form-v1"
 LEAN_ISA_REQUIREMENT_FORM_FORMAT = "stage-a-lean-x86-semantic-form-v1"
 LEAN_ISA_FORM_INVENTORY_FORMAT = "stage-a-lean-isa-form-inventory-v1"
-_LEAN_FORM_EXTRACTION_DRIVER_VERSION = "chunked-request-inventory-v2"
+_LEAN_FORM_EXTRACTION_DRIVER_VERSION = "one-pe-chunked-request-inventory-v3"
 
 _SIDES = ("original", "candidate")
 _PREFIX_NAMES = {
@@ -625,14 +626,82 @@ def main : IO Unit := StageA.GeneratedISARequirementInventory.run
 """
 
 
+def _lean_side_form_extraction_source(
+    side: str, regions: list[Mapping[str, Any]]
+) -> str:
+    if side not in _SIDES:
+        raise StageAInputError(f"unsupported ISA extraction side {side!r}")
+    requests: list[str] = []
+    for node_id, region in enumerate(regions):
+        span = region.get("span")
+        if not isinstance(span, Mapping):
+            raise StageAInputError(
+                f"ISA extraction request region {node_id} has no span"
+            )
+        requests.append(
+            f"{{ nodeId := {node_id}, span := {{ start := "
+            + f"{int(span['rva_start'])}, size := {int(span['size'])} }} }}"
+        )
+    request_chunk_size = 128
+    request_chunks = [
+        requests[offset : offset + request_chunk_size]
+        for offset in range(0, len(requests), request_chunk_size)
+    ]
+    request_chunks_literal = ",\n  ".join(
+        "[\n    " + ",\n    ".join(chunk) + "\n  ]"
+        for chunk in request_chunks
+    )
+    return """import Lean
+import StageA.RelationalISAQualification
+
+namespace StageA.GeneratedSideISARequirementInventory
+
+open Lean StageA.Formal StageA.Relational
+
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+structure Request where
+  nodeId : Nat
+  span : Span
+
+def requestChunks : List (List Request) := [
+  """ + request_chunks_literal + """
+]
+
+def run : IO Unit := do
+  let data <- IO.FS.readBinFile "artifacts/input.pe"
+  let bytes : Bytes := data.toList.map (fun byte => byte.toNat)
+  let some pe := parsePE32 bytes |
+    throw (IO.userError "PE parse failed")
+  for chunk in requestChunks do
+    for request in chunk do
+      let some occurrences := decodeInstructionFormsSpan pe request.span |
+        throw (IO.userError s!"region {request.nodeId} did not decode")
+      IO.println <| Json.compress <| Json.mkObj [
+        ("side", toJson """ + json.dumps(side) + """),
+        ("node_id", toJson request.nodeId),
+        ("occurrences", instructionFormInventoryJson occurrences)
+      ]
+
+end StageA.GeneratedSideISARequirementInventory
+
+def main : IO Unit := StageA.GeneratedSideISARequirementInventory.run
+"""
+
+
 def _parse_lean_form_rows(
-    rows: Any, region_count: int
+    rows: Any,
+    region_count: int,
+    *,
+    sides: tuple[str, ...] = _SIDES,
+    expected_spans: Mapping[tuple[str, int], tuple[int, int]] | None = None,
 ) -> dict[tuple[str, int], tuple[dict[str, Any], ...]]:
     if not isinstance(rows, list):
         raise StageAInputError("Lean ISA form inventory rows must be a list")
     expected = {
         (side, node_id)
-        for side in _SIDES
+        for side in sides
         for node_id in range(region_count)
     }
     result: dict[tuple[str, int], tuple[dict[str, Any], ...]] = {}
@@ -704,9 +773,175 @@ def _parse_lean_form_rows(
                 }
             )
         result[identity] = tuple(occurrences)
+        if expected_spans is not None:
+            expected_span = expected_spans.get(identity)
+            if expected_span is None:
+                raise StageAInputError(
+                    f"Lean ISA form row {index} has no declared span"
+                )
+            if (
+                occurrences[0]["rva"] != expected_span[0]
+                or previous_stop != expected_span[0] + expected_span[1]
+            ):
+                raise StageAInputError(
+                    f"Lean ISA form row {index} does not cover its declared span"
+                )
     if set(result) != expected:
         raise StageAInputError("Lean ISA form inventory omitted a region side")
     return result
+
+
+def extract_lean_instruction_forms_side(
+    *,
+    binary: Path,
+    request: Mapping[str, Any],
+    timeout_seconds: float = 300.0,
+) -> tuple[dict[tuple[str, int], tuple[dict[str, Any], ...]], dict[str, Any]]:
+    side = request.get("side")
+    if side not in _SIDES:
+        raise StageAInputError("side ISA extraction request has an invalid side")
+    binary = Path(binary)
+    binary_sha256 = sha256_file(binary)
+    if request.get("binary_sha256") != binary_sha256:
+        raise StageAInputError(f"{side} ISA extraction binary hash mismatch")
+    regions_value = request.get("regions")
+    if not isinstance(regions_value, list) or any(
+        not isinstance(region, Mapping) for region in regions_value
+    ):
+        raise StageAInputError("side ISA extraction regions must be objects")
+    regions = list(regions_value)
+    expected_spans: dict[tuple[str, int], tuple[int, int]] = {}
+    for index, region in enumerate(regions):
+        if region.get("index") != index:
+            raise StageAInputError(
+                "side ISA extraction region indices are not canonical"
+            )
+        span = region.get("span")
+        if not isinstance(span, Mapping):
+            raise StageAInputError(f"side ISA extraction region {index} has no span")
+        expected_spans[(str(side), index)] = (
+            int(span.get("rva_start", -1)),
+            int(span.get("size", -1)),
+        )
+    source_hashes = _lean_form_source_hashes()
+    input_identity = {
+        "format": "stage-a-lean-side-isa-form-inventory-v1",
+        "side": side,
+        "binary_sha256": binary_sha256,
+        "request_sha256": _canonical_sha256(request),
+        "lean_form_source_sha256": source_hashes["source_sha256"],
+    }
+    from .lean.compiler import _relational_cache_dir, _run_lean_relational
+
+    cache_root = _relational_cache_dir()
+    cache = (
+        cache_root
+        / "isa-form-inventory"
+        / (_canonical_sha256(input_identity) + ".json")
+        if cache_root is not None
+        else None
+    )
+    if cache is not None and cache.is_file():
+        try:
+            cached = json.loads(cache.read_text(encoding="utf-8"))
+            if (
+                isinstance(cached, Mapping)
+                and cached.get("format") == input_identity["format"]
+                and cached.get("inputs") == input_identity
+            ):
+                rows = _parse_lean_form_rows(
+                    cached.get("rows"),
+                    len(regions),
+                    sides=(str(side),),
+                    expected_spans=expected_spans,
+                )
+                return rows, {
+                    "status": "lean_extracted_untrusted",
+                    "cache": "hit",
+                    **source_hashes,
+                    "row_count": len(rows),
+                }
+        except (OSError, json.JSONDecodeError, StageAInputError):
+            pass
+    lean = shutil.which("lean")
+    if lean is None:
+        raise StageAInputError("Lean is required to extract ISA semantic forms")
+    with tempfile.TemporaryDirectory(
+        prefix=f"stage-a-isa-{side}-requirements-"
+    ) as temporary:
+        lean_dir = Path(temporary)
+        stage_a = lean_dir / "StageA"
+        artifacts = lean_dir / "artifacts"
+        stage_a.mkdir()
+        artifacts.mkdir()
+        for module in RELATIONAL_ANALYSIS_KERNEL_MODULES:
+            shutil.copyfile(
+                _LEAN_SOURCE_ROOT / f"{module}.lean",
+                stage_a / f"{module}.lean",
+            )
+        shutil.copyfile(binary, artifacts / "input.pe")
+        bundle = f"GeneratedISARequirementInventory{str(side).title()}"
+        (stage_a / f"{bundle}.lean").write_text(
+            _lean_side_form_extraction_source(str(side), regions),
+            encoding="utf-8",
+        )
+        compiled = _run_lean_relational(lean_dir, bundle=bundle)
+        if compiled.get("status") != "checked":
+            raise StageAInputError(
+                f"Lean {side} ISA form extraction did not compile: "
+                + str(compiled.get("stderr") or compiled.get("stdout"))
+            )
+        completed = subprocess.run(
+            [lean, "--trust=0", "--run", f"StageA/{bundle}.lean"],
+            cwd=lean_dir,
+            env={**os.environ, "LEAN_PATH": "."},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise StageAInputError(
+                f"Lean {side} ISA form extraction failed: "
+                + str(completed.stderr or completed.stdout)
+            )
+        try:
+            raw_rows = [
+                json.loads(line)
+                for line in completed.stdout.splitlines()
+                if line.strip()
+            ]
+        except json.JSONDecodeError as exc:
+            raise StageAInputError(
+                f"Lean {side} ISA form extraction emitted malformed JSON: {exc}"
+            ) from exc
+    rows = _parse_lean_form_rows(
+        raw_rows,
+        len(regions),
+        sides=(str(side),),
+        expected_spans=expected_spans,
+    )
+    if cache is not None:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        write_json(
+            cache,
+            {
+                "format": input_identity["format"],
+                "inputs": input_identity,
+                "rows": raw_rows,
+                "trust": {
+                    "proof_authority": False,
+                    "closes_stage_a_proof": False,
+                },
+            },
+        )
+    return rows, {
+        "status": "lean_extracted_untrusted",
+        "cache": "miss",
+        **source_hashes,
+        "row_count": len(rows),
+    }
 
 
 def extract_lean_instruction_forms(
@@ -726,107 +961,37 @@ def extract_lean_instruction_forms(
         not isinstance(region, Mapping) for region in regions_value
     ):
         raise StageAInputError("relation contract regions must be a list of objects")
-    regions = list(regions_value)
+    paths = {"original": Path(original), "candidate": Path(candidate)}
+    merged: dict[tuple[str, int], tuple[dict[str, Any], ...]] = {}
+    evidence_by_side: dict[str, dict[str, Any]] = {}
+    for side in _SIDES:
+        request = side_extraction_request_payload(
+            relation_contract,
+            side,
+            sha256_file(paths[side]),
+        )
+        rows, evidence = extract_lean_instruction_forms_side(
+            binary=paths[side],
+            request=request,
+            timeout_seconds=timeout_seconds,
+        )
+        merged.update(rows)
+        evidence_by_side[side] = evidence
     source_hashes = _lean_form_source_hashes()
-    input_identity = {
-        "format": LEAN_ISA_FORM_INVENTORY_FORMAT,
-        "original_sha256": sha256_file(Path(original)),
-        "candidate_sha256": sha256_file(Path(candidate)),
-        "relation_contract_sha256": _canonical_sha256(relation_contract),
-        "lean_form_source_sha256": source_hashes["source_sha256"],
-    }
-    from .lean.compiler import _relational_cache_dir, _run_lean_relational
-
-    cache = _relational_cache_dir() / "isa-form-inventory" / (
-        _canonical_sha256(input_identity) + ".json"
-    )
-    if cache.is_file():
-        try:
-            cached = json.loads(cache.read_text(encoding="utf-8"))
-            if (
-                isinstance(cached, Mapping)
-                and cached.get("format") == LEAN_ISA_FORM_INVENTORY_FORMAT
-                and cached.get("inputs") == input_identity
-            ):
-                rows = _parse_lean_form_rows(cached.get("rows"), len(regions))
-                return rows, {
-                    "status": "lean_extracted_untrusted",
-                    "cache": "hit",
-                    **source_hashes,
-                    "row_count": len(rows),
-                }
-        except (OSError, json.JSONDecodeError, StageAInputError):
-            pass
-    lean = shutil.which("lean")
-    if lean is None:
-        raise StageAInputError("Lean is required to extract ISA semantic forms")
-    with tempfile.TemporaryDirectory(prefix="stage-a-isa-requirements-") as temporary:
-        lean_dir = Path(temporary)
-        stage_a = lean_dir / "StageA"
-        artifacts = lean_dir / "artifacts"
-        stage_a.mkdir()
-        artifacts.mkdir()
-        for module in RELATIONAL_ANALYSIS_KERNEL_MODULES:
-            shutil.copyfile(
-                _LEAN_SOURCE_ROOT / f"{module}.lean",
-                stage_a / f"{module}.lean",
-            )
-        shutil.copyfile(Path(original), artifacts / "original.pe")
-        shutil.copyfile(Path(candidate), artifacts / "candidate.pe")
-        bundle = "GeneratedISARequirementInventory"
-        (stage_a / f"{bundle}.lean").write_text(
-            _lean_form_extraction_source(regions), encoding="utf-8"
-        )
-        compiled = _run_lean_relational(lean_dir, bundle=bundle)
-        if compiled.get("status") != "checked":
-            raise StageAInputError(
-                "Lean ISA form extraction did not compile: "
-                + str(compiled.get("stderr") or compiled.get("stdout"))
-            )
-        completed = subprocess.run(
-            [lean, "--trust=0", "--run", f"StageA/{bundle}.lean"],
-            cwd=lean_dir,
-            env={**os.environ, "LEAN_PATH": "."},
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout_seconds,
-            check=False,
-        )
-        if completed.returncode != 0:
-            raise StageAInputError(
-                "Lean ISA form extraction failed: "
-                + str(completed.stderr or completed.stdout)
-            )
-        try:
-            raw_rows = [
-                json.loads(line)
-                for line in completed.stdout.splitlines()
-                if line.strip()
-            ]
-        except json.JSONDecodeError as exc:
-            raise StageAInputError(
-                f"Lean ISA form extraction emitted malformed JSON: {exc}"
-            ) from exc
-    rows = _parse_lean_form_rows(raw_rows, len(regions))
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    write_json(
-        cache,
-        {
-            "format": LEAN_ISA_FORM_INVENTORY_FORMAT,
-            "inputs": input_identity,
-            "rows": raw_rows,
-            "trust": {
-                "proof_authority": False,
-                "closes_stage_a_proof": False,
-            },
-        },
-    )
-    return rows, {
+    for side, evidence in evidence_by_side.items():
+        for field in ("classifier_sha256", "extractor_sha256", "source_sha256"):
+            if evidence.get(field) != source_hashes[field]:
+                raise StageAInputError(
+                    f"{side} Lean ISA extraction source identity mismatch"
+                )
+    return merged, {
         "status": "lean_extracted_untrusted",
-        "cache": "miss",
+        "cache": {
+            side: evidence_by_side[side]["cache"] for side in _SIDES
+        },
         **source_hashes,
-        "row_count": len(rows),
+        "row_count": len(merged),
+        "sides": evidence_by_side,
     }
 
 

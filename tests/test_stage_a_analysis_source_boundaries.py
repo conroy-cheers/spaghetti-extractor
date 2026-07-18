@@ -53,8 +53,11 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
         self._assert_clean_import(
             "spaghetti_extractor.relational.analysis_cli",
             (
+                "spaghetti_extractor.relational.analysis",
+                "spaghetti_extractor.relational.analysis_artifact",
                 "spaghetti_extractor.relational.build",
                 "spaghetti_extractor.relational.executor",
+                "spaghetti_extractor.relational.pipeline",
                 "spaghetti_extractor.relational.proof_diagnostics",
                 "spaghetti_extractor.relational.lean.acceptance",
                 "spaghetti_extractor.relational.lean.composition",

@@ -101,6 +101,7 @@
             ./src/spaghetti_extractor/relational/analysis_artifact.py
             ./src/spaghetti_extractor/relational/analysis_cli.py
             ./src/spaghetti_extractor/relational/artifacts.py
+            ./src/spaghetti_extractor/relational/binary_inventory.py
             ./src/spaghetti_extractor/relational/callsite_preservation.py
             ./src/spaghetti_extractor/relational/contract.py
             ./src/spaghetti_extractor/relational/diagnostics.py
@@ -114,6 +115,9 @@
             ./src/spaghetti_extractor/relational/pipeline.py
             ./src/spaghetti_extractor/relational/preflight.py
             ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/side_extraction.py
+            ./src/spaghetti_extractor/relational/side_extraction_artifact.py
+            ./src/spaghetti_extractor/relational/side_isa_artifact.py
             ./src/spaghetti_extractor/relational/verdict.py
             ./src/spaghetti_extractor/relational/analyses/__init__.py
             ./src/spaghetti_extractor/relational/analyses/callsite.py
@@ -149,12 +153,60 @@
               exec python -m spaghetti_extractor.relational.analysis_cli "$@"
             '';
           };
+          spaghettiExtractorSidePythonFiles = [
+            ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/pe.py
+            ./src/spaghetti_extractor/stage_binary.py
+            ./src/spaghetti_extractor/util.py
+            ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/relational/analysis_cli.py
+            ./src/spaghetti_extractor/relational/artifacts.py
+            ./src/spaghetti_extractor/relational/binary_inventory.py
+            ./src/spaghetti_extractor/relational/contract.py
+            ./src/spaghetti_extractor/relational/extraction.py
+            ./src/spaghetti_extractor/relational/isa_requirements.py
+            ./src/spaghetti_extractor/relational/mapping.py
+            ./src/spaghetti_extractor/relational/model.py
+            ./src/spaghetti_extractor/relational/preflight.py
+            ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/side_extraction.py
+            ./src/spaghetti_extractor/relational/side_extraction_artifact.py
+            ./src/spaghetti_extractor/relational/side_isa_artifact.py
+            ./src/spaghetti_extractor/relational/analyses/__init__.py
+            ./src/spaghetti_extractor/relational/analyses/external.py
+            ./src/spaghetti_extractor/relational/lean/__init__.py
+            ./src/spaghetti_extractor/relational/lean/analysis_source.py
+            ./src/spaghetti_extractor/relational/lean/common.py
+            ./src/spaghetti_extractor/relational/lean/compiler.py
+            ./src/spaghetti_extractor/relational/lean/expressions.py
+          ];
+          spaghettiExtractorSideSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              (pkgs.lib.fileset.unions spaghettiExtractorSidePythonFiles)
+              (pkgs.lib.fileset.unions (
+                map
+                  (module: ./src/spaghetti_extractor/lean/StageA + "/${module}.lean")
+                  relationalAnalysisKernelModules
+              ))
+            ];
+          };
+          spaghetti-extractor-side = pkgs.writeShellApplication {
+            name = "spaghetti-extractor-side";
+            runtimeInputs = [ pythonEnv ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorSideSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.analysis_cli "$@"
+            '';
+          };
           stage-a-analysis-source-boundary-check = pkgs.runCommand
             "stage-a-analysis-source-boundary-check"
             { }
             ''
               source="${spaghettiExtractorAnalysisSource}/src/spaghetti_extractor"
               test -f "$source/relational/analysis_cli.py"
+              test -f "$source/relational/binary_inventory.py"
               test -f "$source/relational/lean/analysis_source.py"
               test -f "$source/relational/lean/compiler.py"
               test ! -e "$source/cli.py"
@@ -166,6 +218,15 @@
               test ! -e "$source/relational/lean/generation.py"
               test ! -e "$source/relational/lean/segments.py"
               test "$(find "$source/lean/StageA" -type f -name '*.lean' | wc -l)" -eq 8
+              side="${spaghettiExtractorSideSource}/src/spaghetti_extractor"
+              test -f "$side/relational/side_extraction.py"
+              test -f "$side/relational/binary_inventory.py"
+              test ! -e "$side/relational/analysis.py"
+              test ! -e "$side/relational/analysis_artifact.py"
+              test ! -e "$side/relational/pipeline.py"
+              test ! -e "$side/relational/phases.py"
+              test ! -e "$side/relational/verdict.py"
+              ${spaghetti-extractor-side}/bin/spaghetti-extractor-side --help >/dev/null
               touch "$out"
             '';
           singlestep-80386-conformance =
@@ -1102,14 +1163,145 @@
                   compiler: { target: $compiler, version: $compiler_version }
                 }' > "$fixture_dir/build-metadata.json"
             '';
+          mkStageAGnuHelloInventory = label: fixture:
+            pkgs.runCommand "stage-a-gnu-hello-${label}-inventory"
+              {
+                nativeBuildInputs = [
+                  spaghetti-extractor-side
+                  pkgs.jq
+                ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+              }
+              ''
+                fixture_dir="${fixture}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/${label}"
+                mkdir -p "$out"
+                spaghetti-extractor-side inventory-binary \
+                  --binary "$fixture_dir/hello.exe" \
+                  --linker-map "$fixture_dir/hello.map" \
+                  --side "${label}" \
+                  --out "$out/inventory.json" \
+                  > "$out/inventory.stdout"
+                jq -e '
+                  .format == "stage-a-binary-cutpoint-inventory-v1" and
+                  .status == "pass" and
+                  .counts.issues == 0 and
+                  .counts.regions > 0 and
+                  .counts.extraction_regions >= .counts.regions
+                ' "$out/inventory.json" >/dev/null
+                spaghetti-extractor-side \
+                  project-inventory-extraction-request \
+                  --inventory "$out/inventory.json" \
+                  --scope base \
+                  --out "$out/request.json" \
+                  > "$out/request.stdout"
+                jq -e '
+                  .format == "stage-a-relational-side-extraction-request-v1" and
+                  .side == "${label}" and
+                  (.regions | length) > 0
+                ' "$out/request.json" >/dev/null
+                spaghetti-extractor-side \
+                  project-inventory-extraction-request \
+                  --inventory "$out/inventory.json" \
+                  --scope superset \
+                  --out "$out/isa-request.json" \
+                  > "$out/isa-request.stdout"
+                jq -e \
+                  --argjson base_count "$(jq '.regions | length' "$out/request.json")" '
+                  .format == "stage-a-relational-side-extraction-request-v1" and
+                  .side == "${label}" and
+                  (.regions | length) >= $base_count
+                ' "$out/isa-request.json" >/dev/null
+              '';
+          stage-a-gnu-hello-original-inventory =
+            mkStageAGnuHelloInventory "original" stage-a-gnu-hello-original;
+          stage-a-gnu-hello-candidate-inventory =
+            mkStageAGnuHelloInventory "candidate" stage-a-gnu-hello-candidate;
+          mkStageAGnuHelloSideExtraction = label: fixture: inventory:
+            pkgs.runCommand "stage-a-gnu-hello-${label}-extraction"
+              {
+                nativeBuildInputs = [
+                  spaghetti-extractor-side
+                  pkgs.lean4
+                  pkgs.jq
+                ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+              }
+              ''
+                fixture_dir="${fixture}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/${label}"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-analysis-kernel-cache}"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_MEMORY_MB=8192
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=8
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_BATCH=4
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/relational-cache"
+                mkdir -p "$out"
+                spaghetti-extractor-side extract-side \
+                  --binary "$fixture_dir/hello.exe" \
+                  --request "${inventory}/request.json" \
+                  --out "$out/extraction.json" \
+                  > "$out/extraction.stdout"
+                jq -e '
+                  .format == "stage-a-relational-side-extraction-v1" and
+                  .side == "${label}" and
+                  (.regions | length) > 0
+                ' "$out/extraction.json" >/dev/null
+              '';
+          stage-a-gnu-hello-original-extraction =
+            mkStageAGnuHelloSideExtraction
+              "original"
+              stage-a-gnu-hello-original
+              stage-a-gnu-hello-original-inventory;
+          stage-a-gnu-hello-candidate-extraction =
+            mkStageAGnuHelloSideExtraction
+              "candidate"
+              stage-a-gnu-hello-candidate
+              stage-a-gnu-hello-candidate-inventory;
+          mkStageAGnuHelloSideIsa = label: fixture: inventory:
+            pkgs.runCommand "stage-a-gnu-hello-${label}-isa"
+              {
+                nativeBuildInputs = [
+                  spaghetti-extractor-side
+                  pkgs.lean4
+                  pkgs.jq
+                ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+              }
+              ''
+                fixture_dir="${fixture}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/${label}"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-analysis-kernel-cache}"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/relational-cache"
+                mkdir -p "$out"
+                spaghetti-extractor-side extract-side-isa \
+                  --binary "$fixture_dir/hello.exe" \
+                  --request "${inventory}/isa-request.json" \
+                  --out "$out/isa.json" \
+                  > "$out/isa.stdout"
+                jq -e '
+                  .format == "stage-a-relational-side-isa-v1" and
+                  .side == "${label}" and
+                  (.regions | length) > 0
+                ' "$out/isa.json" >/dev/null
+              '';
+          stage-a-gnu-hello-original-isa =
+            mkStageAGnuHelloSideIsa
+              "original"
+              stage-a-gnu-hello-original
+              stage-a-gnu-hello-original-inventory;
+          stage-a-gnu-hello-candidate-isa =
+            mkStageAGnuHelloSideIsa
+              "candidate"
+              stage-a-gnu-hello-candidate
+              stage-a-gnu-hello-candidate-inventory;
           stage-a-gnu-hello-static-map = pkgs.runCommand "stage-a-gnu-hello-static-map"
             {
-              nativeBuildInputs = [ spaghetti-extractor-analysis ];
+              nativeBuildInputs = [ spaghetti-extractor-side ];
             }
             ''
               fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
               mkdir -p "$out"
-              spaghetti-extractor-analysis generate-map \
+              spaghetti-extractor-side generate-map \
                 --original "$fixture_dir/hello-original.exe" \
                 --candidate "$fixture_dir/hello-candidate.exe" \
                 --linker-map-original "$fixture_dir/hello-original.map" \
@@ -1122,12 +1314,12 @@
             '';
           stage-a-gnu-hello-relation-contract = pkgs.runCommand "stage-a-gnu-hello-relation-contract"
             {
-              nativeBuildInputs = [ spaghetti-extractor-analysis ];
+              nativeBuildInputs = [ spaghetti-extractor-side ];
             }
             ''
               fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
               mkdir -p "$out"
-              spaghetti-extractor-analysis generate-relation-contract \
+              spaghetti-extractor-side generate-relation-contract \
                 --original "$fixture_dir/hello-original.exe" \
                 --candidate "$fixture_dir/hello-candidate.exe" \
                 --mapping "${stage-a-gnu-hello-static-map}/hello-block-map.json" \
@@ -1136,6 +1328,122 @@
                 --out "$out/hello-relation-contract.json" \
                 > "$out/generate-relation.stdout"
             '';
+          mkStageAGnuHelloSupplementRequest = label: fixture: inventory:
+            pkgs.runCommand "stage-a-gnu-hello-${label}-supplement-request"
+              {
+                nativeBuildInputs = [
+                  spaghetti-extractor-side
+                  pkgs.lean4
+                  pkgs.jq
+                ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+              }
+              ''
+                fixture_dir="${fixture}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/${label}"
+                mkdir -p "$out"
+                spaghetti-extractor-side \
+                  project-missing-side-extraction-request \
+                  --binary "$fixture_dir/hello.exe" \
+                  --side "${label}" \
+                  --relation-contract "${stage-a-gnu-hello-relation-contract}/hello-relation-contract.json" \
+                  --inventory "${inventory}/inventory.json" \
+                  --out "$out/request.json" \
+                  > "$out/request.stdout"
+                jq -e '
+                  .format == "stage-a-relational-side-extraction-request-v1" and
+                  .side == "${label}"
+                ' "$out/request.json" >/dev/null
+              '';
+          stage-a-gnu-hello-original-supplement-request =
+            mkStageAGnuHelloSupplementRequest
+              "original"
+              stage-a-gnu-hello-original
+              stage-a-gnu-hello-original-inventory;
+          stage-a-gnu-hello-candidate-supplement-request =
+            mkStageAGnuHelloSupplementRequest
+              "candidate"
+              stage-a-gnu-hello-candidate
+              stage-a-gnu-hello-candidate-inventory;
+          mkStageAGnuHelloSupplementExtraction = label: fixture: request:
+            pkgs.runCommand "stage-a-gnu-hello-${label}-supplement-extraction"
+              {
+                nativeBuildInputs = [
+                  spaghetti-extractor-side
+                  pkgs.lean4
+                  pkgs.jq
+                ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+              }
+              ''
+                fixture_dir="${fixture}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/${label}"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-analysis-kernel-cache}"
+                export SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_MEMORY_MB=8192
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=2
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_BATCH=1
+                export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$TMPDIR/relational-cache"
+                mkdir -p "$out"
+                spaghetti-extractor-side extract-side \
+                  --binary "$fixture_dir/hello.exe" \
+                  --request "${request}/request.json" \
+                  --out "$out/extraction.json" \
+                  > "$out/extraction.stdout"
+                jq -e '
+                  .format == "stage-a-relational-side-extraction-v1" and
+                  .side == "${label}"
+                ' "$out/extraction.json" >/dev/null
+              '';
+          stage-a-gnu-hello-original-supplement-extraction =
+            mkStageAGnuHelloSupplementExtraction
+              "original"
+              stage-a-gnu-hello-original
+              stage-a-gnu-hello-original-supplement-request;
+          stage-a-gnu-hello-candidate-supplement-extraction =
+            mkStageAGnuHelloSupplementExtraction
+              "candidate"
+              stage-a-gnu-hello-candidate
+              stage-a-gnu-hello-candidate-supplement-request;
+          mkStageAGnuHelloMergedExtraction =
+            label: fixture: base: supplement:
+            pkgs.runCommand "stage-a-gnu-hello-${label}-merged-extraction"
+              {
+                nativeBuildInputs = [
+                  spaghetti-extractor-side
+                  pkgs.lean4
+                  pkgs.jq
+                ];
+                preferLocalBuild = false;
+                allowSubstitutes = true;
+              }
+              ''
+                fixture_dir="${fixture}/share/spaghetti-extractor/stage-a-gnu-hello-fixtures/${label}"
+                mkdir -p "$out"
+                spaghetti-extractor-side merge-side-extractions \
+                  --binary "$fixture_dir/hello.exe" \
+                  --side "${label}" \
+                  --input "${base}/extraction.json" \
+                  --input "${supplement}/extraction.json" \
+                  --out "$out/extraction.json" \
+                  > "$out/merge.stdout"
+                jq -e '
+                  .format == "stage-a-relational-side-extraction-v1" and
+                  .side == "${label}" and
+                  (.regions | length) > 0
+                ' "$out/extraction.json" >/dev/null
+              '';
+          stage-a-gnu-hello-original-merged-extraction =
+            mkStageAGnuHelloMergedExtraction
+              "original"
+              stage-a-gnu-hello-original
+              stage-a-gnu-hello-original-extraction
+              stage-a-gnu-hello-original-supplement-extraction;
+          stage-a-gnu-hello-candidate-merged-extraction =
+            mkStageAGnuHelloMergedExtraction
+              "candidate"
+              stage-a-gnu-hello-candidate
+              stage-a-gnu-hello-candidate-extraction
+              stage-a-gnu-hello-candidate-supplement-extraction;
           stage-a-gnu-hello-analysis = pkgs.runCommand "stage-a-gnu-hello-analysis"
             {
               nativeBuildInputs = [
@@ -1149,27 +1457,53 @@
               work="$TMPDIR/stage-a-gnu-hello-analysis"
               mkdir -p "$work"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-analysis-kernel-cache}"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_LEAN_MEMORY_MB=8192
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NORMALIZATION_JOBS=8
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_NORMALIZATION_BATCH=128
+              set +e
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
                 spaghetti-extractor-analysis analyze-relational \
                   --original "$fixture_dir/hello-original.exe" \
                   --candidate "$fixture_dir/hello-candidate.exe" \
                   --relation-contract "${stage-a-gnu-hello-relation-contract}/hello-relation-contract.json" \
+                  --original-extraction "${stage-a-gnu-hello-original-merged-extraction}/extraction.json" \
+                  --candidate-extraction "${stage-a-gnu-hello-candidate-merged-extraction}/extraction.json" \
+                  --original-isa "${stage-a-gnu-hello-original-isa}/isa.json" \
+                  --candidate-isa "${stage-a-gnu-hello-candidate-isa}/isa.json" \
                   --out "$work/analysis" \
-                  > "$work/analysis.stdout"
-              spaghetti-extractor-analysis validate-analysis \
+                  > "$work/analysis.stdout" \
+                  2> "$work/analysis.stderr"
+              analysis_status=$?
+              set -e
+              if [ "$analysis_status" -ne 0 ]; then
+                cat "$work/analysis.stderr" >&2
+                cat "$work/analysis.stdout" >&2
+                exit "$analysis_status"
+              fi
+              if ! spaghetti-extractor-analysis validate-analysis \
                 --analysis "$work/analysis" \
-                > "$work/analysis-validation.json"
-              jq -e '
+                > "$work/analysis-validation.json"; then
+                cat "$work/analysis-validation.json" >&2
+                exit 1
+              fi
+              if ! jq -e '
                 .format == "stage-a-relational-analysis-v1" and
                 .status == "analyzed" and
                 (.files | length) > 20
-              ' "$work/analysis/relational-analysis-manifest.json" >/dev/null
-              test ! -e "$work/analysis/lean"
-              test ! -e "$work/analysis/certificates"
+              ' "$work/analysis/relational-analysis-manifest.json" >/dev/null; then
+                jq . "$work/analysis/relational-analysis-manifest.json" >&2
+                exit 1
+              fi
+              if [ -e "$work/analysis/lean" ] || [ -e "$work/analysis/certificates" ]; then
+                find "$work/analysis" -maxdepth 2 -type d -print >&2
+                echo "analysis artifact contains downstream proof products" >&2
+                exit 1
+              fi
               mkdir -p "$out"
               cp -R "$work/analysis" "$out/analysis"
-              cp "$work/analysis.stdout" "$work/analysis-validation.json" "$out/"
+              cp "$work/analysis.stdout" "$work/analysis.stderr" \
+                "$work/analysis-validation.json" "$out/"
             '';
           stage-a-gnu-hello-preflight = pkgs.runCommand "stage-a-gnu-hello-preflight"
             {
@@ -2158,6 +2492,7 @@
             singlestep-80386-conformance
             spaghetti-extractor
             spaghetti-extractor-analysis
+            spaghetti-extractor-side
             stage-a-analysis-source-boundary-check
             stage-a-isa-conformance-bochs-80386
             stage-a-isa-kernel-cache
@@ -2179,6 +2514,18 @@
             stage-a-winapi-hello-check
             stage-a-winapi-hello-behavior-smoke
             stage-a-gnu-hello-fixtures
+            stage-a-gnu-hello-original-inventory
+            stage-a-gnu-hello-candidate-inventory
+            stage-a-gnu-hello-original-extraction
+            stage-a-gnu-hello-candidate-extraction
+            stage-a-gnu-hello-original-isa
+            stage-a-gnu-hello-candidate-isa
+            stage-a-gnu-hello-original-supplement-request
+            stage-a-gnu-hello-candidate-supplement-request
+            stage-a-gnu-hello-original-supplement-extraction
+            stage-a-gnu-hello-candidate-supplement-extraction
+            stage-a-gnu-hello-original-merged-extraction
+            stage-a-gnu-hello-candidate-merged-extraction
             stage-a-gnu-hello-static-map
             stage-a-gnu-hello-relation-contract
             stage-a-gnu-hello-analysis
