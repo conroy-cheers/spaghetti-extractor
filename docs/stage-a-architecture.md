@@ -127,3 +127,21 @@ Downstream register, stack, memory, graph, diagnostic, or proof-generation
 changes consume this artifact and must not rerun normalization. Missing or
 mismatched identities fail closed; there is no implicit normalization fallback
 in the cached GNU hello analysis path.
+
+Region-local facts form the next immutable boundary. Bounds, initial static
+code-pointer slots, finite indirect-target proposals, import-register seeds,
+address-separation claims, and machine-level import-call analysis are produced
+from normalized behavior without importing the global register or callsite
+fixed-point implementation. The region-facts artifact binds its exact PE,
+contract, normalized-behavior, and reduced analysis-source identities. Changes
+to global dataflow, diagnostics, graph construction, or proof generation must
+therefore consume the existing artifact instead of replaying region-local
+analysis.
+
+The remaining global state analysis is transitional. Its register, callsite,
+stack, static-memory, dynamic-range, and indirect-control feedback loops must be
+replaced by bottom-rooted monotone propagation over stable region identities.
+Once the least fixed point is independent of traversal history, SCC summaries
+become immutable artifacts keyed by local transfer functions and incoming SCC
+summaries. Cache entries remain untrusted proposals; Lean reconnects every
+accepted claim to the exact image bytes and checked whole-program graph.

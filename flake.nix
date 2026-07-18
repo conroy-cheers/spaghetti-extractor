@@ -130,7 +130,9 @@
             ./src/spaghetti_extractor/relational/analyses/external.py
             ./src/spaghetti_extractor/relational/analyses/invariants.py
             ./src/spaghetti_extractor/relational/analyses/memory.py
+            ./src/spaghetti_extractor/relational/analyses/region_local.py
             ./src/spaghetti_extractor/relational/analyses/registers.py
+            ./src/spaghetti_extractor/relational/analyses/register_static.py
             ./src/spaghetti_extractor/relational/analyses/segments.py
             ./src/spaghetti_extractor/relational/analyses/stack.py
             ./src/spaghetti_extractor/relational/lean/__init__.py
@@ -166,7 +168,6 @@
             ./src/spaghetti_extractor/util.py
             ./src/spaghetti_extractor/relational/__init__.py
             ./src/spaghetti_extractor/relational/artifacts.py
-            ./src/spaghetti_extractor/relational/callsite_preservation.py
             ./src/spaghetti_extractor/relational/contract.py
             ./src/spaghetti_extractor/relational/diagnostics.py
             ./src/spaghetti_extractor/relational/extraction.py
@@ -180,12 +181,12 @@
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/side_extraction_artifact.py
             ./src/spaghetti_extractor/relational/analyses/__init__.py
-            ./src/spaghetti_extractor/relational/analyses/callsite.py
             ./src/spaghetti_extractor/relational/analyses/control.py
             ./src/spaghetti_extractor/relational/analyses/external.py
             ./src/spaghetti_extractor/relational/analyses/invariants.py
             ./src/spaghetti_extractor/relational/analyses/memory.py
-            ./src/spaghetti_extractor/relational/analyses/registers.py
+            ./src/spaghetti_extractor/relational/analyses/region_local.py
+            ./src/spaghetti_extractor/relational/analyses/register_static.py
             ./src/spaghetti_extractor/relational/analyses/segments.py
             ./src/spaghetti_extractor/relational/analyses/stack.py
             ./src/spaghetti_extractor/relational/lean/__init__.py
@@ -380,7 +381,11 @@
               test -f "$region_facts/relational/region_facts.py"
               test -f "$region_facts/relational/region_facts_artifact.py"
               test -f "$region_facts/relational/region_facts_cli.py"
+              test -f "$region_facts/relational/analyses/region_local.py"
+              test -f "$region_facts/relational/analyses/register_static.py"
               test ! -e "$region_facts/relational/pipeline.py"
+              test ! -e "$region_facts/relational/analyses/registers.py"
+              test ! -e "$region_facts/relational/analyses/callsite.py"
               test ! -e "$region_facts/relational/analysis.py"
               test ! -e "$region_facts/relational/analysis_artifact.py"
               test ! -e "$region_facts/relational/build.py"

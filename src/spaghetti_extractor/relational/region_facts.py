@@ -15,7 +15,7 @@ from .analyses.control import (
 )
 from .analyses.external import _machine_import_call_contract_analysis
 from .analyses.memory import _attach_initial_static_code_pointer_slots
-from .analyses.registers import (
+from .analyses.region_local import (
     _attach_assembled_immutable_read_address_separations,
     _attach_import_seed_address_separations,
     _iat_import_register_seed_candidates,
@@ -33,7 +33,6 @@ from .region_facts_artifact import (
 _REGION_FACTS_SEMANTICS_FILES = (
     "../pe.py",
     "../stage_binary.py",
-    "callsite_preservation.py",
     "contract.py",
     "extraction.py",
     "model.py",
@@ -42,12 +41,12 @@ _REGION_FACTS_SEMANTICS_FILES = (
     "region_facts.py",
     "region_facts_artifact.py",
     "schema.py",
-    "analyses/callsite.py",
     "analyses/control.py",
     "analyses/external.py",
     "analyses/invariants.py",
     "analyses/memory.py",
-    "analyses/registers.py",
+    "analyses/region_local.py",
+    "analyses/register_static.py",
     "analyses/segments.py",
     "analyses/stack.py",
 )

@@ -135,7 +135,7 @@ def _behavior(
 
 class StageARegisterAnalysisTests(unittest.TestCase):
     @patch(
-        "spaghetti_extractor.relational.analyses.registers._immutable_image_u32",
+        "spaghetti_extractor.relational.analyses.register_static._immutable_image_u32",
         return_value=7,
     )
     def test_assembled_immutable_word_retains_writes_for_lean(
@@ -163,7 +163,7 @@ class StageARegisterAnalysisTests(unittest.TestCase):
         )
 
     @patch(
-        "spaghetti_extractor.relational.analyses.registers._immutable_image_u32",
+        "spaghetti_extractor.relational.analyses.register_static._immutable_image_u32",
         return_value=7,
     )
     def test_assembled_immutable_word_emits_checked_separation_inventory(
@@ -337,7 +337,7 @@ class StageARegisterAnalysisTests(unittest.TestCase):
         )
 
     @patch(
-        "spaghetti_extractor.relational.analyses.registers._immutable_image_u32",
+        "spaghetti_extractor.relational.analyses.register_static._immutable_image_u32",
         return_value=0x12345678,
     )
     def test_fixed_word_input_drives_checked_immutable_expression(
@@ -392,7 +392,7 @@ class StageARegisterAnalysisTests(unittest.TestCase):
         )
 
     @patch(
-        "spaghetti_extractor.relational.analyses.registers._immutable_image_u32",
+        "spaghetti_extractor.relational.analyses.register_static._immutable_image_u32",
         return_value=None,
     )
     def test_fixed_immutable_expression_fails_closed(
@@ -467,7 +467,7 @@ class StageARegisterAnalysisTests(unittest.TestCase):
         self.assertIn("candidateValue := 305419896", source)
 
     @patch(
-        "spaghetti_extractor.relational.analyses.registers._immutable_image_u32",
+        "spaghetti_extractor.relational.analyses.register_static._immutable_image_u32",
         return_value=0x12345678,
     )
     def test_fixed_immutable_expression_propagates_across_blocks(
@@ -498,32 +498,36 @@ class StageARegisterAnalysisTests(unittest.TestCase):
         second_original["registers"]["ebx"] = read
         second_candidate["registers"]["ebx"] = read
         binary = SimpleNamespace(image_base=0x400000)
+        contract = {
+            "code_targets": [
+                {
+                    "id": index,
+                    "region_index": index,
+                    "original_rva": 0x1000 + index * 0x10,
+                    "candidate_rva": 0x1000 + index * 0x10,
+                }
+                for index in range(2)
+            ],
+            "value_targets": [],
+            "static_word_relation_slots": [],
+            "regions": regions,
+        }
+        behaviors = [
+            {"original_ir": first_original, "candidate_ir": first_candidate},
+            {"original_ir": second_original, "candidate_ir": second_candidate},
+        ]
 
         solver_metrics: dict[str, int] = {}
-        _contract, analysis = _synthesize_register_relations(
-            {
-                "code_targets": [
-                    {
-                        "id": index,
-                        "region_index": index,
-                        "original_rva": 0x1000 + index * 0x10,
-                        "candidate_rva": 0x1000 + index * 0x10,
-                    }
-                    for index in range(2)
-                ],
-                "value_targets": [],
-                "static_word_relation_slots": [],
-                "regions": regions,
-            },
-            [
-                {"original_ir": first_original, "candidate_ir": first_candidate},
-                {"original_ir": second_original, "candidate_ir": second_candidate},
-            ],
+        transfer_cache = {}
+        analyzed_contract, analysis = _synthesize_register_relations(
+            contract,
+            behaviors,
             original_image_base=0x400000,
             candidate_image_base=0x400000,
             original_bin=binary,
             candidate_bin=binary,
             _solver_metrics=solver_metrics,
+            _transfer_cache=transfer_cache,
         )
 
         second_inputs = {
@@ -553,6 +557,24 @@ class StageARegisterAnalysisTests(unittest.TestCase):
             solver_metrics["transfer_evaluations"],
             solver_metrics["iterations"] * analysis["counts"]["regions"],
         )
+        cached_metrics: dict[str, int] = {}
+        cached_contract, cached_analysis = _synthesize_register_relations(
+            contract,
+            behaviors,
+            original_image_base=0x400000,
+            candidate_image_base=0x400000,
+            original_bin=binary,
+            candidate_bin=binary,
+            _solver_metrics=cached_metrics,
+            _transfer_cache=transfer_cache,
+        )
+        self.assertEqual(cached_contract, analyzed_contract)
+        self.assertEqual(cached_analysis, analysis)
+        self.assertEqual(
+            cached_metrics["transfer_cache_hits"],
+            cached_metrics["transfer_evaluations"],
+        )
+        self.assertEqual(cached_metrics["transfer_cache_misses"], 0)
 
     def test_fixed_static_slot_output_requires_same_target_id(self) -> None:
         slot = {"relation": "fixed_code_pointer", "target_id": 7}
@@ -871,6 +893,7 @@ class StageARegisterAnalysisTests(unittest.TestCase):
             machine_contracts = [] if not include_contract else [{
                 "id": 0,
                 "import": {"dll": "msvcrt.dll", "symbol": "__p__iob"},
+                "disposition": "returns",
                 "preserved_registers": ["ebp", "ebx", "edi", "esi"],
                 "clobbered_registers": ["eax", "ecx", "edx"],
                 "stack_result_delta": 4,

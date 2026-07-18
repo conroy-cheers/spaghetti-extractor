@@ -302,6 +302,7 @@ def _stabilize_fixed_code_pointer_register_calls(
     callsite_summary_predecessors: list[dict[str, Any]] | None = None,
     original_bin: StageABinary,
     candidate_bin: StageABinary,
+    register_transfer_cache: dict[str, Any] | None = None,
 ) -> tuple[
     dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, Any]
 ]:
@@ -330,6 +331,7 @@ def _stabilize_fixed_code_pointer_register_calls(
             callsite_summary_predecessors=callsite_summary_predecessors,
             original_bin=original_bin,
             candidate_bin=candidate_bin,
+            _transfer_cache=register_transfer_cache,
         )
         proposed = register_relations.get(
             "indirect_fixed_code_pointer_calls", []
@@ -356,6 +358,7 @@ def _stabilize_fixed_code_pointer_register_calls(
             callsite_summary_predecessors=callsite_summary_predecessors,
             original_bin=original_bin,
             candidate_bin=candidate_bin,
+            _transfer_cache=register_transfer_cache,
         )
     fixed_point = {
         "status": (
@@ -775,6 +778,7 @@ def stage_a_prove_relational(
     dynamic_call_candidates = local_facts["dynamic_call_candidates"]
     import_register_seeds = local_facts["import_register_seeds"]
     machine_call_analysis = local_facts["machine_call_analysis"]
+    register_transfer_cache: dict[str, Any] = {}
     import_register_analysis = _infer_import_register_invariants(
         normalized, behaviors, import_register_seeds
     )
@@ -807,6 +811,7 @@ def stage_a_prove_relational(
         import_call_candidates=import_register_analysis["indirect_import_calls"],
         original_bin=original_bin,
         candidate_bin=candidate_bin,
+        _transfer_cache=register_transfer_cache,
     )
     callsite_preservation_analysis: dict[str, Any] = {}
     max_callsite_rounds = max(1, len(normalized.get("regions", [])) + 1)
@@ -855,6 +860,7 @@ def stage_a_prove_relational(
             ],
             original_bin=original_bin,
             candidate_bin=candidate_bin,
+            _transfer_cache=register_transfer_cache,
         )
     else:
         callsite_preservation_analysis = {
@@ -891,6 +897,7 @@ def stage_a_prove_relational(
         import_call_candidates=import_register_analysis["indirect_import_calls"],
         original_bin=original_bin,
         candidate_bin=candidate_bin,
+        _transfer_cache=register_transfer_cache,
     )
     normalized, register_relations = _lower_stack_register_relations(
         normalized, register_relations
@@ -916,6 +923,7 @@ def stage_a_prove_relational(
         import_call_candidates=import_register_analysis["indirect_import_calls"],
         original_bin=original_bin,
         candidate_bin=candidate_bin,
+        _transfer_cache=register_transfer_cache,
     )
     normalized, register_relations = _lower_stack_register_relations(
         normalized, register_relations
@@ -1022,6 +1030,7 @@ def stage_a_prove_relational(
         import_call_candidates=import_register_analysis["indirect_import_calls"],
         original_bin=original_bin,
         candidate_bin=candidate_bin,
+        register_transfer_cache=register_transfer_cache,
     )
     fixed_register_call_candidates = combined_indirect_call_candidates[
         len(indirect_call_candidates):
@@ -1085,6 +1094,7 @@ def stage_a_prove_relational(
             callsite_summary_predecessors=summary_predecessors,
             original_bin=original_bin,
             candidate_bin=candidate_bin,
+            register_transfer_cache=register_transfer_cache,
         )
         normalized, register_relations = _lower_stack_register_relations(
             normalized, register_relations
