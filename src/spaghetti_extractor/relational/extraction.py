@@ -15,8 +15,8 @@ from ..stage_binary import StageABinary, StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 from .analyses.external import _semantic_external_target_identity
 from .contract import _import_identity, _raw_base_relocations
-from .executor import _relational_cache_dir, _run_lean_relational
-from .lean.definitions import _lean_extraction_source
+from .lean.analysis_source import _lean_extraction_source
+from .lean.compiler import _relational_cache_dir, _run_lean_relational
 from .model import PURE_SEMANTIC_EXPR_OPERATIONS
 from .preflight import side_diagnostics
 from .schema import STAGE_A_RELATIONAL_MODEL_ID

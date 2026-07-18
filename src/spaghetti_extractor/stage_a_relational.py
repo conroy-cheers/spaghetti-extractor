@@ -181,13 +181,13 @@ from .relational.contract import (
     stage_a_generate_relation_contract,
 )
 from .relational.diagnostics import (
-    _check_relational_counterexample,
     _complete_counterexample_assignment,
     _dynamic_pointer_traversal_diagnostic,
     _nonzero_word_guard,
     _read32_input_register_offset,
     _static_dynamic_pointer_seed_diagnostic,
 )
+from .relational.proof_diagnostics import _check_relational_counterexample
 from .relational.executor import (
     _collect_certificates,
     _compile_formal_kernel,

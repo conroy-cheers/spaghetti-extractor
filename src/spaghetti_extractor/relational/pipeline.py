@@ -28,7 +28,10 @@ from .analysis_artifact import (
     validate_relational_analysis,
     write_relational_analysis_manifest,
 )
-from .artifacts import write_text_if_changed as _write_text_if_changed
+from .artifacts import (
+    read_json_object as _read_json,
+    write_text_if_changed as _write_text_if_changed,
+)
 from .callsite_preservation import (
     parse_callsite_preservation_artifact,
     serialize_callsite_preservation_artifact,
@@ -38,23 +41,6 @@ from .ir import (
     ProductGraphIR,
     RelationalProofIR,
     WholeProgramAcceptanceIR,
-)
-from .build import (
-    _check_nix_relational_report,
-    _finalize_local_proof_ir,
-    _finalize_nix_proof_ir,
-    _finalize_proof_ir,
-    _find_relational_flake_root,
-    _load_contract,
-    _locked_flake_input,
-    _read_json,
-    _relational_nix_build_command,
-    _relational_nix_evaluator,
-    _remove_relational_build_output,
-    _validate_prepared_relational,
-    _validate_relational_module_graph,
-    _write_relational_module_graph,
-    stage_a_build_relational,
 )
 from .analyses.control import (
     _attach_reverse_sentinel_table_source_invariants,
@@ -191,6 +177,7 @@ from .contract import (
     _import_identity,
     _infer_region_address_separations,
     _inside_executable,
+    _load_contract,
     _machine_import_call_contracts,
     _mapped_relocation_offsets,
     _normalize_contract,
@@ -208,30 +195,8 @@ from .contract import (
 )
 
 
-from .diagnostics import (
-    _check_relational_counterexample,
-    _complete_counterexample_assignment,
-    _dynamic_pointer_traversal_diagnostic,
-    _nonzero_word_guard,
-    _read32_input_register_offset,
-    _static_dynamic_pointer_seed_diagnostic,
-)
-from .executor import (
-    _collect_certificates,
-    _compile_formal_kernel,
-    _compile_relational_kernel,
-    _failed_shard_hint_path,
-    _lean_output_current,
-    _persistent_olean_path,
-    _relational_cache_dir,
-    _relational_proof_jobs,
-    _run_lean_relational,
-    _run_lean_relational_cached,
-)
 from .verdict import (
     _certificate_hashes_match,
-    _counterexample_assignment,
-    _lean_diagnostic,
     _write_incomplete,
     _write_relational_verdict,
 )
@@ -262,124 +227,6 @@ from .extraction import (
     _semantic_x87_load_pullback_supported,
     _unique_import_at_absolute_address,
 )
-from .lean.generation import (
-    _compact_acceptance_blockers,
-    _copy_relational_kernel_sources,
-    _external_register_policy_replay_candidate,
-    _lean_acceptance_empty_stack,
-    _lean_acceptance_execution_edge,
-    _lean_acceptance_outcome,
-    _lean_acceptance_running_node,
-    _lean_acceptance_running_target,
-    _lean_address_separation,
-    _lean_all_append_proof,
-    _lean_all_listed_proof,
-    _lean_appended_list,
-    _lean_appended_proof,
-    _lean_behavior_field,
-    _lean_behavior_fields_memory_free,
-    _lean_bool,
-    _lean_bound_index_value,
-    _lean_bundle_source,
-    _lean_byte_tree_definitions,
-    _lean_bytes,
-    _lean_code_aliases,
-    _lean_compositional_normalized_theorem_source,
-    _lean_counterexample_source,
-    _lean_direct_append_proof,
-    _lean_dynamic_range_argument_claim,
-    _lean_dynamic_range_relation,
-    _lean_external_target,
-    _lean_extraction_source,
-    _lean_global_mapping_context_source,
-    _lean_identical_state_only_write_registers,
-    _lean_identical_state_only_writes_component,
-    _lean_immutable_indirect_jump_claim,
-    _lean_import_certificate,
-    _lean_import_register_seed_claim,
-    _lean_index_tree,
-    _lean_index_tree_join,
-    _lean_machine_call_memory_footprint,
-    _lean_machine_call_memory_size,
-    _lean_machine_import_call_contract,
-    _lean_masked_successor_tautology_proof,
-    _lean_normalized_branch_parts,
-    _lean_normalized_component_setup,
-    _lean_normalized_static_outcome,
-    _lean_padding_alias_certificate,
-    _lean_paired_stack_word_value_claim,
-    _lean_paired_stack_word_write_claim,
-    _lean_paired_stack_word_writes_claim,
-    _lean_pe,
-    _lean_pe_side_source,
-    _lean_region_bound_setup,
-    _lean_region_definition,
-    _lean_region_flag_setup,
-    _lean_region_index_masks,
-    _lean_region_indexed_memory_fact_names,
-    _lean_region_indexed_memory_lemma_specs,
-    _lean_region_indexed_relocation_word_specs,
-    _lean_region_memory_lemma_names,
-    _lean_region_memory_lemmas,
-    _lean_region_memory_setup,
-    _lean_region_relocation_memory_setup,
-    _lean_region_separation_setup,
-    _lean_region_static_memory_lemma_specs,
-    _lean_region_static_relocation_word_specs,
-    _lean_region_theorem_source,
-    _lean_region_value_targets,
-    _lean_register_argument_claim,
-    _lean_register_offset_witness,
-    _lean_register_offset_write,
-    _lean_register_output_claim,
-    _lean_register_pair,
-    _lean_register_relation_pair,
-    _lean_relation_constructor,
-    _lean_relocations,
-    _lean_return_slot_offset_pair,
-    _lean_right_append,
-    _lean_semantic_bool_expr,
-    _lean_semantic_expr,
-    _lean_semantic_x87_expr,
-    _lean_sorted_span_certificate,
-    _lean_span,
-    _lean_stack_address_separation_claim,
-    _lean_stack_window,
-    _lean_stack_window_argument_claim,
-    _lean_stack_window_transfer_claim,
-    _lean_state_invariant,
-    _lean_static_dynamic_pointer_slot,
-    _lean_static_proof_context_base_source,
-    _lean_static_range,
-    _lean_successor_tautology_proof,
-    _lean_symbolic_x87_state,
-    _lean_targets_definition,
-    _lean_value_target,
-    _lean_x87_state_only_pair,
-    _normalized_behavior_fast_path,
-    _normalized_behavior_structure_matches,
-    _partition_proof_shards,
-    _required_input_pairs,
-    _required_input_pairs_from,
-    _semantic_masked_successor_shape,
-    _semantic_successor_shape,
-    _side_coverage_spans,
-    _side_padding,
-    _sorted_span_certificate,
-    _static_index_ranges,
-    _whole_program_acceptance_plan,
-    _write_reachable_product_local_certificate,
-    _write_relational_acceptance_modules,
-    _write_relational_external_call_refinement_modules,
-    _write_relational_invariant_modules,
-    _write_relational_memory_pullback_modules,
-    _write_relational_product_graph_modules,
-    _write_relational_register_relation_modules,
-    _write_relational_segment_refinement_modules,
-    _write_relational_static_context_modules,
-    _write_sharded_relational_proof,
-    _write_stack_separation_modules,
-)
 from .model import (
     PURE_SEMANTIC_EXPR_OPERATIONS,
     _semantic_constant_bool,
@@ -390,6 +237,10 @@ from .isa_requirements import (
     ISARequirementInventory,
     build_isa_requirement_inventory,
     extract_lean_instruction_forms,
+)
+from .lean.analysis_source import (
+    _copy_relational_analysis_kernel_sources,
+    _copy_relational_kernel_sources,
 )
 from .schema import (
     FLAG_BITS,
@@ -618,6 +469,9 @@ def _write_prepared_relational_graph(
     trusted_base: dict[str, Any],
     prepare_only: bool,
 ) -> tuple[list[str], dict[str, Any] | None]:
+    from .build import _write_relational_module_graph
+    from .lean.generation import _write_sharded_relational_proof
+
     original_artifact = out / "artifacts" / "original.pe"
     candidate_artifact = out / "artifacts" / "candidate.pe"
     shard_modules, _ = _write_sharded_relational_proof(
@@ -769,7 +623,12 @@ def stage_a_prove_relational(
             blocker="x86 semantic preflight found regions outside the reviewed Lean decoder",
         )
 
-    _copy_relational_kernel_sources(out / "lean" / "StageA")
+    copy_kernel_sources = (
+        _copy_relational_analysis_kernel_sources
+        if _analyze_only
+        else _copy_relational_kernel_sources
+    )
+    copy_kernel_sources(out / "lean" / "StageA")
     behaviors, extraction = _extract_relational_behaviors(
         out / "lean",
         original_bin,
@@ -1407,7 +1266,9 @@ def stage_a_prove_relational(
         return prepared
     production = _run_sharded_relational(out / "lean", shard_modules)
     if production["status"] != "checked":
-        counterexample = _check_relational_counterexample(
+        from .proof_diagnostics import check_relational_counterexample
+
+        counterexample = check_relational_counterexample(
             out / "lean",
             original_bin,
             candidate_bin,
@@ -1444,6 +1305,10 @@ def stage_a_prove_relational(
             certificates=[],
             blocker="Lean did not close every relational obligation",
         )
+
+    from .build import _finalize_local_proof_ir
+    from .executor import _collect_certificates
+    from .lean.generation import _write_sharded_relational_proof
 
     certificates = _collect_certificates(out / "lean", out / "certificates")
     covered_indices = {entry["region_index"] for entry in certificates}
@@ -1662,6 +1527,12 @@ def stage_a_generate_relational(
     return prepared
 
 def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> dict[str, Any]:
+    from .build import (
+        _check_nix_relational_report,
+        _validate_relational_module_graph,
+    )
+    from .executor import _run_lean_relational
+
     report = Path(report)
     verdict = _read_json(report / "verdict.json")
     if verdict.get("format") == "stage-a-relational-nix-build-v1":
@@ -1804,6 +1675,15 @@ def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> 
     return result
 
 def _run_sharded_relational(lean_dir: Path, shard_modules: list[str]) -> dict[str, Any]:
+    from .executor import (
+        _compile_formal_kernel,
+        _compile_relational_kernel,
+        _failed_shard_hint_path,
+        _relational_proof_jobs,
+        _run_lean_relational,
+        _run_lean_relational_cached,
+    )
+
     started = time.monotonic()
     formal = _compile_formal_kernel(lean_dir)
     if formal.get("status") != "checked":

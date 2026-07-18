@@ -80,6 +80,94 @@
             ];
             meta.mainProgram = "spaghetti-extractor";
           };
+          relationalAnalysisKernelModules = [
+            "Formal"
+            "ISAQualification"
+            "RelationalDecode"
+            "RelationalLoader"
+            "RelationalMachine"
+            "Relational"
+            "RelationalPEExecution"
+            "RelationalISAQualification"
+          ];
+          spaghettiExtractorAnalysisPythonFiles = [
+            ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/pe.py
+            ./src/spaghetti_extractor/stage_binary.py
+            ./src/spaghetti_extractor/util.py
+            ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/relational/analysis.py
+            ./src/spaghetti_extractor/relational/analysis_artifact.py
+            ./src/spaghetti_extractor/relational/analysis_cli.py
+            ./src/spaghetti_extractor/relational/artifacts.py
+            ./src/spaghetti_extractor/relational/callsite_preservation.py
+            ./src/spaghetti_extractor/relational/contract.py
+            ./src/spaghetti_extractor/relational/diagnostics.py
+            ./src/spaghetti_extractor/relational/extraction.py
+            ./src/spaghetti_extractor/relational/interfaces.py
+            ./src/spaghetti_extractor/relational/ir.py
+            ./src/spaghetti_extractor/relational/isa_requirements.py
+            ./src/spaghetti_extractor/relational/mapping.py
+            ./src/spaghetti_extractor/relational/model.py
+            ./src/spaghetti_extractor/relational/phases.py
+            ./src/spaghetti_extractor/relational/pipeline.py
+            ./src/spaghetti_extractor/relational/preflight.py
+            ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/verdict.py
+            ./src/spaghetti_extractor/relational/analyses/__init__.py
+            ./src/spaghetti_extractor/relational/analyses/callsite.py
+            ./src/spaghetti_extractor/relational/analyses/control.py
+            ./src/spaghetti_extractor/relational/analyses/external.py
+            ./src/spaghetti_extractor/relational/analyses/invariants.py
+            ./src/spaghetti_extractor/relational/analyses/memory.py
+            ./src/spaghetti_extractor/relational/analyses/registers.py
+            ./src/spaghetti_extractor/relational/analyses/segments.py
+            ./src/spaghetti_extractor/relational/analyses/stack.py
+            ./src/spaghetti_extractor/relational/lean/__init__.py
+            ./src/spaghetti_extractor/relational/lean/analysis_source.py
+            ./src/spaghetti_extractor/relational/lean/common.py
+            ./src/spaghetti_extractor/relational/lean/compiler.py
+            ./src/spaghetti_extractor/relational/lean/expressions.py
+          ];
+          spaghettiExtractorAnalysisSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              (pkgs.lib.fileset.unions spaghettiExtractorAnalysisPythonFiles)
+              (pkgs.lib.fileset.unions (
+                map
+                  (module: ./src/spaghetti_extractor/lean/StageA + "/${module}.lean")
+                  relationalAnalysisKernelModules
+              ))
+            ];
+          };
+          spaghetti-extractor-analysis = pkgs.writeShellApplication {
+            name = "spaghetti-extractor-analysis";
+            runtimeInputs = [ pythonEnv ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorAnalysisSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.analysis_cli "$@"
+            '';
+          };
+          stage-a-analysis-source-boundary-check = pkgs.runCommand
+            "stage-a-analysis-source-boundary-check"
+            { }
+            ''
+              source="${spaghettiExtractorAnalysisSource}/src/spaghetti_extractor"
+              test -f "$source/relational/analysis_cli.py"
+              test -f "$source/relational/lean/analysis_source.py"
+              test -f "$source/relational/lean/compiler.py"
+              test ! -e "$source/cli.py"
+              test ! -e "$source/stage_b.py"
+              test ! -e "$source/relational/build.py"
+              test ! -e "$source/relational/executor.py"
+              test ! -e "$source/relational/proof_diagnostics.py"
+              test ! -e "$source/relational/lean/acceptance.py"
+              test ! -e "$source/relational/lean/generation.py"
+              test ! -e "$source/relational/lean/segments.py"
+              test "$(find "$source/lean/StageA" -type f -name '*.lean' | wc -l)" -eq 8
+              touch "$out"
+            '';
           singlestep-80386-conformance =
             pkgs.callPackage ./nix/singlestep-80386-conformance.nix {
               inherit spaghetti-extractor;
@@ -1016,12 +1104,12 @@
             '';
           stage-a-gnu-hello-static-map = pkgs.runCommand "stage-a-gnu-hello-static-map"
             {
-              nativeBuildInputs = [ spaghetti-extractor-core ];
+              nativeBuildInputs = [ spaghetti-extractor-analysis ];
             }
             ''
               fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
               mkdir -p "$out"
-              spaghetti-extractor stage-a-generate-map \
+              spaghetti-extractor-analysis generate-map \
                 --original "$fixture_dir/hello-original.exe" \
                 --candidate "$fixture_dir/hello-candidate.exe" \
                 --linker-map-original "$fixture_dir/hello-original.map" \
@@ -1034,12 +1122,12 @@
             '';
           stage-a-gnu-hello-relation-contract = pkgs.runCommand "stage-a-gnu-hello-relation-contract"
             {
-              nativeBuildInputs = [ spaghetti-extractor-core ];
+              nativeBuildInputs = [ spaghetti-extractor-analysis ];
             }
             ''
               fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
               mkdir -p "$out"
-              spaghetti-extractor stage-a-generate-relation-contract \
+              spaghetti-extractor-analysis generate-relation-contract \
                 --original "$fixture_dir/hello-original.exe" \
                 --candidate "$fixture_dir/hello-candidate.exe" \
                 --mapping "${stage-a-gnu-hello-static-map}/hello-block-map.json" \
@@ -1051,7 +1139,7 @@
           stage-a-gnu-hello-analysis = pkgs.runCommand "stage-a-gnu-hello-analysis"
             {
               nativeBuildInputs = [
-                spaghetti-extractor-core
+                spaghetti-extractor-analysis
                 pkgs.lean4
                 pkgs.jq
               ];
@@ -1060,15 +1148,18 @@
               fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
               work="$TMPDIR/stage-a-gnu-hello-analysis"
               mkdir -p "$work"
-              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
+              export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-analysis-kernel-cache}"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
-                spaghetti-extractor stage-a-analyze-relational \
+                spaghetti-extractor-analysis analyze-relational \
                   --original "$fixture_dir/hello-original.exe" \
                   --candidate "$fixture_dir/hello-candidate.exe" \
                   --relation-contract "${stage-a-gnu-hello-relation-contract}/hello-relation-contract.json" \
                   --out "$work/analysis" \
                   > "$work/analysis.stdout"
+              spaghetti-extractor-analysis validate-analysis \
+                --analysis "$work/analysis" \
+                > "$work/analysis-validation.json"
               jq -e '
                 .format == "stage-a-relational-analysis-v1" and
                 .status == "analyzed" and
@@ -1078,7 +1169,7 @@
               test ! -e "$work/analysis/certificates"
               mkdir -p "$out"
               cp -R "$work/analysis" "$out/analysis"
-              cp "$work/analysis.stdout" "$out/"
+              cp "$work/analysis.stdout" "$work/analysis-validation.json" "$out/"
             '';
           stage-a-gnu-hello-preflight = pkgs.runCommand "stage-a-gnu-hello-preflight"
             {
@@ -1505,6 +1596,14 @@
             root = ./.;
             fileset = ./src/spaghetti_extractor/lean/StageA;
           };
+          relationalAnalysisLeanSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions (
+              map
+                (module: ./src/spaghetti_extractor/lean/StageA + "/${module}.lean")
+                relationalAnalysisKernelModules
+            );
+          };
           relationalKernelModules = [
             "Formal"
             "ISAQualification"
@@ -1542,6 +1641,15 @@
                 relationalLeanSource + "/src/spaghetti_extractor/lean/StageA";
               standaloneModules = isaKernelModules;
               targetNodes = isaKernelModules;
+              targetBundle = true;
+            };
+          stage-a-relational-analysis-kernel-cache =
+            import ./nix/stage-a-lean-graph.nix {
+              inherit pkgs;
+              standaloneSourceRoot =
+                relationalAnalysisLeanSource + "/src/spaghetti_extractor/lean/StageA";
+              standaloneModules = relationalAnalysisKernelModules;
+              targetNodes = relationalAnalysisKernelModules;
               targetBundle = true;
             };
           stage-a-relational-kernel-cache =
@@ -2049,6 +2157,8 @@
             bochs-conformance
             singlestep-80386-conformance
             spaghetti-extractor
+            spaghetti-extractor-analysis
+            stage-a-analysis-source-boundary-check
             stage-a-isa-conformance-bochs-80386
             stage-a-isa-kernel-cache
             stage-a-fixtures
@@ -2093,6 +2203,7 @@
             stage-a-jq-reference-contract
             stage-a-jq-fixtures-check
             stage-a-jq-fixtures-root
+            stage-a-relational-analysis-kernel-cache
             stage-a-relational-kernel-cache
             stage-a-relational-tests
             stage-a-relational-tests-schema

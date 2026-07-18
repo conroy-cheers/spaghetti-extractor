@@ -23,7 +23,7 @@ from capstone import x86_const
 from ..stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 from .preflight import instruction_supported
-from .schema import RELATIONAL_KERNEL_MODULES, STAGE_A_RELATIONAL_MODEL_ID
+from .schema import RELATIONAL_ANALYSIS_KERNEL_MODULES, STAGE_A_RELATIONAL_MODEL_ID
 
 
 ISA_REQUIREMENT_INVENTORY_FORMAT = "stage-a-isa-requirement-inventory-v1"
@@ -531,13 +531,8 @@ def isa_requirement_replay_projection(
 
 def _lean_form_source_hashes() -> dict[str, str]:
     files = {
-        name: sha256_file(_LEAN_SOURCE_ROOT / name)
-        for name in (
-            "Formal.lean",
-            "ISAQualification.lean",
-            "RelationalPEExecution.lean",
-            "RelationalISAQualification.lean",
-        )
+        f"{module}.lean": sha256_file(_LEAN_SOURCE_ROOT / f"{module}.lean")
+        for module in RELATIONAL_ANALYSIS_KERNEL_MODULES
     }
     classifier = _canonical_sha256(
         {name: files[name] for name in ("Formal.lean", "ISAQualification.lean")}
@@ -740,7 +735,7 @@ def extract_lean_instruction_forms(
         "relation_contract_sha256": _canonical_sha256(relation_contract),
         "lean_form_source_sha256": source_hashes["source_sha256"],
     }
-    from .executor import _relational_cache_dir, _run_lean_relational
+    from .lean.compiler import _relational_cache_dir, _run_lean_relational
 
     cache = _relational_cache_dir() / "isa-form-inventory" / (
         _canonical_sha256(input_identity) + ".json"
@@ -771,7 +766,7 @@ def extract_lean_instruction_forms(
         artifacts = lean_dir / "artifacts"
         stage_a.mkdir()
         artifacts.mkdir()
-        for module in RELATIONAL_KERNEL_MODULES:
+        for module in RELATIONAL_ANALYSIS_KERNEL_MODULES:
             shutil.copyfile(
                 _LEAN_SOURCE_ROOT / f"{module}.lean",
                 stage_a / f"{module}.lean",

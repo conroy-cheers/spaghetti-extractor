@@ -8,7 +8,7 @@ import capstone
 
 from ..stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from ..util import sha256_file, write_json
-from .build import _read_json
+from .artifacts import read_json_object as _read_json
 from .model import PURE_SEMANTIC_EXPR_OPERATIONS
 from .schema import (
     EXTERNAL_ENVIRONMENT_PROFILE_FORMAT,
@@ -59,6 +59,16 @@ def _raw_base_relocations(binary: StageABinary) -> list[dict[str, int]]:
             })
         cursor += block_size
     return relocations
+
+
+def _load_contract(path: Path) -> dict[str, Any]:
+    payload = _read_json(path)
+    if payload.get("format") != RELATION_CONTRACT_FORMAT:
+        raise StageAInputError(
+            f"relation contract format must be {RELATION_CONTRACT_FORMAT}"
+        )
+    return payload
+
 
 def _semantic_cutpoint_spans(
     original: StageABinary,

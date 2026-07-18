@@ -57,6 +57,16 @@ FLAG_BITS = {
 RELATIONAL_APPROVED_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
 RELATIONAL_ENVIRONMENT_ID = "adversarial-pe32-external-v1"
 RELATIONAL_OBSERVATIONS = ["external_call", "external_jump", "return", "fault"]
+RELATIONAL_ANALYSIS_KERNEL_MODULES = (
+    "Formal",
+    "ISAQualification",
+    "RelationalDecode",
+    "RelationalLoader",
+    "RelationalMachine",
+    "Relational",
+    "RelationalPEExecution",
+    "RelationalISAQualification",
+)
 RELATIONAL_KERNEL_MODULES = (
     "Formal",
     "ISAQualification",

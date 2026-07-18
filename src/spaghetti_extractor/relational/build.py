@@ -12,8 +12,9 @@ from typing import Any
 from ..stage_binary import StageABinary, StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 from .analysis_artifact import validate_relational_analysis
+from .artifacts import read_json_object as _read_json
+from .contract import _load_contract
 from .schema import (
-    RELATION_CONTRACT_FORMAT,
     RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
     RELATIONAL_PREPARED_REPORT_FILES,
@@ -958,23 +959,6 @@ def _check_nix_relational_report(
     if out is not None:
         write_json(Path(out), result)
     return result
-
-
-def _load_contract(path: Path) -> dict[str, Any]:
-    payload = _read_json(path)
-    if payload.get("format") != RELATION_CONTRACT_FORMAT:
-        raise StageAInputError(f"relation contract format must be {RELATION_CONTRACT_FORMAT}")
-    return payload
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read {path}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise StageAInputError(f"{path} must contain a JSON object")
-    return payload
 
 
 def _write_relational_module_graph(

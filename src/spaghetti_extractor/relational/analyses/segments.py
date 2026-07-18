@@ -13,7 +13,7 @@ from ..diagnostics import (
     _static_dynamic_pointer_seed_diagnostic,
 )
 from ..extraction import _relational_loader_facts
-from ..lean.definitions import _lean_x87_state_only_pair
+from ..lean.analysis_source import _lean_x87_state_only_pair
 from ..schema import (
     FLAG_BITS,
     RELATIONAL_PROOF_IR_FORMAT,
