@@ -167,3 +167,47 @@ summaries. A candidate change should invalidate only changed SCCs and their
 condensation-graph descendants. Cache entries remain untrusted proposals; Lean
 reconnects every accepted claim to the exact image bytes and checked
 whole-program graph.
+
+The register analyzer emits
+`relational-register-dataflow-graph.json` as the migration manifest for that
+boundary. It contains a deterministic SCC condensation DAG and coarser packs
+for Nix execution. SCC identities depend on stable region identities rather
+than inventory positions. Pack identities depend on SCC membership, while pack
+semantics hashes include local transfer and boundary hashes. Therefore a local
+semantic edit preserves the node identity and invalidates its result plus its
+true descendants; reordering the input inventory invalidates nothing. Large
+SCCs are isolated and resource classes are assigned from total pack region
+counts so the remote scheduler can limit memory pressure. This manifest is an
+untrusted scheduling proposal and has no acceptance authority.
+
+The intended build DAG is directional:
+
+1. Each PE independently produces inventory, decode, ISA, and raw-semantics
+   artifacts.
+2. Mapping consumes the two static inventories, while pair normalization
+   consumes the map and the two side artifacts.
+3. Region-local facts consume normalized behavior but not global fixed-point
+   code.
+4. SCC packs consume only their projected local semantics and predecessor
+   summaries. An exact-cover aggregation step rejects missing, duplicate, or
+   stale outputs.
+5. Segment proofs consume only the relevant state summaries and exact decoded
+   paths. Product composition depends on the segment certificates it reaches.
+6. The final acceptance derivation is small and depends on all required roots,
+   frontiers, environment refinements, and the final Lean theorem.
+
+Nix inputs for a pack must be projected into content-addressed per-pack files.
+Passing the monolithic normalized-behavior or analysis JSON path to every pack
+would make every parent store-path change invalidate every child, defeating
+the graph even when the pack hashes are stable. The same rule applies to Lean:
+generated modules are individual `builtins.path` inputs, and kernel modules are
+separate from generated facts. A broad source tree, complete report directory,
+or user-facing CLI package is never an input to a narrow phase derivation.
+
+As of the GNU hello benchmark, 7,430 regions form 6,271 SCCs and 432 execution
+packs: 419 small, 12 medium, and one large. A dataflow-planner-only edit rebuilt
+the analysis package and analysis result in about 2 minutes 45 seconds on a
+remote builder; the warm Nix replay took under one second. The planner is now
+present, but pack-local solving remains the next implementation step. Until
+that migration lands, the single global analysis derivation still accounts for
+most analysis-only cold time.

@@ -357,6 +357,7 @@ from .relational.model import (
     _semantic_constant_bool,
     _semantic_hash,
 )
+from .relational.report_schema import RELATIONAL_PREPARED_REPORT_FILES
 from .relational.schema import (
     FLAG_BITS,
     MACHINE_CALL_ABI_REGISTERS,
@@ -371,7 +372,6 @@ from .relational.schema import (
     RELATIONAL_ENVIRONMENT_ID,
     RELATIONAL_KERNEL_MODULES,
     RELATIONAL_OBSERVATIONS,
-    RELATIONAL_PREPARED_REPORT_FILES,
     RELATIONAL_PROOF_IR_FORMAT,
     RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
     STAGE_A_RELATIONAL_MODEL_ID,

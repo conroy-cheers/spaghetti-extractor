@@ -251,6 +251,7 @@ from .lean.analysis_source import (
     _copy_relational_kernel_sources,
 )
 from .pair_normalization import load_pair_normalization
+from .report_schema import RELATIONAL_PREPARED_REPORT_FILES
 from .side_extraction import load_side_extraction, load_side_isa
 from .schema import (
     FLAG_BITS,
@@ -266,7 +267,6 @@ from .schema import (
     RELATIONAL_ENVIRONMENT_ID,
     RELATIONAL_KERNEL_MODULES,
     RELATIONAL_OBSERVATIONS,
-    RELATIONAL_PREPARED_REPORT_FILES,
     RELATIONAL_PROOF_IR_FORMAT,
     RELATIONAL_SEGMENT_CERTIFICATE_FORMAT,
     STAGE_A_RELATIONAL_MODEL_ID,
@@ -1174,6 +1174,10 @@ def stage_a_prove_relational(
     )
     write_json(out / "relational-static-word-relations.json", static_word_analysis)
     write_json(out / "relational-register-relations.json", register_relations)
+    write_json(
+        out / "relational-register-dataflow-graph.json",
+        register_relations["dataflow_graph"],
+    )
     write_json(out / "relation-contract.json", normalized)
     external_call_sites = _external_call_site_candidates(
         normalized, behaviors, register_relations,

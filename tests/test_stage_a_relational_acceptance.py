@@ -5891,6 +5891,19 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             )
             self.assertTrue(register_relations["converged"])
             self.assertTrue(register_relations["dataflow_complete"])
+            dataflow_graph = json.loads(
+                (prepared / "relational-register-dataflow-graph.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                dataflow_graph, register_relations["dataflow_graph"]
+            )
+            self.assertEqual(
+                dataflow_graph["format"],
+                "stage-a-register-dataflow-graph-v1",
+            )
+            self.assertFalse(dataflow_graph["acceptance_authority"])
             self.assertEqual(
                 register_relations["trust"]["role"],
                 "analysis_and_proof_proposal_only",

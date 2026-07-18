@@ -121,6 +121,7 @@ def stage_a_interface_manifest() -> dict[str, Any]:
                 "id": "state-products",
                 "paths": [
                     "relational-register-relations.json",
+                    "relational-register-dataflow-graph.json",
                     "relational-stack-windows.json",
                     "relational-memory-contracts.json",
                     "relational-static-word-relations.json",

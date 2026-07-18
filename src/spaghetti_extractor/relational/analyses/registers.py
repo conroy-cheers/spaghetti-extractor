@@ -21,7 +21,7 @@ from .callsite import (
     propose_callsite_preserved_register_summary,
 )
 from .control import _constant_read32_address
-from .dataflow import strongly_connected_components
+from .dataflow import stable_dataflow_graph, strongly_connected_components
 from .external import _semantic_external_target_identity
 from .invariants import _semantic_edges
 from .region_local import (
@@ -2231,6 +2231,11 @@ def _synthesize_register_relations(
         )
         for region_index, behavior_pair in enumerate(behaviors)
     ]
+    dataflow_graph = stable_dataflow_graph(
+        successor_regions,
+        region_ids=[str(region["id"]) for region in regions],
+        transfer_semantics_sha256=transfer_region_contexts,
+    )
     for iteration in range(max_iterations):
         next_outputs = [
             None if row is None else dict(row) for row in output_states
@@ -2867,6 +2872,7 @@ def _synthesize_register_relations(
                 "from decoded behavior and checked by Lean"
             ),
         },
+        "dataflow_graph": dataflow_graph.to_payload(),
         "return_slot_analysis": return_slot_analysis,
         "indirect_fixed_code_pointer_calls": indirect_fixed_code_pointer_calls,
         "counts": counts,

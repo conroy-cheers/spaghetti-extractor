@@ -31,6 +31,7 @@ RELATIONAL_ANALYSIS_REQUIRED_FILES = frozenset({
     "relational-memory-contracts.json",
     "relational-static-word-relations.json",
     "relational-register-relations.json",
+    "relational-register-dataflow-graph.json",
     "relational-stack-windows.json",
     "relational-segment-diagnostics.json",
     "relational-product-graph.json",

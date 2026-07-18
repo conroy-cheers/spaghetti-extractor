@@ -119,6 +119,7 @@
             ./src/spaghetti_extractor/relational/region_facts.py
             ./src/spaghetti_extractor/relational/region_facts_artifact.py
             ./src/spaghetti_extractor/relational/region_facts_cli.py
+            ./src/spaghetti_extractor/relational/report_schema.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/side_extraction.py
             ./src/spaghetti_extractor/relational/side_extraction_artifact.py
@@ -381,6 +382,7 @@
               preparation="${spaghettiExtractorPreparationSource}/src/spaghetti_extractor"
               test -f "$preparation/relational/build.py"
               test -f "$preparation/relational/preparation_cli.py"
+              test -f "$preparation/relational/report_schema.py"
               test -f "$preparation/relational/lean/generation.py"
               test -f "$preparation/relational/lean/acceptance.py"
               test ! -e "$preparation/cli.py"
@@ -407,6 +409,7 @@
               test ! -e "$mapping/relational/analysis_cli.py"
               test ! -e "$mapping/relational/extraction.py"
               test ! -e "$mapping/relational/pipeline.py"
+              test ! -e "$mapping/relational/report_schema.py"
               ${spaghetti-extractor-mapping}/bin/spaghetti-extractor-mapping --help >/dev/null
               normalization="${spaghettiExtractorNormalizationSource}/src/spaghetti_extractor"
               test -f "$normalization/relational/pair_normalization.py"

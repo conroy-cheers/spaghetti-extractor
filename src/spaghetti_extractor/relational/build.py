@@ -14,10 +14,10 @@ from ..util import sha256_bytes, sha256_file, write_json
 from .analysis_artifact import validate_relational_analysis
 from .artifacts import read_json_object as _read_json
 from .contract import _load_contract
+from .report_schema import RELATIONAL_PREPARED_REPORT_FILES
 from .schema import (
     RELATIONAL_ACCEPTANCE_THEOREM,
     RELATIONAL_KERNEL_MODULES,
-    RELATIONAL_PREPARED_REPORT_FILES,
     STAGE_A_RELATIONAL_MODEL_ID,
     STAGE_A_RELATIONAL_PROFILE_ID,
     ModuleGraph,

@@ -163,15 +163,6 @@ def stage_a_normalize_pair(
         normalizer_semantics_sha256=semantics_sha256,
         behaviors=behaviors,
     )
-    parse_pair_normalization(
-        payload,
-        expected_original_sha256=original_binary.sha256,
-        expected_candidate_sha256=candidate_binary.sha256,
-        expected_relation_contract=normalized,
-        expected_original_extraction_sha256=sha256_file(original_extraction),
-        expected_candidate_extraction_sha256=sha256_file(candidate_extraction),
-        expected_normalizer_semantics_sha256=semantics_sha256,
-    )
     write_json(out, payload)
     return {
         "format": "stage-a-relational-pair-normalization-result-v1",
