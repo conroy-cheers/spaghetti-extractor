@@ -216,6 +216,56 @@ class StageABinaryInventoryTests(StageARelationalTestBase):
             with self.assertRaisesRegex(StageAInputError, "escapes"):
                 parse_binary_cutpoint_inventory(escaped)
 
+    def test_extraction_regions_are_bounded_by_executable_sections(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = self._write_pe(root / "hello.exe", b"\xeb\xfe")
+            linker_map = root / "hello.map"
+            linker_map.write_text("0x401000 entry\n", encoding="utf-8")
+            payload = stage_a_inventory_binary(
+                binary=binary,
+                linker_map=linker_map,
+                side="candidate",
+                out=root / "inventory.json",
+            )
+
+            section = payload["executable_sections"][0]
+            extraction_span = payload["extraction_regions"][0]["span"]
+            self.assertEqual(extraction_span["rva_start"], section["rva_start"])
+            self.assertEqual(
+                extraction_span["rva_start"] + extraction_span["size"],
+                section["rva_end"],
+            )
+            parse_binary_cutpoint_inventory(payload)
+
+            uint32_boundary = copy.deepcopy(payload)
+            uint32_boundary["executable_sections"][0]["rva_start"] = 2**32 - 2
+            uint32_boundary["executable_sections"][0]["rva_end"] = 2**32
+            for field in ("regions", "extraction_regions"):
+                uint32_boundary[field][0]["span"] = {
+                    "rva_start": 2**32 - 2,
+                    "size": 2,
+                }
+            parse_binary_cutpoint_inventory(uint32_boundary)
+
+            for start, size in (
+                (section["rva_start"] - 1, 2),
+                (section["rva_end"] - 1, 2),
+                (section["rva_end"], 1),
+            ):
+                escaped = copy.deepcopy(payload)
+                escaped["extraction_regions"][0]["span"] = {
+                    "rva_start": start,
+                    "size": size,
+                }
+                with self.assertRaisesRegex(StageAInputError, "escapes"):
+                    parse_binary_cutpoint_inventory(escaped)
+
+            overflowed = copy.deepcopy(uint32_boundary)
+            overflowed["extraction_regions"][0]["span"]["size"] = 3
+            with self.assertRaisesRegex(StageAInputError, "span is invalid"):
+                parse_binary_cutpoint_inventory(overflowed)
+
     def test_extraction_inventory_contains_both_cutpoint_policies(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -256,6 +256,11 @@ def parse_binary_cutpoint_inventory(payload: Any) -> dict[str, Any]:
                 raise StageAInputError(
                     f"binary cutpoint {field} region {index} span is invalid"
                 )
+            stop = start + size
+            if stop > 2**32:
+                raise StageAInputError(
+                    f"binary cutpoint {field} region {index} span is invalid"
+                )
             span_key = (start, size)
             if span_key in seen_spans:
                 raise StageAInputError(
@@ -269,7 +274,7 @@ def parse_binary_cutpoint_inventory(payload: Any) -> dict[str, Any]:
             if not allow_overlap and previous_stop is not None and start < previous_stop:
                 raise StageAInputError(f"binary cutpoint {field} regions overlap")
             previous_start = start
-            previous_stop = start + size
+            previous_stop = stop
             if not isinstance(region.get("source"), Mapping):
                 raise StageAInputError(
                     f"binary cutpoint {field} region {index} source is malformed"

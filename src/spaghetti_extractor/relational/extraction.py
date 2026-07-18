@@ -326,10 +326,20 @@ def _extract_relational_behaviors(
 
 
 _RAW_BEHAVIOR_MARKER = re.compile(
-    r"STAGE_A_RAW_BEHAVIOR_BEGIN (original|candidate) (\d+)\n"
-    r"(.*?)\nSTAGE_A_RAW_BEHAVIOR_END",
-    re.DOTALL,
+    r"^STAGE_A_RAW_BEHAVIOR_BEGIN (?P<side>original|candidate) "
+    r"(?P<index>[0-9]+)\n"
+    r"(?P<value>.*?)\n"
+    r"^(?P<end>STAGE_A_RAW_BEHAVIOR_END)$",
+    re.DOTALL | re.MULTILINE,
 )
+_RAW_BEHAVIOR_PROTOCOL_LINE = re.compile(
+    r"^STAGE_A_RAW_BEHAVIOR_(?:BEGIN|END)[^\r\n]*$",
+    re.MULTILINE,
+)
+
+
+def _canonicalize_raw_behavior_term(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _parse_raw_behavior_output(
@@ -338,10 +348,38 @@ def _parse_raw_behavior_output(
     side: str,
     expected: set[int],
 ) -> tuple[dict[int, str] | None, dict[str, Any]]:
+    stdout = result.get("stdout", "")
+    if not isinstance(stdout, str):
+        return None, {
+            **result,
+            "status": "malformed_output",
+            "stderr": result.get("stderr", "")
+            + "\nraw behavior output is not text",
+        }
+
+    matches = list(_RAW_BEHAVIOR_MARKER.finditer(stdout))
+    protocol_line_positions = [
+        match.start()
+        for match in _RAW_BEHAVIOR_PROTOCOL_LINE.finditer(stdout)
+    ]
+    parsed_line_positions = [
+        position
+        for match in matches
+        for position in (match.start(), match.start("end"))
+    ]
+    if parsed_line_positions != protocol_line_positions:
+        return None, {
+            **result,
+            "status": "malformed_output",
+            "stderr": result.get("stderr", "")
+            + "\nmalformed or nested raw behavior marker",
+        }
+
     values: dict[int, str] = {}
-    for observed_side, index_text, value in _RAW_BEHAVIOR_MARKER.findall(
-        result.get("stdout", "")
-    ):
+    for match in matches:
+        observed_side = match.group("side")
+        index_text = match.group("index")
+        value = match.group("value")
         index = int(index_text)
         if observed_side != side or index not in expected or index in values:
             return None, {
@@ -350,7 +388,7 @@ def _parse_raw_behavior_output(
                 "stderr": result.get("stderr", "")
                 + f"\nunexpected or duplicate raw behavior {observed_side} {index}",
             }
-        normalized = re.sub(r"\s+", " ", value).strip()
+        normalized = _canonicalize_raw_behavior_term(value)
         if not normalized.startswith("some "):
             return None, {
                 **result,
@@ -1507,6 +1545,25 @@ def _relational_extraction_semantics_sha256(path: Path) -> str:
     return sha256_file(path)
 
 
+def _raw_behavior_output_protocol_sha256() -> str:
+    payload = {
+        "format": "stage-a-relational-raw-output-protocol-v1",
+        "marker_pattern": _RAW_BEHAVIOR_MARKER.pattern,
+        "marker_flags": int(_RAW_BEHAVIOR_MARKER.flags),
+        "protocol_line_pattern": _RAW_BEHAVIOR_PROTOCOL_LINE.pattern,
+        "protocol_line_flags": int(_RAW_BEHAVIOR_PROTOCOL_LINE.flags),
+        "parser_source_sha256": sha256_bytes(
+            inspect.getsource(_parse_raw_behavior_output).encode("utf-8")
+        ),
+        "canonicalizer_source_sha256": sha256_bytes(
+            inspect.getsource(_canonicalize_raw_behavior_term).encode("utf-8")
+        ),
+    }
+    return sha256_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    )
+
+
 def _raw_extraction_semantics_sha256(
     *,
     lean_root: Path | None = None,
@@ -1533,13 +1590,7 @@ def _raw_extraction_semantics_sha256(
             else driver_sha256
         ),
         "output_protocol_sha256": (
-            sha256_bytes(
-                (
-                    _RAW_BEHAVIOR_MARKER.pattern
-                    + "\n"
-                    + inspect.getsource(_parse_raw_behavior_output)
-                ).encode("utf-8")
-            )
+            _raw_behavior_output_protocol_sha256()
             if output_protocol_sha256 is None
             else output_protocol_sha256
         ),

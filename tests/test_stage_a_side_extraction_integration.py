@@ -1,9 +1,14 @@
+import inspect
+
 from tests.stage_a_relational_support import *
 
 from spaghetti_extractor.relational.contract import _load_contract, _normalize_contract
 from spaghetti_extractor.relational.extraction import (
+    _canonicalize_raw_behavior_term,
     _parse_normalized_behavior_output,
     _parse_raw_behavior_output,
+    _raw_behavior_output_protocol_sha256,
+    _raw_extraction_semantics_sha256,
 )
 from spaghetti_extractor.relational.isa_requirements import (
     extract_lean_instruction_forms_side,
@@ -11,6 +16,9 @@ from spaghetti_extractor.relational.isa_requirements import (
 from spaghetti_extractor.relational.pipeline import stage_a_analyze_relational
 from spaghetti_extractor.relational.pair_normalization import (
     stage_a_normalize_pair,
+)
+from spaghetti_extractor.relational.schema import (
+    RELATIONAL_ANALYSIS_KERNEL_MODULES,
 )
 from spaghetti_extractor.relational.side_extraction import (
     stage_a_extract_side,
@@ -26,10 +34,14 @@ from spaghetti_extractor.util import sha256_file, write_json
 
 class StageASideExtractionIntegrationTests(StageARelationalTestBase):
     def test_raw_pack_output_rejects_duplicate_and_unexpected_rows(self):
-        def marker(side: str, index: int) -> str:
+        def marker(
+            side: str,
+            index: int,
+            value: str = "some { outcome := none }",
+        ) -> str:
             return (
                 f"STAGE_A_RAW_BEHAVIOR_BEGIN {side} {index}\n"
-                "some { outcome := none }\n"
+                f"{value}\n"
                 "STAGE_A_RAW_BEHAVIOR_END\n"
             )
 
@@ -41,12 +53,20 @@ class StageASideExtractionIntegrationTests(StageARelationalTestBase):
         parsed, _ = _parse_raw_behavior_output(
             valid, side="original", expected={0}
         )
-        self.assertEqual(set(parsed or {}), {0})
+        self.assertEqual(parsed, {0: "{ outcome := none }"})
 
         for malformed in (
             valid["stdout"] + marker("original", 0),
             valid["stdout"] + marker("candidate", 0),
             marker("original", 1),
+            (
+                "STAGE_A_RAW_BEHAVIOR_BEGIN original 0\n"
+                "some { outcome := none }\n"
+                "STAGE_A_RAW_BEHAVIOR_BEGIN original 0\n"
+                "some { outcome := none }\n"
+                "STAGE_A_RAW_BEHAVIOR_END\n"
+            ),
+            marker("original", -1) + valid["stdout"],
         ):
             parsed, evidence = _parse_raw_behavior_output(
                 {**valid, "stdout": malformed},
@@ -54,7 +74,71 @@ class StageASideExtractionIntegrationTests(StageARelationalTestBase):
                 expected={0},
             )
             self.assertIsNone(parsed)
-            self.assertIn(evidence["status"], {"malformed_output", "unsupported"})
+            self.assertEqual(evidence["status"], "malformed_output")
+
+        canonicalized, _ = _parse_raw_behavior_output(
+            {
+                **valid,
+                "stdout": marker(
+                    "original",
+                    0,
+                    "some  { outcome :=\n\t none }",
+                ),
+            },
+            side="original",
+            expected={0},
+        )
+        self.assertEqual(
+            (canonicalized or {})[0].encode("utf-8"),
+            b"{ outcome := none }",
+        )
+
+    def test_raw_output_protocol_identity_binds_python_behavior(self):
+        baseline = _raw_behavior_output_protocol_sha256()
+        getsource = inspect.getsource
+        for changed_function in (
+            _parse_raw_behavior_output,
+            _canonicalize_raw_behavior_term,
+        ):
+
+            def changed_source(function, *, changed=changed_function):
+                source = getsource(function)
+                return source + "\n# changed\n" if function is changed else source
+
+            with patch(
+                "spaghetti_extractor.relational.extraction.inspect.getsource",
+                side_effect=changed_source,
+            ):
+                self.assertNotEqual(
+                    _raw_behavior_output_protocol_sha256(),
+                    baseline,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for module in RELATIONAL_ANALYSIS_KERNEL_MODULES:
+                (root / f"{module}.lean").write_text(
+                    f"def {module.lower()}Version := 1\n",
+                    encoding="utf-8",
+                )
+            arguments = {
+                "lean_root": root,
+                "driver_sha256": "a" * 64,
+                "lean_toolchain": "Lean test-v1",
+            }
+            with patch(
+                "spaghetti_extractor.relational.extraction."
+                "_raw_behavior_output_protocol_sha256",
+                return_value="b" * 64,
+            ):
+                initial = _raw_extraction_semantics_sha256(**arguments)
+            with patch(
+                "spaghetti_extractor.relational.extraction."
+                "_raw_behavior_output_protocol_sha256",
+                return_value="c" * 64,
+            ):
+                changed = _raw_extraction_semantics_sha256(**arguments)
+            self.assertNotEqual(changed, initial)
 
     def test_normalization_pack_output_rejects_duplicate_and_missing_rows(self):
         def marker(side: str, index: int) -> str:
