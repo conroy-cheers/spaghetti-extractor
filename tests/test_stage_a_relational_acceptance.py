@@ -5890,6 +5890,7 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
                 "stage-a-relational-register-relations-v1",
             )
             self.assertTrue(register_relations["converged"])
+            self.assertTrue(register_relations["dataflow_complete"])
             self.assertEqual(
                 register_relations["trust"]["role"],
                 "analysis_and_proof_proposal_only",

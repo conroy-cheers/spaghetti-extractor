@@ -104,6 +104,18 @@ tree. `build/` contains disposable or explicitly exported work products and
 must never be an implicit proof input. Large generated Ghidra/skeleton data is
 reused by content hash and regenerated only when its own inputs change.
 
+Nix executables are phase-scoped. `spaghetti-extractor-mapping` owns static
+maps and relation contracts, `spaghetti-extractor-side` owns side-local
+extraction, `spaghetti-extractor-normalize` owns pair normalization,
+`spaghetti-extractor-region-facts` owns immutable region-local proposals,
+`spaghetti-extractor-analysis` owns global analysis, and
+`spaghetti-extractor-preparation` owns generated Lean sources and the module
+graph. Fixture derivations must use the narrowest executable. The general CLI
+is a user-facing facade, not an acceptable build dependency for an isolated
+phase. Source-boundary checks enforce the dependency direction so an analysis
+or proof-generator edit cannot invalidate mapping, extraction, or
+normalization merely because those commands once shared a Python package.
+
 Static behavior extraction is side-local and precedes relation synthesis. Each
 binary emits a strict executable inventory, raw behavior artifact, and ISA
 artifact without consuming the other binary or a relation contract. Raw
@@ -138,10 +150,20 @@ to global dataflow, diagnostics, graph construction, or proof generation must
 therefore consume the existing artifact instead of replaying region-local
 analysis.
 
-The remaining global state analysis is transitional. Its register, callsite,
-stack, static-memory, dynamic-range, and indirect-control feedback loops must be
-replaced by bottom-rooted monotone propagation over stable region identities.
-Once the least fixed point is independent of traversal history, SCC summaries
-become immutable artifacts keyed by local transfer functions and incoming SCC
-summaries. Cache entries remain untrusted proposals; Lean reconnects every
-accepted claim to the exact image bytes and checked whole-program graph.
+Register analysis now uses bottom-rooted monotone propagation. Declared launch
+roots begin exact, protocol callback entries begin related, and disconnected
+source SCCs begin conservatively related so every mapped region is analyzed
+without inventing exact state. The artifact distinguishes this complete
+analysis inventory from the register graph's declared-root closure; neither is
+the authoritative behavioral reachability computed by the product graph.
+Iteration exhaustion or any unanalyzed region makes `dataflow_complete` false
+and the proposal fails closed.
+
+The remaining global state analysis is transitional. Register, callsite,
+stack, static-memory, dynamic-range, and indirect-control feedback still share
+one derivation. The next durable boundary is an immutable SCC artifact keyed by
+stable region identities, local transfer-function hashes, and incoming SCC
+summaries. A candidate change should invalidate only changed SCCs and their
+condensation-graph descendants. Cache entries remain untrusted proposals; Lean
+reconnects every accepted claim to the exact image bytes and checked
+whole-program graph.

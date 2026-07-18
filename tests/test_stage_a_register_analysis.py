@@ -552,7 +552,7 @@ class StageARegisterAnalysisTests(unittest.TestCase):
             "candidate_value": 0x12345678,
         }, second_claims)
         self.assertEqual(solver_metrics["iterations"], 3)
-        self.assertEqual(solver_metrics["transfer_evaluations"], 3)
+        self.assertEqual(solver_metrics["transfer_evaluations"], 2)
         self.assertLess(
             solver_metrics["transfer_evaluations"],
             solver_metrics["iterations"] * analysis["counts"]["regions"],
@@ -575,6 +575,203 @@ class StageARegisterAnalysisTests(unittest.TestCase):
             cached_metrics["transfer_evaluations"],
         )
         self.assertEqual(cached_metrics["transfer_cache_misses"], 0)
+
+    def test_rooted_loop_retains_fixed_code_pointer_relation(self) -> None:
+        regions = [_region(0, root=True), _region(1)]
+        first_original = _behavior({"op": "jump", "target": 1})
+        first_candidate = _behavior(
+            {"op": "jump", "target": 1}, candidate=True,
+        )
+        original_target_address = 0x401020
+        candidate_target_address = 0x501020
+        first_original["registers"]["eax"] = {
+            "op": "constant", "value": original_target_address,
+        }
+        first_candidate["registers"]["eax"] = {
+            "op": "constant", "value": candidate_target_address,
+        }
+        loop_original = _behavior({"op": "jump", "target": 1})
+        loop_candidate = _behavior(
+            {"op": "jump", "target": 1}, candidate=True,
+        )
+        contract = {
+            "code_targets": [
+                {
+                    "id": 0,
+                    "region_index": 0,
+                    "original_rva": 0x1000,
+                    "candidate_rva": 0x1000,
+                },
+                {
+                    "id": 1,
+                    "region_index": 1,
+                    "original_rva": 0x1020,
+                    "candidate_rva": 0x1020,
+                },
+            ],
+            "value_targets": [],
+            "static_word_relation_slots": [],
+            "regions": regions,
+        }
+
+        _refined, analysis = _synthesize_register_relations(
+            contract,
+            [
+                {
+                    "original_ir": first_original,
+                    "candidate_ir": first_candidate,
+                },
+                {
+                    "original_ir": loop_original,
+                    "candidate_ir": loop_candidate,
+                },
+            ],
+            original_image_base=0x400000,
+            candidate_image_base=0x500000,
+        )
+
+        loop_inputs = {
+            relation["original"]: relation
+            for relation in analysis["regions"][1]["inputs"]
+        }
+        loop_outputs = {
+            relation["original"]: relation
+            for relation in analysis["regions"][1]["outputs"]
+        }
+        expected = {
+            "original": "eax",
+            "candidate": "eax",
+            "relation": "fixed_code_pointer",
+            "target_id": 1,
+        }
+        self.assertEqual(loop_inputs["eax"], expected)
+        self.assertEqual(loop_outputs["eax"], expected)
+
+    def test_protocol_callback_target_is_a_related_root(self) -> None:
+        regions = [_region(0, root=True), _region(1)]
+        returned = {"op": "returned", "target": _input("eax")}
+        callback_original = _behavior(returned)
+        callback_candidate = _behavior(returned, candidate=True)
+        callback_original["registers"]["eax"] = {
+            "op": "constant", "value": 0,
+        }
+        callback_candidate["registers"]["eax"] = {
+            "op": "constant", "value": 0,
+        }
+        contract = {
+            "code_targets": [
+                {
+                    "id": index,
+                    "region_index": index,
+                    "original_rva": 0x1000 + index * 0x10,
+                    "candidate_rva": 0x1000 + index * 0x10,
+                }
+                for index in range(2)
+            ],
+            "value_targets": [],
+            "static_word_relation_slots": [],
+            "protocol_callback_control": {
+                "format": "stage-a-protocol-callback-control-v1",
+                "states": [{
+                    "target_id": 1,
+                    "active_frame_offset": {
+                        "original_register": "esp",
+                        "original": 0,
+                        "candidate_register": "esp",
+                        "candidate": 0,
+                    },
+                    "return_invariant": {"kind": "terminal"},
+                }],
+            },
+            "regions": regions,
+        }
+
+        _refined, analysis = _synthesize_register_relations(
+            contract,
+            [
+                {
+                    "original_ir": _behavior(returned),
+                    "candidate_ir": _behavior(returned, candidate=True),
+                },
+                {
+                    "original_ir": callback_original,
+                    "candidate_ir": callback_candidate,
+                },
+            ],
+            original_image_base=0x400000,
+            candidate_image_base=0x400000,
+        )
+
+        callback = analysis["regions"][1]
+        self.assertEqual(
+            analysis["status"], "proposal_requires_generated_lean_replay"
+        )
+        self.assertTrue(analysis["dataflow_complete"])
+        self.assertTrue(callback["analysis_reachable"])
+        self.assertTrue(callback["register_graph_rooted_reachable"])
+        callback_inputs = {
+            relation["original"]: relation for relation in callback["inputs"]
+        }
+        callback_outputs = {
+            relation["original"]: relation for relation in callback["outputs"]
+        }
+        self.assertEqual(
+            callback_inputs["ebx"]["relation"], "related_word",
+        )
+        self.assertEqual(callback_outputs["eax"], {
+            "original": "eax",
+            "candidate": "eax",
+            "relation": "fixed_word",
+            "value": 0,
+        })
+
+    def test_disconnected_source_scc_gets_conservative_entry(self) -> None:
+        returned = {"op": "returned", "target": _input("eax")}
+        loop = {"op": "jump", "target": 1}
+        contract = {
+            "code_targets": [
+                {
+                    "id": index,
+                    "region_index": index,
+                    "original_rva": 0x1000 + index * 0x10,
+                    "candidate_rva": 0x1000 + index * 0x10,
+                }
+                for index in range(2)
+            ],
+            "value_targets": [],
+            "static_word_relation_slots": [],
+            "regions": [_region(0, root=True), _region(1)],
+        }
+
+        _refined, analysis = _synthesize_register_relations(
+            contract,
+            [
+                {
+                    "original_ir": _behavior(returned),
+                    "candidate_ir": _behavior(returned, candidate=True),
+                },
+                {
+                    "original_ir": _behavior(loop),
+                    "candidate_ir": _behavior(loop, candidate=True),
+                },
+            ],
+            original_image_base=0x400000,
+            candidate_image_base=0x400000,
+        )
+
+        disconnected = analysis["regions"][1]
+        self.assertEqual(
+            analysis["status"], "proposal_requires_generated_lean_replay"
+        )
+        self.assertTrue(analysis["dataflow_complete"])
+        self.assertTrue(disconnected["analysis_reachable"])
+        self.assertFalse(disconnected["register_graph_rooted_reachable"])
+        self.assertEqual(analysis["counts"]["analyzed_regions"], 2)
+        self.assertEqual(analysis["counts"]["conservative_entry_regions"], 1)
+        self.assertTrue(all(
+            relation["relation"] == "related_word"
+            for relation in disconnected["inputs"]
+        ))
 
     def test_fixed_static_slot_output_requires_same_target_id(self) -> None:
         slot = {"relation": "fixed_code_pointer", "target_id": 7}

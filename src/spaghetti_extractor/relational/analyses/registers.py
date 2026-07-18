@@ -21,6 +21,7 @@ from .callsite import (
     propose_callsite_preserved_register_summary,
 )
 from .control import _constant_read32_address
+from .dataflow import strongly_connected_components
 from .external import _semantic_external_target_identity
 from .invariants import _semantic_edges
 from .region_local import (
@@ -1691,26 +1692,41 @@ def _synthesize_register_relations(
     launch_root_region_indices = {
         index for index, region in enumerate(regions) if bool(region.get("root"))
     }
-    for target_id_value in (refined.get("launch") or {}).get(
-        "tls_callback_target_ids", []
-    ):
-        target_id = int(target_id_value)
+
+    def region_index_for_target_id(target_id: int) -> int | None:
         matching_targets = [
             target for target in refined.get("code_targets", [])
             if int(target["id"]) == target_id
         ]
         if len(matching_targets) != 1:
-            continue
+            return None
         mapped_region_index = matching_targets[0].get("region_index")
-        region_index = (
+        return (
             int(mapped_region_index)
             if isinstance(mapped_region_index, int)
             and not isinstance(mapped_region_index, bool)
             and 0 <= mapped_region_index < len(regions)
             else region_by_id.get(target_id)
         )
+
+    for target_id_value in (refined.get("launch") or {}).get(
+        "tls_callback_target_ids", []
+    ):
+        target_id = int(target_id_value)
+        region_index = region_index_for_target_id(target_id)
         if region_index is not None:
             launch_root_region_indices.add(region_index)
+    protocol_callback_region_indices = {
+        region_index
+        for state in (refined.get("protocol_callback_control") or {}).get(
+            "states", []
+        )
+        if isinstance(state, dict)
+        and isinstance(state.get("target_id"), int)
+        and not isinstance(state.get("target_id"), bool)
+        for region_index in [region_index_for_target_id(int(state["target_id"]))]
+        if region_index is not None
+    }
     predecessors: list[
         list[
             tuple[
@@ -2092,6 +2108,31 @@ def _synthesize_register_relations(
             preserved_relations,
         ))
 
+    successor_regions: list[set[int]] = [set() for _ in regions]
+    for target_index, incoming in enumerate(predecessors):
+        for source_index, _barrier, _kind, _preserved, _results in incoming:
+            successor_regions[source_index].add(target_index)
+    components = strongly_connected_components(successor_regions)
+    declared_entry_regions = (
+        launch_root_region_indices | protocol_callback_region_indices
+    )
+    conservative_entry_regions = {
+        region
+        for component_id in components.source_component_ids
+        for component in [components.components[component_id]]
+        if declared_entry_regions.isdisjoint(component)
+        for region in component
+    }
+    rooted_reachable_regions = set(declared_entry_regions)
+    reachability_worklist = list(sorted(declared_entry_regions, reverse=True))
+    while reachability_worklist:
+        source = reachability_worklist.pop()
+        for target in sorted(successor_regions[source]):
+            if target in rooted_reachable_regions:
+                continue
+            rooted_reachable_regions.add(target)
+            reachability_worklist.append(target)
+
     register_order = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
     stack_window_input_pairs = [
         {
@@ -2114,18 +2155,37 @@ def _synthesize_register_relations(
         }
         for region in regions
     ]
-    input_kinds = [
-        {register: "exact" for register in register_order}
-        for _ in regions
+    related_seed = {register: "related_word" for register in register_order}
+    input_states: list[dict[str, RegisterRelation] | None] = []
+    for region_index in range(len(regions)):
+        seeds: list[RegisterRelation] = []
+        if region_index in launch_root_region_indices:
+            seeds.append("exact")
+        if (
+            region_index in protocol_callback_region_indices
+            or region_index in conservative_entry_regions
+        ):
+            seeds.append("related_word")
+        input_states.append(
+            {
+                register: _register_relation_join(seeds)
+                for register in register_order
+            }
+            if seeds else None
+        )
+    output_states: list[dict[str, RegisterRelation] | None] = [
+        None for _ in regions
     ]
-    output_kinds = [dict(kinds) for kinds in input_kinds]
-    output_reasons = [
-        {register: "initial_exact_candidate" for register in register_order}
-        for _ in regions
+    output_reason_states: list[dict[str, str] | None] = [
+        None for _ in regions
     ]
     max_iterations = max(1, len(regions) * len(register_order) + 1)
     converged = False
-    dirty_regions = set(range(len(regions)))
+    dirty_regions = {
+        region_index
+        for region_index, state in enumerate(input_states)
+        if state is not None
+    }
     transfer_evaluations = 0
     transfer_cache_hits = 0
     transfer_cache_misses = 0
@@ -2171,15 +2231,18 @@ def _synthesize_register_relations(
         )
         for region_index, behavior_pair in enumerate(behaviors)
     ]
-    successor_regions: list[set[int]] = [set() for _ in regions]
-    for target_index, incoming in enumerate(predecessors):
-        for source_index, _barrier, _kind, _preserved, _results in incoming:
-            successor_regions[source_index].add(target_index)
     for iteration in range(max_iterations):
-        next_outputs = [dict(row) for row in output_kinds]
-        next_reasons = [dict(row) for row in output_reasons]
+        next_outputs = [
+            None if row is None else dict(row) for row in output_states
+        ]
+        next_reasons = [
+            None if row is None else dict(row) for row in output_reason_states
+        ]
         changed_output_regions: set[int] = set()
         for region_index in sorted(dirty_regions):
+            input_kinds = input_states[region_index]
+            if input_kinds is None:
+                continue
             behavior_pair = behaviors[region_index]
             transfer_evaluations += 1
             original_registers = behavior_pair["original_ir"]["registers"]
@@ -2187,7 +2250,7 @@ def _synthesize_register_relations(
             transfer_cache_key = transfer_region_contexts[region_index] + ":" + (
                 json.dumps(
                     [
-                        _register_relation_key(input_kinds[region_index][register])
+                        _register_relation_key(input_kinds[register])
                         for register in register_order
                     ],
                     separators=(",", ":"),
@@ -2227,7 +2290,7 @@ def _synthesize_register_relations(
                         _infer_register_output_relation(
                             original_registers[register],
                             candidate_registers[candidate_register],
-                            input_kinds[region_index],
+                            input_kinds,
                             refined,
                             original_image_base,
                             candidate_image_base,
@@ -2248,52 +2311,71 @@ def _synthesize_register_relations(
                         },
                         dict(reasons),
                     )
-            if kinds != output_kinds[region_index]:
+            previous_output = output_states[region_index]
+            if previous_output is not None:
+                joined_kinds = {
+                    register: _register_relation_join([
+                        previous_output[register], kinds[register],
+                    ])
+                    for register in register_order
+                }
+                for register in register_order:
+                    if joined_kinds[register] != kinds[register]:
+                        reasons[register] = "monotone_transfer_widening"
+                kinds = joined_kinds
+            if kinds != previous_output:
                 changed_output_regions.add(region_index)
             next_outputs[region_index] = kinds
             next_reasons[region_index] = reasons
 
-        next_inputs = [dict(row) for row in input_kinds]
-        affected_inputs = (
-            set(range(len(regions)))
-            if iteration == 0
-            else {
-                target_index
-                for source_index in changed_output_regions
-                for target_index in successor_regions[source_index]
-            }
-        )
+        next_inputs = [
+            None if row is None else dict(row) for row in input_states
+        ]
+        affected_inputs = {
+            target_index
+            for source_index in changed_output_regions
+            for target_index in successor_regions[source_index]
+        }
         changed_input_regions: set[int] = set()
         for region_index in sorted(affected_inputs):
             region = regions[region_index]
             incoming = predecessors[region_index]
-            kinds: dict[str, RegisterRelation] = {}
+            kinds: dict[str, RegisterRelation] | None = None
             for register in register_order:
                 candidates: list[RegisterRelation] = []
                 if region_index in launch_root_region_indices:
                     candidates.append("exact")
+                if region_index in protocol_callback_region_indices:
+                    candidates.append("related_word")
+                if region_index in conservative_entry_regions:
+                    candidates.append("related_word")
                 for source_index, barrier, kind, preserved, results in incoming:
+                    source_output = next_outputs[source_index]
+                    if source_output is None:
+                        continue
                     candidates.append(
-                        next_outputs[source_index][register]
+                        source_output[register]
                         if kind == "internal_callsite_preservation_summary"
                         and register in preserved
                         and register in results
                         and _register_relation_key(
-                            next_outputs[source_index][register]
+                            source_output[register]
                         ) == _register_relation_key(results[register])
                         else "related_word"
                         if kind == "internal_callsite_preservation_summary"
                         else
-                        next_outputs[source_index][register]
+                        source_output[register]
                         if not barrier
                         else results[register]
                         if register in results
-                        else next_outputs[source_index][register]
+                        else source_output[register]
                         if register in preserved
                         else "related_word"
                     )
                 if not candidates:
-                    candidates.append("related_word")
+                    continue
+                if kinds is None:
+                    kinds = {}
                 kinds[register] = _register_relation_join(candidates)
                 candidate_register = input_pair_candidates[region_index].get(register)
                 if (
@@ -2304,16 +2386,18 @@ def _synthesize_register_relations(
                     # A stack window relates offsets inside paired concrete
                     # ranges; it does not imply literal register equality.
                     kinds[register] = "related_word"
-            if kinds != input_kinds[region_index]:
+            if kinds is not None and len(kinds) != len(register_order):
+                raise AssertionError("reachable register state is incomplete")
+            if kinds != input_states[region_index]:
                 changed_input_regions.add(region_index)
             next_inputs[region_index] = kinds
         if not changed_input_regions and not changed_output_regions:
-            output_reasons = next_reasons
+            output_reason_states = next_reasons
             converged = True
             break
-        input_kinds = next_inputs
-        output_kinds = next_outputs
-        output_reasons = next_reasons
+        input_states = next_inputs
+        output_states = next_outputs
+        output_reason_states = next_reasons
         dirty_regions = changed_input_regions
     else:
         iteration = max_iterations - 1
@@ -2325,6 +2409,27 @@ def _synthesize_register_relations(
             "transfer_cache_hits": transfer_cache_hits,
             "transfer_cache_misses": transfer_cache_misses,
         })
+
+    analyzed_regions = {
+        region_index
+        for region_index, state in enumerate(input_states)
+        if state is not None
+    }
+    input_kinds = [
+        dict(state) if state is not None else dict(related_seed)
+        for state in input_states
+    ]
+    output_kinds = [
+        dict(state) if state is not None else dict(related_seed)
+        for state in output_states
+    ]
+    output_reasons = [
+        dict(reasons) if reasons is not None else {
+            register: "unreachable_from_declared_roots"
+            for register in register_order
+        }
+        for reasons in output_reason_states
+    ]
 
     relation_rows: list[dict[str, Any]] = []
     exact_claims = 0
@@ -2495,6 +2600,10 @@ def _synthesize_register_relations(
         relation_rows.append({
             "region_id": region["id"],
             "region_index": region_index,
+            "analysis_reachable": region_index in analyzed_regions,
+            "register_graph_rooted_reachable": (
+                region_index in rooted_reachable_regions
+            ),
             "inputs": region["input_relations"],
             "outputs": region["output_relations"],
             "runtime_frame_inputs": json.loads(json.dumps(
@@ -2633,6 +2742,17 @@ def _synthesize_register_relations(
     )
     counts = {
         "regions": len(regions),
+        "dataflow_sccs": len(components.components),
+        "dataflow_source_sccs": len(components.source_component_ids),
+        "conservative_entry_regions": len(conservative_entry_regions),
+        "analyzed_regions": len(analyzed_regions),
+        "register_graph_rooted_reachable_regions": len(
+            rooted_reachable_regions
+        ),
+        "register_graph_rooted_reachable_edges": sum(
+            int(edge["source_region_index"]) in rooted_reachable_regions
+            for edge in edges
+        ),
         "direct_edges": len(edges),
         "exact_input_relations": sum(
             _register_relation_kind(kind) == "exact"
@@ -2727,11 +2847,17 @@ def _synthesize_register_relations(
         "exact_pair_edge_claims": exact_pair_edge_claims,
         "edges_with_exact_pair_claims": edges_with_exact_pair_claims,
     }
+    dataflow_complete = converged and len(analyzed_regions) == len(regions)
     artifact = {
         "format": "stage-a-relational-register-relations-v1",
-        "status": "proposal_requires_generated_lean_replay",
+        "status": (
+            "proposal_requires_generated_lean_replay"
+            if dataflow_complete
+            else "incomplete"
+        ),
         "model": STAGE_A_RELATIONAL_MODEL_ID,
         "converged": converged,
+        "dataflow_complete": dataflow_complete,
         "iterations": iteration + 1,
         "relation_kinds": sorted(_REGISTER_RELATION_KINDS),
         "trust": {

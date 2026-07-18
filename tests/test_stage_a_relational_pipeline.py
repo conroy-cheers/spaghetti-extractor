@@ -762,8 +762,10 @@ class StageARelationalPipelineTests(StageARelationalTestBase):
             self.assertIn("behaviorWritesEquivalent", proof)
             self.assertIn("behaviorOutcomeEquivalent", proof)
             self.assertIn("behaviorsEquivalent_of_components", proof)
+            self.assertIn("behaviorsEquivalent_of_normalized_components", proof)
+            self.assertIn("region1NormalizedBehavior", proof)
+            self.assertIn("region2CheckedDirectBehavior", proof)
             self.assertIn("OutcomeConditionWithin", definitions)
-            self.assertNotIn("region0NormalizedBehavior", proof)
 
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for cross-region flag execution")
     def test_logical_execution_carries_computed_flags_into_the_next_region(self):

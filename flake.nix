@@ -127,6 +127,7 @@
             ./src/spaghetti_extractor/relational/analyses/__init__.py
             ./src/spaghetti_extractor/relational/analyses/callsite.py
             ./src/spaghetti_extractor/relational/analyses/control.py
+            ./src/spaghetti_extractor/relational/analyses/dataflow.py
             ./src/spaghetti_extractor/relational/analyses/external.py
             ./src/spaghetti_extractor/relational/analyses/invariants.py
             ./src/spaghetti_extractor/relational/analyses/memory.py
@@ -158,6 +159,35 @@
             text = ''
               export PYTHONPATH="${spaghettiExtractorAnalysisSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
               exec python -m spaghetti_extractor.relational.analysis_cli "$@"
+            '';
+          };
+          spaghettiExtractorPreparationPythonFiles =
+            spaghettiExtractorAnalysisPythonFiles ++ [
+              ./src/spaghetti_extractor/relational/build.py
+              ./src/spaghetti_extractor/relational/preparation_cli.py
+              ./src/spaghetti_extractor/relational/analyses/callbacks.py
+              ./src/spaghetti_extractor/relational/analyses/frames.py
+              ./src/spaghetti_extractor/relational/lean/acceptance.py
+              ./src/spaghetti_extractor/relational/lean/callbacks.py
+              ./src/spaghetti_extractor/relational/lean/composition.py
+              ./src/spaghetti_extractor/relational/lean/definitions.py
+              ./src/spaghetti_extractor/relational/lean/generation.py
+              ./src/spaghetti_extractor/relational/lean/scanner.py
+              ./src/spaghetti_extractor/relational/lean/segments.py
+            ];
+          spaghettiExtractorPreparationSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              (pkgs.lib.fileset.unions spaghettiExtractorPreparationPythonFiles)
+              ./src/spaghetti_extractor/lean/StageA
+            ];
+          };
+          spaghetti-extractor-preparation = pkgs.writeShellApplication {
+            name = "spaghetti-extractor-preparation";
+            runtimeInputs = [ pythonEnv pkgs.lean4 ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorPreparationSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.preparation_cli "$@"
             '';
           };
           spaghettiExtractorRegionFactsPythonFiles = [
@@ -342,11 +372,22 @@
               test ! -e "$source/stage_b.py"
               test ! -e "$source/relational/build.py"
               test ! -e "$source/relational/executor.py"
+              test ! -e "$source/relational/preparation_cli.py"
               test ! -e "$source/relational/proof_diagnostics.py"
               test ! -e "$source/relational/lean/acceptance.py"
               test ! -e "$source/relational/lean/generation.py"
               test ! -e "$source/relational/lean/segments.py"
               test "$(find "$source/lean/StageA" -type f -name '*.lean' | wc -l)" -eq 8
+              preparation="${spaghettiExtractorPreparationSource}/src/spaghetti_extractor"
+              test -f "$preparation/relational/build.py"
+              test -f "$preparation/relational/preparation_cli.py"
+              test -f "$preparation/relational/lean/generation.py"
+              test -f "$preparation/relational/lean/acceptance.py"
+              test ! -e "$preparation/cli.py"
+              test ! -e "$preparation/stage_b.py"
+              test ! -e "$preparation/relational/executor.py"
+              test "$(find "$preparation/lean/StageA" -type f -name '*.lean' | wc -l)" -eq 22
+              ${spaghetti-extractor-preparation}/bin/spaghetti-extractor-preparation --help >/dev/null
               side="${spaghettiExtractorSideSource}/src/spaghetti_extractor"
               test -f "$side/relational/side_extraction.py"
               test -f "$side/relational/binary_inventory.py"
@@ -939,12 +980,12 @@
           };
           stage-a-exit-static-map = pkgs.runCommand "stage-a-exit-static-map"
             {
-              nativeBuildInputs = [ spaghetti-extractor-core ];
+              nativeBuildInputs = [ spaghetti-extractor-mapping ];
             }
             ''
               fixture_dir="${stage-a-exit-fixtures}/share/spaghetti-extractor/stage-a-fixtures/exit-distinct"
               mkdir -p "$out"
-              spaghetti-extractor stage-a-generate-map \
+              spaghetti-extractor-mapping generate-map \
                 --original "$fixture_dir/exit-original.exe" \
                 --candidate "$fixture_dir/exit-candidate.exe" \
                 --linker-map-original "$fixture_dir/exit-original.map" \
@@ -957,12 +998,12 @@
             '';
           stage-a-exit-relation-contract = pkgs.runCommand "stage-a-exit-relation-contract"
             {
-              nativeBuildInputs = [ spaghetti-extractor-core ];
+              nativeBuildInputs = [ spaghetti-extractor-mapping ];
             }
             ''
               fixture_dir="${stage-a-exit-fixtures}/share/spaghetti-extractor/stage-a-fixtures/exit-distinct"
               mkdir -p "$out"
-              spaghetti-extractor stage-a-generate-relation-contract \
+              spaghetti-extractor-mapping generate-relation-contract \
                 --original "$fixture_dir/exit-original.exe" \
                 --candidate "$fixture_dir/exit-candidate.exe" \
                 --mapping "${stage-a-exit-static-map}/exit-block-map.json" \
@@ -972,7 +1013,7 @@
             '';
           stage-a-exit-prepared-proof = pkgs.runCommand "stage-a-exit-prepared-proof"
             {
-              nativeBuildInputs = [ spaghetti-extractor-core pkgs.lean4 ];
+              nativeBuildInputs = [ spaghetti-extractor-preparation ];
             }
             ''
               fixture_dir="${stage-a-exit-fixtures}/share/spaghetti-extractor/stage-a-fixtures/exit-distinct"
@@ -981,7 +1022,7 @@
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=4
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/cache" \
-                spaghetti-extractor stage-a-prepare-relational \
+                spaghetti-extractor-preparation prepare-relational \
                   --original "$fixture_dir/exit-original.exe" \
                   --candidate "$fixture_dir/exit-candidate.exe" \
                   --relation-contract "${stage-a-exit-relation-contract}/exit-relation-contract.json" \
@@ -1077,12 +1118,12 @@
           stage-a-winapi-hello-static-map =
             pkgs.runCommand "stage-a-winapi-hello-static-map"
               {
-                nativeBuildInputs = [ spaghetti-extractor-core ];
+                nativeBuildInputs = [ spaghetti-extractor-mapping ];
               }
               ''
                 fixture_dir="${stage-a-winapi-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/winapi-hello"
                 mkdir -p "$out"
-                spaghetti-extractor stage-a-generate-map \
+                spaghetti-extractor-mapping generate-map \
                   --original "$fixture_dir/hello-original.exe" \
                   --candidate "$fixture_dir/hello-candidate.exe" \
                   --linker-map-original "$fixture_dir/hello-original.map" \
@@ -1096,12 +1137,12 @@
           stage-a-winapi-hello-relation-contract =
             pkgs.runCommand "stage-a-winapi-hello-relation-contract"
               {
-                nativeBuildInputs = [ spaghetti-extractor-core ];
+                nativeBuildInputs = [ spaghetti-extractor-mapping ];
               }
               ''
                 fixture_dir="${stage-a-winapi-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/winapi-hello"
                 mkdir -p "$out"
-                spaghetti-extractor stage-a-generate-relation-contract \
+                spaghetti-extractor-mapping generate-relation-contract \
                   --original "$fixture_dir/hello-original.exe" \
                   --candidate "$fixture_dir/hello-candidate.exe" \
                   --mapping "${stage-a-winapi-hello-static-map}/hello-block-map.json" \
@@ -1112,7 +1153,7 @@
           stage-a-winapi-hello-prepared-proof =
             pkgs.runCommand "stage-a-winapi-hello-prepared-proof"
               {
-                nativeBuildInputs = [ spaghetti-extractor-core pkgs.lean4 ];
+                nativeBuildInputs = [ spaghetti-extractor-preparation ];
               }
               ''
                 fixture_dir="${stage-a-winapi-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/winapi-hello"
@@ -1121,7 +1162,7 @@
                 export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
                 export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=8
                 SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/cache" \
-                  spaghetti-extractor stage-a-prepare-relational \
+                  spaghetti-extractor-preparation prepare-relational \
                     --original "$fixture_dir/hello-original.exe" \
                     --candidate "$fixture_dir/hello-candidate.exe" \
                     --relation-contract "${stage-a-winapi-hello-relation-contract}/hello-relation-contract.json" \
@@ -1735,8 +1776,7 @@
           stage-a-gnu-hello-preflight = pkgs.runCommand "stage-a-gnu-hello-preflight"
             {
               nativeBuildInputs = [
-                spaghetti-extractor-core
-                pkgs.lean4
+                spaghetti-extractor-preparation
                 pkgs.jq
               ];
             }
@@ -1744,7 +1784,7 @@
               work="$TMPDIR/stage-a-gnu-hello"
               mkdir -p "$work"
               set +e
-              spaghetti-extractor stage-a-generate-relational \
+              spaghetti-extractor-preparation generate-relational \
                   --analysis "${stage-a-gnu-hello-analysis}/analysis" \
                   --out "$work/relational-v3" \
                   > "$work/relational-v3.stdout" \
@@ -1860,12 +1900,12 @@
             '';
           stage-a-minimal-hello-static-map = pkgs.runCommand "stage-a-minimal-hello-static-map"
             {
-              nativeBuildInputs = [ spaghetti-extractor-core ];
+              nativeBuildInputs = [ spaghetti-extractor-mapping ];
             }
             ''
               fixture_dir="${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment"
               mkdir -p "$out"
-              spaghetti-extractor stage-a-generate-map \
+              spaghetti-extractor-mapping generate-map \
                 --original "$fixture_dir/hello-original.exe" \
                 --candidate "$fixture_dir/hello-candidate.exe" \
                 --linker-map-original "$fixture_dir/hello-original.map" \
@@ -1878,12 +1918,12 @@
             '';
           stage-a-minimal-hello-relation-contract = pkgs.runCommand "stage-a-minimal-hello-relation-contract"
             {
-              nativeBuildInputs = [ spaghetti-extractor-core ];
+              nativeBuildInputs = [ spaghetti-extractor-mapping ];
             }
             ''
               fixture_dir="${stage-a-minimal-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/minimal-hello-o2-alignment"
               mkdir -p "$out"
-              spaghetti-extractor stage-a-generate-relation-contract \
+              spaghetti-extractor-mapping generate-relation-contract \
                 --original "$fixture_dir/hello-original.exe" \
                 --candidate "$fixture_dir/hello-candidate.exe" \
                 --mapping "${stage-a-minimal-hello-static-map}/hello-block-map.json" \
@@ -1895,8 +1935,7 @@
           stage-a-minimal-hello-prepared-proof = pkgs.runCommand "stage-a-minimal-hello-prepared-proof"
             {
               nativeBuildInputs = [
-                spaghetti-extractor-core
-                pkgs.lean4
+                spaghetti-extractor-preparation
               ];
             }
             ''
@@ -1908,7 +1947,7 @@
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_LAUNCH_CHECK_CHUNK=1024
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_STATIC_CODE_MAP_NIX_PACK_MODULES=4
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
-                spaghetti-extractor stage-a-prepare-relational \
+                spaghetti-extractor-preparation prepare-relational \
                   --original "$fixture_dir/hello-original.exe" \
                   --candidate "$fixture_dir/hello-candidate.exe" \
                   --relation-contract "${stage-a-minimal-hello-relation-contract}/hello-relation-contract.json" \
@@ -1989,13 +2028,13 @@
           stage-a-jq-static-map = pkgs.runCommand "stage-a-jq-static-map"
             {
               nativeBuildInputs = [
-                spaghetti-extractor-core
+                spaghetti-extractor-mapping
               ];
             }
             ''
               fixture_dir="${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
               mkdir -p "$out"
-              spaghetti-extractor stage-a-generate-map \
+              spaghetti-extractor-mapping generate-map \
                 --original "$fixture_dir/jq-original.exe" \
                 --candidate "$fixture_dir/jq-candidate.exe" \
                 --linker-map-original "$fixture_dir/jq-original.map" \
@@ -2009,13 +2048,13 @@
           stage-a-jq-relation-contract = pkgs.runCommand "stage-a-jq-relation-contract"
             {
               nativeBuildInputs = [
-                spaghetti-extractor-core
+                spaghetti-extractor-mapping
               ];
             }
             ''
               fixture_dir="${stage-a-jq-fixtures}/share/spaghetti-extractor/stage-a-fixtures/jq-o2-alignment"
               mkdir -p "$out"
-              spaghetti-extractor stage-a-generate-relation-contract \
+              spaghetti-extractor-mapping generate-relation-contract \
                 --original "$fixture_dir/jq-original.exe" \
                 --candidate "$fixture_dir/jq-candidate.exe" \
                 --mapping "${stage-a-jq-static-map}/jq-block-map.json" \
@@ -2027,8 +2066,7 @@
           stage-a-jq-prepared-proof = pkgs.runCommand "stage-a-jq-prepared-proof"
             {
               nativeBuildInputs = [
-                spaghetti-extractor-core
-                pkgs.lean4
+                spaghetti-extractor-preparation
               ];
             }
             ''
@@ -2038,7 +2076,7 @@
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
-                spaghetti-extractor stage-a-prepare-relational \
+                spaghetti-extractor-preparation prepare-relational \
                   --original "$fixture_dir/jq-original.exe" \
                   --candidate "$fixture_dir/jq-candidate.exe" \
                   --relation-contract "${stage-a-jq-relation-contract}/jq-relation-contract.json" \
@@ -2721,6 +2759,7 @@
             spaghetti-extractor-analysis
             spaghetti-extractor-mapping
             spaghetti-extractor-normalize
+            spaghetti-extractor-preparation
             spaghetti-extractor-region-facts
             spaghetti-extractor-side
             stage-a-analysis-source-boundary-check

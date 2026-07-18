@@ -204,6 +204,7 @@ def _attach_register_relation_analysis(
     proof_ir: dict[str, Any], register_relations: dict[str, Any]
 ) -> dict[str, Any]:
     counts = register_relations["counts"]
+    dataflow_complete = bool(register_relations.get("dataflow_complete", False))
     total_register_outputs = sum(
         len(region.get("outputs", []))
         for region in register_relations.get("regions", [])
@@ -215,6 +216,7 @@ def _attach_register_relation_analysis(
         "status": "incomplete",
         "analysis": {
             **counts,
+            "dataflow_complete": dataflow_complete,
             "total_register_outputs": total_register_outputs,
             "unclaimed_register_outputs": unclaimed_outputs,
             "checked_claim_types": [
@@ -231,8 +233,12 @@ def _attach_register_relation_analysis(
             ),
         },
         "blocker": (
-            f"{unclaimed_outputs} register outputs, mixed-relation direct edges, and explicit "
-            "external-environment result compatibility remain open"
+            "register dataflow did not converge over every region"
+            if not dataflow_complete
+            else (
+                f"{unclaimed_outputs} register outputs, mixed-relation direct edges, and explicit "
+                "external-environment result compatibility remain open"
+            )
         ),
         "next_action": (
             "add generic checked mapped-memory and pointer-arithmetic transfer rules, then "
