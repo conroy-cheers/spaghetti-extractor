@@ -14,6 +14,7 @@ from spaghetti_extractor.relational.isa_requirements import (
     extract_lean_instruction_forms_side,
 )
 from spaghetti_extractor.relational.pipeline import stage_a_analyze_relational
+from spaghetti_extractor.relational.region_facts import stage_a_analyze_region_facts
 from spaghetti_extractor.relational.pair_normalization import (
     stage_a_normalize_pair,
 )
@@ -263,8 +264,10 @@ class StageASideExtractionIntegrationTests(StageARelationalTestBase):
                 isa_artifacts[side] = isa_artifact
 
             split = root / "split"
+            cached = root / "cached"
             monolithic = root / "monolithic"
             normalized_behaviors = root / "normalized-behaviors.json"
+            region_facts = root / "region-facts.json"
             with patch.dict(
                 os.environ,
                 {
@@ -281,6 +284,16 @@ class StageASideExtractionIntegrationTests(StageARelationalTestBase):
                     out=normalized_behaviors,
                 )
                 self.assertEqual(normalized_result["status"], "normalized")
+                region_facts_result = stage_a_analyze_region_facts(
+                    original=original,
+                    candidate=candidate,
+                    relation_contract=contract,
+                    original_extraction=extractions["original"],
+                    candidate_extraction=extractions["candidate"],
+                    normalized_behaviors=normalized_behaviors,
+                    out=region_facts,
+                )
+                self.assertEqual(region_facts_result["status"], "analyzed")
                 split_result = stage_a_analyze_relational(
                     original=original,
                     candidate=candidate,
@@ -291,6 +304,18 @@ class StageASideExtractionIntegrationTests(StageARelationalTestBase):
                     original_isa=isa_artifacts["original"],
                     candidate_isa=isa_artifacts["candidate"],
                     out=split,
+                )
+                cached_result = stage_a_analyze_relational(
+                    original=original,
+                    candidate=candidate,
+                    relation_contract=contract,
+                    original_extraction=extractions["original"],
+                    candidate_extraction=extractions["candidate"],
+                    normalized_behaviors=normalized_behaviors,
+                    original_isa=isa_artifacts["original"],
+                    candidate_isa=isa_artifacts["candidate"],
+                    region_facts=region_facts,
+                    out=cached,
                 )
             with patch.dict(
                 os.environ,
@@ -306,7 +331,12 @@ class StageASideExtractionIntegrationTests(StageARelationalTestBase):
                     out=monolithic,
                 )
             self.assertEqual(split_result["status"], "analyzed")
+            self.assertEqual(cached_result["status"], "analyzed")
             self.assertEqual(monolithic_result["status"], "analyzed")
+            self.assertEqual(
+                sha256_file(split / "relational-analysis-manifest.json"),
+                sha256_file(cached / "relational-analysis-manifest.json"),
+            )
             for relative in (
                 "relation-contract.json",
                 "relational-decoded-behaviors.json",

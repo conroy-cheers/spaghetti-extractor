@@ -116,6 +116,9 @@
             ./src/spaghetti_extractor/relational/phases.py
             ./src/spaghetti_extractor/relational/pipeline.py
             ./src/spaghetti_extractor/relational/preflight.py
+            ./src/spaghetti_extractor/relational/region_facts.py
+            ./src/spaghetti_extractor/relational/region_facts_artifact.py
+            ./src/spaghetti_extractor/relational/region_facts_cli.py
             ./src/spaghetti_extractor/relational/schema.py
             ./src/spaghetti_extractor/relational/side_extraction.py
             ./src/spaghetti_extractor/relational/side_extraction_artifact.py
@@ -153,6 +156,61 @@
             text = ''
               export PYTHONPATH="${spaghettiExtractorAnalysisSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
               exec python -m spaghetti_extractor.relational.analysis_cli "$@"
+            '';
+          };
+          spaghettiExtractorRegionFactsPythonFiles = [
+            ./src/spaghetti_extractor/__init__.py
+            ./src/spaghetti_extractor/contract_tools.py
+            ./src/spaghetti_extractor/pe.py
+            ./src/spaghetti_extractor/stage_binary.py
+            ./src/spaghetti_extractor/util.py
+            ./src/spaghetti_extractor/relational/__init__.py
+            ./src/spaghetti_extractor/relational/artifacts.py
+            ./src/spaghetti_extractor/relational/callsite_preservation.py
+            ./src/spaghetti_extractor/relational/contract.py
+            ./src/spaghetti_extractor/relational/diagnostics.py
+            ./src/spaghetti_extractor/relational/extraction.py
+            ./src/spaghetti_extractor/relational/model.py
+            ./src/spaghetti_extractor/relational/pair_normalization.py
+            ./src/spaghetti_extractor/relational/pair_normalization_artifact.py
+            ./src/spaghetti_extractor/relational/preflight.py
+            ./src/spaghetti_extractor/relational/region_facts.py
+            ./src/spaghetti_extractor/relational/region_facts_artifact.py
+            ./src/spaghetti_extractor/relational/region_facts_cli.py
+            ./src/spaghetti_extractor/relational/schema.py
+            ./src/spaghetti_extractor/relational/side_extraction_artifact.py
+            ./src/spaghetti_extractor/relational/analyses/__init__.py
+            ./src/spaghetti_extractor/relational/analyses/callsite.py
+            ./src/spaghetti_extractor/relational/analyses/control.py
+            ./src/spaghetti_extractor/relational/analyses/external.py
+            ./src/spaghetti_extractor/relational/analyses/invariants.py
+            ./src/spaghetti_extractor/relational/analyses/memory.py
+            ./src/spaghetti_extractor/relational/analyses/registers.py
+            ./src/spaghetti_extractor/relational/analyses/segments.py
+            ./src/spaghetti_extractor/relational/analyses/stack.py
+            ./src/spaghetti_extractor/relational/lean/__init__.py
+            ./src/spaghetti_extractor/relational/lean/analysis_source.py
+            ./src/spaghetti_extractor/relational/lean/common.py
+            ./src/spaghetti_extractor/relational/lean/compiler.py
+            ./src/spaghetti_extractor/relational/lean/expressions.py
+          ];
+          spaghettiExtractorRegionFactsSource = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              (pkgs.lib.fileset.unions spaghettiExtractorRegionFactsPythonFiles)
+              (pkgs.lib.fileset.unions (
+                map
+                  (module: ./src/spaghetti_extractor/lean/StageA + "/${module}.lean")
+                  relationalAnalysisKernelModules
+              ))
+            ];
+          };
+          spaghetti-extractor-region-facts = pkgs.writeShellApplication {
+            name = "spaghetti-extractor-region-facts";
+            runtimeInputs = [ pythonEnv pkgs.lean4 ];
+            text = ''
+              export PYTHONPATH="${spaghettiExtractorRegionFactsSource}/src''${PYTHONPATH:+:$PYTHONPATH}"
+              exec python -m spaghetti_extractor.relational.region_facts_cli "$@"
             '';
           };
           spaghettiExtractorMappingPythonFiles = [
@@ -318,6 +376,16 @@
               test ! -e "$normalization/relational/phases.py"
               test ! -e "$normalization/relational/verdict.py"
               ${spaghetti-extractor-normalize}/bin/spaghetti-extractor-normalize --help >/dev/null
+              region_facts="${spaghettiExtractorRegionFactsSource}/src/spaghetti_extractor"
+              test -f "$region_facts/relational/region_facts.py"
+              test -f "$region_facts/relational/region_facts_artifact.py"
+              test -f "$region_facts/relational/region_facts_cli.py"
+              test ! -e "$region_facts/relational/pipeline.py"
+              test ! -e "$region_facts/relational/analysis.py"
+              test ! -e "$region_facts/relational/analysis_artifact.py"
+              test ! -e "$region_facts/relational/build.py"
+              test ! -e "$region_facts/relational/lean/generation.py"
+              ${spaghetti-extractor-region-facts}/bin/spaghetti-extractor-region-facts --help >/dev/null
               touch "$out"
             '';
           singlestep-80386-conformance =
@@ -1567,6 +1635,35 @@
                   (.regions | length) > 0
                 ' "$out/normalized-behaviors.json" >/dev/null
               '';
+          stage-a-gnu-hello-region-facts =
+            pkgs.runCommand "stage-a-gnu-hello-region-facts"
+              {
+                nativeBuildInputs = [
+                  spaghetti-extractor-region-facts
+                  pkgs.jq
+                ];
+              }
+              ''
+                fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
+                mkdir -p "$out"
+                if ! spaghetti-extractor-region-facts \
+                  --original "$fixture_dir/hello-original.exe" \
+                  --candidate "$fixture_dir/hello-candidate.exe" \
+                  --relation-contract "${stage-a-gnu-hello-relation-contract}/hello-relation-contract.json" \
+                  --original-extraction "${stage-a-gnu-hello-original-merged-extraction}/extraction.json" \
+                  --candidate-extraction "${stage-a-gnu-hello-candidate-merged-extraction}/extraction.json" \
+                  --normalized-behaviors "${stage-a-gnu-hello-normalized-behaviors}/normalized-behaviors.json" \
+                  --out "$out/region-facts.json" \
+                  > "$out/result.json"; then
+                  cat "$out/result.json" >&2
+                  exit 1
+                fi
+                jq -e '
+                  .format == "stage-a-relational-region-facts-v1" and
+                  .status == "untrusted_proposal_requires_global_analysis" and
+                  (.region_count > 0)
+                ' "$out/region-facts.json" >/dev/null
+              '';
           stage-a-gnu-hello-analysis = pkgs.runCommand "stage-a-gnu-hello-analysis"
             {
               nativeBuildInputs = [
@@ -1595,6 +1692,7 @@
                   --normalized-behaviors "${stage-a-gnu-hello-normalized-behaviors}/normalized-behaviors.json" \
                   --original-isa "${stage-a-gnu-hello-original-isa}/isa.json" \
                   --candidate-isa "${stage-a-gnu-hello-candidate-isa}/isa.json" \
+                  --region-facts "${stage-a-gnu-hello-region-facts}/region-facts.json" \
                   --out "$work/analysis" \
                   > "$work/analysis.stdout" \
                   2> "$work/analysis.stderr"
@@ -2618,6 +2716,7 @@
             spaghetti-extractor-analysis
             spaghetti-extractor-mapping
             spaghetti-extractor-normalize
+            spaghetti-extractor-region-facts
             spaghetti-extractor-side
             stage-a-analysis-source-boundary-check
             stage-a-isa-conformance-bochs-80386
@@ -2655,6 +2754,7 @@
             stage-a-gnu-hello-normalized-behaviors
             stage-a-gnu-hello-static-map
             stage-a-gnu-hello-relation-contract
+            stage-a-gnu-hello-region-facts
             stage-a-gnu-hello-analysis
             stage-a-gnu-hello-preflight
             stage-a-gnu-hello-launch-proof

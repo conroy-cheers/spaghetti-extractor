@@ -62,6 +62,21 @@ def _analyze_relational(args: argparse.Namespace) -> dict[str, Any]:
         normalized_behaviors=args.normalized_behaviors,
         original_isa=args.original_isa,
         candidate_isa=args.candidate_isa,
+        region_facts=args.region_facts,
+        out=args.out,
+    )
+
+
+def _analyze_region_facts(args: argparse.Namespace) -> dict[str, Any]:
+    from .region_facts import stage_a_analyze_region_facts
+
+    return stage_a_analyze_region_facts(
+        original=args.original,
+        candidate=args.candidate,
+        relation_contract=args.relation_contract,
+        original_extraction=args.original_extraction,
+        candidate_extraction=args.candidate_extraction,
+        normalized_behaviors=args.normalized_behaviors,
         out=args.out,
     )
 
@@ -81,8 +96,19 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--normalized-behaviors", type=Path)
     analyze.add_argument("--original-isa", type=Path)
     analyze.add_argument("--candidate-isa", type=Path)
+    analyze.add_argument("--region-facts", type=Path)
     analyze.add_argument("--out", type=Path, required=True)
     analyze.set_defaults(handler=_analyze_relational)
+
+    analyze_facts = commands.add_parser("analyze-region-facts")
+    analyze_facts.add_argument("--original", type=Path, required=True)
+    analyze_facts.add_argument("--candidate", type=Path, required=True)
+    analyze_facts.add_argument("--relation-contract", type=Path, required=True)
+    analyze_facts.add_argument("--original-extraction", type=Path, required=True)
+    analyze_facts.add_argument("--candidate-extraction", type=Path, required=True)
+    analyze_facts.add_argument("--normalized-behaviors", type=Path, required=True)
+    analyze_facts.add_argument("--out", type=Path, required=True)
+    analyze_facts.set_defaults(handler=_analyze_region_facts)
 
     generate_map = commands.add_parser("generate-map")
     generate_map.add_argument("--original", type=Path, required=True)

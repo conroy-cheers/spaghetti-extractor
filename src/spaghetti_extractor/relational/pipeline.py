@@ -82,6 +82,12 @@ from .analyses.external import (
 )
 from .model import _semantic_constant_word
 from .phases import CompositionProducts, ExtractedProgramPair, StateAnalysisProducts
+from .region_facts import (
+    _canonical_json_sha256,
+    analyze_relational_region_facts,
+    region_facts_semantics_sha256,
+)
+from .region_facts_artifact import RegionFactsArtifact
 from .analyses.invariants import (
     _SemanticZ3Context,
     _attach_invariant_synthesis,
@@ -540,6 +546,7 @@ def stage_a_prove_relational(
     normalized_behaviors: Path | None = None,
     original_isa: Path | None = None,
     candidate_isa: Path | None = None,
+    region_facts: Path | None = None,
     _prepare_only: bool = False,
     _analyze_only: bool = False,
 ) -> dict[str, Any]:
@@ -642,6 +649,10 @@ def stage_a_prove_relational(
         raise StageAInputError(
             "pair normalization requires both bound side extractions"
         )
+    if region_facts is not None and normalized_behaviors is None:
+        raise StageAInputError(
+            "cached region facts require a bound pair normalization artifact"
+        )
     if normalized_behaviors is not None:
         assert original_extraction is not None
         assert candidate_extraction is not None
@@ -729,36 +740,41 @@ def stage_a_prove_relational(
         extraction=extraction,
     )
     behaviors = extracted.behavior_rows()
-    normalized = _refine_contract_bounds(extracted.mutable_contract(), behaviors)
-    normalized, initial_static_code_pointer_analysis = (
-        _attach_initial_static_code_pointer_slots(
-            normalized, behaviors, original_bin, candidate_bin
+    input_contract = extracted.mutable_contract()
+    if region_facts is None:
+        local_facts = analyze_relational_region_facts(
+            original_bin=original_bin,
+            candidate_bin=candidate_bin,
+            normalized_contract=input_contract,
+            behaviors=behaviors,
         )
-    )
-    indirect_call_candidates = _immutable_indirect_call_candidates(
-        original_bin, candidate_bin, normalized, behaviors
-    )
-    table_call_proposals = _immutable_code_pointer_table_call_candidates(
-        original_bin, candidate_bin, normalized, behaviors
-    )
-    normalized = _attach_reverse_sentinel_table_value_targets(
-        original_bin, candidate_bin, normalized, table_call_proposals
-    )
-    normalized = _attach_reverse_sentinel_table_source_invariants(
-        normalized, table_call_proposals
-    )
-    dynamic_call_candidates = _dynamic_range_indirect_call_candidates(
-        normalized, behaviors
-    )
-    import_register_seeds = _iat_import_register_seed_candidates(
-        original_bin, candidate_bin, behaviors
-    )
-    normalized = _attach_import_seed_address_separations(
-        normalized, import_register_seeds
-    )
-    normalized = _attach_assembled_immutable_read_address_separations(
-        normalized, behaviors, original_bin, candidate_bin
-    )
+    else:
+        assert normalized_behaviors is not None
+        payload = _read_json(Path(region_facts))
+        artifact = RegionFactsArtifact.parse(
+            payload,
+            expected_original_sha256=original_bin.sha256,
+            expected_candidate_sha256=candidate_bin.sha256,
+            expected_input_relation_contract_sha256=(
+                _canonical_json_sha256(input_contract)
+            ),
+            expected_normalized_behaviors_sha256=(
+                sha256_file(Path(normalized_behaviors))
+            ),
+            expected_region_facts_semantics_sha256=(
+                region_facts_semantics_sha256()
+            ),
+        )
+        local_facts = artifact.mutable_payload()
+    normalized = local_facts["contract"]
+    initial_static_code_pointer_analysis = local_facts[
+        "initial_static_code_pointer_analysis"
+    ]
+    indirect_call_candidates = local_facts["indirect_call_candidates"]
+    table_call_proposals = local_facts["table_call_proposals"]
+    dynamic_call_candidates = local_facts["dynamic_call_candidates"]
+    import_register_seeds = local_facts["import_register_seeds"]
+    machine_call_analysis = local_facts["machine_call_analysis"]
     import_register_analysis = _infer_import_register_invariants(
         normalized, behaviors, import_register_seeds
     )
@@ -781,9 +797,6 @@ def stage_a_prove_relational(
     )
     normalized = _attach_import_register_invariants(
         normalized, import_register_analysis
-    )
-    normalized = _attach_return_write_address_separations(
-        normalized, behaviors, original_bin, candidate_bin
     )
     normalized, register_relations = _synthesize_register_relations(
         normalized,
@@ -918,9 +931,6 @@ def stage_a_prove_relational(
     write_json(out / "relation-contract.json", normalized)
     write_json(out / "relational-register-relations.json", register_relations)
     proof_ir = _proof_ir(original_bin, candidate_bin, normalized)
-    machine_call_analysis = _machine_import_call_contract_analysis(
-        normalized, behaviors
-    )
     write_json(out / "relational-machine-import-calls.json", machine_call_analysis)
     external_call_sites = _external_call_site_candidates(
         normalized, behaviors, register_relations,
@@ -1514,6 +1524,7 @@ def stage_a_analyze_relational(
     normalized_behaviors: Path | None = None,
     original_isa: Path | None = None,
     candidate_isa: Path | None = None,
+    region_facts: Path | None = None,
 ) -> dict[str, Any]:
     return stage_a_prove_relational(
         original=original,
@@ -1525,6 +1536,7 @@ def stage_a_analyze_relational(
         normalized_behaviors=normalized_behaviors,
         original_isa=original_isa,
         candidate_isa=candidate_isa,
+        region_facts=region_facts,
         _analyze_only=True,
     )
 

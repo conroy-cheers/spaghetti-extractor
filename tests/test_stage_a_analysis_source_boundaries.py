@@ -81,6 +81,24 @@ class AnalysisSourceBoundaryTests(unittest.TestCase):
             ),
         )
 
+    def test_region_facts_cli_does_not_import_global_or_proof_phases(self):
+        self._assert_clean_import(
+            "spaghetti_extractor.relational.region_facts_cli",
+            (
+                "spaghetti_extractor.relational.analysis",
+                "spaghetti_extractor.relational.analysis_artifact",
+                "spaghetti_extractor.relational.build",
+                "spaghetti_extractor.relational.executor",
+                "spaghetti_extractor.relational.pipeline",
+                "spaghetti_extractor.relational.verdict",
+                "spaghetti_extractor.relational.lean.acceptance",
+                "spaghetti_extractor.relational.lean.composition",
+                "spaghetti_extractor.relational.lean.definitions",
+                "spaghetti_extractor.relational.lean.generation",
+                "spaghetti_extractor.relational.lean.segments",
+            ),
+        )
+
     def test_side_cli_does_not_import_pair_or_mapping_phases(self):
         self._assert_clean_import(
             "spaghetti_extractor.relational.side_cli",
