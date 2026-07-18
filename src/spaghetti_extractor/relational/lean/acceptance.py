@@ -7005,7 +7005,43 @@ def _write_relational_acceptance_modules(
             "64",
         )),
     )
-    launch_leaf_modules: list[str] = []
+    launch_aggregation_fanout = max(
+        2,
+        int(os.environ.get(
+            "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_LAUNCH_AGGREGATION_FANOUT",
+            "8",
+        )),
+    )
+    launch_leaf_module_by_theorem: dict[str, str] = {}
+    launch_aggregation_source = (
+        "import StageA.RelationalLaunchContext\n"
+        "import StageA.RelationalStaticTree\n\n"
+        "namespace StageA.GeneratedRelational\n\n"
+        "open StageA.Formal StageA.Relational\n\n"
+        "theorem launchAllIndexedBoolRangesHold_append (predicate : Nat -> Bool) :\n"
+        "    ∀ left right,\n"
+        "      AllIndexedBoolRangesHold predicate left ->\n"
+        "      AllIndexedBoolRangesHold predicate right ->\n"
+        "      AllIndexedBoolRangesHold predicate (left ++ right) := by\n"
+        "  intro left\n"
+        "  induction left with\n"
+        "  | nil =>\n"
+        "      intro right _ rightHolds\n"
+        "      simpa [AllIndexedBoolRangesHold] using rightHolds\n"
+        "  | cons span spans ih =>\n"
+        "      intro right leftHolds rightHolds\n"
+        "      change IndexedBoolRangeHolds predicate span ∧\n"
+        "        AllIndexedBoolRangesHold predicate spans at leftHolds\n"
+        "      change IndexedBoolRangeHolds predicate span ∧\n"
+        "        AllIndexedBoolRangesHold predicate (spans ++ right)\n"
+        "      exact And.intro leftHolds.1\n"
+        "        (ih right leftHolds.2 rightHolds)\n\n"
+        "end StageA.GeneratedRelational\n"
+    )
+    _write_text_if_changed(
+        stage_a / "RelationalLaunchProofAggregation.lean",
+        launch_aggregation_source,
+    )
 
     def write_launch_span_leaves(
         *,
@@ -7042,7 +7078,7 @@ def _write_relational_acceptance_modules(
                 source_rows.append("end StageA.GeneratedRelational\n")
                 source = "".join(source_rows)
                 _write_text_if_changed(stage_a / f"{module}.lean", source)
-                launch_leaf_modules.append(module)
+                launch_leaf_module_by_theorem[theorem_name] = module
                 checked_ranges.append((theorem_name, start, count))
                 leaf_index += 1
             checked_spans.append((span_start, span_size, checked_ranges))
@@ -7194,7 +7230,7 @@ def _write_relational_acceptance_modules(
                     _write_text_if_changed(
                         stage_a / f"{module}.lean", "".join(source_rows)
                     )
-                    launch_leaf_modules.append(module)
+                    launch_leaf_module_by_theorem[theorem_name] = module
                     checked_ranges.append((theorem_name, start, count))
                     leaf_index += 1
             checked_spans.append((span_start, span_size, checked_ranges))
@@ -7225,31 +7261,6 @@ def _write_relational_acceptance_modules(
             f"{{ ranges := [{span_rows}] }}\n\n"
         )
 
-    def combined_span_proof(
-        predicate: str, chunks: list[tuple[str, int, int]]
-    ) -> str:
-        if not chunks:
-            raise StageAInputError("mapped launch span cannot be empty")
-        proof, start, size = chunks[0]
-        for next_proof, next_start, next_size in chunks[1:]:
-            proof = (
-                f"indexedBoolRangeHolds_append {predicate} "
-                f"{{ start := {start}, size := {size} }} "
-                f"{{ start := {next_start}, size := {next_size} }} "
-                f"(by decide) ({proof}) ({next_proof})"
-            )
-            size += next_size
-        return proof
-
-    def mapped_spans_proof(
-        predicate: str,
-        spans: list[tuple[int, int, list[tuple[str, int, int]]]],
-    ) -> str:
-        return _lean_all_listed_proof([
-            combined_span_proof(predicate, chunks)
-            for _start, _size, chunks in spans
-        ])
-
     def lean_span_list(
         spans: list[tuple[int, int, list[tuple[str, int, int]]]],
     ) -> str:
@@ -7258,18 +7269,245 @@ def _write_relational_acceptance_modules(
             for start, size, _chunks in spans
         ) + "]"
 
-    candidate_image_range_proof = mapped_spans_proof(
-        "consoleLaunchCandidateImageCompatibilityAt", candidate_image_spans
+    def launch_range_leaf(
+        theorem: str, start: int, size: int
+    ) -> dict[str, Any]:
+        module = launch_leaf_module_by_theorem.get(theorem)
+        if module is None:
+            raise StageAInputError(
+                f"launch proof leaf {theorem} has no generated module"
+            )
+        return {
+            "module": module,
+            "theorem": theorem,
+            "start": start,
+            "size": size,
+        }
+
+    def write_contiguous_launch_aggregation(
+        *,
+        module_prefix: str,
+        theorem_prefix: str,
+        predicate: str,
+        chunks: list[tuple[str, int, int]],
+        expected_start: int,
+        expected_size: int,
+    ) -> dict[str, Any]:
+        if not chunks:
+            raise StageAInputError("mapped launch span cannot be empty")
+        nodes = [
+            launch_range_leaf(theorem, start, size)
+            for theorem, start, size in chunks
+        ]
+        cursor = expected_start
+        for node in nodes:
+            if int(node["start"]) != cursor or int(node["size"]) <= 0:
+                raise StageAInputError(
+                    "mapped launch proof chunks are not an exact contiguous span"
+                )
+            cursor += int(node["size"])
+        if cursor != expected_start + expected_size:
+            raise StageAInputError(
+                "mapped launch proof chunks do not cover the expected span"
+            )
+
+        level = 0
+        while len(nodes) > 1:
+            next_nodes: list[dict[str, Any]] = []
+            for group_offset in range(0, len(nodes), launch_aggregation_fanout):
+                group = nodes[
+                    group_offset : group_offset + launch_aggregation_fanout
+                ]
+                if len(group) == 1:
+                    next_nodes.append(group[0])
+                    continue
+                node_index = group_offset // launch_aggregation_fanout
+                module = f"{module_prefix}Level{level}Node{node_index}"
+                imports = "\n".join(
+                    f"import StageA.{name}"
+                    for name in dict.fromkeys([
+                        "RelationalLaunchProofAggregation",
+                        *(str(child["module"]) for child in group),
+                    ])
+                )
+                definitions: list[str] = []
+                current = group[0]
+                for merge_index, right in enumerate(group[1:], 1):
+                    start = int(current["start"])
+                    size = int(current["size"])
+                    right_start = int(right["start"])
+                    right_size = int(right["size"])
+                    if right_start != start + size or right_size <= 0:
+                        raise StageAInputError(
+                            "mapped launch proof chunks are not adjacent"
+                        )
+                    theorem = (
+                        f"{theorem_prefix}Level{level}Node{node_index}"
+                        f"Step{merge_index}Checked"
+                    )
+                    definitions.append(
+                        f"theorem {theorem} :\n"
+                        f"    IndexedBoolRangeHolds {predicate} "
+                        f"{{ start := {start}, size := {size + right_size} }} :=\n"
+                        f"  indexedBoolRangeHolds_append {predicate}\n"
+                        f"    {{ start := {start}, size := {size} }}\n"
+                        f"    {{ start := {right_start}, size := {right_size} }}\n"
+                        f"    (by decide) {current['theorem']} {right['theorem']}"
+                    )
+                    current = {
+                        "module": module,
+                        "theorem": theorem,
+                        "start": start,
+                        "size": size + right_size,
+                    }
+                source = (
+                    imports
+                    + "\n\nnamespace StageA.GeneratedRelational\n\n"
+                    "open StageA.Formal StageA.Relational\n\n"
+                    "set_option maxRecDepth 1000000\n"
+                    "set_option maxHeartbeats 0\n\n"
+                    + "\n\n".join(definitions)
+                    + "\n\nend StageA.GeneratedRelational\n"
+                )
+                _write_text_if_changed(stage_a / f"{module}.lean", source)
+                next_nodes.append(current)
+            nodes = next_nodes
+            level += 1
+        return nodes[0]
+
+    def write_launch_range_list_aggregation(
+        *,
+        module_prefix: str,
+        theorem_prefix: str,
+        predicate: str,
+        nodes: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        if not nodes:
+            return {
+                "module": "RelationalLaunchProofAggregation",
+                "ranges": "[]",
+                "proof": "True.intro",
+            }
+        level = 0
+        while len(nodes) > 1:
+            next_nodes: list[dict[str, Any]] = []
+            for group_offset in range(0, len(nodes), launch_aggregation_fanout):
+                group = nodes[
+                    group_offset : group_offset + launch_aggregation_fanout
+                ]
+                if len(group) == 1:
+                    next_nodes.append(group[0])
+                    continue
+                node_index = group_offset // launch_aggregation_fanout
+                module = f"{module_prefix}Level{level}Node{node_index}"
+                imports = "\n".join(
+                    f"import StageA.{name}"
+                    for name in dict.fromkeys([
+                        "RelationalLaunchProofAggregation",
+                        *(str(child["module"]) for child in group),
+                    ])
+                )
+                definitions: list[str] = []
+                current = group[0]
+                for merge_index, right in enumerate(group[1:], 1):
+                    name = (
+                        f"{theorem_prefix}Level{level}Node{node_index}"
+                        f"Step{merge_index}"
+                    )
+                    ranges = f"{name}Ranges"
+                    proof = f"{name}Checked"
+                    definitions.extend([
+                        f"def {ranges} : List Span :=\n"
+                        f"  {current['ranges']} ++ {right['ranges']}",
+                        f"theorem {proof} :\n"
+                        f"    AllIndexedBoolRangesHold {predicate} {ranges} := by\n"
+                        f"  exact launchAllIndexedBoolRangesHold_append {predicate}\n"
+                        f"    {current['ranges']} {right['ranges']}\n"
+                        f"    ({current['proof']}) ({right['proof']})",
+                    ])
+                    current = {
+                        "module": module,
+                        "ranges": ranges,
+                        "proof": proof,
+                    }
+                source = (
+                    imports
+                    + "\n\nnamespace StageA.GeneratedRelational\n\n"
+                    "open StageA.Formal StageA.Relational\n\n"
+                    "set_option maxRecDepth 1000000\n"
+                    "set_option maxHeartbeats 0\n\n"
+                    + "\n\n".join(definitions)
+                    + "\n\nend StageA.GeneratedRelational\n"
+                )
+                _write_text_if_changed(stage_a / f"{module}.lean", source)
+                next_nodes.append(current)
+            nodes = next_nodes
+            level += 1
+        root = nodes[0]
+        return {
+            "module": str(root["module"]),
+            "ranges": str(root["ranges"]),
+            "proof": str(root["proof"]),
+        }
+
+    candidate_span_nodes: list[dict[str, Any]] = []
+    for span_index, (span_start, span_size, chunks) in enumerate(
+        candidate_image_spans
+    ):
+        span_root = write_contiguous_launch_aggregation(
+            module_prefix=(
+                f"RelationalLaunchCandidateImageSpan{span_index}Aggregate"
+            ),
+            theorem_prefix=(
+                f"consoleLaunchCandidateImageSpan{span_index}Aggregate"
+            ),
+            predicate="consoleLaunchCandidateImageCompatibilityAt",
+            chunks=chunks,
+            expected_start=span_start,
+            expected_size=span_size,
+        )
+        candidate_span_nodes.append({
+            "module": span_root["module"],
+            "ranges": f"[{{ start := {span_start}, size := {span_size} }}]",
+            "proof": f"⟨{span_root['theorem']}, True.intro⟩",
+        })
+    candidate_image_range_root = write_launch_range_list_aggregation(
+        module_prefix="RelationalLaunchCandidateImageAggregate",
+        theorem_prefix="consoleLaunchCandidateImageAggregate",
+        predicate="consoleLaunchCandidateImageCompatibilityAt",
+        nodes=candidate_span_nodes,
     )
-    stack_range_proof = _lean_all_listed_proof([
-        theorem for theorem, _start, _count in stack_ranges
-    ])
-    static_word_slot_range_proof = _lean_all_listed_proof([
-        theorem for theorem, _start, _count in static_word_slot_ranges
-    ])
+    stack_range_root = write_launch_range_list_aggregation(
+        module_prefix="RelationalLaunchStackMemoryAggregate",
+        theorem_prefix="consoleLaunchStackMemoryAggregate",
+        predicate="consoleLaunchStackMemoryAt",
+        nodes=[{
+            "module": launch_range_leaf(theorem, start, size)["module"],
+            "ranges": f"[{{ start := {start}, size := {size} }}]",
+            "proof": f"⟨{theorem}, True.intro⟩",
+        } for theorem, start, size in stack_ranges],
+    )
+    static_word_slot_range_root = write_launch_range_list_aggregation(
+        module_prefix="RelationalLaunchStaticWordSlotAggregate",
+        theorem_prefix="consoleLaunchStaticWordSlotAggregate",
+        predicate="consoleLaunchStaticWordSlotAt",
+        nodes=[{
+            "module": launch_range_leaf(theorem, start, size)["module"],
+            "ranges": f"[{{ start := {start}, size := {size} }}]",
+            "proof": f"⟨{theorem}, True.intro⟩",
+        } for theorem, start, size in static_word_slot_ranges],
+    )
+    launch_check_imports = "\n".join(
+        f"import StageA.{module}"
+        for module in dict.fromkeys([
+            str(candidate_image_range_root["module"]),
+            str(stack_range_root["module"]),
+            str(static_word_slot_range_root["module"]),
+        ])
+    )
 
     launch_checks_source = (
-        "".join(f"import StageA.{module}\n" for module in launch_leaf_modules)
+        launch_check_imports
         + "\nnamespace StageA.GeneratedRelational\n\n"
         "open StageA.Formal StageA.Relational\n\n"
         "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n"
@@ -7328,7 +7566,7 @@ def _write_relational_acceptance_modules(
         "    change AllIndexedBoolRangesHold "
         "consoleLaunchCandidateImageCompatibilityAt "
         + lean_span_list(candidate_image_spans) + "\n"
-        f"    exact {candidate_image_range_proof}\n"
+        f"    exact {candidate_image_range_root['proof']}\n"
         "  simpa [consoleLaunchCandidateImageCompatibilityAt] using rangesHold\n\n"
         "theorem consoleLaunchOriginalImmutableImage :\n"
         "    ImmutableImageWordMemory staticProofContext.originalPe\n"
@@ -7353,7 +7591,7 @@ def _write_relational_acceptance_modules(
         "  · rfl\n"
         "  · have rangesHold : AllIndexedBoolRangesHold consoleLaunchStackMemoryAt\n"
         "        consoleLaunchStackCertificate.ranges := by\n"
-        f"      exact {stack_range_proof}\n"
+        f"      exact {stack_range_root['proof']}\n"
         "    have checked := IndexedBoolCertificate.holds_of_ranges\n"
         "      consoleLaunchStackMemoryAt consoleLaunchStackRange.size\n"
         "      consoleLaunchStackCertificate (by decide) rangesHold\n"
@@ -7366,7 +7604,7 @@ def _write_relational_acceptance_modules(
         "    consoleLaunchCandidateState.memory consoleLaunchStaticWordSlotCertificate\n"
         "  have rangesHold : AllIndexedBoolRangesHold consoleLaunchStaticWordSlotAt\n"
         "      consoleLaunchStaticWordSlotCertificate.ranges := by\n"
-        f"    exact {static_word_slot_range_proof}\n"
+        f"    exact {static_word_slot_range_root['proof']}\n"
         "  have checked := IndexedBoolCertificate.holds_of_ranges\n"
         "    consoleLaunchStaticWordSlotAt staticProofContext.staticWordRelationSlots.length\n"
         "    consoleLaunchStaticWordSlotCertificate (by decide) rangesHold\n"

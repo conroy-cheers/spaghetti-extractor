@@ -8,10 +8,7 @@ from typing import Any, Mapping
 
 from ...stage_binary import StageABinary, StageAInputError
 from ...util import sha256_bytes, write_json
-from ..analyses.external import (
-    _external_call_site_candidates,
-    _semantic_external_target_identity,
-)
+from ..analyses.external import _semantic_external_target_identity
 from ..analyses.stack import _stack_window_transfer_claims
 from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..contract import _raw_base_relocations
@@ -415,7 +412,7 @@ def _write_sharded_relational_proof(
     original: bytes,
     candidate: bytes,
     contract: dict[str, Any],
-    behaviors: list[dict[str, str]],
+    behaviors: list[dict[str, Any]],
     *,
     invariant_synthesis: dict[str, Any],
     memory_contracts: dict[str, Any],
@@ -423,6 +420,7 @@ def _write_sharded_relational_proof(
     product_graph: dict[str, Any],
     import_register_seeds: list[dict[str, Any]],
     import_register_analysis: dict[str, Any],
+    external_call_sites: dict[str, Any],
     segment_candidates: list[dict[str, Any]],
     isa_requirements: Mapping[str, Any],
     replay: bool,
@@ -801,10 +799,6 @@ def _write_sharded_relational_proof(
         instruction_adequacy_source,
     )
 
-    external_call_sites = _external_call_site_candidates(
-        contract, behaviors, register_relations,
-        import_register_analysis["indirect_import_calls"],
-    )
     external_site_candidates = external_call_sites["candidates"]
     external_site_region_chunks = sorted({
         chunk_by_region
@@ -964,7 +958,7 @@ def _write_sharded_relational_proof(
             register_relations,
             product_graph,
             decode_chunk_regions,
-            import_register_analysis["indirect_import_calls"],
+            external_call_sites,
         )
     )
     _write_relational_external_jump_refinement_modules(
@@ -973,7 +967,7 @@ def _write_sharded_relational_proof(
         behaviors,
         register_relations,
         decode_chunk_regions,
-        import_register_analysis["indirect_import_calls"],
+        external_call_sites,
     )
     _write_reachable_product_local_certificate(
         lean_dir,

@@ -40,8 +40,10 @@ from .stage_b_contract import (
 from .stage_binary import StageAInputError
 from .util import sha256_file, write_json
 from .stage_a_relational import (
+    stage_a_analyze_relational,
     stage_a_build_relational,
     stage_a_check_relational_proof,
+    stage_a_generate_relational,
     stage_a_generate_relation_contract,
     stage_a_prepare_relational,
     stage_a_prove_relational,
@@ -216,6 +218,38 @@ def _build_parser(*, prog: str | None) -> argparse.ArgumentParser:
             original=args.original,
             candidate=args.candidate,
             relation_contract=args.relation_contract,
+            out=args.out,
+        )
+    )
+
+    analyze_relational = subcommands.add_parser(
+        "stage-a-analyze-relational",
+        help="emit deterministic relational analysis without Lean proof sources",
+    )
+    analyze_relational.add_argument("--original", type=Path, required=True)
+    analyze_relational.add_argument("--candidate", type=Path, required=True)
+    analyze_relational.add_argument(
+        "--relation-contract", type=Path, required=True
+    )
+    analyze_relational.add_argument("--out", type=Path, required=True)
+    analyze_relational.set_defaults(
+        func=lambda args: stage_a_analyze_relational(
+            original=args.original,
+            candidate=args.candidate,
+            relation_contract=args.relation_contract,
+            out=args.out,
+        )
+    )
+
+    generate_relational = subcommands.add_parser(
+        "stage-a-generate-relational",
+        help="generate a deterministic Lean graph from analyzed relational IR",
+    )
+    generate_relational.add_argument("--analysis", type=Path, required=True)
+    generate_relational.add_argument("--out", type=Path, required=True)
+    generate_relational.set_defaults(
+        func=lambda args: stage_a_generate_relational(
+            analysis=args.analysis,
             out=args.out,
         )
     )
@@ -902,7 +936,14 @@ def _exit_status(result: dict[str, Any]) -> int:
     status = result.get("status", result.get("verdict"))
     verdict = result.get("verdict", status)
     if status in {
-        "pass", "passed", "generated", "prepared", "checked", "complete", "detected"
+        "pass",
+        "passed",
+        "generated",
+        "prepared",
+        "analyzed",
+        "checked",
+        "complete",
+        "detected",
     }:
         return 0
     if verdict == "pass":

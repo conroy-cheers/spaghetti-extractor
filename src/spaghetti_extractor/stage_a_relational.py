@@ -380,7 +380,9 @@ from .relational.schema import (
 )
 from .relational.pipeline import (
     _run_sharded_relational,
+    stage_a_analyze_relational,
     stage_a_check_relational_proof,
+    stage_a_generate_relational,
     stage_a_prepare_relational,
     stage_a_prove_relational,
 )

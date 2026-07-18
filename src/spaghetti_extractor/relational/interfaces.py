@@ -4,6 +4,11 @@ from pathlib import Path
 from typing import Any
 
 from ..util import sha256_file, write_json
+from .analysis_artifact import (
+    RELATIONAL_ANALYSIS_FORMAT,
+    RELATIONAL_DECODED_BEHAVIORS_FORMAT,
+    RELATIONAL_SEGMENT_CANDIDATES_FORMAT,
+)
 
 from .schema import (
     EXTERNAL_ENVIRONMENT_PROFILE_FORMAT,
@@ -29,6 +34,27 @@ def stage_a_interface_manifest() -> dict[str, Any]:
             "integration_owner": "acceptance-integration",
         },
         "schemas": [
+            {
+                "id": "relational-analysis",
+                "format": RELATIONAL_ANALYSIS_FORMAT,
+                "python_boundary": (
+                    "relational.analysis_artifact.RelationalAnalysisManifest"
+                ),
+            },
+            {
+                "id": "decoded-behaviors",
+                "format": RELATIONAL_DECODED_BEHAVIORS_FORMAT,
+                "python_boundary": (
+                    "relational.analysis_artifact.parse_decoded_behaviors"
+                ),
+            },
+            {
+                "id": "segment-candidates",
+                "format": RELATIONAL_SEGMENT_CANDIDATES_FORMAT,
+                "python_boundary": (
+                    "relational.analysis_artifact.parse_segment_candidates"
+                ),
+            },
             {
                 "id": "relation-contract",
                 "format": RELATION_CONTRACT_FORMAT,
@@ -56,6 +82,27 @@ def stage_a_interface_manifest() -> dict[str, Any]:
             },
         ],
         "artifacts": [
+            {
+                "id": "relational-analysis",
+                "path": "relational-analysis-manifest.json",
+                "producer": "relational-analysis",
+                "consumers": ["lean-source-generation"],
+                "cache_boundary": True,
+            },
+            {
+                "id": "decoded-behaviors",
+                "path": "relational-decoded-behaviors.json",
+                "producer": "instruction-semantics",
+                "consumers": ["lean-source-generation"],
+                "cache_boundary": True,
+            },
+            {
+                "id": "segment-candidates",
+                "path": "relational-segment-candidates.json",
+                "producer": "control-composition",
+                "consumers": ["lean-source-generation"],
+                "cache_boundary": True,
+            },
             {
                 "id": "normalized-contract",
                 "path": "relation-contract.json",

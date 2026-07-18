@@ -8,10 +8,7 @@ from typing import Any
 
 from ...stage_binary import StageABinary, StageAInputError
 from ...util import sha256_bytes, write_json
-from ..analyses.external import (
-    _external_call_site_candidates,
-    _semantic_external_target_identity,
-)
+from ..analyses.external import _semantic_external_target_identity
 from ..analyses.stack import _stack_window_transfer_claims
 from ..artifacts import write_text_if_changed as _write_text_if_changed
 from ..contract import _raw_base_relocations
@@ -3841,11 +3838,8 @@ def _write_relational_external_call_refinement_modules(
     register_relations: dict[str, Any],
     product_graph: dict[str, Any],
     decode_chunk_regions: list[list[int]],
-    import_call_candidates: list[dict[str, Any]],
+    external_call_sites: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    analysis = _external_call_site_candidates(
-        contract, behaviors, register_relations, import_call_candidates
-    )
     chunk_by_region = {
         region_index: chunk_index
         for chunk_index, region_indices in enumerate(decode_chunk_regions)
@@ -3859,7 +3853,7 @@ def _write_relational_external_call_refinement_modules(
         int(edge["id"]): edge for edge in product_graph.get("edges", [])
     }
     modules: list[dict[str, Any]] = []
-    for site in analysis["candidates"]:
+    for site in external_call_sites["candidates"]:
         if site.get("site_kind") == "direct_import_thunk":
             continue
         edge_id = int(site["edge_index"])
@@ -4441,11 +4435,8 @@ def _write_relational_external_jump_refinement_modules(
     behaviors: list[dict[str, Any]],
     register_relations: dict[str, Any],
     decode_chunk_regions: list[list[int]],
-    import_call_candidates: list[dict[str, Any]],
+    external_call_sites: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    analysis = _external_call_site_candidates(
-        contract, behaviors, register_relations, import_call_candidates
-    )
     chunk_by_region = {
         region_index: chunk_index
         for chunk_index, region_indices in enumerate(decode_chunk_regions)
@@ -4456,7 +4447,7 @@ def _write_relational_external_jump_refinement_modules(
         for item in contract.get("machine_import_call_contracts", [])
     }
     modules: list[dict[str, Any]] = []
-    for site in analysis["candidates"]:
+    for site in external_call_sites["candidates"]:
         if site.get("site_kind") != "direct_import_thunk":
             continue
         site_id = int(site["id"])

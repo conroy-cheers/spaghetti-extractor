@@ -84,10 +84,13 @@ RELATIONAL_ACCEPTANCE_THEOREM = (
 )
 RELATIONAL_PREPARED_REPORT_FILES = (
     "prepared-proof.json",
+    "relational-analysis-manifest.json",
     "stage-a-interface-manifest.json",
     "module-graph.json",
     "relation-contract.json",
     "relational-proof-ir.json",
+    "relational-decoded-behaviors.json",
+    "relational-segment-candidates.json",
     "relational-semantic-ir.json",
     "relational-memory-contracts.json",
     "relational-static-word-relations.json",
@@ -98,6 +101,10 @@ RELATIONAL_PREPARED_REPORT_FILES = (
     "isa-requirements.json",
     "relational-invariants.json",
     "relational-machine-import-calls.json",
+    "relational-callsite-preservation.json",
+    "relational-dynamic-range-flow.json",
+    "relational-static-dynamic-pointer-slots.json",
+    "relational-fixed-code-pointer-flow.json",
     "relational-external-call-sites.json",
     "relational-external-result-invariants.json",
     "relational-import-register-invariants.json",
@@ -386,6 +393,7 @@ class ModuleGraph:
 
 @dataclass(frozen=True)
 class PreparedProofDigests:
+    analysis_manifest: str
     interface_manifest: str
     relation_contract: str
     proof_ir: str
@@ -405,6 +413,7 @@ class PreparedProofDigests:
     @classmethod
     def parse(cls, payload: Mapping[str, Any]) -> "PreparedProofDigests":
         fields = {
+            "analysis_manifest": "analysis_manifest_sha256",
             "interface_manifest": "interface_manifest_sha256",
             "relation_contract": "relation_contract_sha256",
             "proof_ir": "proof_ir_sha256",

@@ -19,6 +19,15 @@ import z3
 
 from ..stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
+from .analysis_artifact import (
+    copy_relational_analysis,
+    decoded_behaviors_payload,
+    parse_decoded_behaviors,
+    parse_segment_candidates,
+    segment_candidates_payload,
+    validate_relational_analysis,
+    write_relational_analysis_manifest,
+)
 from .artifacts import write_text_if_changed as _write_text_if_changed
 from .callsite_preservation import (
     parse_callsite_preservation_artifact,
@@ -529,6 +538,139 @@ def _indirect_call_target_artifact(
     return artifact
 
 
+def _prepared_relational_payload(
+    out: Path,
+    *,
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    graph: dict[str, Any],
+    composition_progress: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "format": "stage-a-prepared-relational-v1",
+        "status": "prepared",
+        "profile": STAGE_A_RELATIONAL_PROFILE_ID,
+        "model": STAGE_A_RELATIONAL_MODEL_ID,
+        "original_sha256": original_bin.sha256,
+        "candidate_sha256": candidate_bin.sha256,
+        "analysis_manifest_sha256": sha256_file(
+            out / "relational-analysis-manifest.json"
+        ),
+        "interface_manifest_sha256": sha256_file(
+            out / "stage-a-interface-manifest.json"
+        ),
+        "relation_contract_sha256": sha256_file(out / "relation-contract.json"),
+        "proof_ir_sha256": sha256_file(out / "relational-proof-ir.json"),
+        "semantic_ir_sha256": sha256_file(out / "relational-semantic-ir.json"),
+        "memory_contracts_sha256": sha256_file(
+            out / "relational-memory-contracts.json"
+        ),
+        "static_word_relations_sha256": sha256_file(
+            out / "relational-static-word-relations.json"
+        ),
+        "register_relations_sha256": sha256_file(
+            out / "relational-register-relations.json"
+        ),
+        "stack_windows_sha256": sha256_file(
+            out / "relational-stack-windows.json"
+        ),
+        "segment_diagnostics_sha256": sha256_file(
+            out / "relational-segment-diagnostics.json"
+        ),
+        "product_graph_sha256": sha256_file(
+            out / "relational-product-graph.json"
+        ),
+        "isa_requirements_sha256": sha256_file(out / "isa-requirements.json"),
+        "invariants_sha256": sha256_file(out / "relational-invariants.json"),
+        "whole_program_acceptance_sha256": sha256_file(
+            out / "whole-program-acceptance.json"
+        ),
+        "composition_progress_sha256": sha256_file(
+            out / "composition-progress.json"
+        ),
+        "module_graph_sha256": sha256_file(out / "module-graph.json"),
+        "expected_final_theorem": graph["expected_final_theorem"],
+        "acceptance": graph["acceptance"],
+        "composition_progress": composition_progress,
+        "approved_axioms": graph["approved_axioms"],
+        "counts": graph["counts"],
+    }
+
+
+def _write_prepared_relational_graph(
+    out: Path,
+    *,
+    original_bin: StageABinary,
+    candidate_bin: StageABinary,
+    normalized: dict[str, Any],
+    behaviors: list[dict[str, Any]],
+    invariant_synthesis: dict[str, Any],
+    memory_contracts: dict[str, Any],
+    register_relations: dict[str, Any],
+    product_graph: dict[str, Any],
+    import_register_seeds: list[dict[str, Any]],
+    import_register_analysis: dict[str, Any],
+    segment_candidates: list[dict[str, Any]],
+    isa_requirements: dict[str, Any],
+    semantic_preflight: dict[str, Any],
+    external_call_sites: dict[str, Any],
+    stack_window_analysis: dict[str, Any],
+    trusted_base: dict[str, Any],
+    prepare_only: bool,
+) -> tuple[list[str], dict[str, Any] | None]:
+    original_artifact = out / "artifacts" / "original.pe"
+    candidate_artifact = out / "artifacts" / "candidate.pe"
+    shard_modules, _ = _write_sharded_relational_proof(
+        out / "lean",
+        original_bin,
+        candidate_bin,
+        original_artifact.read_bytes(),
+        candidate_artifact.read_bytes(),
+        normalized,
+        behaviors,
+        invariant_synthesis=invariant_synthesis,
+        memory_contracts=memory_contracts,
+        register_relations=register_relations,
+        product_graph=product_graph,
+        import_register_seeds=import_register_seeds,
+        import_register_analysis=import_register_analysis,
+        external_call_sites=external_call_sites,
+        segment_candidates=segment_candidates,
+        isa_requirements=isa_requirements,
+        replay=False,
+    )
+    acceptance = _read_json(out / "whole-program-acceptance.json")
+    WholeProgramAcceptanceIR.parse(acceptance)
+    composition_progress = _composition_progress(
+        product_graph,
+        semantic_preflight,
+        external_call_sites,
+        acceptance,
+        stack_window_analysis,
+    )
+    CompositionProgressIR.parse(composition_progress)
+    write_json(out / "composition-progress.json", composition_progress)
+    graph = _write_relational_module_graph(
+        out,
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
+        trusted_base=trusted_base,
+    )
+    if not prepare_only:
+        return shard_modules, None
+    for olean in (out / "lean").rglob("*.olean"):
+        olean.unlink()
+    prepared = _prepared_relational_payload(
+        out,
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
+        graph=graph,
+        composition_progress=composition_progress,
+    )
+    write_json(out / "prepared-proof.json", prepared)
+    return shard_modules, prepared
+
+
 def stage_a_prove_relational(
     *,
     original: Path,
@@ -536,6 +678,7 @@ def stage_a_prove_relational(
     relation_contract: Path,
     out: Path,
     _prepare_only: bool = False,
+    _analyze_only: bool = False,
 ) -> dict[str, Any]:
     started_at = utc_now()
     out = Path(out)
@@ -1210,106 +1353,59 @@ def stage_a_prove_relational(
     )
     RelationalProofIR.parse(proof_ir)
     write_json(out / "relational-proof-ir.json", proof_ir)
-    bundle_path = out / "lean" / "StageA" / "RelationalBundle.lean"
-    # The canonical context and segment interface are part of every proof graph.
-    # Keeping a second monolithic certificate path would bypass those checks.
-    sharded = True
-    if sharded:
-        shard_modules, _ = _write_sharded_relational_proof(
-            out / "lean", original_bin, candidate_bin,
-            original_artifact.read_bytes(), candidate_artifact.read_bytes(),
-            normalized, behaviors, invariant_synthesis=invariant_synthesis,
-            memory_contracts=memory_contracts, register_relations=register_relations,
-            product_graph=product_graph,
-            import_register_seeds=import_register_seeds,
-            import_register_analysis=import_register_analysis,
-            segment_candidates=segment_candidates,
-            isa_requirements=isa_requirements.to_payload(),
-            replay=False,
-        )
-        acceptance = _read_json(out / "whole-program-acceptance.json")
-        WholeProgramAcceptanceIR.parse(acceptance)
-        composition_progress = _composition_progress(
-            product_graph,
-            semantic_preflight,
-            external_call_sites,
-            acceptance,
-            stack_window_analysis,
-        )
-        CompositionProgressIR.parse(composition_progress)
-        write_json(out / "composition-progress.json", composition_progress)
-        graph = _write_relational_module_graph(
-            out,
-            original_bin=original_bin,
-            candidate_bin=candidate_bin,
-            trusted_base=trusted_base,
-        )
-        if _prepare_only:
-            for olean in (out / "lean").rglob("*.olean"):
-                olean.unlink()
-            prepared = {
-                "format": "stage-a-prepared-relational-v1",
-                "status": "prepared",
-                "profile": STAGE_A_RELATIONAL_PROFILE_ID,
-                "model": STAGE_A_RELATIONAL_MODEL_ID,
-                "original_sha256": original_bin.sha256,
-                "candidate_sha256": candidate_bin.sha256,
-                "interface_manifest_sha256": sha256_file(
-                    out / "stage-a-interface-manifest.json"
-                ),
-                "relation_contract_sha256": sha256_file(out / "relation-contract.json"),
-                "proof_ir_sha256": sha256_file(out / "relational-proof-ir.json"),
-                "semantic_ir_sha256": sha256_file(out / "relational-semantic-ir.json"),
-                "memory_contracts_sha256": sha256_file(
-                    out / "relational-memory-contracts.json"
-                ),
-                "static_word_relations_sha256": sha256_file(
-                    out / "relational-static-word-relations.json"
-                ),
-                "register_relations_sha256": sha256_file(
-                    out / "relational-register-relations.json"
-                ),
-                "stack_windows_sha256": sha256_file(
-                    out / "relational-stack-windows.json"
-                ),
-                "segment_diagnostics_sha256": sha256_file(
-                    out / "relational-segment-diagnostics.json"
-                ),
-                "product_graph_sha256": sha256_file(
-                    out / "relational-product-graph.json"
-                ),
-                "isa_requirements_sha256": sha256_file(
-                    out / "isa-requirements.json"
-                ),
-                "invariants_sha256": sha256_file(out / "relational-invariants.json"),
-                "whole_program_acceptance_sha256": sha256_file(
-                    out / "whole-program-acceptance.json"
-                ),
-                "composition_progress_sha256": sha256_file(
-                    out / "composition-progress.json"
-                ),
-                "module_graph_sha256": sha256_file(out / "module-graph.json"),
-                "expected_final_theorem": graph["expected_final_theorem"],
-                "acceptance": graph["acceptance"],
-                "composition_progress": composition_progress,
-                "approved_axioms": graph["approved_axioms"],
-                "counts": graph["counts"],
-            }
-            write_json(out / "prepared-proof.json", prepared)
-            return prepared
-        production = _run_sharded_relational(out / "lean", shard_modules)
-    else:
-        production_source = _lean_bundle_source(
-            original_bin,
-            candidate_bin,
-            original_artifact.read_bytes(),
-            candidate_artifact.read_bytes(),
-            normalized,
-            behaviors,
-            replay=False,
-        )
-        bundle_path.write_text(production_source, encoding="utf-8")
-        production = _run_lean_relational(out / "lean")
+    write_json(
+        out / "relational-decoded-behaviors.json",
+        decoded_behaviors_payload(
+            original_sha256=original_bin.sha256,
+            candidate_sha256=candidate_bin.sha256,
+            relation_contract_sha256=sha256_file(out / "relation-contract.json"),
+            behaviors=behaviors,
+        ),
+    )
+    write_json(
+        out / "relational-segment-candidates.json",
+        segment_candidates_payload(
+            candidates=segment_candidates,
+            diagnostics_sha256=sha256_file(
+                out / "relational-segment-diagnostics.json"
+            ),
+            product_graph_sha256=sha256_file(
+                out / "relational-product-graph.json"
+            ),
+        ),
+    )
+    analysis_manifest = write_relational_analysis_manifest(
+        out,
+        original_sha256=original_bin.sha256,
+        candidate_sha256=candidate_bin.sha256,
+    )
+    if _analyze_only:
+        shutil.rmtree(out / "lean")
+        shutil.rmtree(out / "certificates")
+        return analysis_manifest
+    shard_modules, prepared = _write_prepared_relational_graph(
+        out,
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
+        normalized=normalized,
+        behaviors=behaviors,
+        invariant_synthesis=invariant_synthesis,
+        memory_contracts=memory_contracts,
+        register_relations=register_relations,
+        product_graph=product_graph,
+        import_register_seeds=import_register_seeds,
+        import_register_analysis=import_register_analysis,
+        segment_candidates=segment_candidates,
+        isa_requirements=isa_requirements.to_payload(),
+        semantic_preflight=semantic_preflight,
+        external_call_sites=external_call_sites,
+        stack_window_analysis=stack_window_analysis,
+        trusted_base=trusted_base,
+        prepare_only=_prepare_only,
+    )
+    if prepared is not None:
+        return prepared
+    production = _run_sharded_relational(out / "lean", shard_modules)
     if production["status"] != "checked":
         counterexample = _check_relational_counterexample(
             out / "lean",
@@ -1376,33 +1472,20 @@ def stage_a_prove_relational(
             blocker="Lean proof production did not emit one LRAT certificate per region",
         )
 
-    if sharded:
-        shard_modules, _ = _write_sharded_relational_proof(
-            out / "lean", original_bin, candidate_bin,
-            original_artifact.read_bytes(), candidate_artifact.read_bytes(),
-            normalized, behaviors, invariant_synthesis=invariant_synthesis,
-            memory_contracts=memory_contracts, register_relations=register_relations,
-            product_graph=product_graph,
-            import_register_seeds=import_register_seeds,
-            import_register_analysis=import_register_analysis,
-            segment_candidates=segment_candidates,
-            isa_requirements=isa_requirements.to_payload(),
-            replay=True, certificates=certificates,
-        )
-        replay = _run_sharded_relational(out / "lean", shard_modules)
-    else:
-        replay_source = _lean_bundle_source(
-            original_bin,
-            candidate_bin,
-            original_artifact.read_bytes(),
-            candidate_artifact.read_bytes(),
-            normalized,
-            behaviors,
-            replay=True,
-            certificates=certificates,
-        )
-        bundle_path.write_text(replay_source, encoding="utf-8")
-        replay = _run_lean_relational(out / "lean")
+    shard_modules, _ = _write_sharded_relational_proof(
+        out / "lean", original_bin, candidate_bin,
+        original_artifact.read_bytes(), candidate_artifact.read_bytes(),
+        normalized, behaviors, invariant_synthesis=invariant_synthesis,
+        memory_contracts=memory_contracts, register_relations=register_relations,
+        product_graph=product_graph,
+        import_register_seeds=import_register_seeds,
+        import_register_analysis=import_register_analysis,
+        external_call_sites=external_call_sites,
+        segment_candidates=segment_candidates,
+        isa_requirements=isa_requirements.to_payload(),
+        replay=True, certificates=certificates,
+    )
+    replay = _run_sharded_relational(out / "lean", shard_modules)
     theorem = str(replay.get("theorem") or "")
     theorem_checked = (
         replay["status"] == "checked"
@@ -1455,6 +1538,128 @@ def stage_a_prepare_relational(
         out=out,
         _prepare_only=True,
     )
+
+
+def stage_a_analyze_relational(
+    *,
+    original: Path,
+    candidate: Path,
+    relation_contract: Path,
+    out: Path,
+) -> dict[str, Any]:
+    return stage_a_prove_relational(
+        original=original,
+        candidate=candidate,
+        relation_contract=relation_contract,
+        out=out,
+        _analyze_only=True,
+    )
+
+
+def stage_a_generate_relational(
+    *, analysis: Path, out: Path
+) -> dict[str, Any]:
+    analysis = Path(analysis)
+    out = Path(out)
+    source_manifest = validate_relational_analysis(analysis)
+    copy_relational_analysis(analysis, out)
+    copied_manifest = validate_relational_analysis(out)
+    if copied_manifest != source_manifest:
+        raise StageAInputError("copied relational analysis manifest changed")
+
+    original_artifact = out / "artifacts" / "original.pe"
+    candidate_artifact = out / "artifacts" / "candidate.pe"
+    original_bin = _parse_stage_a_pe(original_artifact)
+    candidate_bin = _parse_stage_a_pe(candidate_artifact)
+    if original_bin.sha256 != source_manifest.original_sha256:
+        raise StageAInputError("analyzed original PE identity changed")
+    if candidate_bin.sha256 != source_manifest.candidate_sha256:
+        raise StageAInputError("analyzed candidate PE identity changed")
+
+    normalized = _load_contract(out / "relation-contract.json")
+    decoded = _read_json(out / "relational-decoded-behaviors.json")
+    behaviors_raw = parse_decoded_behaviors(
+        decoded,
+        expected_original_sha256=original_bin.sha256,
+        expected_candidate_sha256=candidate_bin.sha256,
+        expected_relation_contract_sha256=sha256_file(
+            out / "relation-contract.json"
+        ),
+        expected_region_count=len(normalized.get("regions", [])),
+    )
+    extracted = ExtractedProgramPair.create(
+        contract=normalized,
+        behaviors=behaviors_raw,
+        extraction={"source": "manifest_bound_lossless_behavior_inventory"},
+    )
+    behaviors = extracted.behavior_rows()
+
+    segment_artifact = _read_json(out / "relational-segment-candidates.json")
+    segment_candidates = parse_segment_candidates(
+        segment_artifact,
+        expected_diagnostics_sha256=sha256_file(
+            out / "relational-segment-diagnostics.json"
+        ),
+        expected_product_graph_sha256=sha256_file(
+            out / "relational-product-graph.json"
+        ),
+    )
+
+    proof_ir = _read_json(out / "relational-proof-ir.json")
+    RelationalProofIR.parse(proof_ir)
+    invariant_synthesis = _read_json(out / "relational-invariants.json")
+    memory_contracts = _read_json(out / "relational-memory-contracts.json")
+    register_relations = _read_json(out / "relational-register-relations.json")
+    product_graph = _read_json(out / "relational-product-graph.json")
+    ProductGraphIR.parse(product_graph)
+    import_seed_artifact = _read_json(
+        out / "relational-import-register-seeds.json"
+    )
+    import_register_seeds = import_seed_artifact.get("candidates")
+    if not isinstance(import_register_seeds, list):
+        raise StageAInputError("import register seed artifact is malformed")
+    import_register_analysis = _read_json(
+        out / "relational-import-register-invariants.json"
+    )
+    isa_requirements = ISARequirementInventory.parse(
+        _read_json(out / "isa-requirements.json")
+    )
+    semantic_preflight = _read_json(out / "semantic-gaps.json")
+    if semantic_preflight.get("status") != "supported":
+        raise StageAInputError(
+            "cannot generate proof sources from incomplete semantic analysis"
+        )
+    external_call_sites = _read_json(out / "relational-external-call-sites.json")
+    stack_window_analysis = _read_json(out / "relational-stack-windows.json")
+    trusted_base = _read_json(out / "trusted-base.json")
+
+    (out / "lean" / "StageA").mkdir(parents=True)
+    (out / "certificates").mkdir(parents=True)
+    _copy_relational_kernel_sources(out / "lean" / "StageA")
+    _shards, prepared = _write_prepared_relational_graph(
+        out,
+        original_bin=original_bin,
+        candidate_bin=candidate_bin,
+        normalized=normalized,
+        behaviors=behaviors,
+        invariant_synthesis=invariant_synthesis,
+        memory_contracts=memory_contracts,
+        register_relations=register_relations,
+        product_graph=product_graph,
+        import_register_seeds=import_register_seeds,
+        import_register_analysis=import_register_analysis,
+        segment_candidates=segment_candidates,
+        isa_requirements=isa_requirements.to_payload(),
+        semantic_preflight=semantic_preflight,
+        external_call_sites=external_call_sites,
+        stack_window_analysis=stack_window_analysis,
+        trusted_base=trusted_base,
+        prepare_only=True,
+    )
+    if prepared is None:
+        raise AssertionError("relational generation did not emit a prepared proof")
+    validate_relational_analysis(out)
+    return prepared
 
 def stage_a_check_relational_proof(*, report: Path, out: Path | None = None) -> dict[str, Any]:
     report = Path(report)

@@ -1048,7 +1048,7 @@
                 --out "$out/hello-relation-contract.json" \
                 > "$out/generate-relation.stdout"
             '';
-          stage-a-gnu-hello-preflight = pkgs.runCommand "stage-a-gnu-hello-preflight"
+          stage-a-gnu-hello-analysis = pkgs.runCommand "stage-a-gnu-hello-analysis"
             {
               nativeBuildInputs = [
                 spaghetti-extractor-core
@@ -1058,16 +1058,42 @@
             }
             ''
               fixture_dir="${stage-a-gnu-hello-fixtures}/share/spaghetti-extractor/stage-a-fixtures/gnu-hello-o2-alignment"
-              work="$TMPDIR/stage-a-gnu-hello"
+              work="$TMPDIR/stage-a-gnu-hello-analysis"
               mkdir -p "$work"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_PRECOMPILED_KERNEL="${stage-a-relational-kernel-cache}"
               export SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_EXTRACTION_JOBS=16
-              set +e
               SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_CACHE="$work/relational-cache" \
-                spaghetti-extractor stage-a-prepare-relational \
+                spaghetti-extractor stage-a-analyze-relational \
                   --original "$fixture_dir/hello-original.exe" \
                   --candidate "$fixture_dir/hello-candidate.exe" \
                   --relation-contract "${stage-a-gnu-hello-relation-contract}/hello-relation-contract.json" \
+                  --out "$work/analysis" \
+                  > "$work/analysis.stdout"
+              jq -e '
+                .format == "stage-a-relational-analysis-v1" and
+                .status == "analyzed" and
+                (.files | length) > 20
+              ' "$work/analysis/relational-analysis-manifest.json" >/dev/null
+              test ! -e "$work/analysis/lean"
+              test ! -e "$work/analysis/certificates"
+              mkdir -p "$out"
+              cp -R "$work/analysis" "$out/analysis"
+              cp "$work/analysis.stdout" "$out/"
+            '';
+          stage-a-gnu-hello-preflight = pkgs.runCommand "stage-a-gnu-hello-preflight"
+            {
+              nativeBuildInputs = [
+                spaghetti-extractor-core
+                pkgs.lean4
+                pkgs.jq
+              ];
+            }
+            ''
+              work="$TMPDIR/stage-a-gnu-hello"
+              mkdir -p "$work"
+              set +e
+              spaghetti-extractor stage-a-generate-relational \
+                  --analysis "${stage-a-gnu-hello-analysis}/analysis" \
                   --out "$work/relational-v3" \
                   > "$work/relational-v3.stdout" \
                   2> "$work/relational-v3.stderr"
@@ -2045,6 +2071,7 @@
             stage-a-gnu-hello-fixtures
             stage-a-gnu-hello-static-map
             stage-a-gnu-hello-relation-contract
+            stage-a-gnu-hello-analysis
             stage-a-gnu-hello-preflight
             stage-a-gnu-hello-launch-proof
             stage-a-gnu-hello-check

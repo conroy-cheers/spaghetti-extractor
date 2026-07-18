@@ -50,6 +50,177 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             [(4, 8, False)],
         )
 
+    def test_launch_proof_aggregation_forms_balanced_module_tree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = _pe32_image_with_writable_data(
+                b"\xeb\xfe", relocation_offsets=[]
+            )
+            original = root / "original.exe"
+            candidate = root / "candidate.exe"
+            original.write_bytes(image)
+            candidate.write_bytes(image)
+            contract = self._write_contract(
+                root / "relation.json", region_size=2
+            )
+            prepared = root / "prepared"
+            aggregation_environment = {
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_LAUNCH_AGGREGATION_FANOUT":
+                    "8",
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_LAUNCH_STACK_CHECK_CHUNK":
+                    "64",
+                "SPAGHETTI_EXTRACTOR_STAGE_A_RELATIONAL_LAUNCH_CHECK_CHUNK": "1",
+            }
+
+            with patch.dict(os.environ, aggregation_environment):
+                result = stage_a_prepare_relational(
+                    original=original,
+                    candidate=candidate,
+                    relation_contract=contract,
+                    out=prepared,
+                )
+
+            self.assertEqual(result["acceptance"]["status"], "ready", result)
+            self.assertEqual(
+                result["expected_final_theorem"], RELATIONAL_ACCEPTANCE_THEOREM
+            )
+            graph = json.loads(
+                (prepared / "module-graph.json").read_text(encoding="utf-8")
+            )
+            modules = graph["modules"]
+            check_imports = modules[
+                "RelationalLaunchCheckCertificate"
+            ]["imports"]
+            self.assertLessEqual(len(check_imports), 3, check_imports)
+            self.assertFalse(
+                any("Leaf" in imported for imported in check_imports),
+                check_imports,
+            )
+            self.assertIn(
+                "RelationalLaunchStackMemoryAggregateLevel1Node0",
+                check_imports,
+            )
+
+            stack_level0 = sorted(
+                module for module in modules
+                if module.startswith(
+                    "RelationalLaunchStackMemoryAggregateLevel0Node"
+                )
+            )
+            self.assertEqual(len(stack_level0), 8, stack_level0)
+            self.assertTrue(any(
+                module.startswith(
+                    "RelationalLaunchCandidateImageSpan2AggregateLevel0Node"
+                )
+                for module in modules
+            ))
+            stack_root_imports = modules[
+                "RelationalLaunchStackMemoryAggregateLevel1Node0"
+            ]["imports"]
+            self.assertEqual(
+                [
+                    imported for imported in stack_root_imports
+                    if imported.startswith(
+                        "RelationalLaunchStackMemoryAggregateLevel0Node"
+                    )
+                ],
+                stack_level0,
+            )
+            for node_index, module in enumerate(stack_level0):
+                leaf_imports = [
+                    imported for imported in modules[module]["imports"]
+                    if imported.startswith("RelationalLaunchStackMemoryLeaf")
+                ]
+                self.assertEqual(
+                    leaf_imports,
+                    [
+                        f"RelationalLaunchStackMemoryLeaf{leaf_index}"
+                        for leaf_index in range(node_index * 8, node_index * 8 + 8)
+                    ],
+                )
+
+            aggregate_modules = [
+                module for module in modules
+                if module.startswith("RelationalLaunch")
+                and "Aggregate" in module
+            ]
+            self.assertTrue(aggregate_modules)
+            for module in aggregate_modules:
+                proof_imports = [
+                    imported for imported in modules[module]["imports"]
+                    if imported != "RelationalLaunchProofAggregation"
+                ]
+                self.assertLessEqual(len(proof_imports), 8, (module, proof_imports))
+                aggregate_source = (
+                    prepared / "lean" / "StageA" / f"{module}.lean"
+                ).read_text(encoding="utf-8")
+                self.assertNotIn("sorry", aggregate_source)
+                self.assertNotIn("native_decide", aggregate_source)
+
+            reachable = set()
+            pending = ["RelationalLaunchCheckCertificate"]
+            while pending:
+                module = pending.pop()
+                if module in reachable:
+                    continue
+                reachable.add(module)
+                pending.extend(modules[module]["imports"])
+            launch_leaves = {
+                module for module in modules
+                if module.startswith("RelationalLaunch") and "Leaf" in module
+            }
+            self.assertTrue(launch_leaves)
+            self.assertLessEqual(launch_leaves, reachable)
+
+            launch_checks = (
+                prepared / "lean" / "StageA" /
+                "RelationalLaunchCheckCertificate.lean"
+            ).read_text(encoding="utf-8")
+            self.assertNotIn("Leaf", launch_checks.split("namespace", 1)[0])
+            self.assertIn(
+                "exact consoleLaunchStackMemoryAggregateLevel1Node0Step7Checked",
+                launch_checks,
+            )
+            self.assertIn("IndexedBoolCertificate.holds_of_ranges", launch_checks)
+
+            repeated = root / "repeated"
+            with patch.dict(os.environ, aggregation_environment):
+                repeated_result = stage_a_prepare_relational(
+                    original=original,
+                    candidate=candidate,
+                    relation_contract=contract,
+                    out=repeated,
+                )
+            self.assertEqual(
+                repeated_result["expected_final_theorem"],
+                RELATIONAL_ACCEPTANCE_THEOREM,
+            )
+            repeated_graph = json.loads(
+                (repeated / "module-graph.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                {
+                    module: metadata for module, metadata in modules.items()
+                    if module.startswith("RelationalLaunch")
+                },
+                {
+                    module: metadata
+                    for module, metadata in repeated_graph["modules"].items()
+                    if module.startswith("RelationalLaunch")
+                },
+            )
+
+            aggregate_path = (
+                prepared / "lean" / "StageA" /
+                "RelationalLaunchStackMemoryAggregateLevel1Node0.lean"
+            )
+            aggregate_path.write_text(
+                aggregate_path.read_text(encoding="utf-8") + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(StageAInputError, "source hash"):
+                _validate_prepared_relational(prepared)
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for PE TLS parsing")
     def test_formal_tls_directory_and_callback_parsing(self):
         absent = _pe32_tls_image((), include_tls=False)

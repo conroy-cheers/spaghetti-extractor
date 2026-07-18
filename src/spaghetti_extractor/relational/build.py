@@ -11,6 +11,7 @@ from typing import Any
 
 from ..stage_binary import StageABinary, StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
+from .analysis_artifact import validate_relational_analysis
 from .schema import (
     RELATION_CONTRACT_FORMAT,
     RELATIONAL_ACCEPTANCE_THEOREM,
@@ -1360,6 +1361,7 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         raise StageAInputError("unsupported prepared relational proof format")
     if manifest.get("status") != "prepared":
         raise StageAInputError("relational proof preparation did not complete")
+    validate_relational_analysis(prepared)
     try:
         StageAInterfaceManifest.parse(
             _read_json(prepared / "stage-a-interface-manifest.json")
@@ -1368,6 +1370,9 @@ def _validate_prepared_relational(prepared: Path) -> dict[str, Any]:
         raise StageAInputError(f"malformed Stage A interface manifest: {exc}") from exc
     graph = _validate_relational_module_graph(prepared)
     expected_hashes = {
+        "analysis_manifest_sha256": (
+            prepared / "relational-analysis-manifest.json"
+        ),
         "interface_manifest_sha256": prepared / "stage-a-interface-manifest.json",
         "relation_contract_sha256": prepared / "relation-contract.json",
         "proof_ir_sha256": prepared / "relational-proof-ir.json",
