@@ -30,6 +30,7 @@ ISA_REQUIREMENT_INVENTORY_FORMAT = "stage-a-isa-requirement-inventory-v1"
 ISA_REQUIREMENT_FORM_FORMAT = "stage-a-x86-instruction-form-v1"
 LEAN_ISA_REQUIREMENT_FORM_FORMAT = "stage-a-lean-x86-semantic-form-v1"
 LEAN_ISA_FORM_INVENTORY_FORMAT = "stage-a-lean-isa-form-inventory-v1"
+_LEAN_FORM_EXTRACTION_DRIVER_VERSION = "chunked-request-inventory-v2"
 
 _SIDES = ("original", "candidate")
 _PREFIX_NAMES = {
@@ -553,7 +554,10 @@ def _lean_form_source_hashes() -> dict[str, str]:
     return {
         "classifier_sha256": classifier,
         "extractor_sha256": extractor,
-        "source_sha256": _canonical_sha256(files),
+        "source_sha256": _canonical_sha256({
+            "lean_sources": files,
+            "driver_version": _LEAN_FORM_EXTRACTION_DRIVER_VERSION,
+        }),
     }
 
 
@@ -572,6 +576,15 @@ def _lean_form_extraction_source(regions: list[Mapping[str, Any]]) -> str:
                 + f", nodeId := {node_id}, span := {{ start := "
                 + f"{int(span['rva_start'])}, size := {int(span['size'])} }} }}"
             )
+    request_chunk_size = 128
+    request_chunks = [
+        requests[offset : offset + request_chunk_size]
+        for offset in range(0, len(requests), request_chunk_size)
+    ]
+    request_chunks_literal = ",\n  ".join(
+        "[\n    " + ",\n    ".join(chunk) + "\n  ]"
+        for chunk in request_chunks
+    )
     return """import Lean
 import StageA.RelationalISAQualification
 
@@ -587,8 +600,8 @@ structure Request where
   nodeId : Nat
   span : Span
 
-def requests : List Request := [
-  """ + ",\n  ".join(requests) + """
+def requestChunks : List (List Request) := [
+  """ + request_chunks_literal + """
 ]
 
 def run : IO Unit := do
@@ -600,15 +613,16 @@ def run : IO Unit := do
     throw (IO.userError "original PE parse failed")
   let some candidatePe := parsePE32 candidateBytes |
     throw (IO.userError "candidate PE parse failed")
-  for request in requests do
-    let pe := if request.candidate then candidatePe else originalPe
-    let some occurrences := decodeInstructionFormsSpan pe request.span |
-      throw (IO.userError s!"region {request.nodeId} did not decode")
-    IO.println <| Json.compress <| Json.mkObj [
-      ("side", toJson (if request.candidate then "candidate" else "original")),
-      ("node_id", toJson request.nodeId),
-      ("occurrences", instructionFormInventoryJson occurrences)
-    ]
+  for chunk in requestChunks do
+    for request in chunk do
+      let pe := if request.candidate then candidatePe else originalPe
+      let some occurrences := decodeInstructionFormsSpan pe request.span |
+        throw (IO.userError s!"region {request.nodeId} did not decode")
+      IO.println <| Json.compress <| Json.mkObj [
+        ("side", toJson (if request.candidate then "candidate" else "original")),
+        ("node_id", toJson request.nodeId),
+        ("occurrences", instructionFormInventoryJson occurrences)
+      ]
 
 end StageA.GeneratedISARequirementInventory
 

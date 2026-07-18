@@ -8,6 +8,7 @@ import capstone
 
 from spaghetti_extractor.relational.isa_requirements import (
     ISARequirementInventory,
+    _lean_form_extraction_source,
     build_isa_requirement_inventory,
     extract_lean_instruction_forms,
     isa_requirement_replay_projection,
@@ -211,6 +212,23 @@ class StageAISARequirementTests(unittest.TestCase):
             self.assertEqual([row["bytes"] for row in occurrences], ["01d8", "c3"])
             self.assertIn("binary", occurrences[0]["form"])
             self.assertIn("ret", occurrences[1]["form"])
+
+    def test_formal_inventory_source_chunks_large_request_sets(self):
+        region = _contract(1)["regions"][0]
+        source = _lean_form_extraction_source([
+            {
+                **region,
+                "id": f"region-{index}",
+                "numeric_id": index,
+            }
+            for index in range(300)
+        ])
+
+        self.assertIn("def requestChunks : List (List Request)", source)
+        self.assertIn("for chunk in requestChunks do", source)
+        self.assertIn("    for request in chunk do", source)
+        self.assertNotIn("def requests : List Request", source)
+        self.assertEqual(source.count("{ candidate :="), 600)
 
 
 if __name__ == "__main__":

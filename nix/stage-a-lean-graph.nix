@@ -179,8 +179,11 @@ let
               ''cp "${moduleSources.${module}}" "source/StageA/${module}.lean"''
             ) node.modules}
             ${if builtins.length node.modules == 1 then
-              let module = builtins.head node.modules; in ''
-                lean -j 2 \
+              let
+                module = builtins.head node.modules;
+                leanJobs = if node.resource_class == "high-memory" then "1" else "2";
+              in ''
+                lean -j ${leanJobs} \
                   -R source \
                   -o "deps/StageA/${module}.olean" \
                   "source/StageA/${module}.lean"

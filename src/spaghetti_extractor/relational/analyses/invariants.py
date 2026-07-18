@@ -482,9 +482,71 @@ def _synthesize_relational_invariants(
                 "region_id": target_region["id"],
                 "requirement_id": requirement["id"],
             })
+        elif len(predecessors) > 1:
+            # Joins are invariant cutpoints. Expanding a separate substituted
+            # predicate down every predecessor path is both redundant with the
+            # checked product-graph invariant table and potentially
+            # exponential. Keep the complete incoming inventory and require a
+            # checked join invariant instead.
+            barriers.append({
+                "kind": "control_join_invariant_required",
+                "side": side,
+                "target_index": target_index,
+                "target_id": target_region["id"],
+                "requirement_id": requirement["id"],
+                "predecessors": [
+                    {
+                        "source_index": edge["source_index"],
+                        "source_id": contract["regions"][edge["source_index"]]["id"],
+                        "edge_kind": edge["kind"],
+                    }
+                    for edge in predecessors
+                ],
+            })
+            continue
         for edge in predecessors:
             source_index = edge["source_index"]
             source_region = contract["regions"][source_index]
+            if edge["kind"] == "call":
+                # Calls are relational cutpoints. Propagating a callee-entry
+                # predicate through the caller as if this were an ordinary
+                # jump conflates the caller and callee frames and causes the
+                # weakest-precondition graph to expand across the whole call
+                # graph. A checked call summary must establish the callee
+                # invariant instead.
+                barriers.append({
+                    "kind": "internal_call_summary_required",
+                    "side": side,
+                    "source_index": source_index,
+                    "source_id": source_region["id"],
+                    "target_index": target_index,
+                    "target_id": target_region["id"],
+                    "requirement_id": requirement["id"],
+                })
+                continue
+            source_function = source_region.get("function_id")
+            target_function = target_region.get("function_id")
+            if (
+                source_function is not None
+                and target_function is not None
+                and source_function != target_function
+            ):
+                # Function ranges are untrusted cutpoint proposals, not proof
+                # facts. They may bound diagnostic WP synthesis, provided the
+                # resulting cross-cutpoint summary remains an explicit
+                # obligation for the checked segment machinery.
+                barriers.append({
+                    "kind": "cross_function_cutpoint_summary_required",
+                    "side": side,
+                    "source_index": source_index,
+                    "source_id": source_region["id"],
+                    "source_function_id": source_function,
+                    "target_index": target_index,
+                    "target_id": target_region["id"],
+                    "target_function_id": target_function,
+                    "requirement_id": requirement["id"],
+                })
+                continue
             if edge.get("environment_barrier"):
                 barriers.append({
                     "kind": "adversarial_environment_transition",

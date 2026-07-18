@@ -1290,6 +1290,12 @@ class StageARelationalAcceptanceTests(StageARelationalTestBase):
             self.assertIn(
                 "RelationalLaunchRealizabilityCertificate", graph["modules"]
             )
+            launch_node = next(
+                node for node in graph["nodes"]
+                if node["modules"] == ["RelationalLaunchRealizabilityCertificate"]
+            )
+            self.assertEqual(launch_node["resource_class"], "high-memory")
+            self.assertGreaterEqual(launch_node["estimated_memory_mb"], 49152)
             self.assertIn(
                 "RelationalInstructionAdequacyCertificate", graph["modules"]
             )

@@ -1439,7 +1439,12 @@ class StageARelationalContractTests(StageARelationalTestBase):
 
         self.assertNotIn("preferLocalBuild = true", evaluator)
         self.assertGreaterEqual(evaluator.count("preferLocalBuild = false"), 3)
-        self.assertEqual(evaluator.count("lean -j 2"), 3)
+        self.assertEqual(evaluator.count("lean -j 2"), 2)
+        self.assertIn(
+            'leanJobs = if node.resource_class == "high-memory" then "1" else "2";',
+            evaluator,
+        )
+        self.assertIn("lean -j ${leanJobs}", evaluator)
         self.assertEqual(evaluator.count("ulimit -s unlimited"), 2)
         high_memory_scheduler = evaluator.split(
             'node.resource_class == "high-memory"', 1

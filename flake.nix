@@ -1052,21 +1052,34 @@
                 echo "GNU hello relational preparation failed" >&2
                 exit 1
               fi
-              jq -e '
+              if ! jq -e '
                 .status == "supported" and
                 (.issues | length) == 0
-              ' "$work/relational-v3/semantic-gaps.json" >/dev/null
-              jq -e '
+              ' "$work/relational-v3/semantic-gaps.json" >/dev/null; then
+                jq . "$work/relational-v3/semantic-gaps.json" >&2
+                echo "GNU hello semantic preflight assertion failed" >&2
+                exit 1
+              fi
+              if ! jq -e '
                 .status == "incomplete" and
                 .theorem == null and
-                ([.blockers[].code] | index("unmapped_return_call_frame_unsupported")) != null
-              ' "$work/relational-v3/whole-program-acceptance.json" >/dev/null
-              jq -e '
+                (.blockers | length) > 0 and
+                all(.blockers[]; (.code | type) == "string" and (.code | length) > 0)
+              ' "$work/relational-v3/whole-program-acceptance.json" >/dev/null; then
+                jq . "$work/relational-v3/whole-program-acceptance.json" >&2
+                echo "GNU hello acceptance frontier assertion failed" >&2
+                exit 1
+              fi
+              if ! jq -e '
                 .status == "prepared" and
                 .acceptance.status == "incomplete" and
-                ([.acceptance.blockers[].code] |
-                  index("unmapped_return_call_frame_unsupported")) != null
-              ' "$work/relational-v3/prepared-proof.json" >/dev/null
+                .expected_final_theorem == null and
+                (.acceptance.blockers | length) > 0
+              ' "$work/relational-v3/prepared-proof.json" >/dev/null; then
+                jq . "$work/relational-v3/prepared-proof.json" >&2
+                echo "GNU hello prepared-proof assertion failed" >&2
+                exit 1
+              fi
               mkdir -p "$out/report"
               cp "${stage-a-gnu-hello-static-map}/hello-block-map.json" \
                 "${stage-a-gnu-hello-static-map}/hello-layout-contract.json" \

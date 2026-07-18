@@ -1051,6 +1051,11 @@ def _write_relational_module_graph(
     def resource_class(modules: list[str]) -> tuple[str, int]:
         names = " ".join(modules)
         source_bytes = sum(logical_modules[module]["source_bytes"] for module in modules)
+        if "RelationalLaunchRealizabilityCertificate" in modules:
+            # The source is tiny, but its exact finite-memory checks reduce
+            # image-wide loader and projection predicates. The WinAPI hello
+            # fixture peaks near 40 GiB while elaborating this singleton.
+            return "high-memory", max(49152, source_bytes // 1024 * 3)
         if any(
             module in (
                 "RelationalProofOriginalCoverageData",

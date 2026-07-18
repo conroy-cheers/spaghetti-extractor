@@ -3465,6 +3465,70 @@ class StageARelationalStateTests(StageARelationalTestBase):
             for obligation in incomplete["obligations"]
         ))
 
+        call_cutpoint = behavior({"op": "call", "target": 2})
+        call_barrier = _synthesize_relational_invariants(
+            {"regions": regions},
+            [
+                {"original_ir": compare, "candidate_ir": compare},
+                {"original_ir": call_cutpoint, "candidate_ir": call_cutpoint},
+                {"original_ir": table, "candidate_ir": table},
+            ],
+        )
+        self.assertEqual(call_barrier["counts"]["edge_obligations"], 0)
+        self.assertEqual(call_barrier["counts"]["solver_queries"], 2)
+        self.assertEqual(
+            {barrier["kind"] for barrier in call_barrier["barriers"]},
+            {"internal_call_summary_required"},
+        )
+        self.assertTrue(all(
+            obligation["status"] == "incomplete"
+            for obligation in call_barrier["obligations"]
+        ))
+
+        cutpoint_regions = [dict(region) for region in regions]
+        cutpoint_regions[0]["function_id"] = "caller"
+        cutpoint_regions[1]["function_id"] = "caller"
+        cutpoint_regions[2]["function_id"] = "callee"
+        cross_jump = behavior({"op": "jump", "target": 2})
+        cross_cutpoint = _synthesize_relational_invariants(
+            {"regions": cutpoint_regions},
+            [
+                {"original_ir": compare, "candidate_ir": compare},
+                {"original_ir": cross_jump, "candidate_ir": cross_jump},
+                {"original_ir": table, "candidate_ir": table},
+            ],
+        )
+        self.assertEqual(cross_cutpoint["counts"]["edge_obligations"], 0)
+        self.assertEqual(
+            {barrier["kind"] for barrier in cross_cutpoint["barriers"]},
+            {"cross_function_cutpoint_summary_required"},
+        )
+        self.assertTrue(all(
+            obligation["status"] == "incomplete"
+            for obligation in cross_cutpoint["obligations"]
+        ))
+
+        join_regions = [dict(region) for region in regions]
+        join_left = behavior({"op": "jump", "target": 2})
+        join_right = behavior({"op": "jump", "target": 2})
+        join_cutpoint = _synthesize_relational_invariants(
+            {"regions": join_regions},
+            [
+                {"original_ir": join_left, "candidate_ir": join_left},
+                {"original_ir": join_right, "candidate_ir": join_right},
+                {"original_ir": table, "candidate_ir": table},
+            ],
+        )
+        self.assertEqual(join_cutpoint["counts"]["edge_obligations"], 0)
+        self.assertEqual(
+            {barrier["kind"] for barrier in join_cutpoint["barriers"]},
+            {"control_join_invariant_required"},
+        )
+        self.assertTrue(all(
+            len(barrier["predecessors"]) == 2
+            for barrier in join_cutpoint["barriers"]
+        ))
+
     @unittest.skipUnless(shutil.which("lean"), "Lean is required for invariant replay")
     def test_compare_branch_bound_invariant_is_replayed_by_lean(self):
         with tempfile.TemporaryDirectory() as temporary:
